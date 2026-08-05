@@ -13,8 +13,9 @@ panel and a future scripting surface, so it may outgrow plotting).
 export** of the visible window or cursor span. **Drag a whole plot
 area** (not just a signal) between plot panels.
 
-**Log scale moved to task 50**, which is landing manual y-axis min/max
-from a right-click menu on the axis. The split follows what each setting
+**Log scale moved to task 50 and shipped there** (manual y-axis
+min/max/log from a right-click menu on the axis; task 50 is retired —
+detail in git history and ADR 0026). The split follows what each setting
 is actually a property of: a log scale is a property of an *axis* (it
 changes how a range maps to pixels, and every series on that axis shares
 it), whereas offset and gain are transforms on a *series* and stay here.

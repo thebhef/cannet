@@ -51,6 +51,12 @@ and the license / platform constraints we need to be aware of.
   toggle's per-row detail block) fall out of the prefix table, and the
   same hand-rolled shape is already in use by `SystemMessagesPanel` —
   not worth a dependency for one more call site.
+- **`dnd-kit` / `react-dnd`** (drag-and-drop libraries) — `rejected`
+  for the gridview cross-panel drag work (task 51). Rationale in
+  [`../docs/adr/0045-cross-panel-drag-payloads.md`](../docs/adr/0045-cross-panel-drag-payloads.md):
+  raw HTML5 DnD must interoperate with dockview's native tab drag,
+  and the hand-rolled surface (one mime type, payload
+  encode/decode, dragover feedback) is small and mime-scoped.
 - **`tauri-plugin-window-state`** (v2, MIT / Apache-2.0) — `adopted`
   to persist the main window's size / position / maximized / fullscreen
   state across launches (machine-local app state, not project data, so

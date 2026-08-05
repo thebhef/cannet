@@ -366,19 +366,12 @@ name/color/remove on any editable event row. Remaining follow-ups:
     anything ends up with a mixture of the two palettes. That
     interaction rule is the design question, and it has to be answered
     before a field is added.
-- `[feat]` **Light mode, and UI density, triaged separately.** Task 45
-  Stage 5 listed "theme and density (dark-only, fixed type scale)" as
-  one item. Neither is a promotion, and they fail for different
-  reasons:
-  - **Light mode is a second stylesheet that does not exist.**
-    `index.css` carries ~530 literal hex colors and **zero** CSS
-    custom properties; `:root` declares `color-scheme: dark` and paints
-    `#0e1116`. Beyond the stylesheet, color is also decided in JS —
-    `palette.ts` (AA-tested against that one background), `busColor.ts`,
-    and `PlotArea.tsx`'s uPlot canvas styling. The real task is
-    "introduce a theme token layer", after which a `theme` setting is
-    one row. Doing it in the other order produces an app that is half
-    light.
+- `[feat]` **UI density / type scale.** Task 45 Stage 5 listed "theme
+  and density (dark-only, fixed type scale)" as one item; the theme
+  half was promoted to
+  [task 53](tasks/0053-theme-token-layer-light-theme.md) (2026-08-05,
+  on a user request for a light theme). Density stays here — it fails
+  for its own reason:
   - **A type scale would break the virtualised views.** The rem side
     looks cheap — ~595 rem lengths against ~307 px, most of them 1–4 px
     borders and radii — but the scroll geometry is px in JavaScript:

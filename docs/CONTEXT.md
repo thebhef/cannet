@@ -16,8 +16,10 @@ A logical CAN bus — one shared medium. Multiple **interfaces** can
 sit on the same bus and see each other's traffic. In the project,
 buses are first-class: a Project Bus carries name and bit-rate,
 and **interface bindings** map a server's interface onto a project
-bus. A virtual-bus server simulates one bus with N interfaces as
-nodes on it.
+bus. A project bus carries **at most one binding** — "many
+interfaces on one medium" describes the physical/simulated bus,
+not project bindings. A virtual-bus server simulates one bus with
+N interfaces as nodes on it.
 
 **Interface**:
 The wire-level endpoint a server exposes — what a client subscribes
@@ -114,6 +116,32 @@ _Avoid_: "trace" for the capture itself, or for a plotted signal.
 The keyed snapshot of a capture — one summary row per arbitration id
 (its latest frame plus stats: count, period, last payload). Bounded by
 id-space, not by capture length.
+
+**Gridview**:
+The shared tree/grid interaction base every grid-like view
+instantiates — one row space of branch nodes and leaf rows, with a
+row cursor, a selection, disclosures, and drag. A view supplies
+rows and cell content; the gridview supplies the interaction.
+_Avoid_: per-panel one-off row interaction.
+
+**Branch node**:
+A gridview row that structures other rows — expanding it adds its
+children to the row space, collapsing removes them.
+
+**Leaf row**:
+A gridview row with no children. A leaf *with content* expands in
+place — its content block (e.g. a trace row's decoded signals)
+grows the row and adds no rows.
+_Avoid_: "children" for a leaf's expanded content.
+
+**Cursor (active row)**:
+The one row a gridview's keyboard navigation is on. Not the
+selection — moving the cursor collapses the selection to it.
+
+**Selection**:
+The set of gridview rows (and pattern chips) that mouse gestures
+have selected; what a drag carries and a bulk action acts on.
+Ephemeral — never persisted.
 
 ### Plot view
 
