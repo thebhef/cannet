@@ -58,6 +58,11 @@ import { listen } from "@tauri-apps/api/event";
 
 import { TransmitPanel } from "./TransmitPanel";
 import {
+  comboboxOptionLabels,
+  openCombobox,
+  pickCombobox,
+} from "./comboboxTestKit";
+import {
   maxDataBytesForKind,
   zeroDataHex,
   resizeDataHexPreserving,
@@ -511,7 +516,9 @@ describe("payload sizing helpers", () => {
     });
   });
 
-  it("an enum signal fetches its VAL_ table and commits the matched raw on a typed label", async () => {
+  // One enum signal with a two-row VAL_ table, expanded and ready to
+  // edit — the fixture the enum-cell cases below share.
+  async function renderEnumRow() {
     POOL = [frame("a")];
     DESCRIBE = {
       name: "Status",
@@ -545,70 +552,49 @@ describe("payload sizing helpers", () => {
     ];
     renderPanel("el", ["a"]);
     fireEvent.click(await screen.findByTitle("expand"));
-    const input = await screen.findByLabelText("Mode value (enum)");
-    // Typing a label the host's VAL_ table defines (not the currently
-    // decoded one — decode_frame returns null here) resolves through
-    // the fetched table to that label's raw value.
-    fireEvent.change(input, { target: { value: "On" } });
-    fireEvent.blur(input);
-    await waitFor(() => {
-      const call = lastCall("encode_frame");
-      expect(call).toBeDefined();
-      const args = call?.args as { signals?: { name: string; physical: number }[] };
-      expect(args.signals).toEqual([{ name: "Mode", physical: 1 }]);
-    });
-  });
+    return await screen.findByLabelText("Mode value (enum)");
+  }
 
-  it("an enum signal commits the moment a label is picked, not on blur", async () => {
-    POOL = [frame("a")];
-    DESCRIBE = {
-      name: "Status",
-      expectedLen: 8,
-      isFd: false,
-      brs: false,
-      genMsgCycleTimeMs: 100,
-      genMsgSendType: null,
-      usesExtendedMux: false,
-      calcFields: {},
-      signals: [
-        {
-          name: "Mode",
-          unit: "",
-          factor: 1,
-          offset: 0,
-          min: 0,
-          max: 1,
-          size: 1,
-          signed: false,
-          mux: { kind: "plain" },
-          floatKind: "integer",
-          hasValueTable: true,
-          startValueRaw: null,
-        },
-      ],
-    };
-    VALUE_TABLES.Mode = [
-      { raw: 0, label: "Off" },
-      { raw: 1, label: "On" },
-    ];
-    renderPanel("el", ["a"]);
-    fireEvent.click(await screen.findByTitle("expand"));
-    const input = await screen.findByLabelText("Mode value (enum)");
-    await waitFor(() =>
-      expect(document.querySelector('datalist option[value="On"]')).toBeTruthy(),
-    );
-    // Picking a datalist suggestion leaves focus where it is, so the
-    // commit cannot wait for a blur.
-    fireEvent.change(input, { target: { value: "On" } });
+  it("an enum signal fetches its VAL_ table and commits the picked label's raw", async () => {
+    const picker = await renderEnumRow();
+    // The host's VAL_ table (not the decoded value — decode_frame
+    // returns null here) is what the picked label resolves through.
+    await pickCombobox(picker, "On");
     await waitFor(() => {
       const args = lastCall("encode_frame")?.args as {
         signals?: { name: string; physical: number }[];
       };
       expect(args?.signals).toEqual([{ name: "Mode", physical: 1 }]);
     });
-    const before = calls.filter((c) => c.cmd === "encode_frame").length;
-    fireEvent.blur(input);
-    expect(calls.filter((c) => c.cmd === "encode_frame")).toHaveLength(before);
+    // One click, one encode — no second send when focus later leaves.
+    expect(calls.filter((c) => c.cmd === "encode_frame")).toHaveLength(1);
+  });
+
+  it("renders one line per enum option: `label (raw)`", async () => {
+    const picker = await renderEnumRow();
+    openCombobox(picker);
+    await waitFor(() => expect(comboboxOptionLabels()).toEqual(["Off (0)", "On (1)"]));
+  });
+
+  it("reopening the picker after a selection still lists every label", async () => {
+    const picker = await renderEnumRow();
+    await pickCombobox(picker, "On");
+    fireEvent.keyDown(picker, { key: "ArrowDown" });
+    expect(comboboxOptionLabels()).toEqual(["Off (0)", "On (1)"]);
+  });
+
+  it("takes a raw value outside the VAL_ table as free text", async () => {
+    const picker = await renderEnumRow();
+    openCombobox(picker);
+    const filter = screen.getByLabelText("Mode value (enum) filter");
+    fireEvent.change(filter, { target: { value: "3" } });
+    fireEvent.keyDown(filter, { key: "Enter" });
+    await waitFor(() => {
+      const args = lastCall("encode_frame")?.args as {
+        signals?: { name: string; physical: number }[];
+      };
+      expect(args?.signals).toEqual([{ name: "Mode", physical: 3 }]);
+    });
   });
 
   it("a numeric signal commits the typed physical value through encode_frame", async () => {

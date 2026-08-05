@@ -9,8 +9,13 @@ import type {
   SignalDescriptorRichRecord,
   SignalRecord,
 } from "./types";
-import { useValueTables, type ValueTableSignal } from "./useValueTables";
-import { ValidatedInput, parseFiniteNumber } from "./ValidatedInput";
+import {
+  useValueTables,
+  valueTableOptions,
+  type ValueTableSignal,
+} from "./useValueTables";
+import { parseFiniteNumber } from "./ValidatedInput";
+import { Combobox } from "./Combobox";
 import {
   type TransmitFrameConfig,
   bytesToHexString,
@@ -246,18 +251,13 @@ interface EnumValueCellProps {
   onCommit: (physical: number) => void;
 }
 
-/// Enum signal value cell. Combobox: an `<input>` linked to a
-/// per-signal `<datalist>` of labels — the user types to filter the
-/// label list, or types a raw number for the (rare) out-of-table
-/// value. On commit:
-///   1. exact label match → that row's raw value
-///   2. numeric → that number directly
-///   3. neither → cancel the edit (keep the current value)
-///
-/// A label is a discrete choice, so it commits as soon as it is
-/// picked; the raw-number path is free text and keeps the Enter/blur
-/// commit (`ValidatedInput`, the shared implementation this and the
-/// RBS panel's signal cells both use).
+/// Enum signal value cell: the shared `Combobox` over the signal's
+/// `VAL_` labels, one row per label. Picking one commits that row's
+/// raw value. `freeText` keeps the (rare) out-of-table code reachable
+/// — the typed text becomes a row of its own and commits as a number;
+/// for enum signals the physical-vs-raw distinction collapses since
+/// factor/offset are typically 1/0, and where they aren't the encoder
+/// maps the physical value back to bits.
 ///
 /// The label table is loaded once per `(messageId, extended,
 /// signal_name)` via the shared `useValueTables` hook.
@@ -273,6 +273,7 @@ function EnumValueCell({
     [messageId, extended, sig.name],
   );
   const [rows = []] = useValueTables(valueTableSignals).values();
+  const options = useMemo(() => valueTableOptions(rows), [rows]);
 
   // Display: if decoded carries a label use it; else show the raw
   // physical (which for enum signals is typically raw=physical since
@@ -281,44 +282,26 @@ function EnumValueCell({
   const currentRaw = decoded ? decoded.value : null;
   const display =
     currentLabel ?? (currentRaw != null ? formatPhysical(currentRaw) : "");
-  const datalistId = `tx-enum-${messageId}-${extended ? "x" : "s"}-${sig.name}`;
   return (
-    <>
-      <ValidatedInput<number>
-        className="tx-col-value tx-signal-input"
-        value={display}
-        list={datalistId}
-        choices={rows.map((r) => r.label)}
-        // Clear on focus so the datalist offers *all* labels instead
-        // of filtering on the current one (which locked the picker to
-        // the already-selected value); the placeholder keeps the
-        // committed label visible, and blurring untouched reverts.
-        focusBehavior="clear"
-        parse={(text) => {
-          if (text === "") return null;
-          // Exact label match first — typing "Park" picks raw=0
-          // regardless of how many "Park"-prefixed labels existed in
-          // the datalist suggestions.
-          const labelMatch = rows.find((r) => r.label === text);
-          if (labelMatch) return labelMatch.raw;
-          // Else parse as a number (raw value). For enum signals the
-          // physical-vs-raw distinction collapses since factor/offset
-          // are typically 1/0; if they aren't, this still sends the
-          // physical value the user typed through `encode_frame` and
-          // the encoder maps it back to bits.
-          return parseFiniteNumber(text);
-        }}
-        onCommit={onCommit}
-        ariaLabel={`${sig.name} value (enum)`}
-      />
-      <datalist id={datalistId}>
-        {rows.map((r) => (
-          <option key={r.raw} value={r.label}>
-            {r.raw}
-          </option>
-        ))}
-      </datalist>
-    </>
+    <Combobox
+      className="tx-col-value tx-signal-input"
+      options={options}
+      value={currentLabel ?? ""}
+      placeholder={display}
+      onChange={(v) => {
+        // Exact label match first — "Park" is raw=0 however many
+        // "Park"-prefixed labels the list also offered.
+        const labelMatch = rows.find((r) => r.label === v);
+        if (labelMatch) {
+          onCommit(labelMatch.raw);
+          return;
+        }
+        const n = parseFiniteNumber(v);
+        if (n !== null) onCommit(n);
+      }}
+      ariaLabel={`${sig.name} value (enum)`}
+      freeText
+    />
   );
 }
 

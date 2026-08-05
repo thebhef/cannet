@@ -53,6 +53,11 @@ export interface ComboboxProps {
   /// Extra class(es) on the trigger button, for per-site layout CSS.
   className?: string;
   title?: string;
+  /// Accept a value no option offers. The filter text becomes one
+  /// extra row at the *end* of the list, so a matching option still
+  /// wins Enter and the typed text is reachable when nothing matches.
+  /// For value cells that must also take a raw out-of-table code.
+  freeText?: boolean;
 }
 
 /// One rendered dropdown row: an ancestor header or a pickable leaf.
@@ -73,6 +78,7 @@ export function Combobox({
   disabled,
   className,
   title,
+  freeText,
 }: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -89,10 +95,19 @@ export function Combobox({
   // Visible options in *catalog order* (not fzf rank) so hierarchy
   // grouping stays stable while filtering.
   const visible = useMemo(() => {
-    if (query === "") return [...options];
-    const matched = new Set(fzf.find(query).map((r) => r.item.value));
-    return options.filter((o) => matched.has(o.value));
-  }, [options, fzf, query]);
+    const matches =
+      query === ""
+        ? [...options]
+        : (() => {
+            const matched = new Set(fzf.find(query).map((r) => r.item.value));
+            return options.filter((o) => matched.has(o.value));
+          })();
+    const typed = query.trim();
+    if (!freeText || typed === "") return matches;
+    // Nothing to offer when the text already *is* an option.
+    if (options.some((o) => o.label === typed || o.value === typed)) return matches;
+    return [...matches, { value: typed, label: `use "${typed}"` }];
+  }, [options, fzf, query, freeText]);
 
   // Interleave ancestor headers: emit a header for each path level
   // that differs from the previous option's path.

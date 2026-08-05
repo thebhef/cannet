@@ -4,11 +4,8 @@
 // `TransmitPanel.tsx`'s value / period cells; this is the one shared
 // implementation the transmit and RBS panels both use.
 //
-// One exception to the blur/Enter rule: text listed in `choices` is a
-// *discrete choice* — an enum label offered by the attached datalist —
-// and commits the moment it lands. There is nothing left to type, and
-// picking a datalist suggestion sets the value without moving focus,
-// so waiting for a blur would cost the user an extra click.
+// Free text only: a value picked from a fixed set is the shared
+// `Combobox`'s job, and it commits on the pick.
 
 import { useState } from "react";
 
@@ -21,20 +18,11 @@ export interface ValidatedInputProps<T> {
   className?: string;
   placeholder?: string;
   ariaLabel: string;
-  /// Optional datalist id (enum comboboxes attach suggestions).
-  list?: string;
-  /// Texts that are a discrete choice rather than free text — the
-  /// labels `list` offers. One of these commits as soon as it lands
-  /// instead of waiting for Enter or blur.
-  choices?: readonly string[];
   disabled?: boolean;
   title?: string;
-  /// What focusing does to the committed text: `"select"` selects it
-  /// (type-to-replace); `"clear"` empties the draft so a datalist
-  /// shows *all* its options instead of filtering on the current
-  /// value (the combobox lock-in fix) — blurring without typing
-  /// reverts. Default: leave the caret where clicked.
-  focusBehavior?: "select" | "clear";
+  /// `"select"` selects the committed text on focus (type-to-replace).
+  /// Default: leave the caret where clicked.
+  focusBehavior?: "select";
 }
 
 export function ValidatedInput<T>({
@@ -44,8 +32,6 @@ export function ValidatedInput<T>({
   className,
   placeholder,
   ariaLabel,
-  list,
-  choices,
   disabled,
   title,
   focusBehavior,
@@ -63,19 +49,13 @@ export function ValidatedInput<T>({
       type="text"
       className={className}
       value={draft ?? value}
-      placeholder={placeholder ?? (focusBehavior === "clear" ? value : undefined)}
-      list={list}
+      placeholder={placeholder}
       disabled={disabled}
       title={title}
       onFocus={(e) => {
-        if (focusBehavior === "clear") setDraft("");
-        else if (focusBehavior === "select") e.currentTarget.select();
+        if (focusBehavior === "select") e.currentTarget.select();
       }}
-      onChange={(e) => {
-        const text = e.target.value;
-        setDraft(text);
-        if (choices?.includes(text.trim())) commit(text);
-      }}
+      onChange={(e) => setDraft(e.target.value)}
       onBlur={() => {
         if (draft === null) return;
         commit(draft);
