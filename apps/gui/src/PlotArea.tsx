@@ -1684,9 +1684,17 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       axes: [xAxis, yAxis],
       series: [
         {},
-        ...signals.map((s) => ({
+        ...signals.map((s, i) => ({
           label: `${s.messageName}.${s.signalName}`,
-          stroke: s.color,
+          // Read live per draw, like the y-axis stroke below: `signalSetKey`
+          // excludes `color`, so this instance is never rebuilt for a
+          // recolor and a captured string would keep the color the series
+          // had when it was constructed. uPlot resolves a function stroke
+          // on every draw (and hands the same function to the point
+          // markers), so the next redraw carries the new color. The
+          // construction-time color is the fallback for the one render
+          // between a signal-set change and the rebuild it triggers.
+          stroke: () => signalsRef.current[i]?.color ?? s.color,
           width: 1,
           // `auto` defers to uPlot's density default; `off` never draws
           // markers; `on` always draws them but capped at a flat max across

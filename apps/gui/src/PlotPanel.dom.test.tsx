@@ -61,7 +61,13 @@ vi.mock("uplot", () => {
     setSeries() {}
     setSelect() {}
     setSize() {}
-    redraw() {}
+    /** How many redraws this instance was asked for — how a restyle that
+     * changes no data (a recolored series) becomes visible on a stopped
+     * trace, and the only place that is observable. */
+    redraws = 0;
+    redraw() {
+      this.redraws++;
+    }
     destroy() {}
     /** px → x value; linear so tests can pick a deterministic x. */
     posToVal(px: number) {
@@ -203,6 +209,7 @@ type FakeUPlotInst = {
   data: unknown;
   scales: Record<string, { min?: number; max?: number }>;
   xCalls: { min: number; max: number }[];
+  redraws: number;
   fire: (hook: string, ...args: unknown[]) => void;
 };
 const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[] }).__instances;
@@ -749,6 +756,39 @@ describe("PlotPanel", () => {
     // jsdom normalises hex → rgb() in inline styles.
     const swatch = document.querySelector(".plot-signal-swatch") as HTMLElement;
     expect(swatch.style.background).toBe("rgb(18, 52, 86)");
+  });
+
+  it("changing a series' color restyles the live uPlot series in place", async () => {
+    // THE REGRESSION: the swatch took the new color and the plotted line
+    // kept the old one — the series' stroke was read once at construction
+    // and nothing rebuilt or restyled the instance for a color-only
+    // change, so only closing and reopening the panel recolored the line.
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const before = uplotInstances.length;
+      const redrawsBefore = liveInstanceIn("Area 1").redraws;
+      fireEvent.change(screen.getByLabelText("pick series color"), {
+        target: { value: "#123456" },
+      });
+      const inst = liveInstanceIn("Area 1") as unknown as {
+        opts: { series: { stroke?: unknown }[] };
+        redraws: number;
+      };
+      // uPlot resolves a series' stroke per draw, so a function stroke is
+      // what a live instance takes a color change through.
+      const s = inst.opts.series[1];
+      const stroke = typeof s.stroke === "function" ? (s.stroke as () => string)() : s.stroke;
+      expect(stroke).toBe("#123456");
+      // In place: no teardown + rebuild, and a redraw so a stopped trace
+      // repaints at the new color instead of waiting for a tick.
+      expect(uplotInstances.length).toBe(before);
+      expect(inst.redraws).toBeGreaterThan(redrawsBefore);
+    });
   });
 
   it("y-axis-mode selector switches an area between unified / per-unit / individual; per-unit splits by unit", async () => {
