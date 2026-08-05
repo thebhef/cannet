@@ -356,7 +356,18 @@ enter rename mode".
 
 ## 7. Audit every view for scroll correctness
 
-**Done.** The chronological trace reaches its last rows; the sweep found
+**REOPENED 2026-08-05 — the chrono fix does not survive row expansion.**
+User repro in the running app: capture longer than the window, scroll to
+the bottom, expand messages to show their signals — content flows out of
+the bottom and the view cannot scroll further. The audit's Chromium
+measurements covered plain rows only; the chronological view's scroll
+bound evidently does not include expanded rows' extra height (the by-ID
+table feeds expansion into its geometry via `expandedRowHeight` /
+`buildPlacements`; the chrono view appears not to). Diagnose exactly
+where expansion height is dropped, fix, and this time the Chromium
+verification must include an expanded-rows-at-the-tail case.
+
+**Done (first pass).** The chronological trace reaches its last rows; the sweep found
 one more view with the same arithmetic defect and one new CSS one; and
 the base-implementation question is answered below — *two* primitives,
 one of which is a test rather than a component.
@@ -1200,7 +1211,31 @@ schedule.
 
 ## 16. Named sections in the signal view
 
-**Done.** The signal view takes user-authored named sections: create,
+**REOPENED 2026-08-05 — the feature does not work in the running app,
+and two design corrections.** User report:
+
+- **Defect: sections can be created but signals cannot be moved into
+  them** — new sections stack up at the bottom, empty. The jsdom suite
+  passes, so the break is somewhere jsdom does not exercise: prime
+  suspects are the frontend↔host identity key not actually matching
+  byte-for-byte (assignments silently bucketing nothing — which would
+  produce exactly this symptom: names arrive, assignments don't apply),
+  the Tauri invoke argument shape (camelCase conversion / serde naming
+  on the nested `sections` object or the `kind`-tagged rows), or the
+  row-menu move never issuing its update against the real panel. This
+  must be diagnosed against the real host (Rust integration test using
+  frontend-produced values, or the live app), not only jsdom.
+- **Creation flow correction:** the new section should be created
+  immediately with a starter name and its header dropped into the
+  existing inline edit mode — not named beforehand in the add control.
+- **Design extension:** each section should carry **its own pattern
+  collection** in addition to individually assigned signals, so a
+  pattern group can be organized — and moved — as a unit.
+
+Keyboard navigation in this panel is deliberately NOT part of this item
+— it belongs to the pending gridview keyboard-nav item (17).
+
+**Done (first pass, defective).** The signal view takes user-authored named sections: create,
 rename, delete, and a per-row move-to-section menu with a "new
 section…" entry. A signal is in at most one section; everything else
 sits in an implicit unnamed section, and a user who makes no sections
@@ -1301,6 +1336,60 @@ creation order, the row menu's move both ways, "new section…"
 creating-and-assigning, rename carrying its members, Escape abandoning
 a rename, and delete leaving the selection alone with the assignment
 dormant.
+
+## 17. Keyboard navigation in the gridview-like panels
+
+Captured 2026-08-05; **held until the user finishes the current
+feedback round — do not start without their go-ahead.**
+
+The grid-like presentations — trace panel in **both** modes
+(chronological and by-ID), the signal view, the event rows — cannot be
+navigated by keyboard: rows cannot be highlighted, focus cannot move
+row-to-row. The by-ID caret button being Tab-reachable only highlighted
+that nothing else is.
+
+**Architectural mandate, from the user:** anything rendering in this
+gridview style must not be patched five times. Keyboard nav is to be
+built once as part of a **shared gridview interaction layer** over the
+existing shared viewport scaffold (`useTraceViewport`), and the
+presentations migrated onto it — the same consolidation move item 7
+made for the scroll math, one layer up. Design it together with item
+18, which shares the selection model.
+
+## 18. Selection, multiselect, and drag-and-drop across panels
+
+Captured 2026-08-05; **held until the user finishes the current
+feedback round — do not start without their go-ahead.**
+
+In the gridview-like panels: select a row, multiselect, and drag items.
+Motivating cases from the user:
+
+- Necessary to make item 16's sections workable — organizing signals by
+  menu alone doesn't scale.
+- Drag a signal or message out of a by-ID panel onto a plot or transmit
+  panel.
+- Drag a **pattern group** (item 16's per-section patterns) and drop it
+  somewhere that supports it — signal view → plot and plot → signal
+  view.
+
+Same architectural mandate as item 17: one shared selection/drag layer
+for the gridview presentations plus a drop contract for the receiving
+panels, not per-panel implementations. Design items 17 and 18 together.
+
+## 19. Enum dropdown rendering and the reopen-filter bug
+
+Two defects in the enum choice UI, reported 2026-08-05. Both are to be
+fixed in the **common control** (`Combobox` / `ValidatedInput`'s
+choices path) so they are fixed once:
+
+- **Rendering:** enum options render multiline, which reads badly. An
+  option should be one line: `Name(Value)`.
+- **Reopen filter bug**, repro: Tab to the combobox → down arrow —
+  picker opens, all options present → make a selection — picker
+  collapses → down arrow again — picker opens showing **only the
+  current selection** instead of everything. The committed value is
+  evidently being used as a filter on reopen; opening the picker should
+  always list every option.
 
 ## Exit criteria
 
