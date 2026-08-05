@@ -559,6 +559,58 @@ describe("payload sizing helpers", () => {
     });
   });
 
+  it("an enum signal commits the moment a label is picked, not on blur", async () => {
+    POOL = [frame("a")];
+    DESCRIBE = {
+      name: "Status",
+      expectedLen: 8,
+      isFd: false,
+      brs: false,
+      genMsgCycleTimeMs: 100,
+      genMsgSendType: null,
+      usesExtendedMux: false,
+      calcFields: {},
+      signals: [
+        {
+          name: "Mode",
+          unit: "",
+          factor: 1,
+          offset: 0,
+          min: 0,
+          max: 1,
+          size: 1,
+          signed: false,
+          mux: { kind: "plain" },
+          floatKind: "integer",
+          hasValueTable: true,
+          startValueRaw: null,
+        },
+      ],
+    };
+    VALUE_TABLES.Mode = [
+      { raw: 0, label: "Off" },
+      { raw: 1, label: "On" },
+    ];
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    const input = await screen.findByLabelText("Mode value (enum)");
+    await waitFor(() =>
+      expect(document.querySelector('datalist option[value="On"]')).toBeTruthy(),
+    );
+    // Picking a datalist suggestion leaves focus where it is, so the
+    // commit cannot wait for a blur.
+    fireEvent.change(input, { target: { value: "On" } });
+    await waitFor(() => {
+      const args = lastCall("encode_frame")?.args as {
+        signals?: { name: string; physical: number }[];
+      };
+      expect(args?.signals).toEqual([{ name: "Mode", physical: 1 }]);
+    });
+    const before = calls.filter((c) => c.cmd === "encode_frame").length;
+    fireEvent.blur(input);
+    expect(calls.filter((c) => c.cmd === "encode_frame")).toHaveLength(before);
+  });
+
   it("a numeric signal commits the typed physical value through encode_frame", async () => {
     POOL = [frame("a")];
     DESCRIBE = {

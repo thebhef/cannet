@@ -3,6 +3,12 @@
 // committed text fails `parse`. The pattern originated in
 // `TransmitPanel.tsx`'s value / period cells; this is the one shared
 // implementation the transmit and RBS panels both use.
+//
+// One exception to the blur/Enter rule: text listed in `choices` is a
+// *discrete choice* — an enum label offered by the attached datalist —
+// and commits the moment it lands. There is nothing left to type, and
+// picking a datalist suggestion sets the value without moving focus,
+// so waiting for a blur would cost the user an extra click.
 
 import { useState } from "react";
 
@@ -17,6 +23,10 @@ export interface ValidatedInputProps<T> {
   ariaLabel: string;
   /// Optional datalist id (enum comboboxes attach suggestions).
   list?: string;
+  /// Texts that are a discrete choice rather than free text — the
+  /// labels `list` offers. One of these commits as soon as it lands
+  /// instead of waiting for Enter or blur.
+  choices?: readonly string[];
   disabled?: boolean;
   title?: string;
   /// What focusing does to the committed text: `"select"` selects it
@@ -35,11 +45,19 @@ export function ValidatedInput<T>({
   placeholder,
   ariaLabel,
   list,
+  choices,
   disabled,
   title,
   focusBehavior,
 }: ValidatedInputProps<T>) {
   const [draft, setDraft] = useState<string | null>(null);
+  // Ends the edit either way: the draft is dropped, so the box falls
+  // back to `value` and a later blur cannot commit the same text twice.
+  const commit = (text: string) => {
+    const parsed = parse(text.trim());
+    setDraft(null);
+    if (parsed !== null) onCommit(parsed);
+  };
   return (
     <input
       type="text"
@@ -53,12 +71,14 @@ export function ValidatedInput<T>({
         if (focusBehavior === "clear") setDraft("");
         else if (focusBehavior === "select") e.currentTarget.select();
       }}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        const text = e.target.value;
+        setDraft(text);
+        if (choices?.includes(text.trim())) commit(text);
+      }}
       onBlur={() => {
         if (draft === null) return;
-        const parsed = parse(draft.trim());
-        setDraft(null);
-        if (parsed !== null) onCommit(parsed);
+        commit(draft);
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();

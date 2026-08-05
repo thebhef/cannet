@@ -660,7 +660,9 @@ interface SignalRowProps {
 function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: SignalRowProps) {
   // Enum signals get a datalist of labels (committed as the label
   // string — the host resolves it through the VAL_ table), fetched via
-  // the shared useValueTables hook.
+  // the shared useValueTables hook. A label is a discrete choice and
+  // commits as soon as it is picked; a raw out-of-table value is free
+  // text and keeps the Enter/blur commit.
   const valueTableSignals = useMemo<ValueTableSignal[]>(
     () =>
       s.hasValueTable
@@ -717,6 +719,7 @@ function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: Sig
               className="rbs-signal-input"
               ariaLabel={`${s.name} value`}
               list={s.hasValueTable ? datalistId : undefined}
+              choices={labels.map((l) => l.label)}
               disabled={inert}
             />
             {s.hasValueTable && (

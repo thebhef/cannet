@@ -172,6 +172,23 @@ function sampleView(): RbsView {
                     hasValueTable: true,
                   },
                   {
+                    name: "PackVoltage",
+                    unit: "V",
+                    value: 400,
+                    label: null,
+                    overridden: false,
+                    overrideText: null,
+                    calcRole: null,
+                    factor: 0.1,
+                    offset: 0,
+                    min: 0,
+                    max: 500,
+                    size: 16,
+                    signed: false,
+                    floatKind: "integer",
+                    hasValueTable: false,
+                  },
+                  {
                     name: "AliveCtr",
                     unit: "",
                     value: 0,
@@ -345,6 +362,71 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
       expect(lastCall("rbs_set_signal")?.args).toMatchObject({
         signal: "TargetMode",
         value: "Off",
+      }),
+    );
+  });
+
+  it("commits an enum label the moment it is picked, not on blur", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const input = await screen.findByLabelText("TargetMode value");
+    await waitFor(() =>
+      expect(
+        document.querySelector('#rbs-enum-0x123-TargetMode option[value="Off"]'),
+      ).toBeTruthy(),
+    );
+    // Picking a datalist suggestion replaces the value without moving
+    // focus, so the commit cannot wait for a blur.
+    fireEvent.change(input, { target: { value: "Off" } });
+    await waitFor(() =>
+      expect(lastCall("rbs_set_signal")?.args).toMatchObject({
+        signal: "TargetMode",
+        value: "Off",
+      }),
+    );
+    // …and the blur that eventually follows must not send it twice.
+    const before = calls.filter((c) => c.cmd === "rbs_set_signal").length;
+    fireEvent.blur(input);
+    expect(calls.filter((c) => c.cmd === "rbs_set_signal")).toHaveLength(before);
+  });
+
+  it("keeps the Enter/blur commit for free text in an enum cell", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const input = await screen.findByLabelText("TargetMode value");
+    await waitFor(() =>
+      expect(
+        document.querySelector('#rbs-enum-0x123-TargetMode option[value="Off"]'),
+      ).toBeTruthy(),
+    );
+    // A raw value outside the VAL_ table (fault injection) is free
+    // text: half-typed "12" must not go out on the way to "127".
+    fireEvent.change(input, { target: { value: "12" } });
+    expect(lastCall("rbs_set_signal")).toBeUndefined();
+    fireEvent.change(input, { target: { value: "127" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(lastCall("rbs_set_signal")?.args).toMatchObject({
+        signal: "TargetMode",
+        value: 127,
+      }),
+    );
+  });
+
+  it("keeps the Enter/blur commit for a numeric signal cell", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const input = await screen.findByLabelText("PackVoltage value");
+    fireEvent.change(input, { target: { value: "403.2" } });
+    expect(lastCall("rbs_set_signal")).toBeUndefined();
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(lastCall("rbs_set_signal")?.args).toMatchObject({
+        signal: "PackVoltage",
+        value: 403.2,
       }),
     );
   });
