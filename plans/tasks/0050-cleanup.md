@@ -157,24 +157,67 @@ tests failed with `["0", "0.5", "1"]` before the fix.
 
 ## 5. Collapsible sections in the project view
 
-`ProjectPanel` already renders six `<section class="project-section">`
-blocks with `<h3>` headers — Project, Elements, Logical buses, Virtual
-buses, Connection, DBC. They just do not collapse. Make them collapsible.
+**Done.** All six sections fold from their headers, and the Elements
+section's contents are grouped by element type with each group folding
+the same way. Both assumptions held: state persists in the workspace
+scope, and the grouping replaces the flat list rather than toggling
+against it.
 
-Alongside that: **group the Elements section's contents by type** —
-trace, plot, signals, and so on. This is sub-structure *within* one
-existing section, not a reorganisation of the panel; the type groups get
-their own headers and collapse the same way the outer sections do.
+**Persistence: the dockview panel params.** No new IPC, no new
+`state.json` key, no host change. `ProjectPanel` writes
+`api.updateParameters({ …, collapsed })`, so the set rides the layout
+blob — which the workspace scope persists as `layout` in the project's
+`.cannet/state.json` (ADR 0042 §3, `SCOPES` in
+`apps/gui/src-tauri/src/state.rs`) and which `gatherProject` also
+embeds in the project file. That is literally "alongside the rest of
+the layout", and it is the panel-local idiom already in use: the DBC
+panel's expanded-node set, the system-messages source filter and the
+graph's node positions all persist exactly this way. Adding a `UiState`
+field would have been a second channel for the same class of fact.
 
-Assumptions taken rather than asked, correct them if wrong: collapse
-state persists in the workspace scope alongside the rest of the layout
-(ADR 0042 §3), because a panel that forgets what you folded away is
-worse than one that never folded; and the type grouping replaces the
-flat list rather than being a toggle, since a toggle implies two layouts
-to maintain for a panel this small.
+Stored **sparsely** — the ids of what is *folded*, so a panel nobody
+folded persists nothing and a fresh panel opens fully expanded. Ids are
+stable strings (`project`, `elements`, `buses`, `virtual-buses`,
+`connection`, `dbc`, and `elements/<kind>` for the groups), not the
+header text, so rewording a header cannot silently unfold everyone's
+panel. A junk value in the params is filtered out rather than thrown on
+— nothing upstream validates the blob.
 
-Task 48 item 5 fixed this panel's scrolling because it was unusable at
-1024 px vertical. Collapsing is the other half of that fix.
+**Grouping order: the declaration order of `elementKindLabel`** —
+Trace, Plot, Signals, Transmit, Filter, RBS, Color Map. Registry order
+is kept *within* a group. The order lives in a `Record<
+ProjectElementKind, number>` rather than an array so a new element kind
+is a compile error there, matching how `elementKindLabel` itself is
+kept exhaustive. Only kinds with elements get a group; the "No
+elements." empty state is unchanged.
+
+**Consequence: `ElementRow` no longer prints the kind.** The group
+header carries it, and a fixed 4.5rem `TRACE` column repeated under a
+`TRACE` heading is exactly the width this panel does not have.
+`.project-element-kind` went with it.
+
+**A11y: button-in-heading with `aria-expanded`.** The `<h3>` / `<h4>`
+stays, so the panel keeps its heading outline, and the toggle inside it
+is the disclosure control. The caret is a `▾` / `▸` glyph swap in an
+`aria-hidden` span — the repo has no rotate-chevron anywhere (RBS,
+transmit, the graph filter node and the trace rows all swap glyphs),
+and `aria-expanded` already carries the state. The body is unmounted
+rather than CSS-hidden, matching `RbsPanel`.
+
+**Task 48 item 5's scroll fix is untouched**: `.project-panel` keeps
+`height: 100%` + `overflow: auto` as its first rule, so
+`dockPanelScrolling.test.ts` still reads it, and folding only removes
+children — it can shorten the scrolled content, never un-bound it.
+
+Tests: `apps/gui/src/ProjectPanel.collapse.dom.test.tsx` — twelve cases
+over fold/unfold, the params write (including the key coming back out
+on unfold), restore-from-params, an unmount/remount round-trip through
+the written params, junk tolerance, group order, per-group folding, and
+the outer section folding over its groups. Eleven of the twelve failed
+before the change. It is also the first test to render the whole
+`ProjectPanel`, which needed stubs for `containerApi` and the sidecar
+status command — the reason the existing file only ever rendered leaf
+components.
 
 ## 6. Rename should rename in place
 

@@ -483,7 +483,7 @@ describe("ElementRow", () => {
     sources: ["*"],
   };
 
-  it("shows the kind and an inline-rename input holding the name", () => {
+  it("shows an inline-rename input holding the name", () => {
     render(
       <ElementRow
         element={traceEl}
@@ -493,8 +493,10 @@ describe("ElementRow", () => {
         onRemove={() => {}}
       />,
     );
-    expect(screen.getByText("Trace")).toBeInTheDocument();
     expect(screen.getByLabelText("element el-1 name")).toHaveValue("Trace 1");
+    // The kind isn't repeated on the row — the row sits under its
+    // kind's group header in the Elements inventory.
+    expect(screen.queryByText("Trace")).not.toBeInTheDocument();
   });
 
   it("typing in the input fires onRename with the new name", () => {
