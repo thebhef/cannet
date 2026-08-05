@@ -30,9 +30,10 @@ export function AboutPanel(_props: IDockviewPanelProps) {
   const [version, setVersion] = useState("");
   const [components, setComponents] = useState<ComponentLicenses[]>([]);
 
-  // The host stamps the binary with `git describe` at build time; the
-  // About section is where an alpha build is identified (the native
-  // title bar carries only the project name).
+  // The host stamps the binary with `git describe` at build time. The
+  // window title carries the same string, so this section is not the
+  // only place a build identifies itself — but it is where the version
+  // sits alongside the build's licence attribution.
   useEffect(() => {
     let live = true;
     invoke<string>("app_version")
