@@ -60,6 +60,8 @@ interface ByIdTableProps {
   baseTimestamp: number | null;
   busLookup: BusLookup;
   /// Expanded rows, by [`byIdRowKey`] (stable identity, not position).
+  /// Owned by the panel, which persists it with the rest of its view
+  /// config — so which messages are open survives a reopen.
   expanded: ReadonlySet<string>;
   onToggleExpand: (rowKey: string) => void;
 }
@@ -69,6 +71,11 @@ interface ByIdTableProps {
 /// the shared windowed-source primitive. Bounded by id-space, so a single
 /// page usually covers it — but it is the same windowed code path as the
 /// chronological views, not a special whole-fetch.
+///
+/// A row's decoded signals fold under it: the caret in the message cell
+/// is the disclosure control (`aria-expanded`), and clicking the row is
+/// the shortcut. Only the *loaded* rows' folds enter the geometry, so
+/// the stacking arithmetic never needs the whole snapshot.
 export function ByIdTable({
   count,
   version,
@@ -303,6 +310,33 @@ const ByIdRow = memo(function ByIdRow({
           row?.count,
         );
         const className = columnDef(c.key).className;
+        // The message cell is this row's disclosure: the name stays put
+        // and the caret beside it is the control, carrying the state as
+        // `aria-expanded` (the project panel's section idiom). Clicking
+        // the row anywhere still toggles — the button has to stop the
+        // event or one press would fold and unfold — and a row with no
+        // decode has nothing to disclose.
+        if (c.key === "msg" && frame?.decoded && rowKey) {
+          return (
+            <span key={c.key} className={className}>
+              {frame.decoded.name}
+              <button
+                type="button"
+                className="trace-disclosure"
+                aria-expanded={isExpanded}
+                aria-label={`${frame.decoded.name} signals`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle(rowKey);
+                }}
+              >
+                <span className="hint" aria-hidden="true">
+                  {isExpanded ? "▾" : "▸"}
+                </span>
+              </button>
+            </span>
+          );
+        }
         return c.key === "time" ? (
           <TraceTimeCell
             key={c.key}

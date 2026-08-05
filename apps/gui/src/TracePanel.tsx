@@ -47,13 +47,23 @@ function traceMode(value: unknown): TraceMode {
 }
 
 /// This panel's persisted view config: the mode, auto-scroll,
-/// column layout, and events toggle — see {@link useElementPanel}.
+/// column layout, events toggle, and the by-id rows left open — see
+/// {@link useElementPanel}.
 interface TraceConfig {
   [key: string]: unknown;
   mode?: unknown;
   autoScroll?: unknown;
   columns?: unknown;
   showEvents?: unknown;
+  expanded?: unknown;
+}
+
+/// Read the persisted by-id fold set, tolerating whatever an older or
+/// hand-edited layout carries — the params blob is round-tripped
+/// opaquely, so nothing upstream validates it.
+function expandedFromConfig(raw: unknown): Set<string> {
+  if (!Array.isArray(raw)) return new Set();
+  return new Set(raw.filter((v): v is string => typeof v === "string"));
 }
 
 /**
@@ -64,9 +74,10 @@ interface TraceConfig {
  * column layout (resize a divider; right-click a header to show / hide
  * columns) and the trace controls; the element lives in the registry,
  * so closing the panel doesn't destroy it. The mode, auto-scroll
- * (chronological), the events overlay, and the column layout are this
- * view's config, persisted on the element (so they survive closing and
- * reopening the panel) and mirrored into the dockview `params`. A panel
+ * (chronological), the events overlay, the column layout, and the by-id
+ * rows left open are this view's config, persisted on the element (so
+ * they survive closing and reopening the panel) and mirrored into the
+ * dockview `params`. A panel
  * with none of them yet — a brand-new one — seeds them from the
  * `trace_mode` / `trace_auto_scroll` / `trace_show_events` settings.
  */
@@ -127,22 +138,30 @@ export function TracePanel(props: IDockviewPanelProps) {
     [],
   );
 
-  // Dual-write this panel's persistable state (mode, auto-scroll,
-  // column layout, events toggle) onto the element and into the
-  // dockview params — see `useElementPanel`'s `persist`.
-  useEffect(() => {
-    persist({ mode, autoScroll, columns, showEvents });
-  }, [persist, mode, autoScroll, columns, showEvents]);
-
   // By-id mode state. The snapshot itself is host-paged and host-sorted
   // (see `useByIdView` below); the panel owns only the view-local sort
   // and expand state.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  //
+  // The fold set is persisted with the rest of the config, sparsely: a
+  // by-id row defaults to collapsed, so what is stored is the ids of
+  // the rows that are *open*. They are `byIdRowKey`s (bus + id +
+  // std/ext), so a fold survives a re-sort, a new id appearing above
+  // it, and the panel being closed and reopened.
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    expandedFromConfig(savedConfig?.expanded),
+  );
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const onSortColumn = useCallback((key: ColumnKey) => setSort((s) => nextSort(s, key)), []);
   const onToggleExpand = useCallback((rowKey: string) => {
     setExpanded((prev) => toggleInSet(prev, rowKey));
   }, []);
+
+  // Dual-write this panel's persistable state (mode, auto-scroll,
+  // column layout, events toggle, the open by-id rows) onto the element
+  // and into the dockview params — see `useElementPanel`'s `persist`.
+  useEffect(() => {
+    persist({ mode, autoScroll, columns, showEvents, expanded: [...expanded] });
+  }, [persist, mode, autoScroll, columns, showEvents, expanded]);
 
   // The fetch predicate the host applies before returning rows. Built
   // from the element's `sources` (and any upstream filter's predicate).
