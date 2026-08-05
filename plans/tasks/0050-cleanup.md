@@ -352,120 +352,119 @@ layout already marks the session dirty. Both failed before the change.
 
 ## 9. Manual y-axis control from a right-click menu on the axis
 
-**Specified — no open questions.** Settings key off `DerivedAxis.id`
-(the mechanism `axisWeights` already uses), are stored sparsely — an
-entry only where the user overrode a default — and retire when their
-signals leave the plot. Log scale hides the min box rather than
-validating one, and drops non-positive points. Fit Y returns an axis to
-automatic. The remaining small defaults (either bound settable alone, a
-manual bound beating follow-live, enum lanes offering none of this) are
-stated below and can be corrected in review.
+**Done.** Right-clicking a y axis opens a menu with a **min**, a
+**max** and a **log-scale toggle**. Both bounds default to empty, and
+empty means the autoscaling that was already there — item 4's
+constant-signal minimum range included — so an axis nobody opens the
+menu on is unchanged and persists nothing.
 
-Right-clicking a y axis opens a context menu offering **a min, a max,
-and a log-scale toggle**. **Min and max default to empty, and empty
-means the autoscaling we already do** — including item 4's minimum range
-for constant signals. So this adds an override, it does not replace the
-existing behaviour, and a user who never opens the menu sees no change.
+**Where the settings live: `apps/gui/src/plotAxisScale.ts`.** One
+`AxisScale` (`min?`, `max?`, `log?`) per derived axis, keyed by
+`DerivedAxis.id`, riding the plot panel's persisted config as
+`axisScales` — the same versioned-params path `axisWeights` uses
+(tolerant parse `axisScalesFromRaw`, persisted by `PlotPanel`'s
+existing `persist` effect). **Sparse**: `setAxisScale` deletes an entry
+that ends up with no override rather than storing an empty one, and
+returns the same reference when nothing changed.
 
-Log scale arrives here from task 23, where it sat under "manual
-per-series y" alongside offset and gain. It belongs on the axis instead:
-a log scale changes how a range maps to pixels and every series sharing
-the axis shares it, whereas offset and gain transform one series and stay
-in task 23. All three of min, max and log scale are also how a user
-reaches for the same thing — "control this axis myself" — so they belong
-in one menu.
+**Pruning: `retainedAxisIds` (`plotAxisDerivation.ts`).** The weights
+prune to the *live* axis set, which is right for them — a weight
+describes the layout on screen. A manual range must survive a mode
+change (the ids regenerate identically), so it prunes instead to the
+union of every id an area's signals could mint in **any** mode:
+`areaId`, `${areaId}/u:unit:<unit>` per distinct unit,
+`${areaId}/u:enum`, `${areaId}/i:<signalKey>` per signal. That is
+exactly the required lifetime — a per-unit entry outlives all but the
+last signal of its unit, an individual entry retires with its signal,
+and a unit test asserts the set covers what all three modes derive so
+no live axis can ever be pruned. The enum-lane id is retained whenever
+the area holds any signal, deliberately **without** consulting
+`isEnum`: enum-ness comes from an async value-table fetch, and a set
+that briefly reads as "no enums" must not delete a lane axis's entry.
 
-Log scale brings its own rules that min/max do not:
+**Precedence, in `resolveAxisRange`.** A pinned bound replaces the
+derived one *after* `groupScaleRanges`, so it beats the follow-live
+all-time extent, the paused visible-fit and the Fit Y pin alike; an
+unset bound stays automatic. Applied per **unit group**, because the
+axis's one setting governs every scale drawn on it and the groups are
+what those scales are. Two edges fell out and are tested: a manual
+bound the automatic side has crossed (a max under the data's floor)
+would leave no span, so it takes item 4's `constantRange` band around
+the value the user pinned; and a manual bound with no automatic range
+at all (nothing decoded) draws nothing rather than half a range.
 
-- **Enabling log hides the min box.** A log axis cannot render zero or
-  negatives, so rather than accepting a min and then rejecting it, the
-  min simply stops being user-settable and is derived — the smallest
-  positive value present. Max stays settable. Turning log back off
-  restores the min box and whatever value it held.
-- **Non-positive points are not displayed on a log axis.** Decided, not
-  assumed. They are dropped rather than clamped: clamping invents a
-  value, and a clamped point sitting on the axis floor reads as a real
-  reading. A series whose values are entirely non-positive therefore
-  draws nothing on a log axis — the UI should say so rather than show an
-  empty axis. Reopen this only if someone brings a concrete case for
-  different behaviour.
-- **Auto-derived bounds change meaning** — a log axis wants decade-ish
-  bounds, not the linear padding the current auto-norm applies.
+**Log scale.** Enabling it removes the min box — the min becomes the
+smallest positive value each group actually holds, snapped down to a
+decade — while the max stays settable and is used *exactly* (only
+auto-derived bounds snap). The typed min is **held** in the store, not
+discarded, so turning log off returns it. Non-positive samples are
+dropped (`null`, a gap) rather than clamped. A series with nothing
+positive in it draws nothing and the area says which one, in a new
+stationary `.plot-area-note` overlay beside the existing `building…`
+one. Ticks come from `logDecadeSplits` (decade boundaries, capped at
+ten) and the labels invert the same mapping, so `1 / 10 / 100` rather
+than uPlot's even `1 / 3.98 / 15.8`.
 
-Note for whoever implements: `plotPanelConfig.ts` already tolerates a
-`yMode` field from v7-and-earlier panels, ignoring it on parse and
-dropping it on save — a previous fixed-range attempt. Old projects may
-still carry one, so decide whether it is honoured, migrated or still
-discarded, and update that comment either way.
+**Rendering approach: no `distr: 3`.** The plot already normalises its
+data to [0, 1] in JS and pins uPlot's y scale there (the tick formatter
+maps back through the axis's range), so a log axis is a different
+*normalisation*, not a different uPlot scale — `(log10 v − log10 lo) /
+(log10 hi − log10 lo)` in the same in-place loop. Handing uPlot a log
+distribution would have meant giving it raw values, which is the
+architecture the unit-group scales are built on. Toggling log rebuilds
+the instance (it is in the construction effect's deps) because the
+splits callback is installed at construction; a bound change does not —
+it drops the fetch memo and resamples, the proven path the
+hidden-signal toggle uses, which is what makes a *stopped* trace redraw
+at the new bound.
 
-**This reverses a documented invariant.** `PlotAreaConfig.yAxisMode`'s
-rustdoc (`apps/gui/src/plotPanelConfig.ts`) currently ends "Y scales are
-always auto-derived (no fixed-range option)." That sentence becomes false
-and changes in the same commit, as does anything ADR 0026 says to the
-same effect.
+**Fit Y clears a manual range** (`min: null, max: null`) and then does
+its usual visible-fit; the log flag is not a range and survives. Both
+entry points route through the area's `fitY`, so the toolbar button and
+the per-area one agree.
 
-**Task 23 keeps offset and gain**, which transform a series rather than
-the axis. Neither task should implement the other's half.
+**Enum axes are excluded** — the menu is omitted on the enum-lanes axis
+*and* on the single-enum axis, and any setting left over from a mode
+change is ignored while an axis renders either way. The item only asked
+for lanes; the single-enum axis takes its y from the value table's raw
+range by the same argument, so offering it a bound would be equally
+inert.
 
-**Settings are stored one per y axis, keyed by `DerivedAxis.id`** — and
-that mechanism already exists, so this is not new design.
+**Menu pattern:** the app's existing floating-context-menu idiom —
+`useDismissableMenu` (outside-click + Escape), `position: fixed` at the
+cursor, shell styled like `.rbs-context-menu` / `.sources-context-menu`
+— and the repo's one inline-edit precedent for the fields (Enter and
+blur commit, an empty box means automatic; unparseable text is left in
+the box rather than committed as a clear). It does not fight uPlot:
+only a right-click in the **gutter** opens it, decided against the
+width the axis reports through `axis.size` (tracked in `PlotArea` from
+the same call that feeds the panel's gutter coordinator), so a
+right-click inside the plot box still reaches uPlot's box-zoom.
 
-An area does not have a fixed number of axes: the glossary is explicit
-that "a plot area renders as one or more axes" and warns against using
-the two words interchangeably. An area holding two current signals and
-one voltage signal has **one** axis in `unified`, **two** in `per-unit`
-(A and V), and **three** in `individual`. In `unified` — the default —
-the single axis's id *is* the area's id, which is why area and axis feel
-like the same thing most of the time.
+**`yMode` stays discarded, not migrated.** It was a per-*area* fixed
+range and the settings that replace it are keyed by derived-axis ids
+that did not exist when it was written, so there is no axis an old
+range can be said to have meant. The comment in `plotPanelConfig.ts`
+now says that, and a test pins it.
 
-`deriveAxesForArea` already mints a stable id per axis for exactly this
-purpose: `areaId` in unified, `${areaId}/u:unit:<unit>` and
-`${areaId}/u:enum` in per-unit, `${areaId}/i:<signalKey>` in individual.
-Its rustdoc says the id exists so an axis's persisted weight survives
-lane-membership churn, and `axisWeights` is already stored against it.
-Manual ranges and the log flag ride the same key.
+**Docs.** `PlotAreaConfig.yAxisMode`'s "Y scales are always auto-derived
+(no fixed-range option)" is gone; **ADR 0026** loses the same claim in
+its decision and its "why", gains the log-axis rules (derived min,
+dropped non-positives, decade bounds, held min) beside the axis-property
+half item 11 recorded, and carries an implementation-status entry.
 
-**The dict is sparse: an entry exists only where the user has overridden
-the default.** An axis that is autoscaling and linear has no entry at
-all, so a project that never touches the menu persists nothing new, and
-clearing the fields deletes the entry rather than storing "empty".
-
-**Signals sharing an axis share its scale.** That is what a unit group
-*is* — two amps signals on the `per-unit` amps axis are governed by that
-axis's one entry, not by two per-signal settings. Only `individual` mode
-gives a signal its own axis and therefore its own entry.
-
-**Lifetime: keep an entry while its signals are still in the plot; drop
-it from the dict when they are removed.** Not dropped on a mode change —
-the ids regenerate identically, so switching to `individual` and back to
-`per-unit` restores the amps axis's range rather than losing it. What
-retires an entry is the signals going away, which is also what makes the
-axis stop existing.
-
-Pruning has one wrinkle worth getting right: in `per-unit` an axis is a
-*unit group*, so its entry survives while any signal of that unit
-remains and retires when the last one leaves. In `individual` the axis
-is one signal, so removal of that signal retires it directly.
-
-Assumptions taken rather than asked; correct them if wrong:
-
-- **Either bound alone is allowed.** Setting only a max leaves the min
-  autoscaling. Requiring both would make the common case ("clamp the top,
-  I don't care about the bottom") a two-field chore.
-- **A manual bound wins over everything automatic** — follow-live
-  auto-norm and the visible-fit path both defer to it. Otherwise the
-  value silently stops applying the moment the capture grows.
-- **Fit Y clears a manual range rather than writing numbers into it.**
-  An earlier draft had Fit Y seed the fields with what it fitted, which
-  reads well in isolation but contradicts the sparse-dict rule: pressing
-  Fit Y once would silently convert an autoscaling axis into a pinned
-  one, and every axis the user ever fitted would start persisting an
-  entry. Under sparse storage "Fit Y" and "clear the fields" are the same
-  intent — go back to automatic — so they should do the same thing.
-- **Enum lane axes are excluded.** A lane's geometry is assigned by
-  `laneBandsForVisible`, not by a value range, so neither min/max nor a
-  log scale means anything there — the menu should omit them rather than
-  offer something inert.
+Tests: `plotAxisScale.test.ts` (parse/junk tolerance, sparse
+set/clear/held-min, prune identity, the whole precedence table, log
+derivation, decade splits, the non-positive drop);
+`plotAxisDerivation.test.ts` for the retention rule, including that it
+covers what every mode derives; `plotPanelConfig.test.ts` for the
+discarded `yMode`; and eleven `PlotPanel.dom.test.tsx` cases — manual
+max beating the follow-live extent, either bound alone, decade
+normalisation + tick labels, the dropped non-positive point, the
+all-non-positive message, Fit Y clearing, mode-change survival with
+stale-unit retirement, menu open/apply/clear, the log toggle hiding and
+restoring the min box, and the enum-lanes exclusion. Each failed before
+its change.
 
 ## 10. The plot's value formatting ignores what kind of signal it is
 
