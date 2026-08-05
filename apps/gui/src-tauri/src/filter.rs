@@ -422,6 +422,7 @@ mod tests {
                     value: *v,
                     unit: String::new(),
                     raw_field: false,
+                    display_hex: false,
                     label: None,
                 })
                 .collect(),

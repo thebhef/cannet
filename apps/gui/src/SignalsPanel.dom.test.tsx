@@ -46,8 +46,8 @@ const DEFAULT_ROWS: SignalSnapshotRecord[] = [
   },
 ];
 
-/// A raw bit field: unscaled, unitless, no `VAL_` table. The host flags
-/// it and the value column renders the bits, not 16 decimal digits.
+/// A raw bit field: unscaled, unitless, no `VAL_` table, whose DBC asks
+/// for hex (`display_hex`) — the value column renders the bits.
 const RAW_FIELD_ROW: SignalSnapshotRecord = {
   bus_id: "p",
   transmitter: "EngineEcu",
@@ -58,6 +58,7 @@ const RAW_FIELD_ROW: SignalSnapshotRecord = {
   unit: "",
   is_enum: false,
   raw_field: true,
+  display_hex: true,
   value: 5124095576030430,
   raw: 5124095576030430,
   rate: 1,
@@ -256,7 +257,7 @@ describe("SignalsPanel", () => {
     expect(screen.getByText("DeadEcu")).toBeInTheDocument();
   });
 
-  it("renders a host-flagged raw bit field in hex", async () => {
+  it("renders a raw bit field in hex only when the DBC asked for it", async () => {
     ROWS = [RAW_FIELD_ROW, DEFAULT_ROWS[0]];
     renderPanel();
     await waitFor(() => {
@@ -266,6 +267,16 @@ describe("SignalsPanel", () => {
     expect(screen.queryByText("5124095576030430")).not.toBeInTheDocument();
     // A scaled, united signal is untouched.
     expect(screen.getByText("1165")).toBeInTheDocument();
+
+    // The same raw field without the DBC's opt-in reads base 10 — and
+    // digit-exact, not 5.12e+15.
+    cleanup();
+    ROWS = [{ ...RAW_FIELD_ROW, display_hex: false }, DEFAULT_ROWS[0]];
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText("5124095576030430")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("0x123456789ABCDE")).not.toBeInTheDocument();
   });
 
   it("edits an existing pattern in place and re-queries the host with it", async () => {

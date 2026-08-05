@@ -93,6 +93,7 @@ impl Database {
                     unit: sig.signal.unit.clone(),
                     is_enum: is_enum(&sig.value_table),
                     value_is_raw_integer: value_is_raw_integer(sig),
+                    display_hex: sig.display_hex,
                     mux_selector: match sig.signal.multiplexer_indicator {
                         MultiplexIndicator::MultiplexedSignal(s)
                         | MultiplexIndicator::MultiplexorAndMultiplexedSignal(s) => Some(s),
@@ -288,6 +289,10 @@ fn numeric_to_f64(value: NumericValue) -> f64 {
 
 /// A `(message, signal)` pair available for plotting / picking.
 #[derive(Debug, Clone, PartialEq, Eq)]
+// `extended`, `is_enum`, `value_is_raw_integer` and `display_hex` are
+// independent facts read from different parts of the DBC; collapsing
+// them into an enum would erase where each came from.
+#[allow(clippy::struct_excessive_bools)]
 pub struct SignalDescriptor {
     /// Raw CAN id of the owning message (29-bit if `extended`).
     pub message_id: u32,
@@ -320,6 +325,14 @@ pub struct SignalDescriptor {
     ///
     /// [`DecodedSignal::value_is_raw_integer`]: crate::DecodedSignal::value_is_raw_integer
     pub value_is_raw_integer: bool,
+    /// The DBC asks for this signal's value to render as a bit pattern
+    /// — `CannetDisplay "radix=hex"` on a signal that is a raw field
+    /// (ADR 0043). False is the default: a raw integer reads base 10
+    /// unless its DBC says otherwise. The decode-side twin is
+    /// [`DecodedSignal::display_hex`].
+    ///
+    /// [`DecodedSignal::display_hex`]: crate::DecodedSignal::display_hex
+    pub display_hex: bool,
     /// The multiplexor-selector group this signal belongs to, or `None`
     /// for plain signals and the multiplexor itself. A frame carries
     /// this signal only when the message's multiplexor decodes to this

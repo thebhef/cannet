@@ -605,6 +605,7 @@ fn collect_signal_rows(
                 unit: d.unit.clone(),
                 is_enum: d.is_enum,
                 raw_field: cannet_dbc::is_raw_field(d.value_is_raw_integer, &d.unit, d.is_enum),
+                display_hex: d.display_hex,
                 value: cell.as_ref().map(|c| c.value),
                 raw: cell.as_ref().map(|c| c.raw),
                 label: cell.as_ref().and_then(|c| c.label.clone()),

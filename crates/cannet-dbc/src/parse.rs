@@ -3,9 +3,10 @@
 //! Parsing is delegated to the `can-dbc` crate, which produces an AST.
 //! This module folds the cannet-specific interpretation on top of it —
 //! long-symbol names, per-message / per-signal comments and attributes,
-//! `SIG_VALTYPE_` float kinds, and the `CannetCounter` / `CannetCrc`
-//! calculated-field designations — into the indexed [`Database`] the
-//! decode / encode / view layers read.
+//! `SIG_VALTYPE_` float kinds, the `CannetCounter` / `CannetCrc`
+//! calculated-field designations and the `CannetDisplay` render mode —
+//! into the indexed [`Database`] the decode / encode / view layers
+//! read.
 
 use std::collections::HashMap;
 
@@ -15,7 +16,10 @@ use can_dbc::{
 };
 
 use crate::calc;
-use crate::model::{Database, DbcAttribute, MessageEntry, SignalEntry, ValueTableEntry};
+use crate::model::{
+    is_enum, is_raw_field, value_is_raw_integer, Database, DbcAttribute, MessageEntry, SignalEntry,
+    ValueTableEntry,
+};
 
 impl Database {
     /// Parse a DBC file from text.
@@ -53,7 +57,7 @@ impl Database {
         let mut messages = HashMap::with_capacity(dbc.messages.len());
         for msg in &dbc.messages {
             let expected_len = usize::try_from(msg.size).unwrap_or(usize::MAX);
-            let signals: Vec<SignalEntry> = msg
+            let mut signals: Vec<SignalEntry> = msg
                 .signals
                 .iter()
                 .map(|s| {
@@ -99,6 +103,9 @@ impl Database {
                         comment,
                         attributes,
                         start_value_raw,
+                        // Needs the message name for its warnings, which
+                        // long-symbol resolution hasn't produced yet.
+                        display_hex: false,
                     }
                 })
                 .collect();
@@ -117,6 +124,7 @@ impl Database {
             let comment = message_comments.get(&msg.id).cloned().unwrap_or_default();
             let attributes = message_attributes.remove(&msg.id).unwrap_or_default();
             let calc_fields = collect_calc_fields(&name, &signals, &mut warnings);
+            apply_display_attributes(&name, &mut signals, &mut warnings);
             messages.insert(
                 msg.id,
                 MessageEntry {
@@ -295,6 +303,55 @@ fn collect_calc_fields(
         }
     }
     config
+}
+
+/// Interpret the `CannetDisplay` attribute on a message's signals
+/// (ADR 0043) and settle each signal's `display_hex`. Empty attribute
+/// values mean "unconfigured" and are skipped; a value that fails to
+/// parse is a warning and leaves the default rendering, as does
+/// `radix=hex` on a signal that is not a raw field — a DBC author who
+/// wrote it on a scaled, united or enum signal meant something by it,
+/// and silently doing nothing hides the mistake.
+fn apply_display_attributes(
+    message_name: &str,
+    signals: &mut [SignalEntry],
+    warnings: &mut Vec<String>,
+) {
+    for sig in signals.iter_mut() {
+        let Some(attr) = sig
+            .attributes
+            .iter()
+            .find(|a| a.name == "CannetDisplay" && !a.value.is_empty())
+        else {
+            continue;
+        };
+        let config = match crate::display::parse_display_attribute(&attr.value) {
+            Ok(config) => config,
+            Err(e) => {
+                warnings.push(format!(
+                    "{message_name}.{}: bad CannetDisplay attribute: {e}",
+                    sig.signal.name
+                ));
+                continue;
+            }
+        };
+        if !config.hex {
+            continue;
+        }
+        if is_raw_field(
+            value_is_raw_integer(sig),
+            &sig.signal.unit,
+            is_enum(&sig.value_table),
+        ) {
+            sig.display_hex = true;
+        } else {
+            warnings.push(format!(
+                "{message_name}.{}: CannetDisplay radix=hex ignored — not a raw integer field \
+                 (it has a unit, a scale factor, or a VAL_ table)",
+                sig.signal.name
+            ));
+        }
+    }
 }
 
 /// A numeric DBC attribute value as `f64` (`GenSigStartValue` uses

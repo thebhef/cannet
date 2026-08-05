@@ -13,9 +13,10 @@ use crate::calc;
 pub struct Database {
     pub(crate) messages: HashMap<MessageKey, MessageEntry>,
     /// Non-fatal problems found while interpreting cannet-specific
-    /// attributes (`CannetCounter` / `CannetCrc`) — a malformed value
-    /// or a duplicate designation. The file still loads; callers
-    /// surface these on their log.
+    /// attributes (`CannetCounter` / `CannetCrc` / `CannetDisplay`) —
+    /// a malformed value, a duplicate designation, or a display mode
+    /// asked for on a signal that cannot take it. The file still
+    /// loads; callers surface these on their log.
     pub(crate) warnings: Vec<String>,
 }
 
@@ -98,6 +99,13 @@ pub(crate) struct SignalEntry {
     /// signal's initial value in *raw* (pre-scale) units, per the
     /// attribute's conventional definition. `None` when absent.
     pub(crate) start_value_raw: Option<f64>,
+    /// The signal declares `CannetDisplay "radix=hex"` *and* is a raw
+    /// field ([`is_raw_field`]) — so its value renders as a bit
+    /// pattern instead of base 10 (ADR 0043). Both halves are settled
+    /// at parse (an attribute on an ineligible signal warns and leaves
+    /// this false), so every consumer only has to render what it is
+    /// told. Absent attribute means base 10.
+    pub(crate) display_hex: bool,
 }
 
 /// Whether a `VAL_` table makes its signal an *enum* — the central

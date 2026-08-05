@@ -91,12 +91,19 @@ describe("SignalValueCell", () => {
     );
   });
 
-  it("still renders a raw bit field's value in hex", () => {
+  it("renders a raw bit field in base 10 by default", () => {
+    // Hex is a per-signal DBC opt-in (ADR 0043), not what being a raw
+    // field means — but the value stays digit-exact, never scientific.
+    render(<SignalValueCell value={0xdeadbeef} unit="" target={target} resolveColor={null} />);
+    expect(screen.getByText("3735928559")).toBeInTheDocument();
+  });
+
+  it("renders a raw bit field's value in hex when the DBC asks for it", () => {
     render(
       <SignalValueCell
         value={0xdeadbeef}
         unit=""
-        rawField
+        displayHex
         target={target}
         resolveColor={null}
       />,
@@ -110,7 +117,7 @@ describe("SignalValueCell", () => {
         value={0xffff}
         unit=""
         label="SNA"
-        rawField
+        displayHex
         target={target}
         resolveColor={null}
       />,

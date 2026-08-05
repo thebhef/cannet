@@ -533,6 +533,7 @@ fn signal_to_wire(sig: &DecodedSignal<'_>) -> SignalRecord {
         value: sig.value,
         unit: sig.unit.to_string(),
         raw_field: cannet_dbc::is_raw_field(sig.value_is_raw_integer, sig.unit, sig.is_enum),
+        display_hex: sig.display_hex,
         label: sig.label.map(str::to_string),
     }
 }

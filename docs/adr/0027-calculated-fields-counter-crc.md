@@ -108,6 +108,12 @@ records the file form, which *does* carry a `signal` key). An
 override replaces the DBC default **wholesale** for that field on
 that message — no per-field merging between layers.
 
+These were cannet's first custom DBC attributes; the general rule they
+turned out to be an instance of — the `Cannet*` namespace and its
+`key=value;` convention, that cannet only ever reads a DBC, and the
+test for whether a fact belongs in the DBC or the project — is
+[ADR 0043](0043-cannet-dbc-attributes-and-display-authority.md).
+
 **cannet reads these attributes but does not yet write them.** DBC
 writing (a surgical attribute editor that leaves every other byte of
 a third-party file untouched) is deferred; until then the GUI

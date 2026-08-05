@@ -8,6 +8,7 @@ mod bitwalk;
 mod calc;
 mod crc_named;
 mod decode;
+mod display;
 mod encode;
 mod model;
 mod parse;

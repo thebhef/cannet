@@ -28,7 +28,7 @@ export function SignalValueText({
   /// Unit suffix; `""` when a separate column carries it.
   unit: string;
   label?: string | null;
-  /// The host's `raw_field` verdict — render the value in hex.
+  /// The host's `display_hex` verdict — render the value in hex.
   hex?: boolean;
 }) {
   return (

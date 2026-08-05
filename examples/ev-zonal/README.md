@@ -16,7 +16,7 @@ Two logical buses, one DBC scoped to each:
 | Bus | DBC | ECUs | Scale |
 | --- | --- | --- | --- |
 | Pack | `dbc/pack.dbc` | BMS, PackSensorFront/Rear, ThermalControl, ChargerObc, DcdcConverter, InsulationMonitor, VehicleControlUnit | 153 messages, 1159 signals |
-| Zonal | `dbc/zonal.dbc` | ZoneFrontLeft/FrontRight/RearLeft/RearRight, CentralCompute, AdasDomain, BodyGateway | 150 messages, 531 signals |
+| Zonal | `dbc/zonal.dbc` | ZoneFrontLeft/FrontRight/RearLeft/RearRight, CentralCompute, AdasDomain, BodyGateway | 151 messages, 536 signals |
 
 Notable stress cases:
 
@@ -30,6 +30,12 @@ Notable stress cases:
   messages; 4 zone controllers × 27 messages) — realistic name
   repetition with distinguishing prefixes, the shape that stresses
   fuzzy-search ranking.
+- **`PackStateCommand`** (`zonal.dbc`, id `0x60A`) — the E2E-protected
+  command: a `CannetCounter` rollover counter and a `CannetCrc`
+  CRC-8/SAE-J1850 over bytes 0–6 (ADR 0027), with the CRC marked
+  `CannetDisplay "radix=hex"` so it reads as `0x5C` rather than `92`
+  (ADR 0043). The counter beside it is just as raw a field and stays
+  decimal — the opt-in is per signal.
 - Value tables, message/signal comments, `GenMsgCycleTime` attributes,
   IEEE-float lane-polynomial signals (`SIG_VALTYPE_`), and a mix of
   standard and extended ids.

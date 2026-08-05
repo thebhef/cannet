@@ -53,6 +53,17 @@ axis is exempt — its tiles carry the labels; see below.)
 auto behaviour). There is no fixed user-set `{min,max}` range; the old
 `yMode` fixed half is removed.
 
+**A log scale is a property of the axis, not of a signal.** A log
+scale changes how a range maps to pixels, and every series drawn on an
+axis shares that mapping — so two same-unit signals collected onto one
+`per-unit` axis cannot disagree about it. It is therefore set per
+axis, keyed by derived-axis id like the axis weights are. A DBC
+display hint ([ADR 0043](0043-cannet-dbc-attributes-and-display-authority.md))
+may at most act as a default that seeds an axis nothing contradicts;
+**it never overrides an explicit per-axis setting**, and an axis whose
+signals disagree stays linear. Per-*value* display facts — a radix —
+carry no such constraint and may be signal properties.
+
 **Enum series render as logic-analyzer lanes.** In **per-unit** mode
 every enum series of an area is pulled off its unit axis onto one
 shared **enum-lanes axis**: each enum is a horizontal lane (config

@@ -577,7 +577,7 @@ function SignalRow({
             value={row.value}
             unit=""
             label={row.label}
-            rawField={row.raw_field}
+            displayHex={row.display_hex}
             target={{
               messageId: row.message_id,
               extended: row.extended,
