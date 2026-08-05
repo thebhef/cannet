@@ -84,19 +84,39 @@ match what the hooks actually do when this lands.
 
 ## 3. The shared-x-window plot test is flaky
 
-`PlotPanel.dom.test.tsx` — "slides the shared x window once per frame,
-not once per area". Timing-sensitive around rAF coalescing.
+**Fixed — the test was at fault, not the coalescer.** rAF was already
+under test control (`captureFrames`); what raced was a *different* real
+timer. Each `PlotArea` schedules a one-shot post-mount uPlot rebuild 250
+ms after it mounts (`PlotArea.tsx`), and the three areas mount at three
+different instants. The test captured uPlot instances and then asserted
+against those objects, so a run slow enough to straddle one area's timer
+found that area's instance deregistered and silent — which reads exactly
+like "the panel slid one area's window and not another's".
 
-Seen failing on an unchanged re-run during the settings review pass
-(2026-08-03), and again at roughly **2 in 5 full-suite runs** during the
-task 48 work — so it is not a once-off, and it flakes often enough to
-train people to ignore a red suite, which is the real cost.
+Evidence: injecting a delay into the assertion window turned the flake
+into a function of elapsed wall clock. At 0–120 ms all three captured
+instances were live and each recorded the one coalesced slide (pass); at
+140–160 ms Area 1 alone had been rebuilt and its captured instance
+recorded nothing, failing at `expect(last[1]).toEqual(last[0])` with
+`expected { min: +0, max: 1.7 } to deeply equal undefined` — the
+reported failure; at 200 ms all three had been rebuilt, every instance
+was silent, and the test **passed vacuously** (`undefined` equals
+`undefined`). The uPlot instance count rose 8 → 9 → 11 across those three
+delays, and a staleness check on the captured instances read
+`[false,false,false]` → `[true,false,false]` → `[true,true,true]`. The
+fan-out itself did exactly one slide in every run, at every delay.
 
-**Nobody has established whether the test or the coalescing is at
-fault**, and that is the first question: a test asserting a
-once-per-frame invariant against a real rAF is a plausible bad test, and
-a coalescer that occasionally slides twice is a plausible real bug. Find
-out which before changing either.
+Changed: the test now waits the post-mount rebuild out (it fires once per
+area) before capturing instances, so the captured ones are final and no
+later delay can move them; and each area must record **at least** one
+slide as well as at most two, which closes the vacuous-pass direction.
+No production code changed.
+
+Verified: with the delay injection still in place the fixed test passes
+at 0/60/150/200/400/800 ms — the whole range that previously broke it.
+Then, uninstrumented: 20 consecutive green runs of the test, 3 green runs
+of the whole file under 48 competing CPU burners, and a green full
+frontend suite (102 files, 1086 tests) plus `pnpm build`.
 
 ## 4. Constant signals still get a degenerate plot scale
 
