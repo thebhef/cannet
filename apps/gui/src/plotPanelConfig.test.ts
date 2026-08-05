@@ -110,6 +110,16 @@ describe("areasFromParams", () => {
     expect(areas[0].patterns).toBeUndefined();
   });
 
+  it("still discards a v7-and-earlier `yMode`, and does not migrate it", () => {
+    // The old per-*area* fixed range. The per-axis manual range that
+    // replaced it is keyed by derived-axis ids that did not exist when
+    // a `yMode` was written, so an old area's range has no axis to
+    // migrate onto — it is dropped, as it has been since ADR 0026.
+    const areas = areasFromParams([{ id: "a", signals: [], yMode: { min: 0, max: 100 } }]);
+    expect(areas[0]).not.toHaveProperty("yMode");
+    expect(Object.keys(areas[0]).sort()).toEqual(["id", "patterns", "primarySignalKey", "signals", "yAxisMode"]);
+  });
+
   it("synthesizes an id when missing", () => {
     const areas = areasFromParams([{ signals: [] }]);
     expect(typeof areas[0].id).toBe("string");

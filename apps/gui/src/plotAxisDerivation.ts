@@ -112,6 +112,43 @@ export function deriveAxesForArea(
 }
 
 /**
+ * Every axis id an area could mint, across all three y-axis modes —
+ * what per-axis settings are kept against.
+ *
+ * Per-axis state keyed by {@link DerivedAxis.id} splits into two kinds.
+ * State that *describes the current layout* (the vertical weights) is
+ * pruned to the live axis set, so a mode change resets it. State that
+ * records what the user asked of an axis — its manual y range and log
+ * flag — must survive a mode change: the ids regenerate identically, so
+ * switching to `individual` and back to `per-unit` should restore the
+ * amps axis's range rather than lose it. Retiring an entry is therefore
+ * driven by the *signals* leaving, which is also what makes the axis
+ * stop existing:
+ *
+ * - a `per-unit` axis is a unit group, so its entry survives while any
+ *   signal of that unit remains and retires when the last one leaves;
+ * - an `individual` axis is one signal, so it retires with that signal;
+ * - the unified axis is the area, so it lives as long as the area does
+ *   (an empty area still draws one).
+ *
+ * The shared enum-lanes id is retained whenever the area holds any
+ * signal, without consulting an `isEnum` predicate: enum-ness comes
+ * from an async value-table fetch, and a set that briefly reads as
+ * "no enums" must not delete a lane axis's settings.
+ */
+export function retainedAxisIds(areaId: string, signals: readonly SignalRef[]): string[] {
+  const out = [areaId];
+  if (signals.length > 0) out.push(`${areaId}/u:enum`);
+  const units = new Set<string>();
+  for (const s of signals) {
+    units.add(s.unit || "");
+    out.push(`${areaId}/i:${signalRefKey(s)}`);
+  }
+  for (const u of units) out.push(`${areaId}/u:unit:${u}`);
+  return out;
+}
+
+/**
  * Stabilise the y-axis gutter width against per-frame label churn.
  *
  * uPlot re-runs `axis.size` on every layout pass, and the numeric

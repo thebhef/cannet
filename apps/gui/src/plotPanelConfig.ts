@@ -53,8 +53,11 @@ export interface PlotAreaConfig {
   /** How the area's series lay out across axes (ADR 0026). `unified`
    * (default) draws one axis with all series overlaid; `per-unit`
    * stacks one axis per unit (each enum series gets its own); and
-   * `individual` stacks one axis per series. Y scales are always
-   * auto-derived (no fixed-range option). */
+   * `individual` stacks one axis per series. Y scales are auto-derived
+   * from the data unless the user overrides an axis's bounds or asks
+   * for a log scale — that override is per *axis*, so it lives in the
+   * panel's `axisScales` (see {@link PlotPanelParams.axisScales}), not
+   * here. */
   yAxisMode?: YAxisMode;
   /** Which signal's raw range / unit drives the y-axis labels for this
    * area. `null` falls back to the first non-hidden signal — that's
@@ -105,6 +108,11 @@ export interface PlotPanelParams {
   /** Per-derived-axis vertical weight (flex-grow), keyed by axis id.
    * See {@link AxisWeights}. Absent axes default to weight 1. */
   axisWeights?: unknown;
+  /** Per-derived-axis manual y range + log flag, keyed by axis id.
+   * See `AxisScales` in `plotAxisScale.ts`. Sparse: an entry exists
+   * only where the user overrode something, so an axis that is
+   * autoscaling and linear has none. */
+  axisScales?: unknown;
 }
 
 /** The area→panel reporting surface: the readouts and data an area
@@ -256,8 +264,13 @@ export function areasFromParams(raw: unknown): PlotAreaConfig[] {
       const o = a as Record<string, unknown>;
       const id = typeof o.id === "string" ? o.id : crypto.randomUUID();
       const signals = (Array.isArray(o.signals) ? o.signals.filter(isSignalRefCore) : []).map((s, i) => withColor(s, i));
-      // `yMode` from a v7-and-earlier panel is ignored — y scales are
-      // always auto-derived (ADR 0026). The field is tolerated on
+      // `yMode` from a v7-and-earlier panel is still ignored, and
+      // deliberately not migrated onto the per-axis manual range that
+      // replaced it (`axisScales`). It was a per-*area* fixed range,
+      // and an area is not an axis: the settings it would migrate into
+      // are keyed by derived-axis ids that did not exist when `yMode`
+      // was written, so any migration would have to guess which of an
+      // area's axes the old range meant. The field is tolerated on
       // parse so old projects don't reject; saving drops it.
       // A pre-patterns panel persisted a single `signalFilter` regex
       // (exclusive filter mode); it migrates to a one-entry pattern

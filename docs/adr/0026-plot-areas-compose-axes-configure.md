@@ -49,9 +49,16 @@ rule that fixes the bug where the y axis sometimes showed `0.0–1.0`
 instead of the selected signal's units. (The blank-gutter enum-lanes
 axis is exempt — its tiles carry the labels; see below.)
 
-**Y scales are always auto-derived from the data** (matching today's
-auto behaviour). There is no fixed user-set `{min,max}` range; the old
-`yMode` fixed half is removed.
+**Y scales are auto-derived from the data, with a per-axis manual
+override.** Auto-derivation is the default and the whole behaviour of
+an axis nobody has configured. On top of it a user may pin an axis's
+**min**, its **max**, or both; an absent bound stays automatic, and a
+pinned one beats everything automatic — follow-live's all-time extent
+and the paused visible-fit alike. The override is per *axis*, keyed by
+derived-axis id like the weights and the log flag, and stored sparsely
+so an axis nobody pinned carries no setting at all. The old per-*area*
+`yMode` fixed range stays removed and is not migrated onto it: an area
+is not an axis, so an old range has no axis to land on.
 
 **A log scale is a property of the axis, not of a signal.** A log
 scale changes how a range maps to pixels, and every series drawn on an
@@ -63,6 +70,19 @@ may at most act as a default that seeds an axis nothing contradicts;
 **it never overrides an explicit per-axis setting**, and an axis whose
 signals disagree stays linear. Per-*value* display facts — a radix —
 carry no such constraint and may be signal properties.
+
+A log scale brings rules the linear bounds do not. **Its min is
+derived, not settable**: a log axis cannot render zero or negatives, so
+rather than accept a min and then reject it, the min becomes the
+smallest positive value present (snapped down to a decade) and only the
+max stays user-settable. **Non-positive points are dropped, not
+clamped** — a clamped point sitting on the axis floor reads as a real
+reading — so a series with no positive value at all draws nothing, and
+the view says so rather than showing a silently empty axis.
+**Auto-derived bounds snap to decades** rather than taking the linear
+padding, and the ticks land on decade boundaries. A manual min set
+before the toggle is *held*, not discarded, so turning log off restores
+it.
 
 **Enum series render as logic-analyzer lanes.** In **per-unit** mode
 every enum series of an area is pulled off its unit axis onto one
@@ -133,10 +153,13 @@ primary's) keeps the axis meaningful even when other units are
 overlaid; the alternative — labelling nothing, or labelling a
 synthetic ratio — is the bug we're fixing.
 
-**No fixed range for now because its semantics under multi-unit
-overlay and per-unit/individual layouts aren't worked out, and it
-isn't needed yet.** Auto-derived scales cover the current need;
-re-introducing a fixed range later is additive.
+**A manual range is per axis, and additive on the auto-derived
+default.** The semantics that once blocked it fall out of the axis
+level: an axis is one scale, so a pinned bound applies to every unit
+group drawn on it and there is no question of which series it means.
+It is an override, not a mode — an unpinned bound keeps auto-scaling —
+so nothing an unconfigured panel does changes, and the sparse store
+means nothing an unconfigured panel persists changes either.
 
 **Axis ↔ uPlot instance because it reuses what already works.**
 Multiple x-synced uPlot instances is precisely how stacked plot areas
@@ -344,5 +367,7 @@ What's still rough:
   ([`../CONTEXT.md`](../CONTEXT.md)): **axis**, **scale**, **y-axis
   mode**, **primary signal**, **logic-analyzer lane** — and "plot
   area" / "plot panel" are pinned to their levels.
-- A future fixed-range or DBC-physical-range scaling option is
-  additive on top of this model.
+- The manual range and the log flag are additive on top of this model:
+  both are per-axis settings stored beside the axis weights, and an
+  axis with none behaves exactly as it did before they existed. A
+  future DBC-physical-range scaling option is additive the same way.
