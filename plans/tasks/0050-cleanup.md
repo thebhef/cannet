@@ -305,9 +305,11 @@ components.
 
 ## 6. Rename should rename in place
 
-**Superseded in part by item 13**, which moved the command onto the
-palette's second stage: the tab edit below is now triggered by
-double-clicking the tab and `RenameTabContext` is gone. Everything the
+**Superseded by item 13.** The command now collects the name in the
+palette's second stage, and the editable tab described below was
+removed outright at the user's direction — `RenamableTab`,
+`RenameTabContext` and the dock's tab-rename input are all gone, and
+the dock is back on the stock `DockviewDefaultTab`. Everything the
 record says about *where the name lives* still holds.
 
 **Fixed.** `panel.rename` no longer maps to `showProjectPanel`; it
@@ -940,17 +942,17 @@ other inline rename in the app. Nothing navigates: the trace panel's
 group is still the active one when the stage opens, and the test pins
 that.
 
-**Item 6's editable tab is kept, as an affordance rather than a command
-path: double-click a tab to edit its title in place.** The user revoked
-the *interaction the command drove*, not the direct manipulation, and a
-tab that can only be renamed from somewhere else is the discoverability
-complaint of the item's second half in another place. Keeping it cost
-*less* code than deleting the trigger would have left: `RenamableTab`
-now owns its own `editing` state, so `RenameTabContext`, the
+**Item 6's editable tab is gone, and the palette prompt is the only way
+to rename a panel.** It was first kept as a double-click affordance
+(the command path removed, the direct manipulation retained); the user
+revoked that too — *"remove tab rename path, even if you bothered to
+hook it up another way. The palette prompt is what I asked for."* So
+the removal is total: `RenamableTab` deleted, `RenameTabContext`, the
 `renameTarget` state in `useCommands` and the `renameTab` member of its
-result all went. `DockviewDefaultTab` spreads unknown props onto its own
-div, so the trigger is one `onDoubleClick` — dockview-core binds no
-`dblclick` anywhere, so nothing is being overridden.
+result all gone with it, the `.dock-tab-rename-input` styling gone, and
+the dock back on the stock `DockviewDefaultTab` rather than a
+pass-through wrapper of it. The project panel's inline rename (ADR
+0019's canonical edit surface) is untouched.
 
 **The trace-panel interaction model.** The "elements" are the timeline
 event rows (ADR 0035) — notes and the derived truncation marker —
@@ -977,10 +979,10 @@ button hides while its own field is open, which is also what keeps the
 remove button pinned right (it takes the auto margin back).
 
 Tests: `App.renameInPlace.dom.test.tsx` — the palette's second stage
-seeded and committing, without the project panel being brought up;
-Escape leaving the name alone; and the tab double-click round-trip
-(all three failed before the change; the first two asserted the tab
-input item 6 shipped). `EventsPanel.dom.test.tsx` — focus moving
+seeded and committing, without the project panel being brought up, and
+Escape leaving the name alone. Both failed before the change (they
+asserted the tab input item 6 shipped); the third case, over the tab
+double-click, went with the affordance. `EventsPanel.dom.test.tsx` — focus moving
 between two rows and the row being focusable, a row click *not*
 starting an edit, the ✎ button opening the field and Enter committing
 through `renameNote`, the double-click shortcut, and no ✎ on the
@@ -988,9 +990,11 @@ derived truncation marker. Four of the five failed before the change.
 The event rows are tested through the events view because it is the
 cheap mount of the same renderer the trace panel interleaves.
 
-Noticed in passing, not acted on: a double-click on a dock tab has to
-be fired on the tab's *content* in jsdom (`.dv-default-tab-content`),
-not dockview's outer `.dv-tab` wrapper — the handler sits on the inner
+Noticed in passing while the tab affordance still existed, and recorded
+because the next person to reach for a dock-tab gesture will hit it: a
+double-click on a dock tab has to be fired on the tab's *content* in
+jsdom (`.dv-default-tab-content`), not dockview's outer `.dv-tab`
+wrapper — a handler passed to `DockviewDefaultTab` lands on the inner
 default-tab div, which a real click reaches by bubbling.
 
 ## 14. RBS enum values commit late, and enum selection costs an extra click
