@@ -22,8 +22,10 @@ the order below is the order of work, top first.
    progress while a cold signal cache builds, a surgical commit gate
    to replace the whole-workspace test run, the flaky shared-x-window
    plot test, a minimum range for constant signals, collapsible and
-   type-grouped project sections, rename-in-place, history-mode trace
-   scrolling, and the version in the title bar.
+   type-grouped project sections, rename-in-place, a scroll-correctness
+   audit across every view, the version and project in the title bar,
+   and manual y-axis min / max / log scale from a right-click menu on
+   the axis (log scale moved here from task 23).
 2. [Task 41 — Production Cannet Server](0041-production-cannet-server.md)
    — `cannet-server` becomes the production server (ADR 0040):
    operator-launched CLI that supervises the frozen python-can sidecar
@@ -62,7 +64,7 @@ the order below is the order of work, top first.
    and the pattern-materialization path. Ahead of task 23 so its
    per-series features can act on a selection that already exists.
 10. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
-    — triggers, math channels, manual per-series y, export, drag a
+    — triggers, math channels, per-series offset / gain, export, drag a
     plot area between panels.
 11. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
     — generalize the DBC auto-reload watcher to project (`.cannet_prj`)

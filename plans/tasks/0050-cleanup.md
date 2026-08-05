@@ -199,6 +199,326 @@ loaded**, so the title only grows when it has something to say.
 The About panel stays: it carries build info and licences, not just the
 version.
 
+## 9. Manual y-axis control from a right-click menu on the axis
+
+**Specified — no open questions.** Settings key off `DerivedAxis.id`
+(the mechanism `axisWeights` already uses), are stored sparsely — an
+entry only where the user overrode a default — and retire when their
+signals leave the plot. Log scale hides the min box rather than
+validating one, and drops non-positive points. Fit Y returns an axis to
+automatic. The remaining small defaults (either bound settable alone, a
+manual bound beating follow-live, enum lanes offering none of this) are
+stated below and can be corrected in review.
+
+Right-clicking a y axis opens a context menu offering **a min, a max,
+and a log-scale toggle**. **Min and max default to empty, and empty
+means the autoscaling we already do** — including item 4's minimum range
+for constant signals. So this adds an override, it does not replace the
+existing behaviour, and a user who never opens the menu sees no change.
+
+Log scale arrives here from task 23, where it sat under "manual
+per-series y" alongside offset and gain. It belongs on the axis instead:
+a log scale changes how a range maps to pixels and every series sharing
+the axis shares it, whereas offset and gain transform one series and stay
+in task 23. All three of min, max and log scale are also how a user
+reaches for the same thing — "control this axis myself" — so they belong
+in one menu.
+
+Log scale brings its own rules that min/max do not:
+
+- **Enabling log hides the min box.** A log axis cannot render zero or
+  negatives, so rather than accepting a min and then rejecting it, the
+  min simply stops being user-settable and is derived — the smallest
+  positive value present. Max stays settable. Turning log back off
+  restores the min box and whatever value it held.
+- **Non-positive points are not displayed on a log axis.** Decided, not
+  assumed. They are dropped rather than clamped: clamping invents a
+  value, and a clamped point sitting on the axis floor reads as a real
+  reading. A series whose values are entirely non-positive therefore
+  draws nothing on a log axis — the UI should say so rather than show an
+  empty axis. Reopen this only if someone brings a concrete case for
+  different behaviour.
+- **Auto-derived bounds change meaning** — a log axis wants decade-ish
+  bounds, not the linear padding the current auto-norm applies.
+
+Note for whoever implements: `plotPanelConfig.ts` already tolerates a
+`yMode` field from v7-and-earlier panels, ignoring it on parse and
+dropping it on save — a previous fixed-range attempt. Old projects may
+still carry one, so decide whether it is honoured, migrated or still
+discarded, and update that comment either way.
+
+**This reverses a documented invariant.** `PlotAreaConfig.yAxisMode`'s
+rustdoc (`apps/gui/src/plotPanelConfig.ts`) currently ends "Y scales are
+always auto-derived (no fixed-range option)." That sentence becomes false
+and changes in the same commit, as does anything ADR 0026 says to the
+same effect.
+
+**Task 23 keeps offset and gain**, which transform a series rather than
+the axis. Neither task should implement the other's half.
+
+**Settings are stored one per y axis, keyed by `DerivedAxis.id`** — and
+that mechanism already exists, so this is not new design.
+
+An area does not have a fixed number of axes: the glossary is explicit
+that "a plot area renders as one or more axes" and warns against using
+the two words interchangeably. An area holding two current signals and
+one voltage signal has **one** axis in `unified`, **two** in `per-unit`
+(A and V), and **three** in `individual`. In `unified` — the default —
+the single axis's id *is* the area's id, which is why area and axis feel
+like the same thing most of the time.
+
+`deriveAxesForArea` already mints a stable id per axis for exactly this
+purpose: `areaId` in unified, `${areaId}/u:unit:<unit>` and
+`${areaId}/u:enum` in per-unit, `${areaId}/i:<signalKey>` in individual.
+Its rustdoc says the id exists so an axis's persisted weight survives
+lane-membership churn, and `axisWeights` is already stored against it.
+Manual ranges and the log flag ride the same key.
+
+**The dict is sparse: an entry exists only where the user has overridden
+the default.** An axis that is autoscaling and linear has no entry at
+all, so a project that never touches the menu persists nothing new, and
+clearing the fields deletes the entry rather than storing "empty".
+
+**Signals sharing an axis share its scale.** That is what a unit group
+*is* — two amps signals on the `per-unit` amps axis are governed by that
+axis's one entry, not by two per-signal settings. Only `individual` mode
+gives a signal its own axis and therefore its own entry.
+
+**Lifetime: keep an entry while its signals are still in the plot; drop
+it from the dict when they are removed.** Not dropped on a mode change —
+the ids regenerate identically, so switching to `individual` and back to
+`per-unit` restores the amps axis's range rather than losing it. What
+retires an entry is the signals going away, which is also what makes the
+axis stop existing.
+
+Pruning has one wrinkle worth getting right: in `per-unit` an axis is a
+*unit group*, so its entry survives while any signal of that unit
+remains and retires when the last one leaves. In `individual` the axis
+is one signal, so removal of that signal retires it directly.
+
+Assumptions taken rather than asked; correct them if wrong:
+
+- **Either bound alone is allowed.** Setting only a max leaves the min
+  autoscaling. Requiring both would make the common case ("clamp the top,
+  I don't care about the bottom") a two-field chore.
+- **A manual bound wins over everything automatic** — follow-live
+  auto-norm and the visible-fit path both defer to it. Otherwise the
+  value silently stops applying the moment the capture grows.
+- **Fit Y clears a manual range rather than writing numbers into it.**
+  An earlier draft had Fit Y seed the fields with what it fitted, which
+  reads well in isolation but contradicts the sparse-dict rule: pressing
+  Fit Y once would silently convert an autoscaling axis into a pinned
+  one, and every axis the user ever fitted would start persisting an
+  entry. Under sparse storage "Fit Y" and "clear the fields" are the same
+  intent — go back to automatic — so they should do the same thing.
+- **Enum lane axes are excluded.** A lane's geometry is assigned by
+  `laneBandsForVisible`, not by a value range, so neither min/max nor a
+  log scale means anything there — the menu should omit them rather than
+  offer something inert.
+
+## 10. The plot's value formatting ignores what kind of signal it is
+
+The plot signal area shows values to around ten decimal places. The
+formatter behind it, `fmtVal` (`apps/gui/src/plotPanelConfig.ts`), is
+`v.toPrecision(6)` — six *significant* figures, which on a small value
+means many decimals (`0.0000123000`) and on an exact half means padding
+(`0.500000`). It knows nothing about the signal it is formatting.
+
+**The rule is three-way, by what the signal actually is:**
+
+| Signal | Rendering |
+| --- | --- |
+| Fixed-precision (a scaled integer, e.g. `factor 0.25`) | fixed, at the decimals the factor implies — `12.25`, never `12.250000` |
+| Float (`SIG_VALTYPE_` float32 / float64) | decimal until it would need more than **5** decimal places, then exponential — `0.0001`, but `1e-6` |
+| Raw integer bit field | **base-10**, unless its DBC marks it `CannetDisplay "radix=hex"` — item 11 |
+
+The raw-integer classification is not new work: `cannet-dbc` already
+computes `value_is_raw_integer`, `is_raw_field` combines it with "no
+unit" and "not an enum", and both the trace rows and the signal view
+already consume it. The plot simply never got the flag — but note the
+*default rendering* for those signals changes in item 11, so land that
+first or land them together. Enum signals already render symbolically
+and are unaffected.
+
+**What is missing is the fixed-precision fact.** `SignalDescriptor`
+carries `unit`, `is_enum` and `value_is_raw_integer`, but **not
+`factor`** — so nothing tells the plot that a signal's values are exact
+multiples of 0.25 and want two decimals. That has to come from the model
+rather than being derived in JS from the factor (CLAUDE.md: domain
+computation belongs in the model), which argues for a computed
+"decimals" fact on the descriptor rather than shipping `factor` and doing
+the arithmetic in the frontend.
+
+Two edges to settle when computing it: a factor with no finite decimal
+expansion (`1/3`) is not fixed-precision and falls to the float rule; and
+`factor == 1` with a non-zero offset or a unit is fixed at zero decimals
+— an integer, but not a raw bit field, so decimal rather than hex.
+
+**There is a second formatter, with a different threshold.**
+`fmtTickValue` (`apps/gui/src/PlotArea.tsx`) formats y-axis tick labels
+at 3 significant figures and goes exponential below `1e-3` — too eager,
+so `0.0001` becomes `1.0e-4` when the digits would have fit. The same
+value can therefore read differently in a tick label, a cursor readout
+and the signal area. Fix the threshold once and have both use it.
+
+Scope notes:
+
+- **The large-magnitude end is not part of this ask.** `fmtTickValue`
+  goes exponential at `1e6`, and `toPrecision(6)` happens to as well.
+  Leave it unless changing it falls out naturally.
+- **Tick labels may not be able to follow the rule exactly.** They live
+  in a fixed 52 px column, so a fixed-precision signal with many decimals
+  or a wide hex value will not fit. Ticks may keep a width-driven
+  fallback; if they do, say so rather than letting the two silently
+  diverge again.
+- **Do not unify with `formatSignalValue` in `format.ts`.** It
+  deliberately never renders an exact integer exponentially, because a
+  digit-exact `uint64` was unreadable as `1.235e+18`. Right there, wrong
+  for a tick label. Shared *rules*, not a shared function, unless the
+  constraints turn out to line up.
+
+## 11. Raw integers default to base-10; hex becomes a per-signal opt-in
+
+**This reverses a shipped default.** Task 48 item 3 made raw integer bit
+fields render as hex everywhere — trace rows, the signal view, the DBC
+panel's value column. The new rule: **base-10 by default**, with hex
+available per signal for the fields where it actually helps (ids,
+serials, bitmasks).
+
+The classification work all survives — `value_is_raw_integer` and
+`is_raw_field` still identify which signals are eligible. What changes is
+what happens to an eligible signal by default, and that there is now a
+per-signal choice on top.
+
+The unconditional half of item 3 is **not** affected: an exact integer
+still never renders in scientific notation. That was the original
+complaint (a `uint64` reading as `1.235e+18`) and base-10 answers it just
+as well as hex did.
+
+### Where the per-signal flag lives
+
+A DBC extension is the right instinct and **not** a last resort — it is
+what ADR 0010 asks for, and cannet already defines its own `BA_`
+attributes (ADRs 0027 and 0028). Per-signal `BA_ "<name>" SG_ <id>
+<signal> <value>` attributes are **already parsed** and bucketed
+per-signal by `cannet-dbc`. Reading one costs almost nothing.
+
+**The obstacle is writing, not reading.** `can-dbc` has no serialiser —
+the DBC stack is parse-only. ADR 0029 hit this exact wall for colour maps
+and put them in the project file instead. So:
+
+- **Honouring a `BA_` attribute the DBC already carries** works today. A
+  hand-edited DBC, or one emitted by whatever generates it, can mark a
+  signal hex and cannet will respect it. This is the cheap, correct,
+  ADR-0010-aligned half.
+- **Setting it from the UI** needs either a DBC writer (a real piece of
+  work, and a destructive one — rewriting a user's DBC) or a
+  project-side override that does not travel with the DBC.
+
+Note the situation differs from ADR 0029's. There, `BA_` was *structurally*
+incapable of carrying the data (it cannot attach to individual `VAL_`
+entries), so the project file was the only home. Here the mechanism fits
+the data exactly and only the write path is missing — which argues for
+reading the attribute now rather than declaring the DBC unusable.
+
+**Decided: read-only, exactly like the existing custom attributes.** No
+DBC writer, no project-side override, no UI for setting it. A DBC author
+writes the attribute; cannet honours it. Absent means base-10.
+
+Name and grammar, following `CannetCounter` / `CannetCrc` (per-signal,
+`STRING`, empty means unconfigured):
+
+```text
+BA_DEF_ SG_ "CannetDisplay" STRING ;
+BA_DEF_DEF_ "CannetDisplay" "";
+BA_ "CannetDisplay" SG_ 291 SerialNumber "radix=hex";
+BA_ "CannetDisplay" SG_ 512 LeakCurrent "scale=log";
+```
+
+**`CannetDisplay` is a display-mode slot, not a radix flag**, and takes
+the same `key=value;key=value` grammar as `CannetCounter` and
+`CannetCrc` — so further simple modes get a home here rather than each
+earning its own attribute.
+
+**`radix=hex` is the only key this task implements.** `scale=log` is
+shown above as the shape of a future key, and it is *not* in scope here —
+see the interaction below before adding it. An unrecognised key or value
+is a parse warning and falls back to the default rendering, matching how
+`CannetCounter` handles a bad value, so a DBC written for a later cannet
+stays readable by an earlier one.
+
+`radix=hex` on a signal that is not raw-integer eligible (it has a unit,
+a scale factor, or a `VAL_` table) should warn rather than silently do
+nothing — a DBC author who wrote it meant something by it.
+
+### `scale=log` collides with item 9 — resolve before implementing it
+
+Item 9 makes log scale a property of an **axis**, on the explicit
+reasoning that a log scale changes how a range maps to pixels and every
+series on that axis shares it. `CannetDisplay scale=log` would make it a
+property of a **signal**. Both cannot be the authority.
+
+The case that breaks: two signals share a unit, so `per-unit` mode puts
+them on one axis; one declares `scale=log` and the other does not. The
+axis has to be one or the other.
+
+`radix=hex` has no such problem — a radix is per-value, so signals on a
+shared axis can render differently without contradiction. That asymmetry
+is why only `radix` ships here.
+
+A plausible resolution, not decided: the DBC value is a **default** that
+seeds an axis when nothing contradicts it — unambiguous in `individual`
+mode where an axis is one signal, and in `per-unit` when every signal on
+the axis agrees — with the project's own per-axis setting (item 9) always
+overriding, and a mixed axis warning and staying linear. Settle it when
+`scale` is actually added.
+
+### This needs an ADR — write it with this item
+
+**New ADR 0043 (next free number): cannet's DBC custom attributes, and
+where display authority lives.** Three things it has to settle, none of
+which is written down today:
+
+1. **The `Cannet*` attribute namespace, and that it is read-only.**
+   `CannetCounter` and `CannetCrc` exist, but only inside ADR 0027 as
+   part of calculated fields — nothing states that cannet has a namespace,
+   what the convention is, or that cannet never writes a DBC (it can't:
+   `can-dbc` has no serialiser, and rewriting a user's DBC is destructive
+   besides). Every future attribute needs that stated once.
+
+2. **The DBC-versus-project test.** The rule already exists, but only
+   scattered through three rejected-alternatives sections: ADR 0028 —
+   "right home for the calculated-field *designation*, wrong one for
+   per-simulation values and cadence: those vary per rig and would churn a
+   shared DBC"; ADR 0029 — colour maps to the project, partly because
+   `BA_` structurally cannot attach to a `VAL_` entry; ADR 0027 — the
+   designation itself belongs in the DBC. Stated positively: **a fact
+   about the signal itself goes in the DBC; a fact that varies per rig,
+   per session, or per user goes in the project.** `radix=hex` passes —
+   a signal being an opaque bit pattern is intrinsic to it.
+
+3. **Precedence, and the per-value / per-axis asymmetry.** When both the
+   DBC and the project speak, the project wins. And a display fact that
+   is *per value* (radix) can safely be a signal property, while one that
+   is *per axis* (log scale) cannot, because signals sharing an axis
+   share it. That asymmetry is the thing a future contributor will
+   otherwise rediscover by shipping `scale=log` and finding it
+   contradictory.
+
+**Amend ADR 0026** in the same change: it governs per-unit axes and must
+record that log scale is an axis property and that a DBC hint never
+overrides an explicit per-axis setting.
+
+ADR 0027 keeps its attributes; it gains a pointer to 0043 as the general
+rule it was the first instance of.
+
+**Document it with the others.** cannet's custom attributes are
+currently spelled out in ADR 0027 and in `README.md` (the calculated
+fields section carries a worked `BA_DEF_` / `BA_` example). Both get the
+new attribute in the same commit. The full set is small enough that the
+README block is the natural place for it to stay complete — if it grows
+much past this, it wants its own reference page.
+
 ## Exit criteria
 
 - Every item above is fixed or struck with a recorded reason, and this
@@ -207,6 +527,12 @@ version.
   deliverable is a test that stops failing intermittently.
 - Item 4 changes ADR 0026 in the same commit if the per-unit axis rule
   needs to say something about constant signals.
+- Item 11 lands **ADR 0043** (cannet's DBC custom-attribute namespace,
+  the DBC-versus-project test, and display-authority precedence) and
+  **amends ADR 0026** for log scale as an axis property. The attribute
+  is not shipped without the ADR: `CannetDisplay` is an extension point,
+  and an extension point with no written rule is how the next three get
+  added inconsistently.
 - Item 2 records any new tool in `plans/technology-inventory.md`,
   adopted or rejected.
 - Item 7 answers the base-implementation question explicitly — either a
