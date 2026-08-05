@@ -147,7 +147,7 @@ header {
   min-height: 0;
 }
 
-/* A tab being renamed in place (`panel.rename`): the title is replaced
+/* A tab being renamed in place (double-click): the title is replaced
    by an input sized to sit inside the tab it came from. */
 .dock-tab-rename-input {
   width: 10ch;
@@ -239,6 +239,13 @@ header {
   border: 1px solid #2c3444;
   border-radius: 4px;
   padding: 0.4rem 0.6rem;
+}
+
+/* The palette's second stage: one field, and a line saying what it is
+   asking for. */
+.palette-prompt-label {
+  font-size: 0.8rem;
+  color: #94a3b8;
 }
 
 .palette-list {

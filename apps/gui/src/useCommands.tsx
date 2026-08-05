@@ -66,13 +66,12 @@ import {
   type FocusHistory,
   type LayoutHistory,
 } from "./viewHistory";
-import { PaletteModal, type PaletteItem } from "./PaletteModal";
+import { PaletteModal, PalettePrompt, type PaletteItem } from "./PaletteModal";
 import {
   recordRecentCommand,
   sortRecentFirst,
 } from "./recentCommands";
 import { createPanelCommandRegistry } from "./panelCommands";
-import type { RenameTabController } from "./RenamableTab";
 
 /// The active dockview panel, tracked by `App`'s `onDidActivePanelChange`
 /// (dockview lifecycle) and read here to route panel-local commands.
@@ -96,10 +95,27 @@ export interface UseCommandsOptions {
   firstIndex: number;
   firstIndexTsNs: number | null;
   sessionStartSeconds: number | null;
+  // Apply a model-owned display name (ADR 0019) to an element — the
+  // same registry mutation the project panel's inline rename performs,
+  // passed in because the registry context is provided *below* `App`.
+  renameElement: (id: string, name: string) => void;
   // The app-domain command implementations (project / BLF / DBC /
   // connection / capture / panel.add / saveAll / kill-switch / exit).
   // Merged with the framework/view/palette commands owned here.
   appCommands: Record<string, () => void>;
+}
+
+/// A command's second stage (ADR 0037): the one piece of text the
+/// command still needs, collected in the palette rather than by sending
+/// the user to another view. Set by a command handler through
+/// `promptForText`; the palette clears it on submit or cancel.
+interface CommandPrompt {
+  /// What is being asked for, shown above the field and used as its
+  /// accessible name.
+  label: string;
+  /// The value the field opens with, pre-selected.
+  initial: string;
+  submit: (value: string) => void;
 }
 
 export interface UseCommandsResult {
@@ -109,8 +125,6 @@ export interface UseCommandsResult {
   keybindings: KeybindingsController;
   /// The panel-local command registry for `PanelCommandsContext`.
   panelCommands: ReturnType<typeof createPanelCommandRegistry>;
-  /// Which tab is in rename mode, for `RenameTabContext`.
-  renameTab: RenameTabController;
   /// The command / go-to-view / go-to-event palette modals.
   palettes: ReactNode;
 }
@@ -166,6 +180,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     firstIndex,
     firstIndexTsNs,
     sessionStartSeconds,
+    renameElement,
     appCommands,
   } = options;
 
@@ -196,9 +211,9 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   );
   // Panel-local command implementations (plot fit / follow-live).
   const [panelCommands] = useState(createPanelCommandRegistry);
-  // The dockview panel whose tab is being renamed in place, if any
-  // (`panel.rename`); the tab component clears it on commit / cancel.
-  const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  // What a command's second stage is asking for, if one is open — the
+  // palette renders a text field for it instead of a list.
+  const [prompt, setPrompt] = useState<CommandPrompt | null>(null);
 
   // --- singleton view-show helpers ---
   // Show-or-focus a singleton panel keyed by its fixed id: bring it
@@ -376,13 +391,28 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "panel.show.about": showAboutPanel,
     "panel.show.events": showEventsPanel,
     "panel.show.shortcuts": showShortcutsPanel,
-    // Rename in place: the focused panel's own tab title becomes
-    // editable (see `RenamableTab`), so the user stays where they are.
-    // The name is still the model-owned one (ADR 0019) — the tab
-    // writes it through the element registry.
+    // Rename in place: the palette stays open and becomes a text field
+    // seeded with the focused panel's name, so the user never leaves
+    // the view they are renaming. The name is the model-owned one
+    // (ADR 0019) — committing writes it through the element registry,
+    // the same mutation the project panel's inline rename performs.
     "panel.rename": () => {
-      const panel = activePanelRef.current;
-      if (panel?.elementId) setRenameTarget(panel.id);
+      const elementId = activePanelRef.current?.elementId;
+      if (!elementId) return;
+      const element = registry.find((e) => e.element.id === elementId)?.element;
+      if (!element) return;
+      const current = elementLabel(element);
+      setPrompt({
+        label: `Rename “${current}”`,
+        initial: current,
+        submit: (value) => {
+          // An empty box reverts rather than clearing the name — every
+          // element has one, and a nameless panel falls back to a
+          // generated label.
+          const next = value.trim();
+          if (next && next !== current) renameElement(elementId, next);
+        },
+      });
     },
     "palette.show": () => setOpenPalette("commands"),
     "goto.view": () => setOpenPalette("goto"),
@@ -667,13 +697,19 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
           onClose={() => setOpenPalette(null)}
         />
       )}
+      {prompt && (
+        <PalettePrompt
+          label={prompt.label}
+          initialValue={prompt.initial}
+          onSubmit={(value) => {
+            setPrompt(null);
+            prompt.submit(value);
+          }}
+          onClose={() => setPrompt(null)}
+        />
+      )}
     </>
   );
 
-  const renameTab: RenameTabController = useMemo(
-    () => ({ target: renameTarget, end: () => setRenameTarget(null) }),
-    [renameTarget],
-  );
-
-  return { runCommand, keybindings, panelCommands, renameTab, palettes };
+  return { runCommand, keybindings, panelCommands, palettes };
 }

@@ -3,6 +3,12 @@
 // only in the items they pass. Types-to-filter through `fzf` (the
 // matcher Task 12 adopted for the DBC panel), arrow keys + Enter to
 // pick, Esc / backdrop click to close.
+//
+// `PalettePrompt` below is the palette's *second stage*: a command that
+// needs one piece of text collects it here, in the palette the user is
+// already looking at, instead of dispatching them to another view
+// (ADR 0037 — the command is still the single entry point; this is
+// part of invoking it).
 
 import { useMemo, useState } from "react";
 import { Fzf } from "fzf";
@@ -93,6 +99,56 @@ export function PaletteModal({
           ))}
           {filtered.length === 0 && <li className="palette-empty">No matches.</li>}
         </ul>
+      </div>
+    </div>
+  );
+}
+
+/// The palette's second stage: one text field in the palette's own
+/// shell, seeded with `initialValue` and labelled with what it is
+/// asking for. Enter submits the current text; Escape / backdrop click
+/// cancels. The seeded text starts selected, so typing replaces it and
+/// editing it in place still works.
+export function PalettePrompt({
+  label,
+  initialValue,
+  onSubmit,
+  onClose,
+}: {
+  label: string;
+  initialValue: string;
+  onSubmit: (value: string) => void;
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+
+  return (
+    <div className="modal-backdrop palette-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="modal palette palette-prompt"
+        role="dialog"
+        aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="palette-prompt-label">{label}</div>
+        <input
+          type="text"
+          className="palette-input"
+          aria-label={label}
+          value={value}
+          autoFocus
+          onFocus={(e) => e.target.select()}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              onClose();
+            } else if (e.key === "Enter") {
+              e.preventDefault();
+              onSubmit(value);
+            }
+          }}
+        />
       </div>
     </div>
   );

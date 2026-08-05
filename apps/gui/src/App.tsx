@@ -132,7 +132,7 @@ import {
   type LayoutHistory,
 } from "./viewHistory";
 import { PanelCommandsContext } from "./panelCommands";
-import { RenamableTab, RenameTabContext } from "./RenamableTab";
+import { RenamableTab } from "./RenamableTab";
 import { useCommands } from "./useCommands";
 import {
   beginDiagCapture,
@@ -525,6 +525,13 @@ export function App() {
       setRegistry((prev) => applyElementPatch(prev, id, patch) as RegistryEntry[]);
     },
     [],
+  );
+  // The one rename path (ADR 0019), handed to the command subsystem so
+  // `panel.rename` writes the same model-owned name the project panel's
+  // and the tab's inline edits do.
+  const renameElement = useCallback(
+    (id: string, name: string) => updateElement(id, { name }),
+    [updateElement],
   );
   const removeElement = useCallback(
     (id: string) => {
@@ -1988,6 +1995,7 @@ export function App() {
     firstIndex,
     firstIndexTsNs,
     sessionStartSeconds,
+    renameElement,
     appCommands,
   });
   const runCommand = commands.runCommand;
@@ -2455,7 +2463,6 @@ export function App() {
                 <TraceDataProvider value={traceData}>
                   <KeybindingsContext.Provider value={commands.keybindings}>
                   <PanelCommandsContext.Provider value={commands.panelCommands}>
-                    <RenameTabContext.Provider value={commands.renameTab}>
                     {/* dockview drags tabs with the HTML5 drag-and-drop API, which
                         Tauri's OS-level drag-drop handler breaks on WebView2 — hence
                         `dragDropEnabled: false` in tauri.conf.json. The GUI takes
@@ -2466,7 +2473,7 @@ export function App() {
                         middle-click. The `mousedown` capture listener above
                         keeps the browser's middle-button autoscroll from
                         eating the press. `RenamableTab` wraps that default
-                        with the in-place rename `panel.rename` drives. */}
+                        with double-click-to-rename. */}
                     <DockviewReact
                       className="dock-area"
                       theme={themeAbyss}
@@ -2474,7 +2481,6 @@ export function App() {
                       defaultTabComponent={RenamableTab}
                       onReady={handleDockReady}
                     />
-                    </RenameTabContext.Provider>
                   </PanelCommandsContext.Provider>
                   </KeybindingsContext.Provider>
                 </TraceDataProvider>
