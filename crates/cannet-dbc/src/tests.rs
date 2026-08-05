@@ -1460,3 +1460,115 @@ fn demo_dbc_calculated_field_examples_resolve() {
         .unwrap();
     assert_eq!(contactor.start_value_raw, Some(2.0));
 }
+
+const DISPLAY_ATTR_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU1 GW
+
+BO_ 291 Ident: 8 ECU1
+ SG_ Serial : 0|32@1+ (1,0) [0|0] "" GW
+ SG_ Plain : 32|8@1+ (1,0) [0|255] "" GW
+ SG_ Volts : 40|16@1+ (0.01,0) [0|655.35] "V" GW
+ SG_ Mode : 56|8@1+ (1,0) [0|3] "" GW
+
+VAL_ 291 Mode 0 "Park" 1 "Drive" ;
+
+BA_DEF_ SG_ "CannetDisplay" STRING ;
+BA_DEF_DEF_ "CannetDisplay" "";
+BA_ "CannetDisplay" SG_ 291 Serial "radix=hex";
+"#;
+
+#[test]
+fn display_attribute_marks_a_raw_field_for_hex() {
+    let db = Database::parse(DISPLAY_ATTR_DBC).unwrap();
+    assert!(db.parse_warnings().is_empty(), "{:?}", db.parse_warnings());
+
+    // Catalog side.
+    let sigs = db.signals();
+    let d = |name: &str| sigs.iter().find(|s| s.signal_name == name).unwrap();
+    assert!(d("Serial").display_hex, "CannetDisplay radix=hex");
+    assert!(!d("Plain").display_hex, "no attribute -> base 10");
+    assert!(!d("Volts").display_hex);
+    assert!(!d("Mode").display_hex);
+
+    // Decode side — the same verdict, so a trace row and the signal
+    // view cannot disagree.
+    let frame = make_frame(291, false, vec![0xEF, 0xBE, 0xAD, 0xDE, 7, 0, 0, 1]);
+    let decoded = db.decode(&frame).unwrap();
+    assert!(signal_by_name(&decoded, "Serial").display_hex);
+    assert!(!signal_by_name(&decoded, "Plain").display_hex);
+}
+
+#[test]
+fn a_bad_display_attribute_warns_and_leaves_the_signal_decimal() {
+    for bad in ["radix=octal", "mode=hex", "radix", "radix=hex;radix=hex"] {
+        let dbc = DISPLAY_ATTR_DBC.replace(r#""radix=hex""#, &format!("\"{bad}\""));
+        let db = Database::parse(&dbc).unwrap();
+        let warnings = db.parse_warnings();
+        assert_eq!(warnings.len(), 1, "{bad}: {warnings:?}");
+        assert!(
+            warnings[0].contains("bad CannetDisplay") && warnings[0].contains("Ident.Serial"),
+            "{bad}: {warnings:?}"
+        );
+        let sigs = db.signals();
+        let serial = sigs.iter().find(|s| s.signal_name == "Serial").unwrap();
+        assert!(!serial.display_hex, "{bad}");
+    }
+    // An empty value is "unconfigured", not an error — the same
+    // reading `CannetCounter` gives it.
+    let dbc = DISPLAY_ATTR_DBC.replace(r#""radix=hex""#, r#""""#);
+    let db = Database::parse(&dbc).unwrap();
+    assert!(db.parse_warnings().is_empty(), "{:?}", db.parse_warnings());
+}
+
+/// The shipped demo DBC carries the `CannetDisplay` example the
+/// README documents — guard that it stays parseable and that the
+/// signal it names is actually eligible.
+#[test]
+fn demo_dbc_display_attribute_example_marks_the_crc_hex() {
+    let text = include_str!("../../../examples/cannet-demo.dbc");
+    let db = Database::parse(text).unwrap();
+    assert!(db.parse_warnings().is_empty(), "{:?}", db.parse_warnings());
+    let sigs = db.signals();
+    let d = |name: &str| {
+        sigs.iter()
+            .find(|s| s.message_name == "BmsCommand" && s.signal_name == name)
+            .unwrap()
+    };
+    assert!(d("Crc8").display_hex);
+    assert!(!d("CmdMode").display_hex, "no attribute -> base 10");
+}
+
+#[test]
+fn radix_hex_on_a_signal_that_is_not_a_raw_field_warns() {
+    // A DBC author who wrote `radix=hex` on a scaled, united or enum
+    // signal meant something by it; silently ignoring it hides the
+    // mistake.
+    let dbc = DISPLAY_ATTR_DBC.replace(
+        r#"BA_ "CannetDisplay" SG_ 291 Serial "radix=hex";"#,
+        concat!(
+            r#"BA_ "CannetDisplay" SG_ 291 Volts "radix=hex";"#,
+            "\n",
+            r#"BA_ "CannetDisplay" SG_ 291 Mode "radix=hex";"#,
+        ),
+    );
+    let db = Database::parse(&dbc).unwrap();
+    let warnings = db.parse_warnings();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(warnings.iter().any(|w| w.contains("Ident.Volts")));
+    assert!(warnings.iter().any(|w| w.contains("Ident.Mode")));
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.contains("not a raw integer field")),
+        "{warnings:?}"
+    );
+    let sigs = db.signals();
+    let d = |name: &str| sigs.iter().find(|s| s.signal_name == name).unwrap();
+    assert!(!d("Volts").display_hex);
+    assert!(!d("Mode").display_hex);
+}

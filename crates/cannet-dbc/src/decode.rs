@@ -181,6 +181,7 @@ fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSigna
         value: physical,
         value_is_raw_integer: value_is_raw_integer(entry),
         is_enum: is_enum(&entry.value_table),
+        display_hex: entry.display_hex,
         label,
     })
 }
@@ -230,6 +231,14 @@ pub struct DecodedSignal<'a> {
     /// (an SNA sentinel on an otherwise numeric signal) leaves this
     /// false; `label` still resolves on an exact raw match.
     pub is_enum: bool,
+    /// The DBC asks for this signal's value to render as a bit pattern
+    /// — `CannetDisplay "radix=hex"` on a signal that is a raw field
+    /// (ADR 0043). False is the default: a raw integer reads base 10
+    /// unless its DBC says otherwise. The catalog-side twin is
+    /// [`SignalDescriptor::display_hex`].
+    ///
+    /// [`SignalDescriptor::display_hex`]: crate::SignalDescriptor::display_hex
+    pub display_hex: bool,
     pub label: Option<&'a str>,
 }
 

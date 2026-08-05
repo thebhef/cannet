@@ -517,7 +517,7 @@ pub fn parse_crc_attribute(signal: &str, text: &str) -> Result<CrcConfig, String
 /// Split a `key=value;key=value` one-liner. Trailing `;` and
 /// whitespace around keys / values are tolerated; duplicate keys are
 /// an error.
-fn key_value_pairs(text: &str) -> Result<Vec<(&str, &str)>, String> {
+pub(crate) fn key_value_pairs(text: &str) -> Result<Vec<(&str, &str)>, String> {
     let mut pairs: Vec<(&str, &str)> = Vec::new();
     for segment in text.split(';') {
         let segment = segment.trim();

@@ -93,11 +93,13 @@ BA_DEF_ BO_ "GenMsgSendType" ENUM "Cyclic","OnEvent","CyclicIfActive","NoMsgSend
 BA_DEF_ SG_ "GenSigStartValue" FLOAT 0 100000;
 BA_DEF_ SG_ "CannetCounter" STRING ;
 BA_DEF_ SG_ "CannetCrc" STRING ;
+BA_DEF_ SG_ "CannetDisplay" STRING ;
 BA_DEF_DEF_ "GenMsgCycleTime" 0;
 BA_DEF_DEF_ "GenMsgSendType" "NoMsgSendType";
 BA_DEF_DEF_ "GenSigStartValue" 0;
 BA_DEF_DEF_ "CannetCounter" "";
 BA_DEF_DEF_ "CannetCrc" "";
+BA_DEF_DEF_ "CannetDisplay" "";
 BA_ "GenMsgCycleTime" BO_ 256 50;
 BA_ "GenMsgCycleTime" BO_ 768 10;
 BA_ "GenMsgCycleTime" BO_ 1042 100;
@@ -106,6 +108,7 @@ BA_ "GenSigStartValue" SG_ 1042 CmdMode 1;
 BA_ "GenSigStartValue" SG_ 1042 ContactorReq 2;
 BA_ "CannetCounter" SG_ 1042 AliveCtr "increment=1;rollover=15";
 BA_ "CannetCrc" SG_ 1042 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=A3";
+BA_ "CannetDisplay" SG_ 1042 Crc8 "radix=hex";
 
 VAL_ 256 GearLever 0 "P" 1 "R" 2 "N" 3 "D" 4 "S" 5 "L" 6 "Manual" 7 "Reserved";
 VAL_ 512 SensorId 0 "Temp" 1 "Pressure" 2 "Humidity" 3 "Accel";

@@ -915,8 +915,10 @@ destination signal:
 ```text
 BA_DEF_ SG_ "CannetCounter" STRING ;
 BA_DEF_ SG_ "CannetCrc" STRING ;
+BA_DEF_ SG_ "CannetDisplay" STRING ;
 BA_ "CannetCounter" SG_ 1042 AliveCtr "increment=1;rollover=15";
 BA_ "CannetCrc" SG_ 1042 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=A3";
+BA_ "CannetDisplay" SG_ 1042 Crc8 "radix=hex";
 ```
 
 (see `examples/cannet-demo.dbc`'s `BmsCommand` message). Both the
@@ -928,6 +930,18 @@ the trace row red, per-id validity is queryable
 (`fetch_field_validity`), and a valid→invalid transition logs a
 rate-limited Info system message. cannet's own transmissions are
 exempt.
+
+That block is the full set of cannet's DBC attributes (ADR 0043).
+They are all per-signal `STRING`s taking a `key=value;` value, an
+empty value means unconfigured, and **cannet reads them but never
+writes a DBC** — a hand-edited file, or whatever generates yours,
+authors them. `CannetDisplay` is a render mode rather than a
+transmit designation: `radix=hex` shows a raw integer bit field (an
+unscaled, unitless, non-enum signal — an id, a serial, a flag word)
+as `0xDEADBEEF` instead of base 10, which is what such signals read
+as by default. Asking for it on a signal that has a unit, a scale
+factor or a `VAL_` table logs a warning and changes nothing, as does
+an unrecognised key or value.
 
 > **Note:** plain `cargo run -p cannet-gui` will build the Rust host on
 > its own but won't bring up a usable window — the host expects either
