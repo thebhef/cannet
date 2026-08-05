@@ -301,6 +301,9 @@ export function App() {
   // The host build's version string, for the window title. Empty until
   // `app_version` answers.
   const [appVersion, setAppVersion] = useState("");
+  // Set once the window-title effect has reported a failure, so a
+  // permanently-denied `setTitle` logs once instead of per title change.
+  const titleFailureReported = useRef(false);
   // Set while the "unsaved changes — Save / Discard / Cancel?" modal is
   // up (the window-close handler awaits the choice via `resolve`).
   const [pendingClose, setPendingClose] = useState<{
@@ -1585,6 +1588,12 @@ export function App() {
   // Native window title: `<project> — <capture source> — cannet
   // <version>`, with a `• ` prefix while unsaved. The OS chrome is the
   // only title surface (no custom title bar).
+  //
+  // A rejection here is *reported*, not swallowed: `setTitle` needs the
+  // `core:window:allow-set-title` capability, which Tauri's
+  // `core:default` does not include, and without it every call rejects
+  // and the static `tauri.conf.json` title silently survives. That
+  // shipped undetected once already.
   useEffect(() => {
     void getCurrentWindow()
       .setTitle(
@@ -1595,8 +1604,23 @@ export function App() {
           version: appVersion,
         }),
       )
-      .catch(() => {
-        /* headless test host — no window to title */
+      .catch((err: unknown) => {
+        // Once per session: a `setTitle` that fails fails on every
+        // subsequent change too, always for the same reason.
+        if (titleFailureReported.current) return;
+        titleFailureReported.current = true;
+        const message =
+          `window title could not be set: ${String(err)} — the host may be ` +
+          `missing the core:window:allow-set-title capability`;
+        // eslint-disable-next-line no-console
+        console.error(message);
+        void invoke("gui_emit_system_log", {
+          level: "error",
+          source: "window",
+          message,
+        }).catch(() => {
+          /* headless test host — nowhere to report to */
+        });
       });
   }, [projectPath, dirty, state, remoteSessions, appVersion]);
 
