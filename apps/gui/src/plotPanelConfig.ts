@@ -11,11 +11,13 @@
  * runtime dependency it takes is `hostSettings`, which {@link newPlotArea}
  * reads for the configured default y-axis mode.
  */
+import { formatSignalValue } from "./format";
 import { hostSettings } from "./hostSettings";
 import { signalKey } from "./plotData";
 import { SIGNAL_WHEEL } from "./palette";
 import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKey } from "./plotCursors";
 import type { YAxisMode } from "./plotAxisDerivation";
+import type { SignalDescriptorRecord } from "./types";
 import { parseSignalDragData } from "./dragSignals";
 
 /** The shared signal color wheel (ADR 0026, `palette.ts`) seeds a new
@@ -337,8 +339,101 @@ export function fmtFreq(hz: number | null | undefined): string {
   return `${hz.toFixed(2)} Hz`;
 }
 
-export function fmtVal(v: number | null | undefined): string {
-  return v == null || !Number.isFinite(v) ? "—" : v.toPrecision(6);
+/** What a plotted signal's DBC says about how its values should read —
+ * the two facts the host computes per signal and the catalog carries
+ * (`SignalDescriptorRecord`). Held per signal rather than derived from
+ * a value, because the same number reads differently depending on the
+ * signal it came from: `12.25` from a factor-0.25 signal is exact,
+ * from a float it is a rounding. */
+export interface SignalValueFormat {
+  /** Decimal places the signal's DBC factor implies, or `null` when it
+   * implies no fixed precision (a `SIG_VALTYPE_` float, or a factor
+   * with no finite decimal expansion) — then the float rule applies. */
+  decimals: number | null;
+  /** Render the value as a bit pattern (`0xDEADBEEF`). The host's
+   * `display_hex` verdict, already gated on the signal being a raw
+   * field (ADR 0043). */
+  hex: boolean;
+}
+
+/** Every catalog signal's {@link SignalValueFormat}, keyed by the
+ * canonical `signalKey`. Built once per panel from the signal catalog —
+ * the same shape as `messageEcuLookup`, and for the same reason: the
+ * facts live on the catalog, not on a plotted signal ref. */
+export function signalValueFormats(
+  catalog: readonly SignalDescriptorRecord[],
+): ReadonlyMap<string, SignalValueFormat> {
+  const out = new Map<string, SignalValueFormat>();
+  for (const s of catalog) {
+    out.set(signalKey(s.bus_id, s.message_id, s.extended, s.signal_name), {
+      decimals: s.decimals ?? null,
+      hex: !!s.display_hex,
+    });
+  }
+  return out;
+}
+
+/** Most decimal places a value renders plainly before it is easier to
+ * read in exponential form. One threshold for every numeric readout the
+ * plot draws — the signal area, the cursor readouts and the y-axis tick
+ * labels — so a value cannot read `0.0001` in one and `1.0e-4` in
+ * another. */
+export const MAX_PLAIN_DECIMALS = 5;
+
+/** Magnitude from which a value always reads exponentially, whatever
+ * the decimal rule says. Unchanged from what both formatters did before
+ * they shared this one: `toPrecision(6)` switches to exponential here,
+ * and the tick labels tested for it explicitly. */
+const EXPONENTIAL_FROM = 1e6;
+
+/** Round to `sigFigs` significant figures and render plainly, unless
+ * that would need more than {@link MAX_PLAIN_DECIMALS} decimals (or the
+ * magnitude is past {@link EXPONENTIAL_FROM}) — then exponential, with
+ * the mantissa's trailing zeros trimmed so `1e-6` doesn't read
+ * `1.00000e-6`.
+ *
+ * The rule a signal falls to when its DBC declares no fixed precision,
+ * and what the y-axis tick labels use (at their own, narrower, sig-fig
+ * budget). */
+export function fmtSigFigs(v: number, sigFigs: number): string {
+  if (!Number.isFinite(v)) return "—";
+  const exponential = () => v.toExponential(sigFigs - 1).replace(/\.?0+e/, "e");
+  if (Math.abs(v) >= EXPONENTIAL_FROM) return exponential();
+  // `String` of the rounded value is its shortest exact rendering, so
+  // its fractional digits are exactly the decimals this value needs. It
+  // only goes exponential itself below 1e-6, which is past the
+  // threshold anyway.
+  const plain = String(Number(v.toPrecision(sigFigs)));
+  const dot = plain.indexOf(".");
+  const decimals = plain.includes("e") ? Infinity : dot < 0 ? 0 : plain.length - dot - 1;
+  return decimals > MAX_PLAIN_DECIMALS ? exponential() : plain;
+}
+
+/** Sig figs a value readout renders a float at — the plot's historical
+ * `toPrecision(6)`, kept; what changes is that the padding and the
+ * excess decimals it used to produce are gone. */
+const VALUE_SIG_FIGS = 6;
+
+/** Format a plotted value for a readout — the signal area, the cursor
+ * readouts, the measurement strip.
+ *
+ * `fmt` is the signal's own rendering facts; the three cases are the
+ * three kinds of signal a DBC describes:
+ *
+ * - **fixed precision** (`decimals` set): exactly that many decimals,
+ *   so a factor-0.25 signal reads `12.25` and never `12.250000`.
+ *   `decimals: 0` covers the unscaled integers, raw bit fields included.
+ * - **hex**: a raw bit field whose DBC asked for it — the same
+ *   rendering the trace rows and the signal view use.
+ * - **float or unknown** (`fmt` omitted, or `decimals: null`):
+ *   {@link fmtSigFigs} at 6 figures. Omitted where the number belongs to
+ *   an axis rather than one signal (a y-cursor position, a scale bound),
+ *   which may span several signals' formats. */
+export function fmtVal(v: number | null | undefined, fmt?: SignalValueFormat | null): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  if (fmt?.hex) return formatSignalValue(v, true);
+  if (fmt?.decimals != null) return v.toFixed(fmt.decimals);
+  return fmtSigFigs(v, VALUE_SIG_FIGS);
 }
 
 export function fmtCount(n: number): string {

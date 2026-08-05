@@ -13,8 +13,10 @@ const {
   cursorModeFromRaw,
   fmtCount,
   fmtFreq,
+  fmtSigFigs,
   fmtVal,
   isSignalRefCore,
+  signalValueFormats,
   measKeysFromRaw,
   newPlotArea,
   signalRefKey,
@@ -24,6 +26,7 @@ const {
   yAxisModeFromRaw,
 } = await import("./plotPanelConfig");
 type SignalRef = import("./plotPanelConfig").SignalRef;
+const { signalKey } = await import("./plotData");
 const { hydrateSettings } = await import("./hostSettings");
 
 beforeEach(async () => {
@@ -187,6 +190,60 @@ describe("formatters", () => {
     expect(fmtVal(null)).toBe("—");
     expect(fmtVal(Number.NaN)).toBe("—");
     expect(fmtVal(1.23456789)).toBe("1.23457");
+    // No signal facts: the float rule, which trims what `toPrecision`
+    // used to pad ("0.500000").
+    expect(fmtVal(0.5)).toBe("0.5");
+  });
+
+  it("fmtVal renders a fixed-precision signal at the decimals its factor implies", () => {
+    const quarter = { decimals: 2, hex: false };
+    expect(fmtVal(12.25, quarter)).toBe("12.25");
+    expect(fmtVal(12, quarter)).toBe("12.00");
+    expect(fmtVal(-0.5, quarter)).toBe("-0.50");
+    // An integral factor (and a factor of 1 with an offset or a unit)
+    // is fixed at zero decimals — an integer, rendered in base 10.
+    expect(fmtVal(-42, { decimals: 0, hex: false })).toBe("-42");
+  });
+
+  it("fmtVal renders a float decimally until it would need more than 5 decimals", () => {
+    const float = { decimals: null, hex: false };
+    expect(fmtVal(0.0001, float)).toBe("0.0001");
+    expect(fmtVal(0.00001, float)).toBe("0.00001");
+    expect(fmtVal(0.000001, float)).toBe("1e-6");
+    expect(fmtVal(0.0000123, float)).toBe("1.23e-5");
+    expect(fmtVal(-0.0000123, float)).toBe("-1.23e-5");
+    expect(fmtVal(1.23456789, float)).toBe("1.23457");
+    expect(fmtVal(0, float)).toBe("0");
+  });
+
+  it("fmtVal renders a raw bit field in base 10 unless its DBC asks for hex", () => {
+    expect(fmtVal(3735928559, { decimals: 0, hex: false })).toBe("3735928559");
+    expect(fmtVal(3735928559, { decimals: 0, hex: true })).toBe("0xDEADBEEF");
+  });
+
+  it("fmtSigFigs takes the exponential threshold the value readout uses", () => {
+    // The tick labels' 3 sig figs, the same "more than 5 decimals"
+    // rule: `0.0001` used to read `1.0e-4` here and `0.000100000` in
+    // the signal area.
+    expect(fmtSigFigs(0.0001, 3)).toBe("0.0001");
+    expect(fmtSigFigs(0.000001, 3)).toBe("1e-6");
+    expect(fmtSigFigs(1.2345, 3)).toBe("1.23");
+    expect(fmtSigFigs(1234, 3)).toBe("1230");
+    // The large end is unchanged: exponential from 1e6 up.
+    expect(fmtSigFigs(999999, 3)).toBe("1000000");
+    expect(fmtSigFigs(1234567, 3)).toBe("1.23e+6");
+  });
+
+  it("signalValueFormats keys the catalog's rendering facts by signal", () => {
+    const formats = signalValueFormats([
+      { bus_id: "a", message_id: 256, extended: false, message_name: "M", transmitter: null, signal_name: "Speed", unit: "rpm", decimals: 2 },
+      { bus_id: "a", message_id: 256, extended: false, message_name: "M", transmitter: null, signal_name: "Serial", unit: "", decimals: 0, display_hex: true },
+      { bus_id: "a", message_id: 256, extended: false, message_name: "M", transmitter: null, signal_name: "Lat", unit: "deg" },
+    ]);
+    expect(formats.get(signalKey("a", 256, false, "Speed"))).toEqual({ decimals: 2, hex: false });
+    expect(formats.get(signalKey("a", 256, false, "Serial"))).toEqual({ decimals: 0, hex: true });
+    // An absent `decimals` is the float rule, not zero decimals.
+    expect(formats.get(signalKey("a", 256, false, "Lat"))).toEqual({ decimals: null, hex: false });
   });
 
   it("fmtCount abbreviates thousands / millions", () => {

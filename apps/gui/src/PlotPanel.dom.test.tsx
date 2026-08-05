@@ -83,7 +83,9 @@ vi.mock("uplot", () => {
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 const SIGNALS = [
-  { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineSpeed", unit: "rpm" },
+  // `decimals: 2` is the catalog's fixed-precision fact — EngineSpeed's
+  // DBC factor is 0.25, so its values land on two decimal places.
+  { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineSpeed", unit: "rpm", decimals: 2 },
   { message_id: 256, extended: false, message_name: "EngineData", transmitter: "EngineEcu", signal_name: "EngineTemp", unit: "degC" },
   // A third signal, so the enum-lane tests have three lanes to hide the
   // middle one of — and, with the fourth, a same-unit *pair*, so
@@ -1738,6 +1740,46 @@ describe("PlotArea y-normalisation", () => {
         expect(data[3]?.[1]).toBeCloseTo(0.25, 6);
         expect(data[3]?.[2]).toBeCloseTo(0.3916667, 6);
       });
+    } finally {
+      restore();
+    }
+  });
+
+  it("a signal's readout takes the decimal precision its DBC factor implies", async () => {
+    // EngineSpeed is a scaled integer (factor 0.25 → `decimals: 2` on
+    // its catalog record): its readout holds two decimals, so a value
+    // that lands on a half still reads to the signal's own precision
+    // rather than being trimmed like a float.
+    mockSignalExtents.EngineSpeed = { lo: 12, hi: 13 };
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [12.5, 12.5, 12.5] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed"]);
+      await waitFor(() =>
+        expect(document.querySelector(".plot-signal-value")?.textContent).toBe("12.50 rpm"),
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("y-axis ticks stay decimal until a value needs more than five decimals", async () => {
+    // The tick labels shared no threshold with the value readouts: an
+    // axis spanning 0…0.0002 read "1.0e-4" at its midpoint while the
+    // signal area printed the digits.
+    mockSignalExtents.LimitNominal = { lo: 0, hi: 0.0002 };
+    mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [0, 0.0001, 0.0002] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["LimitNominal"], "per-unit");
+      await waitForData((data) => {
+        expect(data[1]?.[1]).toBeCloseTo(0.5, 6);
+      });
+      await waitFor(() =>
+        expect(yTickLabels([0, 0.5, 1])).toEqual(["0 A", "0.0001 A", "0.0002 A"]),
+      );
     } finally {
       restore();
     }

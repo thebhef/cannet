@@ -22,6 +22,7 @@ import { enumSegments, groupScaleRanges, mergeSeries } from "./plotData";
 import { useSetting } from "./hostSettings";
 import {
   PLOT_AREA_DND_MIME,
+  fmtSigFigs,
   fmtVal,
   parseDroppedSignals,
   signalRefKey,
@@ -30,6 +31,7 @@ import {
   type PlotAreaConfig,
   type PlotAreaReports,
   type SignalRef,
+  type SignalValueFormat,
   type XSync,
 } from "./plotPanelConfig";
 import { showPointsToUplot, type ShowPointsMode } from "./plotPoints";
@@ -68,15 +70,20 @@ const ZOOM_STEP = 1.15;
  * `clientWidth` is still small. */
 const MIN_DECIMATION_POINTS = 200;
 
-/** Compact tick formatter for the y-axis: 3 significant figures
- * normally, scientific for very small / very large, trims trailing
- * zeros so "1.00" → "1". Distinct from `fmtVal` (6 sig figs) because
- * tick labels have to fit in the axis's fixed 52 px column. */
+/** Sig figs a y-axis tick label renders at. Narrower than the value
+ * readouts' six because tick labels have to fit the axis gutter, which
+ * starts at 52 px. */
+const TICK_SIG_FIGS = 3;
+
+/** Compact tick formatter for the y-axis. Shares the readouts'
+ * exponential threshold through {@link fmtSigFigs} so one value can't
+ * read `0.0001` in the signal
+ * area and `1.0e-4` on the axis beside it; it keeps its own, narrower
+ * sig-fig budget, and it does not follow a signal's fixed precision or
+ * hex radix — a tick is a position on an axis that several signals may
+ * share, not one signal's reading. */
 function fmtTickValue(v: number): string {
-  if (!Number.isFinite(v)) return "—";
-  const abs = Math.abs(v);
-  if (abs !== 0 && (abs < 1e-3 || abs >= 1e6)) return v.toExponential(1);
-  return parseFloat(v.toPrecision(3)).toString();
+  return fmtSigFigs(v, TICK_SIG_FIGS);
 }
 
 /** Width (px) the y-axis needs to fit `values` plus tick mark and
@@ -428,6 +435,11 @@ interface PlotAreaProps {
    * line. The ECU isn't part of a plotted signal's identity, so the
    * panel resolves it from the catalog once and shares it. */
   ecuLookup: ReadonlyMap<string, string>;
+  /** `signalKey` → how that signal's values should read (fixed
+   * precision / float / hex). Resolved from the catalog once per panel,
+   * for the same reason as `ecuLookup`: it is a DBC fact, not part of a
+   * plotted signal's identity. */
+  valueFormats: ReadonlyMap<string, SignalValueFormat>;
   /** Signal value→color resolver (ADR 0029): tints an enum lane box by
    * its held value. Read live in the draw hook via a ref. */
   resolveColor: ColorResolver;
@@ -584,6 +596,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     busNameLookup,
     busColorLookup,
     ecuLookup,
+    valueFormats,
     resolveColor,
     panelElementId,
   } = p;
@@ -2182,8 +2195,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   };
   /** Format a current value for the side panel. If the signal has a
    * value table, render as `<label> (<raw>)` for enum-style readout;
-   * otherwise fall through to numeric. The raw is shown rounded —
-   * enum codes are integers. `v` comes from `seriesRef`, which holds
+   * otherwise fall through to numeric, at the precision and radix that
+   * signal's DBC implies. The raw is shown rounded — enum codes are
+   * integers. `v` comes from `seriesRef`, which holds
    * the un-normalised series, so this matches the code the lane tile
    * labels (the tile inverts its lane normalisation to get there). */
   const formatValueFor = (key: string, v: number | null): string => {
@@ -2194,7 +2208,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       const label = table.find((r) => r.raw === raw)?.label;
       if (label) return `${label} (${raw})`;
     }
-    return fmtVal(v);
+    return fmtVal(v, valueFormats.get(key));
   };
   // A collapsed axis renders no canvas, so uPlot never constructs here
   // and this row is a hole in the panel's pointer surface: the wheel
@@ -2542,6 +2556,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   </span>
                   {showAbDelta && (
                     <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
+                      {/* A difference, not a reading — the plain float
+                        * rule, as in the measurement strip. */}
                       Δ {fmtVal(deltaAbFor(key))}
                       {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
                     </small>

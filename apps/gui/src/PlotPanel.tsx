@@ -31,6 +31,7 @@ import {
   newPlotArea,
   reorderAreas,
   signalRefKey,
+  signalValueFormats,
   signalsWidthFromRaw,
   type AxisHandlers,
   type CursorMode,
@@ -227,7 +228,7 @@ import {
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
 import { PlotArea } from "./PlotArea";
-import { MeasurementMenu, PlotMeasurementStrip } from "./PlotMeasurements";
+import { MeasurementMenu, PlotMeasurementStrip, type PlottedSignal } from "./PlotMeasurements";
 
 
 export function PlotPanel(props: IDockviewPanelProps) {
@@ -1095,6 +1096,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// ancestry, and the ECU only lives in the catalog.
   const ecuLookup = useMemo(() => messageEcuLookup(scopedCatalog), [scopedCatalog]);
 
+  /// `signalKey` → the DBC facts that decide how that signal's values
+  /// read (fixed decimals / float / hex). Built once for the whole
+  /// panel, like `ecuLookup`, and shared by every readout: the side
+  /// panel rows, the A/B delta and the measurement strip.
+  const valueFormats = useMemo(() => signalValueFormats(scopedCatalog), [scopedCatalog]);
+
   /// Areas with their `patterns` resolved against the catalog
   /// (`signalSelection.ts`): the effective series list is the manual
   /// picks plus the pattern matches not already picked. Storage state
@@ -1336,12 +1343,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // same ids. Each signal lives in exactly one derived axis of its
   // parent, so this enumerates every plotted signal exactly once.
   const plottedSignals = useMemo(() => {
-    const out: Array<{ key: string; ref: SignalRef; color: string; areaId: string }> = [];
+    const out: PlottedSignal[] = [];
     for (const d of derivedAreaConfigs) {
-      for (const s of d.area.signals) out.push({ key: signalRefKey(s), ref: s, color: s.color, areaId: d.area.id });
+      for (const s of d.area.signals) {
+        const key = signalRefKey(s);
+        // The strip's cells are per-signal readouts, so they format by
+        // the same DBC facts the side panel's rows do.
+        out.push({ key, ref: s, color: s.color, areaId: d.area.id, fmt: valueFormats.get(key) });
+      }
     }
     return out;
-  }, [derivedAreaConfigs]);
+  }, [derivedAreaConfigs, valueFormats]);
   const seriesFor = useCallback(
     (areaId: string, key: string): Series | undefined => seriesByArea.get(areaId)?.get(key),
     [seriesByArea],
@@ -1677,6 +1689,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               busNameLookup={busNameLookup}
               busColorLookup={busColorLookup}
               ecuLookup={ecuLookup}
+              valueFormats={valueFormats}
               resolveColor={resolveColor}
               panelElementId={elementId}
               />
