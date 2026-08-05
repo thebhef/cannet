@@ -1,7 +1,9 @@
 # Local commit gate. Every hook is repo:local / language:system — it runs a
 # tool this project already pins (uv, cargo, pnpm) or a small script in
-# scripts/, so there are no third-party hook repos to keep in sync and the
-# checks mirror .github/workflows/ci.yml. Enable in a clone with
+# scripts/, so there are no third-party hook repos to keep in sync. The
+# checks are the ones in .github/workflows/ci.yml, narrowed to what a
+# commit touches where that is a big enough saving to matter (each such
+# hook says what it therefore leaves to CI). Enable in a clone with
 # `pre-commit install` (needs the `pre-commit` tool: `uv tool install
 # pre-commit` or `pipx install pre-commit`).
 minimum_pre_commit_version: "3.5.0"
@@ -74,9 +76,9 @@ repos:
       # rustfmt runs first and re-stages what it touches, so formatting
       # lands in the same commit instead of the pre-commit-framework
       # default of aborting with "files were modified by this hook" (which
-      # would make the user re-stage and commit again). cargo has no
-      # per-file granularity for clippy/test; those run the workspace when
-      # any Rust source or manifest changes.
+      # would make the user re-stage and commit again). clippy has no
+      # per-file granularity, so it runs the workspace when any Rust
+      # source or manifest changes; the test hook below is scoped.
       - id: cargo-fmt
         name: cargo fmt (workspace, auto-fix)
         language: system
@@ -89,20 +91,59 @@ repos:
         files: '\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
         pass_filenames: false
         entry: cargo clippy --workspace --all-targets -- -D warnings
-      # The workspace test run is deliberately NOT a commit gate. clippy
-      # above already builds every target, so it catches what a compile
-      # error would; adding `cargo test --workspace` on top pays for
-      # linking and running every test binary on every commit touching a
-      # `.rs` file, which dominates commit time during a run of small
-      # fixes. Run the tests you are working on as you go; CI runs the
-      # whole workspace per-PR.
+      # The test run is scoped to the crates a commit touches — the path
+      # → package map is in scripts/cargo-test-touched.sh, and a root
+      # manifest / toolchain change (or any Rust path with no rule) falls
+      # back to the workspace.
+      #
+      # Measured on this repo, Windows, warm target dir, marginal cost on
+      # top of the clippy hook above:
+      #
+      #   commit touching        scoped        `cargo test --workspace`
+      #   crates/cannet-dbc      4 s           49 s
+      #   apps/gui/src-tauri     24 s          47 s
+      #   nothing to rebuild     1–5 s         17 s
+      #
+      # clippy does *not* make the tests free: it checks metadata only,
+      # so `cargo test` still pays codegen and linking (4 s for
+      # cannet-dbc, 24 s for cannet-gui, against 1–5 s when there is
+      # nothing to rebuild).
+      #
+      # Dependents are deliberately NOT included. cannet-perf-measurement
+      # and cannet-gui between them depend on nearly every crate, so
+      # "touched crates + their dependents" is the entire workspace for
+      # anything under crates/cannet-core or crates/cannet-blf, and costs
+      # 42 s for a cannet-dbc change — i.e. it is the blanket run this
+      # replaces, wearing a scoped name.
+      #
+      # So this gate can miss, and CI catches per-PR: a *behavioural*
+      # break in a dependent crate's tests (a type break is still caught,
+      # since clippy --all-targets compiles every test target), and
+      # anything that only shows up under the workspace's unified feature
+      # resolution. That feature resolution also means switching between
+      # this scoped run and a hand-run `cargo test --workspace` rebuilds
+      # (~25–45 s each way) — expected, not a fault.
+      - id: cargo-test
+        name: cargo test (touched crates)
+        language: system
+        files: '\.rs$|(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$'
+        require_serial: true
+        entry: bash scripts/cargo-test-touched.sh
 
       # --- Frontend (apps/gui, excluding the Rust src-tauri crate) ---
-      # `pnpm build` is the typecheck, so it stays. The full vitest suite
-      # is not a commit gate, for the same reason cargo test isn't.
+      # `pnpm build` is the typecheck and the whole vitest suite is the
+      # test gate; the script runs them concurrently because they are
+      # independent (42 s together, 67 s in sequence).
+      #
+      # The suite is deliberately not scoped to the changed files.
+      # `vitest related` over the files of three real commits ran in
+      # 20 / 28 / 30 s against 41 s for all 109 files — vitest's worker +
+      # jsdom startup dominates, so scoping buys ~13 s — and it maps a
+      # deleted file or a config change to *no* tests at all. Not worth
+      # the hole.
       - id: frontend
-        name: frontend build
+        name: frontend build + tests
         language: system
         files: '^apps/gui/(?!src-tauri/).*'
         pass_filenames: false
-        entry: "bash -c 'pnpm --dir apps/gui build'"
+        entry: bash scripts/frontend-gate.sh

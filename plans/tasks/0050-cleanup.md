@@ -60,33 +60,111 @@ which is exactly what the real slow sample does.
 
 ## 2. Restore the commit gate — surgically
 
-The full test suites were dropped from `.pre-commit-config.yaml` so a run
-of small fixes would not pay a whole-workspace test run per commit.
-`cargo test --workspace` is gone and the frontend hook runs `pnpm build`
-without `pnpm test`. CI still runs both per-PR, so nothing is unguarded —
-but the local gate is weaker than it reads.
+**Done.** `cargo test` is a commit gate again, scoped to the crates a
+commit touches; the frontend hook runs the whole vitest suite alongside
+its build. Both hooks' comments now state what they run, what it costs
+and what it misses.
 
-**Restore it surgically. Do not revert.** A blanket `cargo test
---workspace` on every commit touching a `.rs` file is what made this
-worth removing; putting it back reintroduces the problem. The gate should
-run the smallest set of tests that could actually be broken by what is
-staged.
+**The Rust gate: `scripts/cargo-test-touched.sh`.** pre-commit passes
+the staged filenames; the script maps each to the crate that owns it
+(`crates/<name>/…` → `<name>`, `apps/gui/src-tauri/…` → `cannet-gui`)
+and issues one `cargo test -p …` over the union. A root `Cargo.toml` /
+`Cargo.lock` / `rust-toolchain.toml`, or any Rust path with no rule,
+falls back to `--workspace` rather than guessing and under-testing. A
+frontend-only commit never reaches the hook (`files:` filters it out).
 
-Directions worth taking, to be measured rather than assumed:
+**Measured here** (Windows, warm target dir), marginal cost on top of
+the clippy hook that runs first:
 
-- Scope the Rust run to the crates a commit touches, rather than the
-  workspace.
-- `cargo nextest`, which parallelises and reports better than `cargo
-  test` — a technology-inventory decision, so record it either way.
-- `cargo clippy --all-targets` is already in the gate and already builds
-  every target, so the marginal cost of running the tests may be only
-  linking and execution. Measure that before assuming a test run is
-  expensive.
-- The same question for the frontend: vitest over changed files versus
-  the whole suite.
+| commit touching | scoped | `cargo test --workspace` |
+| --- | --- | --- |
+| `crates/cannet-dbc` | 4.2 s | 49.0 s |
+| `apps/gui/src-tauri` | 23.9 s | 46.8 s |
+| nothing to rebuild | 1.0–4.9 s | 17.3–18.9 s |
 
-The comment in `.pre-commit-config.yaml` explaining the trade-off must
-match what the hooks actually do when this lands.
+**The item's "clippy already builds every target" hypothesis is false.**
+clippy checks metadata only, so `cargo test` still pays codegen and
+linking: after a `cannet-dbc` edit, clippy (9.3 s) is followed by 4.2 s
+of test work against 1.0–2.1 s with nothing to rebuild; for
+`cannet-gui`, 23.9 s against 4.7 s. The saving is real, but it comes
+from scoping, not from clippy having pre-built anything.
+
+**Dependents are deliberately not included, and the measurement is
+why.** `cannet-perf-measurement` and `cannet-gui` between them depend on
+nearly every crate, so "touched crates + their dependents" is the entire
+workspace for anything under `cannet-core` or `cannet-blf`, and costs
+41.9 s for a `cannet-dbc` change — the blanket run this replaces,
+wearing a scoped name. Type-level breakage in a dependent is still
+caught, because `cargo clippy --workspace --all-targets` runs first and
+compiles every dependent's test targets.
+
+**Frontend: the whole suite, concurrent with the build**
+(`scripts/frontend-gate.sh`). `vitest related` over the files of three
+real commits from this stack ran in 20.3 / 29.8 / 28.2 s against 41.0 s
+for all 109 files (1216 tests) — vitest's worker + jsdom startup
+dominates (one file costs 4.4 s, 24 files 31.3 s), so scoping buys
+~13 s while mapping a deleted file or a config change to *no tests at
+all*. The guess that it would also miss the stylesheet assertions was
+**refuted**: `dockPanelScrolling.test.ts` imports `./index.css?raw`, so
+`vitest related src/index.css` does find it — the import graph is
+better than assumed, the arithmetic still isn't. Build and suite are
+independent, so the script runs both and waits on each: 41.8 / 40.6 /
+41.5 s across three runs against 67 s in sequence (`pnpm build` alone is
+25.7 s). Each job's output is buffered and printed only if that job
+failed, so a failure reads as one tool's output rather than two
+interleaved ones.
+
+**`cargo-nextest`: rejected**, entry in
+`plans/technology-inventory.md`. It was not installed; installing it to
+measure cost 3 m 35 s from source. On Windows it is *slower* than
+`cargo test` here, because it spawns a process per test:
+`-p cannet-gui` 8.9–9.3 s against 4.7–5.2 s, `-p cannet-dbc` 3.1 s
+against 1.0–2.1 s, `--workspace` 18.3 s against 17.3 s. There is also
+nothing left to win — the scoped gate's test *execution* share is 1–5 s
+and the rest is codegen and linking, which nextest does not change. It
+would add an unpinned per-clone prerequisite and silently stop running
+doctests (the workspace has none today, so nothing is lost yet, but a
+future one would be invisible locally). It has been uninstalled again.
+
+**What the gate can still miss**, said in the config comment rather than
+papered over:
+
+- A *behavioural* break in a crate that merely depends on what changed.
+  CI's `cargo test --workspace` catches it per-PR.
+- Anything that only appears under the workspace's unified feature
+  resolution. Cargo unifies features over the *selected* packages, so
+  `-p <crate>` and `--workspace` produce different builds of shared
+  dependencies; that is also why alternating between this hook and a
+  hand-run `cargo test --workspace` rebuilds (measured 23.6–45.2 s each
+  way). Expected, not a fault. Alternating `-p` sets between commits
+  does *not* thrash (measured 1.0 / 4.8 / 1.5 s over a
+  dbc → gui → core+blf cycle).
+
+**Verified** by driving the hooks rather than reading them. A cargo shim
+on `PATH` shows the selection: `crates/cannet-dbc/src/lib.rs` →
+`test -p cannet-dbc`; that plus `crates/cannet-core/src/lib.rs`,
+`apps/gui/src-tauri/src/state.rs` and `crates/cannet-blf/Cargo.toml` →
+`test -p cannet-core -p cannet-gui -p cannet-blf`; `Cargo.lock`,
+`rust-toolchain.toml` or an unrecognised `.rs` path → `test
+--workspace`. Then for real: `pre-commit run cargo-test --files
+crates/cannet-dbc/src/lib.rs` passes in 3.8 s running only that crate's
+tests, the same hook over `apps/gui/src/App.tsx` reports "(no files to
+check) Skipped", and `pre-commit run frontend --files
+apps/gui/src/App.tsx` passes in 45.6 s. Both hooks were also shown to
+*fail*: a planted failing `cannet-dbc` test, a planted TS type error
+(the build log printed, the test log not), and a planted failing vitest
+case (the test log printed, the build log not). `pre-commit run
+--all-files` is green end to end, all eleven hooks, in 3 m 9 s. Both
+scripts were also run with CRLF line endings — `core.autocrlf` is on and
+the repo has no `.gitattributes`, so that is how they arrive in a
+Windows clone — and behave identically.
+
+**Docs.** README § Pre-commit hook said the whole-project checks include
+`cargo test` and the frontend `vitest` — which was false in both
+directions; it now says the Rust test run is crate-scoped and points at
+the config for the trade-off. `plans/technology-inventory.md` gains the
+nextest rejection and mentions the two new hook drivers in the
+`pre-commit` entry.
 
 ## 3. The shared-x-window plot test is flaky
 

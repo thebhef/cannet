@@ -309,7 +309,10 @@ crate retained long-term).
   imported and the checks mirror `ci.yml`. Also carries two local
   guard hooks (`scripts/check_local_paths.py`,
   `scripts/relativize_project_paths.py`) that keep machine-local
-  absolute paths out of the repo. Installed per-clone via
+  absolute paths out of the repo, and two hook drivers
+  (`scripts/cargo-test-touched.sh`, `scripts/frontend-gate.sh`) that
+  scope the Rust test run to the crates a commit touches and run the
+  frontend typecheck and vitest suite concurrently. Installed per-clone via
   `pre-commit install`; the tool itself is a dev-only dependency
   (`uv tool install pre-commit` / `pipx`).
 - **Code signing / notarization** — `proposed` (deferred). First alpha
@@ -339,6 +342,28 @@ crate retained long-term).
   `// @vitest-environment jsdom` docblock. MIT. Kept lightweight — the
   pixel-level overlay drawing and canvas event wiring stay untested at
   this layer; their maths live in tested pure modules.
+- **`cargo-nextest`** (v0.9.143, MIT / Apache-2.0) — `proposed` then
+  **`rejected`** as the runner for the local commit gate. Evaluated
+  because it parallelises across test binaries and reports better than
+  `cargo test`; measured on Windows (warm target dir), it is *slower*
+  here, because it spawns one process per test and Windows process
+  creation is expensive:
+
+  | run (warm) | `cargo test` | `cargo nextest run` |
+  | --- | --- | --- |
+  | `--workspace` (814 tests) | 17.3 s | 18.3 s |
+  | `-p cannet-gui` (443 tests) | 4.7–5.2 s | 8.9–9.3 s |
+  | `-p cannet-dbc` (111 tests) | 1.0–2.1 s | 3.1 s |
+
+  There is also nothing left to win: the commit gate runs the tests of
+  the *touched* crates only, so its test-execution share is 1–5 s, and
+  the rest of its cost is codegen and linking, which nextest does not
+  change. Against that it would add an unpinned prerequisite for every
+  clone (`cargo install cargo-nextest --locked` took 3 m 35 s from
+  source here) and would silently stop running doctests — the workspace
+  has none today, so nothing is lost yet, but a future one would be
+  invisible locally while CI kept running it. Revisit if the workspace's
+  test *execution* time (not build time) becomes the gate's bottleneck.
 
 - **ruff** + **mypy** (dev-dependencies in `servers/cannet-python-can`,
   pinned via its `uv.lock`) — `adopted` for the Python sidecar. ruff
