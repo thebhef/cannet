@@ -632,24 +632,52 @@ machine, the same family as item 3. Not touched by this item's change.
 
 ## 12. Plot series don't take a changed color
 
-Reported from usage 2026-08-04. Changing a series' color updates the
-signal panel's swatch but **the plotted line keeps its old color**. So
-the color state propagates to one consumer and not the other — likely
-the uPlot series config is not rebuilt (or not applied) on a color-only
-change.
+**Fixed.** A recolored series now takes its new color on the live uPlot
+instance, without a rebuild.
 
-**Investigate first, then plan.** Establish where the color lives, which
-path the signal panel reads, and why the uPlot series misses the update
-(stale series options vs. a rebuild that never fires vs. a memo that
-doesn't key on color). Record the diagnosis here before fixing; fix with
-a failing test first.
+**Diagnosis: the stroke was a construction-time snapshot, and nothing
+could have updated it.** The color reaches the model correctly —
+`PlotPanel`'s `setSignalColor` rewrites the area's `SignalRef.color`, so
+the swatch, the measurement strip and the y-axis stroke (which reads
+`primaryColorRef` per draw) all follow it. The series did not, for three
+reasons that compound:
 
-Additional observation (2026-08-04): **closing and reopening the plot
-panel is enough to make the new color take effect.** So the color is
-persisted and read correctly on construction — the defect is purely that
-a live uPlot instance is never told about a color-only change. That
-narrows the search to whatever diffing decides when an existing instance
-is rebuilt or restyled.
+- `PlotArea`'s uPlot construction effect built each series with
+  `stroke: s.color` — a *string*, resolved once.
+- Its dep list (`[signalSetKey, areaId, resizeTick, valueTable,
+  showPoints, isLast, logActive]`) carries no color, and `signalSetKey`
+  deliberately excludes `color` and `hidden`, so a recolor never
+  rebuilds the instance. Hence the reopen-the-panel workaround.
+- The in-place escape hatch the hidden-signal toggle uses does not
+  extend to color: uPlot's `setSeries` only acts on `focus` and `show`
+  (`uPlot.esm.js::setSeries`) and drops any other option.
+
+*Confirming experiment:* the new DOM test captured the live instance,
+fired the swatch picker's `change` with `#123456`, and read
+`opts.series[1].stroke` back. It was the string `#c6f24e` — the wheel
+color the series was constructed with. A string (not a stale function)
+and an unchanged instance count together falsify both alternative
+hypotheses: no rebuild fired *and* no restyle was attempted.
+
+**Fix: a function stroke reading the live signals ref** —
+`stroke: () => signalsRef.current[i]?.color ?? s.color`. uPlot resolves a
+function stroke on every draw (`cacheStrokeFill`, called from
+`drawSeries` on each commit) and defaults `points.stroke` to the same
+function, so markers follow too. This is the idiom the file already uses
+for the y-axis stroke (`() => primaryColorRef.current ?? AXIS_STROKE`)
+and for the colormap resolver — a live ref read at draw time rather than
+a captured value. The construction-time color stays as the fallback for
+the one render between a signal-set change and the rebuild it triggers.
+
+**No new redraw effect.** A color change gives `signals` a new identity,
+which the existing primary-signal effect already depends on
+(`u?.redraw(false, true)`), so a *stopped* trace repaints at the new
+color with no extra work. That is load-bearing, so the test pins it:
+the fake uPlot now counts redraws and the case asserts one landed.
+
+Tests: one `PlotPanel.dom.test.tsx` case — new stroke, no rebuild, a
+redraw — which failed before the change with `expected '#c6f24e' to be
+'#123456'`.
 
 ## 13. Rename: palette second stage, and trace-panel field editing
 
