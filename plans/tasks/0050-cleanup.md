@@ -1089,9 +1089,17 @@ action rather than a value edit, so it is left as it is.
 
 ## 15. Collapsible sections in the signals view
 
-**Done, for the by-ID view. The per-signal signals view is a recorded
-blocker** (below) — it needs host-side awareness that is out of this
-item's scope.
+**Done, for the by-ID view — but this item misread the request.** The
+user's intent (clarified 2026-08-05) was **arbitrary named sections in
+the per-signal signal view, as a way to organize signals** — not
+per-message grouping. That feature is now item 16, and the per-message
+blocker recorded at the bottom of this item is moot: nobody asked for
+per-message grouping, so its host-side design is not scheduled.
+
+The by-ID fold work below stands as landed, but **awaits user review in
+the running app before it is accepted** — and if kept, it likely wants
+a way to disable it. Decision pending; nothing further built here until
+the user has seen it.
 
 **The collapse unit: one message's decoded-signal block, folding under
 its ID row in the by-ID trace view** (`ByIdTable` / `TracePanel`).
@@ -1189,6 +1197,54 @@ excludes folded groups' signals. That is a shape change to
 `SignalSnapshotRecord` and a new parameter on the command, i.e. new
 model surface — out of this item's scope and left for the user to
 schedule.
+
+## 16. Named sections in the signal view
+
+The real ask behind item 15 (clarified 2026-08-05): **the user can add
+arbitrary named sections to the signal view (`SignalsPanel`) and
+organize signals into them.** Sections are authored, not derived — a
+way to structure a long watch list ("Pack", "Contactors", "Debug"),
+nothing to do with message grouping.
+
+What the feature is:
+
+- **Create, rename, delete named sections** in a signal view panel.
+  Sections render in order with a header each, collapsible with item
+  5's disclosure idiom (button-in-heading, `aria-expanded`, glyph swap,
+  folded content unmounted).
+- **Assign signals to sections** from the row (a small per-row control
+  — move-to-section with a "new section…" entry, matching existing menu
+  idioms). A signal is in at most one section.
+- **Unassigned signals** live in an implicit unnamed section so the
+  panel keeps working untouched for anyone who never makes a section —
+  a user who adds no sections sees no change.
+- Deleting a section returns its signals to unassigned; it never
+  removes them from the view's selection.
+
+Where things live (assumptions stated; correct in review if wrong):
+
+- **Section definitions and assignments are element config** — project
+  data, persisted with the signal view element like its selection
+  already is (they describe *what the view means*, not machine state).
+- **Fold state rides the dockview panel params**, sparse, exactly like
+  items 5 and 15 — workspace scope, not project.
+- **The host must learn about sections.** `fetch_signal_page` owns
+  ordering, count and paging, so section order, section membership,
+  header-row positions and fold-aware counts are model facts: the
+  panel's query carries the section structure (and folded set), and the
+  host returns rows in section order with the facts the viewport needs.
+  Designing that surface is part of this item — CLAUDE.md's "domain
+  computation belongs in the model" applies, and the item 15 blocker
+  analysis (why a frontend-only regroup fails the paged architecture)
+  is the constraint map. Host IPC changes are in scope here, unlike
+  item 15.
+- **Column sort sorts within each section**; sections do not scatter.
+- Section order is creation order; reordering UI is not required in the
+  first cut unless it falls out cheaply.
+
+Exit: failing tests first at each layer (host ordering/count/folds,
+panel rendering/assignment/persistence round-trip), and the record here
+states the query shape that was added.
 
 ## Exit criteria
 
