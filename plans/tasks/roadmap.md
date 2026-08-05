@@ -17,15 +17,15 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 48 — Miscellaneous Fixes](0048-misc-fixes.md)
-   — independent defects found by using the app: the plot's cached
-   window discarded 250 ms after mount, cold-cache sample cost,
-   integer signals in scientific notation, unit glued to value,
-   dock panels that do not scroll, a repaint stall after sitting
-   live, the transmit sequence editor vanishing mid-edit, and
-   per-unit y-axis scaling. Each is independently shippable; they
-   are grouped so they get scheduled rather than rotting in the
-   backlog.
+1. [Task 50 — Cleanup and Usage Fixes](0050-cleanup.md)
+   — what task 48 left open plus a further round of usage findings:
+   progress while a cold signal cache builds, a surgical commit gate
+   to replace the whole-workspace test run, the flaky shared-x-window
+   plot test, a minimum range for constant signals, collapsible and
+   type-grouped project sections, rename-in-place, a scroll-correctness
+   audit across every view, the version and project in the title bar,
+   and manual y-axis min / max / log scale from a right-click menu on
+   the axis (log scale moved here from task 23).
 2. [Task 41 — Production Cannet Server](0041-production-cannet-server.md)
    — `cannet-server` becomes the production server (ADR 0040):
    operator-launched CLI that supervises the frozen python-can sidecar
@@ -64,7 +64,7 @@ the order below is the order of work, top first.
    and the pattern-materialization path. Ahead of task 23 so its
    per-series features can act on a selection that already exists.
 10. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
-    — triggers, math channels, manual per-series y, export, drag a
+    — triggers, math channels, per-series offset / gain, export, drag a
     plot area between panels.
 11. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
     — generalize the DBC auto-reload watcher to project (`.cannet_prj`)

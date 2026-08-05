@@ -9,10 +9,17 @@ oscilloscope trigger proper; the event-line rendering already
 exists, the trigger engine doesn't). **Math channels** (derived
 signals computed from other signals — also useful to the transmit
 panel and a future scripting surface, so it may outgrow plotting).
-**Manual per-series y** (offset / gain / log scale, overriding the
-auto-norm that ships today). **CSV / image export** of the visible
-window or cursor span. **Drag a whole plot area** (not just a
-signal) between plot panels.
+**Manual per-series y** — now **offset / gain only**. **CSV / image
+export** of the visible window or cursor span. **Drag a whole plot
+area** (not just a signal) between plot panels.
+
+**Log scale moved to task 50**, which is landing manual y-axis min/max
+from a right-click menu on the axis. The split follows what each setting
+is actually a property of: a log scale is a property of an *axis* (it
+changes how a range maps to pixels, and every series on that axis shares
+it), whereas offset and gain are transforms on a *series* and stay here.
+Grouping log scale with min/max also matches how a user reaches for it —
+all three are "control this axis myself."
 
 # Some features and usability notes
 
