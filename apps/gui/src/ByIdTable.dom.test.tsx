@@ -198,11 +198,12 @@ describe("ByIdTable scroll extent", () => {
   });
 });
 
-// A message's decoded signals fold under its ID row. The caret is the
-// disclosure control (button + `aria-expanded` + an `aria-hidden`
-// glyph), matching the project panel's sections; clicking the row is
-// kept as the direct-manipulation shortcut.
-describe("ByIdTable disclosure control", () => {
+// A message's decoded signals fold under its ID row, and the *row* is
+// the control: click it, or focus it and press Enter / Space. There is
+// no caret — a glyph mid-row, beside the message name, said nothing
+// about what it did. A row with nothing to expand claims nothing: no
+// tab stop, no `aria-expanded`.
+describe("ByIdTable row disclosure", () => {
   function renderRow(
     expanded: boolean,
     onToggleExpand: (rowKey: string) => void,
@@ -229,49 +230,67 @@ describe("ByIdTable disclosure control", () => {
     );
   }
 
-  it("makes the message caret a button carrying aria-expanded", () => {
+  it("carries no caret and no button in the message cell", () => {
     const { container } = renderRow(false, () => {});
-    const toggle = container.querySelector(".col-msg button") as HTMLButtonElement;
-    expect(toggle).toBeTruthy();
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    // The glyph says the same thing the attribute does, so it is hidden
-    // from the accessible name.
-    const glyph = toggle.querySelector("[aria-hidden='true']") as HTMLElement;
-    expect(glyph.textContent?.trim()).toBe("▸");
-    expect(toggle.getAttribute("aria-label")).toContain("GearBox");
+    const msg = container.querySelector(".trace-row .col-msg") as HTMLElement;
+    expect(msg.querySelector("button")).toBeNull();
+    // The cell is the message name and nothing else — no ▸ / ▾.
+    expect(msg.textContent).toBe("GearBox");
   });
 
-  it("swaps the glyph and the state when the row is expanded", () => {
+  it("keeps the name alone when the row is open, too", () => {
     const { container } = renderRow(true, () => {});
-    const toggle = container.querySelector(".col-msg button") as HTMLButtonElement;
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(toggle.querySelector("[aria-hidden='true']")?.textContent?.trim()).toBe("▾");
+    const msg = container.querySelector(".trace-row .col-msg") as HTMLElement;
+    expect(msg.textContent).toBe("GearBox");
+    expect(container.querySelector(".trace-row button")).toBeNull();
   });
 
-  it("toggles exactly once from the button, by the row's stable id", () => {
-    // The row itself also toggles on click, so the button has to stop
-    // the event bubbling or a single press folds and unfolds.
+  it("makes the row itself the focusable control, with aria-expanded on it", () => {
+    const collapsed = renderRow(false, () => {});
+    const shut = collapsed.container.querySelector(".trace-row") as HTMLElement;
+    expect(shut).toHaveAttribute("tabindex", "0");
+    expect(shut).toHaveAttribute("aria-expanded", "false");
+    cleanup();
+    const open = renderRow(true, () => {});
+    expect(open.container.querySelector(".trace-row")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
+  it("toggles from the keyboard on Enter and on Space", () => {
     const onToggle = vi.fn();
     const { container } = renderRow(false, onToggle);
-    fireEvent.click(container.querySelector(".col-msg button")!);
-    expect(onToggle.mock.calls).toEqual([[byIdRowKey(frame)]]);
+    const el = container.querySelector(".trace-row") as HTMLElement;
+    fireEvent.keyDown(el, { key: "Enter" });
+    fireEvent.keyDown(el, { key: " " });
+    expect(onToggle.mock.calls).toEqual([[byIdRowKey(frame)], [byIdRowKey(frame)]]);
+    // Something the row does not answer for leaves it alone.
+    fireEvent.keyDown(el, { key: "a" });
+    expect(onToggle).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the row click as the shortcut", () => {
+  it("keeps the mouse path unchanged", () => {
     const onToggle = vi.fn();
     const { container } = renderRow(false, onToggle);
     fireEvent.click(container.querySelector(".trace-row")!);
     expect(onToggle.mock.calls).toEqual([[byIdRowKey(frame)]]);
   });
 
-  it("offers no disclosure on a row with nothing to expand", () => {
+  it("claims nothing on a row with nothing to expand", () => {
     const undecoded: ByIdSnapshotRecord = {
       frame: { ...frame, decoded: null },
       rate: 0,
       count: 1,
     };
-    const { container } = renderRow(false, () => {}, undecoded);
-    expect(container.querySelector(".col-msg button")).toBeNull();
+    const onToggle = vi.fn();
+    const { container } = renderRow(false, onToggle, undecoded);
+    const el = container.querySelector(".trace-row") as HTMLElement;
+    expect(el).not.toHaveAttribute("tabindex");
+    expect(el).not.toHaveAttribute("aria-expanded");
+    fireEvent.keyDown(el, { key: "Enter" });
+    fireEvent.click(el);
+    expect(onToggle).not.toHaveBeenCalled();
   });
 });
 

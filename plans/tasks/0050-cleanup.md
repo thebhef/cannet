@@ -1235,16 +1235,43 @@ from the loaded page only — a row outside it reads as a plain row until
 it lands. Nothing in `traceViewport.ts` or `useTraceViewport` changed.
 What was missing was a control and a memory:
 
-- **A real disclosure control.** The `▾` / `▸` in the message cell was
-  a bare `<span className="hint">` and the toggle was a click anywhere
-  on the row — undiscoverable, and unreachable by keyboard. It is now a
-  `<button aria-expanded>` with the glyph in an `aria-hidden` span and
-  an `aria-label` of `<message> signals`, the caret idiom item 5 took
-  from RBS/transmit. The row click stays as the direct-manipulation
-  shortcut, so the button `stopPropagation`s — without that one press
-  folds *and* unfolds, which is what the "exactly once" test pins.
-  Rendered in `ByIdRow` rather than in the shared `cellContent`, so the
-  chronological trace's own expansion is untouched.
+- **The row is the control — there is no caret.** This landed twice.
+  The first attempt turned the `▾` / `▸` beside the message name into a
+  `<button aria-expanded>`, on the reading that item 5's
+  button-in-heading idiom transferred. **The user rejected it, button
+  and glyph both:** *"The caret conveys nothing. It's buried mid row
+  around the message. Disclosures would typically go at the start of
+  the row. Get rid of it."* Both halves of that are right — a caret
+  three columns into a dense row is not where a reader looks for
+  structure, and it was carrying the state for a control that was
+  really the whole row.
+
+  So the **row itself** is the disclosure: `tabIndex={0}`, Enter and
+  Space toggle it (both `preventDefault`, or Space scrolls the rows
+  container out from under the focused row), and `aria-expanded` sits
+  on the row element. That is the row-as-focus-target model item 13
+  gave the trace event rows, and it reuses their `:focus-visible`
+  outline — the existing `.trace-event-row:focus-visible` rule is now
+  `.trace-row:focus-visible`, which already covered the event rows
+  (they carry both classes) and now covers these. **Mouse behaviour is
+  unchanged**: click anywhere on the row, exactly as before.
+
+  A row with no decode **claims nothing** — no `tabIndex`, no
+  `aria-expanded` — rather than advertising an expandability it does
+  not have; its click was already inert. `ByIdRow` now renders the
+  message cell itself (the name, nothing else) instead of taking
+  `cellContent`'s glyph-bearing one, which keeps the *chronological*
+  trace's own caret exactly as it was — that view was not part of the
+  ruling. `.trace-disclosure`, the class the rejected button used,
+  stays in the stylesheet: item 16's signal-view section headers adopted
+  it, and there the caret is at the **start** of the row, which is
+  where the user says it belongs.
+
+  Longer term the indicator is not this item's to design. The shared
+  gridview interaction layer item 17 mandates — being worked up into
+  its own planning task — owns disclosure indicators across these
+  panels, at row start, per the user. Adding one here per-panel is
+  exactly the five-times patching that item forbids.
 - **Persistence.** The expanded set was `useState` in `TracePanel` and
   died with the panel. It joins that panel's existing dual-write config
   (element `config` + dockview `params`, through `useElementPanel`'s
@@ -1260,18 +1287,21 @@ One ordering consequence: the `persist` effect moved below the by-id
 state block, since it now reads `expanded` and a dep array evaluated
 above the `const` is a TDZ error.
 
-Tests: `apps/gui/src/ByIdTable.dom.test.tsx` gains five disclosure
-cases (the button and its `aria-expanded`, the glyph swap, one toggle
-per button press, the row-click shortcut still working, and no button
-on a row with no decode); three failed before the change, and the other
-two are the regression guards for what already worked. New
+Tests: `apps/gui/src/ByIdTable.dom.test.tsx` gains six row-disclosure
+cases — no caret and no button in the message cell (open or shut), the
+row carrying `tabIndex` and `aria-expanded` both ways, Enter and Space
+toggling while an unrelated key does not, the mouse path unchanged, and
+a row with no decode claiming neither the tab stop nor the state nor
+responding to either input. New
 `apps/gui/src/TracePanel.byIdCollapse.dom.test.tsx` — seven cases over
 the state travelling: the id written to the params, taken back out on
 unfold, mirrored onto the element, restored from params, an
 unmount/remount round-trip through the params the panel itself wrote,
 junk tolerance, and the restored fold reaching the scroll spacer (the
 paging composition, asserted on the height the view *writes* — jsdom
-does no layout). All seven failed before the change.
+does no layout). All seven failed before the change, and stayed green
+across the caret's removal — only their row-locating helper moved off
+the button and onto the row.
 
 **Blocker: per-message grouping in the per-signal signals view
 (`SignalsPanel`) needs host-side awareness, so it is not in this
@@ -1547,8 +1577,9 @@ feedback round — do not start without their go-ahead.**
 The grid-like presentations — trace panel in **both** modes
 (chronological and by-ID), the signal view, the event rows — cannot be
 navigated by keyboard: rows cannot be highlighted, focus cannot move
-row-to-row. The by-ID caret button being Tab-reachable only highlighted
-that nothing else is.
+row-to-row. The by-ID row being Tab-reachable at all (item 15) only
+highlighted that nothing else is, and that a tab stop per row is not
+navigation.
 
 **Architectural mandate, from the user:** anything rendering in this
 gridview style must not be patched five times. Keyboard nav is to be

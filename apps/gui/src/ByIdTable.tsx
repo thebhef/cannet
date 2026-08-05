@@ -72,10 +72,11 @@ interface ByIdTableProps {
 /// page usually covers it — but it is the same windowed code path as the
 /// chronological views, not a special whole-fetch.
 ///
-/// A row's decoded signals fold under it: the caret in the message cell
-/// is the disclosure control (`aria-expanded`), and clicking the row is
-/// the shortcut. Only the *loaded* rows' folds enter the geometry, so
-/// the stacking arithmetic never needs the whole snapshot.
+/// A row's decoded signals fold under it, and the row itself is the
+/// control: click it, or focus it and press Enter / Space. It carries
+/// the state as `aria-expanded`; there is no caret. Only the *loaded*
+/// rows' folds enter the geometry, so the stacking arithmetic never
+/// needs the whole snapshot.
 export function ByIdTable({
   count,
   version,
@@ -291,11 +292,27 @@ const ByIdRow = memo(function ByIdRow({
 }: ByIdRowProps) {
   const frame = row?.frame ?? null;
   const rowKey = frame ? byIdRowKey(frame) : undefined;
+  // The row *is* the disclosure control: it toggles on click, it is a
+  // focus target, and Enter / Space toggle it from the keyboard. A row
+  // with no decode has nothing to open, so it claims neither — it is
+  // not a tab stop and does not report an expanded state.
+  const expandable = frame?.decoded != null && rowKey != null;
+  const toggle = () => {
+    if (expandable) onToggle(rowKey);
+  };
   return (
     <div
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
       style={{ position: "absolute", top, left: 0, right: 0, height, gridTemplateColumns: gridTemplate }}
-      onClick={() => frame?.decoded && rowKey && onToggle(rowKey)}
+      tabIndex={expandable ? 0 : undefined}
+      aria-expanded={expandable ? isExpanded : undefined}
+      onClick={toggle}
+      onKeyDown={(e) => {
+        if (!expandable || (e.key !== "Enter" && e.key !== " ")) return;
+        // Space would scroll the rows container out from under the row.
+        e.preventDefault();
+        toggle();
+      }}
     >
       {columns.map((c) => {
         const content = cellContent(
@@ -310,30 +327,15 @@ const ByIdRow = memo(function ByIdRow({
           row?.count,
         );
         const className = columnDef(c.key).className;
-        // The message cell is this row's disclosure: the name stays put
-        // and the caret beside it is the control, carrying the state as
-        // `aria-expanded` (the project panel's section idiom). Clicking
-        // the row anywhere still toggles — the button has to stop the
-        // event or one press would fold and unfold — and a row with no
-        // decode has nothing to disclose.
-        if (c.key === "msg" && frame?.decoded && rowKey) {
+        // The message cell carries the name and nothing else. A caret
+        // beside it said nothing about what it did — it is mid-row,
+        // where a disclosure indicator does not belong — so this view
+        // renders the cell itself rather than taking `cellContent`'s
+        // glyph-bearing one.
+        if (c.key === "msg") {
           return (
             <span key={c.key} className={className}>
-              {frame.decoded.name}
-              <button
-                type="button"
-                className="trace-disclosure"
-                aria-expanded={isExpanded}
-                aria-label={`${frame.decoded.name} signals`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggle(rowKey);
-                }}
-              >
-                <span className="hint" aria-hidden="true">
-                  {isExpanded ? "▾" : "▸"}
-                </span>
-              </button>
+              {frame?.decoded ? frame.decoded.name : ""}
             </span>
           );
         }
