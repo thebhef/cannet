@@ -571,6 +571,22 @@ pub struct SignalDescriptorRecord {
     /// match. Lets the plot panel pick stepped/symbolic rendering
     /// without a separate `value_table` round-trip.
     pub is_enum: bool,
+    /// True when the DBC asks for this signal's value in hex
+    /// (`CannetDisplay "radix=hex"` on a raw field — ADR 0043). The
+    /// catalog-side twin of [`SignalRecord::display_hex`], so a signal
+    /// cannot read as hex on a trace row and as decimal in a plot's
+    /// readout. Omitted from the wire when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub display_hex: bool,
+    /// Decimal places this signal's physical values land on — the
+    /// precision its DBC `factor` implies. `None` (omitted from the
+    /// wire) when the DBC implies no fixed precision: a `SIG_VALTYPE_`
+    /// float, or a factor with no finite decimal expansion. Computed
+    /// by `cannet_dbc` so a value readout renders the precision the
+    /// signal actually has instead of deriving it from `factor` in the
+    /// frontend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u8>,
 }
 
 /// One row of a signal's `VAL_` table — mirrors

@@ -134,19 +134,66 @@ pub fn is_enum(value_table: &[ValueTableEntry]) -> bool {
 /// [`DecodedSignal::value_is_raw_integer`]: crate::DecodedSignal::value_is_raw_integer
 /// [`SignalDescriptor::value_is_raw_integer`]: crate::SignalDescriptor::value_is_raw_integer
 pub(crate) fn value_is_raw_integer(sig: &SignalEntry) -> bool {
-    // The float arms mirror the physical-value match in `decode_signal`:
-    // an IEEE type whose declared width doesn't match its signal falls
-    // through to the integer arms there, so it is a raw integer here.
-    let decodes_as_float = match sig.extended_type {
-        SignalExtendedValueType::IEEEfloat32Bit => sig.signal.size == 32,
-        SignalExtendedValueType::IEEEdouble64bit => sig.signal.size == 64,
-        SignalExtendedValueType::SignedOrUnsignedInteger => false,
-    };
     // Exact comparison is the point: a factor of exactly 1 and an offset
     // of exactly 0 are what "unscaled" means; anything else is scaled.
     #[allow(clippy::float_cmp)]
     let unscaled = sig.signal.factor == 1.0 && sig.signal.offset == 0.0;
-    !decodes_as_float && unscaled
+    !decodes_as_float(sig) && unscaled
+}
+
+/// Whether the signal's bits decode as an IEEE float rather than an
+/// integer. Mirrors the physical-value match in `decode_signal`: an
+/// IEEE type whose declared width doesn't match its signal falls
+/// through to the integer arms there, so it is an integer here.
+fn decodes_as_float(sig: &SignalEntry) -> bool {
+    match sig.extended_type {
+        SignalExtendedValueType::IEEEfloat32Bit => sig.signal.size == 32,
+        SignalExtendedValueType::IEEEdouble64bit => sig.signal.size == 64,
+        SignalExtendedValueType::SignedOrUnsignedInteger => false,
+    }
+}
+
+/// Most decimal places [`fixed_decimals`] will attribute to a factor.
+/// A DBC factor is a decimal literal someone wrote down; past nine
+/// places the value is a computed ratio (or a `1/2^n`-style binary
+/// fraction), which is not the "this signal steps by 0.25" fact a
+/// fixed-precision readout is after.
+const MAX_FIXED_DECIMALS: u8 = 9;
+
+/// How many decimal places a signal's physical values land on, or
+/// `None` when the DBC implies no fixed precision.
+///
+/// A scaled integer takes exactly the decimals its `factor` needs to
+/// write down: `0.25` steps land on two places, `0.1` on one, an
+/// unscaled or integral factor on none. The offset is deliberately not
+/// consulted — it shifts every value by the same amount, so it cannot
+/// make the steps finer than the factor already does.
+///
+/// `None` means "this is not a fixed-precision quantity" and the value
+/// should be rendered by whatever rule the renderer uses for floats.
+/// Two cases reach it: a `SIG_VALTYPE_` float (its bits are an IEEE
+/// value, and nothing declares what precision they land on) and a
+/// factor with no finite decimal expansion within
+/// [`MAX_FIXED_DECIMALS`] (`1/3`).
+pub(crate) fn fixed_decimals(sig: &SignalEntry) -> Option<u8> {
+    if decodes_as_float(sig) {
+        return None;
+    }
+    let factor = sig.signal.factor.abs();
+    // `is_normal` rules out zero, subnormals, infinities and NaN in one
+    // go — none of which is a scale anything can be written against.
+    if !factor.is_normal() {
+        return None;
+    }
+    (0..=MAX_FIXED_DECIMALS).find(|d| {
+        let scaled = factor * 10f64.powi(i32::from(*d));
+        // Relative tolerance: the factor arrives as the nearest f64 to a
+        // decimal literal, so `0.392157 * 1e6` is 392157.00000000006,
+        // not 392157. A few thousand ulps of slack covers that while
+        // staying far below the ~0.33 residue a non-terminating factor
+        // leaves at every probe.
+        (scaled - scaled.round()).abs() <= scaled * 1e-12
+    })
 }
 
 /// Whether a signal is a *raw field*: an opaque bit pattern carrying no
