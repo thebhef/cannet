@@ -664,6 +664,55 @@ new attribute in the same commit. The full set is small enough that the
 README block is the natural place for it to stay complete — if it grows
 much past this, it wants its own reference page.
 
+## 12. Plot series don't take a changed color
+
+Reported from usage 2026-08-04. Changing a series' color updates the
+signal panel's swatch but **the plotted line keeps its old color**. So
+the color state propagates to one consumer and not the other — likely
+the uPlot series config is not rebuilt (or not applied) on a color-only
+change.
+
+**Investigate first, then plan.** Establish where the color lives, which
+path the signal panel reads, and why the uPlot series misses the update
+(stale series options vs. a rebuild that never fires vs. a memo that
+doesn't key on color). Record the diagnosis here before fixing; fix with
+a failing test first.
+
+## 13. Rename: palette second stage, and trace-panel field editing
+
+Two usage findings from 2026-08-04, both about renaming. Note item 6
+landed in-place renaming via an editable dock tab (this task, branch
+`task50/06-rename-in-place`); the first point below **supersedes that
+interaction** — reconcile rather than stack a third mechanism.
+
+- **`panel.rename` should collect the name through a second-stage
+  command-palette input** — invoke the command, the palette stays open
+  and becomes a text input seeded with the current name, Enter applies.
+  It must not navigate to the project view. Check whether the palette
+  already has a second-stage/argument input; if not, this item adds one.
+  Decide what happens to item 6's editable-tab affordance (keep both or
+  replace) and record the decision here.
+- **Elements in the trace panel, when clicked, should focus** the
+  element, **and carry a button that enables editing the field** —
+  today editing is not discoverable/reachable where the element is.
+  Investigate the current trace-panel element interaction and record
+  the intended click/focus/edit model here before implementing.
+
+## 14. RBS enum values commit late, and enum selection costs an extra click
+
+Reported from usage 2026-08-04. In the RBS panel, an enum signal's new
+value **does not take effect until the control loses focus** — possibly
+true of all value inputs there, check both. And enum selection in
+general seems to take **one more click than expected** to have an
+effect — across the app, not just RBS.
+
+**Investigate first, then plan.** Find where RBS inputs commit
+(blur-commit vs change-commit), whether the extra click is a real event
+ordering issue (e.g. focus-then-open, or a select that swallows the
+first click), and whether the same pattern exists in other enum
+dropdowns. Record the diagnosis and the intended commit model here, then
+fix with failing tests first.
+
 ## Exit criteria
 
 - Every item above is fixed or struck with a recorded reason, and this
