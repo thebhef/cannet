@@ -29,6 +29,54 @@ function declarations(selector: string): string {
   return css.slice(open + 1, css.indexOf("}", open));
 }
 
+/// Every rule in the stylesheet, as `[selector, declarations]`. Naive
+/// on purpose — the file has no nesting, and at-rule wrappers are
+/// dropped by the `@` filter.
+function rules(): [string, string][] {
+  const out: [string, string][] = [];
+  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = m[1].replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
+    if (selector === "" || selector.includes("@")) continue;
+    out.push([selector, m[2]]);
+  }
+  return out;
+}
+
+// The generic guard, and the reason this file is not just a list of the
+// panels that were reported broken. Six surfaces had scroll defects
+// through four different mechanisms before anyone looked at the set as
+// a whole; two of them (the project panel and the colormap panel) were
+// the *same* mistake — `overflow: auto` on a box with no definite size
+// in the scroll axis, which never scrolls because it just grows to its
+// content.
+//
+// A box can get that size three ways, and the app uses all three: an
+// explicit `height` (a panel root pinned to its dock group), a
+// `max-height` (a popup or modal), or `flex` in a column parent (a list
+// filling what the toolbar above it leaves). So the invariant is not a
+// shared class — the three cases need different declarations — it is
+// that every scroll container declares *one* of them. This walks the
+// whole stylesheet, so a panel added next year is covered without
+// anyone remembering to add a case here.
+describe("every scroll container", () => {
+  // Bounded by an ancestor rather than by itself, verified in Chromium
+  // rather than assumed. `.combobox-list` is a flex child of
+  // `.combobox-pop`, whose `max-height: 40vh` is the bound; measured in
+  // a 200 px pop with 40 options, `clientHeight` 160 against a
+  // `scrollHeight` of 911 and `scrollTop` reaching 751.
+  const BOUNDED_BY_ANCESTOR = new Set([".combobox-list"]);
+
+  it("is bounded in the axis it scrolls", () => {
+    const unbounded: string[] = [];
+    for (const [selector, decls] of rules()) {
+      if (!/\boverflow(-y)?\s*:\s*(auto|scroll)\b/.test(decls)) continue;
+      if (BOUNDED_BY_ANCESTOR.has(selector)) continue;
+      if (!/\b(height|max-height|flex)\s*:/.test(decls)) unbounded.push(selector);
+    }
+    expect(unbounded).toEqual([]);
+  });
+});
+
 describe("project panel", () => {
   it("is bounded by the dock group so its overflow scrolls", () => {
     const d = declarations(".project-panel");
@@ -102,6 +150,32 @@ describe("trace table", () => {
   // the rows'. An explicit width stops the stretch.
   it("keeps the header a definite width so the scroll mirror can shift it", () => {
     expect(declarations(".trace-header")).toMatch(/\bwidth:\s*100%/);
+  });
+});
+
+describe("project graph panel", () => {
+  // Found by the item-7 sweep, not previously reported. The canvas
+  // hosts xyflow, which pans by transform and clips itself, so
+  // `.graph-panel-canvas` declares no overflow — correct for the graph,
+  // but the *empty* state is ordinary flow content in the same box and
+  // was `height: 100%` + `justify-content: center` with nothing to
+  // scroll. Measured in Chromium against the real stylesheets: in a
+  // 140 px dock group the panel's three help paragraphs report
+  // `scrollHeight` 137 against a `clientHeight` of 110, `scrollTop`
+  // stuck at 0, and the last paragraph 27 px below the fold. (At the
+  // 300 px group everything else here is measured at, it fits — which
+  // is why nobody hit it.)
+  //
+  // `overflow: auto` alone is not the fix: a centered flex line that
+  // overflows puts its start edge outside the scroll origin. Measured,
+  // it reached the last paragraph (`maxScrollTop` 59) but left the
+  // first one 27 px *above* row zero. With `safe center` as well,
+  // `scrollHeight` is 228, `maxScrollTop` 118, and both ends are
+  // reachable.
+  it("scrolls its empty state instead of clipping it in a short panel", () => {
+    const d = declarations(".graph-empty");
+    expect(d).toMatch(/\boverflow:\s*auto\b/);
+    expect(d).toMatch(/\bjustify-content:\s*safe center\b/);
   });
 });
 
