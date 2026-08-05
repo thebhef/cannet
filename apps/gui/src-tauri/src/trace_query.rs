@@ -629,6 +629,8 @@ fn collect_signal_rows(
                 rate: cell.as_ref().map(|c| c.rate),
                 count: cell.as_ref().map(|c| c.count),
                 time_seconds: cell.as_ref().map(|c| c.time_seconds),
+                // Stamped by `arrange_sections`, which runs next.
+                section: None,
             }
         })
         .collect()

@@ -206,7 +206,7 @@ describe("SignalsPanel sections", () => {
   it("sends no sections and renders no headers for a view that has none", async () => {
     renderPanel();
     await screen.findByText(/EngineSpeed/);
-    expect(lastSections()).toEqual({ names: [], assignments: {}, folded: [] });
+    expect(lastSections()).toEqual({ names: [], assignments: {}, patterns: {}, folded: [] });
     expect(document.querySelector(".signals-section-header")).toBeNull();
   });
 
@@ -281,24 +281,62 @@ describe("SignalsPanel sections", () => {
     expect(elementSections(registry)?.names).toEqual(["Pack"]);
   });
 
-  it("creates a section from the toolbar", async () => {
-    const { registry } = renderPanel();
-    await screen.findByText(/EngineSpeed/);
-    fireEvent.click(screen.getByRole("button", { name: "add section" }));
-    const input = screen.getByLabelText("new section name") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "Pack" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => {
-      expect(lastSections()?.names).toEqual(["Pack"]);
+  it("keeps the move control out of the draggable, clipped name cell", async () => {
+    // THE REOPENED DEFECT. The control shipped inside `.signals-name`,
+    // which is `draggable` and sits in a fixed-width grid cell that
+    // `.trace-row span { overflow: hidden }` clips. jsdom does no
+    // layout and runs no drag heuristics, so the original tests found
+    // the button either way; these two structural facts are what the
+    // real WebView acted on. Both are checkable without layout.
+    renderPanel();
+    const btn = await screen.findByRole("button", { name: "move EngineSpeed to section" });
+    expect(btn.closest('[draggable="true"]')).toBeNull();
+    expect(btn.closest(".col-signal")).toBeNull();
+    // It lives in its own column, so nothing variable-width precedes it.
+    expect(btn.closest(".col-section")).not.toBeNull();
+  });
+
+  it("shows each signal's current section in the section column", async () => {
+    // The section a row sits in is stamped by the host, not looked up
+    // in the assignment map — a pattern-claimed row has no assignment.
+    ROWS = [
+      { ...signalRow("EngineSpeed", 256), section: "Pack" } as SignalPageRow,
+      signalRow("Coolant", 257),
+    ];
+    renderPanel({
+      params: { sections: { names: ["Pack"], assignments: { [ENGINE_KEY]: "Pack" } } },
     });
-    expect(elementSections(registry)?.names).toEqual(["Pack"]);
-    // Creation order, not alphabetical.
+    await screen.findByText(/EngineSpeed/);
+    expect(screen.getByRole("button", { name: "move EngineSpeed to section" })).toHaveTextContent(
+      "Pack",
+    );
+    // An unassigned signal reads as unsectioned, not as blank.
+    expect(screen.getByRole("button", { name: "move Coolant to section" })).toHaveTextContent("—");
+  });
+
+  it("creates a section immediately with a starter name, in edit mode", async () => {
+    // Correction: no name-first control. The section exists straight
+    // away and its header opens in the inline editor.
+    ROWS = [headerRow("Section 1", 0)];
+    const { registry } = renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "add section" }));
-    const again = screen.getByLabelText("new section name") as HTMLInputElement;
-    fireEvent.change(again, { target: { value: "Contactors" } });
-    fireEvent.keyDown(again, { key: "Enter" });
     await waitFor(() => {
-      expect(lastSections()?.names).toEqual(["Pack", "Contactors"]);
+      expect(lastSections()?.names).toEqual(["Section 1"]);
+    });
+    expect(elementSections(registry)?.names).toEqual(["Section 1"]);
+    // The header that arrives is already editing.
+    const input = await screen.findByLabelText("section name");
+    expect((input as HTMLInputElement).value).toBe("Section 1");
+    // The old name-first control is gone.
+    expect(screen.queryByLabelText("new section name")).toBeNull();
+  });
+
+  it("gives each new section a starter name that does not collide", async () => {
+    ROWS = [];
+    renderPanel({ params: { sections: { names: ["Section 1"], assignments: {} } } });
+    fireEvent.click(screen.getByRole("button", { name: "add section" }));
+    await waitFor(() => {
+      expect(lastSections()?.names).toEqual(["Section 1", "Section 2"]);
     });
   });
 
@@ -316,8 +354,11 @@ describe("SignalsPanel sections", () => {
     // …and back out again.
     fireEvent.click(screen.getByRole("button", { name: "move EngineSpeed to section" }));
     fireEvent.click(screen.getByRole("button", { name: "move to Unsectioned" }));
+    // Written as the *explicit* implicit-section assignment, not by
+    // deleting the entry: a deletion reads as "never touched", which a
+    // section pattern would immediately re-claim.
     await waitFor(() => {
-      expect(lastSections()?.assignments).toEqual({});
+      expect(lastSections()?.assignments).toEqual({ [ENGINE_KEY]: "" });
     });
   });
 
@@ -326,15 +367,56 @@ describe("SignalsPanel sections", () => {
     await screen.findByText(/EngineSpeed/);
     fireEvent.click(screen.getByRole("button", { name: "move EngineSpeed to section" }));
     fireEvent.click(screen.getByRole("button", { name: "new section…" }));
-    const input = screen.getByLabelText("new section name") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "Pack" } });
-    fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => {
       expect(lastSections()).toMatchObject({
-        names: ["Pack"],
-        assignments: { [ENGINE_KEY]: "Pack" },
+        names: ["Section 1"],
+        assignments: { [ENGINE_KEY]: "Section 1" },
       });
     });
+  });
+
+  it("gives a section its own patterns, and sends them with the query", async () => {
+    ROWS = [headerRow("Pack", 0)];
+    const { registry } = renderPanel({
+      params: { sections: { names: ["Pack"], assignments: {} } },
+    });
+    await screen.findByText("Pack");
+    fireEvent.click(screen.getByRole("button", { name: "patterns for section Pack" }));
+    const input = screen.getByPlaceholderText(/regex, Enter to add/) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "^Powertrain/Bms/" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(lastSections()?.patterns).toEqual({ Pack: ["^Powertrain/Bms/"] });
+    });
+    expect(elementSections(registry)?.patterns).toEqual({ Pack: ["^Powertrain/Bms/"] });
+  });
+
+  it("carries a section's patterns across a rename, and leaves them dormant on delete", async () => {
+    ROWS = [headerRow("Pack", 0)];
+    const { registry } = renderPanel({
+      params: {
+        sections: { names: ["Pack"], assignments: {}, patterns: { Pack: ["Bms"] } },
+      },
+    });
+    await screen.findByText("Pack");
+    // The header the host sends back after the rename.
+    ROWS = [headerRow("Battery", 0)];
+    fireEvent.click(screen.getByRole("button", { name: "rename section Pack" }));
+    const input = screen.getByLabelText("section name") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "Battery" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => {
+      expect(lastSections()?.patterns).toEqual({ Battery: ["Bms"] });
+    });
+    // Delete stays a `names` edit and nothing else: the patterns go
+    // dormant with the assignments (the host only reads patterns for
+    // live sections), so re-creating the name is a full undo.
+    const del = await screen.findByRole("button", { name: "delete section Battery" });
+    fireEvent.click(del);
+    await waitFor(() => {
+      expect(lastSections()?.names).toEqual([]);
+    });
+    expect(elementSections(registry)?.patterns).toEqual({ Battery: ["Bms"] });
   });
 
   it("renames a section and carries its members across", async () => {

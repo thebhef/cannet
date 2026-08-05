@@ -650,6 +650,11 @@ pub struct SignalSections {
 /// same way it does in every other paged view (ADR 0025).
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// Boxing the big variant would trade a per-row allocation for a smaller
+// enum, and the big variant is the common one: a page is up to
+// `PAGE_ROWS` signals and a handful of headers. The vec is built once
+// per query and serialized straight out.
+#[allow(clippy::large_enum_variant)]
 pub enum SignalPageRow {
     Signal(SignalSnapshotRecord),
     SectionHeader(SignalSectionHeaderRecord),
@@ -741,6 +746,16 @@ pub struct SignalSnapshotRecord {
     pub count: Option<u64>,
     /// Timestamp (seconds) of the latest in-window update.
     pub time_seconds: Option<f64>,
+    /// The section this row was arranged into, or `None` for the
+    /// implicit unsectioned one. Stamped by
+    /// [`crate::signal_snapshot::arrange_sections`] because a row can
+    /// reach a section two ways — an explicit assignment or a section
+    /// *pattern* — and only the host evaluates the second. The view
+    /// renders what it is told rather than re-deriving it from the
+    /// assignment map, which would misreport every pattern-claimed row.
+    /// Omitted from the wire when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section: Option<String>,
 }
 
 /// The full content of one loaded DBC, shaped for the DBC

@@ -633,6 +633,12 @@ export interface SignalSnapshotRecord {
   rate: number | null;
   count: number | null;
   time_seconds: number | null;
+  /// The section the host arranged this row into; absent for the
+  /// implicit unsectioned one. A row reaches a section either by an
+  /// explicit assignment or by a section *pattern*, and only the host
+  /// evaluates the second — so the view renders this rather than
+  /// looking the row up in the assignment map.
+  section?: string | null;
 }
 
 /// A signal view's user-authored sections, sent with its query. Mirrors
@@ -644,8 +650,13 @@ export interface SignalSectionsWire {
   names: string[];
   /// Canonical signal identity (`signalKey`) → section name. An
   /// assignment naming a section that no longer exists reads as
-  /// unassigned and stays dormant.
+  /// unassigned and stays dormant. The empty name is the *implicit*
+  /// section, and assigning it is how a signal is explicitly pulled out
+  /// of a section whose pattern would otherwise re-claim it.
   assignments: Record<string, string>;
+  /// Section name → that section's own ADR 0038 patterns. They widen
+  /// the view's selection and claim their matches for the section.
+  patterns: Record<string, string[]>;
   /// The folded sections; the implicit unassigned section is `""`.
   folded: string[];
 }

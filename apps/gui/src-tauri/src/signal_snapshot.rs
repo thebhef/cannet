@@ -358,7 +358,7 @@ pub fn arrange_sections(
         .collect();
 
     let mut buckets: Vec<Vec<SignalSnapshotRecord>> = vec![Vec::new(); names.len()];
-    for row in rows {
+    for mut row in rows {
         let id = signal_identity(
             row.bus_id.as_deref(),
             row.message_id,
@@ -374,6 +374,9 @@ pub fn arrange_sections(
             .and_then(|s| index.get(s.as_str()).copied())
             .or_else(|| claim_slot(&claims, &row, bus_names))
             .unwrap_or(0);
+        // Tell the row where it landed, so the panel's section cell
+        // reports a pattern claim as accurately as an explicit move.
+        row.section = (slot > 0).then(|| names[slot].to_string());
         buckets[slot].push(row);
     }
 
@@ -540,6 +543,7 @@ mod tests {
             rate: None,
             count: None,
             time_seconds: None,
+            section: None,
         }
     }
 
@@ -854,6 +858,44 @@ mod tests {
         assert_eq!(
             transcript(&out),
             vec!["Second(1)", "+PackVolts", "First(0)"]
+        );
+    }
+
+    #[test]
+    fn an_explicit_unsectioned_assignment_overrides_a_claiming_pattern() {
+        // Moving a pattern-claimed signal *out* has to be expressible,
+        // and deleting the assignment cannot say it — the pattern would
+        // simply re-claim the row. The implicit section's own name (the
+        // empty string) is that assignment.
+        let row = pathed_row("p", "Bms", "PackStatus", "PackVolts");
+        let id = signal_identity(Some("p"), 0, false, "PackVolts");
+        let s = with_patterns(
+            sections(&["Pack"], &[(&id, "")], &[]),
+            &[("Pack", &["/Bms/"])],
+        );
+        let out = arrange_sections(vec![row], &s, None, None, &HashMap::new());
+        assert_eq!(transcript(&out), vec!["(1)", "+PackVolts", "Pack(0)"]);
+    }
+
+    #[test]
+    fn every_row_is_stamped_with_the_section_it_landed_in() {
+        let rows = vec![
+            pathed_row("p", "Bms", "PackStatus", "PackVolts"),
+            pathed_row("p", "Vcu", "DriveCmd", "TorqueReq"),
+        ];
+        let s = with_patterns(sections(&["Pack"], &[], &[]), &[("Pack", &["/Bms/"])]);
+        let out = arrange_sections(rows, &s, None, None, &HashMap::new());
+        let stamped: Vec<(String, Option<String>)> = out
+            .iter()
+            .filter_map(|r| r.signal())
+            .map(|s| (s.signal_name.clone(), s.section.clone()))
+            .collect();
+        assert_eq!(
+            stamped,
+            vec![
+                ("TorqueReq".to_string(), None),
+                ("PackVolts".to_string(), Some("Pack".to_string())),
+            ],
         );
     }
 

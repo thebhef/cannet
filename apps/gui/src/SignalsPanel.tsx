@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import type {
+  SignalDescriptorRecord,
   SignalSectionHeaderRecord,
   SignalSectionsWire,
   SignalSelectionWire,
@@ -88,16 +89,21 @@ const keyOf = (k: { busId: string | null; messageId: number; extended: boolean; 
 interface SectionState {
   names: string[];
   assignments: Record<string, string>;
+  patterns: Record<string, string[]>;
 }
 
 /// The label the implicit unassigned section wears. Its wire name is the
 /// empty string, so it can never collide with a name the user typed.
 const UNSECTIONED = "Unsectioned";
 
+/// Stable empty list, so a section with no patterns doesn't hand its
+/// header a fresh array every render.
+const EMPTY_PATTERNS: string[] = [];
+
 /// Parse the persisted sections from config, tolerating whatever an
 /// older or hand-edited blob carries — nothing upstream validates it.
 function sectionsFromConfig(raw: unknown): SectionState {
-  const o = raw as { names?: unknown; assignments?: unknown } | undefined;
+  const o = raw as { names?: unknown; assignments?: unknown; patterns?: unknown } | undefined;
   const names: string[] = [];
   if (Array.isArray(o?.names)) {
     for (const n of o.names) {
@@ -106,11 +112,30 @@ function sectionsFromConfig(raw: unknown): SectionState {
   }
   const assignments: Record<string, string> = {};
   if (o?.assignments != null && typeof o.assignments === "object") {
+    // `""` is kept: it is the explicit "unsectioned" assignment, the
+    // only thing that can override a section pattern's claim.
     for (const [k, v] of Object.entries(o.assignments as Record<string, unknown>)) {
-      if (typeof v === "string" && v !== "") assignments[k] = v;
+      if (typeof v === "string") assignments[k] = v;
     }
   }
-  return { names, assignments };
+  const patterns: Record<string, string[]> = {};
+  if (o?.patterns != null && typeof o.patterns === "object") {
+    for (const [k, v] of Object.entries(o.patterns as Record<string, unknown>)) {
+      if (!Array.isArray(v)) continue;
+      const ps = v.filter((p): p is string => typeof p === "string" && p !== "");
+      if (ps.length > 0) patterns[k] = ps;
+    }
+  }
+  return { names, assignments, patterns };
+}
+
+/// The next unused `Section N` — the starter name a freshly created
+/// section wears until the user types over it in the header editor.
+function starterSectionName(names: readonly string[]): string {
+  for (let i = 1; ; i++) {
+    const candidate = `Section ${i}`;
+    if (!names.includes(candidate)) return candidate;
+  }
 }
 
 /// Read the persisted fold set from the panel params (item 5's idiom):
@@ -172,10 +197,13 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     signalColumnsFromParams(savedConfig?.columns),
   );
   const [sort, setSort] = useState<SignalSortState>(DEFAULT_SIGNAL_SORT);
-  const onSortColumn = useCallback(
-    (key: SignalColumnKey) => setSort((s) => nextSort(s, key)),
-    [],
-  );
+  const onSortColumn = useCallback((key: SignalColumnKey) => {
+    // The rows are already grouped by section, and the sort runs
+    // *within* each one — so there is no sort-by-section to offer, and
+    // showing an arrow that reorders nothing would be a lie.
+    if (key === "section") return;
+    setSort((s) => nextSort(s, key));
+  }, []);
   const handleColumnResize = useCallback(
     (key: SignalColumnKey, width: number) => setColumns((cs) => resizeColumn(cs, key, width)),
     [],
@@ -199,20 +227,31 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     sectionsFromConfig(savedConfig?.sections),
   );
   const [folded, setFolded] = useState<Set<string>>(() => foldedFromParams(params?.folded));
+  /// The section whose header is in inline-edit mode. Declared with the
+  /// rest of the section state because `createSection` hands a brand-new
+  /// section straight to it.
+  const [renaming, setRenaming] = useState<string | null>(null);
   const toggleFold = useCallback((name: string) => {
     setFolded((prev) => toggleInSet(prev, name));
   }, []);
-  /// Create `name` (or reuse it if it already exists) and optionally
-  /// move one signal into it — the row menu's "new section…" is the same
-  /// operation as the toolbar's, with an assignment attached.
-  const createSection = useCallback((raw: string, assign: string | null) => {
-    const name = raw.trim();
-    if (name === "") return;
-    setSections((prev) => ({
-      names: prev.names.includes(name) ? prev.names : [...prev.names, name],
-      assignments: assign == null ? prev.assignments : { ...prev.assignments, [assign]: name },
-    }));
-  }, []);
+  /// Create a section *now*, with a starter name, and hand its header
+  /// to the inline editor. Naming it up front put a text box between the
+  /// user and a section they could see; this way the section exists the
+  /// moment they ask for it and the name is just its first edit.
+  /// `assign` moves one signal in at the same time — the row menu's
+  /// "new section…" is this operation with a member attached.
+  const createSection = useCallback(
+    (assign: string | null) => {
+      const name = starterSectionName(sections.names);
+      setSections((prev) => ({
+        ...prev,
+        names: [...prev.names, name],
+        assignments: assign == null ? prev.assignments : { ...prev.assignments, [assign]: name },
+      }));
+      setRenaming(name);
+    },
+    [sections.names],
+  );
   const renameSection = useCallback((from: string, raw: string) => {
     const to = raw.trim();
     if (to === "" || to === from) return;
@@ -222,14 +261,21 @@ export function SignalsPanel(props: IDockviewPanelProps) {
       // Members follow the name: an assignment left pointing at the old
       // name would read as unassigned and silently empty the section.
       for (const [k, v] of Object.entries(prev.assignments)) assignments[k] = v === from ? to : v;
-      return { names: prev.names.map((n) => (n === from ? to : n)), assignments };
+      // …and so do the section's own patterns, for the same reason.
+      const patterns: Record<string, string[]> = {};
+      for (const [k, v] of Object.entries(prev.patterns)) patterns[k === from ? to : k] = v;
+      return { names: prev.names.map((n) => (n === from ? to : n)), assignments, patterns };
     });
   }, []);
+  const setSectionPatterns = useCallback((name: string, next: string[]) => {
+    setSections((prev) => ({ ...prev, patterns: { ...prev.patterns, [name]: next } }));
+  }, []);
   /// Delete a section: a `names` edit and nothing else. Its signals fall
-  /// back to unassigned (the host resolves an assignment naming no
-  /// existing section that way) and stay in the selection; the
-  /// assignments stay dormant, so re-creating the name restores the
-  /// membership — the same reasoning as retained plot series ids.
+  /// back to unassigned (the host resolves an assignment — or a section
+  /// pattern — naming no existing section that way) and stay in the
+  /// selection; both the assignments and the section's patterns stay
+  /// dormant, so re-creating the name restores the whole section — the
+  /// same reasoning as retained plot series ids.
   const deleteSection = useCallback((name: string) => {
     setSections((prev) => ({ ...prev, names: prev.names.filter((n) => n !== name) }));
     setFolded((prev) => {
@@ -239,13 +285,12 @@ export function SignalsPanel(props: IDockviewPanelProps) {
       return next;
     });
   }, []);
-  const assignSignal = useCallback((key: string, name: string | null) => {
-    setSections((prev) => {
-      const assignments = { ...prev.assignments };
-      if (name == null) delete assignments[key];
-      else assignments[key] = name;
-      return { ...prev, assignments };
-    });
+  /// Move one signal. `""` is the implicit section, written explicitly
+  /// rather than by deleting the entry: a deleted assignment is
+  /// indistinguishable from "never touched", so a section pattern would
+  /// simply re-claim the row the user just moved out.
+  const assignSignal = useCallback((key: string, name: string) => {
+    setSections((prev) => ({ ...prev, assignments: { ...prev.assignments, [key]: name } }));
   }, []);
 
   // Dual-write the persistable config (element + dockview params), the
@@ -363,7 +408,12 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   // and counts fold-aware, so the panel states the structure and holds
   // only the page it gets back.
   const wireSections = useMemo<SignalSectionsWire>(
-    () => ({ names: sections.names, assignments: sections.assignments, folded: [...folded] }),
+    () => ({
+      names: sections.names,
+      assignments: sections.assignments,
+      patterns: sections.patterns,
+      folded: [...folded],
+    }),
     [sections, folded],
   );
   const busNames = useMemo<[string, string][]>(() => buses.map((b) => [b.id, b.name]), [buses]);
@@ -437,20 +487,32 @@ export function SignalsPanel(props: IDockviewPanelProps) {
 
   const [editOpen, setEditOpen] = useState(false);
 
-  // Section editing surfaces. `creating` holds the signal the new
-  // section should swallow (`null` = the toolbar's unattached create);
-  // `renaming` is the section whose header is in edit mode; the move
-  // menu is positioned at the panel root like the sources menu, because
-  // a popup inside a row would be clipped by the sticky viewport.
-  const [creating, setCreating] = useState<{ assign: string | null } | null>(null);
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [sectionMenu, setSectionMenu] = useState<{ x: number; y: number; key: string; signalName: string } | null>(
+  // Section editing surfaces. `renaming` is the section whose header is
+  // in edit mode; the move menu and the per-section pattern popover are
+  // positioned at the panel root like the sources menu, because a popup
+  // inside a row would be clipped by the sticky viewport.
+  const [sectionMenu, setSectionMenu] = useState<{
+    x: number;
+    y: number;
+    key: string;
+    signalName: string;
+    current: string | null;
+  } | null>(null);
+  const [patternPopover, setPatternPopover] = useState<{ x: number; y: number; name: string } | null>(
     null,
   );
-  const openSectionMenu = useCallback((e: React.MouseEvent, key: string, signalName: string) => {
+  const openSectionMenu = useCallback(
+    (e: React.MouseEvent, key: string, signalName: string, current: string | null) => {
+      e.stopPropagation();
+      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      setSectionMenu({ x: r.left, y: r.bottom, key, signalName, current });
+    },
+    [],
+  );
+  const openPatternPopover = useCallback((e: React.MouseEvent, name: string) => {
     e.stopPropagation();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setSectionMenu({ x: r.left, y: r.bottom, key, signalName });
+    setPatternPopover({ x: r.left, y: r.bottom, name });
   }, []);
 
   // --- virtualized rows (fixed height, no expansion) ---
@@ -510,17 +572,32 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           position={sectionMenu}
           signalName={sectionMenu.signalName}
           names={sections.names}
-          current={sections.assignments[sectionMenu.key] ?? null}
+          current={sectionMenu.current}
           onMove={(name) => {
             assignSignal(sectionMenu.key, name);
             setSectionMenu(null);
           }}
           onNewSection={() => {
-            setCreating({ assign: sectionMenu.key });
+            createSection(sectionMenu.key);
             setSectionMenu(null);
           }}
           onClose={() => setSectionMenu(null)}
         />
+      )}
+      {patternPopover && (
+        <div
+          className="signals-section-patterns"
+          style={{ left: patternPopover.x, top: patternPopover.y }}
+        >
+          <SectionPatternPopover
+            name={patternPopover.name}
+            patterns={sections.patterns[patternPopover.name] ?? EMPTY_PATTERNS}
+            catalog={scopedCatalog}
+            busNames={lookup}
+            onChange={(next) => setSectionPatterns(patternPopover.name, next)}
+            onClose={() => setPatternPopover(null)}
+          />
+        </div>
       )}
       {sourcesMenu && (
         <SourcesContextMenu
@@ -558,26 +635,14 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           selection ({selection.keys.length}
           {selection.patterns.length > 0 ? ` + ${selection.patterns.length} patterns` : ""})
         </button>
-        {creating ? (
-          <SectionNameInput
-            ariaLabel="new section name"
-            initial=""
-            onCommit={(name) => {
-              createSection(name, creating.assign);
-              setCreating(null);
-            }}
-            onCancel={() => setCreating(null)}
-          />
-        ) : (
-          <button
-            type="button"
-            aria-label="add section"
-            title="group this view's signals under a named section"
-            onClick={() => setCreating({ assign: null })}
-          >
-            + section
-          </button>
-        )}
+        <button
+          type="button"
+          aria-label="add section"
+          title="group this view's signals under a named section"
+          onClick={() => createSection(null)}
+        >
+          + section
+        </button>
         {view.error && (
           <span className="signals-error" role="alert" title={view.error}>
             {view.error}
@@ -647,6 +712,8 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                       header={header}
                       folded={folded.has(header.name)}
                       renaming={renaming === header.name}
+                      patternCount={(sections.patterns[header.name] ?? EMPTY_PATTERNS).length}
+                      onOpenPatterns={(e) => openPatternPopover(e, header.name)}
                       onToggleFold={() => toggleFold(header.name)}
                       onStartRename={() => setRenaming(header.name)}
                       onRename={(next) => {
@@ -728,6 +795,8 @@ function SectionHeaderRow({
   header,
   folded,
   renaming,
+  patternCount,
+  onOpenPatterns,
   onToggleFold,
   onStartRename,
   onRename,
@@ -738,6 +807,8 @@ function SectionHeaderRow({
   header: SignalSectionHeaderRecord;
   folded: boolean;
   renaming: boolean;
+  patternCount: number;
+  onOpenPatterns: (e: React.MouseEvent) => void;
   onToggleFold: () => void;
   onStartRename: () => void;
   onRename: (next: string) => void;
@@ -774,6 +845,14 @@ function SectionHeaderRow({
       <span className="hint">({header.signal_count})</span>
       {header.name !== "" && !renaming && (
         <>
+          <button
+            type="button"
+            aria-label={`patterns for section ${header.name}`}
+            title="regex patterns this section collects (bus/ecu/message/signal)"
+            onClick={onOpenPatterns}
+          >
+            /…/{patternCount > 0 ? ` ${patternCount}` : ""}
+          </button>
           <button type="button" aria-label={`rename section ${header.name}`} onClick={onStartRename}>
             ✎
           </button>
@@ -787,6 +866,39 @@ function SectionHeaderRow({
           </button>
         </>
       )}
+    </div>
+  );
+}
+
+/// A section's own pattern list (ADR 0038), in a dismissable popover.
+/// The editor is the shared `SignalPatternEditor` the view-level
+/// selection uses, so a pattern behaves identically wherever it is
+/// typed — the difference is only which selection it belongs to.
+function SectionPatternPopover({
+  name,
+  patterns,
+  catalog,
+  busNames,
+  onChange,
+  onClose,
+}: {
+  name: string;
+  patterns: readonly string[];
+  catalog: readonly SignalDescriptorRecord[];
+  busNames: ReadonlyMap<string, string>;
+  onChange: (next: string[]) => void;
+  onClose: () => void;
+}) {
+  const ref = useDismissableMenu<HTMLDivElement>(true, onClose);
+  return (
+    <div ref={ref} role="group" aria-label={`patterns in ${name}`}>
+      <div className="signals-section-patterns-title">{name} patterns</div>
+      <SignalPatternEditor
+        patterns={patterns}
+        catalog={catalog}
+        busNames={busNames}
+        onChange={onChange}
+      />
     </div>
   );
 }
@@ -807,7 +919,7 @@ function MoveToSectionMenu({
   signalName: string;
   names: readonly string[];
   current: string | null;
-  onMove: (name: string | null) => void;
+  onMove: (name: string) => void;
   onNewSection: () => void;
   onClose: () => void;
 }) {
@@ -824,7 +936,7 @@ function MoveToSectionMenu({
         type="button"
         className={current == null ? "active" : undefined}
         aria-label={`move to ${UNSECTIONED}`}
-        onClick={() => onMove(null)}
+        onClick={() => onMove("")}
       >
         {UNSECTIONED}
       </button>
@@ -857,7 +969,12 @@ interface SignalRowProps {
   manual: ReadonlySet<string>;
   signalColors: Record<string, string>;
   onSetSignalColor: (key: string, color: string | null) => void;
-  onOpenSectionMenu: (e: React.MouseEvent, key: string, signalName: string) => void;
+  onOpenSectionMenu: (
+    e: React.MouseEvent,
+    key: string,
+    signalName: string,
+    current: string | null,
+  ) => void;
 }
 
 function SignalRow({
@@ -915,17 +1032,6 @@ function SignalRow({
           >
             {row.signal_name}
             {manual.has(key) ? "" : " ◇"}
-            <button
-              type="button"
-              className="signals-section-pick"
-              aria-label={`move ${row.signal_name} to section`}
-              title="move this signal to a section"
-              onClick={(e) => onOpenSectionMenu(e, key, row.signal_name)}
-            >
-              <span className="hint" aria-hidden="true">
-                ▾
-              </span>
-            </button>
             <input
               ref={colorInputRef}
               type="color"
@@ -935,6 +1041,22 @@ function SignalRow({
               onClick={(e) => e.stopPropagation()}
             />
           </span>
+        );
+      case "section":
+        // The cell *is* the control. Its own fixed-width column, outside
+        // the draggable name cell — the first cut put this button after
+        // the (variable-length) signal name in a 220px `overflow:
+        // hidden` grid item, where a long name clipped it out of reach.
+        return (
+          <button
+            type="button"
+            className="signals-section-pick"
+            aria-label={`move ${row.signal_name} to section`}
+            title="move this signal to a section"
+            onClick={(e) => onOpenSectionMenu(e, key, row.signal_name, row.section ?? null)}
+          >
+            {row.section ?? "—"}
+          </button>
         );
       case "rate":
         return row.rate != null ? formatMsgRate(row.rate) : "";
