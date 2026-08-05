@@ -367,6 +367,105 @@ table feeds expansion into its geometry via `expandedRowHeight` /
 where expansion height is dropped, fix, and this time the Chromium
 verification must include an expanded-rows-at-the-tail case.
 
+**Fixed (second pass).** The report was right and the first pass's audit
+was the reason it was missed: every measurement it took was of plain
+rows, so it verified a bound the repro never uses.
+
+**Where the expansion height was dropped: `TraceView` called
+`useTraceViewport` with no `variable` argument.** The view has the
+expansion facts — it sizes and stacks its own expanded rows through
+`buildPlacements` and `expandedRowHeight` — but never handed them to
+the scaffold, so the scaffold computed the anchor bound *and* the
+scroll spacer as if every row were `ROW_HEIGHT`. `ByIdTable` passes
+`{ extraHeight, rowHeightAt }`; the chronological view passed nothing.
+The first pass unified the bound over **plain** rows and never asked
+what this caller supplied for its expansions.
+
+That is one omission with **three** consequences, and each was
+falsified separately by reverting it alone:
+
+| Dropped | Consequence | Data |
+| --- | --- | --- |
+| the anchor bound | the stack from the bound overruns the viewport, and the sticky viewport clips | last 3 rows expanded in a 440 px panel: stack 548 px, 108 px = 3 × (58 − 22) below the fold |
+| the scroll spacer | nowhere further to scroll — the "will not scroll further" half of the report | expanding a row grew the spacer by **0** |
+| the sticky viewport's height | a row taller than the panel is cut off at the panel height at every scroll position | a 30-signal row is 562 px, clipped at 440 |
+
+**The fix is in the shared math, with facts the view already had.**
+`TraceView` derives `rowHeightAt` / `extraHeight` from its own expanded
+set and passes them to `useTraceViewport`; it takes the sticky
+viewport's height from the stack (`Math.max(viewportHeight,
+stackHeight)`, the `ByIdTable` rule); and it maps scroll↔anchor through
+`anchorFromScroll` and the new `scrollForAnchor` using that one bound
+and range, so the two directions cannot disagree again. `scrollForRow`
+/ `rowFromScroll` remain as the plain-row wrappers for callers whose
+rows really are uniform.
+
+**`expandedExtraHeightOf` is new, and the reason is `count`.**
+`expandedExtraHeight` walks the whole row range because the by-ID
+table's expansion set is keyed by a stable row key — there is no way to
+ask *which* indices are expanded without asking every index. The
+chronological view's set is keyed by absolute index and its `count` is
+the whole capture (millions), so it sums over the **set** instead:
+O(expanded), not O(count). A unit test pins that it asks
+`rowHeightAt` exactly `expanded.size` times over a 5 M-row trace, and
+that it agrees with the walking form.
+
+**Chromium measurement, with expanded rows at the tail** — the case the
+first pass never took. Same method as the sweep (headless Edge over
+CDP, real `index.css` + `dockview.css`, dockview's real group chain,
+600 × 300 group), with one correction that mattered: **the anchors are
+derived in the page from the scroller's measured `clientHeight`**, as
+`useTraceViewport` does. The panel's toolbar and column header take 53
+px of the group, so `.trace-rows` is **247 px**, not 300 — a bound
+hand-computed for the group height measures a viewport the app never
+has. 1000 rows, the last three expanded with 2 signals each (58 px).
+
+| Case | Anchor | Stack | Last visible row | `scrollHeight` / `maxScrollTop` | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| chrono, before | 989 | 350 px in a 247 px viewport | **997** — 998 and 999 unreachable, last row 103 px past the fold | 22000 / 21753 — unchanged by expanding | the repro |
+| chrono, after | 994 | 240 px | **999**, 7 px of slack inside the fold | 22108 / 21861 — **+108**, so there is somewhere further to scroll | fixed |
+| by-ID, expanded tail | 994 | 240 px | **999** | 22108 / 21861 | already correct — measured, not assumed |
+| one 562 px row, before | 999 | 562 px | — | sticky held at 247 px, so 315 px of the row is unreachable at every scroll position | broken |
+| one 562 px row, after | 999 | 562 px | — | sticky grows to 562 px, the row is fully laid out and the scroll runs through it | fixed |
+
+**The other views that combine expansion with a windowed viewport.**
+The by-ID table is in the table above: the same geometry over the same
+expanded tail reaches row 999, so its task 48 fix holds and this pass
+did not disturb it. The **signal view** has no expansion at all, and
+item 16's section headers do not introduce any: the host emits a header
+as an ordinary row in the paged row space, and it is rendered at
+`ROW_HEIGHT` like every other slot. Measured — with headers every fifth
+row, the distinct rendered row heights are `[22]`, the headers' own
+heights are `[22]`, and every row lands exactly on `i × ROW_HEIGHT`
+(the global `box-sizing: border-box` absorbs the header's border). So
+its rows are uniform, the plain-row bound is the correct bound there,
+and this failure mode cannot arise. `DbcPanel` has variable-height rows
+too but does not use this scaffold — it translates rows to real pixel
+offsets under a full-height spacer, where the browser's own scroll
+geometry supplies the extremes.
+
+Tests, all failing first: `TraceView.anchor.dom.test.tsx` — three cases
+over a stubbed 440 px viewport (the tail rows expanded and dragged back
+down, the spacer growing by exactly what expansion adds, and a row
+taller than the panel), each verified to fail when its own half of the
+fix is reverted. The scroll fake in those cases now clamps `scrollTop`
+to `scrollHeight − clientHeight` like a real element: without the clamp
+the view's own re-pin effect saw an impossible position, took the next
+scroll event for its own correction and swallowed it — an artefact of
+the fake that hid the second half of the fix.
+`traceViewport.test.ts` — `expandedExtraHeightOf` (agreement, cost,
+out-of-range indices), `scrollForAnchor` round-tripping against
+`anchorFromScroll` at three bounds including the compressed regime, and
+the tail-bound invariant over expanded rows (the stack from the bound
+fits; the plain bound overruns it by exactly 108 px).
+
+**What the first pass should have done, for the next reader:** its
+audit table asked "can the last row be reached" of every view in its
+*default* state. Expansion, folding and any other per-row height are
+part of a view's state, and a bound that is only correct for uniform
+rows is only tested by a case that has non-uniform ones. The sweep's
+Chromium harness now carries the expanded-tail case as well.
+
 **Done (first pass).** The chronological trace reaches its last rows; the sweep found
 one more view with the same arithmetic defect and one new CSS one; and
 the base-implementation question is answered below — *two* primitives,
