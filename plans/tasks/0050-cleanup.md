@@ -227,6 +227,11 @@ components.
 
 ## 6. Rename should rename in place
 
+**Superseded in part by item 13**, which moved the command onto the
+palette's second stage: the tab edit below is now triggered by
+double-clicking the tab and `RenameTabContext` is gone. Everything the
+record says about *where the name lives* still holds.
+
 **Fixed.** `panel.rename` no longer maps to `showProjectPanel`; it
 records the focused panel's dockview id as the rename target, and that
 panel's own tab renders an input in place of its title.
@@ -681,23 +686,89 @@ redraw — which failed before the change with `expected '#c6f24e' to be
 
 ## 13. Rename: palette second stage, and trace-panel field editing
 
-Two usage findings from 2026-08-04, both about renaming. Note item 6
-landed in-place renaming via an editable dock tab (this task, branch
-`task50/06-rename-in-place`); the first point below **supersedes that
-interaction** — reconcile rather than stack a third mechanism.
+**Done.** `panel.rename` collects the name in the palette, and an event
+row in the trace focuses on click and carries a rename button.
 
-- **`panel.rename` should collect the name through a second-stage
-  command-palette input** — invoke the command, the palette stays open
-  and becomes a text input seeded with the current name, Enter applies.
-  It must not navigate to the project view. Check whether the palette
-  already has a second-stage/argument input; if not, this item adds one.
-  Decide what happens to item 6's editable-tab affordance (keep both or
-  replace) and record the decision here.
-- **Elements in the trace panel, when clicked, should focus** the
-  element, **and carry a button that enables editing the field** —
-  today editing is not discoverable/reachable where the element is.
-  Investigate the current trace-panel element interaction and record
-  the intended click/focus/edit model here before implementing.
+**The second stage: `PalettePrompt` (`apps/gui/src/PaletteModal.tsx`).**
+The palette had no argument input — the three palettes were one
+`PaletteModal` over three item lists — so this adds one, in the same
+file and the same shell (`.modal.palette` on the palette backdrop), as
+a sibling component rather than a mode of the list palette: they share
+no state and every line of `PaletteModal` (fzf, the clamped selection,
+arrow keys) is about a list. It renders one field seeded with a value
+and pre-selected, a label line saying what is being asked for (also the
+field's accessible name), Enter to submit, Escape / backdrop to cancel.
+
+**How a command reaches it: `setPrompt` in `useCommands`**, holding one
+`CommandPrompt` (`label`, `initial`, `submit`) or `null`. A handler
+opens the stage by setting it and the palette clears it on either exit,
+so the second stage is part of invoking the command (ADR 0037) — not a
+parallel mechanism, not a new surface, and not a `CommandSpec` field.
+Nothing about it is rename-specific, which is the whole of "reusable"
+this item needed; no `argument` declaration, no multi-stage machinery.
+
+**`panel.rename` now** reads the focused panel's element, seeds the
+stage with `elementLabel(element)` and, on Enter, writes `update(id,
+{ name })` — the one rename path (ADR 0019), reached through a new
+narrow `renameElement` option rather than handing the command subsystem
+the registry's general patch power (its context is provided *below*
+`App`, so it cannot consume it). An empty box reverts, matching every
+other inline rename in the app. Nothing navigates: the trace panel's
+group is still the active one when the stage opens, and the test pins
+that.
+
+**Item 6's editable tab is kept, as an affordance rather than a command
+path: double-click a tab to edit its title in place.** The user revoked
+the *interaction the command drove*, not the direct manipulation, and a
+tab that can only be renamed from somewhere else is the discoverability
+complaint of the item's second half in another place. Keeping it cost
+*less* code than deleting the trigger would have left: `RenamableTab`
+now owns its own `editing` state, so `RenameTabContext`, the
+`renameTarget` state in `useCommands` and the `renameTab` member of its
+result all went. `DockviewDefaultTab` spreads unknown props onto its own
+div, so the trigger is one `onDoubleClick` — dockview-core binds no
+`dblclick` anywhere, so nothing is being overridden.
+
+**The trace-panel interaction model.** The "elements" are the timeline
+event rows (ADR 0035) — notes and the derived truncation marker —
+rendered by `EventRow` in `TraceView.tsx`. Before this, the *only* way
+to rename one was clicking its label, announced by a `title` tooltip
+and by nothing else; the row had no notion of being focused at all.
+Now:
+
+| Gesture | Effect |
+| --- | --- |
+| Click anywhere on the row | Focuses that row (and only it) |
+| The row's ✎ button | Turns the label into a field |
+| Double-click the label | The same, as the direct-manipulation shortcut |
+| Enter / blur, Escape | Commit, revert — unchanged |
+
+Focus is view-local state in `TraceView`, keyed by **event id** rather
+than row position, because the row slots are recycled as the view
+scrolls — a position-keyed selection would follow the slot onto a
+different event. `Row` takes it as a *boolean*, not the focused id, so
+moving the focus re-renders the two rows it touches and leaves the
+memoised rest alone. The row is a real focus target (`tabIndex={0}`,
+`:focus-visible` outline) as well as carrying the selected style. The ✎
+button hides while its own field is open, which is also what keeps the
+remove button pinned right (it takes the auto margin back).
+
+Tests: `App.renameInPlace.dom.test.tsx` — the palette's second stage
+seeded and committing, without the project panel being brought up;
+Escape leaving the name alone; and the tab double-click round-trip
+(all three failed before the change; the first two asserted the tab
+input item 6 shipped). `EventsPanel.dom.test.tsx` — focus moving
+between two rows and the row being focusable, a row click *not*
+starting an edit, the ✎ button opening the field and Enter committing
+through `renameNote`, the double-click shortcut, and no ✎ on the
+derived truncation marker. Four of the five failed before the change.
+The event rows are tested through the events view because it is the
+cheap mount of the same renderer the trace panel interleaves.
+
+Noticed in passing, not acted on: a double-click on a dock tab has to
+be fired on the tab's *content* in jsdom (`.dv-default-tab-content`),
+not dockview's outer `.dv-tab` wrapper — the handler sits on the inner
+default-tab div, which a real click reaches by bubbling.
 
 ## 14. RBS enum values commit late, and enum selection costs an extra click
 

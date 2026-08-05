@@ -93,6 +93,72 @@ describe("EventsPanel", () => {
   });
 });
 
+describe("event row focus and editing", () => {
+  // The same `EventRow` renderer draws the events interleaved into the
+  // chronological trace panel, so this covers both surfaces.
+  const note: Note = { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" };
+
+  /// The one event row on screen.
+  function row(): HTMLElement {
+    const el = document.querySelector<HTMLElement>(".trace-event-row");
+    if (!el) throw new Error("no event row rendered");
+    return el;
+  }
+
+  it("focuses the row that was clicked, and only that row", () => {
+    renderPanel([note, { ...note, id: "n2", timestampNs: 6_000_000_000, label: "thud" }]);
+    const rows = Array.from(document.querySelectorAll<HTMLElement>(".trace-event-row"));
+    expect(rows.map((r) => r.classList.contains("trace-event-focused"))).toEqual([false, false]);
+
+    fireEvent.click(rows[1]);
+    expect(rows.map((r) => r.classList.contains("trace-event-focused"))).toEqual([false, true]);
+    // The row is a focus target in its own right, not just a styled div.
+    expect(rows[1].tabIndex).toBe(0);
+
+    fireEvent.click(rows[0]);
+    expect(rows.map((r) => r.classList.contains("trace-event-focused"))).toEqual([true, false]);
+  });
+
+  it("does not start editing when the row is clicked", () => {
+    renderPanel([note]);
+    fireEvent.click(screen.getByText("boom"));
+    expect(screen.queryByLabelText("event label")).toBeNull();
+  });
+
+  it("enables the field from the edit button, and commits the new label", () => {
+    const ctx = notesCtx([note]);
+    render(
+      <TraceDataProvider value={traceData}>
+        <NotesContext.Provider value={ctx}>
+          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
+        </NotesContext.Provider>
+      </TraceDataProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("rename event"));
+    const input = screen.getByLabelText("event label") as HTMLInputElement;
+    expect(input.value).toBe("boom");
+
+    fireEvent.change(input, { target: { value: "crunch" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(ctx.renameNote).toHaveBeenCalledWith("n1", "crunch");
+    expect(screen.queryByLabelText("event label")).toBeNull();
+  });
+
+  it("still takes a double-click on the label as a rename", () => {
+    renderPanel([note]);
+    fireEvent.doubleClick(screen.getByText("boom"));
+    expect((screen.getByLabelText("event label") as HTMLInputElement).value).toBe("boom");
+  });
+
+  it("offers no edit button on a derived event", () => {
+    // The truncation marker is not user-editable (ADR 0035).
+    renderPanel([], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 });
+    expect(row()).toBeTruthy();
+    expect(screen.queryByLabelText("rename event")).toBeNull();
+  });
+});
+
 describe("EventsPanel goto", () => {
   it("broadcasts the event's absolute timestamp on the goto bus", () => {
     renderPanel([{ id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" }]);
