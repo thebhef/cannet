@@ -21,6 +21,7 @@ export const FOCUSED_PANEL_KINDS = [
   "signals",
   "transmit",
   "rbs",
+  "colormap",
   "project",
   "project-graph",
   "system-messages",
@@ -67,6 +68,21 @@ export interface BindingSpec {
 
 const plotFocused = (ctx: CommandContext) => ctx.focusedPanelKind === "plot";
 
+/// The panel kinds whose title is a model-owned element name (ADR
+/// 0019) and can therefore be renamed. The singletons (project,
+/// settings, about, …) carry fixed titles, so `panel.rename` has
+/// nothing to offer them.
+const RENAMEABLE_PANEL_KINDS: readonly (FocusedPanelKind | null)[] = [
+  "trace",
+  "plot",
+  "signals",
+  "transmit",
+  "rbs",
+  "colormap",
+];
+const renameablePanelFocused = (ctx: CommandContext) =>
+  RENAMEABLE_PANEL_KINDS.includes(ctx.focusedPanelKind);
+
 /// Every command the palette lists. Toolbar actions are lifted here
 /// as a second access path — same handler, same behaviour.
 export const COMMANDS: readonly CommandSpec[] = [
@@ -105,7 +121,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.show.about", label: "Show about", category: "Panels" },
   { id: "panel.show.events", label: "Show events", category: "Panels" },
   { id: "panel.show.shortcuts", label: "Show keyboard shortcuts", category: "Panels" },
-  { id: "panel.rename", label: "Rename panel…", category: "Panels" },
+  {
+    id: "panel.rename",
+    label: "Rename panel…",
+    category: "Panels",
+    context: renameablePanelFocused,
+  },
   { id: "app.exit", label: "Exit", category: "App" },
   { id: "palette.show", label: "Show command palette", category: "Palette" },
   { id: "goto.view", label: "Go to view…", category: "Palette" },
