@@ -1235,6 +1235,103 @@ and two design corrections.** User report:
 Keyboard navigation in this panel is deliberately NOT part of this item
 — it belongs to the pending gridview keyboard-nav item (17).
 
+### Resolution (2026-08-05)
+
+**Diagnosis — the host and the wire were exonerated by experiment; the
+control was unreachable.**
+
+The two suspects that could be tested directly were tested and
+falsified. `experiment_frontend_json_buckets_a_row`
+(`signal_snapshot.rs`) takes the *exact* `sections` payload the panel
+builds — `{"names":["Pack"],"assignments":{"p|s:256:EngineSpeed":"Pack"},"folded":[]}`
+— deserializes it the way the command deserializes it, and arranges a
+row with the matching descriptor: it buckets. So serde does not mangle
+the nested object (suspect b), and the identity string the frontend
+writes is byte-for-byte the one `signal_identity` computes (suspect
+a). The user's own report corroborates the first half independently:
+empty section *headers were rendering*, and headers only exist because
+`names` arrived and `arrange_sections` ran.
+
+That left suspect (c), and it is what the evidence fits: with
+`assignments` empty on the wire and `names` populated, **no move was
+ever performed**. The control shipped inside `.signals-name` — which
+is `draggable="true"` — as a bare `▾` glyph appended *after* the
+signal name in the 220px `col-signal` grid item, and
+`.trace-row span { overflow: hidden }` clips a blockified grid item.
+Two consequences, either sufficient: any name long enough to fill the
+column pushes the button past the clip edge, where it cannot be seen
+or hit; and what survives is a glyph-sized hit target nested in a drag
+source, where a press-and-twitch starts a drag instead of a click.
+**jsdom does no layout and runs no drag heuristics**, so the original
+eleven tests found the button by role either way — the suite could not
+have caught this.
+
+Both preconditions are structural, so both are now pinned without
+needing layout: the regression test asserts the control has no
+`[draggable="true"]` ancestor and is not inside `.col-signal`.
+
+**Fix: the control is its own column.** A `section` column shows which
+section a row is in and *is* the button that opens the move menu —
+fixed width, full-cell hit target, outside the drag source, and
+self-labelling (there was previously no way to see a signal's section
+at all). Sorting is suppressed on it: rows are already grouped by
+section and the sort runs within each one, so a sort arrow there would
+reorder nothing.
+
+The section name is **stamped on the row by the host**
+(`SignalSnapshotRecord.section`), not looked up in the assignment map,
+because a row can reach a section two ways and the frontend can only
+see one of them — a pattern-claimed row has no assignment.
+
+**Correction: creation is immediate.** `+ section` creates
+`Section N` (first unused) straight away and hands its header to the
+inline editor; the name-first control is gone. The row menu's "new
+section…" is the same operation with the row assigned to it. Naming
+first put a text box between the user and a section they could see.
+
+**Extension: a section owns patterns.** `sections.patterns` maps a
+section name to its own ADR 0038 patterns, edited from the header
+through the shared `SignalPatternEditor` — so a pattern behaves
+identically wherever it is typed; only which selection it belongs to
+differs. The three design questions:
+
+- **Where they live relative to the view-level selection: a section's
+  patterns are part of the view's selection contribution.**
+  `selection_with_section_patterns` unions every *live* section's
+  patterns into the selection before it resolves, so their matches get
+  rows; then the arrangement files those rows under the owning section.
+  Without the union a pattern typed into a section would collect
+  nothing until the same pattern was also typed at view level.
+- **Pattern vs. explicit assignment: the explicit assignment wins.**
+  The user moved that signal by hand; another section's pattern must
+  not drag it back. This is why "Unsectioned" is now written as an
+  *explicit* assignment to the implicit section (`""`) rather than by
+  deleting the entry — a deleted assignment is indistinguishable from
+  "never touched", so the pattern would re-claim the row on the next
+  poll. `""` is already the implicit section's wire name, so the host
+  needed no new concept.
+- **Two sections matching the same signal: the earlier section in
+  creation order takes it.** Creation order is the order already on
+  screen, so the tie-break is readable off the panel rather than
+  inferred — unlike "most specific pattern" or "last wins".
+
+Deleting a section stays a `names` edit and nothing else: its patterns
+go dormant alongside its assignments (the host only reads either for a
+live section), so re-creating the name restores the whole section.
+Renaming carries both across.
+
+Tests added, all failing first. Rust (eight): the wire experiment; a
+section pattern collecting its matches; explicit assignment beating a
+pattern; explicit-unsectioned beating a pattern; creation-order
+tie-break (asserted both ways round, so name order cannot be what is
+being read); a deleted section's pattern collecting nothing; a
+non-compiling pattern matching nothing rather than panicking; the
+selection union; and the per-row section stamp. Frontend (six): the
+two structural facts behind the defect, the section column's contents,
+immediate creation with a starter name, non-colliding starter names,
+per-section patterns reaching config and wire, and patterns surviving
+a rename / going dormant on delete.
+
 **Done (first pass, defective).** The signal view takes user-authored named sections: create,
 rename, delete, and a per-row move-to-section menu with a "new
 section…" entry. A signal is in at most one section; everything else
@@ -1250,6 +1347,7 @@ and paging; the frontend holds one page. So the query grew a
 sections: {
   names:       [String],            // creation order
   assignments: { <identity>: name },// canonical signal identity → name
+  patterns:    { name: [String] },  // a section's own ADR 0038 patterns
   folded:      [String],            // sparse; "" is the implicit section
 }
 ```
