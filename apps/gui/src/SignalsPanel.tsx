@@ -9,7 +9,7 @@ import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { useSignalView } from "./useSignalView";
-import { useHeaderScrollSync } from "./useTraceViewport";
+import { useTraceViewport } from "./useTraceViewport";
 import { busDisplayName, busLookup, nextSort, reorderColumn, resizeColumn, toggleColumn } from "./traceColumns";
 import {
   DEFAULT_SIGNAL_SORT,
@@ -38,13 +38,7 @@ import {
   setSignalDragData,
   type DraggableSignalRef,
 } from "./dragSignals";
-import {
-  maxAnchorRow,
-  rowFromScroll,
-  scaledHeight,
-  visibleRowCount,
-  ROW_HEIGHT,
-} from "./traceViewport";
+import { anchorFromScroll, maxScrollTop, ROW_HEIGHT } from "./traceViewport";
 import { diagCount } from "./diag"; // DIAG
 
 /// The element id from a panel's params, or a fresh one if absent.
@@ -323,26 +317,24 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   const [editOpen, setEditOpen] = useState(false);
 
   // --- virtualized rows (fixed height, no expansion) ---
-  const containerRef = useRef<HTMLDivElement>(null);
-  const headerRef = useHeaderScrollSync(containerRef);
-  const [viewportHeight, setViewportHeight] = useState(600);
+  // The scaffold is the shared one (`useTraceViewport`): container
+  // measurement, the render window, the spacer and — the part that
+  // matters — the *anchor bound*, so this view cannot drift from the
+  // chronological and by-id tables the way a hand-rolled copy did.
+  // Like `ByIdTable` there is no live tail to pin to: the snapshot is
+  // host-sorted, so the anchor only moves when the user scrolls.
   const [anchoredRow, setAnchoredRow] = useState(0);
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const updateH = () => {
-      if (containerRef.current) setViewportHeight(containerRef.current.clientHeight);
-    };
-    updateH();
-    const ro = new ResizeObserver(updateH);
-    ro.observe(containerRef.current);
-    return () => ro.disconnect();
-  }, []);
   const count = view.count;
-  const rows = visibleRowCount(viewportHeight);
-  const spacerHeight = scaledHeight(count, viewportHeight);
-  const anchorMax = maxAnchorRow(count, viewportHeight);
-  const firstVisibleRow = Math.min(anchorMax, Math.max(0, anchoredRow));
-  const lastVisibleRow = Math.min(count, firstVisibleRow + rows);
+  const {
+    containerRef,
+    headerRef,
+    viewportHeight,
+    rows,
+    spacerHeight,
+    anchorMax,
+    firstVisibleRow,
+    lastVisibleRow,
+  } = useTraceViewport(count, anchoredRow);
   useEffect(() => {
     if (count === 0) return;
     view.ensureVisible(firstVisibleRow, lastVisibleRow);
@@ -353,8 +345,13 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   const handleScroll = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
-    setAnchoredRow(rowFromScroll(el.scrollTop, count, viewportHeight));
-  }, [count, viewportHeight]);
+    // Read the scaffold's bound rather than re-deriving one: the
+    // scroll↔row mapping and the render window have to agree, or the
+    // bottom of the scrollbar maps onto a row short of the end.
+    setAnchoredRow(
+      anchorFromScroll(el.scrollTop, anchorMax, maxScrollTop(count, viewportHeight)),
+    );
+  }, [anchorMax, count, viewportHeight]);
 
   const visible = useMemo(() => columns.filter((c) => c.visible), [columns]);
   const gridTemplate = useMemo(() => signalGridTemplateColumns(columns), [columns]);

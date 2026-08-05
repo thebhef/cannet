@@ -350,3 +350,47 @@ describe("SignalsPanel", () => {
     });
   });
 });
+
+describe("SignalsPanel tail reachability", () => {
+  // The panel used to hand-roll `useTraceViewport`'s arithmetic, and its
+  // copy carried the same defect the chronological trace had: the anchor
+  // bound subtracted `visibleRowCount`, whose two-row render pad stops
+  // the bound two rows past the end, so the last rows stacked below the
+  // sticky viewport's fold with no scroll position that reached them.
+  //
+  // jsdom does no layout, so the viewport height is stubbed and the
+  // assertion is on the offset the view *writes*: the sticky viewport
+  // is `overflow: hidden` at exactly `viewportHeight`, so a row placed
+  // past it is rendered and invisible.
+  const VH = 440; // exactly 20 rows
+  let restore: (() => void) | null = null;
+
+  beforeEach(() => {
+    const prev = Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight");
+    Object.defineProperty(Element.prototype, "clientHeight", {
+      configurable: true,
+      get: () => VH,
+    });
+    restore = () => Object.defineProperty(Element.prototype, "clientHeight", prev!);
+    ROWS = Array.from({ length: 200 }, (_, i) => ({
+      ...DEFAULT_ROWS[0],
+      message_id: 256 + i,
+      signal_name: `Sig${i}`,
+    }));
+  });
+  afterEach(() => restore?.());
+
+  it("scrolls to its last row", async () => {
+    renderPanel();
+    await screen.findByTitle(/^Sig0 —/);
+    const rowsEl = document.querySelector(".trace-rows") as HTMLElement;
+    Object.defineProperty(rowsEl, "scrollTop", { value: 0, writable: true });
+
+    rowsEl.scrollTop = 200 * 22 - VH; // the thumb, all the way down
+    fireEvent.scroll(rowsEl);
+
+    const last = await screen.findByTitle(/^Sig199 —/);
+    const row = last.closest(".trace-row") as HTMLElement;
+    expect(Number.parseFloat(row.style.top)).toBeLessThan(VH);
+  });
+});

@@ -466,11 +466,21 @@ header {
   min-height: 0;
 }
 
+/* The graph's empty state. `.graph-panel-canvas` declares no overflow
+   (it hosts xyflow, which pans by transform and clips itself), so this
+   box has to scroll its own help text: pinned to the canvas at `height:
+   100%`, it is the only thing between that text and the dock group's
+   clip. `safe center` rather than `center` because a centered flex line
+   that overflows puts its *start* edge outside the scroll origin —
+   measured in Chromium at a 140 px group, plain `overflow: auto`
+   scrolled to the last paragraph but left the first 27 px above row
+   zero, unreachable; `safe center` gives both ends. */
 .graph-empty {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: safe center;
+  overflow: auto;
   height: 100%;
   color: #94a3b8;
   text-align: center;

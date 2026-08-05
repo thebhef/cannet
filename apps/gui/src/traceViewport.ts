@@ -86,14 +86,16 @@ export function expandedExtraHeight(
   return extra;
 }
 
-/// The largest valid first-visible-row index when rows have variable
-/// heights: the earliest row whose stack, walked back from the end,
-/// still fits in `viewportHeight`. Unlike [`maxAnchorRow`] — which
-/// subtracts [`visibleRowCount`] and so pads the bound two whole rows
-/// *past* the end — anchoring here leaves the last row fully inside the
-/// viewport. When a single row is taller than the viewport the anchor
-/// stops on it rather than past it; the renderer's sticky viewport
-/// grows to the row's height so the scroll still reaches its bottom.
+/// The largest valid first-visible-row index: the earliest row whose
+/// stack, walked back from the end, still fits in `viewportHeight`.
+/// Anchoring here leaves the last row fully inside the viewport. When a
+/// single row is taller than the viewport the anchor stops on it rather
+/// than past it; the renderer's sticky viewport grows to the row's
+/// height so the scroll still reaches its bottom.
+///
+/// Walks back from the end, so it costs one iteration per row that fits
+/// — a viewport's worth, not the whole trace. [`maxAnchorRow`] is the
+/// plain-row case.
 export function tailAnchorRow(
   count: number,
   viewportHeight: number,
@@ -122,9 +124,18 @@ export function anchorFromScroll(
 }
 
 /// The largest valid first-visible-row index — the row that sits at the
-/// top of the viewport when scrolled all the way to the bottom.
+/// top of the viewport when scrolled all the way to the bottom — for a
+/// view whose rows are all [`ROW_HEIGHT`]: [`tailAnchorRow`]'s plain-row
+/// case.
+///
+/// **Not `count - visibleRowCount(…)`.** That is the render pad, not the
+/// anchor bound: [`visibleRowCount`] adds two rows so the partial rows
+/// at the viewport's edges are drawn, and subtracting it stops the
+/// anchor two whole rows *past* the end — the last two rows then stack
+/// below the sticky viewport's fold with no scroll position that
+/// reaches them.
 export function maxAnchorRow(count: number, viewportHeight: number): number {
-  return Math.max(0, count - visibleRowCount(viewportHeight));
+  return tailAnchorRow(count, viewportHeight, () => ROW_HEIGHT);
 }
 
 /// Map a scrollTop to the first visible row index.

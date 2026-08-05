@@ -16,7 +16,7 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 import { TraceView } from "./TraceView";
 import { columnDef, contentWidth, defaultColumns } from "./traceColumns";
 import { diagCounts } from "./diag";
-import { maxAnchorRow } from "./traceViewport";
+import { ROW_HEIGHT, maxAnchorRow, maxScrollTop } from "./traceViewport";
 
 class FakeResizeObserver {
   observe() {}
@@ -130,6 +130,71 @@ describe("TraceView anchoring", () => {
     rerender(view(1_200, true));
 
     expect(anchorShown(container)).toBe(maxAnchorRow(1_200, 0));
+  });
+});
+
+describe("TraceView tail reachability", () => {
+  // Reviewing a captured trace, the last rows could not be reached:
+  // the anchor bound subtracted `visibleRowCount`, whose two-row render
+  // pad puts the bound two rows *past* the end, so the final rows were
+  // stacked below the sticky viewport's fold with no scroll position
+  // that brought them up.
+  //
+  // jsdom does no layout, so the viewport height is stubbed and the
+  // assertion is on the arithmetic the view commits: the anchor it
+  // lands on plus the rows that fit must cover the last row. The
+  // sticky viewport is `overflow: hidden` at exactly `viewportHeight`,
+  // so a row stacked past that is rendered but invisible.
+  const VH = 440; // exactly 20 rows
+  const onScreen = VH / ROW_HEIGHT;
+  let restore: (() => void) | null = null;
+
+  beforeEach(() => {
+    const prev = Object.getOwnPropertyDescriptor(Element.prototype, "clientHeight");
+    expect(prev, "jsdom defines clientHeight on Element.prototype").toBeTruthy();
+    Object.defineProperty(Element.prototype, "clientHeight", {
+      configurable: true,
+      get: () => VH,
+    });
+    restore = () => Object.defineProperty(Element.prototype, "clientHeight", prev!);
+  });
+  afterEach(() => restore?.());
+
+  it("reaches the last row of a captured trace", () => {
+    const count = 1_000;
+    const { container } = render(view(count, false));
+    const rowsEl = container.querySelector(".trace-rows") as HTMLElement;
+    Object.defineProperty(rowsEl, "scrollTop", { value: 0, writable: true });
+    Object.defineProperty(rowsEl, "scrollHeight", {
+      value: count * ROW_HEIGHT,
+      writable: true,
+    });
+
+    rowsEl.scrollTop = maxScrollTop(count, VH); // drag the thumb to the bottom
+    fireEvent.scroll(rowsEl);
+
+    expect(anchorShown(container) + onScreen).toBeGreaterThanOrEqual(count);
+  });
+
+  it("keeps the last row on screen while pinned to the live tail", () => {
+    const count = 1_000;
+    const { container } = render(view(count, true));
+
+    expect(anchorShown(container) + onScreen).toBeGreaterThanOrEqual(count);
+  });
+
+  it("does not move the tail when auto-scroll is toggled off and on", () => {
+    // The two paths derive the same anchor from the same bound, so a
+    // toggle at the tail is a no-op rather than a two-row jump.
+    const count = 1_000;
+    const { container, rerender } = render(view(count, true));
+    const tail = anchorShown(container);
+
+    rerender(view(count, false));
+    expect(anchorShown(container)).toBe(tail);
+    rerender(view(count, true));
+    expect(anchorShown(container)).toBe(tail);
+    expect(tail + onScreen).toBeGreaterThanOrEqual(count);
   });
 });
 

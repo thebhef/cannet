@@ -354,33 +354,178 @@ enter rename mode".
 
 ## 7. Audit every view for scroll correctness
 
-**Confirmed symptom, and it is a known-unfixed defect.** Reviewing
-captured (not live) data in the chronological trace, the last rows cannot
-be reached: scrolling to the bottom stops short. That is precisely what
-task 48 item 5 fixed in the by-ID panel — `maxAnchorRow` subtracts
-`visibleRowCount`, whose two-row pad puts the anchor bound two rows
-*past* the end — and explicitly did not fix here, on the grounds that the
-chronological view's anchor interacts with auto-scroll and
-`scrollForRow`. The same presentation was meant to be fixed alongside it.
-So: apply `tailAnchorRow` here too, and deal with the auto-scroll
-interaction that was the reason for deferring.
+**Done.** The chronological trace reaches its last rows; the sweep found
+one more view with the same arithmetic defect and one new CSS one; and
+the base-implementation question is answered below — *two* primitives,
+one of which is a test rather than a component.
 
-**Then widen it.** Scroll defects have now been found in the project
-panel, the by-ID panel, the colormap panel, the trace table's horizontal
-axis, the system messages view, and now the chronological trace — six
-surfaces, four distinct mechanisms. That rate says the next one is not
-far off. **Review every scrollable view**, and answer the question the
-count raises: is there a base implementation — a shared scroll container
-or viewport primitive — that would satisfy them all, rather than each
-panel getting its geometry right independently?
+**The chronological trace: one anchor bound, not two.** `maxAnchorRow`
+subtracted `visibleRowCount`, which is the *render* pad — the two extra
+rows that draw the partial rows at the viewport's edges — not an anchor
+bound. Subtracting it stops the anchor two whole rows past the end, so
+the last two rows stacked below the sticky viewport's fold with no
+scroll position that reached them.
 
-If such a primitive exists, adopting it is the deliverable and the
-individual fixes fall out. If it does not, say why in the record, because
-the next reader will ask the same question.
+Task 48 item 5 deferred this view because its anchor interacts with
+auto-scroll and `scrollForRow`, and that interaction is exactly why a
+per-caller fix is wrong: `scrollForRow` and `rowFromScroll` derive the
+bound *themselves*, so a scaffold that used `tailAnchorRow` while they
+kept `count - visibleRowCount` would map the bottom of the scrollbar
+back onto the old anchor and pin the view two rows short again. So
+**`maxAnchorRow` is now `tailAnchorRow` over plain rows** — one bound,
+derived once, and every consumer of it moves together.
 
-Method is settled: jsdom does no layout, so measure in Chromium against
-the real stylesheets or the live WebView2 host. Every one of the four
-mechanisms found so far turned out not to be what the CSS suggested.
+**The auto-scroll interaction resolves to nothing, by construction.**
+Following the live tail anchors at `anchorMax`, and
+`scrollForRow(anchorMax)` is still exactly `maxScrollTop`, so the pin is
+still the bottom of the scrollbar — it just now shows the rows that were
+hidden under it. Toggling follow off and on is a no-op (both paths read
+the same bound), and `handleScroll`'s off-the-edge test is on pixels,
+not rows, so it is untouched. `visibleRowCount` keeps its two-row pad,
+which is still right for what it is for.
+
+Tests: `traceViewport.test.ts` — the two bounds are one function over
+plain rows, and anchoring at the bound leaves the last row inside the
+viewport; `TraceView.anchor.dom.test.tsx` — three cases over a stubbed
+440 px viewport (a captured trace dragged to the bottom, the live tail,
+and the toggle), all three failing before the change with the anchor two
+rows short. The existing auto-scroll cases are unchanged and green.
+
+### The sweep
+
+Method, per the item's binding note. jsdom does no layout, so **layout
+claims were measured in headless Edge (Chromium 151, the engine behind
+the WebView2 host) over CDP**, with the real `index.css` and the real
+`dockview.css`, each panel built in its own class chain inside
+dockview's real group chain (`.dv-groupview` → `.dv-content-container` →
+`.dv-react-part`) at a 600 × 300 dock group. Each container was scrolled
+to its extreme and asked whether its last content element had come
+inside *both* the scroller and the group. The harness carried a
+**control** — the project panel with `height: 100%` overridden back to
+`auto`, the defect task 48 item 5 fixed — which reports its tail 418 px
+past the fold, so the sweep is not measuring nothing. Two claims are
+arithmetic rather than layout (marked *unit*): the anchor bound decides
+what the sticky viewport can ever show, and that is a pure function.
+
+The harness itself was a throwaway (a generated page plus a
+dependency-free CDP driver); what is durable is the guard it justified,
+in `dockPanelScrolling.test.ts`.
+
+| Surface | Scroll container | Method | Verdict |
+| --- | --- | --- | --- |
+| Chronological trace — rows | `.trace-rows`, virtual | unit + Chromium | **was broken** (tail 2 rows short); fixed |
+| Chronological trace — columns | `.trace-scroll-content` | Chromium | ok (`scrollWidth` 1227 / `clientWidth` 600, last column in reach) |
+| By-ID trace | `.trace-rows`, virtual | unit | ok (`tailAnchorRow` since task 48 item 5) |
+| Signal view | `.trace-rows`, virtual | unit | **was broken** (last row at `top: 462` in a 440 px viewport); fixed |
+| Events panel | `TraceView` | — | covered by the chronological fix (same renderer) |
+| DBC panel tree | `.dbc-panel-tree`, virtual | Chromium | ok (4000 / 266, `scrollTop` reaching 3734) |
+| System messages — rows | `.system-messages-list`, virtual | Chromium | ok (880 / 273, last row in reach) |
+| System messages — long line | `.system-messages-list` | Chromium | ok (1456 / 600, `scrollLeft` reaching 856) |
+| Project panel | `.project-panel` | Chromium | ok (744 / 300); the control proves the measurement bites |
+| Colormap panel | `.colormap-panel` | Chromium | ok (755 / 300, "+ range" in reach) |
+| Settings — group tree | `.settings-tree` | Chromium | ok (331 / 255) |
+| Settings — settings list | `.settings-list` | Chromium | ok (2048 / 255) |
+| About / shortcuts panel | `.settings-panel` | Chromium | ok (1618 / 300) |
+| About — license text | `.about-licenses` | Chromium | ok (2816 / 483 at `max-height: 60vh`) |
+| Transmit — frame list | `.tx-panel-list` | Chromium | ok (360 / 268) |
+| Transmit — byte editor | `.tx-bytes` | Chromium | ok (2554 / 600 horizontally, last byte in reach) |
+| RBS tree | `.rbs-tree` | Chromium | ok (648 / 266) |
+| Plot area — signal list | `.plot-area-signals` | Chromium | ok (771 / 300) |
+| Project graph — canvas | `.graph-panel-canvas` | read | n/a — xyflow pans by transform and clips itself |
+| Project graph — empty state | `.graph-empty` | Chromium | **was broken** in a short panel; fixed |
+| Command palette list | `.palette-list` | Chromium | ok (1836 / 323 at `max-height: 40vh`) |
+| Combobox dropdown | `.combobox-list` | Chromium | ok (911 / 160) — bounded by its `.combobox-pop` parent, not by itself |
+| BLF channel-map modal | `.blf-map-rows` | Chromium | ok (511 / 288 at `max-height: 18rem`) |
+
+**Fixes landed.**
+
+1. *The chronological trace's tail* — above.
+2. *The signal view's tail.* `SignalsPanel` had hand-rolled
+   `useTraceViewport` — its own container ref, `ResizeObserver`, render
+   window, spacer and anchor bound — and its copy carried the same
+   defect, so fix 1 repaired it silently. It now takes the shared
+   scaffold, and its scroll handler reads the scaffold's `anchorMax`
+   (the `ByIdTable` idiom) rather than re-deriving one through
+   `rowFromScroll`, which is what let the two drift. Test:
+   `SignalsPanel.dom.test.tsx`, failing before at `top: 462` in a 440 px
+   viewport.
+3. *The project graph's empty state.* The canvas declares no overflow —
+   right for xyflow, which pans by transform — but the empty state is
+   ordinary flow content in that same box, `height: 100%` and centred,
+   with nothing to scroll. Measured at a 140 px dock group:
+   `scrollHeight` 137 against `clientHeight` 110, `scrollTop` stuck at
+   0, the last paragraph 27 px past the fold. (At the 300 px group
+   everything else is measured at, it fits — which is why nobody hit
+   it.) `overflow: auto` alone does **not** close it: a centred flex
+   line that overflows puts its start edge outside the scroll origin,
+   and the measurement shows the first paragraph then 27 px *above* row
+   zero. It takes `justify-content: safe center` as well — measured,
+   `scrollHeight` 228, `maxScrollTop` 118, both ends reachable.
+
+### Is there a base implementation? Yes — two, and they are different kinds of thing
+
+The six defects were not one bug class. They split cleanly, and the
+split is the answer.
+
+**Virtual scrolling: one primitive, and it already exists —
+`traceViewport.ts` + `useTraceViewport`.** Three views (chronological
+trace, by-ID trace, signal view) share the same model: a scaled
+scrollbar over a spacer, a *derived anchor row*, and a sticky clipping
+viewport. They need it because `count` can exceed the browser's CSS
+height cap (~730k rows at `MAX_SCROLL_HEIGHT_PX`), which native
+scrolling cannot express. Every anchor defect found — by-ID's in task 48,
+the chronological view's and the signal view's here — was the same
+arithmetic, and the reason it recurred is that the bound was written
+three times. It is now written **once**: `tailAnchorRow` is the
+definition, `maxAnchorRow` is its plain-row case, `useTraceViewport`
+hands it out, and both scroll handlers consume that value rather than
+re-deriving one. That is the "adopting it is the deliverable, the
+individual fixes fall out" outcome, and the signal-view migration is
+where the falling-out is visible.
+
+Two other views virtualize (`DbcPanel`, `SystemMessagesPanel`) and do
+**not** use it, deliberately: they translate rows to real pixel offsets
+under a full-height spacer, so the browser's own scroll geometry
+supplies the extremes and an unreachable tail is structurally
+impossible. That model is strictly better where it applies — it just
+cannot represent a trace longer than the height cap. Converting them
+would buy nothing and cost the guarantee.
+
+**Plain panels: no shared component, and the reason is concrete.** The
+remaining surfaces are native-overflow scrollers whose defects were CSS
+geometry. A shared `.scrollable-panel` class cannot serve them because
+the boxes are not the same kind of box: a panel root pinned to its dock
+group needs `height: 100%` (project, colormap, settings, about); a list
+under a toolbar needs `flex: 1 1 auto` in a column parent (transmit,
+DBC, RBS, system messages, trace rows, settings list); a popup or modal
+needs `max-height` (palette, combobox pop, BLF map, license text). Any
+one class would be wrong for two thirds of them — and two of the
+reported defects were not about the container at all: the trace table's
+was a *content width* the rows had to publish, the system messages
+view's was an ellipsised grid track.
+
+What generalises is not a declaration, it is the **question**, so the
+shared thing is a test. `dockPanelScrolling.test.ts` now walks every
+rule in `index.css`, finds every one that turns on scrolling in the
+block axis, and requires each to declare a definite size in that axis
+(`height`, `max-height` or `flex`) — the invariant both the project and
+colormap defects violated. It is generic, so a panel added next year is
+covered without anyone remembering to add a case, and it is falsifiable:
+removing `height: 100%` from `.project-panel` makes it name
+`.project-panel`. One selector carries a documented exemption —
+`.combobox-list` is bounded by its `.combobox-pop` parent's
+`max-height`, verified in Chromium rather than assumed.
+
+So the honest answer to "why did six panels each get their geometry
+wrong independently" is: three of them shared arithmetic that was
+written three times (now once), and the rest shared an invariant that
+nothing checked (now checked). Neither half wanted a component.
+
+**Noticed in passing, not acted on:** `.by-id-rows` in `index.css` is
+dead — the by-ID table renders into `.trace-rows` like the other two
+trace views, and nothing references the class. It satisfies the new
+guard, so it is invisible rather than harmful. Left alone rather than
+removed inline. No blockers: nothing found here needed host-side work.
 
 ## 8. Put the version and project in the title bar
 

@@ -79,14 +79,9 @@ describe("expandedExtraHeight", () => {
 describe("tailAnchorRow", () => {
   const plain = () => ROW_HEIGHT;
 
-  it("puts the last row fully inside the viewport, unlike the padded bound", () => {
-    // `maxAnchorRow` subtracts `visibleRowCount`, which pads by two rows
-    // for the partial rows at the edges — as an anchor bound that pads
-    // two whole rows *past* the end, so the final rows stack below the
-    // fold and no scroll position reaches them.
+  it("puts the last row fully inside the viewport", () => {
     const count = 100;
     expect(tailAnchorRow(count, VH, plain)).toBe(count - Math.floor(VH / ROW_HEIGHT));
-    expect(tailAnchorRow(count, VH, plain)).toBeGreaterThan(maxAnchorRow(count, VH));
   });
 
   it("starts later when the rows at the end are expanded", () => {
@@ -134,8 +129,27 @@ describe("visibleRowCount / maxAnchorRow", () => {
 
   it("clamps the anchor to zero when the whole trace fits", () => {
     expect(maxAnchorRow(10, VH)).toBe(0);
-    expect(maxAnchorRow(visibleRowCount(VH), VH)).toBe(0);
-    expect(maxAnchorRow(visibleRowCount(VH) + 7, VH)).toBe(7);
+    expect(maxAnchorRow(Math.floor(VH / ROW_HEIGHT), VH)).toBe(0);
+    expect(maxAnchorRow(Math.floor(VH / ROW_HEIGHT) + 7, VH)).toBe(7);
+  });
+
+  // The render pad and the anchor bound are two different facts, and
+  // conflating them is what put the last two rows of the chronological
+  // trace out of reach: `visibleRowCount`'s two-row pad exists so the
+  // partial rows at the viewport's edges are drawn, but subtracting it
+  // from `count` bounds the anchor two whole rows *past* the end.
+  it("is the plain-row case of tailAnchorRow, not the render pad", () => {
+    const plain = () => ROW_HEIGHT;
+    for (const count of [0, 1, 30, 31, 100, 10_000]) {
+      expect(maxAnchorRow(count, VH)).toBe(tailAnchorRow(count, VH, plain));
+    }
+  });
+
+  it("leaves the last row on screen when anchored at the bound", () => {
+    for (const count of [100, 10_000, 250_000]) {
+      const rowsBelow = count - maxAnchorRow(count, VH);
+      expect(rowsBelow * ROW_HEIGHT).toBeLessThanOrEqual(VH);
+    }
   });
 });
 
