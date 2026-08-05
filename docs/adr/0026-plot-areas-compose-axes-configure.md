@@ -249,7 +249,23 @@ below:
   remove ×) renders only on the first derived axis of each parent.
 - **Fixed-range yMode** is gone. The old `yMode: "auto" | {min,max}`
   field is no longer persisted; old projects parse with the field
-  ignored.
+  ignored, and it is not migrated onto the per-axis manual range above
+  — it was a per-*area* range, so there is no axis it can be said to
+  have meant.
+- **Manual y control** is a context menu on the axis itself:
+  right-clicking the y gutter offers a min, a max and a log toggle for
+  that derived axis. Both bounds default to empty, meaning the
+  auto-derived scale, so an axis nobody opens the menu on is unchanged.
+  The settings live in `plotAxisScale.ts` (`AxisScale` + the
+  precedence and decade maths, under unit tests) and are persisted
+  sparsely as the panel's `axisScales`, keyed by derived-axis id.
+  Pruning is on `retainedAxisIds` — every id an area's signals could
+  mint in *any* mode — so a setting survives a mode change and retires
+  with its signals; a per-unit entry outlives all but the last signal
+  of its unit. **Fit Y clears** a manual range rather than writing the
+  fitted numbers into it: under a sparse store the two are the same
+  intent. The menu is omitted on enum-lanes and single-enum axes,
+  whose geometry comes from a value table rather than a value range.
 - **Per-series color picker** is on each signal-row's swatch
   (right-click opens the browser's native picker).
 - **16-color wheel** is the seed; a dragged-in series picks its

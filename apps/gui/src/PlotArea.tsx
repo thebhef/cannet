@@ -27,6 +27,7 @@ import {
   type AxisScalePatch,
   type ResolvedAxisRange,
 } from "./plotAxisScale";
+import { useDismissableMenu } from "./useDismissableMenu";
 import { useSetting } from "./hostSettings";
 import {
   PLOT_AREA_DND_MIME,
@@ -290,6 +291,94 @@ function SignalSwatch({
         onClick={(e) => e.stopPropagation()}
       />
     </span>
+  );
+}
+
+/** Default y-gutter width (px) before uPlot's first layout pass has
+ * reported one — the floor `measureAxisSize` never goes below. Used to
+ * decide whether a right-click landed on the axis or in the plot box. */
+const DEFAULT_Y_GUTTER_PX = 52;
+
+/**
+ * The y axis's own context menu (ADR 0026): a manual min, a manual max
+ * and a log-scale toggle for one derived axis.
+ *
+ * Both bounds default to **empty, meaning automatic** — the axis keeps
+ * the auto-scaling it has always done — so a user who never opens this
+ * sees no change, and clearing a field puts the axis back. Committing
+ * follows the repo's one inline-edit precedent (`EventRow`): Enter and
+ * blur commit, and the menu's Escape dismisses without committing the
+ * draft.
+ *
+ * The min box is absent while log is on: a log axis cannot render zero
+ * or negatives, so rather than accept a min and then reject it the min
+ * becomes derived. The value the user typed is *held* by the store, so
+ * turning log back off returns it.
+ */
+function YAxisScaleMenu({
+  position,
+  scale,
+  onSet,
+  onClose,
+}: {
+  position: { x: number; y: number };
+  scale: AxisScale | undefined;
+  onSet: (patch: AxisScalePatch) => void;
+  onClose: () => void;
+}) {
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
+  const log = !!scale?.log;
+  const [minDraft, setMinDraft] = useState(scale?.min == null ? "" : String(scale.min));
+  const [maxDraft, setMaxDraft] = useState(scale?.max == null ? "" : String(scale.max));
+  const commit = (which: "min" | "max", text: string) => {
+    const t = text.trim();
+    if (t === "") {
+      onSet({ [which]: null });
+      return;
+    }
+    const v = Number(t);
+    // Unparseable input is left in the box rather than silently
+    // committed as a clear — the user is mid-edit, not asking for auto.
+    if (Number.isFinite(v)) onSet({ [which]: v });
+  };
+  const boundRow = (which: "min" | "max", draft: string, setDraft: (s: string) => void) => (
+    <label className="plot-axis-menu-row">
+      <span>{which}</span>
+      <input
+        aria-label={`y axis ${which === "min" ? "minimum" : "maximum"}`}
+        placeholder="auto"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit(which, draft);
+        }}
+        onBlur={() => commit(which, draft)}
+      />
+    </label>
+  );
+  return (
+    <div
+      ref={menuRef}
+      className="plot-axis-menu"
+      style={{ left: position.x, top: position.y }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="plot-axis-menu-title">y axis</div>
+      {!log && boundRow("min", minDraft, setMinDraft)}
+      {boundRow("max", maxDraft, setMaxDraft)}
+      <label className="plot-axis-menu-row">
+        <input
+          type="checkbox"
+          aria-label="log scale"
+          checked={log}
+          onChange={(e) => onSet({ log: e.target.checked })}
+        />
+        <span>log scale</span>
+      </label>
+      <div className="plot-axis-menu-hint">
+        {log ? "min is the smallest positive value" : "empty = automatic"}
+      </div>
+    </div>
   );
 }
 
@@ -827,6 +916,27 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * none of them. Named rather than counted: the point of the message
    * is that a *specific* trace is missing, not that something is. */
   const [logEmptySignals, setLogEmptySignals] = useState<string>("");
+  /** Where the axis's scale menu is open, in client coordinates.
+   * `null` when closed. */
+  const [axisMenu, setAxisMenu] = useState<{ x: number; y: number } | null>(null);
+  /** Width the y gutter currently reserves — what tells a right-click
+   * on the *axis* from one in the plot box, where uPlot owns the
+   * gesture (right-drag box zoom). Tracked from the same `axis.size`
+   * report the panel latches, so it follows the agreed width rather
+   * than guessing; it moves rarely, so the state write is cheap. */
+  const [gutterPx, setGutterPx] = useState(DEFAULT_Y_GUTTER_PX);
+  const gutterPxRef = useRef(gutterPx);
+  const trackGutter = useCallback(
+    (id: string, needed: number) => {
+      const w = reportGutterNeed(id, needed);
+      if (w !== gutterPxRef.current) {
+        gutterPxRef.current = w;
+        setGutterPx(w);
+      }
+      return w;
+    },
+    [reportGutterNeed],
+  );
 
   const withSuppressed = useCallback(
     (fn: () => void) => {
@@ -1446,7 +1556,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // have to start at the same x for the shared cursor to be
           // collinear — it just leaves it empty.
           ...axisCommon,
-          size: () => reportGutterNeed(areaId, 14),
+          size: () => trackGutter(areaId, 14),
           grid: { show: false },
           ticks: { show: false },
           splits: () => [],
@@ -1455,7 +1565,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       : enumActiveAtConstruct
       ? {
           ...axisCommon,
-          size: () => reportGutterNeed(areaId, 80),
+          size: () => trackGutter(areaId, 80),
           splits: () => enumRaws,
           values: (_u, splits) =>
             splits.map((v) => `${v} "${enumLabelFor(Math.round(v))}"`),
@@ -1493,7 +1603,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // — a per-axis width leaves the plot boxes starting at
           // different x, and an unlatched one makes the left edge
           // twitch frame to frame under an auto-fitted scale.
-          size: (_u, values) => reportGutterNeed(areaId, measureAxisSize(values)),
+          size: (_u, values) => trackGutter(areaId, measureAxisSize(values)),
           // Tint the y-axis to match the primary signal's trace so
           // it's obvious which series the labels correspond to. Falls
           // back to the neutral axis color when there's no primary
@@ -2420,7 +2530,29 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         signalDrop(e, { beforeKey: null, stopEvent: false, panelElementId, onDropSignal });
       }}
     >
-      <div className="plot-area-canvas" ref={canvasRef} />
+      <div
+        className="plot-area-canvas"
+        ref={canvasRef}
+        onContextMenu={(e) => {
+          // Only on the y-axis gutter: inside the plot box uPlot owns
+          // the right button (box zoom / cursor B), and the event
+          // bubbles here from its overlay. The gutter is the strip
+          // left of the box, whose width the axis reports.
+          if (!yScaleSettable) return;
+          if (e.clientX - e.currentTarget.getBoundingClientRect().left > gutterPx) return;
+          e.preventDefault();
+          e.stopPropagation();
+          setAxisMenu({ x: e.clientX, y: e.clientY });
+        }}
+      />
+      {axisMenu && (
+        <YAxisScaleMenu
+          position={axisMenu}
+          scale={effectiveYScale}
+          onSet={onSetYScale}
+          onClose={() => setAxisMenu(null)}
+        />
+      )}
       {collapsed && <div className="plot-area-placeholder" ref={placeholderRef} />}
       {buildingFirstSample && !collapsed && (
         // Overlaid on the canvas column rather than placed in the flow,

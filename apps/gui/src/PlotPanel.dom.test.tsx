@@ -2056,6 +2056,96 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
+  /// Right-click the y-axis gutter — the strip left of the plot box.
+  /// jsdom lays nothing out, so every rect is at x = 0 and a small
+  /// `clientX` is inside the gutter while a large one is inside the
+  /// plot box (which is what the real geometry check compares).
+  function rightClickAxis(clientX: number) {
+    const canvas = document.querySelectorAll(".plot-area-canvas");
+    fireEvent.contextMenu(canvas[canvas.length - 1], { clientX, clientY: 10 });
+  }
+
+  it("right-clicking the y axis opens its scale menu; right-clicking the plot does not", async () => {
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"] });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(400);
+      expect(screen.queryByLabelText("y axis maximum")).not.toBeInTheDocument();
+      rightClickAxis(4);
+      expect(screen.getByLabelText("y axis minimum")).toBeInTheDocument();
+      expect(screen.getByLabelText("y axis maximum")).toBeInTheDocument();
+      expect(screen.getByLabelText("log scale")).not.toBeChecked();
+    } finally {
+      restore();
+    }
+  });
+
+  it("a typed bound pins the axis, and clearing the field returns it to automatic", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({ signals: ["LimitEffective"] });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      const max = screen.getByLabelText("y axis maximum");
+      await act(async () => {
+        fireEvent.change(max, { target: { value: "1000" } });
+        fireEvent.keyDown(max, { key: "Enter" });
+      });
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { max: 1000 } }));
+      await act(async () => {
+        fireEvent.change(max, { target: { value: "" } });
+        fireEvent.keyDown(max, { key: "Enter" });
+      });
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({}));
+    } finally {
+      restore();
+    }
+  });
+
+  it("log hides the min box and gives it back, still holding its value", async () => {
+    const restore = stubSize();
+    try {
+      const { api } = renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { min: 5 } } });
+      await waitFor(() => expect(document.querySelector(".plot-area-canvas")).toBeInTheDocument());
+      rightClickAxis(4);
+      expect(screen.getByLabelText("y axis minimum")).toHaveValue("5");
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("log scale"));
+      });
+      // The min stops being settable — a log axis derives it — but the
+      // value the user typed is held, not discarded.
+      expect(screen.queryByLabelText("y axis minimum")).not.toBeInTheDocument();
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { min: 5, log: true } }));
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("log scale"));
+      });
+      expect(screen.getByLabelText("y axis minimum")).toHaveValue("5");
+      await waitFor(() => expect(persistedScales(api).axisScales).toEqual({ a1: { min: 5 } }));
+    } finally {
+      restore();
+    }
+  });
+
+  it("an enum-lanes axis offers no scale menu", async () => {
+    // A lane's geometry comes from `laneBandsForVisible`, not from a
+    // value range, so neither a bound nor a log mapping means anything
+    // there — the menu is omitted rather than offering something inert.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => expect(data[1]?.[0]).not.toBe(0));
+      rightClickAxis(4);
+      expect(screen.queryByLabelText("y axis maximum")).not.toBeInTheDocument();
+    } finally {
+      restore();
+    }
+  });
+
   it("single-enum axis: raw codes pass through un-normalised", async () => {
     // One enum on its own axis keeps the codes as-is — the y scale is
     // pinned to the table's raw range instead. This is the axis mode
