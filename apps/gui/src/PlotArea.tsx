@@ -1028,9 +1028,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       //    all, so it fell back to the canvas midline and stopped
       //    sharing its unit group's scale — a constant 3000 A limit
       //    drew mid-canvas next to a 500 A signal filling the canvas.
-      //    It contributes its one value to the group union instead; a
-      //    group whose *whole* union is one value still has no span,
-      //    and keeps the midline fallback below.
+      //    It contributes its one value to the group union instead,
+      //    and a group whose *whole* union is one value is widened to
+      //    a minimum range by `groupScaleRanges` so its axis still
+      //    reads as that value (ADR 0026).
       const ranges = new Map<string, { lo: number; hi: number }>();
       signals.forEach((s, i) => {
         if (s.hidden) return;
@@ -1136,11 +1137,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               }
               return row;
             }
-            // No range available yet (signal hasn't decoded, or all
-            // observed values are equal so far). Render at the canvas
-            // midline so the line is *visible* — without this fallback
-            // the raw values get drawn against the y = [0, 1] pin and
-            // clipped to nothing.
+            // No range available yet — the signal hasn't decoded, so
+            // it has no entry at all (a constant one does, widened to
+            // a minimum range). Render at the canvas midline so the
+            // line is *visible* — without this fallback the raw values
+            // get drawn against the y = [0, 1] pin and clipped to
+            // nothing.
             for (let j = 0; j < row.length; j++) {
               if (row[j] != null) row[j] = 0.5;
             }

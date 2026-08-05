@@ -202,10 +202,14 @@ export function enumSegments(
  * not known to be commensurable, and pinning them to a shared scale
  * would flatten whichever has the smaller range.
  *
- * A signal with no entry in `perSignalRanges` (nothing decoded yet,
- * or all values equal so far) contributes nothing to its group and
- * gets no entry in the result — the renderer keeps its midline
- * fallback for it.
+ * A signal with no entry in `perSignalRanges` (nothing decoded yet)
+ * contributes nothing to its group and gets no entry in the result —
+ * the renderer keeps its midline fallback for it.
+ *
+ * A group whose *whole* union has no span — every member constant at
+ * the same value — is widened to {@link CONSTANT_MIN_RANGE_FRACTION}
+ * of that value either side of it, so the axis labels read the value
+ * it holds instead of a bare 0–1. See {@link constantRange}.
  */
 export function groupScaleRanges(
   members: ReadonlyArray<{ key: string; unit: string }>,
@@ -226,12 +230,44 @@ export function groupScaleRanges(
       if (r.hi > g.hi) g.hi = r.hi;
     }
   }
-  // Pass 2: hand each signal its group's range.
+  // Pass 2: hand each signal its group's range, widening a group that
+  // turned out to have no span at all.
   const out = new Map<string, { lo: number; hi: number }>();
   for (const m of members) {
     if (!perSignalRanges.has(m.key)) continue;
     const g = groupRange.get(groupKeyFor(m));
-    if (g) out.set(m.key, { lo: g.lo, hi: g.hi });
+    if (g) out.set(m.key, g.hi > g.lo ? { lo: g.lo, hi: g.hi } : constantRange(g.lo));
   }
   return out;
+}
+
+/** Half-width of a constant group's scale, as a fraction of the value
+ * it holds. Ten per cent puts the trace mid-canvas with round-ish
+ * numbers either side, so the axis reads as the value. */
+export const CONSTANT_MIN_RANGE_FRACTION = 0.1;
+
+/** Half-width used when a constant sits at exactly zero, where the
+ * proportional band collapses. Absolute, because there is no value to
+ * take a fraction of — and ±1 keeps the axis in the units the signal
+ * is measured in rather than inventing a magnitude. */
+export const CONSTANT_ZERO_HALF_RANGE = 1;
+
+/**
+ * The scale to draw a group that never moves on.
+ *
+ * A constant has no span, so any scale for it is a choice rather than
+ * a measurement — but *some* choice has to be made: normalising by a
+ * zero span is a divide by zero, and the fallback that avoided it drew
+ * the trace on the raw 0–1 canvas, an axis that said nothing about the
+ * value under it. The band is centred on the value so the trace still
+ * sits mid-canvas, and wide enough that the tick labels either side
+ * read as that value.
+ *
+ * A non-finite value has nothing to centre on and is returned
+ * unwidened; the renderer's midline fallback still covers it.
+ */
+export function constantRange(v: number): { lo: number; hi: number } {
+  if (!Number.isFinite(v)) return { lo: v, hi: v };
+  const half = Math.abs(v) * CONSTANT_MIN_RANGE_FRACTION || CONSTANT_ZERO_HALF_RANGE;
+  return { lo: v - half, hi: v + half };
 }

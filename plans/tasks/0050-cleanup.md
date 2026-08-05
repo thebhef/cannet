@@ -120,22 +120,40 @@ frontend suite (102 files, 1086 tests) plus `pnpm build`.
 
 ## 4. Constant signals still get a degenerate plot scale
 
-Task 48 item 8 let a constant signal's degenerate extent (`hi == lo`)
-into its unit group's union, which fixed the case where a constant was
-dropped from a group that had other signals in it. **A signal that is
-constant for the whole plot duration is still wrong**: it draws on a
-0.0–1.0 axis with the trace sitting in the middle, which says nothing
-about the value.
+**Fixed.** Task 48 item 8 had let a constant's degenerate extent
+(`hi === lo`) into its unit group's union, which fixed a constant
+*sharing* a group; a group whose whole union had no span still fell to
+the renderer's midline fallback and drew on a bare 0.0–1.0 axis.
 
-A constant signal has no span, so any scale is a choice rather than a
-measurement. **Give it a minimum range — at least ±10 % around the
-value** — so the axis labels read as the value it actually holds.
+**Rule implemented: a group whose whole union has no span is widened to
+±10 % of that value, centred on it. At exactly zero the proportional
+band collapses, so the fallback is an absolute ±1** — there is no
+magnitude to take a fraction of, and ±1 keeps the axis in the signal's
+own units rather than inventing one. The trace still sits mid-canvas
+(that part was never wrong); what changes is that the tick labels now
+read `2700 A / 3000 A / 3300 A` instead of `0 / 0.5 / 1`.
 
-Decide what ±10 % means for a value of exactly zero, where a proportional
-band collapses; that case needs an absolute fallback.
+**Where it lives:** `groupScaleRanges` in `apps/gui/src/plotData.ts` —
+the pure helper that already owns unit-group scale derivation. Widening
+happens on the **group union**, not per signal, so a constant sharing a
+group with a moving signal still takes the plain union (a union with a
+span is a measurement and is left alone) and task 48 item 8's behaviour
+is unchanged. `PlotArea`'s midline fallback now covers only a signal
+with no range at all — nothing decoded yet — which is still what keeps
+the normalise free of a divide-by-zero.
 
-This is ADR 0026 territory (per-unit axes); if the rule it records needs
-to say something about constant signals, it changes in the same commit.
+**ADR 0026 changed**, in the same commit: it recorded "Only when a
+group's *whole* union has no span does the midline fallback apply",
+which this makes false. It now carries a fourth refinement stating the
+±10 % rule, the ±1 zero fallback, and that the widening is on the union
+rather than per signal.
+
+Tests: `groupScaleRanges` unit tests for the constant, negative-constant,
+zero and shares-a-group-with-a-moving-signal cases
+(`apps/gui/src/plotData.test.ts`), plus two `PlotPanel.dom.test.tsx`
+tests asserting the axis *labels* — the only place the settled scale is
+observable, since the normalised data reads 0.5 either way. Both DOM
+tests failed with `["0", "0.5", "1"]` before the fix.
 
 ## 5. Collapsible sections in the project view
 
