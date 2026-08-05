@@ -212,6 +212,8 @@ pub(crate) fn list_signals(
         signal_name: d.signal_name,
         unit: d.unit,
         is_enum: d.is_enum,
+        display_hex: d.display_hex,
+        decimals: d.decimals,
     })
     .collect()
 }

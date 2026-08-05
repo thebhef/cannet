@@ -421,6 +421,46 @@ fn signals_descriptor_carries_value_is_raw_integer() {
     assert!(mode.is_enum);
 }
 
+/// Factors chosen for their decimal expansion: one decimal, a
+/// non-terminating third, and one finer than the probe goes.
+const DECIMALS_DBC: &str = r#"VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECU
+
+BO_ 300 Scaled: 8 ECU
+ SG_ Tenth : 0|16@1+ (0.1,0) [0|0] "V" ECU
+ SG_ Third : 16|16@1+ (0.3333333333333333,0) [0|0] "V" ECU
+ SG_ Micro : 32|16@1+ (0.00000000001,0) [0|0] "V" ECU
+ SG_ Coarse : 48|16@1+ (10,0) [0|0] "V" ECU
+"#;
+
+#[test]
+fn signals_descriptor_carries_the_decimals_its_factor_implies() {
+    let sigs = Database::parse(SAMPLE_DBC).unwrap().signals();
+    let d = |name: &str| sigs.iter().find(|s| s.signal_name == name).unwrap();
+    assert_eq!(d("EngineSpeed").decimals, Some(2), "factor 0.25");
+    assert_eq!(d("ThrottlePos").decimals, Some(6), "factor 0.392157");
+    assert_eq!(d("Alt").decimals, Some(2), "factor 0.01");
+    // A factor of 1 is a fixed zero decimals whether or not the signal
+    // is offset — the value lands on integers either way.
+    assert_eq!(d("EngineTemp").decimals, Some(0), "factor 1, offset -40");
+    assert_eq!(d("BeUnsigned").decimals, Some(0), "unscaled integer");
+    // The bits are an IEEE float: nothing about the DBC says what
+    // precision its values land on.
+    assert_eq!(d("Lat").decimals, None, "SIG_VALTYPE_ float");
+
+    let sigs = Database::parse(DECIMALS_DBC).unwrap().signals();
+    let d = |name: &str| sigs.iter().find(|s| s.signal_name == name).unwrap();
+    assert_eq!(d("Tenth").decimals, Some(1), "factor 0.1");
+    assert_eq!(d("Coarse").decimals, Some(0), "factor 10 lands on integers");
+    assert_eq!(d("Third").decimals, None, "no finite decimal expansion");
+    assert_eq!(d("Micro").decimals, None, "finer than the probe goes");
+}
+
 #[test]
 fn raw_field_verdict_is_the_same_from_a_descriptor_and_a_decoded_signal() {
     // One predicate, two carriers: whichever surface asks, the answer

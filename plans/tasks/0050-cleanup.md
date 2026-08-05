@@ -469,64 +469,78 @@ Assumptions taken rather than asked; correct them if wrong:
 
 ## 10. The plot's value formatting ignores what kind of signal it is
 
-The plot signal area shows values to around ten decimal places. The
-formatter behind it, `fmtVal` (`apps/gui/src/plotPanelConfig.ts`), is
-`v.toPrecision(6)` — six *significant* figures, which on a small value
-means many decimals (`0.0000123000`) and on an exact half means padding
-(`0.500000`). It knows nothing about the signal it is formatting.
+**Done.** A plotted value now reads by what the signal is, and the two
+formatters that used to disagree share one threshold.
 
-**The rule is three-way, by what the signal actually is:**
+**The model fact added: `decimals`.** `cannet_dbc::SignalDescriptor`
+grows `decimals: Option<u8>` — the decimal places a signal's physical
+values land on, computed from its `factor` at
+`model.rs::fixed_decimals` (`0.25` → 2, `0.1` → 1, an unscaled or
+integral factor → 0). `None` where the DBC implies no fixed precision:
+a `SIG_VALTYPE_` float, or a factor with no finite decimal expansion.
+The probe runs to **nine** decimals and gives up past that — beyond
+nine a factor is a computed ratio, not the "this signal steps by 0.25"
+fact a readout is after — with a `1e-12` relative tolerance, which
+absorbs `0.392157 * 1e6 = 392157.00000000006` while staying far below
+the ~0.33 residue `1/3` leaves at every probe. Both documented edges
+fall out of computing from the factor alone: `factor == 1` with an
+offset or a unit is `Some(0)` (an integer, not a bit field, so decimal
+rather than hex), and `1/3` is `None`.
 
-| Signal | Rendering |
-| --- | --- |
-| Fixed-precision (a scaled integer, e.g. `factor 0.25`) | fixed, at the decimals the factor implies — `12.25`, never `12.250000` |
-| Float (`SIG_VALTYPE_` float32 / float64) | decimal until it would need more than **5** decimal places, then exponential — `0.0001`, but `1e-6` |
-| Raw integer bit field | **base-10**, unless its DBC marks it `CannetDisplay "radix=hex"` — item 11 |
+It rides out on `list_signals`' `SignalDescriptorRecord` alongside
+**`display_hex`**, which the catalog did not carry either. **`raw_field`
+was not added**: the formatter never needs it. A raw field's
+`decimals` is 0, which already says "render this as an integer", and
+`display_hex` is the whole radix verdict (the host gated it on
+`is_raw_field` in item 11). Adding the combined flag would have been a
+third way to say what those two already say.
 
-The raw-integer classification is not new work: `cannet-dbc` already
-computes `value_is_raw_integer`, `is_raw_field` combines it with "no
-unit" and "not an enum", and both the trace rows and the signal view
-already consume it. The plot simply never got the flag — but note the
-*default rendering* for those signals changes in item 11, so land that
-first or land them together. Enum signals already render symbolically
-and are unaffected.
+**The formatter.** `fmtVal(v, fmt?)` in `plotPanelConfig.ts`, where
+`fmt` is `{ decimals, hex }` — hex first, then fixed decimals
+(`toFixed`), then the float rule. `signalValueFormats(catalog)` builds
+the `signalKey → format` map; `PlotPanel` builds it once per panel next
+to `ecuLookup` (same reason: a DBC fact, not part of a plotted signal's
+identity) and passes it to every area. The hex branch calls
+`format.ts::formatSignalValue(v, true)`, so a raw field reads
+identically in the plot, the trace rows and the signal view.
 
-**What is missing is the fixed-precision fact.** `SignalDescriptor`
-carries `unit`, `is_enum` and `value_is_raw_integer`, but **not
-`factor`** — so nothing tells the plot that a signal's values are exact
-multiples of 0.25 and want two decimals. That has to come from the model
-rather than being derived in JS from the factor (CLAUDE.md: domain
-computation belongs in the model), which argues for a computed
-"decimals" fact on the descriptor rather than shipping `factor` and doing
-the arithmetic in the frontend.
+**The shared threshold: `MAX_PLAIN_DECIMALS = 5`,** owned by
+`fmtSigFigs(v, sigFigs)` — round to `sigFigs`, render plainly unless
+that needs more than five decimals, then exponential with the
+mantissa's trailing zeros trimmed (`1e-6`, not `1.00000e-6`). The
+readouts call it at 6 figures, the y-axis ticks at 3. The large end is
+untouched: both formatters already went exponential at `1e6` and
+`fmtSigFigs` keeps that constant.
 
-Two edges to settle when computing it: a factor with no finite decimal
-expansion (`1/3`) is not fixed-precision and falls to the float rule; and
-`factor == 1` with a non-zero offset or a unit is fixed at zero decimals
-— an integer, but not a raw bit field, so decimal rather than hex.
+**Where the tick labels diverge, deliberately:** they share the
+threshold and nothing else. They keep 3 significant figures (the gutter
+starts at 52 px), and they do **not** follow a signal's fixed decimals
+or hex radix — a tick is a position on an axis that several signals may
+share, not one signal's reading. The width-driven fallback the item
+allowed for was not needed beyond that, because `measureAxisSize`
+already grows the gutter to the widest formatted label.
 
-**There is a second formatter, with a different threshold.**
-`fmtTickValue` (`apps/gui/src/PlotArea.tsx`) formats y-axis tick labels
-at 3 significant figures and goes exponential below `1e-3` — too eager,
-so `0.0001` becomes `1.0e-4` when the digits would have fit. The same
-value can therefore read differently in a tick label, a cursor readout
-and the signal area. Fix the threshold once and have both use it.
+**Derived quantities keep the plain float rule** — the A/B delta in both
+the side panel and the measurement strip, and the strip's mean. A mean
+of 0.25-quantised readings need not land on that grid, and a difference
+of two bit patterns is not itself a bit pattern (rendering one in hex
+would print `0x1.8`). `@A` / `@B` / `min` / `max` are real readings and
+take the signal's format. The y-cursor readouts (`H1` / `H2` / `ΔH`) and
+the diagnostic `y[lo … hi]` also stay on the float rule: they are axis
+values, and an axis can span several signals' formats.
 
-Scope notes:
+`formatSignalValue` was **not** unified with, as directed — only the hex
+rendering is shared, by call.
 
-- **The large-magnitude end is not part of this ask.** `fmtTickValue`
-  goes exponential at `1e6`, and `toPrecision(6)` happens to as well.
-  Leave it unless changing it falls out naturally.
-- **Tick labels may not be able to follow the rule exactly.** They live
-  in a fixed 52 px column, so a fixed-precision signal with many decimals
-  or a wide hex value will not fit. Ticks may keep a width-driven
-  fallback; if they do, say so rather than letting the two silently
-  diverge again.
-- **Do not unify with `formatSignalValue` in `format.ts`.** It
-  deliberately never renders an exact integer exponentially, because a
-  digit-exact `uint64` was unreadable as `1.235e+18`. Right there, wrong
-  for a tick label. Shared *rules*, not a shared function, unless the
-  constraints turn out to line up.
+Tests: `crates/cannet-dbc/src/tests.rs::signals_descriptor_carries_the_decimals_its_factor_implies`
+(0.25 → 2, 0.1 → 1, 1-with-offset → 0, an integral factor → 0, `1/3`
+→ `None`, a factor finer than the probe → `None`, a `SIG_VALTYPE_`
+float → `None`); `plotPanelConfig.test.ts` for each branch of the
+three-way rule, the hex case, the `fmtSigFigs` threshold and
+`signalValueFormats`; and two `PlotPanel.dom.test.tsx` cases that carry
+the fact end-to-end — a `decimals: 2` signal reading `12.50 rpm`
+(`12.5` before) and an axis over 0…0.0002 reading `0.0001 A` rather
+than `1.0e-4 A`. All failed before the change.
 
 ## 11. Raw integers default to base-10; hex becomes a per-signal opt-in
 

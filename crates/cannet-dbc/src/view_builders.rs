@@ -13,8 +13,8 @@ use can_dbc::{
 
 use crate::calc::CalculatedFieldsConfig;
 use crate::model::{
-    canid_to_message_id, is_enum, message_id_parts, value_is_raw_integer, Database, DbcAttribute,
-    ValueTableEntry,
+    canid_to_message_id, fixed_decimals, is_enum, message_id_parts, value_is_raw_integer, Database,
+    DbcAttribute, ValueTableEntry,
 };
 
 /// Map can-dbc's `MultiplexIndicator` to this crate's [`SignalMux`].
@@ -94,6 +94,7 @@ impl Database {
                     is_enum: is_enum(&sig.value_table),
                     value_is_raw_integer: value_is_raw_integer(sig),
                     display_hex: sig.display_hex,
+                    decimals: fixed_decimals(sig),
                     mux_selector: match sig.signal.multiplexer_indicator {
                         MultiplexIndicator::MultiplexedSignal(s)
                         | MultiplexIndicator::MultiplexorAndMultiplexedSignal(s) => Some(s),
@@ -333,6 +334,15 @@ pub struct SignalDescriptor {
     ///
     /// [`DecodedSignal::display_hex`]: crate::DecodedSignal::display_hex
     pub display_hex: bool,
+    /// How many decimal places this signal's physical values land on —
+    /// the precision its `factor` implies (`0.25` → 2, an unscaled
+    /// integer → 0). `None` when the DBC implies no fixed precision:
+    /// a `SIG_VALTYPE_` float, or a factor with no finite decimal
+    /// expansion. A numeric readout renders a `Some` value at exactly
+    /// that many decimals and falls back to its own float rule on
+    /// `None`, so "how precise is this signal" is decided here rather
+    /// than re-derived from `factor` per surface.
+    pub decimals: Option<u8>,
     /// The multiplexor-selector group this signal belongs to, or `None`
     /// for plain signals and the multiplexor itself. A frame carries
     /// this signal only when the message's multiplexor decodes to this

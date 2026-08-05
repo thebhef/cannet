@@ -15,7 +15,7 @@ import {
   statsOver,
   valueAt,
 } from "./plotCursors";
-import { fmtFreq, fmtVal, type SignalRef, type XCursors } from "./plotPanelConfig";
+import { fmtFreq, fmtVal, type SignalRef, type SignalValueFormat, type XCursors } from "./plotPanelConfig";
 import { formatDurationSeconds } from "./format";
 
 /** One labelled cell of the measurement strip. */
@@ -70,6 +70,10 @@ export interface PlottedSignal {
   ref: SignalRef;
   color: string;
   areaId: string;
+  /** How this signal's values read (fixed decimals / float / hex),
+   * from the catalog. Absent for a signal the catalog no longer
+   * describes, which falls back to the float rule. */
+  fmt?: SignalValueFormat;
 }
 
 /** The bottom measurement strip. Cursor-position cells (A/B/Δt/1÷Δt)
@@ -96,7 +100,7 @@ export function PlotMeasurementStrip({
       {measKeys.includes("b") && <MeasCell k="B (t)" v={fmtPos(cursorX.b)} cls="pink" />}
       {measKeys.includes("dt") && <MeasCell k="Δt" v={formatDurationSeconds(dt)} />}
       {measKeys.includes("freq") && <MeasCell k="1/Δt" v={dt ? fmtFreq(1 / dt) : "—"} />}
-      {plottedSignals.map(({ key, ref, color, areaId }) => {
+      {plottedSignals.map(({ key, ref, color, areaId, fmt }) => {
         const s = seriesFor(areaId, key) ?? { t: [], v: [] };
         const va = cursorX.a != null ? valueAt(s, cursorX.a) : null;
         const vb = cursorX.b != null ? valueAt(s, cursorX.b) : null;
@@ -104,13 +108,19 @@ export function PlotMeasurementStrip({
         const name = `${ref.messageName}.${ref.signalName}`;
         return (
           <span key={key} style={{ display: "contents" }}>
-            {measKeys.includes("valA") && <MeasCell k={`${name} @A`} v={fmtVal(va)} swatch={color} />}
-            {measKeys.includes("valB") && <MeasCell k={`${name} @B`} v={fmtVal(vb)} swatch={color} />}
+            {measKeys.includes("valA") && <MeasCell k={`${name} @A`} v={fmtVal(va, fmt)} swatch={color} />}
+            {measKeys.includes("valB") && <MeasCell k={`${name} @B`} v={fmtVal(vb, fmt)} swatch={color} />}
+            {/* Δ and the mean are *derived* from the samples, not
+              * samples: a mean of 0.25-quantised readings need not land
+              * on that grid, and a difference of two bit patterns is
+              * not itself a bit pattern. Both read by the plain float
+              * rule; @A / @B / min / max are real readings and take the
+              * signal's own precision and radix. */}
             {measKeys.includes("delta") && (
               <MeasCell k={`${name} Δ`} v={va != null && vb != null ? fmtVal(vb - va) : "—"} swatch={color} />
             )}
-            {measKeys.includes("min") && <MeasCell k={`${name} min`} v={fmtVal(span?.min ?? null)} swatch={color} />}
-            {measKeys.includes("max") && <MeasCell k={`${name} max`} v={fmtVal(span?.max ?? null)} swatch={color} />}
+            {measKeys.includes("min") && <MeasCell k={`${name} min`} v={fmtVal(span?.min ?? null, fmt)} swatch={color} />}
+            {measKeys.includes("max") && <MeasCell k={`${name} max`} v={fmtVal(span?.max ?? null, fmt)} swatch={color} />}
             {measKeys.includes("mean") && <MeasCell k={`${name} mean`} v={fmtVal(span?.mean ?? null)} swatch={color} />}
           </span>
         );

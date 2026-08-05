@@ -577,6 +577,16 @@ export interface SignalDescriptorRecord {
   /// numerically and its lone label applies only on an exact raw
   /// match. The plot panel keys stepped + symbolic rendering on this.
   is_enum?: boolean;
+  /// True when the signal's DBC asks for its value in hex — the twin
+  /// of `SignalRecord.display_hex`, so a signal cannot read as hex on
+  /// a trace row and as decimal in a plot readout. Absent when false.
+  display_hex?: boolean;
+  /// Decimal places the signal's DBC factor implies (`0.25` → 2, an
+  /// unscaled integer → 0). Absent when the DBC implies no fixed
+  /// precision — a `SIG_VALTYPE_` float, or a factor with no finite
+  /// decimal expansion — and the value then reads by the float rule.
+  /// The host computes it (`cannet_dbc`); a readout renders it.
+  decimals?: number;
 }
 
 /// A signal view's selection, sent to `fetch_signal_page`: manual
