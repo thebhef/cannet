@@ -149,16 +149,20 @@ const mockSignalExtents: Record<string, { lo: number; hi: number }> = {};
 /// Settings the fake host serves from `get_settings`. Empty means "every
 /// field at its default"; a test that cares sets a key and re-hydrates.
 const mockSettings: Record<string, unknown> = {};
-/// While set, every `sample_signals` call returns a promise that never
-/// settles — so a test can observe what the panel draws with no further
-/// fetch able to land. Prefixed `mock` for the hoisted factory.
-const mockSampleStall = { on: false };
+/// While set, every `sample_signals` call returns a promise that does
+/// not settle on its own — so a test can observe what the panel draws
+/// with no further fetch able to land. Each such call parks its resolver
+/// in `pending`, so a test that needs the stalled fetch to *finish*
+/// (rather than stay stalled forever) can hand it a sample. Prefixed
+/// `mock` for the hoisted factory.
+const mockSampleStall = { on: false, pending: [] as ((buf: ArrayBuffer) => void)[] };
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
     if (cmd === "list_signals") return SIGNALS;
     if (cmd === "sample_signals") {
-      if (mockSampleStall.on) return new Promise<ArrayBuffer>(() => {});
+      if (mockSampleStall.on)
+        return new Promise<ArrayBuffer>((resolve) => mockSampleStall.pending.push(resolve));
       return encodeSample(
         (args?.signals ?? []).map(
           (s) =>
@@ -463,6 +467,7 @@ afterEach(() => {
   mockSampleBounds.from = 0;
   mockSampleBounds.last = 2;
   mockSampleStall.on = false;
+  mockSampleStall.pending.length = 0;
   mockRenderCost.perTickMs = 0;
   mockRenderCost.accMs = 0;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
@@ -1283,6 +1288,52 @@ describe("PlotPanel", () => {
       // The rebuild lands ~250 ms after the instance was constructed.
       await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(before), { timeout: 2000 });
       await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBeGreaterThan(0));
+    });
+  });
+
+  it("an area whose first sample is slow says it is building, and stops when it lands", async () => {
+    // A cold decimation cache decodes the whole window on the first
+    // sample for a signal set, so the canvas is blank for seconds and
+    // reads as "no data" or "hung". Stalling every fetch stands in for
+    // that wait; the gate is real time, so only the positive direction
+    // is asserted here (the sub-threshold case is in
+    // `useFirstSampleWait.test.tsx`, under fake timers).
+    const building = () => document.querySelector(".plot-area-building");
+    await withSizedCanvas(async () => {
+      mockSampleStall.on = true;
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(building()).not.toBeNull(), { timeout: 2000 });
+
+      // The moment the sample lands it goes. Hand the stalled fetch its
+      // answer rather than starting a fresh one: the in-flight round-trip
+      // holds the area's resample guard, exactly as the slow cold sample
+      // this stands in for does.
+      mockSampleStall.on = false;
+      await act(async () => {
+        for (const resolve of mockSampleStall.pending.splice(0))
+          resolve(encodeSample([{ t: [0, 1, 2], v: [10, 20, 15] }]));
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(building()).toBeNull());
+    });
+  });
+
+  it("an area with no signals never says it is building", async () => {
+    // "Nothing to draw yet" must stay distinguishable from "nothing to
+    // draw": an empty area is the latter and arms nothing, however long
+    // it sits there.
+    await withSizedCanvas(async () => {
+      mockSampleStall.on = true;
+      renderPanel();
+      // Long enough for the gate to have fired had it been armed — the
+      // sibling test above proves it fires inside this budget.
+      await new Promise((r) => setTimeout(r, 1000));
+      expect(document.querySelector(".plot-area-building")).toBeNull();
+      expect(screen.getByText("pick a signal above")).toBeInTheDocument();
     });
   });
 
