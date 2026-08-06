@@ -383,3 +383,11 @@ Right, Left, Home/End, PageUp/Down as a pure key → action function.
 expansion edits the row space, a leaf's content expansion does not" is
 exercised rather than asserted. Suite: 111 files / 1272 tests green;
 `pnpm build` green.
+
+### 2026-08-05 — A.2 selection model
+
+`apps/gui/src/gridviewSelection.ts` + `gridviewSelection.test.ts`.
+`{ids, anchor}`, `selectableIdsInOrder`, `selectOnClick`
+(click-replace / Ctrl+Cmd-click toggle / Ctrl+Shift+click additive
+range from the anchor, anchor preserved across ranges), `selectAll`,
+`collapseToCursor`. 15 tests. Suite green; `pnpm build` green.
