@@ -10,7 +10,7 @@ import type {
 } from "./types";
 import { sectionHeaderOf, signalOf } from "./types";
 import { TraceControls } from "./TraceControls";
-import { TraceHeader, contentWidthStyle } from "./traceTable";
+import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import { useTrace } from "./trace";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
@@ -21,7 +21,6 @@ import { busDisplayName, busLookup, nextSort, reorderColumn, resizeColumn, toggl
 import {
   DEFAULT_SIGNAL_SORT,
   SIGNAL_COLUMN_DEFS,
-  signalColumnDef,
   signalColumnsFromParams,
   signalGridTemplateColumns,
   type SignalColumnKey,
@@ -681,10 +680,10 @@ export function SignalsPanel(props: IDockviewPanelProps) {
         </div>
       )}
       <div className="trace">
-        <TraceHeader<SignalColumnKey>
+        <GridviewHeader<SignalColumnKey>
+          defs={SIGNAL_COLUMN_DEFS}
           columns={columns}
           headerRef={headerRef}
-          defs={SIGNAL_COLUMN_DEFS}
           onColumnResize={handleColumnResize}
           onColumnToggle={handleColumnToggle}
           onColumnReorder={handleColumnReorder}
@@ -993,9 +992,9 @@ function SignalRow({
   const key = row ? signalKey(row.bus_id, row.message_id, row.extended, row.signal_name) : "";
   const nameColor = row ? signalColors[key] ?? stableSignalColor(key) : undefined;
   const colorInputRef = useRef<HTMLInputElement>(null);
-  const cell = (c: SignalColumnState): React.ReactNode => {
+  const cell = (column: SignalColumnKey): React.ReactNode => {
     if (!row) return null;
-    switch (c.key) {
+    switch (column) {
       case "bus":
         return busDisplayName(row.bus_id, lookup);
       case "ecu":
@@ -1085,15 +1084,13 @@ function SignalRow({
     }
   };
   return (
-    <div
+    <GridviewRow
+      defs={SIGNAL_COLUMN_DEFS}
+      columns={columns}
+      gridTemplate={gridTemplate}
       className={`trace-row ${row ? "" : "loading"}`}
-      style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT, gridTemplateColumns: gridTemplate }}
-    >
-      {columns.map((c) => (
-        <span key={c.key} className={signalColumnDef(c.key).className}>
-          {cell(c)}
-        </span>
-      ))}
-    </div>
+      style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
+      renderCell={(column, className) => <span className={className}>{cell(column)}</span>}
+    />
   );
 }

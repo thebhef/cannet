@@ -371,6 +371,14 @@ visually until its own migration slice (D0).
 
 ## Status log
 
+### 2026-08-05 — branch setup
+
+`task51-gridview-base`, cut from `gridview-commonization-plan`. The
+planning-doc edits (task-51 drafts applied, tasks 51–53 put first,
+task 53's theme decisions groomed) were **already committed** on the
+parent branch as `e112033`, with a clean working tree — so no separate
+`plan:` commit was made rather than duplicating that content.
+
 ### 2026-08-05 — A.1 row-space contract + cursor math
 
 `apps/gui/src/gridviewRows.ts` + `gridviewRows.test.ts`. The row model
@@ -406,3 +414,71 @@ test was falsified before being trusted: forcing `inGridview: false`
 in the harness's dispatcher makes it fail, so it is testing the rule
 and not the harness. Suite: 113 files / 1303 tests green; `pnpm build`
 green.
+
+### 2026-08-05 — A.4 column framework
+
+`apps/gui/src/gridviewColumns.tsx` + `gridviewColumns.dom.test.tsx`.
+`TraceHeader` and `contentWidthStyle` moved out of `traceTable.tsx`
+into the layer as `GridviewHeader` (panel-declared `defs`, now
+required) and gained `GridviewRow`, the row template: the grid
+container, exactly one cell per visible column in the header's order,
+and the tracks — which survive whatever `style` the panel passes.
+`traceTable.tsx` keeps only trace cell content (`cellContent`,
+`TraceTimeCell`). All three paged views migrated; the by-id header's
+`byId` boolean became a general `label` override.
+
+The old `traceTable.dom.test.tsx` (header drag-to-reorder) moved into
+the layer's test file with the component. Suite: 113 files / 1307
+tests green; `pnpm build` green; every pre-existing trace/by-id/signal
+DOM test unchanged and green, which is the zero-visual-change (D0)
+net.
+
+#### Blockers / side effects
+
+- **D16 "panels supply cell content only" — implemented as "panels
+  supply the cell *element*, the layer supplies the slot, the order and
+  the class".** `renderCell(key, className)` returns the element, and
+  the layer wraps nothing. The reason is `TraceTimeCell`: that cell
+  holds its own hover state to build the wall-clock `title` lazily, and
+  the state has to live on the element carrying the handlers. Lifting
+  it into a layer-owned wrapper would repaint the whole row on every
+  pointer move over a virtualized table — a regression on the ADR 0031
+  hot path — and nesting a second span inside a layer wrapper would
+  change the rendered DOM, which D0 forbids. The alignment invariant
+  D16 is actually after (one slot per visible column, in header order,
+  in the header's tracks) is still structural and is what the new tests
+  assert.
+- **D13.4 "selectable *kinds* are the adapter's declaration" —
+  implemented as a per-row predicate** (`GridviewAdapter.isSelectable`).
+  Kind cannot express what the DBC tree already does: its message nodes
+  are selectable *branches* while its bus / file / ECU nodes are
+  unselectable branches. The predicate is the closest faithful reading;
+  the row model itself stays exactly `{id, kind, expandable, depth}` as
+  ADR 0044 specifies.
+- **Selection follows *every* cursor move, not only Up/Down.** D2/D3
+  spell the rule out for Up/Down and say nothing about Home/End,
+  PageUp/Down or Right-into-first-child, which are cursor moves too.
+  Applying it uniformly is the mainstream
+  single-select-follows-focus behaviour; the alternative (a selection
+  that survives Home but not ArrowUp) has no rationale in the
+  decisions.
+- **`traceColumns.ts` was left where it is.** The column *state*
+  arithmetic there is already generic over the key set and already
+  shared by the signal view, so D16's "columns live in the layer" needed
+  only the header and the row template re-homed. Renaming the module
+  would have touched 17 importers for no behavioural change; if the
+  layer's file names are to be coherent, that rename is a standalone
+  step.
+- **A bug this slice introduced and the suite caught**: renaming
+  `SignalRow`'s cell parameter to `key` shadowed the row's own
+  `signalKey`, so the section menu was passed the column key instead of
+  the signal. `SignalsPanel.sections.dom.test.tsx` failed immediately;
+  the parameter is now `column`. Noted because it is evidence the
+  regression net is doing its job, not a leftover defect.
+- **The D10 DOM test drives a hand-wired dispatcher**, not
+  `useCommands` itself, because no panel is on the layer yet and
+  `useCommands` only exists inside `App`. The harness composes the same
+  three real functions the provider composes (`dispatchStroke`,
+  `isEditableTarget`, `isGridviewTarget`) and the one-line wiring in
+  `useCommands` is what remains untested; the first panel migration
+  (phase B) makes an end-to-end test possible and should take it.

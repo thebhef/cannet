@@ -19,11 +19,12 @@ import {
   type ColumnKey,
   type ColumnState,
   type SortState,
-  columnDef,
+  COLUMN_DEFS,
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { TraceHeader, TraceTimeCell, cellContent, contentWidthStyle } from "./traceTable";
+import { TraceTimeCell, cellContent } from "./traceTable";
+import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import type { ByIdSnapshotRecord } from "./types";
 import { diagCount } from "./diag"; // DIAG
 
@@ -205,7 +206,8 @@ export function ByIdTable({
 
   return (
     <div className="trace">
-      <TraceHeader
+      <GridviewHeader
+        defs={COLUMN_DEFS}
         columns={columns}
         headerRef={headerRef}
         onColumnResize={onColumnResize}
@@ -213,7 +215,7 @@ export function ByIdTable({
         onColumnReorder={onColumnReorder}
         sort={sort}
         onSortColumn={onSortColumn}
-        byId
+        label={(def) => def.byIdLabel ?? def.label}
       />
       <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
         {/* Spacer: gives the scrollbar the snapshot's full extent
@@ -301,9 +303,12 @@ const ByIdRow = memo(function ByIdRow({
     if (expandable) onToggle(rowKey);
   };
   return (
-    <div
+    <GridviewRow
+      defs={COLUMN_DEFS}
+      columns={columns}
+      gridTemplate={gridTemplate}
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
-      style={{ position: "absolute", top, left: 0, right: 0, height, gridTemplateColumns: gridTemplate }}
+      style={{ position: "absolute", top, left: 0, right: 0, height }}
       tabIndex={expandable ? 0 : undefined}
       aria-expanded={expandable ? isExpanded : undefined}
       onClick={toggle}
@@ -313,10 +318,17 @@ const ByIdRow = memo(function ByIdRow({
         e.preventDefault();
         toggle();
       }}
-    >
-      {columns.map((c) => {
+      renderCell={(key, className) => {
+        // The message cell carries the name and nothing else. A caret
+        // beside it said nothing about what it did — it is mid-row,
+        // where a disclosure indicator does not belong — so this view
+        // renders the cell itself rather than taking `cellContent`'s
+        // glyph-bearing one.
+        if (key === "msg") {
+          return <span className={className}>{frame?.decoded ? frame.decoded.name : ""}</span>;
+        }
         const content = cellContent(
-          c.key,
+          key,
           frame,
           frame?.index ?? 0,
           baseTimestamp,
@@ -326,22 +338,8 @@ const ByIdRow = memo(function ByIdRow({
           row?.rate,
           row?.count,
         );
-        const className = columnDef(c.key).className;
-        // The message cell carries the name and nothing else. A caret
-        // beside it said nothing about what it did — it is mid-row,
-        // where a disclosure indicator does not belong — so this view
-        // renders the cell itself rather than taking `cellContent`'s
-        // glyph-bearing one.
-        if (c.key === "msg") {
-          return (
-            <span key={c.key} className={className}>
-              {frame?.decoded ? frame.decoded.name : ""}
-            </span>
-          );
-        }
-        return c.key === "time" ? (
+        return key === "time" ? (
           <TraceTimeCell
-            key={c.key}
             className={className}
             seconds={frame?.timestamp_seconds ?? null}
             base={baseTimestamp}
@@ -349,11 +347,10 @@ const ByIdRow = memo(function ByIdRow({
             {content}
           </TraceTimeCell>
         ) : (
-          <span key={c.key} className={className}>
-            {content}
-          </span>
+          <span className={className}>{content}</span>
         );
-      })}
+      }}
+    >
       {isExpanded && frame?.decoded && (
         <div className="signals">
           {frame.decoded.signals.map((sig) => (
@@ -367,7 +364,7 @@ const ByIdRow = memo(function ByIdRow({
           ))}
         </div>
       )}
-    </div>
+    </GridviewRow>
   );
 });
 
