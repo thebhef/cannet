@@ -1,7 +1,8 @@
 // The gridview's mouse-built selection model (ADR 0044): click
-// replaces, Ctrl/Cmd+click toggles, Ctrl+Shift+click adds the range
-// from the click anchor, Ctrl/Cmd+A takes every selectable row, and a
-// cursor move collapses the selection to the cursor.
+// replaces, Ctrl/Cmd+click toggles, Shift+click replaces with the range
+// from the click anchor, Ctrl+Shift+click adds that range, Ctrl/Cmd+A
+// takes every selectable row, and a cursor move collapses the selection
+// to the cursor.
 
 import { describe, expect, it } from "vitest";
 
@@ -59,10 +60,54 @@ describe("click", () => {
     expect(selectOnClick(before, "zz", MOD, ORDER)).toBe(before);
   });
 
-  it("treats plain Shift+click as a plain click — it is unassigned in v1", () => {
+});
+
+describe("Shift+click", () => {
+  it("replaces the selection with the anchor→target range", () => {
     const next = selectOnClick(selection(["a"], "a"), "d", SHIFT, ORDER);
-    expect(selected(next)).toEqual(["d"]);
-    expect(next.anchor).toBe("d");
+    expect(selected(next)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("drops what was selected outside the range", () => {
+    const next = selectOnClick(selection(["a", "e"], "b"), "c", SHIFT, ORDER);
+    expect(selected(next)).toEqual(["b", "c"]);
+  });
+
+  it("ranges upward as readily as downward", () => {
+    const next = selectOnClick(selection(["d"], "d"), "b", SHIFT, ORDER);
+    expect(selected(next)).toEqual(["b", "c", "d"]);
+  });
+
+  it("keeps the anchor, so a second Shift+click re-ranges from the same point", () => {
+    const first = selectOnClick(selection(["b"], "b"), "d", SHIFT, ORDER);
+    expect(first.anchor).toBe("b");
+    const second = selectOnClick(first, "c", SHIFT, ORDER);
+    expect(selected(second)).toEqual(["b", "c"]);
+    expect(second.anchor).toBe("b");
+  });
+
+  it("shares the anchor with Ctrl+Shift+click", () => {
+    // Ctrl+click anchors; the additive range extends from there, and a
+    // plain Shift+click that follows ranges from the same anchor —
+    // replacing, so the additive range's earlier rows go.
+    const anchored = selectOnClick(selection(["a"], "a"), "c", MOD, ORDER);
+    const added = selectOnClick(anchored, "e", MOD_SHIFT, ORDER);
+    expect(selected(added)).toEqual(["a", "c", "d", "e"]);
+    const replaced = selectOnClick(added, "d", SHIFT, ORDER);
+    expect(selected(replaced)).toEqual(["c", "d"]);
+    expect(replaced.anchor).toBe("c");
+  });
+
+  it("falls back to a plain click when there is no anchor yet", () => {
+    const next = selectOnClick(EMPTY_SELECTION, "c", SHIFT, ORDER);
+    expect(selected(next)).toEqual(["c"]);
+    expect(next.anchor).toBe("c");
+  });
+
+  it("falls back to a plain click when the anchor has left the row space", () => {
+    const next = selectOnClick(selection(["a"], "gone"), "c", SHIFT, ORDER);
+    expect(selected(next)).toEqual(["c"]);
+    expect(next.anchor).toBe("c");
   });
 });
 
