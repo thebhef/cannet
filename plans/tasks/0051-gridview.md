@@ -116,16 +116,19 @@ The complete v1 multiselect surface, per the user ("that's all the
 behavior I want at the moment"):
 
 - **Ctrl/Cmd+click** — toggle the clicked row in/out of the selection.
+- **Shift+click** — *replace* the selection with the contiguous
+  range between the anchor (the last plain/Ctrl click) and the
+  target. (Added 2026-08-06 — originally left unassigned, an
+  omission the user corrected during implementation.)
 - **Ctrl+Shift+click** — *add* the target row and every row between
-  it and the previously-clicked row (the anchor). Additive, so
-  noncontiguous selections can be built and extended.
+  it and the anchor. Additive, so noncontiguous selections can be
+  built and extended.
 - **Ctrl/Cmd+A** — select all.
 - Plain click replaces the selection with the clicked row.
 
 No keyboard multiselect (no Shift/Ctrl+arrows, no Ctrl+Space, no
 checkboxes) — the user knows no intuitive precedent for it and does
-not want checkbox rows. Plain Shift+click is deliberately unassigned
-in v1.
+not want checkbox rows.
 
 ### D5. No branch-with-content in v1 (2026-08-05)
 
@@ -372,7 +375,9 @@ visually until its own migration slice (D0).
   (D1 — revisit once the gridview lands).
 - Host-side fuzzy search for paged views (D14).
 - Type-ahead search (D3).
-- Keyboard multiselect and plain Shift+click (D4).
+- Keyboard multiselect (D4). (Plain Shift+click was deferred here
+  until 2026-08-06, when the user assigned it: replace-with-range —
+  implemented in slice F.)
 - Branch-with-content affordance (D5).
 
 ## Open questions (agenda)
