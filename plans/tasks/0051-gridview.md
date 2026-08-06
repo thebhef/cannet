@@ -616,3 +616,148 @@ clean.
   (`SignalPatternEditor`) and a view-level pattern is the same kind of
   live rule; wiring one and not the other would have been an arbitrary
   asymmetry in the same widget.
+
+### 2026-08-05 — C.1 gate: task 50 item 7 is settled
+
+Verified before starting the chronological migration, as D6 requires.
+Item 7 was reopened on 2026-08-05 (`ef8af87`) and closed by two fixes,
+both on `main` under this branch: `4ae4211` (#175, the anchor bound over
+plain rows) and `27d51e3` (#179, the second pass — `TraceView` never
+passed `variable` to the shared scaffold, so the anchor bound, the
+scroll spacer and the sticky viewport's height were all computed as if
+every row were `ROW_HEIGHT`). The task-50 file records the diagnosis, a
+falsification of each of the three consequences separately, and a
+Chromium table with expanded rows at the tail (chrono before: last
+reachable row 997 of 1000, 108 px past the fold, `scrollHeight`
+unchanged by expanding; after: row 999 with 7 px of slack and
+`scrollHeight` +108). Read against the code today: `TraceView` derives
+`rowHeightAt` / `extraHeight` and hands them to `useTraceViewport`, maps
+scroll↔anchor through the one `anchorFromScroll` / `scrollForAnchor`
+pair, and sizes the sticky viewport from the stack. The regression net
+is `TraceView.anchor.dom.test.tsx`'s "expanded tail reachability" (three
+cases) plus `traceViewport.test.ts`'s tail-bound invariants. Settled —
+the migration proceeded, and those tests stayed green throughout.
+
+### 2026-08-05 — C.1a by-ID on the gridview
+
+`2c8b307`. `ByIdTable` is the first leaf-with-content consumer: the
+host-sorted snapshot *is* the row space, every row a leaf that is
+expandable exactly when it has a decode, keyed by the same stable
+`byIdRowKey` the fold set already used — so the cursor, the selection
+and the expansion name one thing. Right discloses the decoded block and
+Left retracts it, adding no rows. The layer wants `setExpanded(id,
+want)` where the panel offers a toggle, so the adapter asks for the
+toggle only when the two differ.
+
+Drag identity (D9): the row is the source for its whole message, a line
+inside the expanded block still drags that one signal, and a grab on a
+row that is in the selection carries every selected row's message —
+resolved in the `dragstart` handler, so the scroll path pays nothing.
+`ByIdTable.gridview.dom.test.tsx`, 10 DOM tests. Suite: 116 files / 1348
+tests green; `pnpm build` green; every pre-existing `ByIdTable` /
+`TracePanel.byIdCollapse` test unchanged and green (D0).
+
+### 2026-08-05 — C.1b chronological on the gridview
+
+Four commits.
+
+`f2ba825` — the adapter grows an optional `selectionOrder()`. The
+layer's default is `selectableIdsInOrder`, which walks `count` on every
+click and every Ctrl+A; a chronological trace's `count` is the whole
+capture. A panel that can answer is taken at its word.
+
+`27d0e96` — the chronological expansion set stops being a set of
+*display indices*. A display index names a different frame the moment
+the window slides or an event interleaves, so the open row was whatever
+later landed in the slot; it is now `Map<rowId, signals>` keyed by the
+frame's absolute index in the capture (`f:<index>`) or the event's own
+id (`e:<id>`). The signal count travels with the id because the scroll
+geometry needs the height of *every* open row and a row scrolled out of
+the loaded page can no longer be asked — so `expandedExtraHeightOf`
+sums the open rows' signal counts instead of walking indices through a
+`rowHeightAt`. Falsified: keying the toggle and the position derivation
+by `absoluteIndex` fails two of the three new identity tests.
+
+`0a39c4a` — a bug the migration surfaced, fixed in the layer: the grid
+binds the navigation keys on the container, so a text field inside a
+row (a section's name in the signal view, an event row's label here)
+lost the caret to the cursor. The layer now makes the same
+editable-target exemption the global dispatcher does.
+
+`53d3f99` — the migration itself. Frames and events alike are leaves in
+one row space; an event row takes part in the cursor but not the
+selection (it is not a message). `indexOf` scans the render window and
+`selectionOrder` answers with the page the view holds, since the space
+is millions of host-paged rows. That exposed one gap in the layer:
+`moveCursor` re-derived the target's index through `indexOf` before
+scrolling, and the row it scrolls *to* is by definition one the panel
+does not hold — so `cursorAction` now carries the index it already
+computed, and Home / End / PageUp / PageDown move the window instead of
+stranding the cursor off-page. The live pin is released only when a
+cursor move actually has to move the window (arrowing inside the tail on
+screen leaves it following), the same rule the wheel follows.
+`messageDragRefs` moved into `dragSignals.ts`, since both trace modes
+now build the same message payload.
+
+`TraceView.gridview.dom.test.tsx`, 12 DOM tests; 1 new in
+`useGridview.dom.test.tsx` for the paged selection order, 1 for the
+editable exemption; `gridviewRows.test.ts`'s move assertions now read
+the index through a `move(space, id)` helper rather than hand-computed
+numbers. Suite: 117 files / 1362 tests green; `pnpm build` green. No
+host code was touched, so no Rust run was needed.
+
+**Receiving ends: no gap found.** B.3 built them generically over the
+payload shape, and a message drag is a payload whose `signals` are the
+message's signals — so the plot's per-area descriptor dedup, transmit's
+group-by-`(id, extended)`, the signal view's `addKeys(dedupeSignalRefs)`
+and a section's `dropOnSection` all already answer for it, deduped at
+the payload edge (D11). These slices added drag *sources* only.
+
+#### Blockers / side effects
+
+- **The by-ID row keeps its own tab stop and its Enter / Space toggle**,
+  which ADR 0044 would put on the container with Enter unbound. That
+  affordance shipped in `2c1949a` (the row *is* the disclosure, no
+  caret) and its tests are part of D0's "existing DOM tests stay green".
+  The two coexist: the row does not stop propagation, so the grid's keys
+  still reach the container by bubbling, and a click on a row that is
+  *not* a focus target (nothing to disclose) hands the keyboard to the
+  grid instead. Where the two rules disagree, D0 won.
+- **Clicking a trace row both selects it and toggles its disclosure.**
+  In both modes the row is the disclosure control, so a plain click now
+  does two things. Keeping the disclosure off the click would have meant
+  a separate control, which D0 and `2c1949a` both rule out.
+- **The chronological row space's ids exist only where the page has
+  landed**, so `indexOf` scans the render window. A cursor that has
+  scrolled out of that window is out of the space, and the next
+  navigation key restarts it at the first row of the capture — the
+  layer's documented restart rule, which at the live tail also releases
+  the pin. Clicking a row places it again. Making this better needs the
+  host to answer "the id at index N", which is a slice of its own; the
+  alternative considered and rejected was remembering the cursor's last
+  index, which silently names a different row once the window's head
+  advances.
+- **Ctrl+A in either trace mode takes the loaded page, not the whole
+  space** — the same paged-model fact recorded for the signal view in
+  B.2, now stated by the adapter (`selectionOrder`) instead of
+  discovered by a walk. A multi-row drag likewise resolves only the
+  selected rows the view still holds.
+- **A stale open row over-sizes the scroll spacer.** The old
+  index-keyed `expandedExtraHeightOf` dropped indices past the end; the
+  id-keyed form has no index to test, so a frame that was open when the
+  ring buffer truncated it away keeps contributing its signal lines to
+  the spacer until the trace is cleared (which resets the whole set).
+  Bounded by what the user expanded, and pruning it honestly would need
+  the id→index map the previous point says the frontend cannot have.
+- **Row-memo stability is maintained but not directly tested.** The hook
+  returns fresh callbacks every render (its adapter moves with the
+  window), so both trace views read the live gridview through a ref and
+  hand the memoised rows stable handlers — otherwise every visible row
+  would repaint on every live tick, on the hottest ADR 0031 path. There
+  is no per-row render counter to assert against, and adding one would
+  put a `diagCount` call on the very path it protects; the existing
+  "renders once per live tick" test covers the component, not the rows.
+- **`cursorAction`'s move action changed shape** (it carries `index`).
+  Twenty assertions in `gridviewRows.test.ts` now build the expectation
+  through a `move(space, id)` helper, so the indices come from the
+  independently-tested `indexOf` rather than from hand-counting.
