@@ -1,9 +1,53 @@
+/* === Theme tokens ===
+   The one place a color is written down. Every rule below reads a
+   token, so a theme is a different set of values here rather than
+   an edit across the stylesheet. Names are roles, not shades: two
+   rules that happen to share a hex today but mean different things
+   (a border and a fill, say) hold different tokens, and no two
+   distinct values are folded into one.
+*/
+:root {
+  /* Surfaces — panel, row and control backgrounds */
+  --divider: #2c3444;
+  --divider-subtle: #1f2630;
+  --surface-app: #0e1116;
+  --surface-badge-info: #131a26;
+  --surface-bus-row: #111c33;
+  --surface-bus-row-hover: #16213c;
+  --surface-button-hover: #1a212b;
+  --surface-canvas: #0b1220;
+  --surface-cell-hover: #1c2433;
+  --surface-control: #0f141d;
+  --surface-control-hover: #334155;
+  --surface-field: #0f172a;
+  --surface-graph-toolbar: #1f2532;
+  --surface-hover: #1c2530;
+  --surface-hover-strong: #1f2a3d;
+  --surface-hover-subtle: #121821;
+  --surface-overlay: #131923;
+  --surface-pop: #111827;
+  --surface-raised: #1e293b;
+  --surface-row: #11161e;
+  --surface-row-focused: #17202c;
+  --surface-row-primary: #131e29;
+  --surface-row-selected: #1b2740;
+  --surface-section-header: #131a24;
+  --surface-sunken: #0d1114;
+  --surface-toggle-active: #2a3340;
+  --surface-toggle-active-alt: #1f2c3a;
+  --surface-toolbar-control: #1c2230;
+  --surface-toolbar-control-hover: #2a3447;
+  --surface-toolbar-summary: #182030;
+  --surface-tx-toolbar: #11161a;
+}
+/* === end theme tokens === */
+
 :root {
   color-scheme: dark;
   font-family:
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, sans-serif;
-  background: #0e1116;
+  background: var(--surface-app);
   color: #d8dee9;
 }
 
@@ -39,7 +83,7 @@ header {
 }
 
 .toolbar button {
-  background: #1c2230;
+  background: var(--surface-toolbar-control);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 4px;
@@ -49,7 +93,7 @@ header {
 }
 
 .toolbar button:hover:not(:disabled) {
-  background: #2a3447;
+  background: var(--surface-toolbar-control-hover);
 }
 
 .toolbar button:disabled {
@@ -70,7 +114,7 @@ header {
   display: inline-block;
   width: 1px;
   height: 1.4em;
-  background: #2c3444;
+  background: var(--divider);
   margin: 0 0.2rem;
 }
 
@@ -86,7 +130,7 @@ header {
   padding: 0.2rem 0.5rem;
   border: 1px solid #2c3444;
   border-radius: 4px;
-  background: #182030;
+  background: var(--surface-toolbar-summary);
   color: inherit;
   font: inherit;
 }
@@ -94,7 +138,7 @@ header {
   display: none;
 }
 .toolbar details.recent-blfs > summary:hover {
-  background: #1f2a3d;
+  background: var(--surface-hover-strong);
 }
 .toolbar ul.recent-blfs-menu {
   position: absolute;
@@ -103,7 +147,7 @@ header {
   margin: 4px 0 0 0;
   padding: 4px 0;
   list-style: none;
-  background: #0f141d;
+  background: var(--surface-control);
   border: 1px solid #2c3444;
   border-radius: 4px;
   min-width: 280px;
@@ -126,7 +170,7 @@ header {
   cursor: pointer;
 }
 .toolbar ul.recent-blfs-menu > li > button:hover {
-  background: #1f2a3d;
+  background: var(--surface-hover-strong);
 }
 
 /* Placeholder rows render only the row index until their chunk
@@ -168,7 +212,7 @@ header {
 }
 
 .modal {
-  background: #131923;
+  background: var(--surface-overlay);
   border: 1px solid #1f2630;
   border-radius: 6px;
   padding: 1rem 1.2rem;
@@ -198,7 +242,7 @@ header {
 }
 
 .modal-buttons button:hover {
-  background: #1a212b;
+  background: var(--surface-button-hover);
 }
 
 /* Command / go-to-view palette (ADR 0018). Reuses the modal chrome
@@ -221,7 +265,7 @@ header {
   font: inherit;
   width: 100%;
   box-sizing: border-box;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 4px;
@@ -288,7 +332,7 @@ header {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 4px;
@@ -326,7 +370,7 @@ header {
   padding: 0.25rem;
   max-height: 40vh;
   max-width: 90vw;
-  background: #111827;
+  background: var(--surface-pop);
   border: 1px solid #2c3444;
   border-radius: 4px;
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
@@ -337,7 +381,7 @@ header {
 .combobox-input {
   font: inherit;
   box-sizing: border-box;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 4px;
@@ -445,7 +489,7 @@ header {
   gap: 0.4rem;
   padding: 0.25rem 0.5rem;
   border-bottom: 1px solid #2c3444;
-  background: #1f2532;
+  background: var(--surface-graph-toolbar);
 }
 .graph-panel-canvas {
   flex: 1 1 auto;
@@ -477,7 +521,7 @@ header {
 
 /* Tweak xyflow's defaults to fit the abyss theme. */
 .react-flow {
-  background: #0b1220;
+  background: var(--surface-canvas);
 }
 
 /* Custom node shapes used by ProjectGraphPanel — each kind gets a
@@ -602,7 +646,7 @@ header {
 .graph-edge-menu {
   position: fixed;
   z-index: 200;
-  background: #0d1114;
+  background: var(--surface-sunken);
   border: 1px solid #2c3444;
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
@@ -623,7 +667,7 @@ header {
   border-radius: 3px;
 }
 .graph-edge-menu > button:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
 }
 .filter-predicate-editor {
   margin-top: 0.4rem;
@@ -783,7 +827,7 @@ header {
   flex: 1 1 auto;
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   border: 1px solid #1e293b;
   border-radius: 0.2rem;
@@ -797,7 +841,7 @@ header {
   padding: 0;
   border: 1px solid #1e293b;
   border-radius: 0.2rem;
-  background: #0f172a;
+  background: var(--surface-field);
   cursor: pointer;
 }
 
@@ -807,7 +851,7 @@ header {
   gap: 0.3rem;
   margin-top: 0.4rem;
   padding: 0.4rem;
-  background: #0f172a;
+  background: var(--surface-field);
   border: 1px solid #1e293b;
   border-radius: 0.3rem;
 }
@@ -830,7 +874,7 @@ header {
   flex: 1 1 auto;
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: #0b1220;
+  background: var(--surface-canvas);
   color: #e2e8f0;
   border: 1px solid #1e293b;
   border-radius: 0.2rem;
@@ -858,7 +902,7 @@ header {
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.8rem;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   border: 1px solid #1e293b;
   border-radius: 0.2rem;
@@ -897,7 +941,7 @@ header {
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.78rem;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   border: 1px solid #1e293b;
   border-radius: 0.2rem;
@@ -1026,7 +1070,7 @@ header {
 }
 
 .project-panel button:hover:not(:disabled) {
-  background: #1a212b;
+  background: var(--surface-button-hover);
 }
 
 .project-panel button:disabled {
@@ -1076,7 +1120,7 @@ header {
 }
 
 .trace-controls button:hover {
-  background: #1a212b;
+  background: var(--surface-button-hover);
 }
 
 .trace-status {
@@ -1121,11 +1165,11 @@ header {
 }
 
 .mode-toggle button:hover {
-  background: #1a212b;
+  background: var(--surface-button-hover);
 }
 
 .mode-toggle button.active {
-  background: #2a3340;
+  background: var(--surface-toggle-active);
   color: #e2e8f0;
 }
 
@@ -1137,7 +1181,7 @@ header {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  background: #131923;
+  background: var(--surface-overlay);
   border: 1px solid #1f2630;
   border-radius: 4px;
   padding: 0.35rem 0.5rem;
@@ -1179,7 +1223,7 @@ header {
   align-items: center;
   gap: 0.5rem;
   color: #cbd5e1;
-  background: #11161e;
+  background: var(--surface-row);
   border-block: 1px solid #1f2630;
   white-space: nowrap;
 }
@@ -1248,7 +1292,7 @@ button.trace-event-swatch {
 /* The clicked event row. Selection is view-local and keyed by event id,
    so it survives the row slots being recycled by a scroll. */
 .trace-event-focused {
-  background: #17202c;
+  background: var(--surface-row-focused);
   box-shadow: inset 2px 0 0 #38bdf8;
 }
 /* Focusable trace rows: the timeline event rows, and the by-id rows,
@@ -1260,7 +1304,7 @@ button.trace-event-swatch {
 /* A gridview-selected row (ADR 0044). The container holds focus, so
    the selection is the only thing the row itself shows. */
 .trace-row.selected {
-  background: #1b2740;
+  background: var(--surface-row-selected);
 }
 
 .trace-event-label {
@@ -1283,7 +1327,7 @@ button.trace-event-swatch {
   font: inherit;
   flex: 1 1 auto;
   min-width: 0;
-  background: #131923;
+  background: var(--surface-overlay);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -1340,7 +1384,7 @@ button.trace-event-swatch {
 }
 
 .trace-header {
-  background: #131923;
+  background: var(--surface-overlay);
   color: #94a3b8;
   border-bottom: 1px solid #1f2630;
   position: sticky;
@@ -1429,7 +1473,7 @@ button.trace-event-swatch {
 }
 
 .trace-row.expanded {
-  background: #11161e;
+  background: var(--surface-row);
 }
 
 .trace-row span {
@@ -1540,7 +1584,7 @@ button.trace-event-swatch {
 
 .plot-panel-toolbar .combobox-trigger,
 .plot-panel-toolbar button {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 4px;
@@ -1724,7 +1768,7 @@ button.trace-event-swatch {
   width: 6rem;
   height: 2px;
   border-radius: 1px;
-  background: #1f2630;
+  background: var(--divider-subtle);
   overflow: hidden;
 }
 .plot-area-building-bar::after {
@@ -1760,7 +1804,7 @@ button.trace-event-swatch {
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.4rem;
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   border-radius: 4px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
@@ -1783,7 +1827,7 @@ button.trace-event-swatch {
 .plot-axis-menu-row input:not([type]) {
   flex: 1 1 auto;
   width: 6rem;
-  background: #0d1114;
+  background: var(--surface-sunken);
   border: 1px solid #334155;
   border-radius: 3px;
   color: #cbd5e1;
@@ -1833,7 +1877,7 @@ button.trace-event-swatch {
   /* `flex-basis` is set inline from the user-resized pixel width. */
   flex: 0 0 220px;
   border-left: 1px solid #1f2630;
-  background: #0d1114;
+  background: var(--surface-sunken);
   overflow-y: auto;
   font-size: 0.78rem;
 }
@@ -1852,7 +1896,7 @@ button.trace-event-swatch {
 }
 .plot-area-resizer:hover,
 .plot-area-resizer:active {
-  background: #2c3444;
+  background: var(--divider);
 }
 
 .plot-area-signals-head {
@@ -1918,7 +1962,7 @@ button.trace-event-swatch {
   border-radius: 3px;
 }
 .plot-area-filter:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .plot-area-filter-status {
   display: flex;
@@ -1951,7 +1995,7 @@ button.trace-event-swatch {
 }
 .plot-area-filter-promote:hover,
 .plot-area-filter-clear:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .plot-area-filter-error {
   color: #f87171;
@@ -1985,7 +2029,7 @@ button.trace-event-swatch {
   flex-wrap: wrap;
   gap: 0.3rem;
   padding: 0.3rem 0.4rem;
-  background: #111827;
+  background: var(--surface-pop);
 }
 .signals-manual-pick {
   display: inline-flex;
@@ -2018,7 +2062,7 @@ button.trace-event-swatch {
   align-items: center;
   gap: 0.35rem;
   padding-left: 0.25rem;
-  background: #131a24;
+  background: var(--surface-section-header);
   border-bottom: 1px solid #2c3444;
   color: #cbd5e1;
   font-weight: 600;
@@ -2037,7 +2081,7 @@ button.trace-event-swatch {
   color: #e2e8f0;
 }
 .signals-section-name-input {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -2067,7 +2111,7 @@ button.trace-event-swatch {
   text-overflow: ellipsis;
 }
 .signals-section-pick:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
   color: #e2e8f0;
 }
 /* A section's own pattern list, anchored at the panel root like the
@@ -2076,7 +2120,7 @@ button.trace-event-swatch {
   position: fixed;
   z-index: 200;
   min-width: 22rem;
-  background: #0d1114;
+  background: var(--surface-sunken);
   border: 1px solid #2c3444;
   border-radius: 4px;
   padding: 0.4rem 0.5rem;
@@ -2095,7 +2139,7 @@ button.trace-event-swatch {
   display: flex;
   flex-direction: column;
   min-width: 9rem;
-  background: #0d1114;
+  background: var(--surface-sunken);
   border: 1px solid #2c3444;
   border-radius: 4px;
   padding: 0.25rem;
@@ -2113,7 +2157,7 @@ button.trace-event-swatch {
   text-align: left;
 }
 .signals-section-menu button:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
 }
 .signals-section-menu button.active {
   color: #7dd3fc;
@@ -2148,7 +2192,7 @@ button.trace-event-swatch {
   gap: 0.25rem;
   padding: 0.3rem 0.4rem;
   border-bottom: 1px solid #1e293b;
-  background: #111827;
+  background: var(--surface-pop);
   font-size: 0.75rem;
 }
 .pattern-editor-row {
@@ -2174,7 +2218,7 @@ button.trace-event-swatch {
   border-radius: 3px;
 }
 .pattern-editor-grip.selected {
-  background: #1b2740;
+  background: var(--surface-row-selected);
   color: #e2e8f0;
 }
 .pattern-editor-count {
@@ -2194,7 +2238,7 @@ button.trace-event-swatch {
 }
 .pattern-editor input {
   flex: 1 1 0;
-  background: #1e293b;
+  background: var(--surface-raised);
   color: #e2e8f0;
   border: 1px solid #334155;
   padding: 0.15rem 0.3rem;
@@ -2203,7 +2247,7 @@ button.trace-event-swatch {
   font-size: 0.75rem;
 }
 .pattern-editor button {
-  background: #1e293b;
+  background: var(--surface-raised);
   color: #e2e8f0;
   border: 1px solid #334155;
   padding: 0.15rem 0.5rem;
@@ -2212,7 +2256,7 @@ button.trace-event-swatch {
   font-size: 0.75rem;
 }
 .pattern-editor button:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .pattern-editor button:disabled {
   opacity: 0.5;
@@ -2241,7 +2285,7 @@ button.trace-event-swatch {
 /* Highlights the signal whose raw range / unit drives the y-axis
  * labels for this plot area. Click a non-primary row to promote it. */
 .plot-signal-row.primary {
-  background: #131e29;
+  background: var(--surface-row-primary);
   box-shadow: inset 2px 0 0 #4ecbff;
 }
 
@@ -2326,7 +2370,7 @@ button.trace-event-swatch {
   letter-spacing: 0.04em;
 }
 .colormap-field .combobox-trigger {
-  background: #11161e;
+  background: var(--surface-row);
   color: #e2e8f0;
   border: 1px solid #1c252b;
   border-radius: 0.25rem;
@@ -2374,7 +2418,7 @@ button.trace-event-swatch {
 }
 .colormap-num {
   width: 5rem;
-  background: #11161e;
+  background: var(--surface-row);
   color: #e2e8f0;
   border: 1px solid #1c252b;
   border-radius: 0.2rem;
@@ -2454,7 +2498,7 @@ button.trace-event-swatch {
   display: inline-block;
   width: 1px;
   align-self: stretch;
-  background: #2c3444;
+  background: var(--divider);
   margin: 0 0.15rem;
 }
 
@@ -2515,7 +2559,7 @@ button.trace-event-swatch {
   font-size: 0.78rem;
 }
 .sources-picker-row:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
 }
 .sources-picker-row > input[type="checkbox"] {
   margin: 0;
@@ -2526,7 +2570,7 @@ button.trace-event-swatch {
 .sources-context-menu {
   position: fixed;
   z-index: 200;
-  background: #0d1114;
+  background: var(--surface-sunken);
   border: 1px solid #2c3444;
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
@@ -2548,7 +2592,7 @@ button.trace-event-swatch {
   border-radius: 3px;
 }
 .sources-context-menu-action:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
 }
 .plot-window-ctl,
 .plot-cursor-ctl {
@@ -2560,7 +2604,7 @@ button.trace-event-swatch {
 }
 .plot-window-ctl input {
   width: 4.5rem;
-  background: #0f141d;
+  background: var(--surface-control);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 4px;
@@ -2591,7 +2635,7 @@ button.trace-event-swatch {
   left: 0;
   z-index: 20;
   margin-top: 2px;
-  background: #0d1114;
+  background: var(--surface-sunken);
   border: 1px solid #2c3444;
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
@@ -2605,7 +2649,7 @@ button.trace-event-swatch {
 .plot-toolbar-menu {
   position: fixed;
   z-index: 30;
-  background: #0d1114;
+  background: var(--surface-sunken);
   border: 1px solid #2c3444;
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
@@ -2635,7 +2679,7 @@ button.trace-event-swatch {
 }
 .plot-toolbar-menu button:hover,
 .plot-toolbar-menu button:focus-visible {
-  background: #1c2530;
+  background: var(--surface-hover);
   outline: none;
 }
 .plot-toolbar-menu-mark {
@@ -2657,7 +2701,7 @@ button.trace-event-swatch {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   border-top: 1px solid #1f2630;
-  background: #0d1114;
+  background: var(--surface-sunken);
 }
 .plot-meas-cell {
   padding: 0.25rem 0.5rem;
@@ -2693,7 +2737,7 @@ button.trace-event-swatch {
  * dropped in task 15 / ADR 0026: y scales are always auto-derived.) */
 .plot-area-fit-y,
 .plot-area-y-mode {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #94a3b8;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -2715,7 +2759,7 @@ button.trace-event-swatch {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0f141d;
+  background: var(--surface-control);
   color: #e2e8f0;
   font-size: 0.85rem;
 }
@@ -2725,10 +2769,10 @@ button.trace-event-swatch {
   gap: 0.5rem;
   padding: 0.25rem 0.5rem;
   border-bottom: 1px solid #1f2630;
-  background: #11161a;
+  background: var(--surface-tx-toolbar);
 }
 .tx-panel-toolbar button {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #94a3b8;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -2759,7 +2803,7 @@ button.trace-event-swatch {
   border-bottom: 1px solid #1a1f28;
 }
 .tx-frame-row:hover {
-  background: #131923;
+  background: var(--surface-overlay);
 }
 /* The gridview's cursor and selection (ADR 0044). */
 .tx-frame-row[data-active] {
@@ -2767,7 +2811,7 @@ button.trace-event-swatch {
   outline-offset: -1px;
 }
 .tx-frame-row-selected {
-  background: #1b2740;
+  background: var(--surface-row-selected);
 }
 .tx-drag-handle {
   width: 0.45rem;
@@ -2811,12 +2855,12 @@ button.trace-event-swatch {
 .tx-row-identity .tx-name:focus,
 .tx-row-identity .tx-name:hover {
   border-color: #2c3444;
-  background: #0f141d;
+  background: var(--surface-control);
 }
 .tx-row-identity .tx-bus,
 .tx-row-identity .tx-canid-input,
 .tx-row-identity .tx-period {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -2860,7 +2904,7 @@ button.trace-event-swatch {
 .tx-canid {
   display: inline-flex;
   align-items: center;
-  background: #0f141d;
+  background: var(--surface-control);
   border: 1px solid #2c3444;
   border-radius: 3px;
   padding: 0 0.25rem 0 0.35rem;
@@ -2878,7 +2922,7 @@ button.trace-event-swatch {
 }
 .tx-canid-prefix:hover {
   color: #cbd5e1;
-  background: #1c2433;
+  background: var(--surface-cell-hover);
 }
 .tx-canid-input {
   background: transparent;
@@ -2905,7 +2949,7 @@ button.trace-event-swatch {
   overflow: hidden;
 }
 .tx-cycle-toggle button {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #94a3b8;
   border: none;
   font: inherit;
@@ -2914,13 +2958,13 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .tx-cycle-toggle button.active {
-  background: #1f2c3a;
+  background: var(--surface-toggle-active-alt);
   color: #e2e8f0;
 }
 .tx-send,
 .tx-start,
 .tx-stop {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #cbd5e1;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -3010,7 +3054,7 @@ button.trace-event-swatch {
 }
 .tx-byte-cell input {
   width: 2.1rem;
-  background: #0f141d;
+  background: var(--surface-control);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -3064,7 +3108,7 @@ button.trace-event-swatch {
 }
 .tx-shape-field .combobox-trigger,
 .tx-shape-field input[type="number"] {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -3144,7 +3188,7 @@ button.trace-event-swatch {
   white-space: nowrap;
 }
 .tx-signal-input {
-  background: #0f141d;
+  background: var(--surface-control);
   color: #e2e8f0;
   border: 1px solid #2c3444;
   border-radius: 3px;
@@ -3165,7 +3209,7 @@ button.trace-event-swatch {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   font-size: 0.85rem;
 }
@@ -3175,17 +3219,17 @@ button.trace-event-swatch {
   align-items: center;
   padding: 0.3rem 0.5rem;
   border-bottom: 1px solid #1e293b;
-  background: #111827;
+  background: var(--surface-pop);
 }
 .system-messages-toolbar .combobox-trigger {
-  background: #1e293b;
+  background: var(--surface-raised);
   color: #e2e8f0;
   border: 1px solid #334155;
   padding: 0.15rem 0.35rem;
   border-radius: 3px;
 }
 .system-messages-toolbar button {
-  background: #1e293b;
+  background: var(--surface-raised);
   color: #e2e8f0;
   border: 1px solid #334155;
   padding: 0.15rem 0.6rem;
@@ -3193,7 +3237,7 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .system-messages-toolbar button:hover:not(:disabled) {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .system-messages-toolbar button:disabled {
   opacity: 0.5;
@@ -3284,7 +3328,7 @@ button.trace-event-swatch {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   font-size: 0.85rem;
 }
@@ -3294,11 +3338,11 @@ button.trace-event-swatch {
   align-items: center;
   padding: 0.3rem 0.5rem;
   border-bottom: 1px solid #1e293b;
-  background: #111827;
+  background: var(--surface-pop);
 }
 .dbc-panel-search {
   flex: 1 1 0;
-  background: #1e293b;
+  background: var(--surface-raised);
   color: #e2e8f0;
   border: 1px solid #334155;
   padding: 0.2rem 0.5rem;
@@ -3470,7 +3514,7 @@ button.trace-event-swatch {
   height: 100%;
   font-size: 12px;
   color: #cbd5e1;
-  background: #0f172a;
+  background: var(--surface-field);
 }
 .rbs-empty {
   align-items: center;
@@ -3505,7 +3549,7 @@ button.trace-event-swatch {
 .rbs-filter {
   flex: 1;
   min-width: 120px;
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   color: inherit;
   padding: 2px 6px;
@@ -3533,12 +3577,12 @@ button.trace-event-swatch {
 }
 .rbs-bus-row {
   font-weight: 700;
-  background: #111c33;
+  background: var(--surface-bus-row);
 }
 .rbs-ecu { margin-left: 12px; }
 .rbs-ecu-row { font-weight: 600; }
 .rbs-message { margin-left: 24px; }
-.rbs-message-row:hover { background: #16213c; }
+.rbs-message-row:hover { background: var(--surface-bus-row-hover); }
 .rbs-inert { opacity: 0.45; }
 /* The gridview's cursor and selection (ADR 0044). */
 .rbs-bus-row[data-active],
@@ -3548,7 +3592,7 @@ button.trace-event-swatch {
   outline-offset: -1px;
 }
 .rbs-row-selected {
-  background: #1b2740;
+  background: var(--surface-row-selected);
 }
 .rbs-caret {
   /* ADR 0044: a disclosure is a real control whose hit area is the full
@@ -3569,7 +3613,7 @@ button.trace-event-swatch {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #334155;
+  background: var(--surface-control-hover);
   display: inline-block;
 }
 .rbs-dot-on { background: #22c55e; }
@@ -3591,7 +3635,7 @@ button.trace-event-swatch {
 .rbs-period { display: inline-flex; align-items: center; gap: 2px; color: #94a3b8; }
 .rbs-period-input {
   width: 52px;
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   color: inherit;
   padding: 1px 4px;
@@ -3621,7 +3665,7 @@ button.trace-event-swatch {
 .rbs-sig-unit { color: #64748b; }
 .rbs-signal-input {
   width: 110px;
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   color: inherit;
   padding: 1px 4px;
@@ -3649,7 +3693,7 @@ button.trace-event-swatch {
   z-index: 50;
   display: flex;
   flex-direction: column;
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   border-radius: 4px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
@@ -3662,7 +3706,7 @@ button.trace-event-swatch {
   padding: 6px 12px;
   cursor: pointer;
 }
-.rbs-context-menu button:hover { background: #334155; }
+.rbs-context-menu button:hover { background: var(--surface-control-hover); }
 
 /* ---- calculated-field editor (shared, ADR 0027) ---- */
 
@@ -3705,7 +3749,7 @@ button.trace-event-swatch {
 }
 .calc-grid input,
 .calc-grid .combobox-trigger {
-  background: #0f172a;
+  background: var(--surface-field);
   border: 1px solid #334155;
   color: #e2e8f0;
   padding: 2px 6px;
@@ -3758,7 +3802,7 @@ button.trace-event-swatch {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   font-size: 0.85rem;
 }
@@ -3769,7 +3813,7 @@ button.trace-event-swatch {
 }
 .settings-search {
   width: 100%;
-  background: #1c2230;
+  background: var(--surface-toolbar-control);
   border: 1px solid #2c3444;
   border-radius: 4px;
   color: #e2e8f0;
@@ -3805,10 +3849,10 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .settings-tree-row:hover {
-  background: #1f2a3d;
+  background: var(--surface-hover-strong);
 }
 .settings-tree-row.selected {
-  background: #1b2740;
+  background: var(--surface-row-selected);
   color: #e2e8f0;
 }
 .settings-tree-row.developer {
@@ -3852,7 +3896,7 @@ button.trace-event-swatch {
   border-left: 2px solid transparent;
 }
 .setting:hover {
-  background: #121821;
+  background: var(--surface-hover-subtle);
 }
 .setting.modified {
   border-left-color: #4f8ef7;
@@ -3912,7 +3956,7 @@ button.trace-event-swatch {
 .setting-ctl input[type="text"],
 .setting-ctl input[type="number"],
 .setting-ctl select {
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   border-radius: 3px;
   color: #e2e8f0;
@@ -3955,7 +3999,7 @@ button.trace-event-swatch {
   min-width: 9rem;
 }
 .column-default-row input[type="number"] {
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   border-radius: 3px;
   color: #e2e8f0;
@@ -3964,7 +4008,7 @@ button.trace-event-swatch {
   width: 4.5rem;
 }
 .column-default-row button {
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   border-radius: 3px;
   color: #e2e8f0;
@@ -4034,7 +4078,7 @@ button.trace-event-swatch {
   padding: 0.3rem 0.5rem;
 }
 .project-caches-head {
-  background: #121821;
+  background: var(--surface-hover-subtle);
   border-bottom: 1px solid #1f2630;
   font-size: 0.72rem;
   color: #94a3b8;
@@ -4092,7 +4136,7 @@ button.trace-event-swatch {
 .project-cache-badge.auto-located {
   border-color: #33405c;
   color: #93a7cc;
-  background: #131a26;
+  background: var(--surface-badge-info);
 }
 .project-cache-badge.missing,
 .project-cache-badge.orphaned {
@@ -4114,7 +4158,7 @@ button.trace-event-swatch {
   height: 100%;
   overflow: auto;
   padding: 0.75rem 1rem;
-  background: #0f172a;
+  background: var(--surface-field);
   color: #e2e8f0;
   font-size: 0.85rem;
 }
@@ -4154,7 +4198,7 @@ button.trace-event-swatch {
 }
 .settings-field input[type="number"] {
   width: 12rem;
-  background: #1e293b;
+  background: var(--surface-raised);
   color: #e2e8f0;
   border: 1px solid #334155;
   padding: 0.15rem 0.35rem;
@@ -4183,7 +4227,7 @@ button.trace-event-swatch {
   overflow: auto;
   margin: 0.5rem 0 0;
   padding: 0.5rem;
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   border-radius: 3px;
   color: #cbd5e1;
@@ -4219,7 +4263,7 @@ button.trace-event-swatch {
 }
 .shortcuts-reset {
   flex: none;
-  background: #1e293b;
+  background: var(--surface-raised);
   color: #e2e8f0;
   border: 1px solid #334155;
   border-radius: 3px;
@@ -4227,7 +4271,7 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .shortcuts-reset:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .shortcuts-error {
   margin: 0 0 0.75rem;
@@ -4262,7 +4306,7 @@ button.trace-event-swatch {
 .shortcut-chip kbd {
   font-family: ui-monospace, monospace;
   font-size: 0.75rem;
-  background: #1e293b;
+  background: var(--surface-raised);
   border: 1px solid #334155;
   border-radius: 3px;
   padding: 0.05rem 0.3rem;
@@ -4292,7 +4336,7 @@ button.trace-event-swatch {
   color: #fecaca;
 }
 .shortcut-record {
-  background: #1e293b;
+  background: var(--surface-raised);
   color: #cbd5e1;
   border: 1px solid #334155;
   border-radius: 3px;
@@ -4301,7 +4345,7 @@ button.trace-event-swatch {
   font-size: 0.78rem;
 }
 .shortcut-record:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .shortcut-recording {
   color: #fcd34d;
@@ -4316,7 +4360,7 @@ button.trace-event-swatch {
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: #0e1116;
+  background: var(--surface-app);
   display: flex;
   align-items: center;
   justify-content: center;
