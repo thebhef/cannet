@@ -19,7 +19,6 @@ import {
 } from "./traceViewport";
 import { useTraceViewport } from "./useTraceViewport";
 import { useSetting } from "./hostSettings";
-import { toggleInSet } from "./toggleSet";
 import {
   type BusLookup,
   type ColumnKey,
@@ -92,6 +91,25 @@ export interface EventActions {
   onGoto?: (timestampNs: number) => void;
 }
 
+/// Stable ids for the chronological row space (ADR 0044). A frame is
+/// named by its **absolute index in the capture**, which does not move
+/// as the window slides or as timeline events interleave; an event by
+/// its own id. A row whose page has not landed has no identity to
+/// offer — the frontend holds one page of a host-owned row space — so
+/// the space's ids are exactly the rows it holds.
+const FRAME_ROW_PREFIX = "f:";
+const EVENT_ROW_PREFIX = "e:";
+const frameRowId = (frame: TraceFrameRecord) => `${FRAME_ROW_PREFIX}${frame.index}`;
+function rowIdOf(r: TraceRow | null): string | null {
+  if (!r) return null;
+  return r.row === "event" ? `${EVENT_ROW_PREFIX}${r.event.id}` : frameRowId(r.frame);
+}
+
+/// Stable empties, so a view with nothing open hands the same objects
+/// to the memoised rows on every live tick.
+const EMPTY_EXPANDED: ReadonlyMap<string, number> = new Map();
+const EMPTY_POSITIONS: ReadonlySet<number> = new Set();
+
 /// Re-pin scrollTop only when it drifts from the target by more than
 /// this. The target derived from a user-scrolled row is a pixel or two
 /// off the user's actual scrollTop (row-index rounding); the generous
@@ -124,7 +142,14 @@ export function TraceView({
   // keeps painting the old format until something else moves.
   const idFormat = useSetting("can_id_format") as CanIdFormat;
 
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // The open rows, by stable id, each carrying how many decoded signals
+  // it discloses. Keyed by id rather than by row position because a
+  // display index names a different frame the moment the window slides
+  // or an event interleaves (ADR 0044); the signal count rides along
+  // because the scroll geometry needs the height of *every* open row,
+  // including ones scrolled out of the loaded page, which can no longer
+  // be asked. Ephemeral — the chronological rows are capture-scoped.
+  const [expanded, setExpanded] = useState<ReadonlyMap<string, number>>(EMPTY_EXPANDED);
   // The event row the user last clicked, by event id (ADR 0035) — view-local
   // selection, keyed by identity rather than row position because the row
   // slots are recycled as the view scrolls. `null` means none.
@@ -174,16 +199,16 @@ export function TraceView({
   // scroll position that reaches them, and the scroll range doesn't
   // grow to make one.
   const rowHeightAt = useCallback(
-    (absIdx: number) =>
-      expanded.has(absIdx) ? expandedRowHeight(signalCount(absIdx)) : ROW_HEIGHT,
-    [expanded, signalCount],
+    (absIdx: number) => {
+      if (expanded.size === 0) return ROW_HEIGHT;
+      const id = rowIdOf(getRow(absIdx));
+      return id != null && expanded.has(id) ? expandedRowHeight(signalCount(absIdx)) : ROW_HEIGHT;
+    },
+    [expanded, getRow, signalCount],
   );
-  // Iterates the expanded set, not the trace: `count` here is the whole
+  // Iterates the open rows, not the trace: `count` here is the whole
   // capture and reaches millions.
-  const extraHeight = useMemo(
-    () => (expanded.size === 0 ? 0 : expandedExtraHeightOf(expanded, count, rowHeightAt)),
-    [expanded, count, rowHeightAt],
-  );
+  const extraHeight = useMemo(() => expandedExtraHeightOf(expanded.values()), [expanded]);
 
   const {
     containerRef,
@@ -285,7 +310,7 @@ export function TraceView({
   // Reset transient view state when the trace is cleared.
   useEffect(() => {
     if (count === 0) {
-      setExpanded(new Set());
+      setExpanded(EMPTY_EXPANDED);
       setFocusedEvent(null);
       setAnchoredRow(autoScroll ? null : 0);
     }
@@ -318,8 +343,12 @@ export function TraceView({
     setAnchoredRow(anchorFromScroll(el.scrollTop, anchorMax, scrollRange));
   }, [autoScroll, onAutoScrollDisabled, anchorMax, scrollRange]);
 
-  const toggleExpanded = useCallback((absoluteIndex: number) => {
-    setExpanded((prev) => toggleInSet(prev, absoluteIndex));
+  const toggleExpanded = useCallback((rowId: string, signals: number) => {
+    setExpanded((prev) => {
+      const next = new Map(prev);
+      if (!next.delete(rowId)) next.set(rowId, signals);
+      return next;
+    });
   }, []);
   const focusEvent = useCallback((id: string) => setFocusedEvent(id), []);
 
@@ -333,7 +362,26 @@ export function TraceView({
   const gridTemplate = useMemo(() => gridTemplateColumns(shown), [shown]);
   const contentWidthVar = useMemo(() => contentWidthStyle(shown), [shown]);
 
-  const placements = buildPlacements(firstVisibleRow, count, rows, expanded, signalCount);
+  // Which visible positions are open — derived from the loaded rows'
+  // stable ids, so the placement arithmetic still works in positions
+  // while the state itself is keyed by identity. `version` is a dep so a
+  // page landing re-derives it (the row content it gates changes behind
+  // `getRow`); a view with nothing open skips the walk and hands back
+  // one shared empty set.
+  const expandedPositions = useMemo(() => {
+    if (expanded.size === 0) return EMPTY_POSITIONS;
+    const s = new Set<number>();
+    for (let i = 0; i < rows; i++) {
+      const abs = firstVisibleRow + i;
+      if (abs >= count) break;
+      const id = rowIdOf(getRow(abs));
+      if (id != null && expanded.has(id)) s.add(abs);
+    }
+    return s;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, rows, firstVisibleRow, count, getRow, version]);
+
+  const placements = buildPlacements(firstVisibleRow, count, rows, expandedPositions, signalCount);
   // How tall the rendered rows actually stack. The sticky viewport
   // clips (`overflow: hidden`), so it takes the larger of the panel
   // height and the stack — an expanded row taller than the panel then
@@ -431,7 +479,9 @@ interface RowProps {
   gridTemplate: string;
   busLookup: BusLookup;
   resolveColor: ColorResolver | null;
-  onToggle: (absoluteIndex: number) => void;
+  /// Open or shut this row's decoded block, by the row's stable id and
+  /// the number of signal lines it discloses.
+  onToggle: (rowId: string, signals: number) => void;
   eventActions?: EventActions;
   /// This row is the focused event row (event rows only).
   eventFocused: boolean;
@@ -484,7 +534,9 @@ const Row = memo(function Row({
           : undefined
       }
       style={{ position: "absolute", top, left: 0, right: 0, height }}
-      onClick={() => frame?.decoded && onToggle(absoluteIndex)}
+      onClick={() => {
+        if (frame?.decoded) onToggle(frameRowId(frame), frame.decoded.signals.length);
+      }}
       renderCell={(key, className) => {
         const content = cellContent(
           key,
