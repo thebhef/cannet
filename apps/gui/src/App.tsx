@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { DockviewDefaultTab, DockviewReact, themeAbyss } from "dockview";
+import { DockviewDefaultTab, DockviewReact, themeAbyss, themeLight } from "dockview";
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
@@ -83,6 +83,7 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
+import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
 import {
@@ -221,6 +222,11 @@ function withStoredPaths(project: Project, projectFilePath: string): Project {
 
 export function App() {
   diagCount("render.App"); // DIAG
+  // Dockview paints its own chrome from its own theme object rather
+  // than from our token layer, so the tab strip and group borders are
+  // the one piece of the window a `data-theme` flip cannot reach. Swap
+  // the object instead.
+  const dockTheme = useThemeName() === "light" ? themeLight : themeAbyss;
   useEffect(() => startDiagReporter(), []); // DIAG
   const [count, setCount] = useState(0);
   // Windowed-ring low-water mark from `trace-grew` (ADR 0002 DS-8): the
@@ -2506,7 +2512,7 @@ export function App() {
                         eating the press. */}
                     <DockviewReact
                       className="dock-area"
-                      theme={themeAbyss}
+                      theme={dockTheme}
                       components={DOCK_COMPONENTS}
                       defaultTabComponent={DockviewDefaultTab}
                       onReady={handleDockReady}

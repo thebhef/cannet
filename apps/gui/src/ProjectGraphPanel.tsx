@@ -33,7 +33,7 @@ import {
 } from "./projectGraph";
 import type { FilterPredicate } from "./types";
 import { effectiveBusColor } from "./busColor";
-import { theme } from "./theme";
+import { theme, useThemeName } from "./theme";
 import { assignLanePositions, reconcileGraphNodes } from "./graphNodeLayout";
 import { useDismissableMenu } from "./useDismissableMenu";
 
@@ -65,6 +65,9 @@ export function ProjectGraphPanel(props: IDockviewPanelProps) {
 function ProjectGraphPanelInner(props: IDockviewPanelProps) {
   const project = useProjectContext();
   const registry = useElementRegistry();
+  // Wire colors are theme-derived for a bus the user hasn't colored, and
+  // the neutral wire always is.
+  const themeName = useThemeName();
 
   const graph = useMemo(
     () =>
@@ -173,7 +176,7 @@ function ProjectGraphPanelInner(props: IDockviewPanelProps) {
         }
         return toXyflowEdge(e, color);
       }),
-    [graph.edges, project.buses],
+    [graph.edges, project.buses, themeName],
   );
 
   const onEdgesChange = useCallback(
@@ -527,6 +530,9 @@ function BusNode({ data }: NodeProps) {
   // border, and the rail bar — so the node reads as the same color
   // as every wire it carries. Overrides the hardcoded blue in the
   // `.graph-node-bus` CSS rule.
+  // Both the bus color (when the bus is uncustomized) and the base it
+  // is blended into come from the theme.
+  useThemeName();
   const color = effectiveBusColor(node.bus.id, project.buses);
   return (
     <div
