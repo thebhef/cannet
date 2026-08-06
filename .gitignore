@@ -25,3 +25,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+
+# vitest/vite cache from repo-root runs
+.vite/
