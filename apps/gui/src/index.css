@@ -915,6 +915,31 @@ header {
   padding: 0 0.35rem;
 }
 
+/* What the host actually put on the wire for a connected bus. Sits
+   under the bus name, above the (request-side) hardware fields, so the
+   two read as "live" vs "asked for". */
+.project-bus-applied {
+  font-size: 0.7rem;
+  color: #7dd3fc;
+  padding-left: 1.4rem;
+}
+
+/* Per-binding connection state on an interface row — the same palette
+   as `.project-bus-state`, sized for the denser list. */
+.project-binding-state {
+  margin-left: 0.4rem;
+  font-size: 0.7rem;
+  color: #94a3b8;
+}
+
+.project-binding-state.connected {
+  color: #4ade80;
+}
+
+.project-binding-state.errored {
+  color: #f87171;
+}
+
 .project-server {
   margin-bottom: 0.4rem;
 }

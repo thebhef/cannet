@@ -10,11 +10,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { Combobox, type ComboboxOption } from "./Combobox";
+import { describeBusConnState } from "./connectionStates";
 import { hostSettings } from "./hostSettings";
 import { describeSidecarStatus } from "./sidecarStatus";
 import type {
   Bus,
   BridgeSpec,
+  BusConnStates,
   InterfaceBinding,
   InterfaceRecord,
   LocalVirtualBusDef,
@@ -633,11 +635,39 @@ export function AddServerInline({ busLabel, onCancel, onPick }: AddServerInlineP
 
 // ---- Connection-section rows ---------------------------------------------
 
+/// The connection indicator at the end of a binding row. A project bus
+/// has at most one binding (ADR 0023), so the bus's host-side state
+/// *is* this interface's state — nothing is aggregated, and a
+/// four-channel card reads as four independent rows.
+///
+/// `busId` is `null` for an enumerated interface nothing routes
+/// through; an unbound interface has no connection to report.
+export function BindingConnStateBadge({
+  busId,
+  connStates,
+}: {
+  busId: string | null;
+  connStates: BusConnStates;
+}) {
+  if (busId === null) return null;
+  const d = describeBusConnState(connStates[busId], true);
+  return (
+    <span
+      className={`project-binding-state ${d.tone}`}
+      title={d.detail}
+      data-testid={`binding-state-${busId}`}
+    >
+      {d.text}
+    </span>
+  );
+}
+
 interface LocalInterfacesRowProps {
   sidecar: SidecarStatus;
   bindings: readonly InterfaceBinding[];
   buses: readonly Bus[];
   discoveries: Record<string, DiscoveryState>;
+  connStates: BusConnStates;
   onRefresh: () => void;
 }
 
@@ -653,6 +683,7 @@ export function LocalInterfacesRow({
   bindings,
   buses,
   discoveries,
+  connStates,
   onRefresh,
 }: LocalInterfacesRowProps) {
   const ready = sidecar.phase === "ready" && sidecar.address !== null;
@@ -700,6 +731,7 @@ export function LocalInterfacesRow({
         bindings={selected}
         buses={buses}
         discoveries={discoveries}
+        connStates={connStates}
         sidecarAddress={sidecarAddress}
       />
     </div>
@@ -717,11 +749,13 @@ export function LocalInterfaceList({
   bindings,
   buses,
   discoveries,
+  connStates = {},
   sidecarAddress,
 }: {
   bindings: readonly InterfaceBinding[];
   buses: readonly Bus[];
   discoveries: Record<string, DiscoveryState>;
+  connStates?: BusConnStates;
   sidecarAddress: string | null;
 }) {
   const state = sidecarAddress ? discoveries[sidecarAddress] : undefined;
@@ -766,6 +800,10 @@ export function LocalInterfaceList({
             >
               {bus ? bus.name : "(unassigned)"}
             </span>
+            <BindingConnStateBadge
+              busId={binding ? binding.bus_id : null}
+              connStates={connStates}
+            />
           </li>
         );
       })}
@@ -778,6 +816,7 @@ export function LocalInterfaceList({
             <span className="project-server-bus">
               {bus ? bus.name : b.bus_id} (not currently present)
             </span>
+            <BindingConnStateBadge busId={b.bus_id} connStates={connStates} />
           </li>
         );
       })}
@@ -797,6 +836,7 @@ interface RemoteServerRowProps {
   /// `server`; the broader map is here so {@link SelectedInterfaceList}
   /// can be shared with the local row, which keys differently.
   discoveries: Record<string, DiscoveryState>;
+  connStates: BusConnStates;
   onRefresh: () => void;
 }
 
@@ -810,6 +850,7 @@ export function RemoteServerRow({
   buses,
   state,
   discoveries,
+  connStates,
   onRefresh,
 }: RemoteServerRowProps) {
   const selected = bindings.filter((b) => b.server === server);
@@ -838,6 +879,7 @@ export function RemoteServerRow({
         selected={selected}
         buses={buses}
         discoveries={discoveries}
+        connStates={connStates}
         sidecarAddress={null}
       />
     </div>
@@ -848,10 +890,12 @@ function SelectedInterfaceList({
   selected,
   buses,
   discoveries,
+  connStates,
   sidecarAddress,
 }: {
   selected: readonly InterfaceBinding[];
   buses: readonly Bus[];
+  connStates: BusConnStates;
   /// Pass the discovery snapshot so each binding's interface id can
   /// be resolved to its rich {@link InterfaceRecord.display_name} —
   /// the same label the per-bus combo shows. When a binding's
@@ -880,6 +924,7 @@ function SelectedInterfaceList({
             <span className="project-server-bus">
               {bus ? bus.name : b.bus_id}
             </span>
+            <BindingConnStateBadge busId={b.bus_id} connStates={connStates} />
           </li>
         );
       })}

@@ -245,6 +245,34 @@ export function bindingKind(b: InterfaceBinding): BindingKind {
   return b.kind ?? "remote";
 }
 
+/// The hardware configuration the host actually put on the wire for a
+/// bus, echoed back on its row. Mirrors
+/// `src-tauri/src/connection_state.rs::AppliedBusConfig`.
+///
+/// Not the same thing as the bus's `speed_bps` / `fd` fields: those are
+/// what the project asks for, this is what was sent. `speedBps: null`
+/// means no `ConfigureBus` was sent at all (nothing was pinned), so the
+/// controller is on the driver's own default.
+export interface AppliedBusConfig {
+  speedBps: number | null;
+  fdEnabled: boolean;
+  fdDataSpeedBps: number | null;
+}
+
+/// One logical bus's connection state, as the host models it. Mirrors
+/// `src-tauri/src/connection_state.rs::BusConnState`. A project bus has
+/// at most one binding (ADR 0023), so this is per-binding state too —
+/// there is nothing to aggregate.
+export type BusConnState =
+  | { kind: "connecting" }
+  | { kind: "connected"; applied: AppliedBusConfig | null }
+  | { kind: "error"; reason: string };
+
+/// The host's whole per-bus map, keyed by bus id. A bus with no entry
+/// has no session; whether that reads as "unbound" or "not connected"
+/// depends on whether the project binds it.
+export type BusConnStates = Record<string, BusConnState>;
+
 /// Sentinel `server` value for a binding routed through the local
 /// sidecar. The sidecar's listen port is randomised per launch, so
 /// persisting a literal `host:port` would orphan the binding on every

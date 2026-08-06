@@ -37,6 +37,7 @@
 
 mod app_state;
 mod capture;
+mod connection_state;
 mod crash;
 mod dbc_commands;
 mod dbc_watcher;
@@ -431,6 +432,7 @@ pub fn run() {
         .manage(diag::HostMetrics::default())
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
+        .manage(connection_state::ConnectionStates::default())
         .manage(diag::DiagState::default())
         .manage(diag::AutomationState(autostart))
         .invoke_handler(tauri::generate_handler![
@@ -448,6 +450,7 @@ pub fn run() {
             restore_scratch_capture,
             connect_remote_server,
             disconnect_remote_server,
+            connection_state::get_connection_states,
             project::open_project,
             project::save_project,
             project::save_project_as,

@@ -20,6 +20,7 @@ use cannet_core::CanFrameSource;
 
 use crate::app_state::AppState;
 use crate::capture::restamp_scratch_for_capture;
+use crate::connection_state::{self, AppliedBusConfig, BusConnState};
 use crate::ipc::{self, InterfaceRecord, LogFinished, RemoteSessionResult};
 use crate::project;
 use crate::trace_store::RawTraceFrame;
@@ -219,6 +220,56 @@ fn presubscribe_config_from(b: &InterfaceBusBinding) -> Option<PreSubscribeConfi
         fd_data_speed_bps: u64::from(b.fd_data_speed_bps.unwrap_or(0)),
     })
 }
+
+/// What the host will actually put on the wire for `b`, as the UI
+/// reports it back on the bus row.
+///
+/// This is the same decision [`presubscribe_config_from`] makes, read
+/// out rather than sent — so the row can only ever echo what was
+/// really sent. The two normalisations the user can't see from the
+/// input fields are both encoded here: nothing pinned means **no**
+/// `ConfigureBus` at all (`speed_bps: None` — the driver default
+/// stands), and an FD bus with no data rate rides the nominal rate
+/// (a wire `0`, which the sidecar resolves that way).
+fn applied_config_from(b: &InterfaceBusBinding) -> AppliedBusConfig {
+    match presubscribe_config_from(b) {
+        None => AppliedBusConfig {
+            speed_bps: None,
+            fd_enabled: false,
+            fd_data_speed_bps: None,
+        },
+        Some(cfg) => AppliedBusConfig {
+            speed_bps: Some(cfg.speed_bps),
+            fd_enabled: cfg.fd_enabled,
+            fd_data_speed_bps: if cfg.fd_enabled {
+                Some(if cfg.fd_data_speed_bps == 0 {
+                    cfg.speed_bps
+                } else {
+                    cfg.fd_data_speed_bps
+                })
+            } else {
+                None
+            },
+        },
+    }
+}
+
+/// Split `bindings` by whether `exposed` (the server's live
+/// enumeration) actually carries the bound interface.
+///
+/// The unavailable half used to be dropped on the floor by the
+/// subscription `filter_map`: the bus simply never received frames
+/// while the panel showed the server connected. Returning it lets the
+/// caller give that bus its own error state — the one dead channel on
+/// an otherwise working multi-channel card.
+fn split_by_availability<'a>(
+    bindings: &'a [InterfaceBusBinding],
+    exposed: &[String],
+) -> (Vec<&'a InterfaceBusBinding>, Vec<&'a InterfaceBusBinding>) {
+    bindings
+        .iter()
+        .partition(|b| exposed.contains(&b.interface))
+}
 /// Register a freshly-built session through the shared session-map seam,
 /// surfacing the duplicate-address rejection on the system log. The only
 /// session insert either connect path does — so the subscribe/pump-spawn
@@ -271,12 +322,43 @@ pub(crate) async fn connect_remote_server(
         return Err(msg);
     }
 
+    // The bus rows go to `connecting…` before anything is attempted and
+    // only move on a real outcome — never on "the request left".
+    connection_state::set_and_emit(
+        &app,
+        binding_lookup
+            .iter()
+            .map(|b| (b.bus_id.clone(), BusConnState::Connecting)),
+    );
+    // Failure closure: every early return below has to leave the rows
+    // saying why, not stuck spinning.
+    let fail_all = |app: &AppHandle, reason: &str| {
+        connection_state::set_and_emit(
+            app,
+            binding_lookup
+                .iter()
+                .map(|b| (b.bus_id.clone(), BusConnState::error(reason))),
+        );
+    };
+
     // ADR 0023 dispatch: a `local-vbus://<id>` address opens an
     // in-process session against the named virtual bus instead of
     // going over `cannet-client`. Same RemoteSession shape; same
     // entry in the session map; same transmit / disconnect paths.
     if let Some(vbus_id) = address.strip_prefix(project::LOCAL_VBUS_URL_SCHEME) {
-        return connect_local_vbus(&app, address.clone(), vbus_id, &binding_lookup);
+        let result = connect_local_vbus(&app, address.clone(), vbus_id, &binding_lookup);
+        match &result {
+            Ok(_) => connection_state::set_and_emit(
+                &app,
+                binding_lookup.iter().map(|b| {
+                    // An in-process bus has no controller to configure,
+                    // so there is no applied hardware config to echo.
+                    (b.bus_id.clone(), BusConnState::Connected { applied: None })
+                }),
+            ),
+            Err(e) => fail_all(&app, e),
+        }
+        return result;
     }
 
     sys_debug!(&app, "connection", "connecting to {address}");
@@ -285,6 +367,7 @@ pub(crate) async fn connect_remote_server(
         Err(e) => {
             let msg = e.to_string();
             sys_error!(&app, "connection", "failed to connect to {address}: {msg}");
+            fail_all(&app, &msg);
             return Err(msg);
         }
     };
@@ -292,20 +375,45 @@ pub(crate) async fn connect_remote_server(
     if interfaces.is_empty() {
         let msg = format!("server at {address} exposes no interfaces");
         sys_warn!(&app, "connection", "{msg}");
+        fail_all(&app, "server exposes no interfaces");
         return Err(msg);
     }
 
     // Subscribe only to interfaces named in the project's bindings for
-    // this server. Channels are 0..N over the binding list — distinct
-    // per session, not globally unique. When the binding carries an
-    // explicit bus speed / FD mode, attach it so the worker emits a
-    // `ConfigureBus` ahead of the corresponding `Subscribe` and the
-    // controller opens at the right rate from the start.
+    // this server. A binding whose interface the server doesn't expose
+    // gets its bus an error state of its own rather than being dropped
+    // silently — the rest of the card still connects.
+    let exposed: Vec<String> = interfaces.iter().map(|i| i.id.clone()).collect();
+    let (available, unavailable) = split_by_availability(&binding_lookup, &exposed);
+    for b in &unavailable {
+        sys_warn!(
+            &app,
+            "connection",
+            "{iface} is not exposed by {address}; bus {bus} will not receive frames",
+            iface = b.interface,
+            bus = b.bus_id,
+        );
+    }
+    connection_state::set_and_emit(
+        &app,
+        unavailable.iter().map(|b| {
+            (
+                b.bus_id.clone(),
+                BusConnState::error(format!("not exposed by {address}")),
+            )
+        }),
+    );
+
+    // Channels are 0..N over the binding list — distinct per session,
+    // not globally unique. When the binding carries an explicit bus
+    // speed / FD mode, attach it so the worker emits a `ConfigureBus`
+    // ahead of the corresponding `Subscribe` and the controller opens
+    // at the right rate from the start.
     let subscriptions: Vec<Subscription> = binding_lookup
         .iter()
         .enumerate()
         .filter_map(|(i, b)| {
-            if !interfaces.iter().any(|iface| iface.id == b.interface) {
+            if !exposed.contains(&b.interface) {
                 return None;
             }
             let sub = Subscription::new(b.interface.clone(), u8::try_from(i).unwrap_or(u8::MAX));
@@ -319,6 +427,17 @@ pub(crate) async fn connect_remote_server(
     if subscriptions.is_empty() {
         return Err(format!("no bound interface matches what {address} exposes"));
     }
+    // From here on only the bindings we actually subscribed for move;
+    // the unavailable ones keep the error state set above.
+    let subscribed_buses: Vec<String> = available.iter().map(|b| b.bus_id.clone()).collect();
+    let fail_subscribed = |app: &AppHandle, reason: &str| {
+        connection_state::set_and_emit(
+            app,
+            subscribed_buses
+                .iter()
+                .map(|id| (id.clone(), BusConnState::error(reason))),
+        );
+    };
 
     let address_for_thread = address.clone();
     let subs_for_thread = subscriptions.clone();
@@ -331,11 +450,13 @@ pub(crate) async fn connect_remote_server(
         Ok(Err(e)) => {
             let msg = e.to_string();
             sys_error!(&app, "connection", "subscribe to {address} failed: {msg}");
+            fail_subscribed(&app, &msg);
             return Err(msg);
         }
         Err(e) => {
             let msg = format!("subscribe task panicked: {e}");
             sys_error!(&app, "connection", "{msg}");
+            fail_subscribed(&app, &msg);
             return Err(msg);
         }
     };
@@ -377,20 +498,42 @@ pub(crate) async fn connect_remote_server(
             channel_to_bus,
             stop: Arc::clone(&stop),
         },
-    )?;
+    )
+    .inspect_err(|e| fail_subscribed(&app, e))?;
 
     let app_for_thread = app.clone();
     let address_for_cleanup = address.clone();
+    let buses_for_cleanup = subscribed_buses.clone();
     std::thread::Builder::new()
         .name(format!("cannet-remote-pump:{address}"))
         .spawn(move || {
             run_pump(&app_for_thread, receiver, stop, pump_channel_to_bus, false);
             // Pump exited (server hung up or user disconnected). Drop
-            // our entry so the address is free for a fresh connect.
+            // our entry so the address is free for a fresh connect, and
+            // retire the bus rows' connected state with it.
             let state: State<'_, AppState> = app_for_thread.state();
             drop(state.unregister_sessions(Some(&address_for_cleanup)));
+            connection_state::remove_and_emit(&app_for_thread, buses_for_cleanup);
         })
-        .map_err(|e| format!("failed to spawn remote pump thread: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("failed to spawn remote pump thread: {e}");
+            fail_subscribed(&app, &msg);
+            msg
+        })?;
+
+    // The subscribe returned: these buses are up, and each row now
+    // carries the configuration that actually went on the wire for it.
+    connection_state::set_and_emit(
+        &app,
+        available.iter().map(|b| {
+            (
+                b.bus_id.clone(),
+                BusConnState::Connected {
+                    applied: Some(applied_config_from(b)),
+                },
+            )
+        }),
+    );
 
     sys_info!(
         &app,
@@ -528,6 +671,7 @@ fn connect_local_vbus(
                         "in-process session {cleanup_addr_for_log} closed",
                     );
                 }
+                connection_state::remove_and_emit(&app_for_thread, [bus_id.clone()]);
             })
             .map_err(|e| format!("failed to spawn vbus pump thread: {e}"))?;
     }
@@ -597,6 +741,13 @@ pub(crate) fn disconnect_remote_server(
     address: Option<String>,
 ) {
     let sessions = state.unregister_sessions(address.as_deref());
+    // Retire the bus rows before the pumps get a chance to: the buses
+    // an ending session covered are exactly its `channel_to_bus`
+    // entries, and the pump's own cleanup races this one.
+    let retired: Vec<String> = sessions
+        .iter()
+        .flat_map(|(_, s)| s.channel_to_bus.iter().filter_map(|(_, b)| b.clone()))
+        .collect();
     for (addr, session) in sessions {
         session.stop.store(true, Ordering::Relaxed);
         // Dropping the handle signals the worker to disconnect; the
@@ -605,6 +756,7 @@ pub(crate) fn disconnect_remote_server(
         drop(session);
         sys_info!(&app, "connection", "disconnected from {addr}");
     }
+    connection_state::remove_and_emit(&app, retired);
 }
 
 /// Decide how to route an incoming frame given the per-channel bus
@@ -739,4 +891,127 @@ pub(crate) fn resolve_bus_route(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod connect_outcome_tests {
+    use super::*;
+
+    fn binding(iface: &str, bus: &str) -> InterfaceBusBinding {
+        InterfaceBusBinding {
+            interface: iface.into(),
+            bus_id: bus.into(),
+            speed_bps: None,
+            fd: None,
+            fd_data_speed_bps: None,
+        }
+    }
+
+    #[test]
+    fn a_binding_the_server_does_not_expose_is_reported_not_dropped() {
+        // The VN17xx shape: four bound channels, one of which the
+        // server's enumeration doesn't carry. Before this split the
+        // subscription `filter_map` dropped that binding on the floor —
+        // the bus never saw a frame while the panel read "connected".
+        let bindings = vec![
+            binding("vector:VN1780(ch:0)", "b1"),
+            binding("vector:VN1780(ch:1)", "b2"),
+            binding("vector:VN1780(ch:2)", "b3"),
+            binding("vector:VN1780(ch:3)", "b4"),
+        ];
+        let exposed = vec![
+            "vector:VN1780(ch:0)".to_string(),
+            "vector:VN1780(ch:2)".to_string(),
+            "vector:VN1780(ch:3)".to_string(),
+        ];
+        let (available, unavailable) = split_by_availability(&bindings, &exposed);
+        assert_eq!(
+            available.iter().map(|b| &b.bus_id).collect::<Vec<_>>(),
+            ["b1", "b3", "b4"],
+        );
+        assert_eq!(
+            unavailable.iter().map(|b| &b.bus_id).collect::<Vec<_>>(),
+            ["b2"],
+            "the missing channel's bus must be nameable so it can carry its own error",
+        );
+    }
+
+    #[test]
+    fn every_binding_available_leaves_nothing_unavailable() {
+        let bindings = vec![binding("a", "b1")];
+        let exposed = vec!["a".to_string(), "b".to_string()];
+        let (available, unavailable) = split_by_availability(&bindings, &exposed);
+        assert_eq!(available.len(), 1);
+        assert!(unavailable.is_empty());
+    }
+
+    #[test]
+    fn an_unpinned_bus_reports_that_nothing_was_sent() {
+        // Neither speed nor FD pinned => `presubscribe_config_from` is
+        // `None` => no `ConfigureBus` on the wire at all. The row must
+        // say "driver default", not echo the placeholder the input
+        // showed.
+        let b = binding("a", "b1");
+        assert!(presubscribe_config_from(&b).is_none());
+        assert_eq!(
+            applied_config_from(&b),
+            AppliedBusConfig {
+                speed_bps: None,
+                fd_enabled: false,
+                fd_data_speed_bps: None,
+            },
+        );
+    }
+
+    #[test]
+    fn a_classic_bus_echoes_its_nominal_rate_and_no_data_rate() {
+        let mut b = binding("a", "b1");
+        b.speed_bps = Some(250_000);
+        // An FD data rate left over from a bus that has since been
+        // switched back to classic is not on the wire as a data rate,
+        // so it must not be echoed as one.
+        b.fd_data_speed_bps = Some(2_000_000);
+        assert_eq!(
+            applied_config_from(&b),
+            AppliedBusConfig {
+                speed_bps: Some(250_000),
+                fd_enabled: false,
+                fd_data_speed_bps: None,
+            },
+        );
+    }
+
+    #[test]
+    fn an_fd_bus_without_a_data_rate_echoes_the_nominal_rate() {
+        // A wire `fd_data_speed_bps` of 0 means "same as nominal" — the
+        // normalisation the user cannot see from the (blank) input.
+        let mut b = binding("a", "b1");
+        b.speed_bps = Some(500_000);
+        b.fd = Some(true);
+        assert_eq!(
+            applied_config_from(&b),
+            AppliedBusConfig {
+                speed_bps: Some(500_000),
+                fd_enabled: true,
+                fd_data_speed_bps: Some(500_000),
+            },
+        );
+    }
+
+    #[test]
+    fn an_fd_only_bus_reports_the_zero_nominal_it_actually_sends() {
+        // FD pinned but no bitrate: `presubscribe_config_from` sends
+        // `speed_bps: 0`, which the sidecar reads as "unset". The echo
+        // reports the 0 rather than pretending a rate was chosen.
+        let mut b = binding("a", "b1");
+        b.fd = Some(true);
+        assert_eq!(
+            applied_config_from(&b),
+            AppliedBusConfig {
+                speed_bps: Some(0),
+                fd_enabled: true,
+                fd_data_speed_bps: Some(0),
+            },
+        );
+    }
 }
