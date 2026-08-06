@@ -133,8 +133,28 @@
   --node-trace-surface: #064e3b;
   --node-transmit-border: #7c3aed;
   --node-transmit-surface: #3b1d3a;
+
+  /* Translucent layers: shadows, backdrops and washes */
+  --shadow-menu: rgba(0, 0, 0, 0.4);
+  --shadow-modal: rgb(0 0 0 / 0.5);
+  --shadow-inset: rgba(0, 0, 0, 0.25);
+  --overlay-backdrop: rgb(0 0 0 / 0.45);
+  --wash-light: rgba(255, 255, 255, 0.08);
+  --border-wash: rgb(255 255 255 / 0.12);
+  --border-wash-strong: rgba(255, 255, 255, 0.15);
+  --glow-focus: rgba(96, 165, 250, 0.45);
+  --scroll-thumb: rgb(148 163 184 / 0.25);
+  --accent-tint: rgba(78, 203, 255, 0.25);
+  --select-tint-soft: rgba(99, 102, 241, 0.15);
+  --select-tint: rgba(99, 102, 241, 0.35);
+  --select-tint-strong: rgba(99, 102, 241, 0.45);
+  --select-outline: rgba(99, 102, 241, 0.9);
+  --border-row-fade: rgba(30, 41, 59, 0.5);
+  --surface-head-fade: rgba(51, 65, 85, 0.45);
+  --danger-tint: rgba(153, 27, 27, 0.45);
 }
 /* === end theme tokens === */
+
 
 
 
@@ -250,7 +270,7 @@ header {
   min-width: 280px;
   max-width: 560px;
   z-index: 50;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .toolbar ul.recent-blfs-menu > li > button {
   display: block;
@@ -301,7 +321,7 @@ header {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 0.45);
+  background: var(--overlay-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -314,7 +334,7 @@ header {
   border-radius: 6px;
   padding: 1rem 1.2rem;
   max-width: 28rem;
-  box-shadow: 0 8px 28px rgb(0 0 0 / 0.5);
+  box-shadow: 0 8px 28px var(--shadow-modal);
 }
 
 .modal-message {
@@ -470,7 +490,7 @@ header {
   background: var(--surface-pop);
   border: 1px solid var(--border-default);
   border-radius: 4px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
+  box-shadow: 0 8px 24px var(--shadow-modal);
   color: var(--text-primary);
   font-size: 0.85rem;
 }
@@ -535,7 +555,7 @@ header {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 0.45);
+  background: var(--overlay-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -680,7 +700,7 @@ header {
   height: 60%;
   background: var(--node-bus-bar);
   border-radius: 3px;
-  box-shadow: 0 0 6px rgba(96, 165, 250, 0.45);
+  box-shadow: 0 0 6px var(--glow-focus);
 }
 .graph-node-gateway {
   background: var(--node-surface);
@@ -733,7 +753,7 @@ header {
   border-radius: 3px;
 }
 .graph-node-insert-filter:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--wash-light);
 }
 
 /* Right-click edge menu in the project graph view. Same surface as
@@ -747,7 +767,7 @@ header {
   border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .graph-edge-menu > button {
   display: block;
@@ -769,7 +789,7 @@ header {
 .filter-predicate-editor {
   margin-top: 0.4rem;
   padding: 0.3rem;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--shadow-inset);
   border-radius: 3px;
   display: grid;
   gap: 0.25rem;
@@ -1282,7 +1302,7 @@ header {
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   padding: 0.35rem 0.5rem;
-  box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 
 /* Trace table -----------------------------------------------------------*/
@@ -1354,7 +1374,7 @@ header {
   align-self: stretch;
   width: 1.5rem;
   flex: 0 0 auto;
-  border: 1px solid rgb(255 255 255 / 0.12);
+  border: 1px solid var(--border-wash);
   border-radius: 2px;
 }
 button.trace-event-swatch {
@@ -1515,7 +1535,7 @@ button.trace-event-swatch {
 }
 
 .col-resize-handle:hover {
-  background: rgb(148 163 184 / 0.25);
+  background: var(--scroll-thumb);
 }
 
 /* Header cells are click-to-sort in per-id mode. */
@@ -1752,7 +1772,7 @@ button.trace-event-swatch {
 }
 .plot-area-splitter:hover::before,
 .plot-area-splitter:active::before {
-  background: rgba(78, 203, 255, 0.25);
+  background: var(--accent-tint);
 }
 
 .plot-area-ycursors {
@@ -1904,7 +1924,7 @@ button.trace-event-swatch {
   background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: 4px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 6px 18px var(--shadow-modal);
   color: var(--text-secondary);
   font-size: 0.72rem;
 }
@@ -2067,7 +2087,7 @@ button.trace-event-swatch {
   align-items: center;
   padding: 0.2rem 0.4rem;
   font-size: 0.7rem;
-  background: rgba(99, 102, 241, 0.15);
+  background: var(--select-tint-soft);
   border-bottom: 1px solid var(--border-soft);
 }
 .plot-area-filter-regex {
@@ -2221,7 +2241,7 @@ button.trace-event-swatch {
   border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.4rem 0.5rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .signals-section-patterns-title {
   color: var(--text-muted);
@@ -2240,7 +2260,7 @@ button.trace-event-swatch {
   border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.25rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .signals-section-menu button {
   background: transparent;
@@ -2393,7 +2413,7 @@ button.trace-event-swatch {
   width: 1rem;
   height: 1rem;
   border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--border-wash-strong);
   padding: 0;
   cursor: pointer;
   margin-top: 0.18rem;
@@ -2541,7 +2561,7 @@ button.trace-event-swatch {
   border-radius: 2px;
   margin-right: 0.3rem;
   vertical-align: middle;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--border-wash-strong);
 }
 .plot-signal-row.hidden .plot-signal-name,
 .plot-signal-row.hidden .plot-signal-message {
@@ -2671,7 +2691,7 @@ button.trace-event-swatch {
   border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .sources-context-menu-action {
   display: block;
@@ -2754,7 +2774,7 @@ button.trace-event-swatch {
   flex-direction: column;
   gap: 0.15rem;
   white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 /* Menu items are flat buttons with a leading checkmark slot — the
  * slot is always rendered (fixed width) so the labels line up whether
@@ -2904,7 +2924,7 @@ button.trace-event-swatch {
 }
 /* The gridview's cursor and selection (ADR 0044). */
 .tx-frame-row[data-active] {
-  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
 .tx-frame-row-selected {
@@ -3382,7 +3402,7 @@ button.trace-event-swatch {
   padding: 0 0.5rem;
   align-items: center;
   white-space: nowrap;
-  border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+  border-bottom: 1px solid var(--border-row-fade);
 }
 .system-messages-row-debug { color: var(--text-debug); }
 .system-messages-row-info { color: var(--text-secondary); }
@@ -3478,18 +3498,18 @@ button.trace-event-swatch {
   user-select: none;
 }
 .dbc-row:hover {
-  background: rgba(51, 65, 85, 0.45);
+  background: var(--surface-head-fade);
 }
 .dbc-row-selected {
-  background: rgba(99, 102, 241, 0.35);
+  background: var(--select-tint);
 }
 .dbc-row-selected:hover {
-  background: rgba(99, 102, 241, 0.45);
+  background: var(--select-tint-strong);
 }
 /* Keyboard cursor (arrow-key navigation). Distinct from selection —
    the cursor moves without selecting until Enter. */
 .dbc-row-active {
-  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
 .dbc-row-chevron {
@@ -3565,7 +3585,7 @@ button.trace-event-swatch {
   color: var(--text-muted);
   padding-right: 0.5rem;
   padding-bottom: 3px;
-  border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+  border-bottom: 1px solid var(--border-row-fade);
 }
 .dbc-details-grid {
   display: grid;
@@ -3685,7 +3705,7 @@ button.trace-event-swatch {
 .rbs-bus-row[data-active],
 .rbs-ecu-row[data-active],
 .rbs-message-row[data-active] {
-  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
 .rbs-row-selected {
@@ -3793,7 +3813,7 @@ button.trace-event-swatch {
   background: var(--surface-raised);
   border: 1px solid var(--border-strong);
   border-radius: 4px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 6px 18px var(--shadow-modal);
 }
 .rbs-context-menu button {
   background: none;
@@ -3871,7 +3891,7 @@ button.trace-event-swatch {
 
 .trace-row-violation,
 .trace-row-violation td {
-  background: rgba(153, 27, 27, 0.45) !important;
+  background: var(--danger-tint) !important;
   color: var(--danger-text-bright);
 }
 
