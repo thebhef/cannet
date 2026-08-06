@@ -61,6 +61,29 @@ sidecar    listening     127.0.0.1:49725
 port in `listening` is the OS-assigned one when `--bind` was left at
 its default — never a hard-coded value.
 
+## Logging: two sinks
+
+`--log-level` (default `info`) governs **stderr only**. The GUI host
+turns each stderr line into a System Message, so this is the knob for
+how much the sidecar contributes to what a user sees.
+
+`--log-file <path>` adds a second sink that **always records at
+debug**, whatever `--log-level` says: every gRPC command with its
+arguments and outcome, and every driver traceback. It rotates at 1 MB
+across five generations (~5 MB of disk, stdlib `RotatingFileHandler`,
+no extra dependency), and the path is echoed on a
+`sidecar\tlogfile\t<path>` banner line. There is no default — no
+flag, no file — so a developer running the sidecar by hand gets
+exactly the behaviour they always did. The GUI host passes
+`<app_log_dir>/sidecar-python-can.log`, next to its own `cannet.log`.
+
+The frame streams are the deliberate exception to "log every
+command": transmit and receive log their lifecycle and faults
+(channel open / reconfigure / close, rejections, pump crashes, plus
+the existing periodic rx/tx rate lines) but never per-frame content.
+A record per frame would rotate the whole budget away in seconds on a
+busy bus and put a logging call on the hot path.
+
 ## Wire model
 
 The sidecar implements the **hardware-server wire model** described in

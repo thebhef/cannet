@@ -293,13 +293,24 @@ class _SharedInterface:
         with self._lock:
             self._config = new_config
             if self._channel is None:
+                _log.debug(
+                    "reconfigure %s deferred to next open: %r",
+                    self._channel_id,
+                    new_config,
+                )
                 return
             old = self._channel
+            _log.debug("reopening %s with %r", self._channel_id, new_config)
             try:
                 new = self._driver.open(self._channel_id, new_config)
             except Exception as e:  # noqa: BLE001
                 msg = f"reconfigure {self._channel_id} failed: {e}"
                 _log.warning(msg)
+                # The traceback goes to the debug sink only: the warning
+                # above is what stderr (and so the System Messages panel)
+                # already carried, and raising the file's detail must not
+                # raise the panel's.
+                _log.debug("reconfigure %s failed", self._channel_id, exc_info=True)
                 self._broadcast_error(pb.LOG_LEVEL_ERROR, msg, lock_held=True)
                 return
             self._channel = new
@@ -312,7 +323,13 @@ class _SharedInterface:
     # ---- internal --------------------------------------------------------
 
     def _open_locked(self) -> None:
+        # The open attempt and the config it carries, logged before the
+        # call: when the driver refuses (or hangs), this line is the
+        # last thing in the file and names the channel and parameters
+        # that did it. The caller logs the traceback.
+        _log.debug("opening %s with %r", self._channel_id, self._config)
         self._channel = self._driver.open(self._channel_id, self._config)
+        _log.debug("opened %s", self._channel_id)
         self._stop.clear()
         self._reset_state_baseline_locked()
         # Fresh handoff queues per open — a previous session's residue
@@ -346,6 +363,7 @@ class _SharedInterface:
         self._tx_thread.start()
 
     def _close_locked(self) -> None:
+        _log.debug("closing %s", self._channel_id)
         self._stop.set()
         # Best-effort prompt wake for the TX worker; if the queue is
         # full it exits on its next 100 ms stop-flag poll instead.

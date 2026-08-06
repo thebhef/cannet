@@ -163,9 +163,10 @@ Tests updated with the rule, pinning the threshold edges and zero.
   [task 53](0053-theme-token-layer-light-theme.md).
 - Connect/disconnect/configure feedback improvements are scoped into
   concrete changes and shipped.
-- The sidecar writes a rolling logfile detailed enough that a
+- ~~The sidecar writes a rolling logfile detailed enough that a
   per-channel connect failure (the VN17xx ch2 case) leaves a
-  diagnosable trail; log location documented.
+  diagnosable trail; log location documented.~~ Done 2026-08-06 —
+  `f9103b9`, `17d57dc`, `8bf8c59`.
 - Float readouts and y-axis ticks follow item 6's magnitude rule
   through one shared helper, thresholds and mantissa width read from
   settings, with tests pinning the boundaries (threshold edges, zero,
@@ -223,8 +224,115 @@ the "never hangs on a failure path" guard. Suite after: 1418 tests /
 README § Running gained the splash paragraph (wording, no-acknowledge
 behavior, and the loading-screen role).
 
+### 2026-08-06 — item 5: sidecar rolling logfile (`f9103b9`, `17d57dc`, `8bf8c59`)
+
+Three commits, each green.
+
+**`f9103b9` — the sink.** `--log-file <path>` on the sidecar, backed by
+a stdlib `RotatingFileHandler` at 1 MiB × 5 generations (~5 MB on
+disk). **No new dependency** — nothing was added to `pyproject.toml`.
+The level split is the whole point and works like this: the root
+logger drops to `DEBUG` so the file handler sees everything, and
+`--log-level` moves onto the *stderr handler*, which is what keeps
+System Messages at exactly the verbosity they had. The banner tree
+(`propagate=False`) gets the file handler attached directly, so
+enumeration results and the bound address are in the file too. No
+flag → no file, so standalone `uv run` is untouched; an unopenable
+path warns and continues rather than failing the boot. The path is
+announced on a new `sidecar\tlogfile\t<path>` banner line.
+
+**`17d57dc` — the content.** Every command now leaves a debug record
+with args and outcome: `ListInterfaces` ids (not just the count),
+`Subscribe` with interface id and ok / unknown / open-failed,
+`Unsubscribe`, `ConfigureBus` with the requested wire values *and* the
+`OpenConfig` the driver was handed, `Session` open/close naming the
+interfaces released, `WatchInterfaces` stream lifecycle, and channel
+open / reopen / close in `shared_interface`. Failures carry
+`exc_info=True`. **Debug, not warning, deliberately** — the records
+exist for the file, and promoting any of them would have made the
+panel noisier, which the groomed spec forbids. `reconfigure`'s
+pre-existing warning is untouched; its traceback goes to the debug
+sink alongside it.
+
+**Streaming-path boundary (the decision asked for):** *lifecycle and
+faults, never per-frame or per-batch content.* `_handle_tx` logs
+nothing at all — not per frame, not per batch — and says why in its
+docstring; TX rejections already reach the client as `TX_REJECTED`
+envelopes. What *is* logged on the frame paths: channel open /
+reconfigure / close with the config, pump crashes, unencodable-frame
+drops (already first-only), and the existing 2 s periodic rx/tx rate
+lines. A saturated bus reaches `_handle_tx` thousands of times a
+second; a record there would rotate the whole 5 MB away in seconds
+and put a logging call on the hot path for it. A regression test
+transmits 64 frames and asserts none of their CAN ids appear in the
+log.
+
+**`8bf8c59` — the supervisor.** The host resolves
+`<app_log_dir>/sidecar-python-can.log` (via `crash::log_dir()`, so it
+is literally the same directory as `cannet.log`), creates it, and
+passes `--log-file` through `apply_sidecar_settings` — which every
+launch flavour including the frozen binary already routes through. A
+log directory that can't be created costs the logfile, not the
+sidecar. `classify_stdout_line` learns the `logfile` banner at Info
+(like `listening`): it answers "which file do I attach to the bug
+report", so it must be readable at the panel's default filter.
+
+**Would it have explained the VN17xx?** Verified end-to-end against
+real hardware (2 PCAN FD channels on this machine): the file carried
+the banner + enumeration, python-can's own
+`can.interfaces.vector.canlib` warning about the missing `vxlapi64`,
+and `can.interface.detect_available_configs` at debug — i.e. the
+vendor layer's own account of what it found. On the ch2 path a
+refused open now writes the driver traceback with the vendor error
+text intact, which is exactly what was missing.
+
+**Docs, same commits:** the top-level README's Phase-8 section gained
+a "Detailed sidecar logfile" paragraph (per-OS path, always-debug,
+5 MB rotation, the streaming boundary, "no flag → no file" for
+hand-runs); the sidecar's own README gained a "Logging: two sinks"
+section; `__main__.py`'s module docstring documents the two-sink model
+and the boundary, and `service.py`'s and `sidecar.rs`'s docstrings
+restate it where the code lives.
+
+**Tests.** Python: +13 (`tests/test_log_file.py` ×6 — default,
+no-file, the debug/stderr split, rotation budget, banner mirroring,
+unopenable path; `tests/test_command_logging.py` ×7 — enumeration
+ids, subscribe outcome, the refused-channel traceback, unknown
+interface, configure requested-vs-applied, open/close, and the
+no-per-frame boundary). Sidecar suite 89 → **102 passed**; ruff +
+mypy clean. Rust: +3 in `sidecar.rs` (`--log-file` on every launcher,
+`None` → no flag at all, the banner's level and path);
+`cargo test -p cannet-gui` **465 passed**, `cargo clippy -p cannet-gui
+--all-targets` clean. Frontend untouched (zero files changed under
+`apps/gui/src`): `pnpm --dir apps/gui test` ran 1418 tests / 123 files
+with one flake — see below.
+
 ### Blockers / side effects
 
+- **One `PlotPanel.dom.test.tsx` case flaked under full-suite load**
+  (1 failed / 1417 passed, inside `withSizedCanvas` at
+  `PlotPanel.dom.test.tsx:2722`). Re-running that file alone passes
+  all 76 of its tests, and this branch changes zero files under
+  `apps/gui/src`, so it is load-dependent timing in the plot suite,
+  not a regression from item 5. Left alone rather than chased — it is
+  neither in scope nor reproducible in isolation.
+- **`_handle_subscribe` only catches `KeyError` and `OSError`.** The
+  default driver wraps every open failure in `OSError`
+  (`driver_python_can.open`), so the real path is covered — but a
+  replacement driver module (`CANNET_DRIVER_MODULE`) that lets a
+  `can.CanInitializationError` escape would take down the whole
+  session through `request_pump`'s broad handler, not just the one
+  channel. Noticed while adding the traceback log; **not fixed**, as
+  changing the catch is a behaviour change outside item 5's scope.
+- **The debug file inherits third-party debug records.** Root at
+  `DEBUG` means `can.*` and `grpc.*` debug output lands in the file
+  too. Checked before committing to it: python-can debug-logs only on
+  the open/enumerate paths (three call sites across `bus.py` and the
+  Vector `canlib.py`) and grpc's Python layer has none per call, so
+  there is no per-frame amplification. This is a feature — the
+  vendor layer's own account is what a hardware post-mortem wants —
+  but a future python-can that logs per message would land inside the
+  budget silently.
 - **The App-level splash test costs ~5.2 s of wall clock.** The floor
   is a module constant, and driving the whole App boot under fake
   timers risks dockview/ResizeObserver interactions, so the test waits

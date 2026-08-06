@@ -19,16 +19,46 @@ trees coexist:
   stderr. The host's classifier in ``sidecar.rs`` reads these and
   turns each into a typed System Message
   (``sidecar version …``, ``sidecar listening …``, etc.).
+
+Those two trees feed **two sinks with deliberately different
+levels** (:func:`_configure_logging`):
+
+- **stderr** stays at ``--log-level``. It is what the user sees in the
+  System Messages panel, so raising the file's detail must not make
+  the panel noisier.
+- **the ``--log-file`` rolling file** always records at ``debug``, and
+  the banner lines are mirrored into it as well (enumeration results
+  and the bound address belong in a hardware post-mortem). Without the
+  flag no file is written at all, so a standalone ``uv run`` behaves
+  exactly as before. Rotation is
+  :class:`~logging.handlers.RotatingFileHandler` at
+  :data:`LOG_FILE_MAX_BYTES` × (1 + :data:`LOG_FILE_BACKUP_COUNT`)
+  generations — a bounded ~5 MB on disk.
+
+**What the debug file does and does not record on streaming paths.**
+The per-command detail (subscribe / unsubscribe / configure /
+enumerate, with arguments, outcomes, and full tracebacks) is what
+makes a per-channel connect failure diagnosable after the fact. The
+frame streams are the deliberate exception: ``FrameBatch`` transmits
+and the rx fan-out log their **lifecycle and faults only** — channel
+open/close, reconfigure, rejections, pump crashes, and the existing
+periodic rx/tx rate lines — never per-frame content. A bus at
+100k frames/s would otherwise rotate the whole 5 MB budget away in
+under a second and pay a logging call on the hot path for the
+privilege.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import signal
 import sys
 import threading
 import traceback
+from pathlib import Path
+from typing import Optional
 
 from . import __version__
 
@@ -43,6 +73,63 @@ if not BANNER.handlers:
     _banner_handler = logging.StreamHandler(sys.stdout)
     _banner_handler.setFormatter(logging.Formatter("%(message)s"))
     BANNER.addHandler(_banner_handler)
+
+
+#: Record layout shared by the stderr sink and the ``--log-file`` sink.
+#: ``sidecar.rs``'s ``classify_stderr_line`` parses this exact shape, so
+#: it is not free to change.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+#: Rolling-file budget: 1 MiB per generation …
+LOG_FILE_MAX_BYTES = 1024 * 1024
+#: … and four backups behind the live file, so the sidecar's logs cost
+#: at most ~5 MB of disk however long the session runs.
+LOG_FILE_BACKUP_COUNT = 4
+
+
+def _configure_logging(level: str, log_file: Optional[str]) -> Optional[Path]:
+    """Wire up the two sinks; return the logfile path actually opened.
+
+    ``level`` governs **stderr only**. When ``log_file`` is given, the
+    root logger has to drop to ``DEBUG`` for the file handler to see
+    debug records, so ``level`` moves onto the stderr handler itself —
+    that is what keeps the System Messages panel at the verbosity the
+    user asked for while the file records everything.
+
+    Returns ``None`` when no file was requested, and also when the file
+    could not be opened: losing diagnostics must not stop the sidecar
+    from serving hardware.
+    """
+    stderr_level = getattr(logging, level.upper())
+    logging.basicConfig(level=stderr_level, format=LOG_FORMAT)
+    if log_file is None:
+        return None
+    path = Path(log_file)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            path,
+            maxBytes=LOG_FILE_MAX_BYTES,
+            backupCount=LOG_FILE_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logging.getLogger(__name__).warning(
+            "could not open --log-file %s: %s; continuing without it", path, e
+        )
+        return None
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    root = logging.getLogger()
+    for existing in root.handlers:
+        existing.setLevel(stderr_level)
+    root.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+    # The banner tree has `propagate=False`, so it needs the file
+    # handler attached directly — enumeration results and the bound
+    # address only exist there.
+    BANNER.addHandler(handler)
+    return path
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -66,6 +153,17 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default="info",
         choices=("debug", "info", "warning", "error"),
         help="Python log level for stderr output.",
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help=(
+            "Also write a rolling, always-debug logfile at this path "
+            "(1 MB × 5 generations). Every gRPC command, its arguments "
+            "and outcome, and every driver traceback land here at full "
+            "detail regardless of --log-level. Omitted by default: no "
+            "flag, no file."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -172,10 +270,12 @@ def _run(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
-    logging.basicConfig(
-        level=args.log_level.upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    log_path = _configure_logging(args.log_level, args.log_file)
+    if log_path is not None:
+        # Discoverability: the host classifies this into a System
+        # Message, so the user can find the detailed log without
+        # knowing the per-OS log directory.
+        BANNER.info("sidecar\tlogfile\t%s", log_path)
     try:
         return _run(args)
     except Exception as e:  # noqa: BLE001 — top-level last-chance handler

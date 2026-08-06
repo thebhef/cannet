@@ -1189,6 +1189,27 @@ default); once the budget is exhausted, the `restart_sidecar` Tauri
 command — the project panel's **Local interfaces → Restart** button —
 clears it.
 
+**Detailed sidecar logfile**. Stderr is not the whole story: it is
+what the panel shows, so it stays at `sidecar_log_level`. The host
+also launches the sidecar with `--log-file`, pointing at
+`sidecar-python-can.log` in the same per-OS log directory as the
+host's own rolling `cannet.log` (`%LOCALAPPDATA%\<id>\logs` on
+Windows, `~/Library/Logs/<id>` on macOS, `~/.local/share/<id>/logs` on
+Linux). That file **always records at debug**, whatever the panel is
+set to: every gRPC command with its arguments and outcome
+(enumerated interface ids, subscribe attempts, configure with the
+requested values *and* the ones the driver was handed, disconnects)
+plus every driver traceback — which is what a per-channel connect
+failure needs to be diagnosable after the fact. It rotates at 1 MB
+across five generations, so it costs at most ~5 MB of disk. The
+frame streams are the deliberate exception: transmit and receive log
+their lifecycle and faults, never per-frame content. The sidecar
+reports the path back on startup, so the System Messages panel says
+`detailed log: <path>` — that plus `cannet.log` is what to attach to
+a bug report. Running the sidecar by hand (`uv run
+cannet-python-can`) writes no file unless you pass `--log-file`
+yourself.
+
 **Lifecycle: dies with the host**. The host pipes the sidecar's
 stdin and writes nothing to it. When the host process exits (clean
 or not), the OS closes the pipe and the sidecar's stdin-EOF watcher
