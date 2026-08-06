@@ -1,7 +1,7 @@
 # Task 53 — Theme Token Layer, then Light Theme
 
 **Status: implementation complete, pending human review (2026-08-06).**
-All four phases (53.A–53.D) are landed and every exit criterion is met;
+All five phases (53.A–53.E) are landed and every exit criterion is met;
 the evidence for each is in the status log below.
 
 A user asked for a light theme (captured in
@@ -722,3 +722,73 @@ test.
   one full-suite run in this phase and passed the three either side of
   it, including the pre-commit hook's. Same test, same intermittency,
   still not touched.
+
+### 2026-08-06 — Phase 53.E, the pairing inverted (shape-of-the-work item 5)
+
+**One operator moved.** `resolveTheme` now returns `normal` for `light`
++ flag **off** and `light` for `light` + flag **on**; `dark` is the same
+under both. So the pink set is what the light theme renders by default,
+and "Normal mode" is the checkbox that gives you the intended light
+theme — which still ships, unchanged, on the same machinery and the same
+contrast tests. `theme` still stores `dark | light`, `normal_mode` is
+still a developer-tagged boolean defaulting to `false`, and the app
+default is still `theme: dark`, so nothing changes for anyone who has
+not picked the light theme. Two commits: the flip (`710df3e`), the docs
+(`7ee4e88`).
+
+Only the resolver and the words moved. No token set, no wheel, no
+consumer, no host field and no descriptor row changed shape; the settings
+row keeps its label and its default and takes the new help line ("When
+enabled, the light theme renders normally").
+
+**Tests: same count, same coverage, flipped assertions.** Frontend
+**1484 over 130 files**, host **482** — both unchanged from 53.D, which
+is the point: nothing gained or lost coverage. The truth table flipped
+first and failed on the old code
+(`AssertionError: expected 'normal' to be 'light'`), then the resolver
+followed. Four `themeSync.dom.test.ts` cases and both `PlotPanel`
+live-switch cases carried the old pairing in their fixtures or their
+expectations and now carry the new one — the boot case stores the pair
+that reaches the light theme, the flag-flip case starts on `normal` and
+lands on `light`, and the plot's theme-change case asserts the applied
+theme at default flags (`normal`) while its flag-change case asserts
+`light`.
+
+**Evidence: three diffs, all against a same-session reference build.**
+53.C's lesson applies, so the 53.D binary was re-photographed today
+rather than compared against its recorded numbers: reference =
+53.D's tip build, subject = this branch's `tauri build --no-bundle`,
+`ev-demo`, 1600×1000, six capture runs back to back.
+
+| # | claim | before | after | result |
+| --- | --- | --- | --- | ---: |
+| a | dark is untouched | 53.D, defaults | 53.E, defaults | **0** on 8/9; `09-palette` 51 061 px at max Δ**1** |
+| b | `theme: light` alone now renders the pink set | 53.D, `light` + `normal_mode: true` | 53.E, `light`, default flags | **0** on all nine |
+| c | the flag now renders the light set | 53.D, `light` | 53.E, `light` + `normal_mode: true` | **0** on all nine |
+
+The one non-zero is the bistable palette compositing artifact 53.A
+documented, at its documented size (51 061 px) and its documented
+Δchannel (1) — the run came out one form for the reference and the other
+for the subject.
+
+Diffed against the committed review sets as well:
+`docs/review/0053-normal-mode/` is **0 on all nine** against run (b),
+and `docs/review/0053-light-theme/` is 0 on six of nine against run (c),
+differing on `02-dbc-system-messages` (6 707 px), `04-transmit` (19 px)
+and `07-about` (2 800 px). Those three are **not** this phase: the 53.D
+session's own light captures reproduce today's bytes exactly (0 on all
+nine against run (c)) and differ from the committed set by the same
+9 526 pixels — the light set was photographed in the 53.C session, and
+what moved between sessions is unmasked volatile content, which the diff
+artifacts locate precisely: the system-log rows' level chips and both
+scrollbars, the project tree's scrollbar thumb, and the About panel's
+third-party-licence line. Cross-session drift of the kind 53.C recorded,
+in the regions it named.
+
+**No re-capture.** Both review sets are the same pixels they always
+were; only the setting pair that reaches each one changed, so the two
+READMEs were re-labelled and the PNGs left alone.
+
+**Blockers / side effects.** None new. The user `settings.json` was
+edited to drive the six runs and restored to its backup byte for byte;
+no GUI process outlived its capture.
