@@ -33,8 +33,6 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type {
   CalcFieldsSpec,
-  RbsBusView,
-  RbsEcuView,
   RbsMessageView,
   RbsSignalView,
   RbsView,
@@ -54,13 +52,19 @@ import { useHostMirror } from "./useHostMirror";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { formatBytes } from "./format";
-import {
-  GridviewFilterBox,
-  useGridviewFilter,
-  type GridviewFilterEntry,
-} from "./gridviewFilter";
+import { GridviewFilterBox, useGridviewFilter } from "./gridviewFilter";
 import { useGridview, type Gridview } from "./useGridview";
-import { arrayRowSpace, type GridviewAdapter, type GridviewRow } from "./gridviewRows";
+import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
+import {
+  buildRbsFilterEntries,
+  buildVisibleTree,
+  makeRbsRowSpace,
+  makeRbsRowIds,
+  makeRowGridPropsCache,
+  type RbsRowIds,
+  type RowGridProps,
+  type VisibleBus,
+} from "./rbsRowIdentity";
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -73,112 +77,6 @@ interface Target {
 /// has no measured row geometry to derive a viewport's worth from; a
 /// screenful of ~20px rows in a typical dock panel is about this.
 const PAGE_ROWS = 12;
-
-/// Stable gridview row ids (ADR 0044). The bus and ECU forms are also
-/// the keys the `collapsed` set has always used, so the cursor, the
-/// expansion and the selection all name one thing.
-function busRowId(busKey: string): string {
-  return `b:${busKey}`;
-}
-function ecuRowId(busKey: string, ecu: string): string {
-  return `e:${busKey}/${ecu}`;
-}
-function messageRowId(busKey: string, messageKey: string): string {
-  return `m:${busKey}/${messageKey}`;
-}
-
-/// The tree as it will actually render, with the filter's hiding and the
-/// expansion already applied. Built once per render and consumed twice:
-/// by the nested renderers below, and — flattened — by the gridview's
-/// row space, so the two cannot disagree about what is on screen.
-interface VisibleBus {
-  bus: RbsBusView;
-  expanded: boolean;
-  ecus: VisibleEcu[];
-}
-interface VisibleEcu {
-  ecu: RbsEcuView;
-  expanded: boolean;
-  messages: RbsMessageView[];
-}
-
-function buildVisibleTree(
-  view: RbsView | null,
-  expanded: (id: string) => boolean,
-  keep: (id: string) => boolean,
-): VisibleBus[] {
-  if (!view) return [];
-  const out: VisibleBus[] = [];
-  for (const bus of view.buses) {
-    const bId = busRowId(bus.key);
-    if (!keep(bId)) continue;
-    const busExpanded = expanded(bId);
-    const ecus: VisibleEcu[] = [];
-    for (const ecu of bus.ecus) {
-      const eId = ecuRowId(bus.key, ecu.name);
-      if (!keep(eId)) continue;
-      ecus.push({
-        ecu,
-        expanded: expanded(eId),
-        messages: ecu.messages.filter((m) => keep(messageRowId(bus.key, m.key))),
-      });
-    }
-    out.push({ bus, expanded: busExpanded, ecus });
-  }
-  return out;
-}
-
-/// The visible tree as the gridview's ordered row space: buses and ECUs
-/// are branches, a message is a **leaf with content** — its signal table
-/// grows the row in place and adds no rows (ADR 0044's node model).
-function flattenRbsRows(tree: readonly VisibleBus[]): GridviewRow[] {
-  const rows: GridviewRow[] = [];
-  for (const b of tree) {
-    rows.push({
-      id: busRowId(b.bus.key),
-      kind: "branch",
-      expandable: b.ecus.length > 0,
-      depth: 0,
-    });
-    if (!b.expanded) continue;
-    for (const e of b.ecus) {
-      rows.push({
-        id: ecuRowId(b.bus.key, e.ecu.name),
-        kind: "branch",
-        expandable: e.messages.length > 0,
-        depth: 1,
-      });
-      if (!e.expanded) continue;
-      for (const m of e.messages) {
-        rows.push({
-          id: messageRowId(b.bus.key, m.key),
-          kind: "leaf",
-          expandable: true,
-          depth: 2,
-        });
-      }
-    }
-  }
-  return rows;
-}
-
-/// One searchable entry per message, for the layer's filter slot: the
-/// message and the path to it, so a match reveals its bus and ECU.
-function buildRbsFilterEntries(view: RbsView | null): GridviewFilterEntry[] {
-  const out: GridviewFilterEntry[] = [];
-  for (const bus of view?.buses ?? []) {
-    for (const ecu of bus.ecus) {
-      for (const m of ecu.messages) {
-        out.push({
-          id: messageRowId(bus.key, m.key),
-          ancestors: [busRowId(bus.key), ecuRowId(bus.key, ecu.name)],
-          haystack: [m.name ?? "", m.key, ecu.name, ...m.signals.map((s) => s.name)].join(" "),
-        });
-      }
-    }
-  }
-  return out;
-}
 
 /// An open calc-field editor: the target message plus its current
 /// state and an optional preset destination (right-click flow).
@@ -275,7 +173,13 @@ export function RbsPanel(props: IDockviewPanelProps) {
   // The whole tree is client-held, so the panel opts into the layer's
   // fzf instead of carrying its own: a query keeps the matching messages
   // and the bus / ECU path to each, and treats that path as expanded.
-  const buildFilterEntries = useCallback(() => buildRbsFilterEntries(view), [view]);
+  // Row identity is interned for the life of the panel: the 500 ms
+  // value poll below rebuilds `view`, but not the shape the ids name.
+  const rowIds = useMemo(() => makeRbsRowIds(), []);
+  const buildFilterEntries = useCallback(
+    () => buildRbsFilterEntries(view, rowIds),
+    [view, rowIds],
+  );
   const filter = useGridviewFilter(buildFilterEntries);
 
   // ---- expansion state ----
@@ -303,15 +207,21 @@ export function RbsPanel(props: IDockviewPanelProps) {
     (id: string) => ancestorsOfMatches.has(id) || isRowExpanded(id),
     [ancestorsOfMatches, isRowExpanded],
   );
-  const keepRow = useCallback(
-    (id: string) => !filterActive || matchSet.has(id) || ancestorsOfMatches.has(id),
+  /// `null` while nothing is narrowing — then the walk keeps everything
+  /// without asking, and each ECU keeps its own message array.
+  const keepRow = useMemo(
+    () =>
+      filterActive
+        ? (id: string) => matchSet.has(id) || ancestorsOfMatches.has(id)
+        : null,
     [filterActive, matchSet, ancestorsOfMatches],
   );
   const tree = useMemo(
-    () => buildVisibleTree(view, effectiveExpanded, keepRow),
-    [view, effectiveExpanded, keepRow],
+    () => buildVisibleTree(view, rowIds, effectiveExpanded, keepRow),
+    [view, rowIds, effectiveExpanded, keepRow],
   );
-  const gridRows = useMemo(() => flattenRbsRows(tree), [tree]);
+  const rowSpace = useMemo(() => makeRbsRowSpace(), []);
+  const gridRows = rowSpace(tree, rowIds);
   const treeRef = useRef<HTMLDivElement | null>(null);
   const setRowExpanded = useCallback((id: string, want: boolean) => {
     if (id.startsWith("m:")) {
@@ -351,6 +261,11 @@ export function RbsPanel(props: IDockviewPanelProps) {
   /// hook's per-render identity, so it reads the mapping through a ref.
   const rowDomIdRef = useRef(grid.rowDomId);
   rowDomIdRef.current = grid.rowDomId;
+  /// A row's DOM id and its click handler depend only on its id, so they
+  /// are built once per row instead of once per row per refresh.
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
+  const rowProps = useMemo(() => makeRowGridPropsCache(gridRef), []);
 
   // ---- modal / menu state ----
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -435,6 +350,8 @@ export function RbsPanel(props: IDockviewPanelProps) {
             elementId={elementId}
             visible={b}
             grid={grid}
+            rowProps={rowProps}
+            rowIds={rowIds}
             isExpanded={effectiveExpanded}
             onSetExpanded={setRowExpanded}
             onConfigure={(target, message, preset) =>
@@ -538,6 +455,8 @@ interface BusSectionProps {
   elementId: string;
   visible: VisibleBus;
   grid: Gridview;
+  rowProps: (id: string) => RowGridProps;
+  rowIds: RbsRowIds;
   isExpanded: (id: string) => boolean;
   onSetExpanded: (id: string, expanded: boolean) => void;
   onConfigure: (
@@ -548,23 +467,12 @@ interface BusSectionProps {
   onSignalMenu: (menu: MenuState) => void;
 }
 
-/// Props every row in this panel carries so the gridview can see it: the
-/// DOM id `aria-activedescendant` names, the cursor class, and the click
-/// that moves the cursor.
-function rowGridProps(grid: Gridview, id: string) {
-  return {
-    id: grid.rowDomId(id),
-    "data-active": grid.cursor === id || undefined,
-    onClick: (e: MouseEvent) => {
-      grid.onRowClick(id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey });
-    },
-  };
-}
-
 function BusSection({
   elementId,
   visible,
   grid,
+  rowProps,
+  rowIds,
   isExpanded,
   onSetExpanded,
   onConfigure,
@@ -581,7 +489,7 @@ function BusSection({
       enabled,
     }).catch(() => {});
   };
-  const bId = busRowId(bus.key);
+  const bId = rowIds.bus(bus.key);
 
   return (
     <section className={inert ? "rbs-bus rbs-inert" : "rbs-bus"}>
@@ -589,7 +497,8 @@ function BusSection({
         className="rbs-bus-row"
         role="treeitem"
         aria-expanded={visible.expanded}
-        {...rowGridProps(grid, bId)}
+        {...rowProps(bId)}
+        data-active={grid.cursor === bId || undefined}
       >
         <button
           type="button"
@@ -625,14 +534,15 @@ function BusSection({
       </div>
       {visible.expanded &&
         visible.ecus.map(({ ecu, expanded, messages }) => {
-          const eId = ecuRowId(bus.key, ecu.name);
+          const eId = rowIds.ecu(bus.key, ecu.name);
           return (
             <div key={ecu.name} className="rbs-ecu">
               <div
                 className="rbs-ecu-row"
                 role="treeitem"
                 aria-expanded={expanded}
-                {...rowGridProps(grid, eId)}
+                {...rowProps(eId)}
+        data-active={grid.cursor === eId || undefined}
               >
                 <button
                   type="button"
@@ -658,7 +568,7 @@ function BusSection({
               </div>
               {expanded &&
                 messages.map((m) => {
-                  const mId = messageRowId(bus.key, m.key);
+                  const mId = rowIds.message(bus.key, m.key);
                   return (
                     <MessageRow
                       key={m.key}
@@ -668,6 +578,7 @@ function BusSection({
                       inert={inert}
                       rowId={mId}
                       grid={grid}
+                      rowProps={rowProps}
                       expanded={isExpanded(mId)}
                       onToggleExpand={(want) => onSetExpanded(mId, want)}
                       onEnable={(enabled) => setEnabled(ecu.name, m.key, enabled)}
@@ -694,6 +605,7 @@ interface MessageRowProps {
   /// signal table below discloses in place and adds no rows.
   rowId: string;
   grid: Gridview;
+  rowProps: (id: string) => RowGridProps;
   expanded: boolean;
   onToggleExpand: (expanded: boolean) => void;
   onEnable: (enabled: boolean) => void;
@@ -708,6 +620,7 @@ function MessageRow({
   inert,
   rowId,
   grid,
+  rowProps,
   expanded,
   onToggleExpand,
   onEnable,
@@ -732,7 +645,8 @@ function MessageRow({
         role="treeitem"
         aria-expanded={expanded}
         aria-selected={grid.selection.has(rowId)}
-        {...rowGridProps(grid, rowId)}
+        {...rowProps(rowId)}
+        data-active={grid.cursor === rowId || undefined}
       >
         <button
           type="button"

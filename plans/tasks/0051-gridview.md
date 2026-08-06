@@ -1134,5 +1134,152 @@ building a variant that skips them and re-capturing.
 | One implementation; six surfaces consume it; bespoke copies deleted | **Met** — verified by the D.3 sweep above. |
 | D3 nav + D4 multiselect where declared; D7–D11 drop matrix; failing-first tests | **Met with deviations recorded** — every slice landed test-first; the deviations are the per-slice blocker lists, chiefly the unreachable "patterns on empty plot space → new area" cell (B.3), Ctrl+A and multi-item drag reaching only the loaded page in the three paged views (B.2, C.1b), and by-ID keeping its own Enter/Space toggle where D0 outvoted ADR 0044 (C.1b). |
 | Visual parity (D0): DOM tests green; Chromium where jsdom can't see layout | **Met with deviation** — every pre-existing DOM test stayed green through every slice, and the deliberate pixel changes are enumerated (the DBC caret 0.8→1.1 rem, the `.trace-disclosure` hit target, `.trace-row.selected`). **No Chromium measurement was taken**: D16's alignment invariant is structural — one cell per visible column, in header order, in the header's tracks — and that is what the A.4 tests assert. What stays unmeasured is that CSS grid resolves those tracks identically to the hand-built rows. |
-| No regression on the ADR 0031 render-tier perf gate | **Not met** — `jsheap_mb_drift_per_min` 29.17 against a 16.39 limit, reproduced twice and confirmed against a same-day pre-gridview control (D.4). Every other gated metric passed and the CPU tier improved. |
+| No regression on the ADR 0031 render-tier perf gate | **Met** (2026-08-06, after 51.E) — the regression was localized to `RbsPanel` by layout ablation and fixed by interning the tree's row identity (`6e611c0`). `cannet-perf-measurement check` passes on both post-fix captures, 31/31 metrics: `jsheap_mb_drift_per_min` 9.91 and 2.29 against the 16.39 limit, where the unfixed build read 20–29. Across six runs per build the fixed build's mean JS heap is 50.3 MB against a same-day control's 47.9 (eight runs), inside the control's own spread; the unfixed build read 60.3. Long-task and jank stayed at zero. See the 51.E entries. |
 | Docs: ADRs 0044/0045 landed; shortcuts panel reflects the bindings; CONTEXT.md gains the terms; deferred list survives | **Met** — both ADRs are in `docs/adr/` and carry no plans/task reference; the shortcuts panel gained the key table and the per-binding contexts (D.2); `docs/CONTEXT.md` carries the gridview terms; the deferred list is untouched. |
+
+### 2026-08-06 — 51.E the heap regression: cause found in the RBS panel
+
+An unplanned fix phase for the one exit criterion D.4 left unmet.
+Branch `task51-heap-fix`, cut from `task51-finish`.
+
+**Hypothesis history.** D.4 recorded two candidates, both about the
+paged trace views. Both are now **refuted**:
+
+- *H1 — `GridviewRow`'s per-cell `<Fragment key>` wrapper.* Ablated it
+  (cells returned straight from `renderCell`), rebuilt, captured:
+  jsheap mean 59.87 / max 105.8 / slope 29.25 — squarely in the
+  unfixed family (mean 56.8–62.5), nowhere near the control
+  (46.4–48.5). **Refuted**; the ablation was reverted.
+- *H2 — per-row identity strings in the paged parents.* Refuted
+  together with H1 by the layout ablation below: removing the trace
+  views from the scenario leaves the delta intact (+10.1 MB of the
+  +12.9 MB), and removing the signals panel leaves +8.5. Neither is
+  where the cost is.
+
+**Two measurement corrections had to come first**, because the
+experiments were not otherwise trustworthy:
+
+1. *`jsheap_mb.mean` is the discriminator, not the slope.* The slope is
+   a least-squares fit over a sawtooth (a run ends anywhere between
+   ~37 and ~104 MB), so it swings run to run. Interleaved 3+3 runs of
+   the unfixed build against a same-day control separate cleanly on the
+   **mean** — 56.80 / 61.71 / 62.46 vs 47.35 / 46.44 / 48.52 — with no
+   overlap, where the slopes overlap at the edges. The gate still gates
+   the slope; the experiments were read on the mean.
+2. *Compare like builds.* The first control binary was built with
+   `minify: false` (for a profiling experiment) and read ~5 MB high on
+   mean heap — enough to erase the effect. Every A/B below uses matched
+   minified release builds, and both binaries were kept side by side,
+   which turns an A/B into two 90-second runs instead of two rebuilds.
+
+**The confirming experiment: ablation by project layout.** The scenario
+is the variable, so no rebuild is needed — copies of the ev-zonal
+project with panels removed, run on both binaries:
+
+| layout | unfixed mean | control mean | delta |
+| --- | --- | --- | --- |
+| full (3 + 3 runs) | 60.32 | 47.44 | **+12.9** |
+| RBS panel removed | 31.77 | 32.21 | **−0.4** |
+| trace views removed | 58.85 | 48.71 | +10.1 |
+| signals panel removed | 56.55 | 48.08 | +8.5 |
+
+Removing the RBS panel collapses the delta to nothing. Confirmed a
+second way, by reverting **only** `RbsPanel.tsx` to `c2b845c` and
+leaving every other gridview change in place: mean 49.62 / 49.64, slope
+5.56 / 5.55 — 10.7 MB of the 12.9 recovered by one file.
+
+**Mechanism.** Instrumented the panel (a `render.RbsPanel` counter and
+an `rbs.rows` gauge, added for the measurement and then removed): it
+renders **4.83 times per second over 321 rows**. That rate is the RBS
+view's 500 ms value poll — the payloads and running flags move, the
+tree's *shape* does not. The migration nonetheless rebuilt, per row per
+refresh, the row id string, the DOM id (`rowDomId`'s
+`encodeURIComponent` plus a template), the row's click closure and its
+`GridviewRow` object, and walked every message through the filter
+predicate even with an empty query. That is on the order of a few
+hundred bytes per row per refresh over ~1,550 row-renders a second,
+which is the right size for the observed delta.
+
+**The fix** (`6e611c0`, `apps/gui/src/rbsRowIdentity.ts`): intern what
+the shape determines — row ids, row props, and the row space, which
+hands back the *same array* when nothing structural moved and so keeps
+the adapter and the hook's derived callbacks stable too; and skip the
+filter walk entirely while nothing is narrowing, which also hands each
+ECU its own message array back. The caches are bounded by the loaded
+RBS config. No DOM change, no behavioural change; the tests assert
+*identity*, which is the only shape this regression has. Landed in two
+measured steps — ids and row props first (mean 60.3 → 55.5), then the
+row space (→ 50.3).
+
+**Result.** Six runs of the fixed build against eight of the control,
+interleaved, standard scenario:
+
+| build | jsheap mean (avg / worst) | max (avg / worst) | slope (avg / worst) |
+| --- | --- | --- | --- |
+| unfixed (n=3) | 60.32 / 62.46 | 101.9 / 109.7 | 17.9 / 22.9 |
+| **fixed (n=6)** | **50.34 / 51.99** | **77.9 / 82.7** | **4.70 / 12.30** |
+| control (n=8) | 47.91 / 51.12 | 74.4 / 80.2 | 5.94 / 10.36 |
+
+The fixed build is inside the control's own spread on every column; its
+average slope is *lower* than the control's, and its worst run (12.30)
+sits beside the control's worst (10.36) and under the 16.39 limit.
+`cannet-perf-measurement check` passes on both committed post-fix
+captures — **31/31 metrics**, `jsheap_mb_drift_per_min` 9.905 and
+2.288 — with no baseline promoted. Nothing was traded for it:
+`longtask_ms_per_s_mean` 0.000, `jank_fraction` 0.000, `lag_ms_max`
+35.0 and 3.6 (limit 74.2), `tx_late_ms_max` 19.6 and 18.0 (baseline
+75.9), rx/tx fps 1612–1614 against 1608. Captures committed as
+`2026-08-06-6e611c0-rbs-identity-fix-run{1,2}.json`.
+
+#### Blockers / side effects
+
+- **Slice D's "DBC/RBS are not open in this scenario" was wrong, and it
+  is why the search started in the wrong place.** It was inferred from
+  the absence of a `render.RbsPanel` counter — but the panel has never
+  had one, and dockview keeps an inactive tab *mounted*: `rbs-vehicle`
+  sits behind the `project` tab in the ev-zonal layout and renders the
+  whole time. A counter would have prevented the wrong inference; one
+  was added temporarily here and removed with the rest of the
+  instrumentation. Adding it permanently — and for `DbcPanel` and
+  `TransmitPanel` — is worth its own change.
+- **Panel visibility in the gate scenario, verified from the saved
+  layout:** group 1 holds `trace-chrono` *and* `trace-byid-zonal` with
+  the by-ID one active, so **the chronological trace is behind a tab**;
+  `trace-byid-pack` (group 3), `signals-pack-signals` (group 4) and
+  `plot-pack` (group 5) are the visible tabs; `rbs-vehicle`,
+  `system-messages` and `events` sit behind `project` in group 2. All
+  of them render regardless — that is what the render counters show and
+  what the RBS finding rests on. The gate scenario was left exactly as
+  the committed baseline captured it, and a **second scenario with
+  `trace-chrono` as the active tab** was run beside it: unfixed 67.04
+  mean / 110.2 max / 34.56 slope; fixed 49.01 and 52.36 mean / 74.7 and
+  82.4 max / 7.97 and 11.18 slope; control 46.76 / 71.6 / 5.47. The fix
+  holds in the harder scenario too. Whether the gate scenario should
+  put the chronological view in front is a baseline decision, not this
+  phase's.
+- **The V8 sampling heap profiler was tried and is not usable here.**
+  Attached over CDP to the real WebView2 (`--remote-debugging-port`,
+  unminified release build) it reported only ~9 MB/min of total
+  allocation in *both* builds, against a heap that sawtooths 38 → 104 MB
+  in 60 s — it under-reports by roughly an order of magnitude and could
+  not resolve a delta this size. It earned its keep once: its stacks are
+  what revealed `RbsPanel` rendering at all.
+- **Reported by the repo owner while watching these runs: the unfixed
+  build looks visibly worse than the control — plot-panel jank up 2–3×
+  with larger spikes.** That is consistent with the captures' *variance*
+  rather than their means: across the four committed 08-05 captures the
+  unfixed run 2 read `lag_ms_max` 45.4, `jank_fraction` 0.05 and
+  `tx_late_ms_max` 79.6 where run 1 was the cleanest of all four —
+  the signature of GC pauses landing inside or outside the window by
+  luck, and individual collections sit under the long-task threshold, so
+  a clean `longtask_ms_per_s` does not contradict felt stutter. The
+  fixed build shows no run of that kind in six: `longtask_ms_per_s_mean`
+  0.000 and `jank_fraction` 0.000 in every one, worst `lag_ms_max` 35.3.
+  Recorded as an observation, not a measured second cause; if stutter is
+  still felt on the fixed build it is a separate finding and wants its
+  own hypothesis.
+- **No baseline was promoted**, per the brief. The committed
+  `baseline.json` still reads ~1.8× low on `jsheap_mb_drift_per_min`
+  relative to this machine (D.4's finding, unchanged) — the gate passes
+  anyway, but a same-day control remains the honest comparator for any
+  future heap work.
