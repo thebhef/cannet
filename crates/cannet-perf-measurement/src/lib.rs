@@ -32,6 +32,7 @@ pub mod frontend;
 pub mod grpc;
 pub mod hardware_peak;
 pub mod runner;
+pub mod screenshot;
 pub mod sidecar;
 pub mod signal_bench;
 pub mod tracebuffer;

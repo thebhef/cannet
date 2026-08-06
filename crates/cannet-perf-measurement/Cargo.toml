@@ -38,3 +38,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Scratch directory for the `tracebuffer --store disk` run (the disk-spill
 # store needs a real directory to map its segment files in).
 tempfile = "3"
+# Visual-parity screenshots (`screenshot` / `screenshot-diff`): the
+# capture talks the Chrome DevTools Protocol to the shipping app's
+# WebView2 — a websocket for the commands, one plain-HTTP GET to find
+# the page target, and PNG decode/encode for the pixel diff.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+ureq = { version = "3", default-features = false }
+png = "0.18"
+base64 = "0.22"

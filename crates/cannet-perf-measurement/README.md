@@ -293,3 +293,91 @@ trace-store mutex is unfair — the residual the incremental match-count
 fix (filtered-chrono convergence) is expected to remove. A regression
 that lengthens the lock-hold pushes these numbers up; the `check` gate
 catches it.
+
+## Visual parity (`screenshot` / `screenshot-diff`)
+
+The modes above characterize what the render tier *costs*. Two more
+subcommands characterize what it *looks like*, so a change meant to be
+pixel-neutral — swapping the stylesheet's literal colors for tokens,
+say — is proven rather than eyeballed.
+
+`screenshot` launches the shipping GUI on a project, walks a fixed
+scenario, and writes one PNG per step:
+
+```sh
+cargo run -p cannet-perf-measurement -- screenshot \
+  --gui-binary <ABS>/target/release/cannet-gui.exe \
+  --project    <ABS>/examples/ev-demo/ev-demo.cannet_prj \
+  --out-dir    <ABS>/shots/before --prefix before-
+```
+
+`screenshot-diff` compares two capture sets (or two single PNGs), prints
+the differing-pixel count/percentage per pair, writes a magenta-marked
+diff artifact per pair, and exits non-zero past `--max-diff-pct`
+(default 0):
+
+```sh
+cargo run -p cannet-perf-measurement -- screenshot-diff \
+  --before <ABS>/shots/before --after <ABS>/shots/after \
+  --before-prefix before- --after-prefix after-
+```
+
+**Use absolute paths** — the GUI child's working directory is not the
+repo root — and give it a binary with the frontend embedded
+(`pnpm --dir apps/gui tauri build --no-bundle`); a plain
+`cargo build --release` binary comes up with no frontend at all.
+
+### Coverage
+
+The scenario is written against `examples/ev-demo`, whose saved layout
+already carries nine of the app's fourteen dock components; the rest are
+opened the way a user opens them (toolbar buttons, the command palette
+via its real `Ctrl+Shift+P` chord). A unit test asserts the union of the
+steps' coverage ledgers against the full component list, so "the
+captures show the whole app" is checked, not hoped. The always-on chrome
+— toolbar, dock tabs, status bar, and the palette modal — is in frame
+throughout.
+
+### Determinism, and its limits
+
+A pixel diff is only meaningful if both captures were of the same
+picture, and the app renders live data. Four levers make the scenario
+stand still:
+
+- **Idle** — launched with `--project` only. Without `--connect-on-start`
+  nothing connects, so no frames arrive and every rate, counter and
+  follow-live window is at rest.
+- **Fixed viewport** — CDP `Emulation.setDeviceMetricsOverride` pins the
+  layout to `--width` × `--height` at device-scale 1, so the OS window
+  geometry restored from the user's window state cannot move a pixel.
+- **No animation** — `Emulation.setEmulatedMedia` forces
+  `prefers-reduced-motion: reduce`, which the stylesheet honours by
+  dropping its one keyframe animation.
+- **Masking** — the regions that still move while idle (the status bar's
+  memory readings, the system-log message counter and its wall-clock
+  stamps, the plot's decaying perf badge) are hidden by a stylesheet the
+  harness injects before the shutter. It sets `visibility`, never a
+  color, so it adds nothing to a color comparison; and it lives in the
+  harness, so it is identical on both sides of a diff. **Those regions
+  are therefore outside the parity claim** — a change to their text or
+  color is invisible to this check.
+
+Measure the residual rather than assuming it: capture the same scenario
+twice against one build and diff the two. On the reference machine that
+noise floor is **0 differing pixels across all 9 captures** — two
+independent app launches are bit-identical — so a non-zero diff after a
+change is signal, not jitter. Re-measure the floor on a new machine
+before trusting a number from it.
+
+### Platform
+
+**Windows only.** The capture speaks the Chrome DevTools Protocol, which
+needs a Chromium-backed webview — WebView2. macOS (WKWebView) and Linux
+(WebKitGTK) have no CDP endpoint, so this is a developer/CI check on
+Windows rather than a per-platform gate (the same platform asymmetry
+[ADR 0031](../../docs/adr/0031-gui-performance-automation-self-driving.md)
+rejected `tauri-driver` over — but here it costs coverage of a check, not
+of the measurement the ADR is about). The shipping binary is unchanged:
+WebView2 opens the debugging port from the
+`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` environment variable the harness
+sets on the child process, so no automation surface is added to the app.

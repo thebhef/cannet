@@ -16,6 +16,7 @@ use cannet_perf_measurement::filter_bench::{self, FilterBenchConfig};
 use cannet_perf_measurement::frontend::{self, FrontendBaseline, FrontendMetrics};
 use cannet_perf_measurement::grpc::{self, GrpcConfig};
 use cannet_perf_measurement::hardware_peak::{self, HardwarePeakConfig};
+use cannet_perf_measurement::screenshot;
 use cannet_perf_measurement::signal_bench::{self, SignalBenchConfig};
 use cannet_perf_measurement::tracebuffer::{self, StoreKind, TracebufferConfig};
 use cannet_perf_measurement::{
@@ -89,6 +90,66 @@ enum Command {
     /// exit non-zero if any gated metric has regressed past tolerance.
     /// Modes that can't run are skipped, not failed.
     Check,
+    /// Launch the shipping GUI on a project, walk the visual-parity
+    /// scenario, and write one PNG per step. Windows only (the capture
+    /// needs `WebView2`'s `DevTools` protocol).
+    Screenshot(ScreenshotArgs),
+    /// Pixel-diff two capture sets (or two single PNGs) and report how
+    /// many pixels moved; exit non-zero past `--max-diff-pct`.
+    ScreenshotDiff(ScreenshotDiffArgs),
+}
+
+#[derive(Args)]
+struct ScreenshotArgs {
+    /// The GUI binary to photograph — a build with the frontend embedded
+    /// (`pnpm --dir apps/gui tauri build --no-bundle`). Absolute.
+    #[arg(long)]
+    gui_binary: PathBuf,
+    /// Project to open. Absolute — the child's working directory is not
+    /// the repo root.
+    #[arg(long)]
+    project: PathBuf,
+    /// Directory the PNGs land in (created if absent). Absolute.
+    #[arg(long)]
+    out_dir: PathBuf,
+    /// Prefix on every file name, e.g. `dark-baseline-`.
+    #[arg(long, default_value = "")]
+    prefix: String,
+    /// `DevTools` port opened on the child's `WebView2`.
+    #[arg(long, default_value_t = 9333)]
+    port: u16,
+    /// Emulated viewport width / height (pinned so the restored OS window
+    /// geometry can't move a pixel).
+    #[arg(long, default_value_t = 1600)]
+    width: u32,
+    #[arg(long, default_value_t = 1000)]
+    height: u32,
+    /// Seconds to wait for the splash overlay to drop.
+    #[arg(long, default_value_t = 90)]
+    boot_timeout_secs: u64,
+}
+
+#[derive(Args)]
+struct ScreenshotDiffArgs {
+    /// The "before" PNG, or a directory of them.
+    #[arg(long)]
+    before: PathBuf,
+    /// The "after" PNG, or a directory of them.
+    #[arg(long)]
+    after: PathBuf,
+    /// Where the magenta-marked diff artifacts are written. Defaults to
+    /// `<after>/diff` for a directory pair, `<after>.diff.png` for files.
+    #[arg(long)]
+    diff_out: Option<PathBuf>,
+    /// File-name prefix to strip when pairing a `before`/`after`
+    /// directory whose captures were written with different prefixes.
+    #[arg(long, default_value = "")]
+    before_prefix: String,
+    #[arg(long, default_value = "")]
+    after_prefix: String,
+    /// Fail past this share of differing pixels (per capture).
+    #[arg(long, default_value_t = 0.0)]
+    max_diff_pct: f64,
 }
 
 #[derive(Args)]
@@ -287,6 +348,8 @@ fn main() -> ExitCode {
                 tx_fps: cli.expected_tx_fps,
             },
         ),
+        Command::Screenshot(args) => run_screenshot(args),
+        Command::ScreenshotDiff(args) => run_screenshot_diff(&args),
     };
     match result {
         Ok(code) => code,
@@ -538,4 +601,84 @@ fn run_validate(dir: &std::path::Path) -> Result<ExitCode, String> {
         workload::aggregate_rate_hz(&schedule)
     );
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_screenshot(args: ScreenshotArgs) -> Result<ExitCode, String> {
+    let cfg = screenshot::CaptureConfig {
+        gui_binary: args.gui_binary,
+        project: args.project,
+        out_dir: args.out_dir,
+        prefix: args.prefix,
+        port: args.port,
+        width: args.width,
+        height: args.height,
+        boot_timeout: std::time::Duration::from_secs(args.boot_timeout_secs),
+    };
+    let out = screenshot::run_capture(&cfg)?;
+    println!("{} captures written", out.files.len());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Diff a capture pair (two PNGs) or two capture sets (two directories).
+/// Every pair's numbers are printed; the exit code is the verdict over
+/// the whole set.
+fn run_screenshot_diff(args: &ScreenshotDiffArgs) -> Result<ExitCode, String> {
+    let pairs: Vec<(PathBuf, PathBuf, String, PathBuf)> = if args.before.is_dir() {
+        let out_dir = args
+            .diff_out
+            .clone()
+            .unwrap_or_else(|| args.after.join("diff"));
+        std::fs::create_dir_all(&out_dir)
+            .map_err(|e| format!("creating {}: {e}", out_dir.display()))?;
+        screenshot::pair_names(
+            &screenshot::png_names(&args.before)?,
+            &screenshot::png_names(&args.after)?,
+            &args.before_prefix,
+            &args.after_prefix,
+        )?
+        .into_iter()
+        .map(|(b, a, step)| {
+            let artifact = out_dir.join(format!("diff-{step}"));
+            (args.before.join(b), args.after.join(a), step, artifact)
+        })
+        .collect()
+    } else {
+        let artifact = args.diff_out.clone().unwrap_or_else(|| {
+            let mut p = args.after.clone();
+            p.set_extension("diff.png");
+            p
+        });
+        let step = args.after.file_name().map_or_else(
+            || "capture".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        vec![(args.before.clone(), args.after.clone(), step, artifact)]
+    };
+
+    let mut worst = 0.0_f64;
+    let mut total_differing = 0u64;
+    for (before, after, step, artifact) in &pairs {
+        let d = screenshot::diff_files(before, after, artifact)?;
+        total_differing += d.differing;
+        worst = worst.max(d.percent());
+        println!(
+            "{step:<28} {}x{}  differing {:>9} / {:<9} ({:.6} %)  max Δchannel {}",
+            d.width,
+            d.height,
+            d.differing,
+            d.total,
+            d.percent(),
+            d.max_channel_delta
+        );
+    }
+    println!(
+        "{} pairs compared; {total_differing} differing pixels in total; worst {worst:.6} % (limit {:.6} %)",
+        pairs.len(),
+        args.max_diff_pct
+    );
+    Ok(if worst > args.max_diff_pct {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
