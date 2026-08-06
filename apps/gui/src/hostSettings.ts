@@ -64,6 +64,9 @@ export interface Settings {
   /// the token layer keys off. Applied live: `themeSync.ts` bridges this
   /// field to `setActiveTheme`.
   theme: ThemeName;
+  /// Normal mode. On, `light` renders the normal-mode theme instead;
+  /// `dark` is unaffected.
+  normal_mode: boolean;
   /// How long a transient status notice dwells in the header before the
   /// bar reverts to its resting line.
   notice_dwell_ms: number;
@@ -180,6 +183,7 @@ export function defaultSettings(): Settings {
     system_log_min_level: "info",
     reopen_last_project: true,
     theme: "dark",
+    normal_mode: false,
     notice_dwell_ms: 3000,
     plot_fetch_interval_ms: 67,
     view_refresh_interval_ms: 250,
