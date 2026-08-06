@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import css from "./index.css?raw";
-import { THEMES, TOKEN_MIRROR } from "./theme";
+import { THEMES, TOKEN_MIRROR, resolveTheme } from "./theme";
 
 /// Where each theme's token block ends in `index.css`. A block runs from
 /// the end of the previous one to its own marker comment, so a `--x`
@@ -10,6 +10,7 @@ import { THEMES, TOKEN_MIRROR } from "./theme";
 const BLOCK_END: Record<string, string> = {
   dark: "/* === end theme tokens === */",
   light: "/* === end light theme tokens === */",
+  normal: "/* === end normal theme tokens === */",
 };
 
 /// Custom properties one theme's block declares, by name.
@@ -43,29 +44,35 @@ const THEME_INDEPENDENT = [
   "--border-search-focus",
 ];
 
+/// The blocks that override `:root` — every theme but dark, which is
+/// what `:root` itself declares.
+const OVERRIDES = Object.keys(BLOCK_END).filter((n) => n !== "dark");
+
 describe("the stylesheet's theme blocks", () => {
   // A theme is a set of *values* for one fixed set of roles. A block
   // that omits a token silently falls back to the dark value it
   // overrides — a dark remnant no rule and no grep would show — and one
   // that invents a token names a role nothing reads.
-  it("declare the same roles, in the same order", () => {
+  it.each(OVERRIDES)("%s declares the same roles as dark, in the same order", (name) => {
     const dark = [...cssTokens("dark").keys()];
-    const light = [...cssTokens("light").keys()];
     expect(dark.length).toBeGreaterThan(100);
-    expect(light).toEqual(dark);
+    expect([...cssTokens(name).keys()]).toEqual(dark);
   });
 
   // Anything else carried over from dark is a remnant, not a decision.
-  it("re-value every role except the ones that are theme-independent", () => {
-    const dark = cssTokens("dark");
-    for (const [name, value] of cssTokens("light")) {
-      if (THEME_INDEPENDENT.includes(name)) {
-        expect(value, `${name} claims to be theme-independent`).toBe(dark.get(name));
-        continue;
+  it.each(OVERRIDES)(
+    "%s re-values every role except the ones that are theme-independent",
+    (name) => {
+      const dark = cssTokens("dark");
+      for (const [token, value] of cssTokens(name)) {
+        if (THEME_INDEPENDENT.includes(token)) {
+          expect(value, `${token} claims to be theme-independent`).toBe(dark.get(token));
+          continue;
+        }
+        expect(value, `${token} is unchanged from dark`).not.toBe(dark.get(token));
       }
-      expect(value, `${name} is unchanged from dark`).not.toBe(dark.get(name));
-    }
-  });
+    },
+  );
 });
 
 describe("TOKEN_MIRROR", () => {
@@ -108,5 +115,14 @@ describe("themes", () => {
 
   it("key every theme object by its own name", () => {
     for (const [name, t] of Object.entries(THEMES)) expect(t.name).toBe(name);
+  });
+});
+
+describe("resolveTheme", () => {
+  it("gives normal mode the light setting and nothing else", () => {
+    expect(resolveTheme("light", true)).toBe("normal");
+    expect(resolveTheme("light", false)).toBe("light");
+    expect(resolveTheme("dark", true)).toBe("dark");
+    expect(resolveTheme("dark", false)).toBe("dark");
   });
 });

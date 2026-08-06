@@ -60,17 +60,27 @@ describe.each(Object.values(THEMES))("$name wheels", (t) => {
   });
 });
 
-// Slot-matched wheels: the light variants keep the dark wheels' hues
-// slot for slot, retuned only in saturation and lightness. That is what
-// lets a hash or a list position mean the same thing in both — a signal
+// Slot-matched wheels: every variant keeps the dark wheels' hues slot
+// for slot, retuned in saturation and lightness. That is what lets a
+// hash or a list position mean the same thing in all of them — a signal
 // keeps its hue identity across a theme change rather than becoming a
-// different-colored signal. Without this the two wheels could both pass
-// their contrast tests while being unrelated palettes.
+// different-colored signal. Without this the wheels could all pass their
+// contrast tests while being unrelated palettes.
+//
+// How far a variant may travel is per theme, because it is a property of
+// the theme rather than of the check: `light` only retunes, so its slots
+// stay on their hue; `normal` additionally rotates every slot a fifth of
+// the way onto its own axis, which is what makes its wheels part of that
+// theme rather than the light wheels on a different background.
+const HUE_BOUND: Record<string, number> = { light: 8, normal: 36 };
+
 describe("wheels are slot-matched across themes", () => {
   const themes = Object.values(THEMES);
   const reference = THEMES.dark;
 
   it.each(themes.filter((t) => t !== reference))("$name keeps dark's hue per slot", (t) => {
+    const bound = HUE_BOUND[t.name];
+    expect(bound, `${t.name} declares no hue bound`).toBeGreaterThan(0);
     for (const key of ["signalWheel", "busWheel"] as const) {
       expect(t[key].length, `${t.name} ${key} length`).toBe(reference[key].length);
       t[key].forEach((c, i) => {
@@ -78,7 +88,7 @@ describe("wheels are slot-matched across themes", () => {
         expect(
           hueDistance(c, ref),
           `${t.name} ${key}[${i}] ${c} vs dark ${ref}`,
-        ).toBeLessThanOrEqual(8);
+        ).toBeLessThanOrEqual(bound);
       });
     }
   });

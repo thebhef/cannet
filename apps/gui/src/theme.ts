@@ -24,8 +24,13 @@
 import { useSyncExternalStore } from "react";
 
 /// Theme identities. Also the value of the `data-theme` attribute the
-/// stylesheet's token blocks key off, and of the host's `theme` setting.
-export type ThemeName = "dark" | "light";
+/// stylesheet's token blocks key off.
+export type ThemeName = "dark" | "light" | "normal";
+
+/// What the host's `theme` setting stores. A subset of {@link ThemeName}:
+/// `normal` is not a value the setting takes, it is what the setting
+/// pair `light` + normal mode resolves to. See {@link resolveTheme}.
+export type ThemeSetting = "dark" | "light";
 
 /// The semantic colors JS paints with. Names are roles, not shades —
 /// two entries that share a value today but mean different things stay
@@ -191,7 +196,72 @@ const LIGHT: Theme = {
   ],
 };
 
-export const THEMES: Readonly<Record<ThemeName, Theme>> = { dark: DARK, light: LIGHT };
+/// Normal mode's theme, selected in place of {@link LIGHT} when the
+/// setting is on. Same construction as the stylesheet block it goes with
+/// (see `index.css`): the light values re-hued onto the theme's own
+/// axis, keeping their luminance. The wheels are slot-matched like every
+/// other variant, but rotate a fifth of the way onto that axis as well,
+/// so `palette.test.ts` reads them against a wider hue bound than
+/// light's.
+const NORMAL: Theme = {
+  name: "normal",
+  background: "#fddde7",
+  axisText: "#781c38",
+  axisGrid: "#fccad9",
+  axisTicks: "#da8fa5",
+  cursorA: "#b85000",
+  cursorB: "#b22a53",
+  crosshair: "#cf6e8b",
+  eventMarker: "#bd0f7d",
+  eventTruncation: "#9e6205",
+  canvasChipFill: "#feeaf0",
+  laneFillDefault: "rgba(252, 204, 218, 0.75)",
+  busUnknown: "#be2d58",
+  busUnset: "#d98ca3",
+  graphNeutralEdge: "#be2d58",
+  graphBusNodeBase: "#fdd8e3",
+  signalWheel: [
+    "#6f690e",
+    "#2356f3",
+    "#af4609",
+    "#9712f3",
+    "#ca1c0b",
+    "#965808",
+    "#387420",
+    "#b32a95",
+    "#2f6c95",
+    "#c70a6d",
+    "#544af5",
+    "#6b6a06",
+    "#ce0b1b",
+    "#1158f2",
+    "#aa4a09",
+    "#9c0ced",
+  ],
+  busWheel: [
+    "#7075f3", // blue
+    "#c96a0e", // amber
+    "#2d8ea9", // teal
+    "#ec4553", // red
+    "#a95ef0", // violet
+    "#e64194", // pink
+    "#e94d11", // orange
+    "#4481e7", // cyan
+  ],
+};
+
+export const THEMES: Readonly<Record<ThemeName, Theme>> = {
+  dark: DARK,
+  light: LIGHT,
+  normal: NORMAL,
+};
+
+/// The theme a setting pair applies. `normal` is not a `theme` value —
+/// it is what normal mode makes `light` mean, and it leaves `dark`
+/// alone.
+export function resolveTheme(setting: ThemeSetting, normalMode: boolean): ThemeName {
+  return normalMode && setting === "light" ? "normal" : setting;
+}
 
 /// The theme name every color decision resolves through. Module state
 /// rather than React state: the canvas draws outside React, and a
