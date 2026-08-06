@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Fzf } from "fzf";
 
 import type {
   DbcContentRecord,
@@ -25,11 +24,16 @@ import { toggleInSet } from "./toggleSet";
 import { diagCount } from "./diag";
 import {
   ASSUMED_VIEWPORT_HEIGHT,
+  ROW_HEIGHT,
   buildOffsets,
   scrollToShow,
   totalHeight,
   visibleRange,
 } from "./dbcPanelViewport";
+import { GridviewFilterBox, useGridviewFilter, type GridviewFilterEntry } from "./gridviewFilter";
+import { useGridview } from "./useGridview";
+import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
+import { arrayRowSpace } from "./gridviewRows";
 
 /**
  * DBC discovery panel. Tree-with-fuzzy-search over every
@@ -59,9 +63,11 @@ import {
  * large DBC set puts tens of thousands of boxes in the document and
  * every keystroke pays a full synchronous relayout.
  *
- * Rows are drag sources for signals (see {@link setSignalDragData}),
- * support multi-select, and the whole tree is keyboard-navigable
- * (arrow keys move / expand / collapse, Enter selects).
+ * Interaction — the cursor, the selection, the key table and the
+ * dispatcher suppression — is the shared gridview's (ADR 0044). Bus /
+ * DBC / ECU nodes are unselectable branches, message nodes selectable
+ * branches, signals plain leaves; search runs through the layer's filter
+ * slot. Rows are drag sources for signals (see {@link setSignalDragData}).
  */
 
 interface PanelParams {
@@ -285,10 +291,6 @@ interface RenderRow {
   depth: number;
   expanded: boolean;
   hasChildren: boolean;
-  /// True when this row is in the panel's selection set. Bus, DBC,
-  /// and ECU rows are never selectable (clicking expands/collapses
-  /// them); message / signal rows can be selected and dragged.
-  selected: boolean;
   kind:
     | { tag: "bus"; busId: string; label: string; unscopedNote: boolean }
     | { tag: "dbc"; path: string; scopeLabel: string | null }
@@ -395,14 +397,16 @@ export function groupByBus(
 /// children). This bounds a filtered render by the match set — the
 /// task-33 responsiveness rule.
 ///
-/// `selection` flips rows' `selected` flag for the highlight class.
+/// Deliberately **not** a function of the selection: the gridview's
+/// selection follows the cursor, so folding it in here would rebuild
+/// every row object on every arrow press and defeat [`DbcRow`]'s memo.
+/// The highlight is a per-row prop instead.
 function buildRows(
   groups: readonly BusGroup[],
   effectiveExpanded: ReadonlySet<string>,
   matchSet: ReadonlySet<string>,
   ancestorsOfMatches: ReadonlySet<string>,
   filterActive: boolean,
-  selection: ReadonlySet<string>,
 ): RenderRow[] {
   const out: RenderRow[] = [];
   for (const g of groups) {
@@ -420,7 +424,6 @@ function buildRows(
       depth: 0,
       expanded: bExpanded,
       hasChildren: g.dbcs.length > 0,
-      selected: false,
       kind: {
         tag: "bus",
         busId: g.busId,
@@ -438,8 +441,7 @@ function buildRows(
         depth: 1,
         expanded: dExpanded,
         hasChildren: dbc.messages.length > 0,
-        selected: false,
-        kind: {
+          kind: {
           tag: "dbc",
           path: dbc.dbcPath,
           scopeLabel: unscoped ? "applies to all buses" : null,
@@ -455,8 +457,7 @@ function buildRows(
           depth: 2,
           expanded: eExpanded,
           hasChildren: ecu.messages.length > 0,
-          selected: false,
-          kind: { tag: "ecu", label: ecu.label },
+              kind: { tag: "ecu", label: ecu.label },
         });
         if (!eExpanded) continue;
         for (const m of ecu.messages) {
@@ -471,7 +472,6 @@ function buildRows(
             depth: 3,
             expanded: mExpanded,
             hasChildren: m.signals.length > 0,
-            selected: selection.has(mId),
             kind: { tag: "message", busId: dragBusId, dbcPath: dbc.dbcPath, message: m },
           });
           if (!mExpanded) continue;
@@ -492,7 +492,6 @@ function buildRows(
               depth: 4,
               expanded: false,
               hasChildren: false,
-              selected: selection.has(sId),
               kind: {
                 tag: "signal",
                 busId: dragBusId,
@@ -512,16 +511,10 @@ function buildRows(
 }
 
 /// Indexed lookup of every searchable node — one entry per message
-/// and per signal. The flat shape lets fzf rank a single list and the
-/// result includes both kinds. Used to build the panel's `matchSet`.
-interface SearchEntry {
-  id: string;
-  ancestors: string[];
-  haystack: string;
-}
-
-export function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
-  const out: SearchEntry[] = [];
+/// and per signal. The flat shape lets the filter slot's matcher rank a
+/// single list and the result includes both kinds.
+export function buildSearchIndex(groups: readonly BusGroup[]): GridviewFilterEntry[] {
+  const out: GridviewFilterEntry[] = [];
   for (const g of groups) {
     const bId = busNodeId(g.busId);
     const prefix = busSearchPrefix(g);
@@ -550,81 +543,6 @@ export function buildSearchIndex(groups: readonly BusGroup[]): SearchEntry[] {
     }
   }
   return out;
-}
-
-/// Score floor, as a fraction of the best match's score. fzf accepts
-/// any subsequence, so on a large database a query like "pressure"
-/// also "matches" text where the letters merely appear scattered
-/// across word boundaries — and unlike a ranked list, the tree shows
-/// every member of the match set with equal prominence. fzf scores
-/// contiguous, boundary-aligned matches far above scattered ones
-/// (measured on the ev-zonal fixture: literal hits ≥0.8× top, junk
-/// ≤0.5×), so a relative floor keeps the real matches — including
-/// abbreviation queries, whose score spread is narrow — and drops
-/// the noise.
-const MIN_RELATIVE_SCORE = 0.7;
-
-/// How long the filter input settles before the tree re-filters. Short
-/// enough to feel immediate, long enough that a burst of keystrokes
-/// costs one match-and-rebuild instead of one per character.
-const FILTER_DEBOUNCE_MS = 150;
-
-/// A memoised fzf matcher over one bus-grouped tree, built on first
-/// use.
-///
-/// Neither half is cheap at scale and neither is needed until the user
-/// actually types: [`buildSearchIndex`] allocates one haystack string
-/// per message and per signal with attributes and value-table labels
-/// inlined (tens of thousands of strings on a large DBC set), and
-/// `Fzf`'s constructor preprocesses every one of them. Building it
-/// eagerly meant a project open paid for a search nobody had asked for;
-/// building it per keystroke meant paying again on every character.
-/// This does neither — one build on the first non-empty query, reused
-/// until the tree changes.
-type Matcher = () => Fzf<readonly SearchEntry[]>;
-
-function lazyMatcher(groups: readonly BusGroup[]): Matcher {
-  let fzf: Fzf<readonly SearchEntry[]> | null = null;
-  return () => {
-    if (fzf === null) {
-      diagCount("dbcpanel.searchIndexBuild"); // DIAG
-      // fzf's `Fzf` constructor expects to read the haystack off each
-      // item — passing the SearchEntry directly with a `selector` keeps
-      // the `id` available on the result rows.
-      fzf = new Fzf<readonly SearchEntry[]>(buildSearchIndex(groups), {
-        selector: (e) => e.haystack,
-        casing: "case-insensitive",
-      });
-    }
-    return fzf;
-  };
-}
-
-/// Run `query` through `matcher`; return `(matched ids,
-/// ancestors-of-matches ids)`. The render layer shows the matched
-/// set plus the paths to it and uses the ancestor set as "effectively
-/// expanded". An empty query short-circuits to empty sets — without
-/// ever forcing the matcher — and the caller's `filterActive` flag
-/// turns hiding off.
-function searchMatches(
-  matcher: Matcher,
-  query: string,
-): { matchSet: Set<string>; ancestorsOfMatches: Set<string> } {
-  const matchSet = new Set<string>();
-  const ancestorsOfMatches = new Set<string>();
-  if (query.trim() === "") {
-    return { matchSet, ancestorsOfMatches };
-  }
-  const results = matcher().find(query);
-  const floor = (results[0]?.score ?? 0) * MIN_RELATIVE_SCORE;
-  for (const res of results) {
-    // Results arrive score-descending; everything past the floor is
-    // scattered-subsequence noise.
-    if (res.score < floor) break;
-    matchSet.add(res.item.id);
-    for (const a of res.item.ancestors) ancestorsOfMatches.add(a);
-  }
-  return { matchSet, ancestorsOfMatches };
 }
 
 /// Auto-expand every bus group, its DBC children, and their ECU
@@ -705,13 +623,25 @@ function rowToSignalRefs(
   }));
 }
 
-/// The set of selectable rows in display order — used by Shift-click
-/// range-extend to walk from the anchor to the clicked row. Bus /
-/// DBC / ECU rows are filtered out because they aren't selectable.
-function selectableIdsInOrder(rows: readonly RenderRow[]): string[] {
-  return rows
-    .filter((r) => r.kind.tag === "message" || r.kind.tag === "signal")
-    .map((r) => r.id);
+/// Bus / DBC / ECU nodes structure the tree and nothing else; message
+/// and signal nodes are the things a user picks and drags. The gridview
+/// asks per row rather than per kind for exactly this shape — a message
+/// is a *selectable branch* (ADR 0044).
+function isSelectableRow(row: RenderRow): boolean {
+  return row.kind.tag === "message" || row.kind.tag === "signal";
+}
+
+/// The tree's rows as the gridview's row space: everything above a
+/// signal is a branch (expandable when it has children), a signal is a
+/// plain leaf. "Details" is taller cell content, not a disclosed content
+/// block, so no row here is a leaf-with-content.
+function gridviewRowsOf(rows: readonly RenderRow[]): GridviewRowModel[] {
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind.tag === "signal" ? "leaf" : "branch",
+    expandable: r.hasChildren,
+    depth: r.depth,
+  }));
 }
 
 export function DbcPanel(props: IDockviewPanelProps) {
@@ -719,7 +649,6 @@ export function DbcPanel(props: IDockviewPanelProps) {
   const params = props.params as PanelParams | undefined;
   const { dbcPaths, dbcBuses, buses } = useProjectContext();
 
-  const [filter, setFilter] = useState<string>(() => filterFromParams(params?.filter));
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     expandedFromParams(params?.expanded),
   );
@@ -747,14 +676,6 @@ export function DbcPanel(props: IDockviewPanelProps) {
     const d = api.onDidVisibilityChange((e) => setPanelVisible(e.isVisible));
     return () => d.dispose();
   }, [api]);
-  /// Per-panel selection set (panel-local; not persisted in params —
-  /// selection is transient discovery state, like a text-input
-  /// selection, not a saved layout property).
-  const [selection, setSelection] = useState<Set<string>>(new Set());
-  /// Anchor for Shift-click range extension. Tracks the row that
-  /// started the current selection contour.
-  const selectionAnchorRef = useRef<string | null>(null);
-
   /// Bus-grouped view of the loaded DBC content. Reshapes the host's
   /// flat list into one entry per bus (+ optional Unassigned /
   /// All-DBCs fallback groups). Memoised so a re-render that doesn't
@@ -762,6 +683,19 @@ export function DbcPanel(props: IDockviewPanelProps) {
   const busGroups = useMemo(
     () => groupByBus(content, buses, dbcBuses),
     [content, buses, dbcBuses],
+  );
+
+  // --- the filter slot (ADR 0044) ---
+  // The tree holds its whole row space client-side, so it opts into the
+  // layer's fzf: query → matching messages / signals plus the path to
+  // each, with those ancestors treated as expanded so a deep match is
+  // visible without the user unfolding to it.
+  const buildFilterEntries = useCallback(() => buildSearchIndex(busGroups), [busGroups]);
+  const filter = useGridviewFilter(buildFilterEntries, filterFromParams(params?.filter));
+  const mergeExpanded = filter.effectiveExpanded;
+  const effectiveExpanded = useMemo(
+    () => mergeExpanded(expanded),
+    [mergeExpanded, expanded],
   );
 
   /// Pull a fresh `list_dbc_content` snapshot and slot it in. Used
@@ -811,43 +745,24 @@ export function DbcPanel(props: IDockviewPanelProps) {
   // deliberately doesn't ride along — it's transient state, like an
   // editor's text caret.
   useEffect(() => {
-    api.updateParameters({ filter, expanded: Array.from(expanded), showDetails, showValues });
-  }, [api, filter, expanded, showDetails, showValues]);
-
-  // The query the tree is filtered by, trailing the input box by
-  // [`FILTER_DEBOUNCE_MS`]. Typing re-renders only the `<input>`; the
-  // matcher run and the whole-tree rebuild behind it happen once the
-  // user pauses, not once per keystroke.
-  const [query, setQuery] = useState(filter);
-  useEffect(() => {
-    const id = window.setTimeout(() => setQuery(filter), FILTER_DEBOUNCE_MS);
-    return () => window.clearTimeout(id);
-  }, [filter]);
-
-  const matcher = useMemo(() => lazyMatcher(busGroups), [busGroups]);
-  const { matchSet, ancestorsOfMatches } = useMemo(
-    () => searchMatches(matcher, query),
-    [matcher, query],
-  );
-  const filterActive = query.trim() !== "";
-  const effectiveExpanded = useMemo(() => {
-    if (!filterActive) return expanded;
-    const merged = new Set(expanded);
-    for (const a of ancestorsOfMatches) merged.add(a);
-    return merged;
-  }, [expanded, ancestorsOfMatches, filterActive]);
+    api.updateParameters({
+      filter: filter.input,
+      expanded: Array.from(expanded),
+      showDetails,
+      showValues,
+    });
+  }, [api, filter.input, expanded, showDetails, showValues]);
 
   const rows = useMemo(
     () =>
       buildRows(
         busGroups,
         effectiveExpanded,
-        matchSet,
-        ancestorsOfMatches,
-        filterActive,
-        selection,
+        filter.matchSet,
+        filter.ancestorsOfMatches,
+        filter.active,
       ),
-    [busGroups, effectiveExpanded, matchSet, ancestorsOfMatches, filterActive, selection],
+    [busGroups, effectiveExpanded, filter.matchSet, filter.ancestorsOfMatches, filter.active],
   );
 
   // --- row-list virtualization ---
@@ -981,167 +896,97 @@ export function DbcPanel(props: IDockviewPanelProps) {
     // (and the listener) down and firing a round-trip per wheel notch.
   }, [showValues, panelVisible, buses]);
 
-  const toggle = useCallback((id: string) => {
-    setExpanded((prev) => toggleInSet(prev, id));
-  }, []);
-
-  /// Keyboard cursor — the node id the arrow keys operate on. Kept
-  /// as an id (not an index) so it survives re-renders; when the row
-  /// it points at is filtered/collapsed away, the next arrow press
-  /// restarts from the top. View-local, deliberately not persisted.
-  const [activeId, setActiveId] = useState<string | null>(null);
-
-  // Keep the keyboard cursor visible while arrowing through a long
-  // tree. The cursor's row may be outside the rendered window, so this
-  // scrolls by the row's computed offset rather than reaching for a DOM
-  // node that need not exist.
-  useEffect(() => {
-    if (activeId == null) return;
+  // --- the gridview (ADR 0044) ---
+  // The flattened tree *is* the row space. Everything the panel used to
+  // hand-roll here — the roving cursor, the selection set and its anchor,
+  // the arrow-key table — is the layer's now; the panel keeps only the
+  // three things only it can do: scroll its own viewport, change its own
+  // expansion, and say which rows may be selected.
+  const gridRows = useMemo(() => gridviewRowsOf(rows), [rows]);
+  const selectableIds = useMemo(
+    () => new Set(rows.filter(isSelectableRow).map((r) => r.id)),
+    [rows],
+  );
+  /// The virtualizer's live geometry, read by `scrollToRow` without
+  /// making the adapter a fresh object on every scroll.
+  const geometry = useRef({ offsets, windowHeight });
+  geometry.current = { offsets, windowHeight };
+  const scrollToRow = useCallback((index: number) => {
     const el = treeRef.current;
     if (!el) return;
-    const idx = rows.findIndex((r) => r.id === activeId);
-    if (idx < 0) return;
-    // The element's own `scrollTop` is authoritative here — reading the
-    // state instead would make this effect re-run (and fight the user)
-    // on every scroll event.
-    const next = scrollToShow(offsets, idx, el.scrollTop, windowHeight);
+    const g = geometry.current;
+    // The element's own `scrollTop` is authoritative — the state lags a
+    // frame behind a wheel gesture.
+    const next = scrollToShow(g.offsets, index, el.scrollTop, g.windowHeight);
     if (next === el.scrollTop) return;
     el.scrollTop = next;
     setScrollTop(next);
-  }, [activeId, rows, offsets, windowHeight]);
-
-  const onRowClick = useCallback(
-    (id: string, modifiers: { shift: boolean; meta: boolean }) => {
-      setActiveId(id);
-      if (modifiers.shift) {
-        // Range-extend from the anchor (or from `id` itself if no
-        // anchor is set) through the clicked row, over the currently
-        // visible selectable rows. The anchor is preserved so a
-        // subsequent shift-click extends from the same point.
-        const orderedIds = selectableIdsInOrder(rows);
-        const anchor = selectionAnchorRef.current ?? id;
-        const iA = orderedIds.indexOf(anchor);
-        const iB = orderedIds.indexOf(id);
-        if (iA < 0 || iB < 0) return;
-        const [lo, hi] = iA <= iB ? [iA, iB] : [iB, iA];
-        setSelection(new Set(orderedIds.slice(lo, hi + 1)));
-        return;
-      }
-      if (modifiers.meta) {
-        // Toggle this row's membership; update the anchor to the
-        // toggled row so a follow-up shift-click extends from here.
-        setSelection((prev) => toggleInSet(prev, id));
-        selectionAnchorRef.current = id;
-        return;
-      }
-      // Plain click: replace selection with just this row.
-      setSelection(new Set([id]));
-      selectionAnchorRef.current = id;
+  }, []);
+  const setRowExpanded = useCallback((id: string, want: boolean) => {
+    setExpanded((prev) => {
+      if (prev.has(id) === want) return prev;
+      return toggleInSet(prev, id);
+    });
+  }, []);
+  const adapter = useMemo<GridviewAdapter>(() => {
+    const space = arrayRowSpace(gridRows, (id) => effectiveExpanded.has(id));
+    return {
+      ...space,
+      scrollToRow,
+      setExpanded: setRowExpanded,
+      isSelectable: (row) => selectableIds.has(row.id),
+    };
+  }, [gridRows, selectableIds, effectiveExpanded, scrollToRow, setRowExpanded]);
+  const grid = useGridview({
+    adapter,
+    pageRows: Math.max(1, Math.floor(windowHeight / ROW_HEIGHT)),
+    // Keeps the row DOM ids `aria-activedescendant` names exactly what
+    // they were before the migration.
+    idPrefix: "dbcnode",
+  });
+  /// The rows are memoised and the hook hands back fresh callbacks every
+  /// render (its adapter moves with the tree), so the row-facing handlers
+  /// read the live gridview — and the live tree — through refs. Otherwise
+  /// every rendered row repaints on every cursor move.
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
+  const dragContext = useRef({ rows, content });
+  dragContext.current = { rows, content };
+  const handleRowClick = useCallback(
+    (id: string, modifiers: { shift: boolean; mod: boolean }) => {
+      gridRef.current.onRowClick(id, modifiers);
     },
-    [rows],
+    [],
   );
 
-  /// Container-row click / chevron click: toggle expansion and move
-  /// the keyboard cursor there so arrowing continues from where the
-  /// mouse left off.
-  const toggleAndActivate = useCallback(
-    (id: string) => {
-      setActiveId(id);
-      toggle(id);
-    },
-    [toggle],
-  );
-
-  /// Arrow-key tree navigation (task 33): Up/Down move the cursor
-  /// over the visible rows, Right expands (then steps into the first
-  /// child), Left collapses (or walks to the parent), Enter / Space
-  /// selects a message / signal row (with the same shift / meta
-  /// modifiers as a click) or toggles a container row.
-  const onTreeKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (rows.length === 0) return;
-      const idx = activeId == null ? -1 : rows.findIndex((r) => r.id === activeId);
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActiveId(rows[Math.min(idx + 1, rows.length - 1)].id);
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActiveId(rows[Math.max(idx < 0 ? 0 : idx - 1, 0)].id);
-      } else if (e.key === "ArrowRight") {
-        if (idx < 0) return;
-        e.preventDefault();
-        const row = rows[idx];
-        if (row.hasChildren && !row.expanded) {
-          toggle(row.id);
-        } else if (
-          row.expanded &&
-          idx + 1 < rows.length &&
-          rows[idx + 1].depth === row.depth + 1
-        ) {
-          setActiveId(rows[idx + 1].id);
-        }
-      } else if (e.key === "ArrowLeft") {
-        if (idx < 0) return;
-        e.preventDefault();
-        const row = rows[idx];
-        if (row.hasChildren && row.expanded) {
-          toggle(row.id);
-        } else {
-          for (let i = idx - 1; i >= 0; i -= 1) {
-            if (rows[i].depth < row.depth) {
-              setActiveId(rows[i].id);
-              break;
-            }
-          }
-        }
-      } else if (e.key === "Enter" || e.key === " ") {
-        if (idx < 0) return;
-        e.preventDefault();
-        const row = rows[idx];
-        if (row.kind.tag === "message" || row.kind.tag === "signal") {
-          onRowClick(row.id, { shift: e.shiftKey, meta: e.metaKey || e.ctrlKey });
-        } else if (row.hasChildren) {
-          toggle(row.id);
-        }
-      }
-    },
-    [rows, activeId, toggle, onRowClick],
-  );
-
-  const handleDragStart = useCallback(
-    (e: React.DragEvent, row: RenderRow) => {
-      // If the dragged row is itself in the selection, the gesture
-      // drags every selected row. Otherwise it drags just this row
-      // (matching the file-manager / IDE convention; the panel's
-      // visible selection is unchanged so the user can keep it).
-      const draggedRows = selection.has(row.id)
-        ? rows.filter((r) => selection.has(r.id))
-        : [row];
-      const refs = dedupeSignalRefs(
-        draggedRows.flatMap((r) => rowToSignalRefs(r, content)),
-      );
-      if (refs.length === 0) return;
-      setSignalDragData(e, refs);
-    },
-    [selection, rows, content],
-  );
+  /// What one grab carries: the grabbed row's signals, or — when that
+  /// row is in the selection — every selected row's (matching the
+  /// file-manager / IDE convention; the panel's visible selection is
+  /// unchanged so the user can keep it). Resolved at drag time through
+  /// the refs above, so a cursor move costs no row repaints.
+  const handleDragStart = useCallback((e: React.DragEvent, row: RenderRow) => {
+    const { rows: liveRows, content: liveContent } = dragContext.current;
+    const selection = gridRef.current.selection;
+    const draggedRows = selection.has(row.id)
+      ? liveRows.filter((r) => selection.has(r.id))
+      : [row];
+    const refs = dedupeSignalRefs(
+      draggedRows.flatMap((r) => rowToSignalRefs(r, liveContent)),
+    );
+    if (refs.length === 0) return;
+    setSignalDragData(e, refs);
+  }, []);
 
   return (
     <div className="dbc-panel">
       <div className="dbc-panel-toolbar">
-        <input
-          type="search"
+        <GridviewFilterBox
+          filter={filter}
           className="dbc-panel-search"
           placeholder="search messages, signals, comments, attributes…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          aria-label="search DBC content"
+          ariaLabel="search DBC content"
+          matchCountClassName="dbc-panel-match-count"
         />
-        {filterActive && (
-          <span className="dbc-panel-match-count" aria-live="polite">
-            {matchSet.size} match{matchSet.size === 1 ? "" : "es"}
-          </span>
-        )}
         <label className="dbc-panel-details-toggle" title="show bit layout, scale, range, attributes, value table for every signal">
           <input
             type="checkbox"
@@ -1159,13 +1004,14 @@ export function DbcPanel(props: IDockviewPanelProps) {
           values
         </label>
       </div>
+      {/* The tree is the gridview container: it holds focus and names
+          the active row, and its marker keeps the global dispatcher off
+          the keys the grid consumes (ADR 0044). */}
       <div
         ref={treeRef}
         className="dbc-panel-tree"
         role="tree"
-        tabIndex={0}
-        aria-activedescendant={activeId != null ? domRowId(activeId) : undefined}
-        onKeyDown={onTreeKeyDown}
+        {...grid.containerProps}
         onScroll={onTreeScroll}
       >
         {content.length === 0 && (
@@ -1186,7 +1032,9 @@ export function DbcPanel(props: IDockviewPanelProps) {
               <DbcRow
                 key={row.id}
                 row={row}
-                active={row.id === activeId}
+                active={row.id === grid.cursor}
+                selected={grid.selection.has(row.id)}
+                rowDomId={grid.rowDomId}
                 showDetails={showDetails}
                 value={
                   showValues && row.kind.tag === "signal"
@@ -1201,8 +1049,8 @@ export function DbcPanel(props: IDockviewPanelProps) {
                     : undefined
                 }
                 resolveColor={resolveColor}
-                onToggle={toggleAndActivate}
-                onClick={onRowClick}
+                onToggle={setRowExpanded}
+                onClick={handleRowClick}
                 onDragStart={handleDragStart}
               />
             ))}
@@ -1229,24 +1077,24 @@ function detailLinesFor(row: RenderRow, showDetails: boolean): number {
   return 0;
 }
 
-/// DOM id for one tree row — what `aria-activedescendant` points at.
-/// Node ids can carry arbitrary text (DBC paths, bus labels), so
-/// URI-encode to keep the id whitespace-free.
-function domRowId(nodeId: string): string {
-  return `dbcnode-${encodeURIComponent(nodeId)}`;
-}
-
 interface DbcRowProps {
   row: RenderRow;
+  /// The gridview's cursor is on this row.
   active: boolean;
+  /// This row is in the gridview's selection. A prop rather than a field
+  /// on `row`, so the selection following the cursor doesn't rebuild
+  /// every row object and defeat the memo below.
+  selected: boolean;
+  /// The layer's row-id → DOM-id mapping, for `aria-activedescendant`.
+  rowDomId: (id: string) => string;
   showDetails: boolean;
   /// The signal row's live snapshot when the value column is on:
   /// a record (render its value), `null` (no update yet — blank), or
   /// `undefined` (column off / not a signal row).
   value?: SignalSnapshotRecord | null;
   resolveColor: ColorResolver | null;
-  onToggle: (id: string) => void;
-  onClick: (id: string, modifiers: { shift: boolean; meta: boolean }) => void;
+  onToggle: (id: string, expanded: boolean) => void;
+  onClick: (id: string, modifiers: { shift: boolean; mod: boolean }) => void;
   onDragStart: (e: React.DragEvent, row: RenderRow) => void;
 }
 
@@ -1261,6 +1109,8 @@ interface DbcRowProps {
 const DbcRow = memo(function DbcRow({
   row,
   active,
+  selected,
+  rowDomId,
   showDetails,
   value,
   resolveColor,
@@ -1281,22 +1131,21 @@ const DbcRow = memo(function DbcRow({
   const baseClass = [
     "dbc-row",
     `dbc-row-${row.kind.tag}`,
-    row.selected ? "dbc-row-selected" : "",
+    selected ? "dbc-row-selected" : "",
     active ? "dbc-row-active" : "",
   ]
     .filter(Boolean)
     .join(" ");
   const onRowClick = (e: React.MouseEvent) => {
-    if (isContainerRow) {
-      if (row.hasChildren) onToggle(row.id);
-      return;
-    }
-    onClick(row.id, { shift: e.shiftKey, meta: e.metaKey || e.ctrlKey });
+    // Every click moves the gridview's cursor here; on a container row
+    // that is all it does (they aren't selectable) and the row doubles
+    // as its own disclosure.
+    onClick(row.id, { shift: e.shiftKey, mod: e.metaKey || e.ctrlKey });
+    if (isContainerRow && row.hasChildren) onToggle(row.id, !row.expanded);
   };
   const onChevronClick = (e: React.MouseEvent) => {
-    if (!row.hasChildren) return;
     e.stopPropagation();
-    onToggle(row.id);
+    onToggle(row.id, !row.expanded);
   };
   // The details block sits below the row at the same indent + 14 px
   // (so it's visually associated with the row's content column).
@@ -1304,10 +1153,10 @@ const DbcRow = memo(function DbcRow({
   return (
     <>
       <div
-        id={domRowId(row.id)}
+        id={rowDomId(row.id)}
         className={baseClass}
         role="treeitem"
-        aria-selected={selectable ? row.selected : undefined}
+        aria-selected={selectable ? selected : undefined}
         aria-expanded={row.hasChildren ? row.expanded : undefined}
         aria-level={row.depth + 1}
         data-active={active || undefined}
@@ -1316,13 +1165,24 @@ const DbcRow = memo(function DbcRow({
         draggable={draggable}
         onDragStart={draggable ? (e) => onDragStart(e, row) : undefined}
       >
-        <span
-          className="dbc-row-chevron"
-          aria-hidden="true"
-          onClick={onChevronClick}
-        >
-          {row.hasChildren ? (row.expanded ? "▼" : "▶") : ""}
-        </span>
+        {/* ADR 0044: a disclosure is a real control whose hit area is
+            the full row height and comfortably wide — the caret glyph
+            inside it is decoration. A row with nothing to disclose keeps
+            the same slot so the indents line up. */}
+        {row.hasChildren ? (
+          <button
+            type="button"
+            className="dbc-row-chevron"
+            tabIndex={-1}
+            aria-expanded={row.expanded}
+            aria-label={`toggle ${row.id}`}
+            onClick={onChevronClick}
+          >
+            {row.expanded ? "▼" : "▶"}
+          </button>
+        ) : (
+          <span className="dbc-row-chevron" aria-hidden="true" />
+        )}
         <DbcRowContent kind={row.kind} />
         {value !== undefined && row.kind.tag === "signal" && (
           <span className="dbc-row-value">
