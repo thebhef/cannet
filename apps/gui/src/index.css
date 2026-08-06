@@ -3507,13 +3507,30 @@ button.trace-event-swatch {
 .rbs-message { margin-left: 24px; }
 .rbs-message-row:hover { background: #16213c; }
 .rbs-inert { opacity: 0.45; }
+/* The gridview's cursor and selection (ADR 0044). */
+.rbs-bus-row[data-active],
+.rbs-ecu-row[data-active],
+.rbs-message-row[data-active] {
+  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline-offset: -1px;
+}
+.rbs-row-selected {
+  background: #1b2740;
+}
 .rbs-caret {
+  /* ADR 0044: a disclosure is a real control whose hit area is the full
+     row height and comfortably wide — the caret glyph inside it is
+     decoration. */
   background: none;
   border: none;
   color: #64748b;
   cursor: pointer;
-  width: 18px;
   padding: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
 }
 .rbs-dot {
   width: 8px;
