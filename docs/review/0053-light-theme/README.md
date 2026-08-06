@@ -1,10 +1,11 @@
 # Light theme — review captures
 
 The nine steps of the `cannet-perf-measurement screenshot` scenario,
-rendered with `theme: light`. Committed so the light theme can be
-reviewed without a Windows machine and a build; the dark side of the
-same run is the parity check, which is a diff rather than a picture and
-lives in the task's status log.
+rendered with `theme: light` and **Normal mode on** — the pair that
+applies the light theme. Committed so the light theme can be reviewed
+without a Windows machine and a build; the dark side of the same run is
+the parity check, which is a diff rather than a picture and lives in the
+task's status log.
 
 Captured from a `tauri build --no-bundle` release build against
 `examples/ev-demo`, 1600×1000 at device-scale 1, with the harness's

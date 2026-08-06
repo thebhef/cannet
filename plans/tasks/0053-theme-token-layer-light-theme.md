@@ -52,16 +52,22 @@ is not part of this task.
    wheels + threshold tests and the "clear project colors" palette
    command.
 5. **"Normal mode" (developer setting, default off).** *Done
-   2026-08-06 — `2754e69`, `be04272`, `481d50d`.* When enabled,
-   the `light` theme renders a candy-pink token set (think
-   Hello-Kitty pastels: pale pink surfaces, deeper pink/red accents)
-   with its own slot-matched pink-tinted wheels, in place of the
-   intended light set. The intended light theme ships regardless and
-   is what `light` means with the setting off. Same machinery (a
-   third token set + wheel pair), same contrast tests against the
-   pink background. User-facing docs and commit messages call it
-   only "normal mode" / "normal mode enable" — the description is
-   deliberately deadpan; this file is the one place the intent is
+   2026-08-06 — `2754e69`, `be04272`, `481d50d`; inverted the same
+   day — `710df3e`.* A third token set exists: a candy-pink one
+   (think Hello-Kitty pastels: pale pink surfaces, deeper pink/red
+   accents) with its own slot-matched pink-tinted wheels, built on
+   the same machinery as the light set and held to the same contrast
+   tests against the pink background. **The pairing is inverted: with
+   the setting off — the default — `theme: light` renders the pink
+   set, and enabling "Normal mode" is what gives you the intended
+   light theme.** The intended light theme ships regardless; it is
+   one checkbox away rather than the default reading of `light`.
+   `dark` is unaffected by the setting either way, and the app
+   default is still `theme: dark`, so nothing changes for anyone
+   until they pick the light theme. User-facing docs and commit
+   messages call it only "normal mode" / "normal mode enable" — the
+   description is deliberately deadpan ("when enabled, the light
+   theme renders normally"); this file is the one place the intent is
    spelled out.
 
 ## Decisions
@@ -137,11 +143,12 @@ is not part of this task.
 - `onAddBus` no longer seeds `color`; only customized colors
   persist; the "clear project colors" palette command ships behind
   a confirm dialog with the documented scope.
-- ~~"Normal mode" ships as a developer setting, default off; enabling
-  it swaps the `light` token set and wheels for the pink set, live,
-  under the same contrast tests. Docs/commits refer to it only as
-  "normal mode".~~ Done 2026-08-06 — `2754e69`, `be04272`, `481d50d`;
-  see phase 53.D in the status log.
+- ~~"Normal mode" ships as a developer setting, default off; the
+  `light` setting renders the pink token set and wheels with it off
+  and the light ones with it on, switched live, both under the same
+  contrast tests. Docs/commits refer to it only as "normal mode".~~
+  Done 2026-08-06 — `2754e69`, `be04272`, `481d50d`, inverted by
+  `710df3e`; see phases 53.D and 53.E in the status log.
 
 ## Status log
 

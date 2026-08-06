@@ -1,10 +1,11 @@
 # Normal mode — review captures
 
 The nine steps of the `cannet-perf-measurement screenshot` scenario,
-rendered with `theme: light` and `normal_mode: true`. Committed so the
-setting can be reviewed without a Windows machine and a build; the dark
-and plain-light parity checks from the same session are diffs rather
-than pictures and live in the task's status log.
+rendered with `theme: light` and default flags — that is, with **Normal
+mode off**, which is how it ships. Committed so the setting can be
+reviewed without a Windows machine and a build; the dark parity check
+from the same session is a diff rather than a picture and lives in the
+task's status log.
 
 Captured from a `tauri build --no-bundle` release build against
 `examples/ev-demo`, 1600×1000 at device-scale 1, with the harness's
@@ -26,7 +27,8 @@ for what that leaves outside the frame.
 
 Two things are deliberately not in frame. The **Normal mode** row itself
 is developer-tagged, so it is hidden unless `show_developer_settings` is
-on and `03-settings` shows the same rows the light captures do. Plot
+on and `03-settings` shows the same rows the [light
+captures](../0053-light-theme/) do. Plot
 **series** colors are stored project data (`ev-demo` was saved with
 them) and render verbatim under every theme by design — the wheels show
 up on a project that has not stored colors, and in the panels that hash
