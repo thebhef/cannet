@@ -364,10 +364,17 @@ stand still:
 
 Measure the residual rather than assuming it: capture the same scenario
 twice against one build and diff the two. On the reference machine that
-noise floor is **0 differing pixels across all 9 captures** — two
-independent app launches are bit-identical — so a non-zero diff after a
-change is signal, not jitter. Re-measure the floor on a new machine
-before trusting a number from it.
+floor is **0 differing pixels** on eight of the nine captures — two
+independent app launches are bit-identical — so a non-zero diff there is
+signal, not jitter.
+
+The ninth (`09-palette`) has a known bistable state: the bottom dock row
+(y ≈ 763–999, the band holding a plot canvas) composites under the modal
+backdrop two ways that differ by **≤ 1 per channel**, chosen per run.
+Both states have been observed from the same binary. Treat a palette
+diff whose `max Δchannel` is 1 as that artifact; a real color change
+moves channels by far more (a text change reads ~140–210). Re-measure
+the floor on a new machine before trusting a number from it.
 
 ### Platform
 

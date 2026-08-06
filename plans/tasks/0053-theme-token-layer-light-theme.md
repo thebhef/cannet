@@ -12,9 +12,11 @@ is not part of this task.
 
 ## Why a token layer first
 
-- `index.css` carries ~530 literal hex colors and **zero** CSS custom
-  properties; `:root` declares `color-scheme: dark` and paints
-  `#0e1116`.
+- `index.css` carried ~590 literal color values (587 hex occurrences
+  over 102 distinct hexes, plus 31 `rgb()`/`rgba()` layers) and one
+  CSS custom property, a non-color one (`--trace-row-padding-x`);
+  `:root` declares `color-scheme: dark` and paints `#0e1116`.
+  Swept into 134 tokens in phase 53.A — see the status log.
 - Color is also decided in JS, outside the stylesheet's reach:
   - `palette.ts` — the signal color wheel, WCAG-AA-tested against the
     one dark background (`palette.test.ts` requires ≥ 4.5:1).
@@ -219,3 +221,86 @@ project), SHA-256:
 - *New dependencies:* `tungstenite`, `ureq`, `png`, `base64` in
   `cannet-perf-measurement` only, all TLS-free. Recorded in
   `plans/technology-inventory.md`.
+
+### 2026-08-06 — Phase 53.A, token layer (shape-of-the-work item 2)
+
+**Result: `index.css` holds no color literal outside the token block.**
+618 literals replaced by 622 `var()` reads over **134 tokens** in six
+groups:
+
+| group | tokens | what it names |
+| --- | ---: | --- |
+| Surfaces | 31 | app / panel / row / control backgrounds, hovers, dividers |
+| Text | 17 | the five-step ramp plus the semantic tints (log source, ECU, signal value, …) |
+| Borders | 15 | four weights, row and list separators, the focus ring and field-focus border |
+| State | 40 | danger / warning / ok, the developer and scope chips, the modified marker, plot cursors |
+| Graph nodes | 15 | per-kind fill + outline for the project graph |
+| Translucent | 17 | shadows, the modal backdrop, white washes, selection tints, the scrollbar thumb |
+
+Names are roles, not shades. Six hexes carried two jobs and split into
+two tokens each — `#1e293b` (raised surface / soft border), `#334155`
+(control hover / strong border), `#2c3444` (divider / default border),
+`#1f2630`, `#11161e`, `#475569` — and two more split by *selector*,
+where the same hex is chrome in one place and a graph-node identity in
+another (`#38bdf8` focus ring vs signals-node outline, `#475569` dim
+border vs gateway-node outline). No two distinct values were merged.
+The one exception is a notation merge: three shadow declarations spelled
+the same color both as `rgba(0, 0, 0, 0.4)` and `rgb(0 0 0 / 0.4)` and
+now share one token — same computed color, different spelling.
+
+Landed as five green commits, one per token group (surfaces → text →
+borders → state+nodes → translucent), each with
+`pnpm --dir apps/gui test` (125 files, 1449 tests) and
+`pnpm --dir apps/gui build` passing.
+
+**Parity evidence — two independent proofs.**
+
+1. *Static.* Expanding every `var()` in the swept file back to its token
+   value reproduces the pre-sweep file byte for byte, except the three
+   notation-merged shadow declarations above. So no resolved value
+   changed.
+2. *Pixel.* Release builds (`tauri build --no-bundle`) of the pre-sweep
+   and post-sweep stylesheets, captured back to back on the same
+   machine, `ev-demo`, 1600×1000:
+
+   | capture | differing px / 1 600 000 | max Δchannel |
+   | --- | ---: | ---: |
+   | 01-saved-layout | 0 | 0 |
+   | 02-dbc-system-messages | 0 | 0 |
+   | 03-settings | 0 | 0 |
+   | 04-transmit | 0 | 0 |
+   | 05-colormap | 0 | 0 |
+   | 06-project-graph | 0 | 0 |
+   | 07-about | 0 | 0 |
+   | 08-shortcuts | 0 | 0 |
+   | 09-palette | 51 061 (3.19 %) | **1** |
+
+   Eight of nine byte-identical. The ninth is the bistable palette
+   artifact below — not a color change.
+
+**Blockers / side effects.**
+
+- *The palette capture is bistable at ±1/255.* Across twelve capture
+  runs the `09-palette` image took one of exactly two forms, differing
+  only in the bottom dock band (x 16–1599, y 763–999 — the row holding
+  a plot canvas) and never by more than 1 per channel: alpha-compositing
+  rounding where the modal backdrop blends over that band. All six
+  pre-sweep runs produced form A; the post-sweep build produced form B
+  in four runs and **form A — byte-identical to the pre-sweep capture —
+  in two**. A token build that reproduces the pre-sweep bytes exactly is
+  the evidence that the colors are equal and the difference is a raster
+  path; the static expansion proof says the same thing independently.
+  Recorded in the crate README so a future ≤ Δ1 palette diff is read as
+  the artifact rather than a regression. A real color change reads far
+  larger — the text differences found during this phase measured Δ 140–210.
+- *Two more mask entries earned their place, both found by diffing.*
+  The About panel's version readout is `git describe` output, so it
+  differs between any two builds (Δ 142 over ~500 px). The system-log
+  rows race: the sidecar's startup lines and the project-open line
+  interleave differently run to run, so the message *and* source columns
+  move (Δ 210 over ~1600 px). Both are masked now; the log rows, their
+  level chips and the panel chrome stay in frame. The version string and
+  the log text are outside the parity claim.
+- *Task-doc correction.* This file said `index.css` had "zero CSS custom
+  properties"; it had one non-color property (`--trace-row-padding-x`).
+  Fixed above, with the measured literal counts.

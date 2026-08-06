@@ -82,16 +82,27 @@ pub const ALL_PANEL_COMPONENTS: &[&str] = &[
 /// - `.system-messages-count` / `.system-messages-badge` — the health
 ///   recorder logs one debug line every 20 s, so the totals climb even
 ///   with nothing connected.
-/// - `.system-messages-ts` — wall-clock stamps, different every launch.
+/// - `.system-messages-ts` / `.system-messages-msg` /
+///   `.system-messages-source` — wall-clock stamps, message bodies that
+///   quote per-launch facts (sidecar pids, resolved cache paths), and
+///   the source column, whose rows race: the sidecar's startup lines and
+///   the project-open line interleave differently run to run. The rows
+///   themselves and their level chips stay in frame.
 /// - `.plot-perf` — the plot's per-second render badge decays after the
 ///   last resample.
+/// - the About panel's version readout — `git describe` output, so it
+///   differs between any two builds. It has no class of its own; the
+///   selector reaches the first field of the first group of the About
+///   panel (`.settings-panel` without the shortcuts modifier).
 ///
 /// `visibility: hidden` rather than a fill color: the mask must not
 /// introduce a color of its own into the comparison, and it leaves the
 /// surrounding surface — which *is* under test — visible.
 pub const MASK_CSS: &str = "\
 .status, .plot-perf, .system-messages-count, .system-messages-badge, \
-.system-messages-ts { visibility: hidden !important; }";
+.system-messages-ts, .system-messages-msg, .system-messages-source, \
+.settings-panel:not(.shortcuts-panel) .settings-group:first-of-type .settings-desc \
+{ visibility: hidden !important; }";
 
 /// Helpers injected into the page before each step so the scenario
 /// scripts stay short. Driving is done the way a user drives: clicking
