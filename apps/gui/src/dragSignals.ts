@@ -16,6 +16,14 @@
 /// drop-overs.
 export const SIGNAL_DND_MIME = "application/x-cannet-plot-signal";
 
+/// Kind markers (ADR 0045). HTML5 exposes only the *type list* during
+/// `dragover` — never the data — so a target that supports one half of
+/// the payload has to learn which halves are in flight from the mime
+/// list alone. Both carry no data of their own; the payload lives on
+/// [`SIGNAL_DND_MIME`].
+export const DRAG_SIGNALS_MIME = "application/x-cannet-drag-signals";
+export const DRAG_PATTERNS_MIME = "application/x-cannet-drag-patterns";
+
 /// The fields a draggable signal must carry — every field the plot
 /// panel needs to identify and sample it. `color` is intentionally
 /// absent: the receiver assigns a color at drop time (existing plot
@@ -65,10 +73,37 @@ export function setSignalDragData(
   signals: readonly DraggableSignalRef[],
   sourcePanelId?: string,
 ): void {
+  setSignalDragPayload(e, { signals, patterns: [], sourcePanelId });
+}
+
+/// One drag's cargo (ADR 0045): concrete signals and/or live patterns,
+/// travelling together so a mixed selection is one gesture. A target
+/// that supports only one half acts on that half.
+export interface SignalDragPayload {
+  signals: readonly DraggableSignalRef[];
+  patterns: readonly string[];
+  /// The panel the drag started in, when it has an id — how a receiver
+  /// tells a drag from inside itself (move) from one arriving from
+  /// elsewhere (add).
+  sourcePanelId?: string;
+}
+
+/// Encode a combined payload, deduplicated at the edge (D11: one drop
+/// never adds the same signal — or the same pattern — twice, however
+/// the selection that produced it overlapped itself), and announce each
+/// half it carries as its own mime so `dragover` can give feedback.
+export function setSignalDragPayload(
+  e: { dataTransfer: DataTransfer },
+  payload: SignalDragPayload,
+): void {
+  const signals = dedupeSignalRefs(payload.signals);
+  const patterns = [...new Set(payload.patterns)];
   e.dataTransfer.setData(
     SIGNAL_DND_MIME,
-    JSON.stringify({ signals, sourcePanelId }),
+    JSON.stringify({ signals, patterns, sourcePanelId: payload.sourcePanelId }),
   );
+  if (signals.length > 0) e.dataTransfer.setData(DRAG_SIGNALS_MIME, "");
+  if (patterns.length > 0) e.dataTransfer.setData(DRAG_PATTERNS_MIME, "");
   // `copyMove` lets a receiver use either dropEffect — plot panel
   // shows "copy" (the more useful "drop here" cursor); other
   // receivers can pick "move". With `effectAllowed = "move"` some
@@ -77,12 +112,31 @@ export function setSignalDragData(
   e.dataTransfer.effectAllowed = "copyMove";
 }
 
+/// Does the drag in flight carry concrete signals? Read from the mime
+/// list, which is all `dragover` gets. A payload that declares no kind
+/// at all predates the markers (or is a hand-built one) and is read as
+/// signals — every such source drags concrete signals.
+export function dragHasSignals(types: readonly string[]): boolean {
+  if (!types.includes(SIGNAL_DND_MIME)) return false;
+  if (types.includes(DRAG_SIGNALS_MIME)) return true;
+  return !types.includes(DRAG_PATTERNS_MIME);
+}
+
+/// Does the drag in flight carry live patterns (ADR 0020)?
+export function dragHasPatterns(types: readonly string[]): boolean {
+  return types.includes(SIGNAL_DND_MIME) && types.includes(DRAG_PATTERNS_MIME);
+}
+
 /// Parsed drag payload. `sourcePanelId` is `null` for the legacy
 /// single-ref form (no panel id available) and for any payload that
 /// didn't set one (DBC / trace / by-id sources). The plot panel uses
 /// it to decide move vs. add semantics on drop.
 export interface ParsedSignalDrag {
   signals: DraggableSignalRef[];
+  /// The live patterns the drag carries (ADR 0045). Empty for every
+  /// payload written before the field existed, and for a drag of
+  /// concrete signals.
+  patterns: string[];
   sourcePanelId: string | null;
 }
 
@@ -93,23 +147,27 @@ export interface ParsedSignalDrag {
 /// `{ signals: [], sourcePanelId: null }` for any unparseable or
 /// empty payload so call sites can no-op uniformly.
 export function parseSignalDragData(raw: string): ParsedSignalDrag {
-  if (!raw) return { signals: [], sourcePanelId: null };
+  const empty: ParsedSignalDrag = { signals: [], patterns: [], sourcePanelId: null };
+  if (!raw) return empty;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { signals: [], sourcePanelId: null };
+    return empty;
   }
   if (parsed != null && Array.isArray((parsed as { signals?: unknown }).signals)) {
-    const o = parsed as { signals: unknown[]; sourcePanelId?: unknown };
+    const o = parsed as { signals: unknown[]; patterns?: unknown; sourcePanelId?: unknown };
     return {
       signals: o.signals.filter(isDraggableSignalRef),
+      patterns: Array.isArray(o.patterns)
+        ? o.patterns.filter((p): p is string => typeof p === "string")
+        : [],
       sourcePanelId: typeof o.sourcePanelId === "string" ? o.sourcePanelId : null,
     };
   }
   return {
+    ...empty,
     signals: isDraggableSignalRef(parsed) ? [parsed] : [],
-    sourcePanelId: null,
   };
 }
 

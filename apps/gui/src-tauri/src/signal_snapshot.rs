@@ -862,6 +862,32 @@ mod tests {
     }
 
     #[test]
+    fn reordering_the_names_moves_the_headers_and_the_claim_together() {
+        // The signal view's section drag-reorder (ADR 0045) is exactly
+        // a permutation of `names`. The property that makes it safe to
+        // expose as a gesture is that the *visible* order and the
+        // pattern-claim priority are one fact: dragging "Late" to the
+        // front must both move its header and hand it the contested
+        // row, so claim priority stays readable off the panel.
+        let row = pathed_row("p", "Bms", "PackStatus", "PackVolts");
+        let patterns: &[(&str, &[&str])] = &[("Early", &["Pack"]), ("Late", &["Pack"])];
+        let before = with_patterns(sections(&["Early", "Mid", "Late"], &[], &[]), patterns);
+        let out = arrange_sections(vec![row.clone()], &before, None, None, &HashMap::new());
+        assert_eq!(
+            transcript(&out),
+            vec!["Early(1)", "+PackVolts", "Mid(0)", "Late(0)"]
+        );
+
+        // …and the panel's reorder, dropping "Late" onto "Early".
+        let after = with_patterns(sections(&["Late", "Early", "Mid"], &[], &[]), patterns);
+        let out = arrange_sections(vec![row], &after, None, None, &HashMap::new());
+        assert_eq!(
+            transcript(&out),
+            vec!["Late(1)", "+PackVolts", "Early(0)", "Mid(0)"]
+        );
+    }
+
+    #[test]
     fn an_explicit_unsectioned_assignment_overrides_a_claiming_pattern() {
         // Moving a pattern-claimed signal *out* has to be expressible,
         // and deleting the assignment cannot say it — the pattern would

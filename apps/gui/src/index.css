@@ -1232,6 +1232,11 @@ button.trace-event-swatch {
   outline: 1px solid #38bdf8;
   outline-offset: -1px;
 }
+/* A gridview-selected row (ADR 0044). The container holds focus, so
+   the selection is the only thing the row itself shows. */
+.trace-row.selected {
+  background: #1b2740;
+}
 
 .trace-event-label {
   flex: 0 1 auto;
@@ -1430,10 +1435,18 @@ button.trace-event-swatch {
 .trace-disclosure {
   background: none;
   border: none;
-  padding: 0 0 0 0.25rem;
+  padding: 0 0.35rem;
   font: inherit;
   line-height: inherit;
   cursor: pointer;
+  /* ADR 0044: a disclosure is a real control whose hit area is the
+     full row height and comfortably wide — the caret glyph inside it
+     is decoration. A glyph-sized button is what shipped as a defect. */
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.3rem;
 }
 
 /* Expanded-row decoded signals: one indented sub-row per signal. Each
@@ -2127,6 +2140,17 @@ button.trace-event-swatch {
 .pattern-editor-slash {
   color: #64748b;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* The pattern chip's grip (ADR 0045): the row holds a text input, so
+   the drag lives on a handle rather than on the row. */
+.pattern-editor-grip {
+  cursor: grab;
+  padding: 0 0.2rem;
+  border-radius: 3px;
+}
+.pattern-editor-grip.selected {
+  background: #1b2740;
+  color: #e2e8f0;
 }
 .pattern-editor-count {
   color: #94a3b8;

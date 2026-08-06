@@ -205,14 +205,20 @@ function signalDrop(
     stopEvent: boolean;
     panelElementId: string;
     onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
+    /// Live patterns the payload carried, for the area to append to its
+    /// own list (ADR 0045). The drop never flattens them.
+    onDropPatterns: (patterns: readonly string[]) => void;
   },
 ): void {
-  const { refs, sourcePanelId } = parseDroppedSignals(e.dataTransfer.getData(SIGNAL_DND_MIME));
-  if (refs.length === 0) return;
+  const { refs, patterns, sourcePanelId } = parseDroppedSignals(
+    e.dataTransfer.getData(SIGNAL_DND_MIME),
+  );
+  if (refs.length === 0 && patterns.length === 0) return;
   e.preventDefault();
   if (opts.stopEvent) e.stopPropagation();
   const isInternalMove = sourcePanelId === opts.panelElementId;
   for (const r of refs) opts.onDropSignal(r, opts.beforeKey, isInternalMove);
+  if (patterns.length > 0) opts.onDropPatterns(patterns);
 }
 
 /** Drag-over / drop for a plot-area *reorder* — the gesture that
@@ -705,6 +711,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     resolveColor,
     panelElementId,
   } = p;
+
+  /** Fold dropped patterns into this area's own list (ADR 0045): live,
+   * deduped, and never flattened to their current matches — that is
+   * what the explicit materialize path is for. */
+  const appendPatterns = useCallback(
+    (incoming: readonly string[]) =>
+      onSetPatterns([...new Set([...(area.patterns ?? []), ...incoming])]),
+    [area.patterns, onSetPatterns],
+  );
 
   /** How often the live loop below re-samples, from `settings.json`
    * (ADR 0034). Drawing stays pinned to rAF — this is the fetch, which
@@ -2535,7 +2550,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       }}
       onDrop={(e) => {
         if (areaDrop(e, onReorderArea)) return;
-        signalDrop(e, { beforeKey: null, stopEvent: false, panelElementId, onDropSignal });
+        signalDrop(e, {
+          beforeKey: null,
+          stopEvent: false,
+          panelElementId,
+          onDropSignal,
+          onDropPatterns: appendPatterns,
+        });
       }}
     >
       <div
@@ -2792,7 +2813,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   );
                 }}
                 onDragOver={(e) => signalDragOver(e, true)}
-                onDrop={(e) => signalDrop(e, { beforeKey: key, stopEvent: true, panelElementId, onDropSignal })}
+                onDrop={(e) =>
+                  signalDrop(e, {
+                    beforeKey: key,
+                    stopEvent: true,
+                    panelElementId,
+                    onDropSignal,
+                    onDropPatterns: appendPatterns,
+                  })
+                }
               >
                 <SignalSwatch
                   hidden={!!s.hidden}

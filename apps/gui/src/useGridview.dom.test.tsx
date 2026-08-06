@@ -67,11 +67,24 @@ const UNSELECTABLE = new Set(
 const scrolled: number[] = [];
 const primaryAction = vi.fn();
 
+/// The chip ids a consumer can put in the same selection set as its
+/// rows — ADR 0045's pattern chips, which are selectable alongside rows
+/// but live outside the scrolled row space.
+const CHIPS = ["chip-a", "chip-b"];
+
 /// A panel-shaped consumer: it owns the expansion state and the
 /// rendering, the hook owns the interaction. `rendered` limits how many
 /// rows reach the DOM, standing in for a paged viewport where the
 /// cursor's row need not exist as a node.
-function Harness({ pageRows = 2, rendered = 99 }: { pageRows?: number; rendered?: number }) {
+function Harness({
+  pageRows = 2,
+  rendered = 99,
+  chips,
+}: {
+  pageRows?: number;
+  rendered?: number;
+  chips?: readonly string[];
+}) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const rows = flatten(TREE, expanded);
   const space = arrayRowSpace(rows, (id) => expanded.has(id));
@@ -91,9 +104,18 @@ function Harness({ pageRows = 2, rendered = 99 }: { pageRows?: number; rendered?
     pageRows,
     idPrefix: "harness",
     onPrimaryAction: primaryAction,
+    extraSelectableIds: chips,
   });
   return (
     <div data-testid="outside">
+      {(chips ?? []).map((id) => (
+        <div
+          key={id}
+          data-testid={`row-${id}`}
+          data-selected={grid.selection.has(id) ? "yes" : "no"}
+          onClick={(e) => grid.onRowClick(id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
+        />
+      ))}
       <div data-testid="grid" role="tree" {...grid.containerProps}>
         {rows.slice(0, rendered).map((row) => (
           <div
@@ -115,7 +137,7 @@ function Harness({ pageRows = 2, rendered = 99 }: { pageRows?: number; rendered?
   );
 }
 
-function setup(props: { pageRows?: number; rendered?: number } = {}) {
+function setup(props: { pageRows?: number; rendered?: number; chips?: readonly string[] } = {}) {
   scrolled.length = 0;
   primaryAction.mockClear();
   const view = render(<Harness {...props} />);
@@ -255,6 +277,22 @@ describe("selection", () => {
     fireEvent.keyDown(view.grid, { key: "ArrowRight" }); // open the container
     fireEvent.keyDown(view.grid, { key: "a", ctrlKey: true });
     expect(selectedRows(view).sort()).toEqual(["frame", "msg", "plain"]);
+  });
+
+  it("puts a consumer's extra selectable items in the same set as the rows", () => {
+    // ADR 0045's pattern chips: selectable alongside rows so one drag
+    // can carry both, without being rows of the scrolled space.
+    const view = setup({ chips: CHIPS });
+    fireEvent.click(view.getByTestId("row-plain"));
+    fireEvent.click(view.getByTestId("row-chip-a"), { ctrlKey: true });
+    expect(selectedRows(view).sort()).toEqual(["chip-a", "plain"]);
+    // …and they range and select-all with the rows, in that order.
+    fireEvent.click(view.getByTestId("row-chip-b"), { ctrlKey: true, shiftKey: true });
+    expect(selectedRows(view).sort()).toEqual(["chip-a", "chip-b", "plain"]);
+    // Ctrl+A takes them too (the tree is closed, so "plain" is the
+    // only selectable row in the space).
+    fireEvent.keyDown(view.grid, { key: "a", ctrlKey: true });
+    expect(selectedRows(view).sort()).toEqual(["chip-a", "chip-b", "plain"]);
   });
 });
 

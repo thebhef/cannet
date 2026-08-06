@@ -19,6 +19,17 @@ import type { SignalDescriptorRecord } from "./types";
 import { resolvePatterns } from "./signalSelection";
 import { ValidatedInput } from "./ValidatedInput";
 
+/// Per-pattern selection + drag wiring (ADR 0045). A pattern chip is a
+/// selectable item in the same set as the consuming panel's rows, and
+/// drags the pattern *live* — so a mixed selection of rows and chips is
+/// one gesture. The row holds a text input, so the drag lives on a
+/// dedicated grip rather than on the row (ADR 0045).
+export interface PatternGrip {
+  selected: (pattern: string) => boolean;
+  onSelect: (pattern: string, modifiers: { mod: boolean; shift: boolean }) => void;
+  onDragStart: (pattern: string, e: React.DragEvent) => void;
+}
+
 interface SignalPatternEditorProps {
   patterns: readonly string[];
   catalog: readonly SignalDescriptorRecord[];
@@ -31,6 +42,10 @@ interface SignalPatternEditorProps {
   /// Placeholder for the add-pattern input; defaults to a canonical
   /// path example.
   placeholder?: string;
+  /// Makes each pattern a draggable, selectable chip. Omitted ⇒ the
+  /// rows are plain editors, which is what the plot panel's per-area
+  /// filter popover wants.
+  grip?: PatternGrip;
 }
 
 export function SignalPatternEditor({
@@ -40,6 +55,7 @@ export function SignalPatternEditor({
   onChange,
   onMaterialize,
   placeholder,
+  grip,
 }: SignalPatternEditorProps) {
   const [draft, setDraft] = useState("");
   const resolutions = resolvePatterns(patterns, catalog, busNames);
@@ -53,9 +69,26 @@ export function SignalPatternEditor({
     <div className="pattern-editor">
       {resolutions.map((res, i) => (
         <div className="pattern-editor-row" key={`${res.pattern}-${i}`}>
-          <span className="pattern-editor-slash" aria-hidden="true">
-            /
-          </span>
+          {grip ? (
+            <span
+              className={`pattern-editor-slash pattern-editor-grip${
+                grip.selected(res.pattern) ? " selected" : ""
+              }`}
+              aria-label={`pattern ${i + 1} grip`}
+              title="drag this pattern where it should apply; click to select it with the rows"
+              draggable
+              onClick={(e) =>
+                grip.onSelect(res.pattern, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey })
+              }
+              onDragStart={(e) => grip.onDragStart(res.pattern, e)}
+            >
+              /
+            </span>
+          ) : (
+            <span className="pattern-editor-slash" aria-hidden="true">
+              /
+            </span>
+          )}
           <ValidatedInput
             className="pattern-editor-regex"
             value={res.pattern}

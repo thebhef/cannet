@@ -482,3 +482,137 @@ net.
   `isEditableTarget`, `isGridviewTarget`) and the one-line wiring in
   `useCommands` is what remains untested; the first panel migration
   (phase B) makes an end-to-end test possible and should take it.
+  *(Taken in B.1 — see below.)*
+
+### 2026-08-05 — B.1 signal view: cursor, keys, selection
+
+Branch `task51-signal-view`, cut from `task51-gridview-base`.
+`SignalsPanel` is the first gridview consumer: the host-arranged page
+row space *is* the row space, with section headers as branch rows
+(`sec:<name>`) and signal rows as plain leaves (`sig:<signalKey>`) one
+level under them. The rows viewport carries `containerProps` — it holds
+focus and names the active row — and every row carries its
+`rowDomId`, `aria-selected` and a click that feeds `onRowClick`.
+`.trace-row.selected` is the only new style.
+
+`SignalsPanel.gridview.dom.test.tsx`, 8 DOM tests: the cursor over a
+sectioned space, Left/Right walking out to a header and back in,
+fold/unfold from the cursor, a flat (section-less) space where Left has
+no phantom parent, click-replace / Ctrl+click toggle /
+Ctrl+Shift+click range / Ctrl+A, and **the D10 end-to-end test the base
+slice deferred**: a user-bound `ArrowDown` chord dispatched by the real
+`useCommands` capture listener fires outside the panel and does not
+fire inside its grid, while the grid's own cursor moves. Suite: 114
+files / 1315 tests green; `pnpm build` green; every pre-existing
+`SignalsPanel` DOM test unchanged and green (D0).
+
+### 2026-08-05 — B.2 signal view: drag sources and intra-panel drops
+
+Two commits. `6a4e780` lands the carrier and the pure pieces:
+`dragSignals.ts` grows `patterns` on the payload plus the two kind
+marker mimes a `dragover` reads (`DRAG_SIGNALS_MIME`,
+`DRAG_PATTERNS_MIME`), with `setSignalDragPayload` deduping signals and
+patterns at the edge (D11); `reorderSectionNames` in
+`signalSelection.ts` is the `names` permutation a header drop makes; a
+Rust test in `signal_snapshot.rs` proves the drag's permutation moves
+the headers *and* the pattern-claim priority together; and `useGridview`
+grows `extraSelectableIds`, the non-row selectable items D7's pattern
+chips need.
+
+The panel wiring: a signal row drags its concrete signal from the name
+cell, a section header drags the whole unit (its assigned signals and
+its live patterns) from its label, a pattern chip drags its pattern from
+a grip in `SignalPatternEditor` — and any of them, when the grabbed item
+is in the selection, drags the whole selection. Drops: signals onto a
+section (header **or** any row in its span) are assigned there,
+patterns merge into it, patterns onto the panel itself make a section
+carrying them, and a header dropped on another header reorders. The
+`.trace-disclosure` control took the D0 hit-target treatment (full row
+height, ~1.3rem wide, glyph as decoration).
+
+`SignalsPanel.dnd.dom.test.tsx`, 10 DOM tests over a real
+`DataTransfer` round trip; 6 new unit tests in `dragSignals.test.ts`, 3
+in `signalSelection.test.ts`, 1 in `useGridview.dom.test.tsx`, 1 in
+`signal_snapshot.rs`. Suite: 115 files / 1333 tests green; `pnpm build`
+green; `cargo test -p cannet-gui` green.
+
+### 2026-08-05 — B.3 receiving ends
+
+The plot area accepts pattern payloads: `parseDroppedSignals` carries
+`patterns` through, `signalDrop` (the area surface *and* each signal
+row) hands them to the area's `onSetPatterns`, deduped against what it
+already has, and the rule stays live — the dropped pattern's matches
+render as pattern-derived rows, not as materialized picks. The transmit
+panel now gates on `dragHasSignals`, so a pattern-only payload is
+refused during `dragover` (the only feedback the gesture can give) and
+lands nothing.
+
+Message payloads are handled *generically over the payload shape*, as
+briefed: a message drag is a payload whose `signals` are the message's
+signals, so the plot's per-area descriptor dedup and transmit's
+group-by-`(id, extended)` already answer for it. The later phases that
+add trace-row message drags add sources only, no receiving-end code.
+
+3 new DOM tests in `PlotPanel.dom.test.tsx` (pattern append + no
+flatten; merge without duplicating; a message payload's signals landing
+once however the drop overlaps) and 2 in `TransmitPanel.dom.test.tsx`
+(one frame per distinct message; the pattern payload refused). Suite:
+115 files / 1338 tests green; `pnpm build` green; `cargo test -p
+cannet-gui` 462 passed; `cargo clippy -p cannet-gui --all-targets`
+clean.
+
+#### Blockers / side effects
+
+- **"Dropping patterns on empty plot space creates a new area" (D7,
+  ADR 0045) is unreachable and was not built.** There is no empty plot
+  space: ADR 0026's fit-to-panel rule means the derived axes always
+  fill `.plot-panel-areas` (a flex column, `overflow: hidden`, no
+  scroll list), so every point in the plot region belongs to some area.
+  A container-level drop handler would also have to fight the area
+  handlers, which deliberately do not stop propagation. Implemented the
+  reachable half faithfully — patterns dropped anywhere in the plot
+  land in the area under the pointer, live. If the "new area" gesture
+  is wanted it needs a *surface* first (a drop strip under the stack,
+  say), which is a layout change and therefore out of D0's scope.
+- **A drag payload resolves only the selected rows that are on
+  screen.** The row space is host-paged: the panel holds one page, so a
+  selected signal row scrolled out of the page is an id with no
+  `DraggableSignalRef` behind it. The payload builder resolves ids
+  through the manual picks (which carry the full ref) and the rendered
+  page, and silently omits anything it cannot resolve. In practice a
+  multi-item drag is built by clicking rows you can see; the case that
+  loses is Ctrl+A followed by a scroll and then a drag. Fixing it
+  properly means a host command that resolves identities to refs — a
+  slice of its own, not a quiet addition here.
+- **Ctrl+A in the signal view selects the loaded page, not the whole
+  row space** — the same paging fact from the other side:
+  `selectableIdsInOrder` walks the row space through `rowIdAt`, which
+  is `null` for rows whose page has not landed. Consistent with the
+  paged-model rule (the frontend must not hold the whole dataset); the
+  honest fix is again host-side.
+- **`useGridview` grew `extraSelectableIds`.** D7 requires pattern
+  chips to be "selectable items in the same selection set as rows", and
+  chips are not rows of any scrolled row space — they live in a popover
+  over a header. The adapter cannot express them, so the option
+  appends non-row ids to the selection order; they take part in
+  clicks, ranges and Ctrl+A, and not in the cursor. This is the
+  smallest change that implements D7 rather than dropping it.
+- **A section header drag carries its *explicit* members plus its
+  patterns, not its pattern-claimed rows.** "The section's assigned
+  signals *and* its patterns" (D7) reads naturally as exactly that: the
+  assignments the panel holds, and the rules that collect the rest —
+  which travel live, so the target re-collects them itself. Flattening
+  the claims into the payload would be the flatten-on-drop ADR 0045
+  forbids.
+- **A multi-header selection reorders by one header.** Dragging with
+  several section headers selected exports all their units (the payload
+  is the union), but the intra-panel reorder moves the header the
+  pointer grabbed, since `names` order is a single insertion point. The
+  decisions say nothing about multi-section reorder; this is the
+  closest reading that is not an invention.
+- **Pattern chips are draggable in the view-level selection editor
+  too**, not only in a section's popover. D7 names "a pattern chip (in
+  a section's pattern UI)", but the two editors are one component
+  (`SignalPatternEditor`) and a view-level pattern is the same kind of
+  live rule; wiring one and not the other would have been an arbitrary
+  asymmetry in the same widget.
