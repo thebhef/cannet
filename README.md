@@ -1005,6 +1005,30 @@ the sidecar's port is randomised per launch, so persisting a literal
 resolves `"local"` to the live sidecar address before invoking the
 connect command.
 
+**Connection feedback.** Connecting, failing, and configuring are all
+visible where the action is, not only in System Messages. Each
+logical-bus row carries a marker for its binding — `unbound`, `not
+connected`, `connecting…`, `connected`, or `error: <reason>` — and so
+does each bound interface row in the *Connection* section, so a
+multi-channel device shows which of its channels actually came up. The
+state is the host's (`connection_state.rs`, read through
+`get_connection_states` and the `connection-states-changed` event) and
+only moves on a real outcome: the interface list, the subscribe, the
+pump's exit. A binding whose interface the server doesn't expose gets
+its own error rather than being dropped silently.
+
+A connected bus also shows a `live:` line with the hardware
+configuration the host **actually sent** for it, which is not always
+what the fields below say. `ConfigureBus` is only pushed at connect
+(edit while connected and the row's `pending` chip says so — reconnect
+applies it), and a bus with neither a bitrate nor FD pinned sends no
+`ConfigureBus` at all, so the row reads `driver default (nothing
+sent)` rather than echoing the input's greyed placeholder. The wire
+has no applied-config response (ADR 0022 makes `ConfigureBus`
+fire-and-forget), so this is "what was sent", not "what timing
+registers the controller landed on" — which no layer of the stack
+reports.
+
 **BLF channel mapping**. Opening a BLF now pre-scans the file for its
 distinct channels (capped at 200k frames for huge BLFs) and shows a
 modal where each channel is mapped to a logical bus or marked as

@@ -161,8 +161,9 @@ Tests updated with the rule, pinning the threshold edges and zero.
 - ~~The light-theme request is linked to a groomed token-layer
   task.~~ Done 2026-08-05 — promoted to
   [task 53](0053-theme-token-layer-light-theme.md).
-- Connect/disconnect/configure feedback improvements are scoped into
-  concrete changes and shipped.
+- ~~Connect/disconnect/configure feedback improvements are scoped into
+  concrete changes and shipped.~~ Done 2026-08-06 — `10f9ee0`,
+  `bb82ad3`, `2b2e30f`.
 - ~~The sidecar writes a rolling logfile detailed enough that a
   per-channel connect failure (the VN17xx ch2 case) leaves a
   diagnosable trail; log location documented.~~ Done 2026-08-06 —
@@ -373,8 +374,126 @@ lands instead is the display that makes the construction visible (see
 the item-4 entry below), and the real defect found while tracing the
 same path (silently-dropped bindings) *does* get a failing test first.
 
+### 2026-08-06 — item 4: connect/disconnect/configure feedback (`bb82ad3`, `2b2e30f`)
+
+Two code commits after the STEP-0 doc commit above. Inline in the
+project panel, as groomed — no new panel.
+
+**The model is host-side.** New `connection_state.rs`: a
+`ConnectionStates` singleton keyed by **bus id**, because a project bus
+has at most one binding (ADR 0023) — one binding, one state, nothing to
+aggregate. `BusConnState` is `connecting | connected { applied } |
+error { reason }`; a bus with no entry has no session. The frontend
+hydrates once through `get_connection_states` and then follows the
+`connection-states-changed` event — the same pull-then-follow shape as
+`useSidecarStatus` and the interface cache (ADR 0016), so nothing polls
+and nothing accumulates. `useConnectionStates` renders it and derives
+exactly one thing itself: "this bus has no binding", which is a project
+fact, not a connection fact.
+
+**(a) In-place response, on the real outcome.** Every transition is
+driven by something that actually happened, never by "the request was
+dispatched": the buses go to `connecting…` before `list_interfaces`,
+and leave it on the list result, the subscribe result, the
+session-register result, the pump-spawn result, the pump's exit, or the
+disconnect. `disconnect_remote_server` retires the rows from the
+ending sessions' own `channel_to_bus` rather than racing the pumps'
+cleanup for them.
+
+**(b) Per-interface state — and the real defect.** Tracing the same
+path turned up a silent failure worth its own failing test: bindings
+whose interface the server's enumeration doesn't carry were dropped by
+the subscription `filter_map`, so that bus never received a frame while
+the panel read "connected" — precisely the VN17xx ch2 symptom. They now
+warn on the system log and take an `error: not exposed by <address>`
+state of their own; the rest of the card still connects.
+`split_by_availability` is the seam, and
+`a_binding_the_server_does_not_expose_is_reported_not_dropped` is the
+regression guard. On the UI side each bound interface row under
+*Connection* carries its bus's state, so ch1/3/4 connected + ch2 error
+reads at a glance.
+
+**(c) Configure acknowledged — honestly.** A connected bus row grows a
+`live:` line with the configuration the host **actually put on the
+wire**, which differs from the input fields in exactly the two places
+the fields can't show: nothing pinned means no `ConfigureBus` was sent
+at all (the row says `driver default (nothing sent)` instead of
+echoing the greyed 500 kbit/s placeholder), and an FD bus with a blank
+data rate rides the nominal rate. It is *not* "what the driver
+applied" — see Blockers; that value does not exist anywhere in this
+stack.
+
+**Bus-row marker.** `unbound` / `not connected` / `connecting…` /
+`connected` / `error: <reason>`, in the same `project-bus-state` idiom
+the sidecar and remote-server rows already use. "not connected" is the
+fifth state the groomed list didn't name: a bus that *is* bound but has
+no session is neither unbound nor errored.
+
+**Tests.** Rust +12 (`connection_state` ×6 — the transitions, the
+independent-per-bus VN17xx shape, the no-op suppression that keeps
+redundant events off the WebView, and the serialized wire shape;
+`session::connect_outcome_tests` ×6 — the availability split and all
+four applied-config normalisations). `cargo test -p cannet-gui` 465 →
+**477**; clippy `--all-targets` and `cargo fmt --check` clean.
+Frontend +16 in `ProjectPanel.connectionState.dom.test.tsx` (the two
+pure formatters, the bus-row marker incl. unbound and the reason text,
+the applied echo appearing only when connected, the change event
+updating without a refetch, and the four-channel device rendering four
+independent binding states). `pnpm --dir apps/gui test` 1418 →
+**1434** / 124 files, `pnpm --dir apps/gui build` green.
+
+**Docs, same commits:** README § Phase 6 gained a *Connection
+feedback* subsection (the five markers, where the state comes from,
+the applied-vs-requested distinction and why it is "sent" not
+"applied"); `connection_state.rs`'s module docs carry the same
+reasoning where the code lives.
+
 ### Blockers / side effects
 
+- **"What the driver actually applied" does not exist in this stack.**
+  Item 4(c) was groomed as "echo the values the driver applied, from
+  the response". There is no response: ADR 0022 makes `ConfigureBus`
+  deliberately fire-and-forget, the proto has no acknowledgement
+  message, and `_handle_configure` only *logs* requested-vs-applied
+  (52.B) — it sends nothing back. One layer down it is the same story:
+  the sidecar's `OpenConfig` is an input to `Driver.open`, and no
+  `OpenChannel` reports the timing registers the controller settled
+  on. So the deepest available truth is "the configuration the host put
+  on the wire", which is what shipped and what the UI labels it as. A
+  true applied-echo would need a new server→client envelope (or a
+  bidirectional `ConfigureBus`), a `cannet-client` side-channel to
+  surface it — the rx loop currently *drops* inbound `ConfigureBus`,
+  `Log` and `InterfaceState` — and a driver-protocol addition. That is
+  a wire-model decision, so it wants an ADR, not a drive-by.
+- **Editing a bitrate while connected still applies nothing.** The
+  STEP-0 finding, left as-is: `SessionTransmitter::configure_bus`
+  exists with zero callers, and no Tauri command reaches it. The row's
+  `pending` chip plus the new `live:` line now make the situation
+  legible ("you typed 250k; 500k is what is running; reconnect to
+  apply") rather than silent, but a live configure path is a separate
+  change — it needs the acknowledgement question above answered first,
+  which is exactly why the groomed note said to root-cause before
+  designing (c).
+- **`cannet-client`'s rx-loop comment is stale.** It says wire `Log`
+  / `InterfaceState` / `ConfigureBus` envelopes "have no consumer in
+  this crate; the GUI host bridges them into its own surfaces". The
+  host does not — they are dropped in `run_session`. The sidecar's
+  per-channel error text reaches System Messages via its *stderr*,
+  not via the wire. Left alone: it is a comment in a crate this phase
+  didn't otherwise touch, and correcting it properly is part of the
+  side-channel work above.
+- **`is_per_frame_error_code` treats `UNKNOWN_INTERFACE` as fatal.**
+  A sidecar that refuses one channel replies `CODE_UNKNOWN_INTERFACE`,
+  which ends the whole rx loop — so one dead channel can still take
+  its siblings down *if the refusal happens at subscribe time on the
+  server*. The host-side fix in this phase covers the case the server
+  never advertised the interface at all (the enumeration gap); it does
+  not change the wire's fatality classification. Noticed, not fixed —
+  changing it is a `cannet-client` behaviour change outside item 4.
+- **Item 4 was not verified in a running window.** `cargo test` +
+  `clippy` + `pnpm test` + `pnpm build` are green; the new markers were
+  not eyeballed against real hardware in a `tauri dev` launch this
+  session.
 - **One `PlotPanel.dom.test.tsx` case flaked under full-suite load**
   (1 failed / 1417 passed, inside `withSizedCanvas` at
   `PlotPanel.dom.test.tsx:2722`). Re-running that file alone passes
