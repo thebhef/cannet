@@ -10,6 +10,7 @@ import {
   cursorAction,
   type GridviewRow,
   type GridviewRowKind,
+  type GridviewRowSpace,
 } from "./gridviewRows";
 
 interface Node {
@@ -58,6 +59,13 @@ function space(...expandedIds: string[]) {
   return arrayRowSpace(flatten(TREE, expanded), (id) => expanded.has(id));
 }
 
+/// The `move` action onto `id`: the arithmetic hands the hook the index
+/// as well, because that is what it scrolls by — and in a host-paged
+/// space the target row is one the panel has yet to load.
+function move(s: GridviewRowSpace, id: string) {
+  return { type: "move", id, index: s.indexOf(id) };
+}
+
 describe("row space", () => {
   it("orders rows by id and reports positions", () => {
     const s = space();
@@ -91,22 +99,22 @@ describe("row space", () => {
 describe("cursor movement", () => {
   it("steps down and up, clamped at both ends", () => {
     const s = space();
-    expect(cursorAction(s, "bus", "ArrowDown", 10)).toEqual({ type: "move", id: "empty-branch" });
-    expect(cursorAction(s, "empty-branch", "ArrowUp", 10)).toEqual({ type: "move", id: "bus" });
-    expect(cursorAction(s, "bus", "ArrowUp", 10)).toEqual({ type: "move", id: "bus" });
-    expect(cursorAction(s, "plain", "ArrowDown", 10)).toEqual({ type: "move", id: "plain" });
+    expect(cursorAction(s, "bus", "ArrowDown", 10)).toEqual(move(s, "empty-branch"));
+    expect(cursorAction(s, "empty-branch", "ArrowUp", 10)).toEqual(move(s, "bus"));
+    expect(cursorAction(s, "bus", "ArrowUp", 10)).toEqual(move(s, "bus"));
+    expect(cursorAction(s, "plain", "ArrowDown", 10)).toEqual(move(s, "plain"));
   });
 
   it("starts at the first row when there is no cursor", () => {
     const s = space();
-    expect(cursorAction(s, null, "ArrowDown", 10)).toEqual({ type: "move", id: "bus" });
-    expect(cursorAction(s, null, "ArrowUp", 10)).toEqual({ type: "move", id: "bus" });
+    expect(cursorAction(s, null, "ArrowDown", 10)).toEqual(move(s, "bus"));
+    expect(cursorAction(s, null, "ArrowUp", 10)).toEqual(move(s, "bus"));
   });
 
   it("restarts at the first row when the cursor left the row space", () => {
     // `sig` was visible while `msg` was open; collapsing it took the row
     // away without the cursor moving.
-    expect(cursorAction(space("bus"), "sig", "ArrowDown", 10)).toEqual({ type: "move", id: "bus" });
+    expect(cursorAction(space("bus"), "sig", "ArrowDown", 10)).toEqual(move(space("bus"), "bus"));
   });
 
   it("does nothing in an empty row space", () => {
@@ -117,30 +125,29 @@ describe("cursor movement", () => {
 
   it("jumps to the first and last row", () => {
     const s = space("bus", "msg");
-    expect(cursorAction(s, "frame", "Home", 10)).toEqual({ type: "move", id: "bus" });
-    expect(cursorAction(s, "bus", "End", 10)).toEqual({ type: "move", id: "plain" });
+    expect(cursorAction(s, "frame", "Home", 10)).toEqual(move(s, "bus"));
+    expect(cursorAction(s, "bus", "End", 10)).toEqual(move(s, "plain"));
     // Home/End work from no cursor at all.
-    expect(cursorAction(s, null, "End", 10)).toEqual({ type: "move", id: "plain" });
+    expect(cursorAction(s, null, "End", 10)).toEqual(move(s, "plain"));
   });
 
   it("moves by a viewport of rows, clamped", () => {
     const s = space("bus", "msg"); // bus, msg, sig, frame, empty-branch, plain
-    expect(cursorAction(s, "bus", "PageDown", 2)).toEqual({ type: "move", id: "sig" });
-    expect(cursorAction(s, "sig", "PageUp", 2)).toEqual({ type: "move", id: "bus" });
-    expect(cursorAction(s, "bus", "PageDown", 100)).toEqual({ type: "move", id: "plain" });
-    expect(cursorAction(s, "plain", "PageUp", 100)).toEqual({ type: "move", id: "bus" });
+    expect(cursorAction(s, "bus", "PageDown", 2)).toEqual(move(s, "sig"));
+    expect(cursorAction(s, "sig", "PageUp", 2)).toEqual(move(s, "bus"));
+    expect(cursorAction(s, "bus", "PageDown", 100)).toEqual(move(s, "plain"));
+    expect(cursorAction(s, "plain", "PageUp", 100)).toEqual(move(s, "bus"));
     // A viewport too short to hold a row still advances by one.
-    expect(cursorAction(s, "bus", "PageDown", 0)).toEqual({ type: "move", id: "msg" });
+    expect(cursorAction(s, "bus", "PageDown", 0)).toEqual(move(s, "msg"));
   });
 });
 
 describe("cursor expansion (Right)", () => {
   it("expands a closed branch, then steps into its first child", () => {
     expect(cursorAction(space(), "bus", "ArrowRight", 10)).toEqual({ type: "expand", id: "bus" });
-    expect(cursorAction(space("bus"), "bus", "ArrowRight", 10)).toEqual({
-      type: "move",
-      id: "msg",
-    });
+    expect(cursorAction(space("bus"), "bus", "ArrowRight", 10)).toEqual(
+      move(space("bus"), "msg"),
+    );
   });
 
   it("expands a leaf's content block and then does nothing", () => {
@@ -163,7 +170,7 @@ describe("cursor expansion (Right)", () => {
     // works, but from `msg` open with no following child row it must not
     // walk into a sibling.
     const s = space("bus", "msg");
-    expect(cursorAction(s, "msg", "ArrowRight", 10)).toEqual({ type: "move", id: "sig" });
+    expect(cursorAction(s, "msg", "ArrowRight", 10)).toEqual(move(s, "sig"));
     expect(cursorAction(s, "sig", "ArrowRight", 10)).toEqual({ type: "none" });
   });
 });
@@ -186,8 +193,8 @@ describe("cursor collapse (Left)", () => {
   it("walks to the parent from a closed row", () => {
     const s = space("bus", "msg");
     expect(cursorAction(s, "msg", "ArrowLeft", 10)).toEqual({ type: "collapse", id: "msg" });
-    expect(cursorAction(s, "sig", "ArrowLeft", 10)).toEqual({ type: "move", id: "msg" });
-    expect(cursorAction(s, "frame", "ArrowLeft", 10)).toEqual({ type: "move", id: "bus" });
+    expect(cursorAction(s, "sig", "ArrowLeft", 10)).toEqual(move(s, "msg"));
+    expect(cursorAction(s, "frame", "ArrowLeft", 10)).toEqual(move(s, "bus"));
   });
 
   it("does nothing at the top level with nothing to collapse", () => {

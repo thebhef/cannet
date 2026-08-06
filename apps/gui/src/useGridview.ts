@@ -120,13 +120,16 @@ export function useGridview({
   /// single-select-follows-focus rule. A cursor landing on a row the
   /// adapter won't let be selected clears the selection rather than
   /// picking the row up.
+  /// `index` comes from the arithmetic that chose the row, not from
+  /// asking the space again: in a host-paged space the target is
+  /// routinely a row the panel has not loaded, and that is exactly when
+  /// it has to be scrolled to.
   const moveCursor = useCallback(
-    (id: string) => {
+    (id: string, index: number) => {
       setCursor(id);
       const row = adapter.rowAt(id);
       setSelection(collapseToCursor(row != null && adapter.isSelectable(row) ? id : null));
-      const index = adapter.indexOf(id);
-      if (index >= 0) adapter.scrollToRow(index);
+      adapter.scrollToRow(index);
     },
     [adapter],
   );
@@ -166,7 +169,7 @@ export function useGridview({
       const action = cursorAction(adapter, cursor, e.key as GridviewNavKey, pageRows);
       switch (action.type) {
         case "move":
-          moveCursor(action.id);
+          moveCursor(action.id, action.index);
           break;
         case "expand":
           adapter.setExpanded(action.id, true);

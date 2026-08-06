@@ -15,7 +15,11 @@ import {
 import { useTraceViewport } from "./useTraceViewport";
 import { useGridview } from "./useGridview";
 import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
-import { setSignalDragPayload, type DraggableSignalRef } from "./dragSignals";
+import {
+  messageDragRefs,
+  setSignalDragPayload,
+  type DraggableSignalRef,
+} from "./dragSignals";
 import { useSetting } from "./hostSettings";
 import type { CanIdFormat } from "./format";
 import {
@@ -42,23 +46,6 @@ export function byIdRowKey(f: TraceFrameRecord): string {
   return `${f.bus_id ?? "_"}:${f.id}:${f.extended ? "x" : "s"}`;
 }
 
-/// The message a by-id row stands for, as drag refs: every decoded
-/// signal it carries (ADR 0045 — the row drags the message, a line
-/// inside its expanded block drags that one signal). A row with no
-/// decode has no message to drag.
-function messageDragRefs(row: ByIdSnapshotRecord | null): DraggableSignalRef[] {
-  const frame = row?.frame;
-  const decoded = frame?.decoded;
-  if (!frame || !decoded) return [];
-  return decoded.signals.map((s) => ({
-    busId: frame.bus_id ?? null,
-    messageId: frame.id,
-    extended: frame.extended,
-    signalName: s.name,
-    messageName: decoded.name,
-    unit: s.unit,
-  }));
-}
 
 interface ByIdTableProps {
   /// Total by-id rows (the scrollbar extent) and the paged, host-sorted
@@ -213,8 +200,24 @@ export function ByIdTable({
   );
   // The scaffold's live geometry, read by `scrollToRow` without making
   // the adapter a fresh object on every scroll.
-  const geometry = useRef({ firstVisibleRow, rows, count, viewportHeight, anchorMax, extraHeight });
-  geometry.current = { firstVisibleRow, rows, count, viewportHeight, anchorMax, extraHeight };
+  const geometry = useRef({
+    firstVisibleRow,
+    rows,
+    count,
+    viewportHeight,
+    anchorMax,
+    extraHeight,
+    getRow,
+  });
+  geometry.current = {
+    firstVisibleRow,
+    rows,
+    count,
+    viewportHeight,
+    anchorMax,
+    extraHeight,
+    getRow,
+  };
   const scrollToRow = useCallback(
     (index: number) => {
       const g = geometry.current;
@@ -277,9 +280,15 @@ export function ByIdTable({
     pageRows: Math.max(1, rows - 2),
     idPrefix: `byid${instanceId}`,
   });
+  // The rows are memoised and the hook hands back fresh callbacks every
+  // render (its adapter moves with the page), so the row-facing handlers
+  // read the live gridview through a ref instead — otherwise every
+  // visible row repaints on every live refresh.
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
   const handleRowClick = useCallback(
     (rowKey: string, e: React.MouseEvent) => {
-      grid.onRowClick(rowKey, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+      gridRef.current.onRowClick(rowKey, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey });
       // A row with something to disclose is its own focus target, so it
       // keeps the keyboard (its Enter / Space still toggle it, and the
       // grid's keys reach the container by bubbling). A row that isn't
@@ -289,23 +298,25 @@ export function ByIdTable({
         containerRef.current?.focus();
       }
     },
-    [grid, containerRef],
+    [containerRef],
   );
   /// What one grab carries (ADR 0045): the grabbed row's message, or —
   /// when that row is in the selection — every selected row's message.
   /// Resolved at drag time, so the scroll path pays nothing for it.
   const startRowDrag = useCallback(
     (rowKey: string, e: React.DragEvent) => {
-      const ids = grid.selection.has(rowKey) ? grid.selection : new Set([rowKey]);
+      const g = geometry.current;
+      const selection = gridRef.current.selection;
+      const ids = selection.has(rowKey) ? selection : new Set([rowKey]);
       const signals: DraggableSignalRef[] = [];
-      for (let i = 0; i < count; i++) {
-        const r = getRow(i);
+      for (let i = 0; i < g.count; i++) {
+        const r = g.getRow(i);
         if (!r || !ids.has(byIdRowKey(r.frame))) continue;
-        signals.push(...messageDragRefs(r));
+        signals.push(...messageDragRefs(r.frame));
       }
       setSignalDragPayload(e, { signals, patterns: [] });
     },
-    [grid.selection, count, getRow],
+    [],
   );
 
   // Which visible positions are expanded — derived from the loaded rows'

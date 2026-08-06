@@ -106,8 +106,13 @@ export type GridviewNavKey =
 /// What a navigation key does. Returned rather than applied so the
 /// arithmetic stays pure — the hook moves the cursor or calls the
 /// adapter's `setExpanded`.
+///
+/// A move carries the target's `index` as well as its id: the hook
+/// scrolls by index, and asking the space to find the id again is both
+/// redundant and, in a host-paged space, impossible — the row it is
+/// scrolling *to* is by definition one the panel does not hold yet.
 export type GridviewCursorAction =
-  | { type: "move"; id: string }
+  | { type: "move"; id: string; index: number }
   | { type: "expand"; id: string }
   | { type: "collapse"; id: string }
   | { type: "none" };
@@ -132,7 +137,7 @@ export function cursorAction(
   const moveTo = (index: number): GridviewCursorAction => {
     const clamped = Math.min(Math.max(index, 0), space.count - 1);
     const id = space.rowIdAt(clamped);
-    return id == null ? NONE : { type: "move", id };
+    return id == null ? NONE : { type: "move", id, index: clamped };
   };
   if (key === "Home") return moveTo(0);
   if (key === "End") return moveTo(space.count - 1);
@@ -158,7 +163,9 @@ export function cursorAction(
       if (row.kind === "branch" && space.isExpanded(row.id)) {
         const nextId = space.rowIdAt(index + 1);
         const next = nextId == null ? null : space.rowAt(nextId);
-        if (next != null && next.depth === row.depth + 1) return { type: "move", id: next.id };
+        if (next != null && next.depth === row.depth + 1) {
+          return { type: "move", id: next.id, index: index + 1 };
+        }
       }
       return NONE;
     }
@@ -170,7 +177,7 @@ export function cursorAction(
         const id = space.rowIdAt(i);
         const candidate = id == null ? null : space.rowAt(id);
         if (candidate != null && candidate.depth < row.depth) {
-          return { type: "move", id: candidate.id };
+          return { type: "move", id: candidate.id, index: i };
         }
       }
       return NONE;
