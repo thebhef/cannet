@@ -75,6 +75,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("system_log_min_level", Scope::User),
     ("notice_dwell_ms", Scope::User),
     ("reopen_last_project", Scope::User),
+    ("theme", Scope::User),
     ("plot_fetch_interval_ms", Scope::UserOverridable),
     ("view_refresh_interval_ms", Scope::UserOverridable),
     ("follow_window_ms", Scope::UserOverridable),
@@ -168,6 +169,20 @@ pub struct Settings {
     /// it cannot take part in deciding it. That it is not a project's
     /// business either is what makes the restriction cost nothing.
     pub reopen_last_project: bool,
+    /// Which color theme the app renders in — one of [`THEMES`], default
+    /// `dark`, which is the only look the app had before this existed.
+    ///
+    /// The frontend owns what a theme *is* (a set of CSS custom
+    /// properties plus the JS color source that paints the canvas); the
+    /// host only stores which one is chosen. Applied live, so changing
+    /// it needs no restart.
+    ///
+    /// A setting about the person at the keyboard rather than about the
+    /// work, so it is user-scoped: a project does not get to decide what
+    /// its reader's screen looks like. Manual only — there is no
+    /// "follow the OS" value, because the per-platform webview media
+    /// query is a separate question from having a second theme at all.
+    pub theme: String,
     /// How long a transient status notice stays frozen in the header
     /// before the bar reverts to the resting residency line. Default
     /// 3000 ms. Nothing is lost by shortening or lengthening it —
@@ -484,6 +499,11 @@ pub const MAX_MANTISSA_DECIMALS: u64 = 20;
 /// spellings, since the value crosses the IPC verbatim.
 pub const CAN_ID_FORMATS: &[&str] = &["hex", "decimal"];
 
+/// The themes [`Settings::theme`] accepts. The names are the frontend's
+/// `ThemeName` spellings and the value of its `data-theme` attribute,
+/// since the value crosses the IPC verbatim.
+pub const THEMES: &[&str] = &["dark", "light"];
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -493,6 +513,7 @@ impl Default for Settings {
             show_developer_settings: false,
             system_log_min_level: "info".to_string(),
             reopen_last_project: true,
+            theme: "dark".to_string(),
             notice_dwell_ms: 3_000,
             plot_fetch_interval_ms: 67,
             view_refresh_interval_ms: 250,
@@ -708,6 +729,7 @@ fn refuse_unknown_options(settings: &mut Settings, complaints: &mut Vec<String>)
             CAN_ID_FORMATS,
             d.can_id_format.clone(),
         ),
+        ("theme", &mut settings.theme, THEMES, d.theme.clone()),
     ] {
         refuse_unknown(complaints, key, value, allowed, default);
     }
@@ -1002,6 +1024,7 @@ mod tests {
             show_developer_settings: true,
             system_log_min_level: "warn".to_string(),
             reopen_last_project: false,
+            theme: "light".to_string(),
             notice_dwell_ms: 1_500,
             plot_fetch_interval_ms: 33,
             view_refresh_interval_ms: 500,

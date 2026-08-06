@@ -28,7 +28,8 @@ use serde::Serialize;
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
     Settings, CAN_ID_FORMATS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES,
-    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
+    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, THEMES, TRACE_MODES,
+    Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -253,6 +254,17 @@ const DESCRIPTORS: &[Spec] = &[
         surfaces: &[Surface::General],
         kind: Kind::Behaviour,
         control: Control::Bool,
+    },
+    Spec {
+        key: "theme",
+        backing: Backing::Field,
+        label: "Theme",
+        help: "Applies immediately. Colors you have picked yourself — a bus \
+               color, a signal color, a color-map rule — are stored with the \
+               project and render as chosen under either theme.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Enum { options: THEMES },
     },
     Spec {
         key: "scratch_cap_bytes",
