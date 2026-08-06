@@ -69,8 +69,11 @@ already covered by Left/Right, so no default action is bound.
 Ctrl/Cmd+click toggles a row; Ctrl+Shift+click *adds* the range from
 the click anchor (noncontiguous selections accumulate); Ctrl/Cmd+A
 selects all. No keyboard multiselect, no checkbox rows, and plain
-Shift+click is unassigned. Which row kinds are selectable is the
-adapter's declaration, and select-all honours it.
+Shift+click is unassigned. Which rows are selectable is the adapter's
+declaration, and select-all honours it — over the rows the view holds,
+which in a host-paged view is the loaded page and not the whole space
+(the frontend must not hold a capture's worth of rows to answer a
+select-all).
 
 **Columns live in the layer.** The panel declares an ordered column
 set; the layer owns widths/resize, drag-reorder, the sort affordance
@@ -91,7 +94,10 @@ The dispatcher's capture-phase listener fires before any panel
 handler, so the layer marks its container and the dispatcher treats
 focus-inside-a-gridview like its existing focus-inside-an-editable
 suppression for the keys the grid consumes (unmodified navigation
-keys, Space, Tab, Ctrl/Cmd+A). All other chords pass through. The
+keys, Space, Tab, Ctrl/Cmd+A). The grid makes that same
+editable-target exemption of its own: a text field inside a row (a
+section's name, an event row's label) keeps its keys, or the caret
+cannot be moved inside it. All other chords pass through. The
 keybindings view states each binding's context — global, in-gridview,
 or per-panel action — so the suppression is legible to the user.
 

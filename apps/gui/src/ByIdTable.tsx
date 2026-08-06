@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import type { TraceFrameRecord } from "./types";
 import { type ColorResolver } from "./colorMap";
@@ -10,8 +10,16 @@ import {
   expandedExtraHeight,
   expandedRowHeight,
   maxScrollTop,
+  scrollForAnchor,
 } from "./traceViewport";
 import { useTraceViewport } from "./useTraceViewport";
+import { useGridview } from "./useGridview";
+import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
+import {
+  messageDragRefs,
+  setSignalDragPayload,
+  type DraggableSignalRef,
+} from "./dragSignals";
 import { useSetting } from "./hostSettings";
 import type { CanIdFormat } from "./format";
 import {
@@ -37,6 +45,7 @@ import { diagCount } from "./diag"; // DIAG
 export function byIdRowKey(f: TraceFrameRecord): string {
   return `${f.bus_id ?? "_"}:${f.id}:${f.extended ? "x" : "s"}`;
 }
+
 
 interface ByIdTableProps {
   /// Total by-id rows (the scrollbar extent) and the paged, host-sorted
@@ -168,6 +177,148 @@ export function ByIdTable({
     );
   }, [anchorMax, count, viewportHeight, extraHeight]);
 
+  // --- the gridview (ADR 0044) ---
+  // The row space is the host-sorted snapshot itself: every row is a
+  // leaf, expandable exactly when it has a decode to disclose, and the
+  // disclosure grows the row in place rather than adding rows. Ids are
+  // the same stable `byIdRowKey`s the fold set is stored under, so the
+  // cursor, the selection and the expansion all name the same thing.
+  const rowModelAt = useCallback(
+    (index: number): GridviewRowModel | null => {
+      const r = getRow(index);
+      if (!r) return null;
+      return {
+        id: byIdRowKey(r.frame),
+        kind: "leaf",
+        expandable: r.frame.decoded != null,
+        depth: 0,
+      };
+    },
+    // `version` is a dep for the same reason as everywhere else here:
+    // what `getRow` answers changes behind it.
+    [getRow, version],
+  );
+  // The scaffold's live geometry, read by `scrollToRow` without making
+  // the adapter a fresh object on every scroll.
+  const geometry = useRef({
+    firstVisibleRow,
+    rows,
+    count,
+    viewportHeight,
+    anchorMax,
+    extraHeight,
+    getRow,
+  });
+  geometry.current = {
+    firstVisibleRow,
+    rows,
+    count,
+    viewportHeight,
+    anchorMax,
+    extraHeight,
+    getRow,
+  };
+  const scrollToRow = useCallback(
+    (index: number) => {
+      const g = geometry.current;
+      // `rows` carries the two-row render pad, so the last *whole* row
+      // is two short of the window's end.
+      const page = Math.max(1, g.rows - 2);
+      const next =
+        index < g.firstVisibleRow
+          ? index
+          : index > g.firstVisibleRow + page - 1
+            ? index - page + 1
+            : null;
+      if (next == null) return;
+      const anchor = Math.max(0, Math.min(g.anchorMax, next));
+      setAnchoredRow(anchor);
+      const el = containerRef.current;
+      if (el) {
+        el.scrollTop = scrollForAnchor(
+          anchor,
+          g.anchorMax,
+          maxScrollTop(g.count, g.viewportHeight, g.extraHeight),
+        );
+      }
+    },
+    [containerRef],
+  );
+  // The panel owns the fold set and offers a toggle; the layer says
+  // which state it wants, so ask for the toggle only when they differ.
+  const setRowExpanded = useCallback(
+    (id: string, want: boolean) => {
+      if (expanded.has(id) !== want) onToggleExpand(id);
+    },
+    [expanded, onToggleExpand],
+  );
+  const adapter = useMemo<GridviewAdapter>(() => {
+    // Bounded by id space, like `expandedExtraHeight`'s walk above.
+    const indexOf = (id: string) => {
+      for (let i = 0; i < count; i++) if (rowModelAt(i)?.id === id) return i;
+      return -1;
+    };
+    return {
+      count,
+      rowIdAt: (index) => rowModelAt(index)?.id ?? null,
+      indexOf,
+      rowAt: (id) => {
+        const i = indexOf(id);
+        return i < 0 ? null : rowModelAt(i);
+      },
+      isExpanded: (id) => expanded.has(id),
+      scrollToRow,
+      setExpanded: setRowExpanded,
+      isSelectable: () => true,
+    };
+  }, [count, rowModelAt, expanded, scrollToRow, setRowExpanded]);
+  // Namespaces this instance's row DOM ids, so two by-id tables on
+  // screen can't name each other's rows.
+  const instanceId = useId();
+  const grid = useGridview({
+    adapter,
+    pageRows: Math.max(1, rows - 2),
+    idPrefix: `byid${instanceId}`,
+  });
+  // The rows are memoised and the hook hands back fresh callbacks every
+  // render (its adapter moves with the page), so the row-facing handlers
+  // read the live gridview through a ref instead — otherwise every
+  // visible row repaints on every live refresh.
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
+  const handleRowClick = useCallback(
+    (rowKey: string, e: React.MouseEvent) => {
+      gridRef.current.onRowClick(rowKey, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+      // A row with something to disclose is its own focus target, so it
+      // keeps the keyboard (its Enter / Space still toggle it, and the
+      // grid's keys reach the container by bubbling). A row that isn't
+      // one would leave the keyboard nowhere, so hand it to the grid.
+      const target = e.target as HTMLElement | null;
+      if (target?.closest(".trace-row[tabindex], button, input") == null) {
+        containerRef.current?.focus();
+      }
+    },
+    [containerRef],
+  );
+  /// What one grab carries (ADR 0045): the grabbed row's message, or —
+  /// when that row is in the selection — every selected row's message.
+  /// Resolved at drag time, so the scroll path pays nothing for it.
+  const startRowDrag = useCallback(
+    (rowKey: string, e: React.DragEvent) => {
+      const g = geometry.current;
+      const selection = gridRef.current.selection;
+      const ids = selection.has(rowKey) ? selection : new Set([rowKey]);
+      const signals: DraggableSignalRef[] = [];
+      for (let i = 0; i < g.count; i++) {
+        const r = g.getRow(i);
+        if (!r || !ids.has(byIdRowKey(r.frame))) continue;
+        signals.push(...messageDragRefs(r.frame));
+      }
+      setSignalDragPayload(e, { signals, patterns: [] });
+    },
+    [],
+  );
+
   // Which visible positions are expanded — derived from the loaded rows'
   // stable keys, so `buildPlacements` can size them. `version` is a dep so
   // a page landing (or a live refresh) re-derives it.
@@ -217,7 +368,15 @@ export function ByIdTable({
         onSortColumn={onSortColumn}
         label={(def) => def.byIdLabel ?? def.label}
       />
-      <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
+      {/* The rows viewport is the gridview container: it holds focus and
+          names the active row, because the rows themselves are recycled
+          by the paged viewport (ADR 0044). */}
+      <div
+        ref={containerRef}
+        className="trace-rows"
+        onScroll={handleScroll}
+        {...grid.containerProps}
+      >
         {/* Spacer: gives the scrollbar the snapshot's full extent
             vertically, and the columns' own width horizontally — the rows
             are absolutely positioned against it, so without that the
@@ -253,6 +412,10 @@ export function ByIdTable({
                   busLookup={busLookup}
                   resolveColor={resolveColor}
                   onToggle={onToggleExpand}
+                  rowDomId={grid.rowDomId}
+                  selected={row != null && grid.selection.has(byIdRowKey(row.frame))}
+                  onSelect={handleRowClick}
+                  onDragStart={startRowDrag}
                 />
               );
             })}
@@ -277,6 +440,15 @@ interface ByIdRowProps {
   busLookup: BusLookup;
   resolveColor: ColorResolver | null;
   onToggle: (rowKey: string) => void;
+  /// The DOM id `aria-activedescendant` names this row by (ADR 0044).
+  /// Taken as the layer's stable mapper rather than the finished string
+  /// so the memo still skips a row whose id hasn't moved.
+  rowDomId: (id: string) => string;
+  selected: boolean;
+  onSelect: (rowKey: string, e: React.MouseEvent) => void;
+  /// The row drags its whole message (ADR 0045); the decoded lines
+  /// inside it drag one signal each and stop the event here.
+  onDragStart: (rowKey: string, e: React.DragEvent) => void;
 }
 
 const ByIdRow = memo(function ByIdRow({
@@ -291,6 +463,10 @@ const ByIdRow = memo(function ByIdRow({
   busLookup,
   resolveColor,
   onToggle,
+  rowDomId,
+  selected,
+  onSelect,
+  onDragStart,
 }: ByIdRowProps) {
   const frame = row?.frame ?? null;
   const rowKey = frame ? byIdRowKey(frame) : undefined;
@@ -307,11 +483,20 @@ const ByIdRow = memo(function ByIdRow({
       defs={COLUMN_DEFS}
       columns={columns}
       gridTemplate={gridTemplate}
-      className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}`}
+      id={rowKey == null ? undefined : rowDomId(rowKey)}
+      className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
+        selected ? " selected" : ""
+      }`}
       style={{ position: "absolute", top, left: 0, right: 0, height }}
       tabIndex={expandable ? 0 : undefined}
       aria-expanded={expandable ? isExpanded : undefined}
-      onClick={toggle}
+      aria-selected={rowKey == null ? undefined : selected}
+      draggable={rowKey != null}
+      onDragStart={rowKey == null ? undefined : (e) => onDragStart(rowKey, e)}
+      onClick={(e) => {
+        if (rowKey != null) onSelect(rowKey, e);
+        toggle();
+      }}
       onKeyDown={(e) => {
         if (!expandable || (e.key !== "Enter" && e.key !== " ")) return;
         // Space would scroll the rows container out from under the row.

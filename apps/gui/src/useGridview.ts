@@ -9,7 +9,7 @@
 
 import { useCallback, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import { GRIDVIEW_ATTR } from "./keybindings";
+import { GRIDVIEW_ATTR, isEditableTarget } from "./keybindings";
 import {
   cursorAction,
   type GridviewAdapter,
@@ -98,9 +98,14 @@ export function useGridview({
   const [selection, setSelection] = useState(EMPTY_SELECTION);
 
   /// Everything the selection may hold, in display order: the
-  /// selectable rows, then the consumer's non-row items.
+  /// selectable rows, then the consumer's non-row items. A panel that
+  /// answers the row half itself is taken at its word — the default
+  /// walk is O(count), which a host-paged row space cannot afford.
   const selectionOrder = useCallback(
-    () => [...selectableIdsInOrder(adapter, adapter.isSelectable), ...extraSelectableIds],
+    () => [
+      ...(adapter.selectionOrder?.() ?? selectableIdsInOrder(adapter, adapter.isSelectable)),
+      ...extraSelectableIds,
+    ],
     [adapter, extraSelectableIds],
   );
 
@@ -115,19 +120,28 @@ export function useGridview({
   /// single-select-follows-focus rule. A cursor landing on a row the
   /// adapter won't let be selected clears the selection rather than
   /// picking the row up.
+  /// `index` comes from the arithmetic that chose the row, not from
+  /// asking the space again: in a host-paged space the target is
+  /// routinely a row the panel has not loaded, and that is exactly when
+  /// it has to be scrolled to.
   const moveCursor = useCallback(
-    (id: string) => {
+    (id: string, index: number) => {
       setCursor(id);
       const row = adapter.rowAt(id);
       setSelection(collapseToCursor(row != null && adapter.isSelectable(row) ? id : null));
-      const index = adapter.indexOf(id);
-      if (index >= 0) adapter.scrollToRow(index);
+      adapter.scrollToRow(index);
     },
     [adapter],
   );
 
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent) => {
+      // A text field inside a row owns its own keys: the arrows move
+      // the caret, Home/End jump within the value, Ctrl+A selects the
+      // text. The rows carry inline editors (a section's name, an event
+      // row's label), so the grid makes the same exemption the global
+      // dispatcher does rather than swallowing them.
+      if (isEditableTarget(e.target)) return;
       // Ctrl/Cmd+A — the one modified chord the layer claims.
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
@@ -155,7 +169,7 @@ export function useGridview({
       const action = cursorAction(adapter, cursor, e.key as GridviewNavKey, pageRows);
       switch (action.type) {
         case "move":
-          moveCursor(action.id);
+          moveCursor(action.id, action.index);
           break;
         case "expand":
           adapter.setExpanded(action.id, true);

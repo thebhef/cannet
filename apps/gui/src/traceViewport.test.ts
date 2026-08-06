@@ -264,37 +264,40 @@ describe("buildPlacements", () => {
 });
 
 describe("expandedExtraHeightOf", () => {
-  // The chronological trace's form: its expansion set is keyed by
-  // absolute row index, so the extra height can be summed over the
-  // *set*. `expandedExtraHeight` has to walk `count` because the by-id
-  // table's set is keyed by a stable row key — and `count` here is the
-  // whole capture, which reaches millions.
-  const expanded = new Set([3, 40]);
+  // The chronological trace's form: its expansion state is keyed by
+  // stable row id and carries each open row's signal count, so the extra
+  // height sums over the *open rows*. `expandedExtraHeight` has to walk
+  // `count` because the by-id table asks the rows themselves — and
+  // `count` here is the whole capture, which reaches millions.
   const heights = (i: number) =>
     i === 3 ? expandedRowHeight(4) : i === 40 ? expandedRowHeight(9) : ROW_HEIGHT;
 
   it("agrees with the walking form", () => {
-    expect(expandedExtraHeightOf(expanded, 100, heights)).toBe(
-      expandedExtraHeight(100, heights),
-    );
-    expect(expandedExtraHeightOf(expanded, 100, heights)).toBe(13 * SIGNAL_LINE_HEIGHT);
+    expect(expandedExtraHeightOf([4, 9])).toBe(expandedExtraHeight(100, heights));
+    expect(expandedExtraHeightOf([4, 9])).toBe(13 * SIGNAL_LINE_HEIGHT);
   });
 
-  it("costs the expanded set, not the trace", () => {
-    let asked = 0;
-    const counted = (i: number) => {
-      asked++;
-      return heights(i);
+  it("costs the open rows, not the trace", () => {
+    // It is handed the open rows' signal counts and nothing else, so a
+    // 5 M-row capture with two rows open is two additions. The walking
+    // form cannot have that shape at all.
+    let pulled = 0;
+    const counts = {
+      *[Symbol.iterator]() {
+        for (const n of [4, 9]) {
+          pulled++;
+          yield n;
+        }
+      },
     };
-    expandedExtraHeightOf(expanded, 5_000_000, counted);
-    expect(asked).toBe(expanded.size);
+    expect(expandedExtraHeightOf(counts)).toBe(13 * SIGNAL_LINE_HEIGHT);
+    expect(pulled).toBe(2);
   });
 
-  it("ignores indices past the end of a trace that shrank", () => {
-    expect(expandedExtraHeightOf(new Set([3, 999]), 100, heights)).toBe(
-      4 * SIGNAL_LINE_HEIGHT,
-    );
-    expect(expandedExtraHeightOf(new Set(), 100, heights)).toBe(0);
+  it("adds nothing for a view with nothing open", () => {
+    expect(expandedExtraHeightOf([])).toBe(0);
+    // A row that discloses no signals is a plain row's height.
+    expect(expandedExtraHeightOf([0, 0])).toBe(0);
   });
 });
 
@@ -356,7 +359,7 @@ describe("the tail bound over expanded rows", () => {
   it("carries the same extra height into the scroll range", () => {
     // …and the range has to grow by it too, or there is no scroll
     // position past the one the user is already on.
-    const extra = expandedExtraHeightOf(new Set([97, 98, 99]), 100, tailExpanded);
+    const extra = expandedExtraHeightOf([2, 2, 2]);
     expect(extra).toBe(108);
     expect(maxScrollTop(100, VH, extra) - maxScrollTop(100, VH)).toBe(108);
   });

@@ -79,11 +79,10 @@ export function maxScrollTop(
 /// does.
 ///
 /// The walk is why this form is only for views bounded by *id* space
-/// (the by-id table): its expansion set is keyed by a stable row key,
-/// so there is no way to ask which indices are expanded without asking
-/// every index. Where the set is keyed by absolute index, use
-/// [`expandedExtraHeightOf`] instead — a chronological trace's `count`
-/// reaches millions and this would walk all of them on every render.
+/// (the by-id table): asking which indices are expanded means asking
+/// every index, and `count` there is the id space. A chronological
+/// trace's `count` is the whole capture and reaches millions — it uses
+/// [`expandedExtraHeightOf`] instead.
 export function expandedExtraHeight(
   count: number,
   rowHeightAt: (absIdx: number) => number,
@@ -93,20 +92,16 @@ export function expandedExtraHeight(
   return extra;
 }
 
-/// [`expandedExtraHeight`] for a view whose expansion set is keyed by
-/// absolute row index: it iterates the *set*, so the cost is the number
-/// of expanded rows rather than the length of the trace. Indices past
-/// the end (a trace that shrank under a stale set) contribute nothing.
-export function expandedExtraHeightOf(
-  expanded: ReadonlySet<number>,
-  count: number,
-  rowHeightAt: (absIdx: number) => number,
-): number {
+/// [`expandedExtraHeight`] summed over the *open rows* instead of the
+/// trace: `signalCounts` is how many decoded signals each expanded row
+/// discloses, so the cost is the number of expanded rows and the trace's
+/// length never enters it. This is the form a view whose expansion state
+/// is keyed by stable row id can use — it holds the counts alongside the
+/// ids, because a row scrolled out of the loaded page can no longer be
+/// asked how tall it is.
+export function expandedExtraHeightOf(signalCounts: Iterable<number>): number {
   let extra = 0;
-  for (const i of expanded) {
-    if (i < 0 || i >= count) continue;
-    extra += rowHeightAt(i) - ROW_HEIGHT;
-  }
+  for (const signals of signalCounts) extra += expandedRowHeight(signals) - ROW_HEIGHT;
   return extra;
 }
 

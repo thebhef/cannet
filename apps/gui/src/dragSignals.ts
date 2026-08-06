@@ -11,6 +11,8 @@
 /// have always set, and the `{signals: SignalRef[]}` form the
 /// multi-select / message-row drags require.
 
+import type { TraceFrameRecord } from "./types";
+
 /// Mime type carried on the `DataTransfer`. Receiving panels check
 /// `e.dataTransfer.types.includes(SIGNAL_DND_MIME)` to filter
 /// drop-overs.
@@ -169,6 +171,25 @@ export function parseSignalDragData(raw: string): ParsedSignalDrag {
     ...empty,
     signals: isDraggableSignalRef(parsed) ? [parsed] : [],
   };
+}
+
+/// Every decoded signal a frame carries, as drag refs — what a
+/// *message* row drags in either trace mode (ADR 0045: the row drags
+/// the message, a line inside its expanded block drags that one
+/// signal). The bus comes from the frame's own routing decision, so a
+/// frame on bus A drops as signals bound to bus A. A frame with no
+/// decode has no message to drag.
+export function messageDragRefs(frame: TraceFrameRecord | null): DraggableSignalRef[] {
+  const decoded = frame?.decoded;
+  if (!frame || !decoded) return [];
+  return decoded.signals.map((s) => ({
+    busId: frame.bus_id ?? null,
+    messageId: frame.id,
+    extended: frame.extended,
+    signalName: s.name,
+    messageName: decoded.name,
+    unit: s.unit,
+  }));
 }
 
 /// Fan one signal out across the buses a given DBC applies to. The

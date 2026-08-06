@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { TraceFrameRecord } from "./types";
 import type { TimelineEvent } from "./notes";
@@ -19,7 +28,6 @@ import {
 } from "./traceViewport";
 import { useTraceViewport } from "./useTraceViewport";
 import { useSetting } from "./hostSettings";
-import { toggleInSet } from "./toggleSet";
 import {
   type BusLookup,
   type ColumnKey,
@@ -31,6 +39,13 @@ import {
 } from "./traceColumns";
 import { TraceTimeCell, cellContent } from "./traceTable";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
+import { useGridview } from "./useGridview";
+import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
+import {
+  messageDragRefs,
+  setSignalDragPayload,
+  type DraggableSignalRef,
+} from "./dragSignals";
 import { diagCount } from "./diag"; // DIAG
 
 interface TraceViewProps {
@@ -92,6 +107,25 @@ export interface EventActions {
   onGoto?: (timestampNs: number) => void;
 }
 
+/// Stable ids for the chronological row space (ADR 0044). A frame is
+/// named by its **absolute index in the capture**, which does not move
+/// as the window slides or as timeline events interleave; an event by
+/// its own id. A row whose page has not landed has no identity to
+/// offer — the frontend holds one page of a host-owned row space — so
+/// the space's ids are exactly the rows it holds.
+const FRAME_ROW_PREFIX = "f:";
+const EVENT_ROW_PREFIX = "e:";
+const frameRowId = (frame: TraceFrameRecord) => `${FRAME_ROW_PREFIX}${frame.index}`;
+function rowIdOf(r: TraceRow | null): string | null {
+  if (!r) return null;
+  return r.row === "event" ? `${EVENT_ROW_PREFIX}${r.event.id}` : frameRowId(r.frame);
+}
+
+/// Stable empties, so a view with nothing open hands the same objects
+/// to the memoised rows on every live tick.
+const EMPTY_EXPANDED: ReadonlyMap<string, number> = new Map();
+const EMPTY_POSITIONS: ReadonlySet<number> = new Set();
+
 /// Re-pin scrollTop only when it drifts from the target by more than
 /// this. The target derived from a user-scrolled row is a pixel or two
 /// off the user's actual scrollTop (row-index rounding); the generous
@@ -124,7 +158,14 @@ export function TraceView({
   // keeps painting the old format until something else moves.
   const idFormat = useSetting("can_id_format") as CanIdFormat;
 
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // The open rows, by stable id, each carrying how many decoded signals
+  // it discloses. Keyed by id rather than by row position because a
+  // display index names a different frame the moment the window slides
+  // or an event interleaves (ADR 0044); the signal count rides along
+  // because the scroll geometry needs the height of *every* open row,
+  // including ones scrolled out of the loaded page, which can no longer
+  // be asked. Ephemeral — the chronological rows are capture-scoped.
+  const [expanded, setExpanded] = useState<ReadonlyMap<string, number>>(EMPTY_EXPANDED);
   // The event row the user last clicked, by event id (ADR 0035) — view-local
   // selection, keyed by identity rather than row position because the row
   // slots are recycled as the view scrolls. `null` means none.
@@ -174,16 +215,16 @@ export function TraceView({
   // scroll position that reaches them, and the scroll range doesn't
   // grow to make one.
   const rowHeightAt = useCallback(
-    (absIdx: number) =>
-      expanded.has(absIdx) ? expandedRowHeight(signalCount(absIdx)) : ROW_HEIGHT,
-    [expanded, signalCount],
+    (absIdx: number) => {
+      if (expanded.size === 0) return ROW_HEIGHT;
+      const id = rowIdOf(getRow(absIdx));
+      return id != null && expanded.has(id) ? expandedRowHeight(signalCount(absIdx)) : ROW_HEIGHT;
+    },
+    [expanded, getRow, signalCount],
   );
-  // Iterates the expanded set, not the trace: `count` here is the whole
+  // Iterates the open rows, not the trace: `count` here is the whole
   // capture and reaches millions.
-  const extraHeight = useMemo(
-    () => (expanded.size === 0 ? 0 : expandedExtraHeightOf(expanded, count, rowHeightAt)),
-    [expanded, count, rowHeightAt],
-  );
+  const extraHeight = useMemo(() => expandedExtraHeightOf(expanded.values()), [expanded]);
 
   const {
     containerRef,
@@ -285,7 +326,7 @@ export function TraceView({
   // Reset transient view state when the trace is cleared.
   useEffect(() => {
     if (count === 0) {
-      setExpanded(new Set());
+      setExpanded(EMPTY_EXPANDED);
       setFocusedEvent(null);
       setAnchoredRow(autoScroll ? null : 0);
     }
@@ -318,10 +359,159 @@ export function TraceView({
     setAnchoredRow(anchorFromScroll(el.scrollTop, anchorMax, scrollRange));
   }, [autoScroll, onAutoScrollDisabled, anchorMax, scrollRange]);
 
-  const toggleExpanded = useCallback((absoluteIndex: number) => {
-    setExpanded((prev) => toggleInSet(prev, absoluteIndex));
+  const toggleExpanded = useCallback((rowId: string, signals: number) => {
+    setExpanded((prev) => {
+      const next = new Map(prev);
+      if (!next.delete(rowId)) next.set(rowId, signals);
+      return next;
+    });
   }, []);
   const focusEvent = useCallback((id: string) => setFocusedEvent(id), []);
+
+  // --- the gridview (ADR 0044) ---
+  // The row space is the merged display space: frames and timeline
+  // events alike, every row a leaf, a frame expandable exactly when it
+  // has a decode to disclose. Its ids exist for the rows this view
+  // holds — one page of a host-owned space whose `count` is the whole
+  // capture — so everything id-keyed resolves through the render
+  // window, which is where the cursor lives by construction.
+  const geometry = useRef({ firstVisibleRow, rows, count, getRow, autoScroll, anchorMax });
+  geometry.current = { firstVisibleRow, rows, count, getRow, autoScroll, anchorMax };
+  /// Where a row id sits in the display space, or `-1`. Runs on a key
+  /// press or a click, never in the render path.
+  const windowIndexOf = useCallback((id: string) => {
+    const g = geometry.current;
+    for (let i = 0; i < g.rows; i++) {
+      const abs = g.firstVisibleRow + i;
+      if (abs >= g.count) break;
+      if (rowIdOf(g.getRow(abs)) === id) return abs;
+    }
+    return -1;
+  }, []);
+  const rowModelAt = useCallback(
+    (index: number): GridviewRowModel | null => {
+      const r = getRow(index);
+      const id = rowIdOf(r);
+      if (r == null || id == null) return null;
+      return {
+        id,
+        kind: "leaf",
+        expandable: r.row === "frame" && r.frame.decoded != null,
+        depth: 0,
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [getRow, version],
+  );
+  const scrollToRow = useCallback(
+    (index: number) => {
+      const g = geometry.current;
+      // `rows` carries the two-row render pad, so the last *whole* row
+      // is two short of the window's end.
+      const page = Math.max(1, g.rows - 2);
+      const next =
+        index < g.firstVisibleRow
+          ? index
+          : index > g.firstVisibleRow + page - 1
+            ? index - page + 1
+            : null;
+      // Already on screen: the live pin is never disturbed by a cursor
+      // move within the tail the user is watching.
+      if (next == null) return;
+      // Moving the window is what releases the pin, exactly as a
+      // wheel-up does — otherwise the anchor is written and ignored.
+      if (g.autoScroll) onAutoScrollDisabled();
+      setAnchoredRow(Math.max(0, Math.min(g.anchorMax, next)));
+    },
+    [onAutoScrollDisabled],
+  );
+  const setRowExpanded = useCallback(
+    (id: string, want: boolean) => {
+      if (expanded.has(id) === want) return;
+      toggleExpanded(id, want ? signalCount(windowIndexOf(id)) : 0);
+    },
+    [expanded, toggleExpanded, signalCount, windowIndexOf],
+  );
+  const adapter = useMemo<GridviewAdapter>(
+    () => ({
+      count,
+      rowIdAt: (index) => rowModelAt(index)?.id ?? null,
+      indexOf: windowIndexOf,
+      rowAt: (id) => {
+        const i = windowIndexOf(id);
+        return i < 0 ? null : rowModelAt(i);
+      },
+      isExpanded: (id) => expanded.has(id),
+      scrollToRow,
+      setExpanded: setRowExpanded,
+      // An event row is not a message: it carries nothing a drop target
+      // could take, so it takes part in the cursor but not the
+      // selection.
+      isSelectable: (row) => row.id.startsWith(FRAME_ROW_PREFIX),
+      // The space is the whole capture; the page this view holds is the
+      // honest answer, and the only affordable one (the default walk is
+      // O(count) per click).
+      selectionOrder: () => {
+        const out: string[] = [];
+        for (let i = 0; i < rows; i++) {
+          const abs = firstVisibleRow + i;
+          if (abs >= count) break;
+          const id = rowModelAt(abs)?.id;
+          if (id != null && id.startsWith(FRAME_ROW_PREFIX)) out.push(id);
+        }
+        return out;
+      },
+    }),
+    [count, rows, firstVisibleRow, rowModelAt, expanded, scrollToRow, setRowExpanded, windowIndexOf],
+  );
+  // Namespaces this instance's row DOM ids, so two chronological views
+  // on screen can't name each other's rows.
+  const instanceId = useId();
+  const grid = useGridview({
+    adapter,
+    pageRows: Math.max(1, rows - 2),
+    idPrefix: `trace${instanceId}`,
+  });
+  // The rows are memoised and the hook hands back fresh callbacks every
+  // render (its adapter moves with the window), so the row-facing
+  // handlers read the live gridview through a ref instead — otherwise
+  // every visible row repaints on every live tick.
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
+  const handleRowClick = useCallback(
+    (id: string, e: React.MouseEvent) => {
+      gridRef.current.onRowClick(id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+      // An event row is its own focus target and keeps the keyboard (the
+      // grid's keys still reach the container by bubbling); a frame row
+      // is not one, so the grid takes it.
+      const target = e.target as HTMLElement | null;
+      if (target?.closest(".trace-row[tabindex], button, input") == null) {
+        containerRef.current?.focus();
+      }
+    },
+    [containerRef],
+  );
+  /// What one grab carries (ADR 0045): the grabbed row's message, or —
+  /// when that row is in the selection — every selected row's message.
+  /// Resolved from the rows this view holds, at drag time, so the scroll
+  /// path pays nothing for it.
+  const startRowDrag = useCallback(
+    (id: string, e: React.DragEvent) => {
+      const g = geometry.current;
+      const selection = gridRef.current.selection;
+      const ids = selection.has(id) ? selection : new Set([id]);
+      const signals: DraggableSignalRef[] = [];
+      for (let i = 0; i < g.rows; i++) {
+        const abs = g.firstVisibleRow + i;
+        if (abs >= g.count) break;
+        const r = g.getRow(abs);
+        if (r?.row !== "frame" || !ids.has(frameRowId(r.frame))) continue;
+        signals.push(...messageDragRefs(r.frame));
+      }
+      setSignalDragPayload(e, { signals, patterns: [] });
+    },
+    [],
+  );
 
   // The chronological view drops by-id-only columns (e.g. "msg/s" — a
   // single frame has no rate). Memoised so a `trace-grew` re-render
@@ -333,7 +523,26 @@ export function TraceView({
   const gridTemplate = useMemo(() => gridTemplateColumns(shown), [shown]);
   const contentWidthVar = useMemo(() => contentWidthStyle(shown), [shown]);
 
-  const placements = buildPlacements(firstVisibleRow, count, rows, expanded, signalCount);
+  // Which visible positions are open — derived from the loaded rows'
+  // stable ids, so the placement arithmetic still works in positions
+  // while the state itself is keyed by identity. `version` is a dep so a
+  // page landing re-derives it (the row content it gates changes behind
+  // `getRow`); a view with nothing open skips the walk and hands back
+  // one shared empty set.
+  const expandedPositions = useMemo(() => {
+    if (expanded.size === 0) return EMPTY_POSITIONS;
+    const s = new Set<number>();
+    for (let i = 0; i < rows; i++) {
+      const abs = firstVisibleRow + i;
+      if (abs >= count) break;
+      const id = rowIdOf(getRow(abs));
+      if (id != null && expanded.has(id)) s.add(abs);
+    }
+    return s;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, rows, firstVisibleRow, count, getRow, version]);
+
+  const placements = buildPlacements(firstVisibleRow, count, rows, expandedPositions, signalCount);
   // How tall the rendered rows actually stack. The sticky viewport
   // clips (`overflow: hidden`), so it takes the larger of the panel
   // height and the stack — an expanded row taller than the panel then
@@ -342,6 +551,7 @@ export function TraceView({
   // `ByIdTable`.
   const lastPlacement = placements[placements.length - 1];
   const stackHeight = lastPlacement ? lastPlacement.top + lastPlacement.height : 0;
+  const anySelected = grid.selection.size > 0;
 
   return (
     <div className="trace">
@@ -355,7 +565,15 @@ export function TraceView({
           onColumnReorder={onColumnReorder}
         />
       )}
-      <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
+      {/* The rows viewport is the gridview container: it holds focus and
+          names the active row, because the rows themselves are recycled
+          by the paged viewport (ADR 0044). */}
+      <div
+        ref={containerRef}
+        className="trace-rows"
+        onScroll={handleScroll}
+        {...grid.containerProps}
+      >
         {/* Spacer: gives the scrollbar the trace's full (scaled) extent
             vertically, and the columns' own width horizontally — the
             rows are absolutely positioned against it, so without that
@@ -404,6 +622,12 @@ export function TraceView({
                   // focus re-renders the two rows it touches and no others.
                   eventFocused={r?.row === "event" && r.event.id === focusedEvent}
                   onEventFocus={focusEvent}
+                  rowDomId={grid.rowDomId}
+                  // Deriving the id costs a string per row, so the
+                  // common case — nothing selected — never asks.
+                  selected={anySelected && grid.selection.has(rowIdOf(r) ?? "")}
+                  onSelect={handleRowClick}
+                  onDragStart={startRowDrag}
                 />
               );
             })}
@@ -431,11 +655,22 @@ interface RowProps {
   gridTemplate: string;
   busLookup: BusLookup;
   resolveColor: ColorResolver | null;
-  onToggle: (absoluteIndex: number) => void;
+  /// Open or shut this row's decoded block, by the row's stable id and
+  /// the number of signal lines it discloses.
+  onToggle: (rowId: string, signals: number) => void;
   eventActions?: EventActions;
   /// This row is the focused event row (event rows only).
   eventFocused: boolean;
   onEventFocus: (id: string) => void;
+  /// The DOM id `aria-activedescendant` names this row by (ADR 0044).
+  /// Taken as the layer's stable mapper rather than the finished string
+  /// so the memo still skips a row whose id hasn't moved.
+  rowDomId: (id: string) => string;
+  selected: boolean;
+  onSelect: (rowId: string, e: React.MouseEvent) => void;
+  /// The row drags its whole message (ADR 0045); the decoded lines
+  /// inside it drag one signal each and stop the event there.
+  onDragStart: (rowId: string, e: React.DragEvent) => void;
 }
 
 const Row = memo(function Row({
@@ -455,6 +690,10 @@ const Row = memo(function Row({
   eventActions,
   eventFocused,
   onEventFocus,
+  rowDomId,
+  selected,
+  onSelect,
+  onDragStart,
 }: RowProps) {
   // Event rows (truncation marker, notes) render through the same renderer
   // as frames but with their own row layout (ADR 0035).
@@ -467,24 +706,34 @@ const Row = memo(function Row({
         actions={eventActions}
         focused={eventFocused}
         onFocus={onEventFocus}
+        domId={rowDomId(`${EVENT_ROW_PREFIX}${event.id}`)}
+        onSelect={onSelect}
       />
     );
   }
+  const rowId = frame ? frameRowId(frame) : null;
   return (
     <GridviewRow
       defs={COLUMN_DEFS}
       columns={columns}
       gridTemplate={gridTemplate}
+      id={rowId == null ? undefined : rowDomId(rowId)}
+      aria-selected={rowId == null ? undefined : selected}
+      draggable={rowId != null}
+      onDragStart={rowId == null ? undefined : (e) => onDragStart(rowId, e)}
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
         frame?.violation ? " trace-row-violation" : ""
-      }`}
+      }${selected ? " selected" : ""}`}
       title={
         frame?.violation
           ? `calculated-field check failed: ${frame.violation}`
           : undefined
       }
       style={{ position: "absolute", top, left: 0, right: 0, height }}
-      onClick={() => frame?.decoded && onToggle(absoluteIndex)}
+      onClick={(e) => {
+        if (rowId != null) onSelect(rowId, e);
+        if (frame?.decoded) onToggle(frameRowId(frame), frame.decoded.signals.length);
+      }}
       renderCell={(key, className) => {
         const content = cellContent(
           key,
@@ -552,6 +801,8 @@ function EventRow({
   actions,
   focused,
   onFocus,
+  domId,
+  onSelect,
 }: {
   top: number;
   event: TimelineEvent;
@@ -559,6 +810,11 @@ function EventRow({
   actions?: EventActions;
   focused: boolean;
   onFocus: (id: string) => void;
+  /// The DOM id `aria-activedescendant` names this row by. An event row
+  /// takes part in the grid's cursor, but not in its selection — it is
+  /// not a message (ADR 0044).
+  domId: string;
+  onSelect: (rowId: string, e: React.MouseEvent) => void;
 }) {
   const color = event.color ?? EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note;
   const editable = event.editable && actions != null;
@@ -588,8 +844,12 @@ function EventRow({
       }${focused ? " trace-event-focused" : ""}`}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
       title={event.label}
+      id={domId}
       tabIndex={0}
-      onClick={() => onFocus(event.id)}
+      onClick={(e) => {
+        onFocus(event.id);
+        onSelect(`${EVENT_ROW_PREFIX}${event.id}`, e);
+      }}
     >
       <span className="trace-event-time">
         {formatTimestamp(event.timestampNs / 1e9, baseTimestamp)}

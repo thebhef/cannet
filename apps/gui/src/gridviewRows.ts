@@ -62,6 +62,16 @@ export interface GridviewAdapter extends GridviewRowSpace {
   /// nodes are selectable branches while its bus / file / ECU nodes are
   /// not.
   isSelectable(row: GridviewRow): boolean;
+  /// The selectable rows in display order, when the panel can answer
+  /// without being walked. Omitted ⇒ the layer walks the space and asks
+  /// `isSelectable` for each row, which is right wherever `count` is
+  /// what the panel holds.
+  ///
+  /// A view over a *host-paged* row space has to supply it: the walk
+  /// runs on every click and on Ctrl/Cmd+A, and a chronological trace's
+  /// `count` is the whole capture — millions of rows the frontend does
+  /// not hold. The honest answer there is the page it does hold.
+  selectionOrder?(): string[];
 }
 
 /// A row space over an array of already-flattened rows — the shape the
@@ -96,8 +106,13 @@ export type GridviewNavKey =
 /// What a navigation key does. Returned rather than applied so the
 /// arithmetic stays pure — the hook moves the cursor or calls the
 /// adapter's `setExpanded`.
+///
+/// A move carries the target's `index` as well as its id: the hook
+/// scrolls by index, and asking the space to find the id again is both
+/// redundant and, in a host-paged space, impossible — the row it is
+/// scrolling *to* is by definition one the panel does not hold yet.
 export type GridviewCursorAction =
-  | { type: "move"; id: string }
+  | { type: "move"; id: string; index: number }
   | { type: "expand"; id: string }
   | { type: "collapse"; id: string }
   | { type: "none" };
@@ -122,7 +137,7 @@ export function cursorAction(
   const moveTo = (index: number): GridviewCursorAction => {
     const clamped = Math.min(Math.max(index, 0), space.count - 1);
     const id = space.rowIdAt(clamped);
-    return id == null ? NONE : { type: "move", id };
+    return id == null ? NONE : { type: "move", id, index: clamped };
   };
   if (key === "Home") return moveTo(0);
   if (key === "End") return moveTo(space.count - 1);
@@ -148,7 +163,9 @@ export function cursorAction(
       if (row.kind === "branch" && space.isExpanded(row.id)) {
         const nextId = space.rowIdAt(index + 1);
         const next = nextId == null ? null : space.rowAt(nextId);
-        if (next != null && next.depth === row.depth + 1) return { type: "move", id: next.id };
+        if (next != null && next.depth === row.depth + 1) {
+          return { type: "move", id: next.id, index: index + 1 };
+        }
       }
       return NONE;
     }
@@ -160,7 +177,7 @@ export function cursorAction(
         const id = space.rowIdAt(i);
         const candidate = id == null ? null : space.rowAt(id);
         if (candidate != null && candidate.depth < row.depth) {
-          return { type: "move", id: candidate.id };
+          return { type: "move", id: candidate.id, index: i };
         }
       }
       return NONE;
