@@ -66,10 +66,13 @@ to define (transmit: send the focused message once); expansion is
 already covered by Left/Right, so no default action is bound.
 
 **Multiselect is mouse-built.** Plain click replaces the selection;
-Ctrl/Cmd+click toggles a row; Ctrl+Shift+click *adds* the range from
-the click anchor (noncontiguous selections accumulate); Ctrl/Cmd+A
-selects all. No keyboard multiselect, no checkbox rows, and plain
-Shift+click is unassigned. Which rows are selectable is the adapter's
+Ctrl/Cmd+click toggles a row; Shift+click *replaces* the selection with
+the range from the click anchor; Ctrl+Shift+click *adds* that same
+range (noncontiguous selections accumulate); Ctrl/Cmd+A selects all.
+The anchor is the last plain or Ctrl/Cmd+click, shared by both range
+chords and kept across them, so successive range clicks re-range from
+one point rather than walking. No keyboard multiselect and no checkbox
+rows. Which rows are selectable is the adapter's
 declaration, and select-all honours it — over the rows the view holds,
 which in a host-paged view is the loaded page and not the whole space
 (the frontend must not hold a capture's worth of rows to answer a

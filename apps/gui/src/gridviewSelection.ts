@@ -1,10 +1,10 @@
 /// The gridview's selection model (ADR 0044). Pure: no DOM, no React.
 ///
 /// Selection is separate from the cursor and is built with the mouse —
-/// plain click replaces, Ctrl/Cmd+click toggles, Ctrl+Shift+click adds
-/// the range from the click anchor, Ctrl/Cmd+A takes everything
-/// selectable. There is no keyboard multiselect and plain Shift+click
-/// carries no special meaning. Both the set and the anchor are
+/// plain click replaces, Ctrl/Cmd+click toggles, Shift+click replaces
+/// the selection with the range from the click anchor, Ctrl+Shift+click
+/// *adds* that same range, Ctrl/Cmd+A takes everything selectable.
+/// There is no keyboard multiselect. Both the set and the anchor are
 /// ephemeral — never persisted.
 
 import type { GridviewRow, GridviewRowSpace } from "./gridviewRows";
@@ -54,23 +54,24 @@ export function selectOnClick(
 ): GridviewSelection {
   if (!order.includes(id)) return current;
 
-  // Ctrl+Shift+click: *add* the anchor→target range. Additive, so a
-  // noncontiguous selection accumulates, and the anchor is kept so a
-  // follow-up range extends from the same point rather than from the
-  // last target.
-  if (modifiers.mod && modifiers.shift) {
-    const anchorAt = current.anchor == null ? -1 : order.indexOf(current.anchor);
-    if (anchorAt < 0) {
-      // No anchor yet (or it has left the row space): the clicked row
-      // is the whole range, and becomes the anchor.
-      return { ids: new Set([...current.ids, id]), anchor: id };
+  // Either range chord: the rows from the anchor to the target,
+  // inclusive. `null` when there is no usable anchor — none has been
+  // set yet, or it has left the row space — and then each chord falls
+  // back to what a click on the target alone means.
+  if (modifiers.shift) {
+    const range = anchorRange(current.anchor, id, order);
+    // Ctrl+Shift+click: *add* the range. Additive, so a noncontiguous
+    // selection accumulates.
+    if (modifiers.mod) {
+      if (range == null) return { ids: new Set([...current.ids, id]), anchor: id };
+      return { ids: new Set([...current.ids, ...range]), anchor: current.anchor };
     }
-    const targetAt = order.indexOf(id);
-    const [lo, hi] = anchorAt <= targetAt ? [anchorAt, targetAt] : [targetAt, anchorAt];
-    return {
-      ids: new Set([...current.ids, ...order.slice(lo, hi + 1)]),
-      anchor: current.anchor,
-    };
+    // Shift+click: *replace* the selection with the range — the
+    // file-explorer gesture.
+    if (range == null) return { ids: new Set([id]), anchor: id };
+    // The anchor is kept by both, so a follow-up range extends from the
+    // same point rather than from the last target.
+    return { ids: new Set(range), anchor: current.anchor };
   }
 
   // Ctrl/Cmd+click: toggle this row, and anchor here so a follow-up
@@ -81,9 +82,22 @@ export function selectOnClick(
     return { ids, anchor: id };
   }
 
-  // Plain click — and plain Shift+click, which is deliberately
-  // unassigned in v1 — replaces the selection.
+  // Plain click replaces the selection.
   return { ids: new Set([id]), anchor: id };
+}
+
+/// The contiguous run of selectable rows between the anchor and the
+/// target, or `null` when the anchor names no row `order` holds.
+function anchorRange(
+  anchor: string | null,
+  id: string,
+  order: readonly string[],
+): string[] | null {
+  const anchorAt = anchor == null ? -1 : order.indexOf(anchor);
+  if (anchorAt < 0) return null;
+  const targetAt = order.indexOf(id);
+  const [lo, hi] = anchorAt <= targetAt ? [anchorAt, targetAt] : [targetAt, anchorAt];
+  return order.slice(lo, hi + 1);
 }
 
 /// Ctrl/Cmd+A: every selectable row. The anchor is left alone — the
