@@ -9,7 +9,7 @@
 
 import { useCallback, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import { GRIDVIEW_ATTR } from "./keybindings";
+import { GRIDVIEW_ATTR, isEditableTarget } from "./keybindings";
 import {
   cursorAction,
   type GridviewAdapter,
@@ -133,6 +133,12 @@ export function useGridview({
 
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent) => {
+      // A text field inside a row owns its own keys: the arrows move
+      // the caret, Home/End jump within the value, Ctrl+A selects the
+      // text. The rows carry inline editors (a section's name, an event
+      // row's label), so the grid makes the same exemption the global
+      // dispatcher does rather than swallowing them.
+      if (isEditableTarget(e.target)) return;
       // Ctrl/Cmd+A — the one modified chord the layer claims.
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "a") {
         e.preventDefault();

@@ -133,6 +133,7 @@ function Harness({
           >
             {row.id}
             <button type="button">edit</button>
+            <input aria-label={`rename ${row.id}`} />
           </div>
         ))}
       </div>
@@ -245,6 +246,23 @@ describe("keys the layer does not bind", () => {
     expect(primaryAction).not.toHaveBeenCalled();
     fireEvent.keyDown(view.grid, { key: " " });
     expect(primaryAction).toHaveBeenCalledWith("bus");
+  });
+
+  it("leaves an inline editor inside a row its own keys", () => {
+    // Rows carry text fields (a section's name, an event row's label).
+    // The grid consumes the navigation keys, so without the same
+    // exemption the global dispatcher makes, the caret cannot be moved
+    // and Ctrl+A selects rows instead of the text being typed.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    const field = view.getByLabelText("rename bus");
+    const handled = fireEvent.keyDown(field, { key: "ArrowDown" });
+    expect(handled).toBe(true);
+    expect(cursor(view.grid)).toBe("bus");
+    fireEvent.keyDown(field, { key: "Home" });
+    expect(cursor(view.grid)).toBe("bus");
+    fireEvent.keyDown(field, { key: "a", ctrlKey: true });
+    expect(selectedRows(view)).toEqual([]);
   });
 
   it("lets Tab through to the row's interactive content", () => {
