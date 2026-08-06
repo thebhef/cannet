@@ -9,6 +9,7 @@ import {
   applyAreaSelections,
   catalogPath,
   effectiveSourceBuses,
+  reorderSectionNames,
   resolvePatterns,
   scopeCatalog,
   signalPath,
@@ -202,5 +203,23 @@ describe("applyAreaSelections", () => {
     const before = withPatterns.signals.length;
     applyAreaSelections([withPatterns], CATALOG, BUSES);
     expect(withPatterns.signals.length).toBe(before);
+  });
+});
+
+describe("reorderSectionNames", () => {
+  const NAMES = ["Pack", "Chassis", "Body"];
+
+  it("moves a section down to where the target sits", () => {
+    expect(reorderSectionNames(NAMES, "Pack", "Body")).toEqual(["Chassis", "Body", "Pack"]);
+  });
+
+  it("moves a section up to where the target sits", () => {
+    expect(reorderSectionNames(NAMES, "Body", "Pack")).toEqual(["Body", "Pack", "Chassis"]);
+  });
+
+  it("returns the same list for a no-op, so a setState can bail", () => {
+    expect(reorderSectionNames(NAMES, "Pack", "Pack")).toBe(NAMES);
+    expect(reorderSectionNames(NAMES, "Nope", "Pack")).toBe(NAMES);
+    expect(reorderSectionNames(NAMES, "Pack", "Nope")).toBe(NAMES);
   });
 });

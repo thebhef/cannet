@@ -24,6 +24,10 @@ import {
   type GridviewClickModifiers,
 } from "./gridviewSelection";
 
+/// Stable empty extras, so the default doesn't hand `useCallback` a
+/// fresh array on every render.
+const EMPTY_EXTRAS: readonly string[] = [];
+
 const NAV_KEYS = new Set<string>([
   "ArrowUp",
   "ArrowDown",
@@ -49,6 +53,12 @@ export interface UseGridviewOptions {
   /// the layer binds no default. Enter is deliberately left unbound
   /// for the user's own keybindings.
   onPrimaryAction?: (id: string) => void;
+  /// Selectable items that are **not** rows of the scrolled space,
+  /// appended to the selection order after them: ADR 0045's pattern
+  /// chips, which are "selectable items in the same selection set as
+  /// rows" so one drag can carry both kinds. They take no part in the
+  /// cursor — there is nothing to arrow onto — only in the selection.
+  extraSelectableIds?: readonly string[];
 }
 
 /// Props the panel spreads onto its container element. The container —
@@ -71,7 +81,8 @@ export interface Gridview {
   /// The DOM id a row element must carry for `aria-activedescendant`
   /// to name it.
   rowDomId: (id: string) => string;
-  /// Feed a row click in, with the platform's primary modifier as
+  /// Feed a click on a row — or on one of the consumer's extra
+  /// selectable items — in, with the platform's primary modifier as
   /// `mod` (Cmd on mac, Ctrl elsewhere).
   onRowClick: (id: string, modifiers: GridviewClickModifiers) => void;
 }
@@ -81,9 +92,17 @@ export function useGridview({
   pageRows,
   idPrefix,
   onPrimaryAction,
+  extraSelectableIds = EMPTY_EXTRAS,
 }: UseGridviewOptions): Gridview {
   const [cursor, setCursor] = useState<string | null>(null);
   const [selection, setSelection] = useState(EMPTY_SELECTION);
+
+  /// Everything the selection may hold, in display order: the
+  /// selectable rows, then the consumer's non-row items.
+  const selectionOrder = useCallback(
+    () => [...selectableIdsInOrder(adapter, adapter.isSelectable), ...extraSelectableIds],
+    [adapter, extraSelectableIds],
+  );
 
   const rowDomId = useCallback(
     // Row ids carry arbitrary text (DBC paths, signal names), so
@@ -112,7 +131,7 @@ export function useGridview({
       // Ctrl/Cmd+A — the one modified chord the layer claims.
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
-        const order = selectableIdsInOrder(adapter, adapter.isSelectable);
+        const order = selectionOrder();
         setSelection((current) => selectAll(current, order));
         return;
       }
@@ -148,16 +167,17 @@ export function useGridview({
           break;
       }
     },
-    [adapter, cursor, moveCursor, onPrimaryAction, pageRows],
+    [adapter, cursor, moveCursor, onPrimaryAction, pageRows, selectionOrder],
   );
 
   const onRowClick = useCallback(
     (id: string, modifiers: GridviewClickModifiers) => {
-      setCursor(id);
-      const order = selectableIdsInOrder(adapter, adapter.isSelectable);
-      setSelection((current) => selectOnClick(current, id, modifiers, order));
+      // A non-row item has no place in the row space, so the cursor
+      // stays where it is; only the selection moves.
+      if (adapter.indexOf(id) >= 0) setCursor(id);
+      setSelection((current) => selectOnClick(current, id, modifiers, selectionOrder()));
     },
-    [adapter],
+    [adapter, selectionOrder],
   );
 
   const containerProps = useMemo(

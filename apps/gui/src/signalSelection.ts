@@ -173,3 +173,31 @@ export function applyAreaSelections<A extends SelectableArea>(
     };
   });
 }
+
+/// Move section `moved` to where `target` currently sits in the view's
+/// section order — the whole of the signal view's section drag-reorder
+/// (ADR 0045). The order *is* the `names` array (the host arranges the
+/// row space from it, and the pattern-claim tie-break reads the same
+/// order), so a reorder is a pure permutation of it and nothing keyed
+/// by section name has to move along.
+///
+/// Insertion uses the target's index in the *original* list, so the
+/// dragged section lands where the pointer let go in both directions.
+/// A no-op — same section, or a name that isn't here — returns the
+/// input reference so a caller's `setState` can bail out. The implicit
+/// unassigned section is not in `names`; dropping onto its header means
+/// "to the front", which is `target: names[0]` for the caller to pick.
+export function reorderSectionNames(
+  names: readonly string[],
+  moved: string,
+  target: string,
+): readonly string[] {
+  if (moved === target) return names;
+  const from = names.indexOf(moved);
+  const to = names.indexOf(target);
+  if (from < 0 || to < 0) return names;
+  const next = [...names];
+  next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
