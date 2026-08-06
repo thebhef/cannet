@@ -10,6 +10,7 @@ import {
 } from "react";
 
 import type { TraceFrameRecord } from "./types";
+import { theme } from "./theme";
 import type { TimelineEvent } from "./notes";
 import type { TraceRow } from "./trace";
 import { formatTimestamp, type CanIdFormat } from "./format";
@@ -777,9 +778,9 @@ const Row = memo(function Row({
 /// Default color per event kind when an event carries no explicit color
 /// (ADR 0035): notes share the plot's event blue; the derived truncation
 /// marker a muted amber.
-const EVENT_KIND_COLOR: Record<string, string> = {
-  note: "#4ecbff",
-  truncation: "#e0a030",
+const EVENT_KIND_COLOR: Record<string, () => string> = {
+  note: () => theme().eventMarker,
+  truncation: () => theme().eventTruncation,
 };
 
 /// One timeline-event row (ADR 0035), rendered by the same `Row` path as a
@@ -816,7 +817,7 @@ function EventRow({
   domId: string;
   onSelect: (rowId: string, e: React.MouseEvent) => void;
 }) {
-  const color = event.color ?? EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note;
+  const color = event.color ?? (EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note)();
   const editable = event.editable && actions != null;
   const onGoto = actions?.onGoto;
   const colorInputRef = useRef<HTMLInputElement>(null);
