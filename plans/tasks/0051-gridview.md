@@ -1288,3 +1288,85 @@ captures — **31/31 metrics**, `jsheap_mb_drift_per_min` 9.905 and
   relative to this machine (D.4's finding, unchanged) — the gate passes
   anyway, but a same-day control remains the honest comparator for any
   future heap work.
+
+### 2026-08-06 — 51.F plain Shift+click, assigned
+
+Branch `task51-shift-click`, cut from `task51-heap-fix`. Three commits.
+
+`d9f51b5` — the amended D4: plain **Shift+click replaces the selection
+with the contiguous range between the anchor and the target**, the
+mainstream file-explorer gesture. It was left unassigned in v1, which
+slice C2.1 read faithfully and so *removed* the behaviour from the DBC
+panel; the user corrected the omission, and this slice restores it for
+every migrated surface at once, through the layer.
+
+`089b69d` — the pure model plus ADR 0044. The two range chords are now
+one branch in `selectOnClick` over a shared `anchorRange` helper: they
+walk the same selectable-row order, share one anchor (the last plain or
+Ctrl/Cmd+click) and both *keep* it, so successive range clicks re-range
+from one point instead of walking. Ctrl+Shift unions the range into what
+is selected; plain Shift replaces with it. ADR 0044's multiselect
+paragraph states the surface as it now is — the anchor rule included,
+which it had only implied.
+
+**Degenerate cases, both tested:** with no usable anchor — none set yet,
+or the anchored row has left the row space — each chord falls back to
+what a click on the target alone means. So Shift+click selects just the
+target and anchors there (a plain click), and Ctrl+Shift+click adds just
+the target and anchors there (unchanged from C.0). This is the existing
+Ctrl+Shift rule generalized rather than a new one, and it is the only
+choice that leaves the selection somewhere the *next* range click can
+work from.
+
+`1adc3b4` — the wiring and the end-to-end proof. **No panel needed
+changing**: every migrated surface already passed `shift: e.shiftKey`
+into `onRowClick`, so all six inherited the gesture the moment the model
+changed. The layer did grow one thing — a Shift+click extends the
+document's *text* selection as a browser side effect, and only some row
+surfaces are `user-select: none` (`.dbc-row` is; `.trace-row` is not) —
+so `onRowClick` collapses a non-collapsed document selection when the
+shift modifier is set. A text field's own selection is not the
+document's, so the collapsed-selection early return keeps it out of
+inputs.
+
+Tests: 7 new in `gridviewSelection.test.ts` (range, replacement,
+upward, anchor kept across successive clicks, the anchor shared with
+Ctrl+Shift, and the two degenerate cases) replacing the one that
+asserted Shift was inert; 3 new + 1 extended in
+`useGridview.dom.test.tsx` (the range end to end, the text-selection
+collapse, an unmodified click leaving a selection alone, and the
+pattern-chip `extraSelectableIds` order — a replacing range spans rows
+then chips, same order Ctrl+Shift and Ctrl+A use); 1 new in
+`DbcPanel.dom.test.tsx` (range over message + signal rows with the
+unselectable containers skipped, re-ranging from the same anchor, and a
+prior selection outside the range being dropped), and C2.1's
+"Ctrl+Shift-click adds the range" test lost its now-false plain-Shift
+assertion. Suite: 121 files / **1413 tests** green (was 1409);
+`pnpm build` green. No host code touched.
+
+#### Blockers / side effects
+
+- **C2.1's test suite did not fail when the model changed.** Its
+  plain-Shift assertion clicked the *anchor row itself*, whose range is
+  one row — indistinguishable from a replace. The behaviour it meant to
+  pin was therefore never pinned; the new DBC test uses three selectable
+  rows so the range is observable. Noting it because a green suite was
+  not evidence here.
+- **The text-selection collapse is post-hoc, not prevention.** The
+  browser makes the selection on `mousedown` and the layer only sees
+  the click, so there is a frame in which the drag-highlight exists.
+  Preventing it properly means `preventDefault()` on a `mousedown` the
+  layer does not currently receive — which would also swallow the
+  focus-the-container side effect and interfere with `draggable` rows
+  (every migrated panel has them). Not worth that trade for a
+  sub-frame flash.
+- **In the trace views a Shift+click still toggles the row's
+  disclosure**, because there the row *is* the disclosure control
+  (C.1b's recorded consequence, `2c1949a`). A range click over expanded
+  trace rows therefore also opens/closes the row it lands on. Unchanged
+  by this slice and not re-litigated here.
+- **No perf run.** Row click handlers gained no allocation: the
+  collapse helper is module-level, called only on a shift-click, and
+  `selectOnClick`'s new branch allocates the same one `Set` per click
+  the old one did. Nothing on the render path moved, so 51.E's numbers
+  stand.
