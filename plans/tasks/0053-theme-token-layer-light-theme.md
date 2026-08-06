@@ -411,3 +411,177 @@ a 53.A capture byte for byte.
   the theme's own background: signal ≥ 4.5:1 (unchanged), bus ≥ 3:1 (new
   — the dark bus wheel measures 6.8–11.3:1, so it passes with room). Both
   loop over `THEMES`, so a second theme is tested by existing.
+
+### 2026-08-06 — Phase 53.C, the `theme` setting and the light theme (shape-of-the-work item 4)
+
+**The setting is one row.** `theme` (`dark | light`, default `dark`) is a
+user-scoped field validated against `settings::THEMES`, published by a
+`Control::Enum` descriptor whose options are that same list, and rendered
+by the settings view's existing generated control — no per-setting UI.
+The host's anti-drift tests cover it by existing
+(`every_published_option_set_is_the_one_validate_accepts` refuses
+`not-an-option` and resolves it to the default). User scope, not
+project-overridable: a project does not decide what its reader's screen
+looks like.
+
+**The light token set is a value exercise, as designed.** 53.A's sweep
+left no color literal outside the `:root` block, so
+`:root[data-theme="light"]` re-values all 134 roles and flips
+`color-scheme`; the splash overlay, scrollbars and selection tints came
+along for free because they were already tokens. Grep after the fact:
+**zero hex / `rgb()` / named colors anywhere below the two token
+blocks.**
+
+Not an inversion pass — each group was re-derived from what the role
+does:
+
+| group | how light differs |
+| --- | --- |
+| Surfaces | the ramp turns over: `--surface-app` is `#f4f5f7` and a *raised* surface is white above it, where dark had grey above black |
+| Text | the ramp turns over with it — the emphatic end is darkest (`--text-label #0f172a`), the de-emphasis end lightest (`--text-dim #98a3b3`, 2.34:1, matching dark's 2.56:1 weakness) |
+| Borders | dark's borders are lighter than their surface, light's are darker; the eleven weights keep their order |
+| State | deep tints under bright text become pale washes under dark text; `--danger-text-bright` is the *darkest* red, not the lightest |
+| Graph nodes | pale per-kind fills, outlines deepened to read on them |
+| Translucent | re-mixed, not reused: a white wash lightens a dark surface and does nothing to a light one, so `--wash-light` and both `--border-wash`es become dark washes |
+
+Two drift guards in `theme.test.ts`, both of which caught something on
+their first run. (1) *The blocks declare the same roles in the same
+order* — an omitted token silently inherits the dark value, which no
+grep would show. (2) *Every role is re-valued unless it is on an
+explicit theme-independent list* (five roles: text on a solid accent,
+the accent fill itself, the danger badge, the search-focus ring — all
+sit on a solid of their own, so the surface under them does not change).
+That second test found three graph-node colors carried over unchanged
+(`--node-transmit-border`, `--node-bus-bar`, `--node-bus-border`).
+
+**Wheels: same hues, retuned.** Each light slot keeps its dark slot's
+hue and drops lightness (at ~0.9x the original saturation) until it
+clears its threshold against the light background, maximising lightness
+subject to that. Worst slot per wheel per theme, against that theme's
+own `--surface-app`:
+
+| wheel | threshold | dark worst | light worst |
+| --- | --- | --- | --- |
+| signal (16) | 4.5:1 | **6.01** (slot 7 `#e15dcf`) | **4.77** (slot 12 `#da0b0b`) |
+| bus (8) | 3:1 | **6.84** (slot 3 `#f87171`) | **3.26** (slot 0 `#3588ee`) |
+
+Light signal slots span 4.77–4.88, bus slots 3.26–3.33 — tight, because
+the tuner takes the lightest passing color. Worst per-slot hue drift
+**0.35°** (signal) and **0.14°** (bus); `palette.test.ts` bounds it at
+8°. That check is not decoration: both wheels could pass their contrast
+tests while being unrelated palettes, and then a signal's hash would
+mean a different hue in each theme. AA on a light background does cost
+hue *separation* at the warm end — slots 2, 5 and 14 (orange, gold,
+peach) all land in the browns, which is inherent to 4.5:1 rather than a
+tuning choice.
+
+Testing the wheels against `--surface-app` is the conservative reading:
+`--surface-canvas` is `#ffffff` in light, and a higher-luminance
+background gives *more* contrast, so a slot that passes on the app
+surface passes on the canvas.
+
+**Live switching, and the one thing the token layer could not reach.**
+`themeSync.ts` is the single wire from the persisted setting to
+`theme.ts`, started before first render (so a stored `light` never shows
+a dark frame) and following every later change. CSS needs nothing but
+the `data-theme` flip. Three things do:
+
+- *uPlot.* Its axis strokes were already per-draw functions (53.B), so
+  one forced redraw per instance suffices — but a plot receiving no
+  samples keeps its last chrome, which is exactly the stale canvas the
+  exit criteria forbid. A `useThemeName()` + redraw effect in `PlotArea`.
+- *Components that resolve a color while rendering.* `useThemeName`
+  (a `useSyncExternalStore` over the theme) in the plot area and its
+  swatches, the graph's wires and bus nodes, the project panel's bus
+  swatches, the signal panel's hashed name colors, transmit rows, event
+  rows. React cannot know a plain function call's answer moved, and four
+  of these sit behind a `memo` a parent re-render would not cross.
+- *Dockview.* It paints its tab strip and group borders from its own
+  theme object, outside our token layer entirely — the one piece of
+  chrome a `data-theme` flip cannot reach. `themeAbyss` swaps to
+  `themeLight`.
+
+Verified at both ends. `themeSync.dom.test.ts` covers the setting path
+(boot application, both switch directions, the dark default correctly
+leaving the attribute off, one notification per change, unsubscribe).
+`PlotPanel.dom.test.tsx` covers the canvas path on a live panel: flip
+the setting, and the `data-theme` attribute, the redraw count and the
+axis stroke's resolved color all have to move. That test fails on the
+code with the redraw effect removed (`expected 4 to be greater than 4`),
+which is the falsification that makes it worth having.
+
+**"Clear project colors."** Palette command, confirm dialog first (same
+shape and escape routes as the unsaved-changes prompt), then: delete
+every bus's `color` key and empty `signal_colors`. The keys are
+*deleted*, not rewritten with a derived value — storing what the theme
+already derives is how the colors stopped following the theme in the
+first place. Color-map rules are untouched: a rule says what a *value*
+means, which is authored data. `App.clearColors.dom.test.tsx` drives the
+real palette chord against a real opened project and checks all three
+(cleared, spared, and neither Cancel nor Escape doing anything).
+
+**Dark parity: the two captures that moved are the two features, and
+nothing else.** Release build, same scenario, same machine, `ev-demo`,
+1600x1000, diffed against a 53.B (`5734a08`) reference binary built and
+captured in the same session:
+
+| capture | differing px / 1 600 000 | max Δchannel |
+| --- | ---: | ---: |
+| 01, 02, 04, 05, 06, 07, 08 | **0** | 0 |
+| 03-settings | 1 237 (0.077 %) | 215 |
+| 09-palette | 51 098 (3.19 %) | 115 |
+
+Both are accounted for by region:
+
+- *03-settings* — every differing pixel is inside `x 18–359, y 797–991`,
+  the settings tree's own column, where the new **Theme** row renders.
+- *09-palette* — split in two. Rows 763–999 hold **51 061 px at max
+  Δ1**: the bistable compositing artifact 53.A documented, to the pixel
+  (53.A measured 51 061 as well). Everything above it is **37 px in a
+  9x7 box at `x 1051–1059, y 287–293`** — the palette list's scrollbar
+  thumb, one row shorter because the command registry gained an entry.
+  The palette's visible rows are unchanged (the new command sits below
+  the fold), and `08-shortcuts`, which lists every command, is
+  byte-identical.
+
+So the theme setting's *default* moves no pixel; what moved is the row
+and the command this phase adds.
+
+**Light captures** are committed for review at
+[`docs/review/0053-light-theme/`](../../../docs/review/0053-light-theme/)
+(nine PNGs plus a README saying what to look at in each). They also
+stand as evidence for the boot path: they were produced by writing
+`"theme": "light"` into the user `settings.json` and launching, so
+`startThemeSync` applying a stored theme before first render is what
+made them light.
+
+**Blockers / side effects.**
+
+- *The harness cannot drive a settings change, so the live flip is not
+  in the pixel evidence.* Its scenario is a fixed list of steps compiled
+  into the crate, with no step that edits `settings.json` or reaches the
+  settings control; adding one is a change to the harness, not to this
+  task. The two capture runs prove the boot path (dark by default, light
+  from the stored value) and the DOM tests prove the flip; what nothing
+  photographs is the transition itself.
+- *Cross-session capture drift is real; within-session determinism is
+  what the check rests on.* Four of the nine dark captures hashed
+  differently from 53.A's recorded SHA-256 table, but two of those four
+  (`02`, `07`) diff to **0 pixels** against a 53.B binary captured
+  today — so those hashes moved with the environment (this machine's
+  `projects.json` and system-log ordering have changed since 53.A), not
+  with the build. The lesson for the next phase: **diff against a
+  reference build captured in the same session**, and treat the recorded
+  hashes as a within-session identity check only. Two back-to-back dark
+  runs of this build were byte-identical on all nine.
+- *The splash logo is outside the token layer.* `assets/logo.svg` is an
+  `<img>` with baked fills, and CSS cannot reach into it. Its letters are
+  already a dark slate blue (the file's own comment calls them the
+  light-theme defaults), so it reads better on the light background than
+  on the dark one — no action needed, but it is not theme-derived.
+- *A pre-existing flaky test.* `PlotPanel.dom.test.tsx`'s
+  "re-renders no plot area when only panel-local state changes" asserts a
+  render counter and fails intermittently under full-suite parallel load
+  (seen twice, once on a commit that touched only `settings.rs`); it
+  passes on every isolated run and on a re-run of the full suite. Not
+  caused by this phase and not touched by it.
