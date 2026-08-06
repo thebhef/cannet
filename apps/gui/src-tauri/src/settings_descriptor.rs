@@ -412,6 +412,48 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "float_exponential_below",
+        backing: Backing::Field,
+        label: "Exponential below",
+        help: "Values smaller than this read as 1.23457e-4 rather than written out \
+               in full. Zero never switches. Zero itself always reads as 0.",
+        surfaces: &[Surface::Plot],
+        kind: Kind::Behaviour,
+        control: Control::Number {
+            unit: None,
+            min: None,
+        },
+    },
+    Spec {
+        key: "float_exponential_from",
+        backing: Backing::Field,
+        label: "Exponential from",
+        help: "Values this large or larger read as 1.23457e+6. The same rule as \
+               Exponential below, at the other end.",
+        surfaces: &[Surface::Plot],
+        kind: Kind::Behaviour,
+        control: Control::Number {
+            unit: None,
+            min: None,
+        },
+    },
+    Spec {
+        key: "float_mantissa_decimals",
+        backing: Backing::Field,
+        label: "Exponential mantissa decimals",
+        help: "Digits after the point in exponential form, trailing zeros kept: 5 \
+               gives 1.00000e-6, 0 gives 1e-6. At most 20 — a double carries no \
+               more.",
+        surfaces: &[Surface::Plot],
+        kind: Kind::Behaviour,
+        control: Control::Int {
+            unit: Some("decimals"),
+            scale: 1,
+            min: None,
+            unset: None,
+        },
+    },
+    Spec {
         key: "trace_columns",
         backing: Backing::Field,
         label: "Default trace columns",

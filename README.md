@@ -687,6 +687,24 @@ the re-sampling), Clear re-anchors what's plotted to "now".
   capture-start "T0" plus your notes — draw as vertical lines across the
   areas; the event log under the panel renames (click the label) and
   removes notes.
+- **Number formatting.** Every float the plot shows — the signal
+  panel, the cursor readouts, the measurement strip, the y-axis tick
+  labels — reads under **one magnitude rule**, so a value can't read
+  `0.0001` in the panel and `1.0e-4` on the axis beside it. It goes
+  exponential only when it is *small or large*: below **`1e-4`** or at
+  **`1e6`** and up (both are settings — **Exponential below** /
+  **Exponential from**). Otherwise it is written out in full, to six
+  significant figures in a readout and three on a tick, with no
+  trailing padding — so a six-figure reading just above the small
+  threshold writes nine decimals (`0.000123456`) rather than
+  switching. Zero always reads `0`. In exponential form the mantissa
+  carries a fixed five decimals with the trailing zeros kept
+  (`1.00000e-6`), so two readings of one magnitude are one width;
+  **Exponential mantissa decimals** changes that width. A signal whose
+  DBC gives it a fixed precision keeps that precision instead, and one
+  the DBC marks as a raw bit field still reads in hex. A **log-scaled
+  y-axis always labels exponentially** — its ticks are decades, and
+  mixing the two notations on one axis reads as two quantities.
 - **Performance.** Each re-sample slices only the trace element's
   window out of the store by frame index (so the work is bounded by the
   window, not the whole capture), and the result is min/max-decimated

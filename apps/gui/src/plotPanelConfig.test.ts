@@ -13,7 +13,6 @@ const {
   cursorModeFromRaw,
   fmtCount,
   fmtFreq,
-  fmtSigFigs,
   fmtVal,
   isSignalRefCore,
   signalValueFormats,
@@ -215,33 +214,35 @@ describe("formatters", () => {
     expect(fmtVal(-42, { decimals: 0, hex: false })).toBe("-42");
   });
 
-  it("fmtVal renders a float decimally until it would need more than 5 decimals", () => {
+  it("renders a float through the shared magnitude rule", () => {
+    // The rule itself is pinned in `floatFormat.test.ts`; what this
+    // pins is that a signal with no declared precision goes *through*
+    // it, at the readouts' six figures. A full six-figure mantissa
+    // under 1.0 reads plainly — the case the old
+    // more-than-five-decimals rule sent exponential.
     const float = { decimals: null, hex: false };
+    expect(fmtVal(0.123456, float)).toBe("0.123456");
     expect(fmtVal(0.0001, float)).toBe("0.0001");
-    expect(fmtVal(0.00001, float)).toBe("0.00001");
-    expect(fmtVal(0.000001, float)).toBe("1e-6");
-    expect(fmtVal(0.0000123, float)).toBe("1.23e-5");
-    expect(fmtVal(-0.0000123, float)).toBe("-1.23e-5");
+    expect(fmtVal(0.00001, float)).toBe("1.00000e-5");
+    expect(fmtVal(-0.0000123, float)).toBe("-1.23000e-5");
     expect(fmtVal(1.23456789, float)).toBe("1.23457");
     expect(fmtVal(0, float)).toBe("0");
+  });
+
+  it("fmtVal follows a settings change without a reload", async () => {
+    // The float case reads the rule live, so a settings change reaches
+    // the readouts on the next render.
+    storedSettings = { float_exponential_from: 1e3, float_mantissa_decimals: 2 };
+    await hydrateSettings();
+    expect(fmtVal(1234, { decimals: null, hex: false })).toBe("1.23e+3");
+    // A signal with a declared precision is unaffected: the rule is the
+    // fallback for a float, not an override of the DBC.
+    expect(fmtVal(1234, { decimals: 1, hex: false })).toBe("1234.0");
   });
 
   it("fmtVal renders a raw bit field in base 10 unless its DBC asks for hex", () => {
     expect(fmtVal(3735928559, { decimals: 0, hex: false })).toBe("3735928559");
     expect(fmtVal(3735928559, { decimals: 0, hex: true })).toBe("0xDEADBEEF");
-  });
-
-  it("fmtSigFigs takes the exponential threshold the value readout uses", () => {
-    // The tick labels' 3 sig figs, the same "more than 5 decimals"
-    // rule: `0.0001` used to read `1.0e-4` here and `0.000100000` in
-    // the signal area.
-    expect(fmtSigFigs(0.0001, 3)).toBe("0.0001");
-    expect(fmtSigFigs(0.000001, 3)).toBe("1e-6");
-    expect(fmtSigFigs(1.2345, 3)).toBe("1.23");
-    expect(fmtSigFigs(1234, 3)).toBe("1230");
-    // The large end is unchanged: exponential from 1e6 up.
-    expect(fmtSigFigs(999999, 3)).toBe("1000000");
-    expect(fmtSigFigs(1234567, 3)).toBe("1.23e+6");
   });
 
   it("signalValueFormats keys the catalog's rendering facts by signal", () => {

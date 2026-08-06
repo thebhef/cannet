@@ -8,6 +8,7 @@
 import { useState } from "react";
 
 import { useDismissableMenu } from "./useDismissableMenu";
+import { useFloatFormatRule } from "./floatFormat";
 import {
   MEASUREMENT_QUANTITIES,
   type MeasurementKey,
@@ -93,6 +94,11 @@ export function PlotMeasurementStrip({
   seriesFor: (areaId: string, key: string) => Series | undefined;
   fmtPos: (t: number | null) => string;
 }) {
+  // The strip re-renders when the cursors move, which is not when the
+  // float-format settings change — and `fmtVal` reads them at call
+  // time. Subscribing here is what re-labels the cells on a settings
+  // change instead of at the next cursor placement.
+  useFloatFormatRule();
   const dt = cursorX.a != null && cursorX.b != null ? cursorX.b - cursorX.a : null;
   return (
     <div className="plot-meas-strip">

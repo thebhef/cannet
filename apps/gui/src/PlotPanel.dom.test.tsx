@@ -2108,9 +2108,50 @@ describe("PlotArea y-normalisation", () => {
         opts: { axes: { splits: () => number[] }[] };
       };
       expect(inst.opts.axes[1].splits()).toEqual([0, 0.5, 1]);
-      await waitFor(() => expect(yTickLabels([0, 0.5, 1])).toEqual(["1 A", "10 A", "100 A"]));
+      // A log axis labels exponentially whatever the magnitude: its
+      // ticks *are* decades, so `1`, `10`, `100` beside a
+      // `1.00000e+6` further up would read as two notations on one
+      // axis.
+      await waitFor(() =>
+        expect(yTickLabels([0, 0.5, 1])).toEqual([
+          "1.00000e+0 A",
+          "1.00000e+1 A",
+          "1.00000e+2 A",
+        ]),
+      );
     } finally {
       restore();
+    }
+  });
+
+  it("re-labels the y-axis when the float-format settings change, with no reload", async () => {
+    // The tick formatter is a closure the uPlot instance keeps, so a
+    // live read alone would leave the axis on the old rule until
+    // something else rebuilt it. Lowering the large-end threshold has
+    // to re-label the axis on its own.
+    mockSignalExtents.LimitEffective = { lo: 1, hi: 100 };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [1, 50, 100] };
+    const restore = stubSize();
+    try {
+      renderSeeded({ signals: ["LimitEffective"] });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["1 A", "100 A"]));
+
+      mockSettings.float_exponential_from = 10;
+      await act(async () => {
+        await hydrateSettings();
+      });
+
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["1 A", "1.00000e+2 A"]));
+    } finally {
+      restore();
+      // Put the cache back *awaited*, inside this test: the suite's own
+      // reset does not await its re-hydrate, so a settings value left
+      // changed here would publish — and re-render a plot area — in
+      // whichever test happens to be running when it lands.
+      delete mockSettings.float_exponential_from;
+      await act(async () => {
+        await hydrateSettings();
+      });
     }
   });
 

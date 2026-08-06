@@ -101,6 +101,9 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("can_id_format", Scope::UserOverridable),
     ("trace_columns", Scope::UserOverridable),
     ("signal_columns", Scope::UserOverridable),
+    ("float_exponential_below", Scope::UserOverridable),
+    ("float_exponential_from", Scope::UserOverridable),
+    ("float_mantissa_decimals", Scope::UserOverridable),
 ];
 
 /// The persisted user settings. `#[serde(default)]` fills any absent field
@@ -117,8 +120,12 @@ pub(crate) const SCOPES: ScopeTable = &[
 // serde mirror of a hand-editable JSON document (ADR 0034) in which each
 // on/off knob is independent. Folding pairs into two-variant enums would
 // change what the file looks like without making any of them clearer.
+//
+// `derive_partial_eq_without_eq` cannot apply: the float-format
+// thresholds are `f64`, and a struct carrying one is `PartialEq` and
+// nothing more.
 #[allow(clippy::struct_field_names, clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Maximum bytes the disk-spill scratch may grow to before the oldest
@@ -366,6 +373,30 @@ pub struct Settings {
     /// Two fields rather than one: the two tables have different
     /// columns, so one shared layout could not name them both.
     pub signal_columns: Option<Vec<ColumnLayout>>,
+    /// Magnitude below which a float reads exponentially. Default
+    /// `1e-4`, so `0.0001` is the smallest value still written out in
+    /// full and `0.00001` is the largest one that switches.
+    ///
+    /// One of the three knobs behind **one** rule, applied identically
+    /// by every float readout and y-axis tick label the plot draws: a
+    /// value cannot read `0.0001` in the signal panel and `1.0e-4` on
+    /// the axis beside it. Zero is legal and means "never switch at the
+    /// small end"; a negative threshold is refused, since the
+    /// comparison is against `|v|`.
+    pub float_exponential_below: f64,
+    /// Magnitude from which a float reads exponentially. Default `1e6`.
+    /// The large-end counterpart of
+    /// [`Settings::float_exponential_below`], with the same contract.
+    pub float_exponential_from: f64,
+    /// Decimals the mantissa carries in exponential form, trailing
+    /// zeros kept — default 5, so a value reads `1.23457e-4` and
+    /// `1.00000e-6` rather than a trimmed `1e-6`. Zero drops the
+    /// mantissa's fraction entirely.
+    ///
+    /// Capped at [`MAX_MANTISSA_DECIMALS`]: past what a double actually
+    /// carries the digits are noise, and the renderer's
+    /// `Number.toExponential` refuses a wide enough width outright.
+    pub float_mantissa_decimals: u64,
 }
 
 /// One column of a table's default layout — the on-disk mirror of the
@@ -436,6 +467,18 @@ pub const TRACE_MODES: &[&str] = &["chronological", "by-id"];
 /// verbatim and is narrowed by `yAxisModeFromRaw` on arrival.
 pub const Y_AXIS_MODES: &[&str] = &["unified", "per-unit", "individual"];
 
+/// The widest [`Settings::float_mantissa_decimals`] the renderer will
+/// accept.
+///
+/// A hard limit rather than a taste, and stated once here: an IEEE
+/// double carries about 17 significant decimal digits, so a mantissa
+/// wider than this is padding — and the frontend formats through
+/// `Number.prototype.toExponential`, which throws outside its own
+/// accepted width. Enforced in [`validate`]; the control publishes no
+/// maximum because `Control::Int` has no such field, so the bound lives
+/// in the field's help text instead.
+pub const MAX_MANTISSA_DECIMALS: u64 = 20;
+
 /// The renderings [`Settings::can_id_format`] accepts for a trace-style
 /// table's `id` column. The names are the frontend's `CanIdFormat`
 /// spellings, since the value crosses the IPC verbatim.
@@ -477,6 +520,9 @@ impl Default for Settings {
             can_id_format: "hex".to_string(),
             trace_columns: None,
             signal_columns: None,
+            float_exponential_below: 1e-4,
+            float_exponential_from: 1e6,
+            float_mantissa_decimals: 5,
         }
     }
 }
@@ -580,7 +626,44 @@ pub(crate) fn validate(settings: Settings) -> (Settings, Vec<String>) {
     }
     refuse_unknown_options(&mut settings, &mut complaints);
     refuse_below_minimums(&mut settings, &mut complaints);
+    refuse_bad_float_format(&mut settings, &mut complaints);
     (settings, complaints)
+}
+
+/// The float-format half of [`validate`]: the two magnitude thresholds
+/// are compared against `|v|`, so a negative one is not a threshold at
+/// all, and the mantissa width is bounded by what a double carries
+/// ([`MAX_MANTISSA_DECIMALS`]).
+fn refuse_bad_float_format(settings: &mut Settings, complaints: &mut Vec<String>) {
+    let d = Settings::default();
+    for (key, value, default) in [
+        (
+            "float_exponential_below",
+            &mut settings.float_exponential_below,
+            d.float_exponential_below,
+        ),
+        (
+            "float_exponential_from",
+            &mut settings.float_exponential_from,
+            d.float_exponential_from,
+        ),
+    ] {
+        if *value < 0.0 {
+            complaints.push(format!(
+                "{key} {value} is negative, and the threshold is compared against the \
+                 value's magnitude; ignoring it — using the default ({default})"
+            ));
+            *value = default;
+        }
+    }
+    if settings.float_mantissa_decimals > MAX_MANTISSA_DECIMALS {
+        complaints.push(format!(
+            "float_mantissa_decimals {} is above the maximum of {MAX_MANTISSA_DECIMALS} \
+             (a double carries no more); ignoring it — using the default ({})",
+            settings.float_mantissa_decimals, d.float_mantissa_decimals
+        ));
+        settings.float_mantissa_decimals = d.float_mantissa_decimals;
+    }
 }
 
 /// The fixed-option half of [`validate`]: one table row per field whose
@@ -950,6 +1033,9 @@ mod tests {
                 visible: false,
             }]),
             signal_columns: None,
+            float_exponential_below: 1e-3,
+            float_exponential_from: 1e5,
+            float_mantissa_decimals: 3,
         }
     }
 
@@ -993,6 +1079,98 @@ mod tests {
             "{complaints:?}"
         );
         assert!(complaints[0].contains("verbose"), "{complaints:?}");
+    }
+
+    #[test]
+    fn the_float_format_defaults_are_the_rule_the_views_document() {
+        // The magnitude rule the plot's readouts and y-axis ticks share:
+        // exponential below 1e-4 and from 1e6 up, with a five-decimal
+        // mantissa. An install nobody has touched must read exactly that.
+        let d = Settings::default();
+        assert!((d.float_exponential_below - 1e-4).abs() < f64::EPSILON);
+        assert!((d.float_exponential_from - 1e6).abs() < f64::EPSILON);
+        assert_eq!(d.float_mantissa_decimals, 5);
+    }
+
+    #[test]
+    fn a_negative_magnitude_threshold_is_refused_and_reported() {
+        // The thresholds are compared against |v|, so a negative one is
+        // not a stricter setting — it is a threshold that can never
+        // (or always) fire. Refused and reported, resolving to its own
+        // default, like every other out-of-range value.
+        let (accepted, complaints) = validate(Settings {
+            float_exponential_below: -1.0,
+            ..Settings::default()
+        });
+        assert!(
+            (accepted.float_exponential_below - Settings::default().float_exponential_below).abs()
+                < f64::EPSILON
+        );
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(
+            complaints[0].contains("float_exponential_below"),
+            "{complaints:?}"
+        );
+
+        let (accepted, complaints) = validate(Settings {
+            float_exponential_from: -0.5,
+            ..Settings::default()
+        });
+        assert!(
+            (accepted.float_exponential_from - Settings::default().float_exponential_from).abs()
+                < f64::EPSILON
+        );
+        assert!(
+            complaints[0].contains("float_exponential_from"),
+            "{complaints:?}"
+        );
+    }
+
+    #[test]
+    fn a_zero_magnitude_threshold_is_accepted_as_never_and_always() {
+        // Zero is a legitimate setting at both ends: `|v| < 0` never
+        // fires (nothing small goes exponential) and `|v| >= 0` always
+        // does (everything but zero itself). Neither is out of range.
+        let (accepted, complaints) = validate(Settings {
+            float_exponential_below: 0.0,
+            float_exponential_from: 0.0,
+            ..Settings::default()
+        });
+        assert!(accepted.float_exponential_below.abs() < f64::EPSILON);
+        assert!(accepted.float_exponential_from.abs() < f64::EPSILON);
+        assert!(complaints.is_empty(), "{complaints:?}");
+    }
+
+    #[test]
+    fn a_mantissa_wider_than_a_double_carries_is_refused_and_reported() {
+        // The one bound that is a hard limit rather than a taste: the
+        // frontend renders the mantissa with `toExponential`, so a width
+        // past what a double carries is padding at best and a thrown
+        // RangeError at worst.
+        let (accepted, complaints) = validate(Settings {
+            float_mantissa_decimals: MAX_MANTISSA_DECIMALS + 1,
+            ..Settings::default()
+        });
+        assert_eq!(
+            accepted.float_mantissa_decimals,
+            Settings::default().float_mantissa_decimals
+        );
+        assert_eq!(complaints.len(), 1, "{complaints:?}");
+        assert!(
+            complaints[0].contains("float_mantissa_decimals"),
+            "{complaints:?}"
+        );
+
+        // The bound itself, and zero (`1e-6` with no mantissa at all),
+        // are both legal.
+        for decimals in [0, MAX_MANTISSA_DECIMALS] {
+            let (accepted, complaints) = validate(Settings {
+                float_mantissa_decimals: decimals,
+                ..Settings::default()
+            });
+            assert_eq!(accepted.float_mantissa_decimals, decimals);
+            assert!(complaints.is_empty(), "{decimals}: {complaints:?}");
+        }
     }
 
     #[test]

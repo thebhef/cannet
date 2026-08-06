@@ -30,8 +30,13 @@ import {
 import { useDismissableMenu } from "./useDismissableMenu";
 import { useSetting } from "./hostSettings";
 import {
+  TICK_SIG_FIGS,
+  formatFloat,
+  useFloatFormatRule,
+  type FloatFormatRule,
+} from "./floatFormat";
+import {
   PLOT_AREA_DND_MIME,
-  fmtSigFigs,
   fmtVal,
   parseDroppedSignals,
   signalRefKey,
@@ -79,20 +84,22 @@ const ZOOM_STEP = 1.15;
  * `clientWidth` is still small. */
 const MIN_DECIMATION_POINTS = 200;
 
-/** Sig figs a y-axis tick label renders at. Narrower than the value
- * readouts' six because tick labels have to fit the axis gutter, which
- * starts at 52 px. */
-const TICK_SIG_FIGS = 3;
-
 /** Compact tick formatter for the y-axis. Shares the readouts'
- * exponential threshold through {@link fmtSigFigs} so one value can't
- * read `0.0001` in the signal
- * area and `1.0e-4` on the axis beside it; it keeps its own, narrower
- * sig-fig budget, and it does not follow a signal's fixed precision or
- * hex radix — a tick is a position on an axis that several signals may
- * share, not one signal's reading. */
-function fmtTickValue(v: number): string {
-  return fmtSigFigs(v, TICK_SIG_FIGS);
+ * magnitude rule through {@link formatFloat} so one value can't read
+ * `0.0001` in the signal area and `1.0e-4` on the axis beside it; it
+ * keeps its own, narrower sig-fig budget, and it does not follow a
+ * signal's fixed precision or hex radix — a tick is a position on an
+ * axis that several signals may share, not one signal's reading.
+ *
+ * A **log axis always labels exponentially**: its ticks are decade
+ * boundaries, and mixing `1`, `100` and `1.00000e+6` on one axis reads
+ * as two different quantities.
+ *
+ * The rule is passed in rather than read here, because the callback is
+ * installed on the uPlot instance at construction — see the rebuild
+ * effect's deps. */
+function fmtTickValue(v: number, rule: FloatFormatRule, log: boolean): string {
+  return formatFloat(v, TICK_SIG_FIGS, { rule, alwaysExponential: log });
 }
 
 /** Width (px) the y-axis needs to fit `values` plus tick mark and
@@ -725,6 +732,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * (ADR 0034). Drawing stays pinned to rAF — this is the fetch, which
    * is where the host-side cost is. */
   const fetchIntervalMs = useSetting("plot_fetch_interval_ms");
+
+  /** How a float reads, from `settings.json` (ADR 0034). Reactive
+   * because the y-axis tick formatter is a closure the uPlot instance
+   * keeps — it is in the rebuild effect's deps, so a settings change
+   * re-labels the axis rather than waiting for a relaunch. The value
+   * readouts below re-render with this component. */
+  const floatRule = useFloatFormatRule();
 
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The empty stand-in drawn in the canvas column while collapsed. */
@@ -1597,8 +1611,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // axis is on a log scale.
           values: (_u, splits) => splits.map((v) => {
             const p = primaryAxisRef.current;
-            if (p == null) return fmtTickValue(v);
-            return `${fmtTickValue(denormalizeOnAxis(v, p))}${p.unit ? ` ${p.unit}` : ""}`;
+            if (p == null) return fmtTickValue(v, floatRule, logActive);
+            const label = fmtTickValue(denormalizeOnAxis(v, p), floatRule, logActive);
+            return `${label}${p.unit ? ` ${p.unit}` : ""}`;
           }),
           // A log axis puts its ticks on decade boundaries; uPlot's own
           // even splits over the normalised [0, 1] would read `1`,
@@ -2224,8 +2239,22 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       u.destroy();
       if (uplotRef.current === u) uplotRef.current = null;
     };
+    // The float rule enters as its three numbers, not as the object:
+    // the hook builds a fresh one each render, so the object itself
+    // would rebuild the instance on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signalSetKey, areaId, resizeTick, valueTable, showPoints, isLast, logActive]);
+  }, [
+    signalSetKey,
+    areaId,
+    resizeTick,
+    valueTable,
+    showPoints,
+    isLast,
+    logActive,
+    floatRule.exponentialBelow,
+    floatRule.exponentialFrom,
+    floatRule.mantissaDecimals,
+  ]);
 
   // While the trace is running, re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one

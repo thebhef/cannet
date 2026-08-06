@@ -145,6 +145,16 @@ export interface Settings {
   /// The same for the signal table's own column set
   /// (`signalColumns.ts`).
   signal_columns: ColumnLayout[] | null;
+  /// Magnitude below which a float reads exponentially — the small end
+  /// of the one rule every float readout and y-axis tick label shares
+  /// (`floatFormat.ts`). Compared against `|v|`; `0` never switches.
+  float_exponential_below: number;
+  /// Magnitude from which a float reads exponentially — the large end
+  /// of the same rule.
+  float_exponential_from: number;
+  /// Decimals the mantissa carries in exponential form, trailing zeros
+  /// kept: `5` gives `1.00000e-6`, `0` gives `1e-6`.
+  float_mantissa_decimals: number;
 }
 
 /// One column of a stored default table layout — the wire mirror of
@@ -190,6 +200,9 @@ export function defaultSettings(): Settings {
     can_id_format: "hex",
     trace_columns: null,
     signal_columns: null,
+    float_exponential_below: 1e-4,
+    float_exponential_from: 1e6,
+    float_mantissa_decimals: 5,
   };
 }
 

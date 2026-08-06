@@ -168,10 +168,10 @@ Tests updated with the rule, pinning the threshold edges and zero.
   per-channel connect failure (the VN17xx ch2 case) leaves a
   diagnosable trail; log location documented.~~ Done 2026-08-06 —
   `f9103b9`, `17d57dc`, `8bf8c59`.
-- Float readouts and y-axis ticks follow item 6's magnitude rule
+- ~~Float readouts and y-axis ticks follow item 6's magnitude rule
   through one shared helper, thresholds and mantissa width read from
   settings, with tests pinning the boundaries (threshold edges, zero,
-  log-mode).
+  log-mode).~~ Done 2026-08-06 — `85dcde0`, `9bb7798`, `83ede6e`.
 
 ## Status log
 
@@ -448,7 +448,114 @@ the applied-vs-requested distinction and why it is "sent" not
 "applied"); `connection_state.rs`'s module docs carry the same
 reasoning where the code lives.
 
+### 2026-08-06 — item 6: the float exponential rule (`85dcde0`, `9bb7798`, `83ede6e`)
+
+Three commits, each green.
+
+**`85dcde0` — the knobs.** `float_exponential_below` (1e-4),
+`float_exponential_from` (1e6) and `float_mantissa_decimals` (5) as
+ordinary `UserOverridable` settings with `Plot`-surface `behaviour`
+descriptors. The two thresholds are the store's first `f64` fields, so
+`Settings` derives `PartialEq` alone now, and they are also the first
+use of the `Control::Number` variant the descriptor vocabulary already
+carried (the frontend renders it — `settingControls.dom.test.tsx`
+covers the variant), so the settings view needed **no change at all**.
+Validation follows the refuse-report-default contract: a *negative*
+threshold is refused (the comparison is against `|v|`, so a negative
+one can only never or always fire) and the mantissa width is capped at
+`MAX_MANTISSA_DECIMALS = 20`, past which `toExponential` throws rather
+than degrading. Zero is legal at all three — "never switch", "always
+switch", and a mantissa with no fraction.
+
+**`9bb7798` — the rule.** `floatFormat.ts`, with `formatFloat` as the
+single helper and the two sig-fig budgets (`READOUT_SIG_FIGS` 6,
+`TICK_SIG_FIGS` 3) beside it. Pure magnitude, exactly as groomed; zero
+is the one exception in the other direction and stays plain **even in
+log mode**, since `0.00000e+0` is not a reading and a log axis cannot
+plot zero anyway. One case the groomed spec did not name: below 1e-6
+JavaScript writes its *own* numbers exponentially, so a threshold set
+under that has no plain form to fall back on — the rule's exponential
+form is used instead of leaking JS's trimmed notation. (Only reachable
+by lowering the setting; the shipped 1e-4 never gets there.)
+
+**`83ede6e` — the consumers.** `fmtVal` (signal panel, cursor
+readouts, measurement strip, the ΔH chips) and the y-axis tick
+formatter, through the one helper. The old rule is **deleted, not kept
+alongside**: `fmtSigFigs`, `MAX_PLAIN_DECIMALS` and `EXPONENTIAL_FROM`
+are gone. The x (time) axis is untouched — it formats through
+`formatElapsed`/`fracDigitsForSpan` (ADR 0024) and never went near
+`fmtSigFigs`.
+
+**Axis width, checked rather than assumed.** uPlot hands `axis.size`
+the strings the `values` callback returned, and `size` is
+`measureAxisSize(values)` → `trackGutter`. So the gutter is measured
+from the *new* labels, wider exponential ticks included, with no stale
+constant anywhere in the path.
+
+**Reactivity, per consumer.** The tick callback is a closure the uPlot
+instance keeps, so the rule's three numbers join the rebuild effect's
+deps (the object itself would rebuild on every render); the readouts
+re-render with `PlotArea`, which holds the hook; and
+`PlotMeasurementStrip` subscribes for itself, because it otherwise
+re-renders only when a cursor moves.
+
+**Tests.** Rust +4 (`settings`: the defaults, the negative-threshold
+refusal, zero accepted at both ends, the mantissa cap with its own
+bound and 0 accepted); `cargo test -p cannet-gui` 477 → **481**,
+clippy `--all-targets` and `cargo fmt --check` clean. Frontend +15:
+`floatFormat.test.ts` ×14 — both threshold edges *exactly* (`0.0001`
+plain / `0.00001` exponential, `999999.4` plain / `1e6` exponential),
+zero including on a log axis, negatives switching with their
+positives, mantissa exactness with trailing zeros kept, the
+nine-decimal worst plain case, both sig-fig budgets, log-mode
+always-exponential, the settings overrides, and the sub-1e-6 fallback
+— plus one DOM case in `PlotPanel.dom.test.tsx` that lowers the
+large-end threshold on a live panel and watches the axis re-label.
+Two superseded cases were rewritten rather than kept (see below).
+`pnpm --dir apps/gui test` 1434 → **1449** / 125 files, run twice
+clean; `pnpm --dir apps/gui build` green.
+
+**Docs, same commit:** README § plot gained a *Number formatting*
+bullet — the rule, the three settings by their panel labels, what
+still wins over it (a DBC's fixed precision, a raw field's hex), and
+the log-axis case.
+
 ### Blockers / side effects
+
+- **The groomed spec's `1.23457e-4` example is unreachable under its
+  own threshold.** A value that renders as `1.23457e-4` has magnitude
+  1.23e-4, which is *above* the 1e-4 switch, so it reads plainly
+  (`0.000123457`). The mantissa-width point the example was making
+  stands — the test pins it at `1.23457e-5` instead. Nothing was
+  changed to accommodate the example: the threshold and the mantissa
+  width are what shipped.
+- **The tick-reactivity DOM test does not isolate the effect deps.**
+  Removing the three dep entries and re-running it still passes: under
+  jsdom the panel's post-mount rebuild timer and resample loop rebuild
+  the uPlot instance within the `waitFor` window regardless, so the
+  fresh closure gets installed either way. The test therefore pins the
+  *behaviour* (a settings change re-labels a live axis) and not the
+  mechanism. The deps are still required — an idle plot with a paused
+  capture and no resize rebuilds nothing on its own — but nothing in
+  the suite would catch their removal.
+- **`RbsPanel`'s own `formatValue` was deliberately not migrated.** It
+  renders value-table entries in the RBS/transmit editor — a
+  `toPrecision(6)` with its trailing zeros trimmed. It is not a plot
+  readout and not a y-axis tick, which is the scope the groomed item
+  names, and folding an editor's cell rendering into the plot's
+  magnitude rule is a UI decision nobody asked for. Left as it was.
+- **One pre-existing render-count test flaked, once.** `PlotPanel.dom
+  .test.tsx`'s "re-renders no plot area when only panel-local state
+  changes" failed on a full-suite run *before* any of item 6's code
+  existed (baseline check on `task52-connection-feedback`), and again
+  on one run mid-phase; the two final full runs are clean. The
+  mechanism is visible in the file: the suite's reset does `void
+  hydrateSettings()` **without awaiting it**, so a settings publish can
+  land inside a later test and re-render a plot area. Item 6's own DOM
+  test restores its key awaited, inside the test, so it cannot
+  contribute; the pre-existing `plot_fetch_interval_ms` case at the
+  bottom of the same file still does not, and was left alone as out of
+  scope.
 
 - **"What the driver actually applied" does not exist in this stack.**
   Item 4(c) was groomed as "echo the values the driver applied, from
