@@ -834,6 +834,44 @@ describe("PlotPanel", () => {
     });
   });
 
+  // Normal mode is the other half of the applied theme, so it is a live
+  // switch on the same terms — same attribute, same redraw.
+  it("follows a normal mode change live, same as a theme change", async () => {
+    mockSettings.theme = "light";
+    await act(async () => {
+      await hydrateSettings();
+    });
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const stop = startThemeSync();
+      try {
+        const inst = liveInstanceIn("Area 1") as unknown as {
+          opts: { axes: { stroke?: unknown }[] };
+          redraws: number;
+        };
+        const redrawsBefore = inst.redraws;
+        await act(async () => {
+          await updateSettings({ normal_mode: true });
+        });
+        expect(document.documentElement.dataset.theme).toBe("normal");
+        expect(activeTheme()).toBe("normal");
+        expect(inst.redraws).toBeGreaterThan(redrawsBefore);
+        const stroke = inst.opts.axes[0].stroke;
+        expect(typeof stroke === "function" ? (stroke as () => string)() : stroke).toBe(
+          THEMES.normal.axisText,
+        );
+      } finally {
+        stop();
+        setActiveTheme("dark");
+      }
+    });
+  });
+
   it("y-axis-mode selector switches an area between unified / per-unit / individual; per-unit splits by unit", async () => {
     renderPanel();
     const picker = screen.getByLabelText("add signal to focused plot area");

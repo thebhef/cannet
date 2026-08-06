@@ -227,7 +227,9 @@ export function App() {
   // than from our token layer, so the tab strip and group borders are
   // the one piece of the window a `data-theme` flip cannot reach. Swap
   // the object instead.
-  const dockTheme = useThemeName() === "light" ? themeLight : themeAbyss;
+  // Dockview ships two of them, so every light-background theme takes
+  // the light one.
+  const dockTheme = useThemeName() === "dark" ? themeAbyss : themeLight;
   useEffect(() => startDiagReporter(), []); // DIAG
   const [count, setCount] = useState(0);
   // Windowed-ring low-water mark from `trace-grew` (ADR 0002 DS-8): the

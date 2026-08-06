@@ -97,3 +97,50 @@ describe("startThemeSync", () => {
     expect(activeTheme()).toBe("dark");
   });
 });
+
+// The applied theme comes from the *pair*, so the flag is a live switch
+// of its own — not something read once at boot.
+describe("normal mode", () => {
+  it("applies from the stored pair at boot", async () => {
+    stored = { theme: "light", normal_mode: true };
+    await hydrateSettings();
+    stop = startThemeSync();
+    expect(document.documentElement.dataset.theme).toBe("normal");
+    expect(theme()).toBe(THEMES.normal);
+  });
+
+  it("swaps the light theme when it is flipped, and back", async () => {
+    stored = { theme: "light" };
+    await hydrateSettings();
+    stop = startThemeSync();
+    expect(activeTheme()).toBe("light");
+
+    const notified = vi.fn();
+    const unsubscribe = subscribeTheme(notified);
+    try {
+      await updateSettings({ normal_mode: true });
+      expect(document.documentElement.dataset.theme).toBe("normal");
+      expect(theme()).toBe(THEMES.normal);
+      expect(notified).toHaveBeenCalledTimes(1);
+
+      await updateSettings({ normal_mode: false });
+      expect(document.documentElement.dataset.theme).toBe("light");
+      expect(theme()).toBe(THEMES.light);
+      expect(notified).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("leaves the dark theme alone", async () => {
+    stored = { theme: "dark", normal_mode: true };
+    await hydrateSettings();
+    stop = startThemeSync();
+    expect(activeTheme()).toBe("dark");
+
+    await updateSettings({ theme: "light" });
+    expect(activeTheme()).toBe("normal");
+    await updateSettings({ theme: "dark" });
+    expect(activeTheme()).toBe("dark");
+  });
+});

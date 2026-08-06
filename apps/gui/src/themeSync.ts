@@ -10,12 +10,19 @@
 // Started before first render so a user whose stored theme is `light`
 // never sees a dark frame.
 
+import type { Settings } from "./hostSettings";
 import { hostSettings, subscribeSettings } from "./hostSettings";
-import { setActiveTheme } from "./theme";
+import { resolveTheme, setActiveTheme } from "./theme";
+
+/// The theme a settings snapshot applies. Two fields decide it —
+/// `theme` and `normal_mode` — and `resolveTheme` owns the rule.
+function applied(s: Settings): void {
+  setActiveTheme(resolveTheme(s.theme, s.normal_mode));
+}
 
 /// Apply the currently-cached theme setting, then keep applying it on
 /// every settings change. Returns the unsubscribe function.
 export function startThemeSync(): () => void {
-  setActiveTheme(hostSettings().theme);
-  return subscribeSettings((s) => setActiveTheme(s.theme));
+  applied(hostSettings());
+  return subscribeSettings(applied);
 }

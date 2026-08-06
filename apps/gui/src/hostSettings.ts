@@ -31,7 +31,7 @@ import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { BindingSpec } from "./commands";
-import type { ThemeName } from "./theme";
+import type { ThemeSetting } from "./theme";
 import type { SystemLogLevel } from "./types";
 
 /// Mirror of the host `Settings` struct (snake_case to match serde).
@@ -59,13 +59,14 @@ export interface Settings {
   /// auto-located project directory the host resolved. Read once, on the
   /// boot open.
   reopen_last_project: boolean;
-  /// Which color theme the app renders in — a `ThemeName` from
-  /// `theme.ts`, which is also the value of the `data-theme` attribute
-  /// the token layer keys off. Applied live: `themeSync.ts` bridges this
-  /// field to `setActiveTheme`.
-  theme: ThemeName;
+  /// Which color theme the app renders in. Applied live: `themeSync.ts`
+  /// resolves this and `normal_mode` to the `ThemeName` of `theme.ts`,
+  /// which is the value of the `data-theme` attribute the token layer
+  /// keys off.
+  theme: ThemeSetting;
   /// Normal mode. On, `light` renders the normal-mode theme instead;
-  /// `dark` is unaffected.
+  /// `dark` is unaffected. Applied live, like `theme`, with which it
+  /// pairs to decide the theme.
   normal_mode: boolean;
   /// How long a transient status notice dwells in the header before the
   /// bar reverts to its resting line.
