@@ -16,6 +16,7 @@
 //!
 //! ```text
 //! sidecar\tversion\t<v>
+//! sidecar\tlogfile\t<path>
 //! sidecar\tinterfaces\t<n>
 //! interface\t<id>\t<display_name>\t<fd|classic>
 //! sidecar\tlistening\t<addr>
@@ -27,6 +28,17 @@
 //! plain info-level message — so a stray `print` from a vendor SDK
 //! still reaches the user without code changes here. Stderr is
 //! routed to warn level.
+//!
+//! ## Two sidecar log sinks
+//!
+//! The child's stderr is one sink and the panel reads it, so it stays
+//! at the `sidecar_log_level` setting. The host also hands the sidecar
+//! `--log-file <log_dir>/`[`SIDECAR_LOG_FILE`] — a second, **always
+//! debug** rolling sink (1 MiB × 5 generations) next to the host's own
+//! `cannet.log`, holding every gRPC command with its arguments and
+//! outcome and every driver traceback. Raising the file's detail
+//! therefore never raises the panel's. The sidecar echoes the path back
+//! on the `logfile` banner line so the user can find it.
 //!
 //! ## Launch strategy
 //!
@@ -347,12 +359,55 @@ pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
 /// never set this before, which is what made a replaced driver
 /// unreachable from the GUI.
 ///
+/// `log_file` is the sidecar's own rolling, **always-debug** logfile
+/// ([`sidecar_log_file`]). It is a separate sink from stderr, on
+/// purpose: stderr is what becomes System Messages and stays at
+/// `log_level`, while the file records every gRPC command with its
+/// arguments and outcome plus every driver traceback — the detail a
+/// per-channel connect failure needs after the fact, without making the
+/// panel noisier for everyone. `None` means "don't write one", which is
+/// also the sidecar's own default when the flag is absent.
+///
 /// `--bind` is still deliberately not passed — see [`build_command`].
-fn apply_sidecar_settings(cmd: &mut Command, log_level: &str, driver_module: Option<&OsStr>) {
+fn apply_sidecar_settings(
+    cmd: &mut Command,
+    log_level: &str,
+    log_file: Option<&std::path::Path>,
+    driver_module: Option<&OsStr>,
+) {
     cmd.arg("--log-level").arg(log_level);
+    if let Some(path) = log_file {
+        cmd.arg("--log-file").arg(path);
+    }
     if let Some(module) = driver_module {
         cmd.env(DRIVER_MODULE_ENV, module);
     }
+}
+
+/// File name of the sidecar's rolling logfile, a sibling of the host's
+/// own [`crate::crash::LOG_FILE`] in the same per-OS log directory — one
+/// place to look, and one directory to attach to a bug report.
+pub const SIDECAR_LOG_FILE: &str = "sidecar-python-can.log";
+
+/// Where to tell the sidecar to write its logfile, creating the
+/// directory if it isn't there yet (the sidecar creates it too, but the
+/// host knows the path first and a missing directory is the one failure
+/// mode that would silently cost the whole log). `None` — and no
+/// `--log-file` argument — when the directory can't be created, since a
+/// sidecar that serves hardware without a logfile beats one that
+/// doesn't start.
+fn sidecar_log_file(app: &AppHandle) -> Option<PathBuf> {
+    let dir = crate::crash::log_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        sys_warn!(
+            app,
+            SOURCE,
+            "could not create the log directory {}: {e}; the sidecar will not write a logfile",
+            dir.display()
+        );
+        return None;
+    }
+    Some(dir.join(SIDECAR_LOG_FILE))
 }
 
 /// Windows: suppress the console window a console-subsystem child would
@@ -599,8 +654,14 @@ fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
         sys_warn!(app, SOURCE, "{note}");
     }
     let log_level = crate::settings::effective().sidecar_log_level.clone();
+    let log_file = sidecar_log_file(app);
     let configure = |mut cmd: Command| {
-        apply_sidecar_settings(&mut cmd, &log_level, driver_module.value.as_deref());
+        apply_sidecar_settings(
+            &mut cmd,
+            &log_level,
+            log_file.as_deref(),
+            driver_module.value.as_deref(),
+        );
         cmd
     };
     // Resolve the sidecar source directory to an absolute path
@@ -959,6 +1020,11 @@ pub fn classify_stdout_line(line: &str) -> (LogLevel, String) {
         // local capture is available; the rest of the banner is the
         // sidecar reporting on itself.
         ["sidecar", "listening", addr] => (LogLevel::Info, format!("listening on {addr}")),
+        // Where the sidecar's own always-debug rolling log went. Info,
+        // like `listening`: it is the answer to "what do I attach to
+        // the bug report", so it has to be readable at the panel's
+        // default filter.
+        ["sidecar", "logfile", path] => (LogLevel::Info, format!("detailed log: {path}")),
         ["sidecar", "shutdown", reason] => (LogLevel::Info, format!("shutting down ({reason})")),
         ["sidecar", "exit", code] => (LogLevel::Debug, format!("exit code {code}")),
         // Top-level Python failure surfaced by `__main__.py`'s
@@ -1395,7 +1461,7 @@ mod tests {
             build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
             build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
         ] {
-            apply_sidecar_settings(&mut cmd, "warning", None);
+            apply_sidecar_settings(&mut cmd, "warning", None, None);
             let args: Vec<OsString> = cmd.get_args().map(OsStr::to_os_string).collect();
             let at = args
                 .iter()
@@ -1407,13 +1473,63 @@ mod tests {
     }
 
     #[test]
+    fn the_sidecar_logfile_path_reaches_the_child_on_every_launcher() {
+        // The always-debug file is the only place a per-channel connect
+        // failure is diagnosable after the fact, and the sidecar writes
+        // one only when told where — so the flag has to be on every
+        // launch flavour, frozen included.
+        let path = std::env::temp_dir().join("logs").join(SIDECAR_LOG_FILE);
+        for mut cmd in [
+            build_command(LaunchPath::PathUv, &sample_sidecar_dir()),
+            build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
+            build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
+        ] {
+            apply_sidecar_settings(&mut cmd, "info", Some(&path), None);
+            let args: Vec<OsString> = cmd.get_args().map(OsStr::to_os_string).collect();
+            let at = args
+                .iter()
+                .position(|a| a == "--log-file")
+                .unwrap_or_else(|| panic!("no --log-file in {args:?}"));
+            assert_eq!(args[at + 1], path.as_os_str());
+        }
+    }
+
+    #[test]
+    fn no_logfile_path_means_no_flag_at_all() {
+        // `None` must not degrade into an empty argument: the sidecar
+        // reads a bare `--log-file` as an error, and its own default is
+        // exactly "write no file".
+        let mut cmd = build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name()));
+        apply_sidecar_settings(&mut cmd, "info", None, None);
+        assert!(
+            !cmd.get_args().any(|a| a == "--log-file"),
+            "{:?}",
+            cmd.get_args().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_logfile_banner_line_is_readable_at_the_default_filter() {
+        // Debug-level would hide it behind the panel's default filter,
+        // which defeats the point: this line is how a user finds the
+        // file to attach to a bug report.
+        let (lvl, msg) =
+            classify_stdout_line("sidecar\tlogfile\t/home/u/.local/share/cannet/logs/s.log");
+        assert!(matches!(lvl, LogLevel::Info));
+        assert!(
+            msg.contains("/home/u/.local/share/cannet/logs/s.log"),
+            "the path must survive verbatim, got {msg}"
+        );
+    }
+
+    #[test]
     fn the_driver_module_is_forwarded_to_the_sidecar_process() {
         // `CANNET_DRIVER_MODULE` is read by the *sidecar*, and the host
         // never set it — so the only way to select a driver was to
         // launch the GUI from a shell that already had it. The setting
         // is the host-side half of that contract.
         let mut cmd = build_command(LaunchPath::PathUv, &sample_sidecar_dir());
-        apply_sidecar_settings(&mut cmd, "info", Some(OsStr::new("my_team.driver")));
+        apply_sidecar_settings(&mut cmd, "info", None, Some(OsStr::new("my_team.driver")));
         let value = cmd
             .get_envs()
             .find_map(|(k, v)| (k == DRIVER_MODULE_ENV).then_some(v))
@@ -1427,7 +1543,7 @@ mod tests {
         // The untouched install must launch exactly as it did before
         // the setting existed: the sidecar picks its own default.
         let mut cmd = build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name()));
-        apply_sidecar_settings(&mut cmd, "info", None);
+        apply_sidecar_settings(&mut cmd, "info", None, None);
         assert!(
             !cmd.get_envs().any(|(k, _)| k == DRIVER_MODULE_ENV),
             "nothing should be set when neither the env nor the setting names one"
