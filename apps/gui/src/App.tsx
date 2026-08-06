@@ -83,6 +83,7 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
+import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
 import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
@@ -1777,6 +1778,27 @@ export function App() {
     [],
   );
 
+  /// Whether the "Clear project colors" confirmation is up. The command
+  /// discards deliberate choices with no partial undo, so it asks first.
+  const [confirmingClearColors, setConfirmingClearColors] = useState(false);
+
+  /// Drop every color the user picked: each bus's `color` field and the
+  /// whole `signal_colors` map, so both populations fall back to the
+  /// active theme's wheels. Color-map rules are deliberately untouched —
+  /// a rule says what a *value* means, which is authored data rather
+  /// than cosmetic identity.
+  const handleClearProjectColors = useCallback(() => {
+    setBuses((prev) =>
+      prev.map((b) => {
+        if (b.color == null) return b;
+        const { color: _dropped, ...rest } = b;
+        return rest;
+      }),
+    );
+    setSignalColors({});
+    setDirty(true);
+  }, []);
+
   /// Set (or clear, with `null`) one signal's project-level color
   /// override — a model edit, so it marks the project dirty.
   const handleSetSignalColor = useCallback((key: string, color: string | null) => {
@@ -2010,6 +2032,7 @@ export function App() {
     "panel.add.rbs": () => addPanel("rbs"),
     "panel.add.colormap": () => addPanel("colormap"),
     "project.saveAll": () => void handleSaveAllRef.current(),
+    "project.clearColors": () => setConfirmingClearColors(true),
     "rbs.killSwitch": toggleRbsKillSwitch,
     // Quit via the window's own close path: runs the unsaved-changes
     // prompt (`onCloseRequested`) and the clean-shutdown flush, exactly
@@ -2527,6 +2550,14 @@ export function App() {
       </ProjectContext.Provider>
       {commands.palettes}
       {pendingClose && <CloseConfirmModal onChoice={pendingClose.resolve} />}
+      {confirmingClearColors && (
+        <ClearColorsConfirmModal
+          onChoice={(confirmed) => {
+            setConfirmingClearColors(false);
+            if (confirmed) handleClearProjectColors();
+          }}
+        />
+      )}
       {pendingBlf && (
         <BlfChannelMapModal
           blfPath={pendingBlf.blfPath}
