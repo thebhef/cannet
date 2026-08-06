@@ -80,10 +80,12 @@ function Harness({
   pageRows = 2,
   rendered = 99,
   chips,
+  selectionOrder,
 }: {
   pageRows?: number;
   rendered?: number;
   chips?: readonly string[];
+  selectionOrder?: () => string[];
 }) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const rows = flatten(TREE, expanded);
@@ -100,6 +102,7 @@ function Harness({
           return next;
         }),
       isSelectable: (row) => !UNSELECTABLE.has(row.id),
+      selectionOrder,
     },
     pageRows,
     idPrefix: "harness",
@@ -137,7 +140,14 @@ function Harness({
   );
 }
 
-function setup(props: { pageRows?: number; rendered?: number; chips?: readonly string[] } = {}) {
+function setup(
+  props: {
+    pageRows?: number;
+    rendered?: number;
+    chips?: readonly string[];
+    selectionOrder?: () => string[];
+  } = {},
+) {
   scrolled.length = 0;
   primaryAction.mockClear();
   const view = render(<Harness {...props} />);
@@ -293,6 +303,25 @@ describe("selection", () => {
     // only selectable row in the space).
     fireEvent.keyDown(view.grid, { key: "a", ctrlKey: true });
     expect(selectedRows(view).sort()).toEqual(["chip-a", "chip-b", "plain"]);
+  });
+
+  it("takes a paged panel's own selection order instead of walking the space", () => {
+    // A host-paged row space cannot be walked — `count` is the whole
+    // capture. The panel answers with the page it holds, and the layer
+    // asks it rather than `isSelectable`, on clicks and on Ctrl+A alike.
+    const asked = vi.fn(() => ["frame", "plain"]);
+    const view = setup({ selectionOrder: asked });
+    fireEvent.keyDown(view.grid, { key: "a", ctrlKey: true });
+    expect(asked).toHaveBeenCalled();
+    // "frame" is a child of the closed container, so a walk of the space
+    // could not have produced it — and "msg" is not in the page.
+    expect(selectedRows(view)).toEqual(["plain"]);
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" }); // open the container
+    fireEvent.click(view.getByTestId("row-msg"));
+    expect(selectedRows(view)).toEqual([]); // not in the panel's order
+    fireEvent.click(view.getByTestId("row-frame"));
+    expect(selectedRows(view)).toEqual(["frame"]);
   });
 });
 

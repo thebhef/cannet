@@ -62,6 +62,16 @@ export interface GridviewAdapter extends GridviewRowSpace {
   /// nodes are selectable branches while its bus / file / ECU nodes are
   /// not.
   isSelectable(row: GridviewRow): boolean;
+  /// The selectable rows in display order, when the panel can answer
+  /// without being walked. Omitted ⇒ the layer walks the space and asks
+  /// `isSelectable` for each row, which is right wherever `count` is
+  /// what the panel holds.
+  ///
+  /// A view over a *host-paged* row space has to supply it: the walk
+  /// runs on every click and on Ctrl/Cmd+A, and a chronological trace's
+  /// `count` is the whole capture — millions of rows the frontend does
+  /// not hold. The honest answer there is the page it does hold.
+  selectionOrder?(): string[];
 }
 
 /// A row space over an array of already-flattened rows — the shape the

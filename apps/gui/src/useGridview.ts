@@ -98,9 +98,14 @@ export function useGridview({
   const [selection, setSelection] = useState(EMPTY_SELECTION);
 
   /// Everything the selection may hold, in display order: the
-  /// selectable rows, then the consumer's non-row items.
+  /// selectable rows, then the consumer's non-row items. A panel that
+  /// answers the row half itself is taken at its word — the default
+  /// walk is O(count), which a host-paged row space cannot afford.
   const selectionOrder = useCallback(
-    () => [...selectableIdsInOrder(adapter, adapter.isSelectable), ...extraSelectableIds],
+    () => [
+      ...(adapter.selectionOrder?.() ?? selectableIdsInOrder(adapter, adapter.isSelectable)),
+      ...extraSelectableIds,
+    ],
     [adapter, extraSelectableIds],
   );
 
