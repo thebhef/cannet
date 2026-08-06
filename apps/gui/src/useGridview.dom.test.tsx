@@ -1,0 +1,312 @@
+// @vitest-environment jsdom
+//
+// The gridview container hook (ADR 0044): the key table, the roving
+// active row named by `aria-activedescendant` while focus stays on the
+// container, and the dispatcher suppression that keeps a global chord
+// on an arrow key from killing grid navigation.
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import "@testing-library/jest-dom/vitest";
+import { cleanup, fireEvent, render } from "@testing-library/react";
+import { useState } from "react";
+
+import {
+  dispatchStroke,
+  isEditableTarget,
+  isGridviewTarget,
+  parseChord,
+  type KeyStroke,
+} from "./keybindings";
+import { arrayRowSpace, type GridviewRow } from "./gridviewRows";
+import { useGridview } from "./useGridview";
+
+afterEach(cleanup);
+
+interface Node {
+  id: string;
+  kind: "branch" | "leaf";
+  children?: Node[];
+  content?: boolean;
+  selectable?: boolean;
+}
+
+const TREE: Node[] = [
+  {
+    id: "bus",
+    kind: "branch",
+    selectable: false,
+    children: [
+      { id: "msg", kind: "branch", children: [{ id: "sig", kind: "leaf" }] },
+      { id: "frame", kind: "leaf", content: true },
+    ],
+  },
+  { id: "plain", kind: "leaf" },
+];
+
+function flatten(nodes: readonly Node[], expanded: ReadonlySet<string>, depth = 0): GridviewRow[] {
+  const out: GridviewRow[] = [];
+  for (const n of nodes) {
+    const children = n.children ?? [];
+    out.push({
+      id: n.id,
+      kind: n.kind,
+      expandable: n.kind === "branch" ? children.length > 0 : n.content === true,
+      depth,
+    });
+    if (n.kind === "branch" && expanded.has(n.id)) {
+      out.push(...flatten(children, expanded, depth + 1));
+    }
+  }
+  return out;
+}
+
+const UNSELECTABLE = new Set(
+  TREE.filter((n) => n.selectable === false).map((n) => n.id),
+);
+
+const scrolled: number[] = [];
+const primaryAction = vi.fn();
+
+/// A panel-shaped consumer: it owns the expansion state and the
+/// rendering, the hook owns the interaction. `rendered` limits how many
+/// rows reach the DOM, standing in for a paged viewport where the
+/// cursor's row need not exist as a node.
+function Harness({ pageRows = 2, rendered = 99 }: { pageRows?: number; rendered?: number }) {
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const rows = flatten(TREE, expanded);
+  const space = arrayRowSpace(rows, (id) => expanded.has(id));
+  const grid = useGridview({
+    adapter: {
+      ...space,
+      scrollToRow: (index) => scrolled.push(index),
+      setExpanded: (id, open) =>
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          if (open) next.add(id);
+          else next.delete(id);
+          return next;
+        }),
+      isSelectable: (row) => !UNSELECTABLE.has(row.id),
+    },
+    pageRows,
+    idPrefix: "harness",
+    onPrimaryAction: primaryAction,
+  });
+  return (
+    <div data-testid="outside">
+      <div data-testid="grid" role="tree" {...grid.containerProps}>
+        {rows.slice(0, rendered).map((row) => (
+          <div
+            key={row.id}
+            id={grid.rowDomId(row.id)}
+            role="treeitem"
+            data-testid={`row-${row.id}`}
+            data-selected={grid.selection.has(row.id) ? "yes" : "no"}
+            onClick={(e) =>
+              grid.onRowClick(row.id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey })
+            }
+          >
+            {row.id}
+            <button type="button">edit</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function setup(props: { pageRows?: number; rendered?: number } = {}) {
+  scrolled.length = 0;
+  primaryAction.mockClear();
+  const view = render(<Harness {...props} />);
+  const grid = view.getByTestId("grid");
+  grid.focus();
+  return { ...view, grid };
+}
+
+/// What `aria-activedescendant` names, back as a row id.
+function cursor(grid: HTMLElement): string | null {
+  const value = grid.getAttribute("aria-activedescendant");
+  return value == null ? null : decodeURIComponent(value.replace(/^harness-/, ""));
+}
+
+function selectedRows(view: ReturnType<typeof render>): string[] {
+  return Array.from(view.container.querySelectorAll('[data-selected="yes"]')).map(
+    (el) => (el as HTMLElement).dataset.testid?.replace("row-", "") ?? "",
+  );
+}
+
+describe("cursor", () => {
+  it("moves with the arrows while focus stays on the container", () => {
+    const view = setup();
+    expect(cursor(view.grid)).toBeNull();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    expect(cursor(view.grid)).toBe("bus");
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    expect(cursor(view.grid)).toBe("plain");
+    fireEvent.keyDown(view.grid, { key: "ArrowUp" });
+    expect(cursor(view.grid)).toBe("bus");
+    expect(document.activeElement).toBe(view.grid);
+  });
+
+  it("names a row that is not in the DOM at all", () => {
+    // A paged viewport renders a window; the cursor still has to be
+    // nameable, which is why focus never lives on a row.
+    const view = setup({ rendered: 0 });
+    fireEvent.keyDown(view.grid, { key: "End" });
+    expect(cursor(view.grid)).toBe("plain");
+    expect(view.queryByTestId("row-plain")).toBeNull();
+    expect(document.activeElement).toBe(view.grid);
+  });
+
+  it("jumps to the ends and moves by a viewport", () => {
+    const view = setup({ pageRows: 2 });
+    fireEvent.keyDown(view.grid, { key: "End" });
+    expect(cursor(view.grid)).toBe("plain");
+    fireEvent.keyDown(view.grid, { key: "Home" });
+    expect(cursor(view.grid)).toBe("bus");
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" }); // expand bus
+    fireEvent.keyDown(view.grid, { key: "PageDown" });
+    expect(cursor(view.grid)).toBe("frame");
+    fireEvent.keyDown(view.grid, { key: "PageUp" });
+    expect(cursor(view.grid)).toBe("bus");
+  });
+
+  it("asks the panel to scroll the cursor's row into view", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "End" });
+    expect(scrolled).toEqual([1]);
+  });
+
+  it("expands and collapses through Right and Left", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" });
+    expect(view.getByTestId("row-msg")).toBeInTheDocument();
+    expect(cursor(view.grid)).toBe("bus");
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" });
+    expect(cursor(view.grid)).toBe("msg");
+    fireEvent.keyDown(view.grid, { key: "ArrowLeft" });
+    expect(cursor(view.grid)).toBe("bus");
+    fireEvent.keyDown(view.grid, { key: "ArrowLeft" });
+    expect(view.queryByTestId("row-msg")).toBeNull();
+  });
+
+  it("expands a leaf's content block without adding rows", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" }); // bus opens
+    fireEvent.keyDown(view.grid, { key: "End" });
+    fireEvent.keyDown(view.grid, { key: "ArrowUp" });
+    expect(cursor(view.grid)).toBe("frame");
+    const before = view.container.querySelectorAll('[role="treeitem"]').length;
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" });
+    expect(view.container.querySelectorAll('[role="treeitem"]').length).toBe(before);
+  });
+});
+
+describe("keys the layer does not bind", () => {
+  it("runs the panel's primary action on Space and nothing on Enter", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "Enter" });
+    expect(primaryAction).not.toHaveBeenCalled();
+    fireEvent.keyDown(view.grid, { key: " " });
+    expect(primaryAction).toHaveBeenCalledWith("bus");
+  });
+
+  it("lets Tab through to the row's interactive content", () => {
+    const view = setup();
+    const handled = fireEvent.keyDown(view.grid, { key: "Tab" });
+    // `fireEvent` returns false when a handler called preventDefault:
+    // the grid must not consume Tab, or the button inside a row is
+    // unreachable.
+    expect(handled).toBe(true);
+  });
+});
+
+describe("selection", () => {
+  it("replaces on a plain click and follows the cursor", () => {
+    const view = setup();
+    fireEvent.click(view.getByTestId("row-plain"));
+    expect(selectedRows(view)).toEqual(["plain"]);
+    expect(cursor(view.grid)).toBe("plain");
+    fireEvent.keyDown(view.grid, { key: "ArrowUp" });
+    // The cursor lands on an unselectable container, so the selection
+    // collapses to nothing rather than picking it up.
+    expect(cursor(view.grid)).toBe("bus");
+    expect(selectedRows(view)).toEqual([]);
+  });
+
+  it("toggles with Ctrl+click and keeps the cursor with it", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" });
+    fireEvent.click(view.getByTestId("row-frame"));
+    fireEvent.click(view.getByTestId("row-msg"), { ctrlKey: true });
+    expect(selectedRows(view).sort()).toEqual(["frame", "msg"]);
+    fireEvent.click(view.getByTestId("row-msg"), { ctrlKey: true });
+    expect(selectedRows(view)).toEqual(["frame"]);
+  });
+
+  it("takes every selectable row on Ctrl+A, and no others", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" }); // open the container
+    fireEvent.keyDown(view.grid, { key: "a", ctrlKey: true });
+    expect(selectedRows(view).sort()).toEqual(["frame", "msg", "plain"]);
+  });
+});
+
+describe("global dispatcher suppression", () => {
+  /// The command framework's listener, wired exactly as `useCommands`
+  /// does it: capture phase on `document`, editable and gridview
+  /// suppression from the target.
+  function installDispatcher(bindings: { chord: string; commandId: string }[]) {
+    const fired: string[] = [];
+    const parsed = bindings.map((b) => ({
+      chord: parseChord(b.chord),
+      commandId: b.commandId,
+    }));
+    const onKeyDown = (e: KeyboardEvent) => {
+      const stroke: KeyStroke = {
+        key: e.key,
+        ctrl: e.ctrlKey,
+        meta: e.metaKey,
+        shift: e.shiftKey,
+        alt: e.altKey,
+      };
+      const r = dispatchStroke([], stroke, parsed, {
+        isMac: false,
+        inEditable: isEditableTarget(e.target),
+        inGridview: isGridviewTarget(e.target),
+      });
+      if (r.commandId) fired.push(r.commandId);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return { fired, dispose: () => document.removeEventListener("keydown", onKeyDown, true) };
+  }
+
+  it("does not fire a globally-bound arrow chord inside a grid, but does outside it", () => {
+    const view = setup();
+    const dispatcher = installDispatcher([
+      { chord: "ArrowDown", commandId: "test.down" },
+      { chord: "f", commandId: "test.fit" },
+    ]);
+    try {
+      fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+      expect(dispatcher.fired).toEqual([]);
+      // …and the grid's own cursor did move.
+      expect(cursor(view.grid)).toBe("bus");
+
+      fireEvent.keyDown(view.getByTestId("outside"), { key: "ArrowDown" });
+      expect(dispatcher.fired).toEqual(["test.down"]);
+
+      // An unrelated chord still reaches the dispatcher from inside.
+      fireEvent.keyDown(view.grid, { key: "f" });
+      expect(dispatcher.fired).toEqual(["test.down", "test.fit"]);
+    } finally {
+      dispatcher.dispose();
+    }
+  });
+});

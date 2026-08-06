@@ -391,3 +391,18 @@ exercised rather than asserted. Suite: 111 files / 1272 tests green;
 (click-replace / Ctrl+Cmd-click toggle / Ctrl+Shift+click additive
 range from the anchor, anchor preserved across ranges), `selectAll`,
 `collapseToCursor`. 15 tests. Suite green; `pnpm build` green.
+
+### 2026-08-05 — A.3 `useGridview` container + D10 suppression
+
+`apps/gui/src/useGridview.ts` + `useGridview.dom.test.tsx` (12 DOM
+tests), plus `keybindings.ts` gaining `GRIDVIEW_ATTR`, `isGridviewKey`,
+`isGridviewTarget` and `dispatchStroke`'s `inGridview` option (4 new
+unit tests), wired in `useCommands`'s capture-phase listener.
+
+The container holds focus and `aria-activedescendant` names the active
+row — covered by a test that renders **zero** rows and still navigates,
+which is the paged-viewport case the rule exists for. The suppression
+test was falsified before being trusted: forcing `inGridview: false`
+in the harness's dispatcher makes it fail, so it is testing the rule
+and not the harness. Suite: 113 files / 1303 tests green; `pnpm build`
+green.
