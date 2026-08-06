@@ -1,10 +1,171 @@
+/* === Theme tokens ===
+   The one place a color is written down. Every rule below reads a
+   token, so a theme is a different set of values here rather than
+   an edit across the stylesheet. Names are roles, not shades: two
+   rules that happen to share a hex today but mean different things
+   (a border and a fill, say) hold different tokens, and no two
+   distinct values are folded into one.
+*/
+:root {
+  /* Surfaces — panel, row and control backgrounds */
+  --divider: #2c3444;
+  --divider-subtle: #1f2630;
+  --surface-app: #0e1116;
+  --surface-badge-info: #131a26;
+  --surface-bus-row: #111c33;
+  --surface-bus-row-hover: #16213c;
+  --surface-button-hover: #1a212b;
+  --surface-canvas: #0b1220;
+  --surface-cell-hover: #1c2433;
+  --surface-control: #0f141d;
+  --surface-control-hover: #334155;
+  --surface-field: #0f172a;
+  --surface-graph-toolbar: #1f2532;
+  --surface-hover: #1c2530;
+  --surface-hover-strong: #1f2a3d;
+  --surface-hover-subtle: #121821;
+  --surface-overlay: #131923;
+  --surface-pop: #111827;
+  --surface-raised: #1e293b;
+  --surface-row: #11161e;
+  --surface-row-focused: #17202c;
+  --surface-row-primary: #131e29;
+  --surface-row-selected: #1b2740;
+  --surface-section-header: #131a24;
+  --surface-sunken: #0d1114;
+  --surface-toggle-active: #2a3340;
+  --surface-toggle-active-alt: #1f2c3a;
+  --surface-toolbar-control: #1c2230;
+  --surface-toolbar-control-hover: #2a3447;
+  --surface-toolbar-summary: #182030;
+  --surface-tx-toolbar: #11161a;
+
+  /* Text — the foreground ramp and the semantic text tints */
+  --text-applied: #7dd3fc;
+  --text-badge-info: #93a7cc;
+  --text-body: #d8dee9;
+  --text-data: #c5d2e0;
+  --text-debug: #7c8899;
+  --text-dim: #475569;
+  --text-ecu: #5eead4;
+  --text-faint: #64748b;
+  --text-label: #e6ecf5;
+  --text-message: #93c5fd;
+  --text-muted: #94a3b8;
+  --text-on-accent: #f8fafc;
+  --text-on-solid: #fff;
+  --text-primary: #e2e8f0;
+  --text-secondary: #cbd5e1;
+  --text-signal-value: #fde68a;
+  --text-source: #a5b4fc;
+
+  /* Borders, dividers and focus rings */
+  --border-badge-info: #33405c;
+  --border-default: #2c3444;
+  --border-dim: #475569;
+  --border-dotted: #1c252b;
+  --border-hover: #3f4a5f;
+  --border-list: #161d27;
+  --border-row: #11161e;
+  --border-row-subtle: #1a1f28;
+  --border-search-focus: #2d5aa8;
+  --border-soft: #1e293b;
+  --border-strong: #334155;
+  --border-subtle: #1f2630;
+  --field-focus-border: #60a5fa;
+  --focus-marker: #38bdf8;
+  --focus-outline: #38bdf8;
+
+  /* State: danger / warning / ok, plus markers and accents */
+  --accent-marker: #4ecbff;
+  --accent-progress: #4ecbff;
+  --accent-selected-bg: #1d4ed8;
+  --cursor-gold: #ffd93d;
+  --cursor-pink: #ff5577;
+  --danger-badge: #dc2626;
+  --danger-border: #7f1d1d;
+  --danger-border-soft: #4d2c2c;
+  --danger-surface: #2a1414;
+  --danger-surface-deep: #450a0a;
+  --danger-surface-dim: #1d1010;
+  --danger-surface-strong: #7f1d1d;
+  --danger-text: #f87171;
+  --danger-text-bright: #fecaca;
+  --danger-text-muted: #d98a8a;
+  --danger-text-soft: #fca5a5;
+  --dev-border: #4d3f1c;
+  --dev-surface: #1c1708;
+  --dev-text: #e0a458;
+  --modified-marker: #4f8ef7;
+  --modified-text: #4f8ef7;
+  --ok-border: #21463d;
+  --ok-dot: #22c55e;
+  --ok-surface: #0d1a17;
+  --ok-text: #4ade80;
+  --scope-marker: #58b09c;
+  --scope-text: #58b09c;
+  --warn-border: #eab308;
+  --warn-border-dim: #4a3a0a;
+  --warn-border-notice: #78350f;
+  --warn-border-strong: #92400e;
+  --warn-outline: #d97706;
+  --warn-surface: #422006;
+  --warn-surface-dim: #1e1a0a;
+  --warn-surface-notice: #1c1710;
+  --warn-text: #fbbf24;
+  --warn-text-bright: #fcd34d;
+  --warn-text-em: #eab308;
+  --warn-text-truncation: #e0a030;
+
+  /* Project-graph node identities (fill + outline per kind) */
+  --node-bus-bar: #60a5fa;
+  --node-bus-border: #3b82f6;
+  --node-bus-surface: #1e3a8a;
+  --node-filter-border: #a1a1aa;
+  --node-filter-surface: #3f3f46;
+  --node-gateway-border: #475569;
+  --node-plot-border: #14b8a6;
+  --node-plot-surface: #134e4a;
+  --node-signals-border: #38bdf8;
+  --node-signals-surface: #1e3a5f;
+  --node-surface: #1f2937;
+  --node-trace-border: #10b981;
+  --node-trace-surface: #064e3b;
+  --node-transmit-border: #7c3aed;
+  --node-transmit-surface: #3b1d3a;
+
+  /* Translucent layers: shadows, backdrops and washes */
+  --shadow-menu: rgba(0, 0, 0, 0.4);
+  --shadow-modal: rgb(0 0 0 / 0.5);
+  --shadow-inset: rgba(0, 0, 0, 0.25);
+  --overlay-backdrop: rgb(0 0 0 / 0.45);
+  --wash-light: rgba(255, 255, 255, 0.08);
+  --border-wash: rgb(255 255 255 / 0.12);
+  --border-wash-strong: rgba(255, 255, 255, 0.15);
+  --glow-focus: rgba(96, 165, 250, 0.45);
+  --scroll-thumb: rgb(148 163 184 / 0.25);
+  --accent-tint: rgba(78, 203, 255, 0.25);
+  --select-tint-soft: rgba(99, 102, 241, 0.15);
+  --select-tint: rgba(99, 102, 241, 0.35);
+  --select-tint-strong: rgba(99, 102, 241, 0.45);
+  --select-outline: rgba(99, 102, 241, 0.9);
+  --border-row-fade: rgba(30, 41, 59, 0.5);
+  --surface-head-fade: rgba(51, 65, 85, 0.45);
+  --danger-tint: rgba(153, 27, 27, 0.45);
+}
+/* === end theme tokens === */
+
+
+
+
+
 :root {
   color-scheme: dark;
   font-family:
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, sans-serif;
-  background: #0e1116;
-  color: #d8dee9;
+  background: var(--surface-app);
+  color: var(--text-body);
 }
 
 * {
@@ -26,7 +187,7 @@ main.app {
 
 header {
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #1f2630;
+  border-bottom: 1px solid var(--border-subtle);
   flex: 0 0 auto;
 }
 
@@ -39,9 +200,9 @@ header {
 }
 
 .toolbar button {
-  background: #1c2230;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-toolbar-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.25rem 0.6rem;
   cursor: pointer;
@@ -49,7 +210,7 @@ header {
 }
 
 .toolbar button:hover:not(:disabled) {
-  background: #2a3447;
+  background: var(--surface-toolbar-control-hover);
 }
 
 .toolbar button:disabled {
@@ -70,7 +231,7 @@ header {
   display: inline-block;
   width: 1px;
   height: 1.4em;
-  background: #2c3444;
+  background: var(--divider);
   margin: 0 0.2rem;
 }
 
@@ -84,9 +245,9 @@ header {
   list-style: none;
   cursor: pointer;
   padding: 0.2rem 0.5rem;
-  border: 1px solid #2c3444;
+  border: 1px solid var(--border-default);
   border-radius: 4px;
-  background: #182030;
+  background: var(--surface-toolbar-summary);
   color: inherit;
   font: inherit;
 }
@@ -94,7 +255,7 @@ header {
   display: none;
 }
 .toolbar details.recent-blfs > summary:hover {
-  background: #1f2a3d;
+  background: var(--surface-hover-strong);
 }
 .toolbar ul.recent-blfs-menu {
   position: absolute;
@@ -103,13 +264,13 @@ header {
   margin: 4px 0 0 0;
   padding: 4px 0;
   list-style: none;
-  background: #0f141d;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   min-width: 280px;
   max-width: 560px;
   z-index: 50;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .toolbar ul.recent-blfs-menu > li > button {
   display: block;
@@ -126,7 +287,7 @@ header {
   cursor: pointer;
 }
 .toolbar ul.recent-blfs-menu > li > button:hover {
-  background: #1f2a3d;
+  background: var(--surface-hover-strong);
 }
 
 /* Placeholder rows render only the row index until their chunk
@@ -138,7 +299,7 @@ header {
 
 .status {
   font-size: 0.78rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 /* Dock layout -----------------------------------------------------------*/
@@ -160,7 +321,7 @@ header {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 0.45);
+  background: var(--overlay-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -168,17 +329,17 @@ header {
 }
 
 .modal {
-  background: #131923;
-  border: 1px solid #1f2630;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 1rem 1.2rem;
   max-width: 28rem;
-  box-shadow: 0 8px 28px rgb(0 0 0 / 0.5);
+  box-shadow: 0 8px 28px var(--shadow-modal);
 }
 
 .modal-message {
   margin: 0 0 0.9rem;
-  color: #e2e8f0;
+  color: var(--text-primary);
 }
 
 .modal-buttons {
@@ -190,15 +351,15 @@ header {
 .modal-buttons button {
   font: inherit;
   background: transparent;
-  border: 1px solid #2c3444;
-  color: #cbd5e1;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
   padding: 0.2rem 0.7rem;
   border-radius: 4px;
   cursor: pointer;
 }
 
 .modal-buttons button:hover {
-  background: #1a212b;
+  background: var(--surface-button-hover);
 }
 
 /* Command / go-to-view palette (ADR 0018). Reuses the modal chrome
@@ -221,9 +382,9 @@ header {
   font: inherit;
   width: 100%;
   box-sizing: border-box;
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.4rem 0.6rem;
 }
@@ -232,7 +393,7 @@ header {
    asking for. */
 .palette-prompt-label {
   font-size: 0.8rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .palette-list {
@@ -249,13 +410,13 @@ header {
   gap: 0.6rem;
   padding: 0.3rem 0.6rem;
   border-radius: 4px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
 .palette-item.selected {
-  background: #1d4ed8;
-  color: #f8fafc;
+  background: var(--accent-selected-bg);
+  color: var(--text-on-accent);
 }
 
 .palette-item-label {
@@ -268,16 +429,16 @@ header {
 .palette-item-hint {
   flex: 0 0 auto;
   font-size: 0.75rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .palette-item.selected .palette-item-hint {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 .palette-empty {
   padding: 0.3rem 0.6rem;
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 
@@ -288,9 +449,9 @@ header {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.15rem 0.4rem;
   font: inherit;
@@ -307,7 +468,7 @@ header {
 }
 
 .combobox-trigger:disabled {
-  color: #64748b;
+  color: var(--text-faint);
   cursor: default;
 }
 
@@ -326,20 +487,20 @@ header {
   padding: 0.25rem;
   max-height: 40vh;
   max-width: 90vw;
-  background: #111827;
-  border: 1px solid #2c3444;
+  background: var(--surface-pop);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.5);
-  color: #e2e8f0;
+  box-shadow: 0 8px 24px var(--shadow-modal);
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 
 .combobox-input {
   font: inherit;
   box-sizing: border-box;
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.2rem 0.5rem;
 }
@@ -354,7 +515,7 @@ header {
 .combobox-option {
   padding: 0.15rem 0.5rem;
   border-radius: 3px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -362,12 +523,12 @@ header {
 }
 
 .combobox-option.active {
-  background: #1d4ed8;
-  color: #f8fafc;
+  background: var(--accent-selected-bg);
+  color: var(--text-on-accent);
 }
 
 .combobox-option.disabled {
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
   cursor: default;
 }
@@ -378,14 +539,14 @@ header {
 
 .combobox-group {
   padding: 0.2rem 0.5rem 0.05rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.75rem;
   white-space: nowrap;
 }
 
 .combobox-empty {
   padding: 0.2rem 0.5rem;
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 
@@ -394,7 +555,7 @@ header {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 0.45);
+  background: var(--overlay-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -402,13 +563,13 @@ header {
 }
 
 .modal-subtitle {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.85rem;
   margin: 0.1rem 0 0.6rem;
 }
 
 .modal-empty {
-  color: #fbbf24;
+  color: var(--warn-text);
   font-size: 0.85rem;
   margin: 0 0 0.6rem;
 }
@@ -430,7 +591,7 @@ header {
 
 .blf-map-channel {
   flex: 0 0 7rem;
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 .graph-panel {
@@ -444,8 +605,8 @@ header {
   align-items: center;
   gap: 0.4rem;
   padding: 0.25rem 0.5rem;
-  border-bottom: 1px solid #2c3444;
-  background: #1f2532;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-graph-toolbar);
 }
 .graph-panel-canvas {
   flex: 1 1 auto;
@@ -469,7 +630,7 @@ header {
   justify-content: safe center;
   overflow: auto;
   height: 100%;
-  color: #94a3b8;
+  color: var(--text-muted);
   text-align: center;
   padding: 1rem;
   gap: 0.5rem;
@@ -477,7 +638,7 @@ header {
 
 /* Tweak xyflow's defaults to fit the abyss theme. */
 .react-flow {
-  background: #0b1220;
+  background: var(--surface-canvas);
 }
 
 /* Custom node shapes used by ProjectGraphPanel — each kind gets a
@@ -490,13 +651,13 @@ header {
   padding: 0.55rem 0.75rem;
   border-radius: 6px;
   font-size: 0.78rem;
-  color: #e2e8f0;
-  background: #1f2937;
-  border: 1px solid #334155;
+  color: var(--text-primary);
+  background: var(--node-surface);
+  border: 1px solid var(--border-strong);
 }
 .graph-node-glyph {
   flex: 0 0 24px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 .graph-node-label {
   display: flex;
@@ -509,7 +670,7 @@ header {
   font-size: 0.62rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .graph-node-title {
   font-weight: 600;
@@ -519,7 +680,7 @@ header {
 }
 .graph-node-sub {
   font-size: 0.7rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -530,40 +691,40 @@ header {
    see a wire that other nodes tap into. */
 .graph-node-bus {
   position: relative;
-  background: #1e3a8a;
-  border: 1px solid #3b82f6;
+  background: var(--node-bus-surface);
+  border: 1px solid var(--node-bus-border);
   padding-left: 1.1rem;
 }
 .graph-bus-bar {
   flex: 0 0 6px;
   height: 60%;
-  background: #60a5fa;
+  background: var(--node-bus-bar);
   border-radius: 3px;
-  box-shadow: 0 0 6px rgba(96, 165, 250, 0.45);
+  box-shadow: 0 0 6px var(--glow-focus);
 }
 .graph-node-gateway {
-  background: #1f2937;
-  border-color: #475569;
+  background: var(--node-surface);
+  border-color: var(--node-gateway-border);
 }
 .graph-node-transmit {
-  background: #3b1d3a;
-  border-color: #7c3aed;
+  background: var(--node-transmit-surface);
+  border-color: var(--node-transmit-border);
 }
 .graph-node-trace {
-  background: #064e3b;
-  border-color: #10b981;
+  background: var(--node-trace-surface);
+  border-color: var(--node-trace-border);
 }
 .graph-node-plot {
-  background: #134e4a;
-  border-color: #14b8a6;
+  background: var(--node-plot-surface);
+  border-color: var(--node-plot-border);
 }
 .graph-node-signals {
-  background: #1e3a5f;
-  border-color: #38bdf8;
+  background: var(--node-signals-surface);
+  border-color: var(--node-signals-border);
 }
 .graph-node-filter {
-  background: #3f3f46;
-  border-color: #a1a1aa;
+  background: var(--node-filter-surface);
+  border-color: var(--node-filter-border);
   /* `.graph-node` is a flex row; let the inline predicate editor wrap
      onto its own line below the glyph + label instead of flowing off
      the node's right edge. */
@@ -578,21 +739,21 @@ header {
   appearance: none;
   border: 0;
   background: transparent;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font: inherit;
   cursor: pointer;
   padding: 0 0.25rem;
 }
 .graph-node-expand:hover,
 .graph-node-insert-filter:hover {
-  color: #fff;
+  color: var(--text-on-solid);
 }
 .graph-node-insert-filter {
   font-size: 0.75rem;
   border-radius: 3px;
 }
 .graph-node-insert-filter:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--wash-light);
 }
 
 /* Right-click edge menu in the project graph view. Same surface as
@@ -602,11 +763,11 @@ header {
 .graph-edge-menu {
   position: fixed;
   z-index: 200;
-  background: #0d1114;
-  border: 1px solid #2c3444;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .graph-edge-menu > button {
   display: block;
@@ -623,12 +784,12 @@ header {
   border-radius: 3px;
 }
 .graph-edge-menu > button:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
 }
 .filter-predicate-editor {
   margin-top: 0.4rem;
   padding: 0.3rem;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--shadow-inset);
   border-radius: 3px;
   display: grid;
   gap: 0.25rem;
@@ -645,7 +806,7 @@ header {
 }
 .filter-predicate-row > span:first-child {
   flex: 0 0 6.5rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .filter-predicate-row > input,
 .filter-predicate-row > .combobox-trigger {
@@ -663,7 +824,7 @@ header {
   padding: 0.6rem 0.8rem;
   overflow: auto;
   font-size: 0.85rem;
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 .project-section {
@@ -676,7 +837,7 @@ header {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #64748b;
+  color: var(--text-faint);
 }
 
 /* Section (and Elements type-group) headers are disclosure buttons.
@@ -703,7 +864,7 @@ header {
 
 .project-panel .project-section-toggle:hover:not(:disabled) {
   background: none;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .project-section-caret {
@@ -724,7 +885,7 @@ header {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .project-path,
@@ -745,7 +906,7 @@ header {
 }
 
 .project-dirty {
-  color: #fbbf24;
+  color: var(--warn-text);
   margin-right: 0.3rem;
   font-size: 0.7rem;
 }
@@ -763,19 +924,19 @@ header {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .project-bus-state.connected {
-  color: #4ade80;
+  color: var(--ok-text);
 }
 
 .project-bus-state.errored {
-  color: #f87171;
+  color: var(--danger-text);
 }
 
 .project-empty {
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 
@@ -783,9 +944,9 @@ header {
   flex: 1 1 auto;
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #1e293b;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-soft);
   border-radius: 0.2rem;
   padding: 0.15rem 0.35rem;
 }
@@ -795,9 +956,9 @@ header {
   width: 1.6rem;
   height: 1.6rem;
   padding: 0;
-  border: 1px solid #1e293b;
+  border: 1px solid var(--border-soft);
   border-radius: 0.2rem;
-  background: #0f172a;
+  background: var(--surface-field);
   cursor: pointer;
 }
 
@@ -807,8 +968,8 @@ header {
   gap: 0.3rem;
   margin-top: 0.4rem;
   padding: 0.4rem;
-  background: #0f172a;
-  border: 1px solid #1e293b;
+  background: var(--surface-field);
+  border: 1px solid var(--border-soft);
   border-radius: 0.3rem;
 }
 .project-binding-form-source {
@@ -819,7 +980,7 @@ header {
 }
 .project-binding-form-or {
   font-size: 0.72rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .project-binding-form-row {
   display: flex;
@@ -830,14 +991,14 @@ header {
   flex: 1 1 auto;
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: #0b1220;
-  color: #e2e8f0;
-  border: 1px solid #1e293b;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  border: 1px solid var(--border-soft);
   border-radius: 0.2rem;
   padding: 0.15rem 0.35rem;
 }
 .project-binding-form-error {
-  color: #f87171;
+  color: var(--danger-text);
   font-size: 0.72rem;
 }
 
@@ -858,9 +1019,9 @@ header {
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.8rem;
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #1e293b;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-soft);
   border-radius: 0.2rem;
   padding: 0.1rem 0.25rem;
 }
@@ -889,7 +1050,7 @@ header {
   align-items: center;
   gap: 0.2rem;
   font-size: 0.78rem;
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 .project-bus-hw-input {
@@ -897,9 +1058,9 @@ header {
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.78rem;
-  background: #0f172a;
-  color: #e2e8f0;
-  border: 1px solid #1e293b;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-soft);
   border-radius: 0.2rem;
   padding: 0.1rem 0.25rem;
 }
@@ -908,9 +1069,9 @@ header {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #fbbf24;
-  background: #422006;
-  border: 1px solid #92400e;
+  color: var(--warn-text);
+  background: var(--warn-surface);
+  border: 1px solid var(--warn-border-strong);
   border-radius: 0.2rem;
   padding: 0 0.35rem;
 }
@@ -920,7 +1081,7 @@ header {
    two read as "live" vs "asked for". */
 .project-bus-applied {
   font-size: 0.7rem;
-  color: #7dd3fc;
+  color: var(--text-applied);
   padding-left: 1.4rem;
 }
 
@@ -929,15 +1090,15 @@ header {
 .project-binding-state {
   margin-left: 0.4rem;
   font-size: 0.7rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .project-binding-state.connected {
-  color: #4ade80;
+  color: var(--ok-text);
 }
 
 .project-binding-state.errored {
-  color: #f87171;
+  color: var(--danger-text);
 }
 
 .project-server {
@@ -949,7 +1110,7 @@ header {
   margin: 0.1rem 0 0;
   padding-left: 1.4rem;
   font-size: 0.78rem;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -960,27 +1121,27 @@ header {
 }
 
 .project-server-arrow {
-  color: #64748b;
+  color: var(--text-faint);
 }
 
 .project-server-bus {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .project-server-bus.unassigned {
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 
 .project-server-orphan {
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 
 .project-server-empty {
   padding-left: 1.4rem;
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 
@@ -995,11 +1156,11 @@ header {
   gap: 0.4rem;
   font-size: 0.75rem;
   margin-top: 0.2rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .project-dbc-scoping-label {
-  color: #64748b;
+  color: var(--text-faint);
 }
 
 .project-dbc-scoping-checkbox {
@@ -1018,15 +1179,15 @@ header {
   font: inherit;
   font-size: 0.8rem;
   background: transparent;
-  border: 1px solid #1f2630;
-  color: #cbd5e1;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
   padding: 0.05rem 0.45rem;
   border-radius: 3px;
   cursor: pointer;
 }
 
 .project-panel button:hover:not(:disabled) {
-  background: #1a212b;
+  background: var(--surface-button-hover);
 }
 
 .project-panel button:disabled {
@@ -1044,7 +1205,7 @@ header {
 
 .by-id-count {
   font-size: 0.75rem;
-  color: #64748b;
+  color: var(--text-faint);
 }
 
 .trace-panel-toolbar {
@@ -1053,7 +1214,7 @@ header {
   gap: 0.4rem;
   padding: 0.25rem 0.6rem;
   flex: 0 0 auto;
-  border-bottom: 1px solid #1f2630;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 /* Start / Stop / Pause / Resume / Clear controls in a trace panel's
@@ -1068,40 +1229,40 @@ header {
   font: inherit;
   font-size: 0.85rem;
   background: transparent;
-  border: 1px solid #1f2630;
-  color: #cbd5e1;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
   padding: 0.05rem 0.45rem;
   border-radius: 3px;
   cursor: pointer;
 }
 
 .trace-controls button:hover {
-  background: #1a212b;
+  background: var(--surface-button-hover);
 }
 
 .trace-status {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #64748b;
+  color: var(--text-faint);
 }
 
 .trace-status-running {
-  color: #4ade80;
+  color: var(--ok-text);
 }
 
 .trace-status-paused {
-  color: #fbbf24;
+  color: var(--warn-text);
 }
 
 .trace-status-stopped {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 /* Chronological / by-ID mode toggle in a trace panel's toolbar. */
 .mode-toggle {
   display: inline-flex;
-  border: 1px solid #1f2630;
+  border: 1px solid var(--border-subtle);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -1111,22 +1272,22 @@ header {
   font-size: 0.85rem;
   background: transparent;
   border: 0;
-  color: #94a3b8;
+  color: var(--text-muted);
   padding: 0.05rem 0.5rem;
   cursor: pointer;
 }
 
 .mode-toggle button + button {
-  border-left: 1px solid #1f2630;
+  border-left: 1px solid var(--border-subtle);
 }
 
 .mode-toggle button:hover {
-  background: #1a212b;
+  background: var(--surface-button-hover);
 }
 
 .mode-toggle button.active {
-  background: #2a3340;
-  color: #e2e8f0;
+  background: var(--surface-toggle-active);
+  color: var(--text-primary);
 }
 
 /* Right-click-the-header column show/hide menu (positioned at the
@@ -1137,11 +1298,11 @@ header {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  background: #131923;
-  border: 1px solid #1f2630;
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-subtle);
   border-radius: 4px;
   padding: 0.35rem 0.5rem;
-  box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 
 /* Trace table -----------------------------------------------------------*/
@@ -1178,14 +1339,14 @@ header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  color: #cbd5e1;
-  background: #11161e;
-  border-block: 1px solid #1f2630;
+  color: var(--text-secondary);
+  background: var(--surface-row);
+  border-block: 1px solid var(--border-subtle);
   white-space: nowrap;
 }
 
 .trace-event-time {
-  color: #64748b;
+  color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   min-width: 6ch;
 }
@@ -1197,13 +1358,13 @@ header {
   font: inherit;
   line-height: 1;
   background: transparent;
-  color: #64748b;
+  color: var(--text-faint);
   border: none;
   padding: 0 0.2rem;
   cursor: pointer;
 }
 .trace-event-goto:hover {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 /* Full-height color bar at the row's left. A `<button>` for editable
@@ -1213,7 +1374,7 @@ header {
   align-self: stretch;
   width: 1.5rem;
   flex: 0 0 auto;
-  border: 1px solid rgb(255 255 255 / 0.12);
+  border: 1px solid var(--border-wash);
   border-radius: 2px;
 }
 button.trace-event-swatch {
@@ -1248,19 +1409,19 @@ button.trace-event-swatch {
 /* The clicked event row. Selection is view-local and keyed by event id,
    so it survives the row slots being recycled by a scroll. */
 .trace-event-focused {
-  background: #17202c;
-  box-shadow: inset 2px 0 0 #38bdf8;
+  background: var(--surface-row-focused);
+  box-shadow: inset 2px 0 0 var(--focus-marker);
 }
 /* Focusable trace rows: the timeline event rows, and the by-id rows,
    which are their own disclosure control. */
 .trace-row:focus-visible {
-  outline: 1px solid #38bdf8;
+  outline: 1px solid var(--focus-outline);
   outline-offset: -1px;
 }
 /* A gridview-selected row (ADR 0044). The container holds focus, so
    the selection is the only thing the row itself shows. */
 .trace-row.selected {
-  background: #1b2740;
+  background: var(--surface-row-selected);
 }
 
 .trace-event-label {
@@ -1283,9 +1444,9 @@ button.trace-event-swatch {
   font: inherit;
   flex: 1 1 auto;
   min-width: 0;
-  background: #131923;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   padding: 0 0.25rem;
 }
@@ -1298,13 +1459,13 @@ button.trace-event-swatch {
   font: inherit;
   line-height: 1;
   background: transparent;
-  color: #64748b;
+  color: var(--text-faint);
   border: none;
   padding: 0 0.35rem;
   cursor: pointer;
 }
 .trace-event-edit:hover {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 .trace-event-edit + .trace-event-remove {
   margin-left: 0;
@@ -1317,18 +1478,18 @@ button.trace-event-swatch {
   font: inherit;
   line-height: 1;
   background: transparent;
-  color: #64748b;
+  color: var(--text-faint);
   border: none;
   padding: 0 0.35rem;
   cursor: pointer;
 }
 .trace-event-remove:hover {
-  color: #f87171;
+  color: var(--danger-text);
 }
 
 .trace-event-truncation {
   font-style: italic;
-  color: #e0a030;
+  color: var(--warn-text-truncation);
 }
 
 /* The pinned truncation floor row above the chronological scroll area —
@@ -1340,9 +1501,9 @@ button.trace-event-swatch {
 }
 
 .trace-header {
-  background: #131923;
-  color: #94a3b8;
-  border-bottom: 1px solid #1f2630;
+  background: var(--surface-overlay);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
   position: sticky;
   top: 0;
   z-index: 1;
@@ -1374,7 +1535,7 @@ button.trace-event-swatch {
 }
 
 .col-resize-handle:hover {
-  background: rgb(148 163 184 / 0.25);
+  background: var(--scroll-thumb);
 }
 
 /* Header cells are click-to-sort in per-id mode. */
@@ -1384,7 +1545,7 @@ button.trace-event-swatch {
 }
 
 .trace-header > span.col-sortable:hover {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 /* Header cells are also drag-to-reorder. `grab` hints the drag; the
@@ -1398,7 +1559,7 @@ button.trace-event-swatch {
 }
 
 .sort-marker {
-  color: #93c5fd;
+  color: var(--text-message);
 }
 
 .trace-rows {
@@ -1424,12 +1585,12 @@ button.trace-event-swatch {
 }
 
 .trace-row {
-  border-bottom: 1px solid #11161e;
+  border-bottom: 1px solid var(--border-row);
   cursor: default;
 }
 
 .trace-row.expanded {
-  background: #11161e;
+  background: var(--surface-row);
 }
 
 .trace-row span {
@@ -1438,20 +1599,20 @@ button.trace-event-swatch {
 }
 
 .col-data {
-  color: #c5d2e0;
+  color: var(--text-data);
   letter-spacing: 0.02em;
 }
 
 .col-msg {
-  color: #93c5fd;
+  color: var(--text-message);
 }
 
 .col-rate {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .hint {
-  color: #475569;
+  color: var(--text-dim);
 }
 
 /* A caret disclosure at the *start* of a row — the signal view's
@@ -1488,15 +1649,15 @@ button.trace-event-swatch {
   align-items: center;
   gap: 0.5rem;
   max-width: 32rem;
-  border-bottom: 1px dashed #1f2630;
+  border-bottom: 1px dashed var(--border-subtle);
 }
 
 .signal-name {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 
 .signal-value {
-  color: #fde68a;
+  color: var(--text-signal-value);
 }
 
 /* Signal value/unit/label parts (SignalValueText), shared by the
@@ -1506,7 +1667,7 @@ button.trace-event-swatch {
    and carries the spacing, so a caller with the unit in a separate
    column renders the value alone. */
 .signal-value-unit {
-  color: #94a3b8;
+  color: var(--text-muted);
   margin-left: 0.35em;
 }
 
@@ -1528,7 +1689,7 @@ button.trace-event-swatch {
   gap: 0.4rem;
   padding: 0.25rem 0.6rem;
   flex: 0 0 auto;
-  border-bottom: 1px solid #1f2630;
+  border-bottom: 1px solid var(--border-subtle);
   /* The readout on the right changes width as numbers fluctuate; if
    * the toolbar were allowed to wrap, the wrap toggle would resize the
    * plot area underneath every tick — visible as a vertical "wiggle"
@@ -1540,9 +1701,9 @@ button.trace-event-swatch {
 
 .plot-panel-toolbar .combobox-trigger,
 .plot-panel-toolbar button {
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.15rem 0.4rem;
   font: inherit;
@@ -1581,7 +1742,7 @@ button.trace-event-swatch {
   display: flex;
   flex: 1 1 0;
   min-height: 24px;
-  border-bottom: 1px solid #1f2630;
+  border-bottom: 1px solid var(--border-subtle);
   /* Containing block for the "building…" overlay. */
   position: relative;
 }
@@ -1611,27 +1772,27 @@ button.trace-event-swatch {
 }
 .plot-area-splitter:hover::before,
 .plot-area-splitter:active::before {
-  background: rgba(78, 203, 255, 0.25);
+  background: var(--accent-tint);
 }
 
 .plot-area-ycursors {
   display: flex;
   gap: 0.5rem;
   padding: 0.1rem 0.4rem;
-  border-bottom: 1px dotted #1c252b;
+  border-bottom: 1px dotted var(--border-dotted);
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .plot-area-ycursors .gold {
-  color: #ffd93d;
+  color: var(--cursor-gold);
 }
 .plot-area-ycursors .pink {
-  color: #ff5577;
+  color: var(--cursor-pink);
 }
 
 .plot-area.focused {
-  box-shadow: inset 2px 0 0 #4ecbff;
+  box-shadow: inset 2px 0 0 var(--accent-marker);
 }
 
 /* A fully-hidden axis (every signal hidden): drop the canvas so it
@@ -1716,7 +1877,7 @@ button.trace-event-swatch {
   z-index: 4;
   font-size: 0.72rem;
   font-style: italic;
-  color: #64748b;
+  color: var(--text-faint);
 }
 /* Indeterminate: a chip sliding along a track, sized so it reads as
    activity without competing with the plot. */
@@ -1724,7 +1885,7 @@ button.trace-event-swatch {
   width: 6rem;
   height: 2px;
   border-radius: 1px;
-  background: #1f2630;
+  background: var(--divider-subtle);
   overflow: hidden;
 }
 .plot-area-building-bar::after {
@@ -1732,7 +1893,7 @@ button.trace-event-swatch {
   display: block;
   width: 35%;
   height: 100%;
-  background: #4ecbff;
+  background: var(--accent-progress);
   animation: plot-area-building-slide 1.1s ease-in-out infinite;
 }
 @keyframes plot-area-building-slide {
@@ -1760,16 +1921,16 @@ button.trace-event-swatch {
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.4rem;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
-  color: #cbd5e1;
+  box-shadow: 0 6px 18px var(--shadow-modal);
+  color: var(--text-secondary);
   font-size: 0.72rem;
 }
 .plot-axis-menu-title {
   font-weight: 700;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .plot-axis-menu-row {
   display: flex;
@@ -1783,15 +1944,15 @@ button.trace-event-swatch {
 .plot-axis-menu-row input:not([type]) {
   flex: 1 1 auto;
   width: 6rem;
-  background: #0d1114;
-  border: 1px solid #334155;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font: inherit;
   padding: 0.1rem 0.25rem;
 }
 .plot-axis-menu-hint {
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 
@@ -1814,7 +1975,7 @@ button.trace-event-swatch {
   z-index: 4;
   font-size: 0.72rem;
   font-style: italic;
-  color: #64748b;
+  color: var(--text-faint);
 }
 
 .plot-area-canvas {
@@ -1832,8 +1993,8 @@ button.trace-event-swatch {
 .plot-area-signals {
   /* `flex-basis` is set inline from the user-resized pixel width. */
   flex: 0 0 220px;
-  border-left: 1px solid #1f2630;
-  background: #0d1114;
+  border-left: 1px solid var(--border-subtle);
+  background: var(--surface-sunken);
   overflow-y: auto;
   font-size: 0.78rem;
 }
@@ -1852,7 +2013,7 @@ button.trace-event-swatch {
 }
 .plot-area-resizer:hover,
 .plot-area-resizer:active {
-  background: #2c3444;
+  background: var(--divider);
 }
 
 .plot-area-signals-head {
@@ -1860,8 +2021,8 @@ button.trace-event-swatch {
   align-items: center;
   justify-content: space-between;
   padding: 0.2rem 0.4rem;
-  border-bottom: 1px solid #1f2630;
-  color: #94a3b8;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   font-size: 0.66rem;
@@ -1870,7 +2031,7 @@ button.trace-event-swatch {
 /* Drag handle for reordering a panel's plot areas. Only the grip is
    draggable, so the head's own controls keep their pointer gestures. */
 .plot-area-grip {
-  color: #475569;
+  color: var(--text-dim);
   cursor: grab;
   line-height: 1;
   padding: 0 0.2rem 0 0;
@@ -1878,7 +2039,7 @@ button.trace-event-swatch {
 }
 
 .plot-area-grip:hover {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .plot-area-grip:active {
@@ -1889,7 +2050,7 @@ button.trace-event-swatch {
 .plot-signal-remove {
   background: none;
   border: none;
-  color: #64748b;
+  color: var(--text-faint);
   cursor: pointer;
   font-size: 0.9rem;
   line-height: 1;
@@ -1898,27 +2059,27 @@ button.trace-event-swatch {
 
 .plot-area-remove:hover,
 .plot-signal-remove:hover {
-  color: #ff5577;
+  color: var(--cursor-pink);
 }
 
 .plot-area-empty {
   padding: 0.4rem;
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 
 /* Phase 12 filter-defined plot area (ADR 0020). */
 .plot-area-filter {
   background: none;
-  border: 1px solid #334155;
-  color: #cbd5e1;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.7rem;
   padding: 0 0.4rem;
   border-radius: 3px;
 }
 .plot-area-filter:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .plot-area-filter-status {
   display: flex;
@@ -1926,24 +2087,24 @@ button.trace-event-swatch {
   align-items: center;
   padding: 0.2rem 0.4rem;
   font-size: 0.7rem;
-  background: rgba(99, 102, 241, 0.15);
-  border-bottom: 1px solid #1e293b;
+  background: var(--select-tint-soft);
+  border-bottom: 1px solid var(--border-soft);
 }
 .plot-area-filter-regex {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #e2e8f0;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1 1 0;
 }
 .plot-area-filter-count {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .plot-area-filter-promote,
 .plot-area-filter-clear {
   background: none;
-  border: 1px solid #334155;
-  color: #cbd5e1;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 0.7rem;
   padding: 0 0.3rem;
@@ -1951,14 +2112,14 @@ button.trace-event-swatch {
 }
 .plot-area-filter-promote:hover,
 .plot-area-filter-clear:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .plot-area-filter-error {
-  color: #f87171;
+  color: var(--danger-text);
 }
 /* A pattern-derived signal row's badge (in place of the manual ×). */
 .plot-signal-pattern-badge {
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 0.7rem;
   padding: 0 0.3rem;
   cursor: default;
@@ -1970,7 +2131,7 @@ button.trace-event-swatch {
   min-width: 12rem;
 }
 .signals-error {
-  color: #f87171;
+  color: var(--danger-text);
   font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1978,20 +2139,20 @@ button.trace-event-swatch {
   max-width: 24rem;
 }
 .signals-selection-editor {
-  border-bottom: 1px solid #1e293b;
+  border-bottom: 1px solid var(--border-soft);
 }
 .signals-manual-list {
   display: flex;
   flex-wrap: wrap;
   gap: 0.3rem;
   padding: 0.3rem 0.4rem;
-  background: #111827;
+  background: var(--surface-pop);
 }
 .signals-manual-pick {
   display: inline-flex;
   align-items: center;
   gap: 0.2rem;
-  border: 1px solid #334155;
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
   padding: 0 0.15rem 0 0.35rem;
   font-size: 0.75rem;
@@ -1999,12 +2160,12 @@ button.trace-event-swatch {
 .signals-manual-pick button {
   background: none;
   border: none;
-  color: #94a3b8;
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 0.75rem;
 }
 .signals-manual-pick button:hover {
-  color: #e2e8f0;
+  color: var(--text-primary);
 }
 .signals-name {
   cursor: grab;
@@ -2018,28 +2179,28 @@ button.trace-event-swatch {
   align-items: center;
   gap: 0.35rem;
   padding-left: 0.25rem;
-  background: #131a24;
-  border-bottom: 1px solid #2c3444;
-  color: #cbd5e1;
+  background: var(--surface-section-header);
+  border-bottom: 1px solid var(--border-default);
+  color: var(--text-secondary);
   font-weight: 600;
   font-size: 0.75rem;
 }
 .signals-section-header button {
   background: none;
   border: 0;
-  color: #94a3b8;
+  color: var(--text-muted);
   cursor: pointer;
   font: inherit;
   font-weight: 400;
   padding: 0 0.15rem;
 }
 .signals-section-header button:hover {
-  color: #e2e8f0;
+  color: var(--text-primary);
 }
 .signals-section-name-input {
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   font: inherit;
   padding: 0 0.25rem;
@@ -2050,7 +2211,7 @@ button.trace-event-swatch {
    glyph-sized button at the end of the signal cell, where the name
    pushed it past an `overflow: hidden` edge. */
 .col-section {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .signals-section-pick {
   display: block;
@@ -2067,8 +2228,8 @@ button.trace-event-swatch {
   text-overflow: ellipsis;
 }
 .signals-section-pick:hover {
-  background: #1c2530;
-  color: #e2e8f0;
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 /* A section's own pattern list, anchored at the panel root like the
    move menu. */
@@ -2076,14 +2237,14 @@ button.trace-event-swatch {
   position: fixed;
   z-index: 200;
   min-width: 22rem;
-  background: #0d1114;
-  border: 1px solid #2c3444;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.4rem 0.5rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .signals-section-patterns-title {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.72rem;
   margin-bottom: 0.3rem;
 }
@@ -2095,17 +2256,17 @@ button.trace-event-swatch {
   display: flex;
   flex-direction: column;
   min-width: 9rem;
-  background: #0d1114;
-  border: 1px solid #2c3444;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.25rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .signals-section-menu button {
   background: transparent;
   border: 0;
   border-radius: 3px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   cursor: pointer;
   font: inherit;
   font-size: 0.78rem;
@@ -2113,17 +2274,17 @@ button.trace-event-swatch {
   text-align: left;
 }
 .signals-section-menu button:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
 }
 .signals-section-menu button.active {
-  color: #7dd3fc;
+  color: var(--text-applied);
 }
 .col-value .signal-value-cell {
   border-radius: 3px;
   padding: 0 0.25rem;
 }
 .col-unit {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 /* DBC panel live value column (shared SignalValueCell renderer). */
@@ -2132,7 +2293,7 @@ button.trace-event-swatch {
   padding-right: 0.5rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.75rem;
-  color: #e2e8f0;
+  color: var(--text-primary);
   white-space: nowrap;
 }
 .dbc-row-value .signal-value-cell {
@@ -2147,8 +2308,8 @@ button.trace-event-swatch {
   flex-direction: column;
   gap: 0.25rem;
   padding: 0.3rem 0.4rem;
-  border-bottom: 1px solid #1e293b;
-  background: #111827;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-pop);
   font-size: 0.75rem;
 }
 .pattern-editor-row {
@@ -2163,7 +2324,7 @@ button.trace-event-swatch {
   min-width: 4rem;
 }
 .pattern-editor-slash {
-  color: #64748b;
+  color: var(--text-faint);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 /* The pattern chip's grip (ADR 0045): the row holds a text input, so
@@ -2174,15 +2335,15 @@ button.trace-event-swatch {
   border-radius: 3px;
 }
 .pattern-editor-grip.selected {
-  background: #1b2740;
-  color: #e2e8f0;
+  background: var(--surface-row-selected);
+  color: var(--text-primary);
 }
 .pattern-editor-count {
-  color: #94a3b8;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 .pattern-editor-error {
-  color: #f87171;
+  color: var(--danger-text);
   white-space: nowrap;
 }
 .pattern-editor-add {
@@ -2194,25 +2355,25 @@ button.trace-event-swatch {
 }
 .pattern-editor input {
   flex: 1 1 0;
-  background: #1e293b;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   padding: 0.15rem 0.3rem;
   border-radius: 3px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.75rem;
 }
 .pattern-editor button {
-  background: #1e293b;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   padding: 0.15rem 0.5rem;
   border-radius: 3px;
   cursor: pointer;
   font-size: 0.75rem;
 }
 .pattern-editor button:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .pattern-editor button:disabled {
   opacity: 0.5;
@@ -2232,7 +2393,7 @@ button.trace-event-swatch {
   column-gap: 0.4rem;
   row-gap: 0.05rem;
   padding: 0.25rem 0.4rem;
-  border-bottom: 1px dotted #1c252b;
+  border-bottom: 1px dotted var(--border-dotted);
   cursor: grab;
 }
 .plot-signal-row:active {
@@ -2241,8 +2402,8 @@ button.trace-event-swatch {
 /* Highlights the signal whose raw range / unit drives the y-axis
  * labels for this plot area. Click a non-primary row to promote it. */
 .plot-signal-row.primary {
-  background: #131e29;
-  box-shadow: inset 2px 0 0 #4ecbff;
+  background: var(--surface-row-primary);
+  box-shadow: inset 2px 0 0 var(--accent-marker);
 }
 
 /* The swatch doubles as the show/hide toggle. Pinned to the top row
@@ -2252,7 +2413,7 @@ button.trace-event-swatch {
   width: 1rem;
   height: 1rem;
   border-radius: 3px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--border-wash-strong);
   padding: 0;
   cursor: pointer;
   margin-top: 0.18rem;
@@ -2288,14 +2449,14 @@ button.trace-event-swatch {
 }
 .plot-signal-name {
   font-size: 0.92rem;
-  color: #e2e8f0;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .plot-signal-message {
   font-size: 0.7rem;
-  color: #64748b;
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2311,7 +2472,7 @@ button.trace-event-swatch {
   gap: 0.6rem;
   padding: 0.6rem;
   font-size: 0.85rem;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   overflow: auto;
 }
 .colormap-field {
@@ -2320,20 +2481,20 @@ button.trace-event-swatch {
   gap: 0.25rem;
 }
 .colormap-field > span {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .colormap-field .combobox-trigger {
-  background: #11161e;
-  color: #e2e8f0;
-  border: 1px solid #1c252b;
+  background: var(--surface-row);
+  color: var(--text-primary);
+  border: 1px solid var(--border-dotted);
   border-radius: 0.25rem;
   padding: 0.3rem;
 }
 .colormap-empty {
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
 }
 .colormap-rules {
@@ -2354,7 +2515,7 @@ button.trace-event-swatch {
   width: 1.5rem;
   height: 1.5rem;
   padding: 0;
-  border: 1px solid #1c252b;
+  border: 1px solid var(--border-dotted);
   border-radius: 0.2rem;
   background: none;
 }
@@ -2362,27 +2523,27 @@ button.trace-event-swatch {
  * the end. */
 .colormap-enum-label {
   flex: 1 1 auto;
-  color: #e2e8f0;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .colormap-enum-raw {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
 .colormap-num {
   width: 5rem;
-  background: #11161e;
-  color: #e2e8f0;
-  border: 1px solid #1c252b;
+  background: var(--surface-row);
+  color: var(--text-primary);
+  border: 1px solid var(--border-dotted);
   border-radius: 0.2rem;
   padding: 0.2rem 0.3rem;
   font-variant-numeric: tabular-nums;
 }
 .colormap-dash {
-  color: #64748b;
+  color: var(--text-faint);
 }
 .colormap-remove {
   margin-left: auto;
@@ -2400,7 +2561,7 @@ button.trace-event-swatch {
   border-radius: 2px;
   margin-right: 0.3rem;
   vertical-align: middle;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--border-wash-strong);
 }
 .plot-signal-row.hidden .plot-signal-name,
 .plot-signal-row.hidden .plot-signal-message {
@@ -2417,11 +2578,11 @@ button.trace-event-swatch {
   min-width: 0;
 }
 .plot-signal-value {
-  color: #fde68a;
+  color: var(--text-signal-value);
   font-variant-numeric: tabular-nums;
 }
 .plot-signal-delta {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.78em;
   font-variant-numeric: tabular-nums;
 }
@@ -2430,7 +2591,7 @@ button.trace-event-swatch {
  * column is too narrow to show `y[…] t[…]` comfortably). */
 .plot-signal-range {
   grid-column: 2 / 4;
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 0.7em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -2446,7 +2607,7 @@ button.trace-event-swatch {
 /* uPlot renders on a dark ground; nudge its chrome to match the app. */
 .plot-area-canvas .u-legend {
   font-size: 0.78rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 /* Plot panel — toolbar extras */
@@ -2454,7 +2615,7 @@ button.trace-event-swatch {
   display: inline-block;
   width: 1px;
   align-self: stretch;
-  background: #2c3444;
+  background: var(--divider);
   margin: 0 0.15rem;
 }
 
@@ -2482,16 +2643,16 @@ button.trace-event-swatch {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #94a3b8;
+  color: var(--text-muted);
   padding: 0.1rem 0.4rem 0.2rem;
-  border-bottom: 1px solid #2c3444;
+  border-bottom: 1px solid var(--border-default);
   margin-bottom: 0.15rem;
 }
 .sources-picker-subheader {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #94a3b8;
+  color: var(--text-muted);
   padding: 0.1rem 0.4rem;
   margin-top: 0.15rem;
 }
@@ -2501,7 +2662,7 @@ button.trace-event-swatch {
   gap: 0;
 }
 .sources-picker-group-filters {
-  border-top: 1px solid #2c3444;
+  border-top: 1px solid var(--border-default);
   margin-top: 0.15rem;
   padding-top: 0.15rem;
 }
@@ -2515,7 +2676,7 @@ button.trace-event-swatch {
   font-size: 0.78rem;
 }
 .sources-picker-row:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
 }
 .sources-picker-row > input[type="checkbox"] {
   margin: 0;
@@ -2526,11 +2687,11 @@ button.trace-event-swatch {
 .sources-context-menu {
   position: fixed;
   z-index: 200;
-  background: #0d1114;
-  border: 1px solid #2c3444;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 .sources-context-menu-action {
   display: block;
@@ -2539,7 +2700,7 @@ button.trace-event-swatch {
   padding: 0.25rem 0.4rem;
   background: transparent;
   border: 0;
-  border-top: 1px solid #2c3444;
+  border-top: 1px solid var(--border-default);
   color: inherit;
   text-align: left;
   font: inherit;
@@ -2548,7 +2709,7 @@ button.trace-event-swatch {
   border-radius: 3px;
 }
 .sources-context-menu-action:hover {
-  background: #1c2530;
+  background: var(--surface-hover);
 }
 .plot-window-ctl,
 .plot-cursor-ctl {
@@ -2556,13 +2717,13 @@ button.trace-event-swatch {
   align-items: center;
   gap: 0.25rem;
   font-size: 0.8rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .plot-window-ctl input {
   width: 4.5rem;
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.1rem 0.3rem;
   font: inherit;
@@ -2571,7 +2732,7 @@ button.trace-event-swatch {
 .plot-perf {
   margin-left: auto;
   font-size: 0.72rem;
-  color: #64748b;
+  color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   /* Absorb width changes so adjacent controls don't shift. */
   flex: 0 1 auto;
@@ -2591,8 +2752,8 @@ button.trace-event-swatch {
   left: 0;
   z-index: 20;
   margin-top: 2px;
-  background: #0d1114;
-  border: 1px solid #2c3444;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
   display: flex;
@@ -2605,15 +2766,15 @@ button.trace-event-swatch {
 .plot-toolbar-menu {
   position: fixed;
   z-index: 30;
-  background: #0d1114;
-  border: 1px solid #2c3444;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
   padding: 0.3rem 0.5rem;
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
   white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px var(--shadow-menu);
 }
 /* Menu items are flat buttons with a leading checkmark slot — the
  * slot is always rendered (fixed width) so the labels line up whether
@@ -2635,7 +2796,7 @@ button.trace-event-swatch {
 }
 .plot-toolbar-menu button:hover,
 .plot-toolbar-menu button:focus-visible {
-  background: #1c2530;
+  background: var(--surface-hover);
   outline: none;
 }
 .plot-toolbar-menu-mark {
@@ -2656,19 +2817,19 @@ button.trace-event-swatch {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  border-top: 1px solid #1f2630;
-  background: #0d1114;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-sunken);
 }
 .plot-meas-cell {
   padding: 0.25rem 0.5rem;
-  border-right: 1px solid #1f2630;
+  border-right: 1px solid var(--border-subtle);
   font-size: 0.72rem;
 }
 .plot-meas-k {
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  color: #64748b;
+  color: var(--text-faint);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 0.62rem;
@@ -2677,25 +2838,25 @@ button.trace-event-swatch {
   white-space: nowrap;
 }
 .plot-meas-v {
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   font-size: 0.8rem;
   margin-top: 0.1rem;
 }
 .plot-meas-v.gold {
-  color: #ffd93d;
+  color: var(--cursor-gold);
 }
 .plot-meas-v.pink {
-  color: #ff5577;
+  color: var(--cursor-pink);
 }
 
 /* Plot panel — per-area Fit Y control. (The old fixed-range editor was
  * dropped in task 15 / ADR 0026: y scales are always auto-derived.) */
 .plot-area-fit-y,
 .plot-area-y-mode {
-  background: #0f141d;
-  color: #94a3b8;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-muted);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   font: inherit;
   font-size: 0.62rem;
@@ -2704,7 +2865,7 @@ button.trace-event-swatch {
 }
 .plot-area-fit-y:hover,
 .plot-area-y-mode:hover {
-  color: #e2e8f0;
+  color: var(--text-primary);
 }
 
 /* Phase 10 Track 2 transmit panel. Single column of collapsible
@@ -2715,8 +2876,8 @@ button.trace-event-swatch {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0f141d;
-  color: #e2e8f0;
+  background: var(--surface-control);
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 .tx-panel-toolbar {
@@ -2724,21 +2885,21 @@ button.trace-event-swatch {
   align-items: center;
   gap: 0.5rem;
   padding: 0.25rem 0.5rem;
-  border-bottom: 1px solid #1f2630;
-  background: #11161a;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-tx-toolbar);
 }
 .tx-panel-toolbar button {
-  background: #0f141d;
-  color: #94a3b8;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-muted);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   font: inherit;
   padding: 0.1rem 0.5rem;
   cursor: pointer;
 }
 .tx-panel-toolbar button:hover {
-  color: #e2e8f0;
-  border-color: #3f4a5f;
+  color: var(--text-primary);
+  border-color: var(--border-hover);
 }
 .tx-panel-list {
   flex: 1 1 auto;
@@ -2747,7 +2908,7 @@ button.trace-event-swatch {
   flex-direction: column;
 }
 .tx-empty {
-  color: #94a3b8;
+  color: var(--text-muted);
   padding: 0.75rem;
   font-style: italic;
 }
@@ -2756,18 +2917,18 @@ button.trace-event-swatch {
 .tx-frame-row {
   display: flex;
   align-items: stretch;
-  border-bottom: 1px solid #1a1f28;
+  border-bottom: 1px solid var(--border-row-subtle);
 }
 .tx-frame-row:hover {
-  background: #131923;
+  background: var(--surface-overlay);
 }
 /* The gridview's cursor and selection (ADR 0044). */
 .tx-frame-row[data-active] {
-  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
 .tx-frame-row-selected {
-  background: #1b2740;
+  background: var(--surface-row-selected);
 }
 .tx-drag-handle {
   width: 0.45rem;
@@ -2802,7 +2963,7 @@ button.trace-event-swatch {
   flex: 1 1 8rem;
   min-width: 4rem;
   background: transparent;
-  color: #e2e8f0;
+  color: var(--text-primary);
   border: 1px solid transparent;
   border-radius: 3px;
   font: inherit;
@@ -2810,24 +2971,24 @@ button.trace-event-swatch {
 }
 .tx-row-identity .tx-name:focus,
 .tx-row-identity .tx-name:hover {
-  border-color: #2c3444;
-  background: #0f141d;
+  border-color: var(--border-default);
+  background: var(--surface-control);
 }
 .tx-row-identity .tx-bus,
 .tx-row-identity .tx-canid-input,
 .tx-row-identity .tx-period {
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   font: inherit;
   padding: 0.1rem 0.25rem;
 }
 .tx-row-identity .tx-warn {
-  outline: 1px solid #d97706;
+  outline: 1px solid var(--warn-outline);
 }
 .tx-row-identity .tx-dbc-name {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.78rem;
   white-space: nowrap;
   overflow: hidden;
@@ -2838,7 +2999,7 @@ button.trace-event-swatch {
 .tx-row-identity .tx-remove {
   background: transparent;
   border: 1px solid transparent;
-  color: #94a3b8;
+  color: var(--text-muted);
   cursor: pointer;
   font: inherit;
   padding: 0.1rem 0.35rem;
@@ -2846,27 +3007,27 @@ button.trace-event-swatch {
   line-height: 1;
 }
 .tx-row-identity .tx-expand:hover {
-  color: #e2e8f0;
-  border-color: #2c3444;
+  color: var(--text-primary);
+  border-color: var(--border-default);
 }
 .tx-row-identity .tx-remove:hover,
 .tx-row-identity .tx-remove-armed {
-  color: #f87171;
-  border-color: #7f1d1d;
-  background: #2a1414;
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-surface);
 }
 
 /* CAN-id input: `s:0x` / `x:0x` prefix + hex digits. */
 .tx-canid {
   display: inline-flex;
   align-items: center;
-  background: #0f141d;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   padding: 0 0.25rem 0 0.35rem;
 }
 .tx-canid-prefix {
-  color: #64748b;
+  color: var(--text-faint);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.78rem;
   padding: 0 0.15rem 0 0;
@@ -2877,12 +3038,12 @@ button.trace-event-swatch {
   border-radius: 2px;
 }
 .tx-canid-prefix:hover {
-  color: #cbd5e1;
-  background: #1c2433;
+  color: var(--text-secondary);
+  background: var(--surface-cell-hover);
 }
 .tx-canid-input {
   background: transparent;
-  color: #e2e8f0;
+  color: var(--text-primary);
   border: none !important;
   outline: none;
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -2900,13 +3061,13 @@ button.trace-event-swatch {
 }
 .tx-cycle-toggle {
   display: inline-flex;
-  border: 1px solid #2c3444;
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   overflow: hidden;
 }
 .tx-cycle-toggle button {
-  background: #0f141d;
-  color: #94a3b8;
+  background: var(--surface-control);
+  color: var(--text-muted);
   border: none;
   font: inherit;
   font-size: 0.78rem;
@@ -2914,23 +3075,23 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .tx-cycle-toggle button.active {
-  background: #1f2c3a;
-  color: #e2e8f0;
+  background: var(--surface-toggle-active-alt);
+  color: var(--text-primary);
 }
 .tx-send,
 .tx-start,
 .tx-stop {
-  background: #0f141d;
-  color: #cbd5e1;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   font: inherit;
   padding: 0.1rem 0.5rem;
   cursor: pointer;
 }
 .tx-stop {
-  color: #fca5a5;
-  border-color: #7f1d1d;
+  color: var(--danger-text-soft);
+  border-color: var(--danger-border);
 }
 .tx-send:disabled,
 .tx-start:disabled {
@@ -2942,7 +3103,7 @@ button.trace-event-swatch {
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 .tx-period-unit {
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 0.75rem;
   margin-left: -0.15rem;
 }
@@ -2991,7 +3152,7 @@ button.trace-event-swatch {
 }
 .tx-bytes-none {
   display: block;
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
   font-size: 0.78rem;
   padding-left: 0.1rem;
@@ -3003,16 +3164,16 @@ button.trace-event-swatch {
   gap: 0.05rem;
 }
 .tx-byte-cell .tx-byte-index {
-  color: #475569;
+  color: var(--text-dim);
   font-size: 0.65rem;
   font-family: ui-monospace, SFMono-Regular, monospace;
   line-height: 1;
 }
 .tx-byte-cell input {
   width: 2.1rem;
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -3022,7 +3183,7 @@ button.trace-event-swatch {
 }
 .tx-byte-cell input:focus {
   outline: none;
-  border-color: #60a5fa;
+  border-color: var(--field-focus-border);
 }
 .tx-bytes-fd .tx-byte-cell input {
   /* FD frames have up to 64 bytes; give the cells slightly more
@@ -3044,7 +3205,7 @@ button.trace-event-swatch {
   flex-direction: column;
   gap: 0.4rem;
   padding-top: 0.3rem;
-  border-top: 1px dashed #1f2630;
+  border-top: 1px dashed var(--border-subtle);
 }
 
 /* Frame-shape strip — kind/extended/BRS/DLC. */
@@ -3059,14 +3220,14 @@ button.trace-event-swatch {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.78rem;
 }
 .tx-shape-field .combobox-trigger,
 .tx-shape-field input[type="number"] {
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   font: inherit;
   padding: 0.1rem 0.25rem;
@@ -3077,7 +3238,7 @@ button.trace-event-swatch {
   cursor: not-allowed;
 }
 .tx-shape-hint {
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 0.72rem;
   font-style: italic;
   margin-left: auto;
@@ -3097,29 +3258,29 @@ button.trace-event-swatch {
   align-items: center;
 }
 .tx-signals-empty {
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
   font-size: 0.78rem;
   padding: 0.1rem 0.1rem;
 }
 .tx-signals-extmux {
   display: block;
-  color: #fcd34d;
+  color: var(--warn-text-bright);
   font-size: 0.78rem;
   padding: 0.3rem 0.5rem;
-  background: #1e1a0a;
-  border: 1px solid #4a3a0a;
+  background: var(--warn-surface-dim);
+  border: 1px solid var(--warn-border-dim);
   border-radius: 3px;
 }
 .tx-signals-header {
   display: contents;
 }
 .tx-signals-header > span {
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  border-bottom: 1px solid #1f2630;
+  border-bottom: 1px solid var(--border-subtle);
   padding-bottom: 0.1rem;
   margin-bottom: 0.1rem;
 }
@@ -3127,26 +3288,26 @@ button.trace-event-swatch {
   display: contents;
 }
 .tx-signal-row .tx-col-name {
-  color: #cbd5e1;
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 0.82rem;
 }
 .tx-signal-row .tx-col-unit {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.78rem;
 }
 .tx-signal-row .tx-col-range {
-  color: #64748b;
+  color: var(--text-faint);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 0.75rem;
   white-space: nowrap;
 }
 .tx-signal-input {
-  background: #0f141d;
-  color: #e2e8f0;
-  border: 1px solid #2c3444;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
   border-radius: 3px;
   font: inherit;
   font-family: ui-monospace, SFMono-Regular, monospace;
@@ -3157,7 +3318,7 @@ button.trace-event-swatch {
 }
 .tx-signal-input:focus {
   outline: none;
-  border-color: #60a5fa;
+  border-color: var(--field-focus-border);
 }
 
 /* Phase 7 — System Messages panel + unread badge */
@@ -3165,8 +3326,8 @@ button.trace-event-swatch {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0f172a;
-  color: #e2e8f0;
+  background: var(--surface-field);
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 .system-messages-toolbar {
@@ -3174,33 +3335,33 @@ button.trace-event-swatch {
   gap: 0.5rem;
   align-items: center;
   padding: 0.3rem 0.5rem;
-  border-bottom: 1px solid #1e293b;
-  background: #111827;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-pop);
 }
 .system-messages-toolbar .combobox-trigger {
-  background: #1e293b;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   padding: 0.15rem 0.35rem;
   border-radius: 3px;
 }
 .system-messages-toolbar button {
-  background: #1e293b;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   padding: 0.15rem 0.6rem;
   border-radius: 3px;
   cursor: pointer;
 }
 .system-messages-toolbar button:hover:not(:disabled) {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .system-messages-toolbar button:disabled {
   opacity: 0.5;
   cursor: default;
 }
 .system-messages-count {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.78rem;
   margin-left: auto;
 }
@@ -3241,14 +3402,14 @@ button.trace-event-swatch {
   padding: 0 0.5rem;
   align-items: center;
   white-space: nowrap;
-  border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+  border-bottom: 1px solid var(--border-row-fade);
 }
-.system-messages-row-debug { color: #7c8899; }
-.system-messages-row-info { color: #cbd5e1; }
-.system-messages-row-warn { color: #fbbf24; }
-.system-messages-row-error { color: #f87171; }
-.system-messages-ts { color: #64748b; }
-.system-messages-source { color: #a5b4fc; }
+.system-messages-row-debug { color: var(--text-debug); }
+.system-messages-row-info { color: var(--text-secondary); }
+.system-messages-row-warn { color: var(--warn-text); }
+.system-messages-row-error { color: var(--danger-text); }
+.system-messages-ts { color: var(--text-faint); }
+.system-messages-source { color: var(--text-source); }
 .system-messages-level { text-transform: uppercase; font-weight: 600; }
 /* No ellipsis, and nothing clipped: the track is sized to the text and
    the whole line is reachable by scrolling the list sideways. Staying
@@ -3257,7 +3418,7 @@ button.trace-event-swatch {
 .system-messages-msg { overflow: visible; }
 .system-messages-empty {
   padding: 1rem;
-  color: #64748b;
+  color: var(--text-faint);
   text-align: center;
 }
 
@@ -3269,8 +3430,8 @@ button.trace-event-swatch {
   display: inline-block;
   margin-left: 0.4rem;
   padding: 0 0.35rem;
-  background: #dc2626;
-  color: #fff;
+  background: var(--danger-badge);
+  color: var(--text-on-solid);
   border-radius: 999px;
   font-size: 0.7rem;
   line-height: 1.2;
@@ -3284,8 +3445,8 @@ button.trace-event-swatch {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #0f172a;
-  color: #e2e8f0;
+  background: var(--surface-field);
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 .dbc-panel-toolbar {
@@ -3293,20 +3454,20 @@ button.trace-event-swatch {
   gap: 0.5rem;
   align-items: center;
   padding: 0.3rem 0.5rem;
-  border-bottom: 1px solid #1e293b;
-  background: #111827;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-pop);
 }
 .dbc-panel-search {
   flex: 1 1 0;
-  background: #1e293b;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   padding: 0.2rem 0.5rem;
   border-radius: 3px;
   font-size: 0.85rem;
 }
 .dbc-panel-match-count {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.78rem;
 }
 .dbc-panel-tree {
@@ -3317,7 +3478,7 @@ button.trace-event-swatch {
 }
 .dbc-panel-empty {
   padding: 1rem;
-  color: #64748b;
+  color: var(--text-faint);
   text-align: center;
 }
 /* The fixed height is load-bearing: the panel virtualizes its row list
@@ -3337,18 +3498,18 @@ button.trace-event-swatch {
   user-select: none;
 }
 .dbc-row:hover {
-  background: rgba(51, 65, 85, 0.45);
+  background: var(--surface-head-fade);
 }
 .dbc-row-selected {
-  background: rgba(99, 102, 241, 0.35);
+  background: var(--select-tint);
 }
 .dbc-row-selected:hover {
-  background: rgba(99, 102, 241, 0.45);
+  background: var(--select-tint-strong);
 }
 /* Keyboard cursor (arrow-key navigation). Distinct from selection —
    the cursor moves without selecting until Enter. */
 .dbc-row-active {
-  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
 .dbc-row-chevron {
@@ -3361,7 +3522,7 @@ button.trace-event-swatch {
   border: none;
   padding: 0;
   font: inherit;
-  color: #64748b;
+  color: var(--text-faint);
   cursor: pointer;
   align-self: stretch;
   display: flex;
@@ -3370,34 +3531,34 @@ button.trace-event-swatch {
   min-width: 1.1rem;
 }
 .dbc-row-bus .dbc-row-label {
-  color: #fbbf24;
+  color: var(--warn-text);
   font-weight: 600;
 }
 .dbc-row-dbc .dbc-row-label {
-  color: #a5b4fc;
+  color: var(--text-source);
   font-weight: 600;
 }
 .dbc-row-ecu .dbc-row-label {
-  color: #5eead4;
+  color: var(--text-ecu);
   font-weight: 600;
 }
 .dbc-row-scope {
   font-style: italic;
 }
 .dbc-row-message .dbc-row-label {
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 .dbc-row-signal .dbc-row-label {
-  color: #e2e8f0;
+  color: var(--text-primary);
 }
 .dbc-row-signal {
   cursor: default;
 }
 .dbc-row-meta {
-  color: #64748b;
+  color: var(--text-faint);
 }
 .dbc-row-comment {
-  color: #64748b;
+  color: var(--text-faint);
   font-style: italic;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3408,7 +3569,7 @@ button.trace-event-swatch {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font-size: 0.78rem;
   cursor: pointer;
   user-select: none;
@@ -3421,10 +3582,10 @@ button.trace-event-swatch {
 .dbc-row-details {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.72rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   padding-right: 0.5rem;
   padding-bottom: 3px;
-  border-bottom: 1px solid rgba(30, 41, 59, 0.5);
+  border-bottom: 1px solid var(--border-row-fade);
 }
 .dbc-details-grid {
   display: grid;
@@ -3438,18 +3599,18 @@ button.trace-event-swatch {
   line-height: 16px;
 }
 .dbc-details-grid dt {
-  color: #64748b;
+  color: var(--text-faint);
   text-align: right;
 }
 .dbc-details-grid dd {
   margin: 0;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .dbc-details-aside {
-  color: #64748b;
+  color: var(--text-faint);
 }
 .dbc-details-attr,
 .dbc-details-value {
@@ -3458,7 +3619,7 @@ button.trace-event-swatch {
 }
 .dbc-details-attr em,
 .dbc-details-value {
-  color: #e2e8f0;
+  color: var(--text-primary);
   font-style: normal;
 }
 
@@ -3469,8 +3630,8 @@ button.trace-event-swatch {
   flex-direction: column;
   height: 100%;
   font-size: 12px;
-  color: #cbd5e1;
-  background: #0f172a;
+  color: var(--text-secondary);
+  background: var(--surface-field);
 }
 .rbs-empty {
   align-items: center;
@@ -3489,7 +3650,7 @@ button.trace-event-swatch {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-bottom: 1px solid #1e293b;
+  border-bottom: 1px solid var(--border-soft);
   flex-wrap: wrap;
 }
 .rbs-run-toggle {
@@ -3499,20 +3660,20 @@ button.trace-event-swatch {
   font-weight: 600;
 }
 .rbs-kill-on {
-  background: #7f1d1d;
-  color: #fecaca;
+  background: var(--danger-surface-strong);
+  color: var(--danger-text-bright);
 }
 .rbs-filter {
   flex: 1;
   min-width: 120px;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   color: inherit;
   padding: 2px 6px;
   border-radius: 3px;
 }
 .rbs-path {
-  color: #64748b;
+  color: var(--text-faint);
   max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3533,22 +3694,22 @@ button.trace-event-swatch {
 }
 .rbs-bus-row {
   font-weight: 700;
-  background: #111c33;
+  background: var(--surface-bus-row);
 }
 .rbs-ecu { margin-left: 12px; }
 .rbs-ecu-row { font-weight: 600; }
 .rbs-message { margin-left: 24px; }
-.rbs-message-row:hover { background: #16213c; }
+.rbs-message-row:hover { background: var(--surface-bus-row-hover); }
 .rbs-inert { opacity: 0.45; }
 /* The gridview's cursor and selection (ADR 0044). */
 .rbs-bus-row[data-active],
 .rbs-ecu-row[data-active],
 .rbs-message-row[data-active] {
-  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
 .rbs-row-selected {
-  background: #1b2740;
+  background: var(--surface-row-selected);
 }
 .rbs-caret {
   /* ADR 0044: a disclosure is a real control whose hit area is the full
@@ -3556,7 +3717,7 @@ button.trace-event-swatch {
      decoration. */
   background: none;
   border: none;
-  color: #64748b;
+  color: var(--text-faint);
   cursor: pointer;
   padding: 0;
   align-self: stretch;
@@ -3569,46 +3730,46 @@ button.trace-event-swatch {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #334155;
+  background: var(--surface-control-hover);
   display: inline-block;
 }
-.rbs-dot-on { background: #22c55e; }
-.rbs-warn { color: #fbbf24; }
+.rbs-dot-on { background: var(--ok-dot); }
+.rbs-warn { color: var(--warn-text); }
 .rbs-badge {
   margin-left: 4px;
   padding: 0 3px;
-  border: 1px solid #475569;
+  border: 1px solid var(--border-dim);
   border-radius: 3px;
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .rbs-msg-key {
   font-family: ui-monospace, monospace;
-  color: #93c5fd;
+  color: var(--text-message);
   min-width: 78px;
 }
 .rbs-msg-name { flex: 1; min-width: 120px; }
-.rbs-period { display: inline-flex; align-items: center; gap: 2px; color: #94a3b8; }
+.rbs-period { display: inline-flex; align-items: center; gap: 2px; color: var(--text-muted); }
 .rbs-period-input {
   width: 52px;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   color: inherit;
   padding: 1px 4px;
   border-radius: 3px;
   text-align: right;
 }
-.rbs-overridden { border-color: #eab308; }
+.rbs-overridden { border-color: var(--warn-border); }
 .rbs-calc-summary {
   font-family: ui-monospace, monospace;
   font-size: 10px;
-  color: #a5b4fc;
+  color: var(--text-source);
   min-width: 90px;
 }
 .rbs-configure { font-size: 11px; }
 .rbs-data {
   font-family: ui-monospace, monospace;
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -3617,28 +3778,28 @@ button.trace-event-swatch {
   border-collapse: collapse;
 }
 .rbs-signals td { padding: 1px 8px 1px 0; }
-.rbs-sig-name { color: #94a3b8; min-width: 140px; }
-.rbs-sig-unit { color: #64748b; }
+.rbs-sig-name { color: var(--text-muted); min-width: 140px; }
+.rbs-sig-unit { color: var(--text-faint); }
 .rbs-signal-input {
   width: 110px;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   color: inherit;
   padding: 1px 4px;
   border-radius: 3px;
 }
-.rbs-signal-overridden .rbs-signal-input { border-color: #eab308; }
+.rbs-signal-overridden .rbs-signal-input { border-color: var(--warn-border); }
 .rbs-clear {
   background: none;
   border: none;
-  color: #64748b;
+  color: var(--text-faint);
   cursor: pointer;
   padding: 0 2px;
 }
-.rbs-clear:hover { color: #f87171; }
-.rbs-calc-cell { color: #a5b4fc; }
+.rbs-clear:hover { color: var(--danger-text); }
+.rbs-calc-cell { color: var(--text-source); }
 .rbs-calc-cell em { font-size: 10px; }
-.rbs-no-signals { color: #64748b; font-style: italic; }
+.rbs-no-signals { color: var(--text-faint); font-style: italic; }
 .rbs-add-bus {
   display: flex;
   gap: 6px;
@@ -3649,20 +3810,20 @@ button.trace-event-swatch {
   z-index: 50;
   display: flex;
   flex-direction: column;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 6px 18px var(--shadow-modal);
 }
 .rbs-context-menu button {
   background: none;
   border: none;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   text-align: left;
   padding: 6px 12px;
   cursor: pointer;
 }
-.rbs-context-menu button:hover { background: #334155; }
+.rbs-context-menu button:hover { background: var(--surface-control-hover); }
 
 /* ---- calculated-field editor (shared, ADR 0027) ---- */
 
@@ -3676,7 +3837,7 @@ button.trace-event-swatch {
   margin-bottom: 10px;
 }
 .calc-section {
-  border-top: 1px solid #1e293b;
+  border-top: 1px solid var(--border-soft);
   padding: 8px 0;
 }
 .calc-toggle {
@@ -3687,7 +3848,7 @@ button.trace-event-swatch {
 }
 .calc-default-hint {
   font-weight: 400;
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 11px;
 }
 .calc-grid {
@@ -3701,13 +3862,13 @@ button.trace-event-swatch {
   flex-direction: column;
   gap: 2px;
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .calc-grid input,
 .calc-grid .combobox-trigger {
-  background: #0f172a;
-  border: 1px solid #334155;
-  color: #e2e8f0;
+  background: var(--surface-field);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
   padding: 2px 6px;
   border-radius: 3px;
 }
@@ -3716,7 +3877,7 @@ button.trace-event-swatch {
   align-items: center;
 }
 .calc-error {
-  color: #f87171;
+  color: var(--danger-text);
   margin: 6px 0;
 }
 .modal-actions {
@@ -3730,8 +3891,8 @@ button.trace-event-swatch {
 
 .trace-row-violation,
 .trace-row-violation td {
-  background: rgba(153, 27, 27, 0.45) !important;
-  color: #fecaca;
+  background: var(--danger-tint) !important;
+  color: var(--danger-text-bright);
 }
 
 /* transmit panel: calculated-fields strip (shared editor, ADR 0027) */
@@ -3742,12 +3903,12 @@ button.trace-event-swatch {
   padding: 4px 0;
   font-size: 11px;
 }
-.tx-calc-label { color: #64748b; }
+.tx-calc-label { color: var(--text-faint); }
 .tx-calc-summary {
   font-family: ui-monospace, monospace;
-  color: #a5b4fc;
+  color: var(--text-source);
 }
-.tx-calc-summary em { color: #eab308; font-style: normal; }
+.tx-calc-summary em { color: var(--warn-text-em); font-style: normal; }
 
 /* Settings view (ADR 0034) — the descriptor-driven editor over
    settings.json: search, a tag-grouped tree, and rows whose controls are
@@ -3758,27 +3919,27 @@ button.trace-event-swatch {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: #0f172a;
-  color: #e2e8f0;
+  background: var(--surface-field);
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 .settings-header {
   flex: 0 0 auto;
   padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid #1f2630;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .settings-search {
   width: 100%;
-  background: #1c2230;
-  border: 1px solid #2c3444;
+  background: var(--surface-toolbar-control);
+  border: 1px solid var(--border-default);
   border-radius: 4px;
-  color: #e2e8f0;
+  color: var(--text-primary);
   font: inherit;
   padding: 0.25rem 0.5rem;
 }
 .settings-search:focus {
   outline: none;
-  border-color: #2d5aa8;
+  border-color: var(--border-search-focus);
 }
 .settings-body {
   display: flex;
@@ -3789,7 +3950,7 @@ button.trace-event-swatch {
   flex: 0 0 12rem;
   overflow-y: auto;
   padding: 0.5rem 0;
-  border-right: 1px solid #1f2630;
+  border-right: 1px solid var(--border-subtle);
 }
 .settings-tree-row {
   display: flex;
@@ -3798,23 +3959,23 @@ button.trace-event-swatch {
   width: 100%;
   background: none;
   border: 0;
-  color: #94a3b8;
+  color: var(--text-muted);
   font: inherit;
   text-align: left;
   padding: 0.15rem 0.5rem 0.15rem 0.75rem;
   cursor: pointer;
 }
 .settings-tree-row:hover {
-  background: #1f2a3d;
+  background: var(--surface-hover-strong);
 }
 .settings-tree-row.selected {
-  background: #1b2740;
-  color: #e2e8f0;
+  background: var(--surface-row-selected);
+  color: var(--text-primary);
 }
 .settings-tree-row.developer {
-  color: #e0a458;
+  color: var(--dev-text);
   margin-top: 0.4rem;
-  border-top: 1px solid #1f2630;
+  border-top: 1px solid var(--border-subtle);
   padding-top: 0.4rem;
 }
 .settings-tree-label {
@@ -3824,7 +3985,7 @@ button.trace-event-swatch {
   white-space: nowrap;
 }
 .settings-tree-count {
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
 }
@@ -3840,11 +4001,11 @@ button.trace-event-swatch {
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #64748b;
+  color: var(--text-faint);
 }
 .settings-empty {
   padding: 2rem 0.9rem;
-  color: #64748b;
+  color: var(--text-faint);
   text-align: center;
 }
 .setting {
@@ -3852,13 +4013,13 @@ button.trace-event-swatch {
   border-left: 2px solid transparent;
 }
 .setting:hover {
-  background: #121821;
+  background: var(--surface-hover-subtle);
 }
 .setting.modified {
-  border-left-color: #4f8ef7;
+  border-left-color: var(--modified-marker);
 }
 .setting.overridden {
-  border-left-color: #58b09c;
+  border-left-color: var(--scope-marker);
 }
 .setting-top {
   display: flex;
@@ -3867,12 +4028,12 @@ button.trace-event-swatch {
 }
 .setting-label {
   font-weight: 600;
-  color: #e6ecf5;
+  color: var(--text-label);
 }
 .setting-key {
   font-family: ui-monospace, monospace;
   font-size: 0.72rem;
-  color: #64748b;
+  color: var(--text-faint);
 }
 .setting-chips {
   margin-left: auto;
@@ -3883,22 +4044,22 @@ button.trace-event-swatch {
   font-size: 0.65rem;
   padding: 0 0.3rem;
   border-radius: 0.5rem;
-  border: 1px solid #2c3444;
-  color: #64748b;
+  border: 1px solid var(--border-default);
+  color: var(--text-faint);
   white-space: nowrap;
 }
 .setting-chip.developer {
-  border-color: #4d3f1c;
-  color: #e0a458;
-  background: #1c1708;
+  border-color: var(--dev-border);
+  color: var(--dev-text);
+  background: var(--dev-surface);
 }
 .setting-chip.scope {
-  border-color: #21463d;
-  color: #58b09c;
-  background: #0d1a17;
+  border-color: var(--ok-border);
+  color: var(--scope-text);
+  background: var(--ok-surface);
 }
 .setting-desc {
-  color: #94a3b8;
+  color: var(--text-muted);
   margin: 0.2rem 0 0.4rem;
   max-width: 68ch;
   line-height: 1.45;
@@ -3912,10 +4073,10 @@ button.trace-event-swatch {
 .setting-ctl input[type="text"],
 .setting-ctl input[type="number"],
 .setting-ctl select {
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
-  color: #e2e8f0;
+  color: var(--text-primary);
   font: inherit;
   padding: 0.1rem 0.3rem;
   min-width: 6rem;
@@ -3930,15 +4091,15 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .setting-unit {
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 0.72rem;
 }
 .setting-custom {
   margin: 0;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .setting-missing-renderer {
-  color: #d98a8a;
+  color: var(--danger-text-muted);
 }
 .column-defaults {
   display: flex;
@@ -3955,19 +4116,19 @@ button.trace-event-swatch {
   min-width: 9rem;
 }
 .column-default-row input[type="number"] {
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
-  color: #e2e8f0;
+  color: var(--text-primary);
   font: inherit;
   padding: 0.1rem 0.3rem;
   width: 4.5rem;
 }
 .column-default-row button {
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
-  color: #e2e8f0;
+  color: var(--text-primary);
   font: inherit;
   font-size: 0.7rem;
   line-height: 1;
@@ -3975,7 +4136,7 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .column-default-row button:disabled {
-  color: #475569;
+  color: var(--text-dim);
   cursor: default;
 }
 .setting-meta {
@@ -3987,12 +4148,12 @@ button.trace-event-swatch {
   min-height: 1rem;
 }
 .setting-from {
-  color: #64748b;
+  color: var(--text-faint);
 }
 .setting-reset {
   background: none;
   border: 0;
-  color: #4f8ef7;
+  color: var(--modified-text);
   font: inherit;
   font-size: 0.72rem;
   cursor: pointer;
@@ -4006,9 +4167,9 @@ button.trace-event-swatch {
   display: flex;
   gap: 0.9rem;
   align-items: center;
-  border-top: 1px solid #1f2630;
+  border-top: 1px solid var(--border-subtle);
   padding: 0.3rem 0.75rem;
-  color: #64748b;
+  color: var(--text-faint);
   font-size: 0.72rem;
 }
 .settings-footer-hint {
@@ -4016,13 +4177,13 @@ button.trace-event-swatch {
 }
 .settings-footer-hint code {
   font-family: ui-monospace, monospace;
-  color: #a5b4fc;
+  color: var(--text-source);
 }
 
 /* Storage › Project caches — the settings view's one management
    surface (ADR 0042 §5). */
 .project-caches {
-  border: 1px solid #1f2630;
+  border: 1px solid var(--border-subtle);
   border-radius: 4px;
   overflow: hidden;
 }
@@ -4034,29 +4195,29 @@ button.trace-event-swatch {
   padding: 0.3rem 0.5rem;
 }
 .project-caches-head {
-  background: #121821;
-  border-bottom: 1px solid #1f2630;
+  background: var(--surface-hover-subtle);
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 0.72rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .project-caches-summary {
   flex: 1 1 auto;
 }
 .project-caches-hint {
-  color: #64748b;
+  color: var(--text-faint);
 }
 .project-caches-error {
   margin: 0;
   padding: 0.3rem 0.5rem;
-  color: #d98a8a;
+  color: var(--danger-text-muted);
 }
 .project-caches-empty {
   margin: 0;
   padding: 0.5rem;
-  color: #64748b;
+  color: var(--text-faint);
 }
 .project-cache-row + .project-cache-row {
-  border-top: 1px solid #161d27;
+  border-top: 1px solid var(--border-list);
 }
 .project-cache-path {
   flex: 1 1 auto;
@@ -4067,12 +4228,12 @@ button.trace-event-swatch {
   white-space: nowrap;
 }
 .project-cache-row.gone .project-cache-path {
-  color: #64748b;
+  color: var(--text-faint);
   text-decoration: line-through;
 }
 .project-cache-size {
   font-variant-numeric: tabular-nums;
-  color: #94a3b8;
+  color: var(--text-muted);
   width: 4.5rem;
   text-align: right;
 }
@@ -4080,33 +4241,33 @@ button.trace-event-swatch {
   font-size: 0.65rem;
   padding: 0 0.3rem;
   border-radius: 0.5rem;
-  border: 1px solid #2c3444;
-  color: #64748b;
+  border: 1px solid var(--border-default);
+  color: var(--text-faint);
   white-space: nowrap;
 }
 .project-cache-badge.active {
-  border-color: #21463d;
-  color: #58b09c;
-  background: #0d1a17;
+  border-color: var(--ok-border);
+  color: var(--scope-text);
+  background: var(--ok-surface);
 }
 .project-cache-badge.auto-located {
-  border-color: #33405c;
-  color: #93a7cc;
-  background: #131a26;
+  border-color: var(--border-badge-info);
+  color: var(--text-badge-info);
+  background: var(--surface-badge-info);
 }
 .project-cache-badge.missing,
 .project-cache-badge.orphaned {
-  border-color: #4d2c2c;
-  color: #d98a8a;
-  background: #1d1010;
+  border-color: var(--danger-border-soft);
+  color: var(--danger-text-muted);
+  background: var(--danger-surface-dim);
 }
 .project-caches button {
   font-size: 0.72rem;
   padding: 0.05rem 0.4rem;
 }
 .project-caches button.danger:not(:disabled) {
-  border-color: #4d2c2c;
-  color: #d98a8a;
+  border-color: var(--danger-border-soft);
+  color: var(--danger-text-muted);
 }
 
 /* The older shared panel shell — the About and Shortcuts panels. */
@@ -4114,8 +4275,8 @@ button.trace-event-swatch {
   height: 100%;
   overflow: auto;
   padding: 0.75rem 1rem;
-  background: #0f172a;
-  color: #e2e8f0;
+  background: var(--surface-field);
+  color: var(--text-primary);
   font-size: 0.85rem;
 }
 .settings-title {
@@ -4124,14 +4285,14 @@ button.trace-event-swatch {
 }
 .settings-hint {
   margin: 0 0 1rem;
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 .settings-hint code {
   font-family: ui-monospace, monospace;
-  color: #a5b4fc;
+  color: var(--text-source);
 }
 .settings-group {
-  border: 1px solid #1e293b;
+  border: 1px solid var(--border-soft);
   border-radius: 4px;
   padding: 0.5rem 0.75rem 0.75rem;
   margin: 0 0 0.75rem;
@@ -4141,7 +4302,7 @@ button.trace-event-swatch {
 }
 .settings-group legend {
   padding: 0 0.4rem;
-  color: #cbd5e1;
+  color: var(--text-secondary);
 }
 .settings-field {
   display: flex;
@@ -4150,13 +4311,13 @@ button.trace-event-swatch {
   margin: 0.5rem 0;
 }
 .settings-field .settings-label {
-  color: #e2e8f0;
+  color: var(--text-primary);
 }
 .settings-field input[type="number"] {
   width: 12rem;
-  background: #1e293b;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   padding: 0.15rem 0.35rem;
   border-radius: 3px;
 }
@@ -4173,7 +4334,7 @@ button.trace-event-swatch {
   grid-column: 2;
 }
 .settings-desc {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.78rem;
 }
 /* About panel: the bundled third-party license text (~100 KB) scrolls
@@ -4183,10 +4344,10 @@ button.trace-event-swatch {
   overflow: auto;
   margin: 0.5rem 0 0;
   padding: 0.5rem;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font-family: ui-monospace, monospace;
   font-size: 0.72rem;
   white-space: pre-wrap;
@@ -4206,7 +4367,7 @@ button.trace-event-swatch {
 .about-license-dep > summary {
   cursor: pointer;
   padding: 0.15rem 0;
-  color: #cbd5e1;
+  color: var(--text-secondary);
   font-size: 0.82rem;
 }
 
@@ -4219,23 +4380,23 @@ button.trace-event-swatch {
 }
 .shortcuts-reset {
   flex: none;
-  background: #1e293b;
-  color: #e2e8f0;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
   padding: 0.2rem 0.5rem;
   cursor: pointer;
 }
 .shortcuts-reset:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .shortcuts-error {
   margin: 0 0 0.75rem;
   padding: 0.35rem 0.5rem;
-  border: 1px solid #7f1d1d;
+  border: 1px solid var(--danger-border);
   border-radius: 3px;
-  background: #450a0a;
-  color: #fecaca;
+  background: var(--danger-surface-deep);
+  color: var(--danger-text-bright);
   font-size: 0.8rem;
 }
 .shortcut-row {
@@ -4246,7 +4407,7 @@ button.trace-event-swatch {
   padding: 0.2rem 0;
 }
 .shortcut-label {
-  color: #e2e8f0;
+  color: var(--text-primary);
 }
 .shortcut-chords {
   display: flex;
@@ -4262,15 +4423,15 @@ button.trace-event-swatch {
 .shortcut-chip kbd {
   font-family: ui-monospace, monospace;
   font-size: 0.75rem;
-  background: #1e293b;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
   padding: 0.05rem 0.3rem;
-  color: #a5b4fc;
+  color: var(--text-source);
 }
 /* The binding's context, where it isn't simply global (ADR 0044). */
 .shortcut-scope {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.7rem;
   font-style: italic;
 }
@@ -4283,28 +4444,28 @@ button.trace-event-swatch {
 .shortcut-remove {
   background: none;
   border: none;
-  color: #94a3b8;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0 0.15rem;
   line-height: 1;
 }
 .shortcut-remove:hover {
-  color: #fecaca;
+  color: var(--danger-text-bright);
 }
 .shortcut-record {
-  background: #1e293b;
-  color: #cbd5e1;
-  border: 1px solid #334155;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
   padding: 0.1rem 0.4rem;
   cursor: pointer;
   font-size: 0.78rem;
 }
 .shortcut-record:hover {
-  background: #334155;
+  background: var(--surface-control-hover);
 }
 .shortcut-recording {
-  color: #fcd34d;
+  color: var(--warn-text-bright);
   font-size: 0.78rem;
 }
 
@@ -4316,7 +4477,7 @@ button.trace-event-swatch {
   position: fixed;
   inset: 0;
   z-index: 1000;
-  background: #0e1116;
+  background: var(--surface-app);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4339,17 +4500,17 @@ button.trace-event-swatch {
   font-size: 1.6rem;
   font-weight: 500;
   letter-spacing: 0.04em;
-  color: #e2e8f0;
+  color: var(--text-primary);
 }
 
 .splash-warning {
   margin: 0;
   padding: 0.9rem 1.1rem;
-  border: 1px solid #78350f;
+  border: 1px solid var(--warn-border-notice);
   border-left-width: 4px;
   border-radius: 4px;
-  background: #1c1710;
-  color: #fbbf24;
+  background: var(--warn-surface-notice);
+  color: var(--warn-text);
   font-size: 0.95rem;
   line-height: 1.5;
   text-align: left;
@@ -4357,6 +4518,6 @@ button.trace-event-swatch {
 
 .splash-loading {
   margin: 1.2rem 0 0;
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.85rem;
 }

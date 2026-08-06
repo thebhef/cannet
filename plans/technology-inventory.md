@@ -371,6 +371,23 @@ crate retained long-term).
   invisible locally while CI kept running it. Revisit if the workspace's
   test *execution* time (not build time) becomes the gate's bottleneck.
 
+- **`tungstenite`** (v0.30, no default features, `handshake` only) +
+  **`ureq`** (v3, no default features) + **`png`** (v0.18) +
+  **`base64`** (v0.22), all in `crates/cannet-perf-measurement` — `adopted`
+  for the harness's visual-parity check (`screenshot` /
+  `screenshot-diff`). The capture drives the shipping GUI's WebView2 over
+  the Chrome DevTools Protocol: `ureq` does the one plain-HTTP GET that
+  finds the page target (`/json/list`), `tungstenite` carries the CDP
+  command channel, `base64` decodes the returned image, and `png`
+  decodes/encodes for the pixel diff and its artifact. All four are
+  TLS-free here (the endpoint is `127.0.0.1`), which is why the two
+  network crates are taken with default features off — no rustls /
+  native-tls enters the tree. The alternative, a platform window-capture
+  crate, would have added an OS-API dependency for something WebView2
+  already exposes, and would have photographed whatever occluded the
+  window. Chromium-only by construction, so the check is Windows-only;
+  see the crate README. MIT / Apache-2.0.
+
 - **ruff** + **mypy** (dev-dependencies in `servers/cannet-python-can`,
   pinned via its `uv.lock`) — `adopted` for the Python sidecar. ruff
   does both linting and black-compatible formatting in one tool;
