@@ -1232,6 +1232,11 @@ button.trace-event-swatch {
   outline: 1px solid #38bdf8;
   outline-offset: -1px;
 }
+/* A gridview-selected row (ADR 0044). The container holds focus, so
+   the selection is the only thing the row itself shows. */
+.trace-row.selected {
+  background: #1b2740;
+}
 
 .trace-event-label {
   flex: 0 1 auto;

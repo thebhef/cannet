@@ -44,7 +44,9 @@ import {
   setSignalDragData,
   type DraggableSignalRef,
 } from "./dragSignals";
-import { anchorFromScroll, maxScrollTop, ROW_HEIGHT } from "./traceViewport";
+import { anchorFromScroll, maxScrollTop, ROW_HEIGHT, scrollForRow } from "./traceViewport";
+import { useGridview } from "./useGridview";
+import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { diagCount } from "./diag"; // DIAG
@@ -79,6 +81,17 @@ function selectionFromParams(raw: unknown): { keys: SelectedKey[]; patterns: str
 
 const keyOf = (k: { busId: string | null; messageId: number; extended: boolean; signalName: string }) =>
   signalKey(k.busId, k.messageId, k.extended, k.signalName);
+
+/// Gridview row ids (ADR 0044) for the two kinds of page row. Prefixed
+/// so a section literally named like a signal key can't collide with
+/// one: the id space is the interaction layer's, and it is one space.
+const SECTION_ROW_PREFIX = "sec:";
+const SIGNAL_ROW_PREFIX = "sig:";
+const sectionRowId = (name: string) => `${SECTION_ROW_PREFIX}${name}`;
+const signalRowId = (key: string) => `${SIGNAL_ROW_PREFIX}${key}`;
+/// The section a header row's id names, or `null` for a signal row.
+const sectionOfRowId = (id: string): string | null =>
+  id.startsWith(SECTION_ROW_PREFIX) ? id.slice(SECTION_ROW_PREFIX.length) : null;
 
 /// The view's user-authored sections: names in creation order, plus the
 /// canonical-identity → name assignment map. Project data — persisted on
@@ -551,6 +564,107 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     );
   }, [anchorMax, count, viewportHeight]);
 
+  // --- the gridview (ADR 0044) ---
+  // The row space is the host-arranged page space itself: a section
+  // header is a branch, a signal row a plain leaf one level under it.
+  // Rows outside the loaded page have no id — the cursor lives in the
+  // viewport, which is exactly what the page covers.
+  const hasSections = sections.names.length > 0;
+  const rowModelAt = useCallback(
+    (index: number): GridviewRowModel | null => {
+      const pageRow = view.getRow(index);
+      if (!pageRow) return null;
+      const header = sectionHeaderOf(pageRow);
+      if (header) {
+        return { id: sectionRowId(header.name), kind: "branch", expandable: true, depth: 0 };
+      }
+      const s = signalOf(pageRow);
+      if (!s) return null;
+      return {
+        id: signalRowId(signalKey(s.bus_id, s.message_id, s.extended, s.signal_name)),
+        kind: "leaf",
+        expandable: false,
+        // Flat when the view has no sections at all, so Left has no
+        // phantom parent to walk out to.
+        depth: hasSections ? 1 : 0,
+      };
+    },
+    [view, hasSections],
+  );
+  // The scaffold's live geometry, read by `scrollToRow` without making
+  // the adapter a fresh object on every scroll.
+  const geometry = useRef({ firstVisibleRow, rows, count, viewportHeight });
+  geometry.current = { firstVisibleRow, rows, count, viewportHeight };
+  const scrollToRow = useCallback(
+    (index: number) => {
+      const g = geometry.current;
+      // `rows` carries the two-row render pad, so the last *whole* row
+      // is two short of the window's end.
+      const page = Math.max(1, g.rows - 2);
+      const next =
+        index < g.firstVisibleRow
+          ? index
+          : index > g.firstVisibleRow + page - 1
+            ? index - page + 1
+            : null;
+      if (next == null) return;
+      const anchor = Math.max(0, next);
+      setAnchoredRow(anchor);
+      const el = containerRef.current;
+      if (el) el.scrollTop = scrollForRow(anchor, g.count, g.viewportHeight);
+    },
+    [containerRef],
+  );
+  const setRowExpanded = useCallback((id: string, expanded: boolean) => {
+    const name = sectionOfRowId(id);
+    if (name == null) return;
+    setFolded((prev) => {
+      const next = new Set(prev);
+      if (expanded) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
+  const adapter = useMemo<GridviewAdapter>(() => {
+    const indexOf = (id: string) => {
+      for (let i = 0; i < count; i++) if (rowModelAt(i)?.id === id) return i;
+      return -1;
+    };
+    return {
+      count,
+      rowIdAt: (index) => rowModelAt(index)?.id ?? null,
+      indexOf,
+      rowAt: (id) => {
+        const i = indexOf(id);
+        return i < 0 ? null : rowModelAt(i);
+      },
+      isExpanded: (id) => {
+        const name = sectionOfRowId(id);
+        return name == null ? false : !folded.has(name);
+      },
+      scrollToRow,
+      setExpanded: setRowExpanded,
+      // Both kinds are selectable: a header is the drag handle for the
+      // whole section (ADR 0045), not mere structure.
+      isSelectable: () => true,
+    };
+  }, [count, rowModelAt, folded, scrollToRow, setRowExpanded]);
+  const grid = useGridview({
+    adapter,
+    pageRows: Math.max(1, rows - 2),
+    idPrefix: `signals-${elementId}`,
+  });
+  const handleRowClick = useCallback(
+    (id: string, e: React.MouseEvent) => {
+      grid.onRowClick(id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+      // Clicking a row hands the grid the keyboard, unless the click was
+      // aimed at a control that wants focus itself.
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("button, input") == null) containerRef.current?.focus();
+    },
+    [grid, containerRef],
+  );
+
   const visible = useMemo(() => columns.filter((c) => c.visible), [columns]);
   const gridTemplate = useMemo(() => signalGridTemplateColumns(columns), [columns]);
   const contentWidthVar = useMemo(() => contentWidthStyle(columns), [columns]);
@@ -690,7 +804,15 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           sort={sort}
           onSortColumn={onSortColumn}
         />
-        <div ref={containerRef} className="trace-rows" onScroll={handleScroll}>
+        {/* The rows viewport is the gridview container: it holds focus
+            and names the active row, because the rows themselves are
+            recycled by the paged viewport (ADR 0044). */}
+        <div
+          ref={containerRef}
+          className="trace-rows"
+          onScroll={handleScroll}
+          {...grid.containerProps}
+        >
           {/* The scrolled content carries the columns' own width as well
               as the snapshot's extent: the rows are absolutely positioned
               against it inside a viewport that clips, so without it the
@@ -704,11 +826,15 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                 const pageRow = view.getRow(abs);
                 const header = sectionHeaderOf(pageRow);
                 if (header) {
+                  const rowId = sectionRowId(header.name);
                   return (
                     <SectionHeaderRow
                       key={abs}
                       top={i * ROW_HEIGHT}
                       header={header}
+                      domId={grid.rowDomId(rowId)}
+                      selected={grid.selection.has(rowId)}
+                      onRowClick={(e) => handleRowClick(rowId, e)}
                       folded={folded.has(header.name)}
                       renaming={renaming === header.name}
                       patternCount={(sections.patterns[header.name] ?? EMPTY_PATTERNS).length}
@@ -724,11 +850,27 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                     />
                   );
                 }
+                const signal = signalOf(pageRow);
+                const signalRow = signal
+                  ? signalRowId(
+                      signalKey(
+                        signal.bus_id,
+                        signal.message_id,
+                        signal.extended,
+                        signal.signal_name,
+                      ),
+                    )
+                  : null;
                 return (
                   <SignalRow
                     key={abs}
                     top={i * ROW_HEIGHT}
-                    row={signalOf(pageRow)}
+                    row={signal}
+                    domId={signalRow == null ? undefined : grid.rowDomId(signalRow)}
+                    selected={signalRow != null && grid.selection.has(signalRow)}
+                    onRowClick={
+                      signalRow == null ? undefined : (e) => handleRowClick(signalRow, e)
+                    }
                     columns={visible}
                     gridTemplate={gridTemplate}
                     baseTimestamp={trace.baseTimestampSeconds}
@@ -792,6 +934,9 @@ function SectionNameInput({
 function SectionHeaderRow({
   top,
   header,
+  domId,
+  selected,
+  onRowClick,
   folded,
   renaming,
   patternCount,
@@ -804,6 +949,10 @@ function SectionHeaderRow({
 }: {
   top: number;
   header: SignalSectionHeaderRecord;
+  /// The DOM id `aria-activedescendant` names this row by.
+  domId: string;
+  selected: boolean;
+  onRowClick: (e: React.MouseEvent) => void;
   folded: boolean;
   renaming: boolean;
   patternCount: number;
@@ -817,7 +966,10 @@ function SectionHeaderRow({
   const label = header.name === "" ? UNSECTIONED : header.name;
   return (
     <div
-      className="trace-row signals-section-header"
+      id={domId}
+      className={`trace-row signals-section-header${selected ? " selected" : ""}`}
+      aria-selected={selected}
+      onClick={onRowClick}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
     >
       <button
@@ -960,6 +1112,11 @@ function MoveToSectionMenu({
 interface SignalRowProps {
   top: number;
   row: SignalSnapshotRecord | null;
+  /// The DOM id `aria-activedescendant` names this row by. Absent for a
+  /// row whose page hasn't landed — it has no identity to name yet.
+  domId?: string;
+  selected?: boolean;
+  onRowClick?: (e: React.MouseEvent) => void;
   columns: readonly SignalColumnState[];
   gridTemplate: string;
   baseTimestamp: number | null;
@@ -979,6 +1136,9 @@ interface SignalRowProps {
 function SignalRow({
   top,
   row,
+  domId,
+  selected = false,
+  onRowClick,
   columns,
   gridTemplate,
   baseTimestamp,
@@ -1088,7 +1248,10 @@ function SignalRow({
       defs={SIGNAL_COLUMN_DEFS}
       columns={columns}
       gridTemplate={gridTemplate}
-      className={`trace-row ${row ? "" : "loading"}`}
+      id={domId}
+      className={`trace-row ${row ? "" : "loading"}${selected ? " selected" : ""}`}
+      aria-selected={selected}
+      onClick={onRowClick}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
       renderCell={(column, className) => <span className={className}>{cell(column)}</span>}
     />

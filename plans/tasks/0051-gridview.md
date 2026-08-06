@@ -482,3 +482,26 @@ net.
   `isEditableTarget`, `isGridviewTarget`) and the one-line wiring in
   `useCommands` is what remains untested; the first panel migration
   (phase B) makes an end-to-end test possible and should take it.
+  *(Taken in B.1 — see below.)*
+
+### 2026-08-05 — B.1 signal view: cursor, keys, selection
+
+Branch `task51-signal-view`, cut from `task51-gridview-base`.
+`SignalsPanel` is the first gridview consumer: the host-arranged page
+row space *is* the row space, with section headers as branch rows
+(`sec:<name>`) and signal rows as plain leaves (`sig:<signalKey>`) one
+level under them. The rows viewport carries `containerProps` — it holds
+focus and names the active row — and every row carries its
+`rowDomId`, `aria-selected` and a click that feeds `onRowClick`.
+`.trace-row.selected` is the only new style.
+
+`SignalsPanel.gridview.dom.test.tsx`, 8 DOM tests: the cursor over a
+sectioned space, Left/Right walking out to a header and back in,
+fold/unfold from the cursor, a flat (section-less) space where Left has
+no phantom parent, click-replace / Ctrl+click toggle /
+Ctrl+Shift+click range / Ctrl+A, and **the D10 end-to-end test the base
+slice deferred**: a user-bound `ArrowDown` chord dispatched by the real
+`useCommands` capture listener fires outside the panel and does not
+fire inside its grid, while the grid's own cursor moves. Suite: 114
+files / 1315 tests green; `pnpm build` green; every pre-existing
+`SignalsPanel` DOM test unchanged and green (D0).
