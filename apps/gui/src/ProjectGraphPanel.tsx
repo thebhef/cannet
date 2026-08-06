@@ -33,6 +33,7 @@ import {
 } from "./projectGraph";
 import type { FilterPredicate } from "./types";
 import { effectiveBusColor } from "./busColor";
+import { theme } from "./theme";
 import { assignLanePositions, reconcileGraphNodes } from "./graphNodeLayout";
 import { useDismissableMenu } from "./useDismissableMenu";
 
@@ -164,7 +165,7 @@ function ProjectGraphPanelInner(props: IDockviewPanelProps) {
         // differs by edge kind: `bus-consumer` has the bus as its
         // source, `gateway-bus` and `transmit-bus` as their target.
         // `filter-consumer` carries no single bus → neutral grey.
-        let color = NEUTRAL_EDGE;
+        let color = theme().graphNeutralEdge;
         if (e.kind === "bus-consumer") {
           color = effectiveBusColor(stripBusPrefix(e.source), project.buses);
         } else if (e.kind === "gateway-bus" || e.kind === "transmit-bus") {
@@ -470,10 +471,6 @@ function addEdgeToRegistry(
   }
 }
 
-/// Edge color for wires that don't carry a single identifiable bus
-/// (filter→consumer).
-const NEUTRAL_EDGE = "#94a3b8";
-
 const EDGE_STROKE_WIDTH = 8;
 
 /// Invisible hit-area width around each edge for pointer events
@@ -536,7 +533,7 @@ function BusNode({ data }: NodeProps) {
       className="graph-node graph-node-bus"
       style={{
         width: BUS_WIDTH,
-        background: `color-mix(in srgb, ${color} 22%, #11161f)`,
+        background: `color-mix(in srgb, ${color} 22%, ${theme().graphBusNodeBase})`,
         borderColor: color,
       }}
     >

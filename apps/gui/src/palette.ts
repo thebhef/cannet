@@ -1,33 +1,22 @@
 /// The shared 16-color signal wheel (ADR 0026): every surface that
 /// colors a signal — plot series seeds, signal-view name text, the
 /// DBC panel's value renderer — draws from this one module, so the
-/// palettes can't drift apart. All entries must hold WCAG-AA contrast
-/// (≥ 4.5:1) against the app background (`index.css` `#0e1116`);
-/// `palette.test.ts` enforces it.
+/// palettes can't drift apart. The values live in `theme.ts` (one wheel
+/// per theme, slot-matched); `palette.test.ts` holds them to WCAG-AA
+/// contrast (≥ 4.5:1) against the theme's background.
 
-export const SIGNAL_WHEEL: readonly string[] = [
-  "#c6f24e",
-  "#4ecbff",
-  "#ffaa3d",
-  "#b48cff",
-  "#ff7e5a",
-  "#ffd93d",
-  "#5ddb7c",
-  "#e15dcf",
-  "#8ce0d4",
-  "#ff9bd2",
-  "#a0bfff",
-  "#d0ff7a",
-  "#ff6b6b",
-  "#7be3ff",
-  "#ffcf85",
-  "#c39bff",
-];
+import { theme } from "./theme";
+
+/// The active theme's signal wheel.
+export function signalWheel(): readonly string[] {
+  return theme().signalWheel;
+}
 
 /// The wheel color at `index`, wrapping (negative-safe).
 export function wheelColor(index: number): string {
-  const n = SIGNAL_WHEEL.length;
-  return SIGNAL_WHEEL[((index % n) + n) % n];
+  const wheel = signalWheel();
+  const n = wheel.length;
+  return wheel[((index % n) + n) % n];
 }
 
 /// A signal's stable-by-identity color: the wheel entry at the hash

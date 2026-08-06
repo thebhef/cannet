@@ -100,7 +100,6 @@ import {
   reanchorToSession,
   restoredTrace,
 } from "./trace";
-import { defaultBusColor } from "./busColor";
 import { useSessionReset } from "./useSessionReset";
 import { assignDefaultNames, defaultElementName, elementLabel } from "./elementLabel";
 import {
@@ -1688,12 +1687,11 @@ export function App() {
     setBuses((prev) => {
       if (prev.some((b) => b.id === bus.id)) return prev;
       // A new bus carries no bitrate — the adapter's own default stays
-      // in charge until one is set. Seed a graph color if the caller
-      // didn't supply one: the default palette indexed by the new bus's
-      // list position.
-      const seeded: Bus =
-        bus.color != null ? bus : { ...bus, color: defaultBusColor(prev.length) };
-      return [...prev, seeded];
+      // in charge until one is set — and no color: an uncustomized bus
+      // renders the active theme's wheel entry for its list position,
+      // derived where it's drawn. Only a color the user picked is
+      // project data.
+      return [...prev, bus];
     });
     setDirty(true);
   }, []);

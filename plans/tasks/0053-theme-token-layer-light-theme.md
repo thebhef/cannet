@@ -24,6 +24,9 @@ is not part of this task.
   - `PlotArea.tsx` — uPlot canvas styling (axes, grid, fonts) drawn
     outside CSS entirely.
 
+  Gathered into one per-theme source (`theme.ts`) in phase 53.B — see
+  the status log.
+
 ## Shape of the work
 
 1. **Harness screenshot step.** The ADR-0031 Chromium harness gains
@@ -304,3 +307,107 @@ borders → state+nodes → translucent), each with
 - *Task-doc correction.* This file said `index.css` had "zero CSS custom
   properties"; it had one non-color property (`--trace-row-padding-x`).
   Fixed above, with the measured literal counts.
+
+### 2026-08-06 — Phase 53.B, JS color sources (shape-of-the-work item 3)
+
+**Mechanism: a TS mirror, guarded by a drift test — not
+`getComputedStyle`.** Canvas code takes a resolved color string, so the
+JS half of the app can't read a `var()`. The two candidates were reading
+the resolved custom properties off `:root` at theme-change time and
+caching them, or writing the values down in TS. Mirroring won on three
+counts: reading from the DOM makes every color decision depend on a live
+document and a loaded stylesheet (the wheels could then not be
+contrast-tested in a plain unit test — and the AA guarantee is the point
+of having them in one place), it returns whatever the cascade happens to
+hold at call time rather than what the theme says, and it cannot carry
+the wheels at all, which have no CSS presence. Its one cost is drift, and
+`theme.test.ts` closes it: for every entry in `TOKEN_MIRROR` it parses
+the `:root` token block out of `index.css` and asserts the two spell the
+same value. Nine of the fifteen semantic colors are mirrored that way;
+the other six (grid lines, tick marks, crosshair, canvas chip fill,
+default lane fill, graph bus-node mix base) are canvas-only and have no
+CSS counterpart to drift from.
+
+`theme.ts` holds a `Theme` per name in `THEMES` — fifteen semantic colors
+plus the two wheels — and `theme()` returns the active one. Consumers
+call it at paint time, so a light theme is a `Theme` added to that record
+and a change of what `theme()` returns; no consumer changes shape.
+
+**Consumers migrated: 45 color literals across 7 modules.**
+
+| module | literals | what they were |
+| --- | ---: | --- |
+| `PlotArea.tsx` | 14 | axis stroke / grid / ticks, cursors A+B, crosshair, event marker, three chip fills, two Δ-chip label colors, the default enum-lane fill, the bus-swatch grey |
+| `palette.ts` | 16 | the signal wheel |
+| `busColor.ts` | 9 | the bus wheel + the unknown-bus grey |
+| `TraceView.tsx` | 2 | per-kind event colors (note, truncation) |
+| `ProjectGraphPanel.tsx` | 2 | neutral wire, bus-node mix base |
+| `PlotPanel.tsx` | 1 | the truncation marker's cursor color |
+| `TransmitFrameRow.tsx` | 1 | the unbound-frame grey |
+
+`plotPanelConfig.ts` changed without holding a literal: `TRACE_COLORS`
+(an alias of the signal wheel, indexed by hand at three call sites) gave
+way to `wheelColor`, which does the same wrap.
+
+uPlot resolves an axis `stroke` / `grid.stroke` / `ticks.stroke` function
+per draw (`fnOrSelf`) — the y-axis already relied on that for its
+primary-signal tint — so the shared axis config takes functions and
+follows a theme change on redraw rather than needing a rebuild.
+
+**Deliberately not migrated: the colormap seeds.** `colorMap.ts`'s
+`ENUM_PALETTE` (8) and `ColorMapPanel`'s `DEFAULT_RULE_COLOR` are the
+values a *new colormap rule is created with* — they become project data
+the moment they're used, and "clear project colors" explicitly leaves
+colormap rules alone as authored data. Theming them would make a theme
+change alter what future rules get written as. `SignalsPanel`'s
+`"#ffffff"` is the `value` fallback of a hidden color input whose
+`nameColor` is never null when the row exists — unreachable, and never
+rendered as a color.
+
+**`onAddBus` stops seeding.** A new bus now carries no `color` at all.
+Every render path already derived one from the bus's list position when
+the field was absent (`effectiveBusColor`, the project panel's swatch,
+the plot panel's bus-color lookup) — that fallback is now the only path
+for an uncustomized bus, so a default follows the theme with nothing
+stored. Picking a color in the project panel still writes it, and a
+stored color renders verbatim. The host is untouched: `Bus::color` was
+already `Option<String>` with `skip_serializing_if`, so the saved project
+simply has no `color` key for an uncustomized bus.
+
+Tested at both levels: `App.busColor.dom.test.tsx` drives the real
+toolbar — open the project panel, add a bus, read the swatch (it shows
+the wheel entry for slot 0), save and inspect the project handed to the
+host (no `color`), pick a color, save again (the color is there) — and it
+failed on the old code exactly at the "no color" assertion. `busColor.ts`
+had no unit tests at all; `busColor.test.ts` now covers derive-by-index,
+stored-verbatim, and the unknown-id grey.
+
+**Parity: zero visual change.** Release build
+(`pnpm --dir apps/gui tauri build --no-bundle`), same scenario, same
+machine, `ev-demo`, 1600×1000, diffed against 53.A's post-sweep captures:
+
+| capture | differing px / 1 600 000 | max Δchannel |
+| --- | ---: | ---: |
+| 01-saved-layout … 08-shortcuts | 0 | 0 |
+| 09-palette | 51 061 (3.19 %) | **1** |
+
+The ninth is the bistable palette artifact 53.A documented, and this run
+pins it down: the new build's `09-palette` is **byte-identical to the
+*pre-sweep* capture** (form A), while the post-sweep set it was compared
+against had come out form B. Diffing the two 53.A sets against each other
+reproduces the same 51 061 px at Δ1. So every capture in this run matches
+a 53.A capture byte for byte.
+
+**Blockers / side effects.**
+
+- *The screenshots don't exercise the seeding change.* `ev-demo`'s buses
+  were saved with colors (they were seeded when the project was made), so
+  they render verbatim and the pixels can't move. The equality that
+  matters — derived color == the color seeding used to write for the same
+  index — is the same `defaultBusColor(i)` call in both cases, and is
+  covered by test rather than by pixels.
+- *Bus wheel contrast is now enforced too.* The wheels moved into the
+  theme, so the per-slot threshold tests moved with them and read against
+  the theme's own background: signal ≥ 4.5:1 (unchanged), bus ≥ 3:1 (new
+  — the dark bus wheel measures 6.8–11.3:1, so it passes with room). Both
+  loop over `THEMES`, so a second theme is tested by existing.

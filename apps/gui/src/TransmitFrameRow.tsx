@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Bus, MessageDescriptorRecord } from "./types";
 import { Combobox } from "./Combobox";
 import { effectiveBusColor } from "./busColor";
+import { theme } from "./theme";
 import { BytesEditor } from "./TransmitBytesEditor";
 import { SignalsTable } from "./TransmitSignalsTable";
 import {
@@ -78,7 +79,7 @@ export function TransmitFrameRow({
     key: K,
     value: TransmitFrameConfig[K],
   ) => onChange((f) => ({ ...f, [key]: value }));
-  const busColor = frame.busId ? effectiveBusColor(frame.busId, buses) : "#475569";
+  const busColor = frame.busId ? effectiveBusColor(frame.busId, buses) : theme().busUnset;
 
   // The rich message descriptor lives at the row level — both the
   // frame-shape strip (which gets `kind` / `brs` from the DBC) and

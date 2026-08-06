@@ -10,6 +10,7 @@ import { useTraceLive, useTraceModel } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { defaultBusColor } from "./busColor";
+import { theme } from "./theme";
 import { buildColorResolver } from "./colorMap";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
@@ -23,7 +24,6 @@ import { stableSignalColor, wheelColor } from "./palette";
 import {
   SIGNALS_WIDTH_MAX,
   SIGNALS_WIDTH_MIN,
-  TRACE_COLORS,
   areasFromParams,
   cursorModeFromRaw,
   fmtCount,
@@ -152,9 +152,6 @@ const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 /** Stable empty list for areas with no patterns — a fresh `[]` per render
  * would defeat `PlotArea`'s memo. */
 const EMPTY_RESOLUTIONS: readonly PatternResolution[] = [];
-/// The derived truncation marker's cursor color (ADR 0035) — a muted
-/// amber, distinct from the note-event blue. Matches the trace floor row.
-const TRUNCATION_COLOR = "#e0a030";
 const SHOW_POINTS_OPTIONS: ComboboxOption[] = [
   { value: "auto", label: "auto" },
   { value: "off", label: "off" },
@@ -785,7 +782,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           signalName: desc.signal_name,
           messageName: desc.message_name,
           unit: desc.unit,
-          color: TRACE_COLORS[seedIdx % TRACE_COLORS.length],
+          color: wheelColor(seedIdx),
         };
         const key = signalRefKey(ref);
         if (prev.some((a) => a.signals.some((s) => signalRefKey(s) === key))) return prev;
@@ -865,7 +862,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         // discard here so the wheel index is consistent regardless of
         // where the drag started.
         const seedIdx = target.signals.length;
-        const seeded: SignalRef = { ...ref, color: TRACE_COLORS[seedIdx % TRACE_COLORS.length] };
+        const seeded: SignalRef = { ...ref, color: wheelColor(seedIdx) };
         return prev.map((a) => {
           if (a.id !== toAreaId) return a;
           if (beforeKey == null) return { ...a, signals: [...a.signals, seeded] };
@@ -1413,7 +1410,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
       id: TRUNCATION_EVENT_ID,
       t: model.truncationTsNs / 1e9 - baseSeconds,
       label: "history truncated here",
-      color: TRUNCATION_COLOR,
+      // A muted amber, distinct from the note-event blue (ADR 0035).
+      // Matches the trace floor row.
+      color: theme().eventTruncation,
     };
   }, [model.truncationTsNs, baseSeconds]);
   const events = useMemo<NoteEvent[]>(

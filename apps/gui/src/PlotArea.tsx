@@ -64,18 +64,8 @@ import { laneBandsForVisible, laneTileBand, laneValueRange, normalizeIntoLane, t
 import { useDecimatedRange, type DecimatedOutcome } from "./useDecimatedRange";
 import { useFirstSampleWait } from "./useFirstSampleWait";
 import { diagCount, diagGauge } from "./diag"; // DIAG
+import { theme } from "./theme";
 
-const CURSOR_A_COLOR = "#ffd93d";
-const CURSOR_B_COLOR = "#ff5577";
-/// The mouse crosshair's line color — uPlot's default cursor grey, kept
-/// now that the line is drawn by the panel's own overlay (in *every*
-/// stacked area, at the shared hover x) instead of uPlot's per-instance
-/// native cursor.
-const CROSSHAIR_COLOR = "#607d8b";
-const EVENT_COLOR = "#4ecbff";
-const AXIS_STROKE = "#cbd5e1";
-const AXIS_GRID = "#222b35";
-const AXIS_TICKS = "#3a4654";
 const ZOOM_STEP = 1.15;
 /** Floor for `sample_signals`' `max_points` (the host min/max-decimates
  * to at most `2 * max_points`). We ask for ~1× the canvas width — 2
@@ -629,7 +619,7 @@ function drawEnumTiles(
     const labelX = tileLabelX({ lo: x0, hi: x1 }, { lo: o.left, hi: o.left + o.width }, tw, padX);
     const mapColor = o.target ? o.resolveColor(o.target, raw) : null;
     // ~65-85% fills keep the stepped line faintly visible underneath.
-    const fill = mapColor ? colorMapLaneFill(mapColor) : "rgba(10, 13, 15, 0.65)";
+    const fill = mapColor ? colorMapLaneFill(mapColor) : theme().laneFillDefault;
     const accent = mapColor ?? o.accent;
     ctx.fillStyle = fill;
     ctx.fillRect(visStart, o.bandTop, segW, bandH);
@@ -1532,9 +1522,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       return () => probe.disconnect();
     }
     const axisCommon = {
-      stroke: AXIS_STROKE,
-      grid: { stroke: AXIS_GRID, width: 1 },
-      ticks: { stroke: AXIS_TICKS, width: 1 },
+      stroke: () => theme().axisText,
+      grid: { stroke: () => theme().axisGrid, width: 1 },
+      ticks: { stroke: () => theme().axisTicks, width: 1 },
       font: "10px ui-monospace, SFMono-Regular, Menlo, monospace",
     };
     // Enum-mode hook-up: stepped paths + symbolic y-axis
@@ -1639,8 +1629,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // back to the neutral axis color when there's no primary
           // (empty area). uPlot calls these per draw, so the ref read
           // picks up promotions immediately.
-          stroke: () => primaryColorRef.current ?? AXIS_STROKE,
-          ticks: { stroke: () => primaryColorRef.current ?? AXIS_TICKS, width: 1 },
+          stroke: () => primaryColorRef.current ?? theme().axisText,
+          ticks: { stroke: () => primaryColorRef.current ?? theme().axisTicks, width: 1 },
         };
     // Elapsed-time labels widen as you zoom in (more fractional digits,
     // ADR 0024), so a fixed tick spacing lets them collide. Space the
@@ -1839,7 +1829,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 resolveColor: colorResolverRef.current,
                 bandTop,
                 bandBot: bandTop + bandH,
-                accent: primaryColorRef.current ?? AXIS_STROKE,
+                accent: primaryColorRef.current ?? theme().axisText,
                 left,
                 width,
                 ratio,
@@ -1899,7 +1889,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 const padX = 4 * ratio;
                 const h = 13 * ratio;
                 const ty = atTop ? top + 2 * ratio : top + height - h - 2 * ratio;
-                ctx.fillStyle = "#0a0d0f";
+                ctx.fillStyle = theme().canvasChipFill;
                 ctx.fillRect(xp - tw / 2 - padX, ty, tw + padX * 2, h);
                 ctx.strokeStyle = color;
                 ctx.strokeRect(xp - tw / 2 - padX, ty, tw + padX * 2, h);
@@ -1910,7 +1900,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               }
             };
             for (const ev of lr.events) {
-              vline(ev.t, ev.color ?? EVENT_COLOR, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
+              vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }
             // Task 15 / ADR 0026: the X cursor's time label appears on
             // every axis (it used to render only on the last area, so
@@ -1920,10 +1910,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // elapsed-time format, at the axis ticks' adaptive precision.
             const xDigits = fracDigitsForSpan((u.scales.x.max ?? 0) - (u.scales.x.min ?? 0));
             if (lr.cursorXa != null) {
-              vline(lr.cursorXa, CURSOR_A_COLOR, [4, 3], `A ${formatElapsed(lr.cursorXa, xDigits)}`, false);
+              vline(lr.cursorXa, theme().cursorA, [4, 3], `A ${formatElapsed(lr.cursorXa, xDigits)}`, false);
             }
             if (lr.cursorXb != null) {
-              vline(lr.cursorXb, CURSOR_B_COLOR, [4, 3], `B ${formatElapsed(lr.cursorXb, xDigits)}`, false);
+              vline(lr.cursorXb, theme().cursorB, [4, 3], `B ${formatElapsed(lr.cursorXb, xDigits)}`, false);
             }
             // The shared mouse crosshair (panel-level, like A/B): drawn
             // in *every* stacked area at the same x, so the hover in
@@ -1931,7 +1921,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // — it tracks the pointer; `vline` clips it when the x
             // falls outside this area's window, same as A/B.
             if (lr.hoverX != null) {
-              vline(lr.hoverX, CROSSHAIR_COLOR, [4, 3], null, false);
+              vline(lr.hoverX, theme().crosshair, [4, 3], null, false);
             }
             const hline = (yVal: number, color: string, lbl: string) => {
               const yp = u.valToPos(yVal, "y", true);
@@ -1947,7 +1937,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               const padX = 4 * ratio;
               const h = 13 * ratio;
               const lx = left + 3 * ratio;
-              ctx.fillStyle = "#0a0d0f";
+              ctx.fillStyle = theme().canvasChipFill;
               ctx.fillRect(lx, yp - h / 2, tw + padX * 2, h);
               ctx.strokeStyle = color;
               ctx.strokeRect(lx, yp - h / 2, tw + padX * 2, h);
@@ -1956,15 +1946,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               ctx.textBaseline = "middle";
               ctx.fillText(lbl, lx + padX, yp);
             };
-            if (lr.cursorYh1 != null) hline(lr.cursorYh1, CURSOR_A_COLOR, "H1");
-            if (lr.cursorYh2 != null) hline(lr.cursorYh2, CURSOR_B_COLOR, "H2");
+            if (lr.cursorYh1 != null) hline(lr.cursorYh1, theme().cursorA, "H1");
+            if (lr.cursorYh2 != null) hline(lr.cursorYh2, theme().cursorB, "H2");
             // A small Δ chip so the cursor delta is visible without
             // turning on the measurement strip.
             const chip = (cx: number, cy: number, text: string, color: string) => {
               const tw = ctx.measureText(text).width;
               const padX = 4 * ratio;
               const h = 13 * ratio;
-              ctx.fillStyle = "#0a0d0f";
+              ctx.fillStyle = theme().canvasChipFill;
               ctx.fillRect(cx - tw / 2 - padX, cy - h / 2, tw + padX * 2, h);
               ctx.strokeStyle = color;
               ctx.strokeRect(cx - tw / 2 - padX, cy - h / 2, tw + padX * 2, h);
@@ -1976,13 +1966,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             if (lr.cursorXa != null && lr.cursorXb != null && isLast) {
               const xp = u.valToPos((lr.cursorXa + lr.cursorXb) / 2, "x", true);
               if (xp > left && xp < left + width) {
-                chip(xp, top + height - 18 * ratio, `Δt ${formatDurationSeconds(Math.abs(lr.cursorXb - lr.cursorXa))}`, "#cbd5e1");
+                chip(xp, top + height - 18 * ratio, `Δt ${formatDurationSeconds(Math.abs(lr.cursorXb - lr.cursorXa))}`, theme().axisText);
               }
             }
             if (lr.cursorYh1 != null && lr.cursorYh2 != null) {
               const yp = u.valToPos((lr.cursorYh1 + lr.cursorYh2) / 2, "y", true);
               if (yp > top && yp < top + height) {
-                chip(left + 40 * ratio, yp, `ΔH ${fmtVal(Math.abs(lr.cursorYh2 - lr.cursorYh1))}`, "#cbd5e1");
+                chip(left + 40 * ratio, yp, `ΔH ${fmtVal(Math.abs(lr.cursorYh2 - lr.cursorYh1))}`, theme().axisText);
               }
             }
             ctx.restore();
@@ -2870,7 +2860,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                       <>
                         <span
                           className="plot-bus-swatch"
-                          style={{ background: busColorLookup.get(s.busId) ?? "#94a3b8" }}
+                          style={{ background: busColorLookup.get(s.busId) ?? theme().busUnknown }}
                           aria-hidden="true"
                         />
                         {messageLabelFor(s)}
