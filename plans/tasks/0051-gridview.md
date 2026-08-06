@@ -368,3 +368,18 @@ visually until its own migration slice (D0).
 ## Open questions (agenda)
 
 (none — all resolved 2026-08-05.)
+
+## Status log
+
+### 2026-08-05 — A.1 row-space contract + cursor math
+
+`apps/gui/src/gridviewRows.ts` + `gridviewRows.test.ts`. The row model
+(`{id, kind, expandable, depth}`), the row-space contract
+(`count`/`rowIdAt`/`indexOf`/`rowAt`/`isExpanded`), the full adapter
+(`+ scrollToRow`/`setExpanded`/`isSelectable`), an array-backed row
+space for the client-held panels, and `cursorAction` — D3's Up/Down,
+Right, Left, Home/End, PageUp/Down as a pure key → action function.
+17 tests over a tree fixture flattened per expansion set, so "a branch
+expansion edits the row space, a leaf's content expansion does not" is
+exercised rather than asserted. Suite: 111 files / 1272 tests green;
+`pnpm build` green.
