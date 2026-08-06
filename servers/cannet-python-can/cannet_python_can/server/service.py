@@ -5,6 +5,17 @@ framework dispatches to: it owns the :class:`_InterfaceRegistry`, wires
 ``ListInterfaces`` / ``WatchInterfaces`` to :mod:`.enumeration`, and runs
 the bidirectional ``Session`` stream (subscribe / unsubscribe / transmit /
 configure). :func:`serve` builds and starts a bound server around it.
+
+Every command here leaves a ``debug`` record carrying its arguments and
+its outcome (with the driver's traceback on a failure), because that is
+the only trail a post-mortem of a per-channel connect failure has. The
+records are ``debug`` on purpose: they exist for the ``--log-file`` sink,
+which always records at debug, and must not change what stderr — and so
+the System Messages panel — shows at the level the user chose. The
+frame paths are the deliberate exception: ``FrameBatch`` is not logged
+per batch or per frame, only its lifecycle and faults. See
+``cannet_python_can.__main__``'s module docstring for the two-sink model
+and the streaming boundary.
 """
 
 from __future__ import annotations
@@ -59,6 +70,14 @@ class CannetServerService(pb_grpc.CannetServerServicer):
     ) -> pb.InterfaceList:
         ifaces = enumerate_interfaces(self._driver)
         _log.info("ListInterfaces -> %d channels", len(ifaces))
+        # The count alone can't answer "is the channel I want missing?".
+        _log.debug(
+            "ListInterfaces -> %s",
+            [
+                (i.id, i.display_name, "fd" if i.fd_capable else "classic")
+                for i in ifaces
+            ],
+        )
         return pb.InterfaceList(interfaces=ifaces)
 
     def WatchInterfaces(
@@ -67,11 +86,15 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         context: grpc.ServicerContext,
     ) -> Iterator[pb.InterfaceList]:
         """See :func:`.enumeration.watch_interfaces`."""
-        yield from watch_interfaces(
-            self._driver,
-            context,
-            recheck_interval_s=self._watch_recheck_interval_s,
-        )
+        _log.debug("WatchInterfaces stream opened")
+        try:
+            yield from watch_interfaces(
+                self._driver,
+                context,
+                recheck_interval_s=self._watch_recheck_interval_s,
+            )
+        finally:
+            _log.debug("WatchInterfaces stream closed")
 
     # ----- Session ----------------------------------------------------------
 
@@ -89,6 +112,10 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         subscribed: set[str] = set()
 
         def cleanup() -> None:
+            # A session ending is a disconnect for every interface it
+            # still held — the reason a channel went quiet.
+            if subscribed:
+                _log.debug("Session closing; releasing %s", sorted(subscribed))
             for cid in list(subscribed):
                 self._registry.unsubscribe(cid, outbox)
             subscribed.clear()
@@ -96,6 +123,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
 
         def request_pump() -> None:
             try:
+                _log.debug("Session opened")
                 # Greeting log: lets the host show a "sidecar:python-can
                 # connected" message in System Messages without a side
                 # channel.
@@ -143,11 +171,14 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         outbox: "queue.Queue[Optional[pb.Envelope]]",
     ) -> None:
         cid = sub.interface_id
+        _log.debug("Subscribe interface_id=%s", cid)
         if cid in subscribed:
+            _log.debug("Subscribe %s -> ok (already subscribed in this session)", cid)
             return  # idempotent within a session
         try:
             self._registry.subscribe(cid, outbox)
         except KeyError:
+            _log.debug("Subscribe %s -> unknown interface", cid, exc_info=True)
             outbox.put(
                 _error_envelope(
                     pb.Error.CODE_UNKNOWN_INTERFACE, f"unknown interface {cid}"
@@ -155,6 +186,11 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             )
             return
         except OSError as e:
+            # The whole point of the debug logfile: a channel that
+            # refuses to open (the one dead channel on an otherwise
+            # working card) leaves the driver's own traceback behind,
+            # not just the one-line message the client is sent.
+            _log.debug("Subscribe %s -> open failed", cid, exc_info=True)
             outbox.put(_log_envelope(pb.LOG_LEVEL_ERROR, f"open {cid} failed: {e}"))
             outbox.put(
                 _error_envelope(
@@ -163,6 +199,7 @@ class CannetServerService(pb_grpc.CannetServerServicer):
             )
             return
         subscribed.add(cid)
+        _log.debug("Subscribe %s -> ok", cid)
 
     def _handle_unsubscribe(
         self,
@@ -171,10 +208,13 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         outbox: "queue.Queue[Optional[pb.Envelope]]",
     ) -> None:
         cid = unsub.interface_id
+        _log.debug("Unsubscribe interface_id=%s", cid)
         if cid not in subscribed:
+            _log.debug("Unsubscribe %s -> not subscribed in this session", cid)
             return
         self._registry.unsubscribe(cid, outbox)
         subscribed.discard(cid)
+        _log.debug("Unsubscribe %s -> ok", cid)
 
     def _handle_tx(
         self,
@@ -182,6 +222,16 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         subscribed: set[str],
         outbox: "queue.Queue[Optional[pb.Envelope]]",
     ) -> None:
+        """Transmit a wire ``FrameBatch``.
+
+        **Not logged**, deliberately — not per frame, not per batch. A
+        saturated bus reaches this method thousands of times a second,
+        so a record here would rotate the whole logfile budget away in
+        seconds and put a logging call on the hot path. Transmit
+        failures already reach the client as ``TX_REJECTED`` envelopes,
+        and the interface's lifecycle (open / reconfigure / close, with
+        tracebacks) is logged where it happens.
+        """
         cid = batch.interface_id
         if cid not in subscribed:
             outbox.put(
@@ -233,15 +283,30 @@ class CannetServerService(pb_grpc.CannetServerServicer):
         """
         cid = cfg.interface_id
         config = _configure_to_open_config(cfg)
+        # Requested (as it came off the wire) alongside applied (what the
+        # driver is handed): a bitrate that silently doesn't take is
+        # otherwise indistinguishable from one that was never asked for.
+        _log.debug(
+            "ConfigureBus interface_id=%s requested=speed_bps=%d "
+            "fd_data_speed_bps=%d fd_enabled=%s applied=%r",
+            cid,
+            cfg.speed_bps,
+            cfg.fd_data_speed_bps,
+            bool(cfg.fd_enabled),
+            config,
+        )
         try:
             self._registry.reconfigure(cid, config)
         except Exception as e:  # noqa: BLE001
+            _log.debug("ConfigureBus %s -> failed", cid, exc_info=True)
             outbox.put(
                 _log_envelope(
                     pb.LOG_LEVEL_ERROR,
                     f"configure {cid} failed: {e}",
                 )
             )
+        else:
+            _log.debug("ConfigureBus %s -> ok", cid)
 
 
 def serve(
