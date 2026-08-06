@@ -24,11 +24,13 @@ import {
   type BusLookup,
   type ColumnKey,
   type ColumnState,
+  COLUMN_DEFS,
   columnDef,
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { TraceHeader, TraceTimeCell, cellContent, contentWidthStyle } from "./traceTable";
+import { TraceTimeCell, cellContent } from "./traceTable";
+import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import { diagCount } from "./diag"; // DIAG
 
 interface TraceViewProps {
@@ -344,7 +346,8 @@ export function TraceView({
   return (
     <div className="trace">
       {showHeader && (
-        <TraceHeader
+        <GridviewHeader
+          defs={COLUMN_DEFS}
           columns={shown}
           headerRef={headerRef}
           onColumnResize={onColumnResize}
@@ -468,7 +471,10 @@ const Row = memo(function Row({
     );
   }
   return (
-    <div
+    <GridviewRow
+      defs={COLUMN_DEFS}
+      columns={columns}
+      gridTemplate={gridTemplate}
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
         frame?.violation ? " trace-row-violation" : ""
       }`}
@@ -477,19 +483,11 @@ const Row = memo(function Row({
           ? `calculated-field check failed: ${frame.violation}`
           : undefined
       }
-      style={{
-        position: "absolute",
-        top,
-        left: 0,
-        right: 0,
-        height,
-        gridTemplateColumns: gridTemplate,
-      }}
+      style={{ position: "absolute", top, left: 0, right: 0, height }}
       onClick={() => frame?.decoded && onToggle(absoluteIndex)}
-    >
-      {columns.map((c) => {
+      renderCell={(key, className) => {
         const content = cellContent(
-          c.key,
+          key,
           frame,
           absoluteIndex,
           baseTimestamp,
@@ -497,10 +495,8 @@ const Row = memo(function Row({
           isExpanded,
           busLookup,
         );
-        const className = columnDef(c.key).className;
-        return c.key === "time" ? (
+        return key === "time" ? (
           <TraceTimeCell
-            key={c.key}
             className={className}
             seconds={frame?.timestamp_seconds ?? null}
             base={baseTimestamp}
@@ -508,11 +504,10 @@ const Row = memo(function Row({
             {content}
           </TraceTimeCell>
         ) : (
-          <span key={c.key} className={className}>
-            {content}
-          </span>
+          <span className={className}>{content}</span>
         );
-      })}
+      }}
+    >
       {isExpanded && frame?.decoded && (
         <div className="signals">
           {frame.decoded.signals.map((sig) => (
@@ -526,7 +521,7 @@ const Row = memo(function Row({
           ))}
         </div>
       )}
-    </div>
+    </GridviewRow>
   );
 });
 

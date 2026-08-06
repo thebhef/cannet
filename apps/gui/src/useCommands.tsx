@@ -56,6 +56,7 @@ import {
   dispatchStroke,
   formatChord,
   isEditableTarget,
+  isGridviewTarget,
   isMacPlatform,
   type KeyStroke,
 } from "./keybindings";
@@ -502,8 +503,10 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   // The global keydown dispatcher: resolve binding → check context →
   // run, or silently no-op. Registered once, on the capture phase so
   // a focused panel's own handlers can't shadow the global chords;
-  // plain-key bindings are suppressed while typing (see
-  // `dispatchStroke`). Sequence prefixes expire after a beat.
+  // plain-key bindings are suppressed while typing, and the keys a
+  // gridview consumes are suppressed while focus is inside one
+  // (ADR 0044) — see `dispatchStroke`. Sequence prefixes expire after
+  // a beat.
   useEffect(() => {
     const isMac = isMacPlatform();
     let pending: KeyStroke[] = [];
@@ -520,7 +523,11 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
         pending,
         { key: e.key, ctrl: e.ctrlKey, meta: e.metaKey, shift: e.shiftKey, alt: e.altKey },
         parsedBindingsRef.current.filter((b) => available.has(b.commandId)),
-        { isMac, inEditable: isEditableTarget(e.target) },
+        {
+          isMac,
+          inEditable: isEditableTarget(e.target),
+          inGridview: isGridviewTarget(e.target),
+        },
       );
       pending = result.pending;
       window.clearTimeout(timer);

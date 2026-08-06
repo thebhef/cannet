@@ -163,13 +163,18 @@ export interface DispatchResult {
 /// While the target is editable (text input / textarea /
 /// contentEditable) plain-key bindings are suppressed so typing
 /// doesn't trigger hotkeys; chords with `Mod` or `Alt` still fire.
+/// While the target is inside a gridview the keys that layer consumes
+/// are suppressed the same way — see [`isGridviewKey`].
 export function dispatchStroke(
   pending: readonly KeyStroke[],
   stroke: KeyStroke,
   bindings: readonly ParsedBinding[],
-  opts: { isMac: boolean; inEditable: boolean },
+  opts: { isMac: boolean; inEditable: boolean; inGridview?: boolean },
 ): DispatchResult {
   if (opts.inEditable && !stroke.ctrl && !stroke.meta && !stroke.alt) {
+    return { pending: [], commandId: null, handled: false };
+  }
+  if (opts.inGridview && isGridviewKey(stroke)) {
     return { pending: [], commandId: null, handled: false };
   }
   const usable = opts.inEditable ? bindings.filter((b) => !b.skipEditable) : bindings;
@@ -202,6 +207,45 @@ export function isEditableTarget(target: EventTarget | null): boolean {
     target instanceof HTMLSelectElement ||
     target.isContentEditable
   );
+}
+
+/// Marker attribute a gridview container carries (ADR 0044). The
+/// command dispatcher is a capture-phase `document` listener, so it
+/// fires before any panel handler — without this, a global chord on an
+/// arrow key would kill grid navigation silently.
+export const GRIDVIEW_ATTR = "data-gridview";
+
+/// The navigation keys a gridview consumes, unmodified.
+const GRIDVIEW_NAV_KEYS = new Set([
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  " ",
+  "Tab",
+]);
+
+/// Is this stroke one a gridview consumes (ADR 0044)? The unmodified
+/// navigation keys — arrows, Home/End, PageUp/PageDown, Space, Tab —
+/// plus Ctrl/Cmd+A. Everything else, a modified arrow included, is a
+/// global chord and passes through.
+export function isGridviewKey(stroke: KeyStroke): boolean {
+  if (stroke.shift || stroke.alt) return false;
+  if (stroke.ctrl || stroke.meta) {
+    return stroke.key.toLowerCase() === "a";
+  }
+  return GRIDVIEW_NAV_KEYS.has(stroke.key);
+}
+
+/// Is the keydown target inside a gridview container? The grid's own
+/// keys are suppressed there (see `dispatchStroke`'s `inGridview`).
+export function isGridviewTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.closest(`[${GRIDVIEW_ATTR}]`) != null;
 }
 
 /// Cmd-as-Mod platform detection for the dispatcher and the palette's

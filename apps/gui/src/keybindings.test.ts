@@ -4,6 +4,7 @@ import {
   chordFromEvent,
   dispatchStroke,
   formatChord,
+  isGridviewKey,
   parseChord,
   strokeMatchesStep,
   type KeyStroke,
@@ -207,6 +208,71 @@ describe("dispatchStroke", () => {
     const r = dispatchStroke([], plain("z"), bindings, { isMac: false, inEditable: false });
     expect(r.commandId).toBeNull();
     expect(r.handled).toBe(false);
+  });
+});
+
+describe("gridview key suppression", () => {
+  const mod = (key: string): KeyStroke => ({ ...plain(key), ctrl: true });
+  const fitBinding = [{ chord: parseChord("f"), commandId: "plot.fitXAxis" }];
+
+  it("claims the unmodified navigation keys and Ctrl/Cmd+A", () => {
+    for (const key of [
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "Home",
+      "End",
+      "PageUp",
+      "PageDown",
+      " ",
+      "Tab",
+    ]) {
+      expect(isGridviewKey(plain(key))).toBe(true);
+    }
+    expect(isGridviewKey(mod("a"))).toBe(true);
+    expect(isGridviewKey({ ...plain("a"), meta: true })).toBe(true);
+  });
+
+  it("leaves every other chord alone", () => {
+    expect(isGridviewKey(plain("f"))).toBe(false);
+    expect(isGridviewKey(plain("Enter"))).toBe(false);
+    // A modified navigation key is a global chord, not a grid move —
+    // the layer binds no Alt+← / Ctrl+↑ of its own.
+    expect(isGridviewKey({ ...plain("ArrowLeft"), alt: true })).toBe(false);
+    expect(isGridviewKey(mod("ArrowDown"))).toBe(false);
+    expect(isGridviewKey({ ...plain("ArrowDown"), shift: true })).toBe(false);
+    expect(isGridviewKey({ ...mod("a"), shift: true })).toBe(false);
+  });
+
+  it("holds a claimed key back from the dispatcher while focus is in a grid", () => {
+    const navBindings = [
+      { chord: parseChord("ArrowDown"), commandId: "test.down" },
+      { chord: parseChord("Mod+a"), commandId: "test.all" },
+    ];
+    for (const stroke of [plain("ArrowDown"), mod("a")]) {
+      const inside = dispatchStroke([], stroke, navBindings, {
+        isMac: false,
+        inEditable: false,
+        inGridview: true,
+      });
+      expect(inside.commandId).toBeNull();
+      expect(inside.handled).toBe(false);
+      const outside = dispatchStroke([], stroke, navBindings, {
+        isMac: false,
+        inEditable: false,
+      });
+      expect(outside.handled).toBe(true);
+    }
+  });
+
+  it("passes every other chord through from inside a grid", () => {
+    const r = dispatchStroke([], plain("f"), fitBinding, {
+      isMac: false,
+      inEditable: false,
+      inGridview: true,
+    });
+    expect(r.commandId).toBe("plot.fitXAxis");
   });
 });
 
