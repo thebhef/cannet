@@ -7,7 +7,6 @@ import {
   type CSSProperties,
 } from "react";
 import type { IDockviewPanelProps } from "dockview";
-import { invoke } from "@tauri-apps/api/core";
 
 import { Combobox } from "./Combobox";
 import { hostSettings, subscribeSettings, updateSettings } from "./hostSettings";
@@ -156,11 +155,6 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
     const text = filtered.map(formatLogLine).join("\n");
     void navigator.clipboard?.writeText(text);
   }, [filtered]);
-  const restartSidecar = useCallback(() => {
-    void invoke("restart_sidecar").catch(() => {
-      /* best-effort — the command emits its own System Messages */
-    });
-  }, []);
 
   return (
     <div className="system-messages-panel">
@@ -189,13 +183,6 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
         </button>
         <button type="button" onClick={clear} disabled={messages.length === 0}>
           Clear
-        </button>
-        <button
-          type="button"
-          onClick={restartSidecar}
-          title="Stop the python-can sidecar (if running) and start it again. Clears the per-session crash-budget counter."
-        >
-          Restart sidecar
         </button>
         <span className="system-messages-count">
           {filtered.length} / {messages.length}

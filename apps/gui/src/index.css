@@ -4282,3 +4282,56 @@ button.trace-event-swatch {
   color: #fcd34d;
   font-size: 0.78rem;
 }
+
+/* Startup splash (full-window, every launch). Sits above the modal
+   layer so nothing can render over the safety disclaimer, and covers
+   the app while the boot project — DBCs, layout, restored capture —
+   is still coming up. */
+.splash-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: #0e1116;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.splash-card {
+  max-width: 34rem;
+  text-align: center;
+}
+
+.splash-logo {
+  width: 8rem;
+  max-width: 40vw;
+  height: auto;
+}
+
+.splash-title {
+  margin: 0.2rem 0 1.4rem;
+  font-size: 1.6rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: #e2e8f0;
+}
+
+.splash-warning {
+  margin: 0;
+  padding: 0.9rem 1.1rem;
+  border: 1px solid #78350f;
+  border-left-width: 4px;
+  border-radius: 4px;
+  background: #1c1710;
+  color: #fbbf24;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.splash-loading {
+  margin: 1.2rem 0 0;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}

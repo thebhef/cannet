@@ -644,10 +644,10 @@ interface LocalInterfacesRowProps {
 /// "Local interfaces" row in the Connection section. Always rendered
 /// (even when the local driver is offline) so the user has a fixed
 /// handle for the local path. Lists every binding currently pointed
-/// at the sidecar's address. When the sidecar isn't ready, the row
-/// surfaces an error indicator and a "Restart" button (which calls the
-/// `restart_sidecar` Tauri command) — the only place the sidecar's
-/// implementation detail leaks into the UI label.
+/// at the sidecar's address. The row's state indicator reads
+/// ready/starting/offline, and its "Restart" button (which calls the
+/// `restart_sidecar` Tauri command) is always available — it is the
+/// only place in the app that restarts the sidecar.
 export function LocalInterfacesRow({
   sidecar,
   bindings,

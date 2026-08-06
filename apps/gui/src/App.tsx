@@ -83,6 +83,7 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
+import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
 import {
   ElementRegistryContext,
@@ -397,6 +398,12 @@ export function App() {
   // one-shots the boot open; `applyProject` reads `dockApiRef.current`,
   // so the surviving dockview instance still gets the layout.
   const bootOpenRanRef = useRef(false);
+  // The boot open has run to a conclusion — project applied (its last
+  // step being the scratch-capture restore), nothing to open, or an
+  // error. It only gates the splash, which must come down on every one
+  // of those outcomes.
+  const [bootSettled, setBootSettled] = useState(false);
+  const splashVisible = useSplashVisible(bootSettled);
   const interfaceBindingsRef = useRef<InterfaceBinding[]>([]);
   const sidecarAddressRef = useRef<string | null>(null);
   const handleConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -2136,6 +2143,9 @@ export function App() {
             rememberProject(null);
           }
         }
+        // The boot has reached a conclusion either way — drop the
+        // splash's hold on the app (the 5 s floor may still hold it).
+        setBootSettled(true);
         // Hand off to the orchestration effect, which connects /
         // captures / exits per the flags once the project has applied.
         if (cfg) setAutomation(cfg);
@@ -2528,6 +2538,7 @@ export function App() {
           onCancel={() => setPendingBlf(null)}
         />
       )}
+      {splashVisible && <SplashOverlay />}
     </main>
   );
 }

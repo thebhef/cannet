@@ -152,10 +152,12 @@ Tests updated with the rule, pinning the threshold edges and zero.
 
 ## Exit criteria
 
-- The System Messages panel no longer has a restart button; sidecar
-  restart lives only in Connection Management.
-- Startup splashscreen with the safety disclaimer ships (wording and
-  acknowledge behavior decided and documented).
+- ~~The System Messages panel no longer has a restart button; sidecar
+  restart lives only in Connection Management.~~ Done 2026-08-06 —
+  `ca0c337`.
+- ~~Startup splashscreen with the safety disclaimer ships (wording and
+  acknowledge behavior decided and documented).~~ Done 2026-08-06 —
+  `cd19690`.
 - ~~The light-theme request is linked to a groomed token-layer
   task.~~ Done 2026-08-05 — promoted to
   [task 53](0053-theme-token-layer-light-theme.md).
@@ -168,3 +170,75 @@ Tests updated with the rule, pinning the threshold edges and zero.
   through one shared helper, thresholds and mantissa width read from
   settings, with tests pinning the boundaries (threshold edges, zero,
   log-mode).
+
+## Status log
+
+### 2026-08-06 — item 1: sidecar restart button deleted (`ca0c337`)
+
+Pure deletion, as groomed. `SystemMessagesPanel.tsx` lost the button,
+its `restartSidecar` handler, its crash-budget tooltip, and its now-
+unused `invoke` import; no tooltip text migrated anywhere. The project
+panel's `LocalInterfacesRow` Restart is untouched and is now the only
+restart in the app.
+
+Its stale doc-comment ("when the sidecar isn't ready, the row surfaces
+… a Restart button") now says what is true: the state indicator reads
+ready/starting/offline and Restart is always available.
+
+No test asserted the deleted button, so no DOM test changed. Docs in
+the same commit: README ×2 and `servers/cannet-python-can/SMOKE.md`
+each named "Restart sidecar" as a clickable thing; they now point at
+the project panel's **Local interfaces → Restart**.
+
+Suite after: 1413 tests / 121 files, green; `pnpm --dir apps/gui build`
+green. No host code touched.
+
+### 2026-08-06 — item 2: startup splash (`cd19690`)
+
+In-app full-window React overlay (`SplashOverlay.tsx`), rendered last
+inside `main.app` above the modal layer (`z-index: 1000`). Carries the
+existing (previously unused) `src/assets/logo.svg`, the app name, the
+approved disclaimer verbatim under a **Warning:** lead-in, and a
+"Starting up…" line. No new asset, no acknowledge state, nothing
+persisted, no click-through.
+
+Dismissal is `max(5 s, boot settled)` via `useSplashVisible(bootSettled)`
+— a floor timer started at mount, ANDed with a `bootSettled` flag. The
+flag is set in `App.tsx`'s boot open IIFE (the one behind
+`bootOpenRanRef`) right after the `open_project` → `applyProject`
+block, whose last step is the DS-7 `restore_scratch_capture`. All three
+outcomes reach it: project applied, no project to open, or the
+open/apply `catch`. **No host-side change was needed** — the restore
+already settles inside a frontend-awaited call, so nothing new is
+observable from the host and no Tauri command was added.
+
+Tests (+5): `SplashOverlay.dom.test.tsx` — three fake-timer cases
+pinning the max (settles first / settles late / settles mid-floor) plus
+a render assertion on the disclaimer text; `App.splash.dom.test.tsx` —
+boots the whole App with `restore_scratch_capture` rejecting and
+asserts the overlay is up at first paint and gone afterwards, which is
+the "never hangs on a failure path" guard. Suite after: 1418 tests /
+123 files, green; build green.
+
+README § Running gained the splash paragraph (wording, no-acknowledge
+behavior, and the loading-screen role).
+
+### Blockers / side effects
+
+- **The App-level splash test costs ~5.2 s of wall clock.** The floor
+  is a module constant, and driving the whole App boot under fake
+  timers risks dockview/ResizeObserver interactions, so the test waits
+  the real 5 s. The suite went 31.8 s → 31.7 s (it runs in parallel
+  with the slower plot files), so nothing was actually lost — but the
+  file is the slowest single test in the frontend suite.
+- **The overlay covers self-driving perf runs (ADR 0031) for their
+  first ≥ 5 s.** `perfInteract` dispatches DOM events at elements
+  directly rather than hit-testing, so the overlay cannot swallow a
+  gesture, and the harness brackets its measurement after a warm-up —
+  but a run whose capture window starts within 5 s of boot now paints
+  one extra full-window layer. Left in deliberately: the groomed spec
+  says "every launch", and suppressing it under automation would be a
+  second code path with nothing testing it.
+- **Not verified in a running window.** `pnpm test` + `pnpm build` are
+  green; the splash's actual look was not eyeballed in a `tauri dev`
+  launch this session.

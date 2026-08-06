@@ -284,6 +284,15 @@ database for live decoding — load more than one and frames decode
 against each in order, first match wins (every loaded DBC applies to
 the one interface for now).
 
+**Every launch opens on a splash** carrying the safety disclaimer —
+cannet transmits, and the system on the other end of the cable should
+be in a state where disrupted CAN traffic is safe. It is a notice, not
+a prompt: there is nothing to acknowledge and nothing is remembered.
+It doubles as the loading screen, so it stays up for the longer of five
+seconds and however long the reopened project takes to apply (its last
+step restores the previous session's capture, which scales with the
+capture's size) — when the splash lifts, the app is up with its data.
+
 ### Self-driving performance runs
 
 The shipping GUI can drive itself for a render-tier performance
@@ -535,8 +544,8 @@ writes, so the panel teaches the file.
   overrode which key, with both values, so the file never quietly shows
   something the app isn't using. The three settings the sidecar is
   launched with — its directory, its driver module, its log level —
-  are re-read on every spawn, so **Restart sidecar** applies a change
-  without relaunching cannet.
+  are re-read on every spawn, so the project panel's **Local
+  interfaces → Restart** applies a change without relaunching cannet.
 - **Defaults you can still change per view.** Some settings only decide
   what a *new* view starts as — the trace panel's **Default trace
   view**, **Default auto-scroll**, and **Default events overlay**, the
@@ -1176,8 +1185,9 @@ user can bind interfaces without typing an address. The sidecar's
 stdout / stderr and exit code feed the **System Messages** panel
 tagged `sidecar:python-can`. A crashing sidecar gets a budget of
 auto-restart attempts per session (`sidecar_restart_budget`, three by
-default); once the budget is exhausted, the **Restart sidecar** Tauri
-command clears it.
+default); once the budget is exhausted, the `restart_sidecar` Tauri
+command — the project panel's **Local interfaces → Restart** button —
+clears it.
 
 **Lifecycle: dies with the host**. The host pipes the sidecar's
 stdin and writes nothing to it. When the host process exits (clean

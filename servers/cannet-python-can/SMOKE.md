@@ -89,7 +89,8 @@ simply skips that vendor and the others still work.
   `--log-level debug` for the vendor-specific message.
 - **The sidecar exits at startup**: the System Messages panel will
   surface the last few stderr lines as an `error`-level
-  `sidecar:python-can` message; click "Restart sidecar" once. If it
+  `sidecar:python-can` message; click the project panel's "Local
+  interfaces → Restart" once. If it
   exits again, capture the stderr and file an issue.
 - **Frames look corrupt**: check the bitrate / FD configuration on
   the logical bus. The wire `Subscribe` envelope does not currently
