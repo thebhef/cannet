@@ -270,7 +270,8 @@ const DESCRIPTORS: &[Spec] = &[
         key: "normal_mode",
         backing: Backing::Field,
         label: "Normal mode",
-        help: "Replaces the light theme. No effect on the dark theme.",
+        help: "When enabled, the light theme renders normally. No effect on \
+               the dark theme.",
         surfaces: &[Surface::General],
         kind: Kind::Developer,
         control: Control::Bool,

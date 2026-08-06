@@ -64,9 +64,10 @@ export interface Settings {
   /// which is the value of the `data-theme` attribute the token layer
   /// keys off.
   theme: ThemeSetting;
-  /// Normal mode. On, `light` renders the normal-mode theme instead;
-  /// `dark` is unaffected. Applied live, like `theme`, with which it
-  /// pairs to decide the theme.
+  /// Normal mode. On, `light` renders the light theme; off — the
+  /// default — it renders the normal-mode theme. `dark` is unaffected.
+  /// Applied live, like `theme`, with which it pairs to decide the
+  /// theme.
   normal_mode: boolean;
   /// How long a transient status notice dwells in the header before the
   /// bar reverts to its resting line.
