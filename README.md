@@ -284,6 +284,15 @@ database for live decoding — load more than one and frames decode
 against each in order, first match wins (every loaded DBC applies to
 the one interface for now).
 
+**Every launch opens on a splash** carrying the safety disclaimer —
+cannet transmits, and the system on the other end of the cable should
+be in a state where disrupted CAN traffic is safe. It is a notice, not
+a prompt: there is nothing to acknowledge and nothing is remembered.
+It doubles as the loading screen, so it stays up for the longer of five
+seconds and however long the reopened project takes to apply (its last
+step restores the previous session's capture, which scales with the
+capture's size) — when the splash lifts, the app is up with its data.
+
 ### Self-driving performance runs
 
 The shipping GUI can drive itself for a render-tier performance
