@@ -120,8 +120,8 @@ describe("themes", () => {
 
 describe("resolveTheme", () => {
   it("gives normal mode the light setting and nothing else", () => {
-    expect(resolveTheme("light", true)).toBe("normal");
-    expect(resolveTheme("light", false)).toBe("light");
+    expect(resolveTheme("light", true)).toBe("light");
+    expect(resolveTheme("light", false)).toBe("normal");
     expect(resolveTheme("dark", true)).toBe("dark");
     expect(resolveTheme("dark", false)).toBe("dark");
   });

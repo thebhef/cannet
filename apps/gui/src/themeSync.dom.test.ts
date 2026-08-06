@@ -43,7 +43,7 @@ afterEach(() => {
 
 describe("startThemeSync", () => {
   it("applies a stored theme at boot, before anything renders", async () => {
-    stored = { theme: "light" };
+    stored = { theme: "light", normal_mode: true };
     await hydrateSettings();
     stop = startThemeSync();
     expect(document.documentElement.dataset.theme).toBe("light");
@@ -60,6 +60,7 @@ describe("startThemeSync", () => {
   });
 
   it("follows a later change of the setting, both ways", async () => {
+    stored = { normal_mode: true };
     await hydrateSettings();
     stop = startThemeSync();
 
@@ -102,7 +103,7 @@ describe("startThemeSync", () => {
 // of its own — not something read once at boot.
 describe("normal mode", () => {
   it("applies from the stored pair at boot", async () => {
-    stored = { theme: "light", normal_mode: true };
+    stored = { theme: "light", normal_mode: false };
     await hydrateSettings();
     stop = startThemeSync();
     expect(document.documentElement.dataset.theme).toBe("normal");
@@ -113,19 +114,19 @@ describe("normal mode", () => {
     stored = { theme: "light" };
     await hydrateSettings();
     stop = startThemeSync();
-    expect(activeTheme()).toBe("light");
+    expect(activeTheme()).toBe("normal");
 
     const notified = vi.fn();
     const unsubscribe = subscribeTheme(notified);
     try {
       await updateSettings({ normal_mode: true });
-      expect(document.documentElement.dataset.theme).toBe("normal");
-      expect(theme()).toBe(THEMES.normal);
+      expect(document.documentElement.dataset.theme).toBe("light");
+      expect(theme()).toBe(THEMES.light);
       expect(notified).toHaveBeenCalledTimes(1);
 
       await updateSettings({ normal_mode: false });
-      expect(document.documentElement.dataset.theme).toBe("light");
-      expect(theme()).toBe(THEMES.light);
+      expect(document.documentElement.dataset.theme).toBe("normal");
+      expect(theme()).toBe(THEMES.normal);
       expect(notified).toHaveBeenCalledTimes(2);
     } finally {
       unsubscribe();
@@ -139,7 +140,7 @@ describe("normal mode", () => {
     expect(activeTheme()).toBe("dark");
 
     await updateSettings({ theme: "light" });
-    expect(activeTheme()).toBe("normal");
+    expect(activeTheme()).toBe("light");
     await updateSettings({ theme: "dark" });
     expect(activeTheme()).toBe("dark");
   });

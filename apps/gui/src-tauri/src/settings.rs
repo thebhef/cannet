@@ -185,7 +185,7 @@ pub struct Settings {
     /// query is a separate question from having a second theme at all.
     pub theme: String,
     /// Normal mode. Default `false`. On, the `light` theme renders the
-    /// normal-mode token set and wheels instead of the light ones;
+    /// light token set and wheels; off, it renders the normal-mode ones.
     /// `dark` is unaffected. Applied live, like [`Settings::theme`],
     /// with which it pairs to decide the applied theme.
     ///

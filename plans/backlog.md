@@ -1003,3 +1003,47 @@ next pass on this surface can address them as one piece.
   local session at all — that single observation decides whether this is
   our bug. Parked here rather than scheduled because nobody can act on
   it until someone reproduces it. Carried out of task 48.
+
+### Task 51–53 carry-forwards (2026-08-06)
+
+Follow-ups recorded in the task 51–53 status logs (now in git
+history) at implementation review. Grouped here as one block for the
+next planning pass.
+
+- `[feat]` **Gridview deferred set** (task 51 D-decisions): plot
+  signal side-list and project-panel element-list migrations onto the
+  layer; host-side fuzzy search for the paged views; type-ahead
+  search; keyboard multiselect; branch-with-content affordance.
+- `[feat]` **Host id↔ref resolution for paged selections.** Ctrl+A
+  and multi-row drag in the paged views (chrono/by-ID/signal) cover
+  only the loaded page; a cursor scrolled out of a paged window
+  restarts at row 0. Both want a host command resolving row ids
+  beyond the page.
+- `[chore]` **Render counters for `RbsPanel`/`DbcPanel`/
+  `TransmitPanel`.** Their absence hid RbsPanel's per-refresh render
+  cost during the task-51 heap investigation (dockview keeps
+  inactive tabs mounted, so "no counter" read as "not rendering").
+- `[feat]` **`ConfigureBus` acknowledgement needs a wire-model
+  decision (ADR).** "What the driver actually applied" exists
+  nowhere: ADR 0022 is fire-and-forget, the client rx loop drops
+  inbound control frames. The project-panel echo shows host-truth,
+  labelled as such. Related missing capability: editing a bitrate
+  while connected applies nothing (now legible as a `pending` chip,
+  still inert).
+- `[fix]` **Per-channel failure isolation gaps.** Sidecar
+  `_handle_subscribe` catches only `KeyError`/`OSError` — a
+  replacement driver letting `can.CanInitializationError` escape
+  kills the session, not the channel. Host-side,
+  `is_per_frame_error_code` treats `UNKNOWN_INTERFACE` as fatal, so
+  a server-side channel refusal can down sibling channels.
+- `[chore]` **Perf-harness scenario debts.** The startup splash now
+  covers the first ≥5 s of every ADR-0031 run; the chrono trace is
+  hidden behind the by-ID tab in the stock gate scenario (a
+  chrono-visible variant exists from the task-51 heap work).
+  Changing the gate scenario is a baseline decision — take it
+  deliberately.
+- `[fix]` **`PlotPanel.dom.test.tsx` render-counter flake.** The
+  suite's reset calls `void hydrateSettings()` un-awaited, so a
+  settings publish can land inside a later test
+  (`plot_fetch_interval_ms` case). Reproduced across several
+  full-suite runs during tasks 52–53; passes isolated.

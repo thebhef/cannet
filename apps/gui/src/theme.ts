@@ -28,8 +28,8 @@ import { useSyncExternalStore } from "react";
 export type ThemeName = "dark" | "light" | "normal";
 
 /// What the host's `theme` setting stores. A subset of {@link ThemeName}:
-/// `normal` is not a value the setting takes, it is what the setting
-/// pair `light` + normal mode resolves to. See {@link resolveTheme}.
+/// `normal` is not a value the setting takes, it is one of the two
+/// things the setting pair resolves `light` to. See {@link resolveTheme}.
 export type ThemeSetting = "dark" | "light";
 
 /// The semantic colors JS paints with. Names are roles, not shades —
@@ -257,10 +257,11 @@ export const THEMES: Readonly<Record<ThemeName, Theme>> = {
 };
 
 /// The theme a setting pair applies. `normal` is not a `theme` value —
-/// it is what normal mode makes `light` mean, and it leaves `dark`
-/// alone.
+/// it is what `light` means with normal mode off, which is the default;
+/// turning normal mode on makes `light` mean the `light` theme. `dark`
+/// is the same under both.
 export function resolveTheme(setting: ThemeSetting, normalMode: boolean): ThemeName {
-  return normalMode && setting === "light" ? "normal" : setting;
+  return !normalMode && setting === "light" ? "normal" : setting;
 }
 
 /// The theme name every color decision resolves through. Module state

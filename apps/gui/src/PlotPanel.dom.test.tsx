@@ -815,17 +815,18 @@ describe("PlotPanel", () => {
         await act(async () => {
           await updateSettings({ theme: "light" });
         });
-        // The stylesheet's half of the switch.
-        expect(document.documentElement.dataset.theme).toBe("light");
-        expect(activeTheme()).toBe("light");
+        // The stylesheet's half of the switch. The flag is off (its
+        // default), which is what `light` resolves to `normal` for.
+        expect(document.documentElement.dataset.theme).toBe("normal");
+        expect(activeTheme()).toBe("normal");
         // The canvas's half: a redraw, and an axis that resolves to the
-        // light theme's color when it happens. uPlot resolves axis
+        // applied theme's color when it happens. uPlot resolves axis
         // strokes per draw, so the second is what makes the first
         // enough.
         expect(inst.redraws).toBeGreaterThan(redrawsBefore);
         const stroke = inst.opts.axes[0].stroke;
         expect(typeof stroke === "function" ? (stroke as () => string)() : stroke).toBe(
-          THEMES.light.axisText,
+          THEMES.normal.axisText,
         );
       } finally {
         stop();
@@ -858,12 +859,12 @@ describe("PlotPanel", () => {
         await act(async () => {
           await updateSettings({ normal_mode: true });
         });
-        expect(document.documentElement.dataset.theme).toBe("normal");
-        expect(activeTheme()).toBe("normal");
+        expect(document.documentElement.dataset.theme).toBe("light");
+        expect(activeTheme()).toBe("light");
         expect(inst.redraws).toBeGreaterThan(redrawsBefore);
         const stroke = inst.opts.axes[0].stroke;
         expect(typeof stroke === "function" ? (stroke as () => string)() : stroke).toBe(
-          THEMES.normal.axisText,
+          THEMES.light.axisText,
         );
       } finally {
         stop();
