@@ -659,3 +659,55 @@ describe("payload sizing helpers", () => {
     expect(resizeDataHexPreserving("AABB", 2)).toBe("AABB");
   });
 });
+
+// ADR 0045: the transmit panel is a receiving end for concrete
+// signals — it builds one frame per distinct message — and rejects a
+// pattern payload outright, because a rule names no message set.
+describe("TransmitPanel as a drop target", () => {
+  const MIME = "application/x-cannet-plot-signal";
+  const SIGNALS_MIME = "application/x-cannet-drag-signals";
+  const PATTERNS_MIME = "application/x-cannet-drag-patterns";
+
+  function transfer(types: string[], payload: unknown) {
+    return {
+      types,
+      getData: (t: string) => (t === MIME ? JSON.stringify(payload) : ""),
+      dropEffect: "",
+    };
+  }
+  const sig = (signalName: string, messageId: number) => ({
+    busId: "b1",
+    messageId,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit: "",
+  });
+  const panel = () => document.querySelector(".tx-panel") as HTMLElement;
+  const framesCreated = () => calls.filter((c) => c.cmd === "set_transmit_frame").length;
+
+  it("makes one frame for a whole message's signals, and none for a repeat", async () => {
+    renderPanel("el-tx-drop", []);
+    const dt = transfer([MIME, SIGNALS_MIME], {
+      signals: [sig("EngineSpeed", 256), sig("EngineTemp", 256), sig("Brake", 257)],
+      patterns: [],
+    });
+    fireEvent.dragOver(panel(), { dataTransfer: dt });
+    fireEvent.drop(panel(), { dataTransfer: dt });
+    // Two distinct messages in the payload ⇒ two frames, however many
+    // of their signals came along.
+    await waitFor(() => expect(framesCreated()).toBe(2));
+  });
+
+  it("refuses a pattern-only payload during dragover, and drops nothing", async () => {
+    renderPanel("el-tx-pattern", []);
+    const dt = transfer([MIME, PATTERNS_MIME], { signals: [], patterns: ["^Bus1/"] });
+    // `fireEvent` returns false when a handler called preventDefault —
+    // accepting the drop. Refusing it is what shows the "no drop"
+    // cursor, which is the only feedback `dragover` can give.
+    expect(fireEvent.dragOver(panel(), { dataTransfer: dt })).toBe(true);
+    fireEvent.drop(panel(), { dataTransfer: dt });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(framesCreated()).toBe(0);
+  });
+});

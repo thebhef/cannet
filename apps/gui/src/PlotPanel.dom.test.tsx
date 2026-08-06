@@ -915,6 +915,97 @@ describe("PlotPanel", () => {
     });
   });
 
+  // ADR 0045: a pattern dropped on a plot area joins that area's live
+  // pattern list. It is never flattened to its current matches — that
+  // is what the explicit materialize path is for.
+  it("appends dropped patterns to the area, live, and never flattens them", async () => {
+    const MIME = "application/x-cannet-plot-signal";
+    const PATTERNS_MIME = "application/x-cannet-drag-patterns";
+    const payload = JSON.stringify({ signals: [], patterns: ["EngineSpeed"] });
+    const dt = {
+      types: [MIME, PATTERNS_MIME],
+      getData: (t: string) => (t === MIME ? payload : ""),
+      dropEffect: "",
+    };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      const area = screen.getByText("Area 1").closest(".plot-area")!;
+      fireEvent.dragOver(area, { dataTransfer: dt });
+      fireEvent.drop(area, { dataTransfer: dt });
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /patterns \(1\)/ })).toBeInTheDocument(),
+      );
+      // The rule's current match is drawn — as a pattern-derived row,
+      // not as a manual pick.
+      expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
+      expect(screen.getByTitle(/added by a pattern/)).toBeInTheDocument();
+    });
+  });
+
+  it("merges a dropped pattern into an area that already has one, without duplicating", async () => {
+    const registry = makeRegistry({
+      id: "el-drop-patterns",
+      config: { areas: [{ id: "a1", signals: [], patterns: ["EngineSpeed"] }] },
+    });
+    const MIME = "application/x-cannet-plot-signal";
+    const payload = JSON.stringify({
+      signals: [],
+      patterns: ["EngineSpeed", "EngineTemp"],
+    });
+    const dt = {
+      types: [MIME, "application/x-cannet-drag-patterns"],
+      getData: (t: string) => (t === MIME ? payload : ""),
+      dropEffect: "",
+    };
+    await withSizedCanvas(async () => {
+      renderPanel({ params: { elementId: "el-drop-patterns" }, registry });
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      const area = screen.getByText("Area 1").closest(".plot-area")!;
+      fireEvent.drop(area, { dataTransfer: dt });
+      // Two patterns, not three: the repeat of one it already carries
+      // is dropped (D11).
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /patterns \(2\)/ })).toBeInTheDocument(),
+      );
+    });
+  });
+
+  it("adds a whole message's signals once, however often the drop overlaps", async () => {
+    // D11 at the plot end: a message payload is just its signals, and
+    // a payload overlapping the area's existing content lands each at
+    // most once.
+    const MIME = "application/x-cannet-plot-signal";
+    const sig = (signalName: string) => ({
+      busId: null,
+      messageId: 256,
+      extended: false,
+      signalName,
+      messageName: "EngineData",
+      unit: "rpm",
+    });
+    const payload = JSON.stringify({
+      signals: [sig("EngineSpeed"), sig("EngineTemp"), sig("EngineSpeed")],
+      patterns: [],
+    });
+    const dt = {
+      types: [MIME, "application/x-cannet-drag-signals"],
+      getData: (t: string) => (t === MIME ? payload : ""),
+      dropEffect: "",
+    };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      const area = screen.getByText("Area 1").closest(".plot-area")!;
+      fireEvent.drop(area, { dataTransfer: dt });
+      await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+      // …and dropping the same payload again changes nothing.
+      fireEvent.drop(area, { dataTransfer: dt });
+      await waitFor(() => {
+        expect(screen.getAllByText("EngineSpeed")).toHaveLength(1);
+        expect(screen.getAllByText("EngineTemp")).toHaveLength(1);
+      });
+    });
+  });
+
   it("hovering one area drives the crosshair readout in every area (shared hoverX)", async () => {
     // The mouse crosshair is panel-level: a hover reported by *any*
     // area's uPlot flips every area's side-panel readout to

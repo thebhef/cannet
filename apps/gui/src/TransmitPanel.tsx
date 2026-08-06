@@ -8,7 +8,7 @@ import type {
 } from "./types";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
-import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
+import { SIGNAL_DND_MIME, dragHasSignals, parseSignalDragData } from "./dragSignals";
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
 import { FrameDropZone, TransmitFrameRow } from "./TransmitFrameRow";
@@ -308,18 +308,21 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     <div
       className="tx-panel"
       onDragOver={(e) => {
-        // Accept the signal mime as a drop target. The TX
-        // panel turns each dropped signal's parent message into a
-        // new transmit frame (deduped by message). Other DnD mimes
-        // (the panel's own frame-reorder) bubble through to the
-        // row-level handlers below.
-        if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
+        // Accept a payload carrying concrete signals: the TX panel
+        // turns each dropped signal's parent message into a new
+        // transmit frame (deduped by message). A pattern payload is
+        // refused here — a rule names no message set to build frames
+        // from (ADR 0045) — and refusing during `dragover` is the only
+        // feedback the gesture can give. Other DnD mimes (the panel's
+        // own frame-reorder) bubble through to the row-level handlers
+        // below.
+        if (dragHasSignals(e.dataTransfer.types)) {
           e.preventDefault();
           e.dataTransfer.dropEffect = "copy";
         }
       }}
       onDrop={(e) => {
-        if (!e.dataTransfer.types.includes(SIGNAL_DND_MIME)) return;
+        if (!dragHasSignals(e.dataTransfer.types)) return;
         e.preventDefault();
         handleDropSignals(e.dataTransfer.getData(SIGNAL_DND_MIME));
       }}

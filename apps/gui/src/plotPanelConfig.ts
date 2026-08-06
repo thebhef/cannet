@@ -229,11 +229,16 @@ export function withColor(
  *   the source. */
 export function parseDroppedSignals(s: string): {
   refs: SignalRef[];
+  /// The live patterns the payload carried (ADR 0045). An area appends
+  /// them to its own `patterns` list — they are never flattened to
+  /// their current matches by a drop.
+  patterns: string[];
   sourcePanelId: string | null;
 } {
   const parsed = parseSignalDragData(s);
   return {
     refs: parsed.signals.map((r, i) => withColor(r, i)),
+    patterns: parsed.patterns,
     sourcePanelId: parsed.sourcePanelId,
   };
 }
