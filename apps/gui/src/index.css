@@ -75,8 +75,67 @@
   --field-focus-border: #60a5fa;
   --focus-marker: #38bdf8;
   --focus-outline: #38bdf8;
+
+  /* State: danger / warning / ok, plus markers and accents */
+  --accent-marker: #4ecbff;
+  --accent-progress: #4ecbff;
+  --accent-selected-bg: #1d4ed8;
+  --cursor-gold: #ffd93d;
+  --cursor-pink: #ff5577;
+  --danger-badge: #dc2626;
+  --danger-border: #7f1d1d;
+  --danger-border-soft: #4d2c2c;
+  --danger-surface: #2a1414;
+  --danger-surface-deep: #450a0a;
+  --danger-surface-dim: #1d1010;
+  --danger-surface-strong: #7f1d1d;
+  --danger-text: #f87171;
+  --danger-text-bright: #fecaca;
+  --danger-text-muted: #d98a8a;
+  --danger-text-soft: #fca5a5;
+  --dev-border: #4d3f1c;
+  --dev-surface: #1c1708;
+  --dev-text: #e0a458;
+  --modified-marker: #4f8ef7;
+  --modified-text: #4f8ef7;
+  --ok-border: #21463d;
+  --ok-dot: #22c55e;
+  --ok-surface: #0d1a17;
+  --ok-text: #4ade80;
+  --scope-marker: #58b09c;
+  --scope-text: #58b09c;
+  --warn-border: #eab308;
+  --warn-border-dim: #4a3a0a;
+  --warn-border-notice: #78350f;
+  --warn-border-strong: #92400e;
+  --warn-outline: #d97706;
+  --warn-surface: #422006;
+  --warn-surface-dim: #1e1a0a;
+  --warn-surface-notice: #1c1710;
+  --warn-text: #fbbf24;
+  --warn-text-bright: #fcd34d;
+  --warn-text-em: #eab308;
+  --warn-text-truncation: #e0a030;
+
+  /* Project-graph node identities (fill + outline per kind) */
+  --node-bus-bar: #60a5fa;
+  --node-bus-border: #3b82f6;
+  --node-bus-surface: #1e3a8a;
+  --node-filter-border: #a1a1aa;
+  --node-filter-surface: #3f3f46;
+  --node-gateway-border: #475569;
+  --node-plot-border: #14b8a6;
+  --node-plot-surface: #134e4a;
+  --node-signals-border: #38bdf8;
+  --node-signals-surface: #1e3a5f;
+  --node-surface: #1f2937;
+  --node-trace-border: #10b981;
+  --node-trace-surface: #064e3b;
+  --node-transmit-border: #7c3aed;
+  --node-transmit-surface: #3b1d3a;
 }
 /* === end theme tokens === */
+
 
 
 
@@ -336,7 +395,7 @@ header {
 }
 
 .palette-item.selected {
-  background: #1d4ed8;
+  background: var(--accent-selected-bg);
   color: var(--text-on-accent);
 }
 
@@ -444,7 +503,7 @@ header {
 }
 
 .combobox-option.active {
-  background: #1d4ed8;
+  background: var(--accent-selected-bg);
   color: var(--text-on-accent);
 }
 
@@ -490,7 +549,7 @@ header {
 }
 
 .modal-empty {
-  color: #fbbf24;
+  color: var(--warn-text);
   font-size: 0.85rem;
   margin: 0 0 0.6rem;
 }
@@ -573,7 +632,7 @@ header {
   border-radius: 6px;
   font-size: 0.78rem;
   color: var(--text-primary);
-  background: #1f2937;
+  background: var(--node-surface);
   border: 1px solid var(--border-strong);
 }
 .graph-node-glyph {
@@ -612,40 +671,40 @@ header {
    see a wire that other nodes tap into. */
 .graph-node-bus {
   position: relative;
-  background: #1e3a8a;
-  border: 1px solid #3b82f6;
+  background: var(--node-bus-surface);
+  border: 1px solid var(--node-bus-border);
   padding-left: 1.1rem;
 }
 .graph-bus-bar {
   flex: 0 0 6px;
   height: 60%;
-  background: #60a5fa;
+  background: var(--node-bus-bar);
   border-radius: 3px;
   box-shadow: 0 0 6px rgba(96, 165, 250, 0.45);
 }
 .graph-node-gateway {
-  background: #1f2937;
-  border-color: #475569;
+  background: var(--node-surface);
+  border-color: var(--node-gateway-border);
 }
 .graph-node-transmit {
-  background: #3b1d3a;
-  border-color: #7c3aed;
+  background: var(--node-transmit-surface);
+  border-color: var(--node-transmit-border);
 }
 .graph-node-trace {
-  background: #064e3b;
-  border-color: #10b981;
+  background: var(--node-trace-surface);
+  border-color: var(--node-trace-border);
 }
 .graph-node-plot {
-  background: #134e4a;
-  border-color: #14b8a6;
+  background: var(--node-plot-surface);
+  border-color: var(--node-plot-border);
 }
 .graph-node-signals {
-  background: #1e3a5f;
-  border-color: #38bdf8;
+  background: var(--node-signals-surface);
+  border-color: var(--node-signals-border);
 }
 .graph-node-filter {
-  background: #3f3f46;
-  border-color: #a1a1aa;
+  background: var(--node-filter-surface);
+  border-color: var(--node-filter-border);
   /* `.graph-node` is a flex row; let the inline predicate editor wrap
      onto its own line below the glyph + label instead of flowing off
      the node's right edge. */
@@ -827,7 +886,7 @@ header {
 }
 
 .project-dirty {
-  color: #fbbf24;
+  color: var(--warn-text);
   margin-right: 0.3rem;
   font-size: 0.7rem;
 }
@@ -849,11 +908,11 @@ header {
 }
 
 .project-bus-state.connected {
-  color: #4ade80;
+  color: var(--ok-text);
 }
 
 .project-bus-state.errored {
-  color: #f87171;
+  color: var(--danger-text);
 }
 
 .project-empty {
@@ -919,7 +978,7 @@ header {
   padding: 0.15rem 0.35rem;
 }
 .project-binding-form-error {
-  color: #f87171;
+  color: var(--danger-text);
   font-size: 0.72rem;
 }
 
@@ -990,9 +1049,9 @@ header {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #fbbf24;
-  background: #422006;
-  border: 1px solid #92400e;
+  color: var(--warn-text);
+  background: var(--warn-surface);
+  border: 1px solid var(--warn-border-strong);
   border-radius: 0.2rem;
   padding: 0 0.35rem;
 }
@@ -1015,11 +1074,11 @@ header {
 }
 
 .project-binding-state.connected {
-  color: #4ade80;
+  color: var(--ok-text);
 }
 
 .project-binding-state.errored {
-  color: #f87171;
+  color: var(--danger-text);
 }
 
 .project-server {
@@ -1169,11 +1228,11 @@ header {
 }
 
 .trace-status-running {
-  color: #4ade80;
+  color: var(--ok-text);
 }
 
 .trace-status-paused {
-  color: #fbbf24;
+  color: var(--warn-text);
 }
 
 .trace-status-stopped {
@@ -1405,12 +1464,12 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .trace-event-remove:hover {
-  color: #f87171;
+  color: var(--danger-text);
 }
 
 .trace-event-truncation {
   font-style: italic;
-  color: #e0a030;
+  color: var(--warn-text-truncation);
 }
 
 /* The pinned truncation floor row above the chronological scroll area —
@@ -1706,14 +1765,14 @@ button.trace-event-swatch {
   color: var(--text-muted);
 }
 .plot-area-ycursors .gold {
-  color: #ffd93d;
+  color: var(--cursor-gold);
 }
 .plot-area-ycursors .pink {
-  color: #ff5577;
+  color: var(--cursor-pink);
 }
 
 .plot-area.focused {
-  box-shadow: inset 2px 0 0 #4ecbff;
+  box-shadow: inset 2px 0 0 var(--accent-marker);
 }
 
 /* A fully-hidden axis (every signal hidden): drop the canvas so it
@@ -1814,7 +1873,7 @@ button.trace-event-swatch {
   display: block;
   width: 35%;
   height: 100%;
-  background: #4ecbff;
+  background: var(--accent-progress);
   animation: plot-area-building-slide 1.1s ease-in-out infinite;
 }
 @keyframes plot-area-building-slide {
@@ -1980,7 +2039,7 @@ button.trace-event-swatch {
 
 .plot-area-remove:hover,
 .plot-signal-remove:hover {
-  color: #ff5577;
+  color: var(--cursor-pink);
 }
 
 .plot-area-empty {
@@ -2036,7 +2095,7 @@ button.trace-event-swatch {
   background: var(--surface-control-hover);
 }
 .plot-area-filter-error {
-  color: #f87171;
+  color: var(--danger-text);
 }
 /* A pattern-derived signal row's badge (in place of the manual ×). */
 .plot-signal-pattern-badge {
@@ -2052,7 +2111,7 @@ button.trace-event-swatch {
   min-width: 12rem;
 }
 .signals-error {
-  color: #f87171;
+  color: var(--danger-text);
   font-size: 0.75rem;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2264,7 +2323,7 @@ button.trace-event-swatch {
   white-space: nowrap;
 }
 .pattern-editor-error {
-  color: #f87171;
+  color: var(--danger-text);
   white-space: nowrap;
 }
 .pattern-editor-add {
@@ -2324,7 +2383,7 @@ button.trace-event-swatch {
  * labels for this plot area. Click a non-primary row to promote it. */
 .plot-signal-row.primary {
   background: var(--surface-row-primary);
-  box-shadow: inset 2px 0 0 #4ecbff;
+  box-shadow: inset 2px 0 0 var(--accent-marker);
 }
 
 /* The swatch doubles as the show/hide toggle. Pinned to the top row
@@ -2765,10 +2824,10 @@ button.trace-event-swatch {
   margin-top: 0.1rem;
 }
 .plot-meas-v.gold {
-  color: #ffd93d;
+  color: var(--cursor-gold);
 }
 .plot-meas-v.pink {
-  color: #ff5577;
+  color: var(--cursor-pink);
 }
 
 /* Plot panel — per-area Fit Y control. (The old fixed-range editor was
@@ -2906,7 +2965,7 @@ button.trace-event-swatch {
   padding: 0.1rem 0.25rem;
 }
 .tx-row-identity .tx-warn {
-  outline: 1px solid #d97706;
+  outline: 1px solid var(--warn-outline);
 }
 .tx-row-identity .tx-dbc-name {
   color: var(--text-muted);
@@ -2933,9 +2992,9 @@ button.trace-event-swatch {
 }
 .tx-row-identity .tx-remove:hover,
 .tx-row-identity .tx-remove-armed {
-  color: #f87171;
-  border-color: #7f1d1d;
-  background: #2a1414;
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-surface);
 }
 
 /* CAN-id input: `s:0x` / `x:0x` prefix + hex digits. */
@@ -3011,8 +3070,8 @@ button.trace-event-swatch {
   cursor: pointer;
 }
 .tx-stop {
-  color: #fca5a5;
-  border-color: #7f1d1d;
+  color: var(--danger-text-soft);
+  border-color: var(--danger-border);
 }
 .tx-send:disabled,
 .tx-start:disabled {
@@ -3186,11 +3245,11 @@ button.trace-event-swatch {
 }
 .tx-signals-extmux {
   display: block;
-  color: #fcd34d;
+  color: var(--warn-text-bright);
   font-size: 0.78rem;
   padding: 0.3rem 0.5rem;
-  background: #1e1a0a;
-  border: 1px solid #4a3a0a;
+  background: var(--warn-surface-dim);
+  border: 1px solid var(--warn-border-dim);
   border-radius: 3px;
 }
 .tx-signals-header {
@@ -3327,8 +3386,8 @@ button.trace-event-swatch {
 }
 .system-messages-row-debug { color: var(--text-debug); }
 .system-messages-row-info { color: var(--text-secondary); }
-.system-messages-row-warn { color: #fbbf24; }
-.system-messages-row-error { color: #f87171; }
+.system-messages-row-warn { color: var(--warn-text); }
+.system-messages-row-error { color: var(--danger-text); }
 .system-messages-ts { color: var(--text-faint); }
 .system-messages-source { color: var(--text-source); }
 .system-messages-level { text-transform: uppercase; font-weight: 600; }
@@ -3351,7 +3410,7 @@ button.trace-event-swatch {
   display: inline-block;
   margin-left: 0.4rem;
   padding: 0 0.35rem;
-  background: #dc2626;
+  background: var(--danger-badge);
   color: var(--text-on-solid);
   border-radius: 999px;
   font-size: 0.7rem;
@@ -3452,7 +3511,7 @@ button.trace-event-swatch {
   min-width: 1.1rem;
 }
 .dbc-row-bus .dbc-row-label {
-  color: #fbbf24;
+  color: var(--warn-text);
   font-weight: 600;
 }
 .dbc-row-dbc .dbc-row-label {
@@ -3581,8 +3640,8 @@ button.trace-event-swatch {
   font-weight: 600;
 }
 .rbs-kill-on {
-  background: #7f1d1d;
-  color: #fecaca;
+  background: var(--danger-surface-strong);
+  color: var(--danger-text-bright);
 }
 .rbs-filter {
   flex: 1;
@@ -3654,8 +3713,8 @@ button.trace-event-swatch {
   background: var(--surface-control-hover);
   display: inline-block;
 }
-.rbs-dot-on { background: #22c55e; }
-.rbs-warn { color: #fbbf24; }
+.rbs-dot-on { background: var(--ok-dot); }
+.rbs-warn { color: var(--warn-text); }
 .rbs-badge {
   margin-left: 4px;
   padding: 0 3px;
@@ -3680,7 +3739,7 @@ button.trace-event-swatch {
   border-radius: 3px;
   text-align: right;
 }
-.rbs-overridden { border-color: #eab308; }
+.rbs-overridden { border-color: var(--warn-border); }
 .rbs-calc-summary {
   font-family: ui-monospace, monospace;
   font-size: 10px;
@@ -3709,7 +3768,7 @@ button.trace-event-swatch {
   padding: 1px 4px;
   border-radius: 3px;
 }
-.rbs-signal-overridden .rbs-signal-input { border-color: #eab308; }
+.rbs-signal-overridden .rbs-signal-input { border-color: var(--warn-border); }
 .rbs-clear {
   background: none;
   border: none;
@@ -3717,7 +3776,7 @@ button.trace-event-swatch {
   cursor: pointer;
   padding: 0 2px;
 }
-.rbs-clear:hover { color: #f87171; }
+.rbs-clear:hover { color: var(--danger-text); }
 .rbs-calc-cell { color: var(--text-source); }
 .rbs-calc-cell em { font-size: 10px; }
 .rbs-no-signals { color: var(--text-faint); font-style: italic; }
@@ -3798,7 +3857,7 @@ button.trace-event-swatch {
   align-items: center;
 }
 .calc-error {
-  color: #f87171;
+  color: var(--danger-text);
   margin: 6px 0;
 }
 .modal-actions {
@@ -3813,7 +3872,7 @@ button.trace-event-swatch {
 .trace-row-violation,
 .trace-row-violation td {
   background: rgba(153, 27, 27, 0.45) !important;
-  color: #fecaca;
+  color: var(--danger-text-bright);
 }
 
 /* transmit panel: calculated-fields strip (shared editor, ADR 0027) */
@@ -3829,7 +3888,7 @@ button.trace-event-swatch {
   font-family: ui-monospace, monospace;
   color: var(--text-source);
 }
-.tx-calc-summary em { color: #eab308; font-style: normal; }
+.tx-calc-summary em { color: var(--warn-text-em); font-style: normal; }
 
 /* Settings view (ADR 0034) — the descriptor-driven editor over
    settings.json: search, a tag-grouped tree, and rows whose controls are
@@ -3894,7 +3953,7 @@ button.trace-event-swatch {
   color: var(--text-primary);
 }
 .settings-tree-row.developer {
-  color: #e0a458;
+  color: var(--dev-text);
   margin-top: 0.4rem;
   border-top: 1px solid var(--border-subtle);
   padding-top: 0.4rem;
@@ -3937,10 +3996,10 @@ button.trace-event-swatch {
   background: var(--surface-hover-subtle);
 }
 .setting.modified {
-  border-left-color: #4f8ef7;
+  border-left-color: var(--modified-marker);
 }
 .setting.overridden {
-  border-left-color: #58b09c;
+  border-left-color: var(--scope-marker);
 }
 .setting-top {
   display: flex;
@@ -3970,14 +4029,14 @@ button.trace-event-swatch {
   white-space: nowrap;
 }
 .setting-chip.developer {
-  border-color: #4d3f1c;
-  color: #e0a458;
-  background: #1c1708;
+  border-color: var(--dev-border);
+  color: var(--dev-text);
+  background: var(--dev-surface);
 }
 .setting-chip.scope {
-  border-color: #21463d;
-  color: #58b09c;
-  background: #0d1a17;
+  border-color: var(--ok-border);
+  color: var(--scope-text);
+  background: var(--ok-surface);
 }
 .setting-desc {
   color: var(--text-muted);
@@ -4020,7 +4079,7 @@ button.trace-event-swatch {
   color: var(--text-muted);
 }
 .setting-missing-renderer {
-  color: #d98a8a;
+  color: var(--danger-text-muted);
 }
 .column-defaults {
   display: flex;
@@ -4074,7 +4133,7 @@ button.trace-event-swatch {
 .setting-reset {
   background: none;
   border: 0;
-  color: #4f8ef7;
+  color: var(--modified-text);
   font: inherit;
   font-size: 0.72rem;
   cursor: pointer;
@@ -4130,7 +4189,7 @@ button.trace-event-swatch {
 .project-caches-error {
   margin: 0;
   padding: 0.3rem 0.5rem;
-  color: #d98a8a;
+  color: var(--danger-text-muted);
 }
 .project-caches-empty {
   margin: 0;
@@ -4167,9 +4226,9 @@ button.trace-event-swatch {
   white-space: nowrap;
 }
 .project-cache-badge.active {
-  border-color: #21463d;
-  color: #58b09c;
-  background: #0d1a17;
+  border-color: var(--ok-border);
+  color: var(--scope-text);
+  background: var(--ok-surface);
 }
 .project-cache-badge.auto-located {
   border-color: var(--border-badge-info);
@@ -4178,17 +4237,17 @@ button.trace-event-swatch {
 }
 .project-cache-badge.missing,
 .project-cache-badge.orphaned {
-  border-color: #4d2c2c;
-  color: #d98a8a;
-  background: #1d1010;
+  border-color: var(--danger-border-soft);
+  color: var(--danger-text-muted);
+  background: var(--danger-surface-dim);
 }
 .project-caches button {
   font-size: 0.72rem;
   padding: 0.05rem 0.4rem;
 }
 .project-caches button.danger:not(:disabled) {
-  border-color: #4d2c2c;
-  color: #d98a8a;
+  border-color: var(--danger-border-soft);
+  color: var(--danger-text-muted);
 }
 
 /* The older shared panel shell — the About and Shortcuts panels. */
@@ -4314,10 +4373,10 @@ button.trace-event-swatch {
 .shortcuts-error {
   margin: 0 0 0.75rem;
   padding: 0.35rem 0.5rem;
-  border: 1px solid #7f1d1d;
+  border: 1px solid var(--danger-border);
   border-radius: 3px;
-  background: #450a0a;
-  color: #fecaca;
+  background: var(--danger-surface-deep);
+  color: var(--danger-text-bright);
   font-size: 0.8rem;
 }
 .shortcut-row {
@@ -4371,7 +4430,7 @@ button.trace-event-swatch {
   line-height: 1;
 }
 .shortcut-remove:hover {
-  color: #fecaca;
+  color: var(--danger-text-bright);
 }
 .shortcut-record {
   background: var(--surface-raised);
@@ -4386,7 +4445,7 @@ button.trace-event-swatch {
   background: var(--surface-control-hover);
 }
 .shortcut-recording {
-  color: #fcd34d;
+  color: var(--warn-text-bright);
   font-size: 0.78rem;
 }
 
@@ -4427,11 +4486,11 @@ button.trace-event-swatch {
 .splash-warning {
   margin: 0;
   padding: 0.9rem 1.1rem;
-  border: 1px solid #78350f;
+  border: 1px solid var(--warn-border-notice);
   border-left-width: 4px;
   border-radius: 4px;
-  background: #1c1710;
-  color: #fbbf24;
+  background: var(--warn-surface-notice);
+  color: var(--warn-text);
   font-size: 0.95rem;
   line-height: 1.5;
   text-align: left;
