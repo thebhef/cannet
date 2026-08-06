@@ -251,6 +251,24 @@ export function isGridviewKey(stroke: KeyStroke): boolean {
   return GRIDVIEW_NAV_KEYS.has(stroke.key);
 }
 
+/// The same key set spelled as `parseChord` normalises it (lowercase),
+/// for the declaration-side check below.
+const GRIDVIEW_NAV_KEY_IDS = new Set([...GRIDVIEW_NAV_KEYS].map((k) => k.toLowerCase()));
+
+/// Would this binding go silent while focus is inside a gridview? The
+/// declaration-side counterpart of [`isGridviewKey`]: `dispatchStroke`
+/// decides per *stroke*, but the shortcuts view has to state the fact
+/// per *chord*, before any key is pressed. A sequence is suppressed if
+/// any step is a key the grid takes — that step can never arrive, so
+/// the chord can never complete there (ADR 0044).
+export function chordSuppressedInGridview(chord: KeyChord): boolean {
+  return chord.some((step) => {
+    if (step.shift || step.alt) return false;
+    if (step.mod || step.ctrl) return step.key === "a";
+    return GRIDVIEW_NAV_KEY_IDS.has(step.key);
+  });
+}
+
 /// Is the keydown target inside a gridview container? The grid's own
 /// keys are suppressed there (see `dispatchStroke`'s `inGridview`).
 export function isGridviewTarget(target: EventTarget | null): boolean {

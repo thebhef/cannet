@@ -820,7 +820,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   }, []);
   /// Drop onto a section — its header, or any row in its span. Signals
   /// are *assigned* there, which beats every other section's pattern
-  /// (item 16's rule); patterns merge in; a header dragged within this
+  /// (ADR 0045); patterns merge in; a header dragged within this
   /// panel reorders instead.
   const dropOnSection = useCallback(
     (name: string, e: React.DragEvent) => {

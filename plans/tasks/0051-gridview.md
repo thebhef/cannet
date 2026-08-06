@@ -1,6 +1,11 @@
 # Task 51 — Shared gridview interaction layer
 
-**Status: planned (2026-08-05). First in the implementation order.**
+**Status: implementation complete, pending human review (2026-08-05).**
+Slices A–D are landed and the exit criteria are walked at the foot of
+the status log. **One criterion is not met** — the ADR 0031 render-tier
+perf gate reports a reproducible JS-heap regression against a same-day
+pre-gridview control (see "D.4 perf gate"). Whether that blocks the
+task or becomes its own slice is a review decision.
 Supersedes task 50 items 17 (keyboard
 nav) and 18 (selection / multiselect / drag-and-drop), which grew
 into one architectural effort: a shared tree/grid interaction layer
@@ -338,7 +343,12 @@ visually until its own migration slice (D0).
 
 ### D. Finish
 
-1. Keybindings-view context display (D12).
+1. Keybindings-view context display (D12), which is also the
+   "shortcuts panel reflects the new bindings" exit criterion.
+2. Scrub any plans/task reference out of the ADRs and the sources
+   this task added.
+3. The ADR 0031 render-tier perf gate.
+4. The exit-criteria sweep, recorded verdict by verdict.
 
 ## Exit criteria
 
@@ -937,3 +947,192 @@ Rust run was needed.
   brief; the three panels in this slice are not on the paged hot path,
   and the DBC panel's two in-suite bounds (the memo criterion and the
   viewport-bounded window) both stayed green.
+
+### 2026-08-05 — D.1 the plans reference in the sources
+
+Branch `task51-finish`, cut from `task51-dbc-rbs-transmit`. `2ffb9f8`.
+One line: `SignalsPanel.tsx`'s section-drop comment cited "item 16's
+rule", a task-file item number, which the working agreement forbids in
+source — plan docs track state and churn, so a code reference to them
+rots. The rule it names (an explicit assignment beats every other
+section's pattern claim) is stated in ADR 0045, which the comment now
+cites.
+
+The sweep behind it: `git diff c2b845c...HEAD` filtered to *added* lines
+matching `plans/|task N|task-N|item N` across `apps/gui/src` and
+`apps/gui/src-tauri` returned exactly that one line. The other hits in
+those files (`signal_snapshot.rs`'s "item 16 defect", `DbcPanel`'s task
+20 / 33 / 41 notes, `PlotArea`'s task 15 / 0030) are all pre-existing and
+were left alone — cleaning them is not this task's, per the
+surgical-changes rule. **ADRs 0044 and 0045 needed no scrub**: the same
+grep over both files returns nothing.
+
+### 2026-08-05 — D.2 keybindings-view context display (D12)
+
+`5cdf53a`. `chordSuppressedInGridview` in `keybindings.ts` is the
+declaration-side counterpart of `isGridviewKey`: `dispatchStroke` decides
+per *stroke*, and the view has to state the fact per *chord*, before any
+key is pressed. A sequence counts as suppressed if any step is a key the
+grid takes — that step can never arrive there, so the chord can never
+complete.
+
+Its test proves it against `dispatchStroke` itself over eleven chords
+rather than restating the key set, so the marker cannot drift from the
+suppression it explains; each case also asserts the chord *does* fire
+outside a grid, so a typo in the stroke fails instead of passing quietly.
+
+In `ShortcutsPanel`: every binding chip now carries its context as a
+`title` (global, or global-except-in-grids) and the suppressed case shows
+a visible "not in grids" marker. Two read-only sections follow the editor
+in the existing fieldset/legend idiom (D0: no redesign) — **In a grid
+view**, which is ADR 0044's key table with Enter listed as unbound and
+bindable above, and **Panel actions**, which names transmit's Space. 2
+unit tests, 3 DOM tests. Suite: 120 files / 1393 tests green; `pnpm
+build` green.
+
+#### Blockers / side effects
+
+- **The shortcuts panel is where this landed, not the About panel.** The
+  exit criterion says "the About/shortcuts panel reflects the new
+  bindings"; `AboutPanel` documents the version and the third-party
+  licenses and has never documented a shortcut, while `ShortcutsPanel` is
+  the panel a user opens to read and change bindings. Adding a key table
+  to About would have put the same content in two places.
+- **The panel-actions list is hand-kept.** The primary action is an
+  argument each panel passes to its own `useGridview` call, so there is
+  no central registry to read it off, and building one for a single
+  entry (transmit) would be an abstraction for single-use code. Noted at
+  the declaration so the next panel that defines one knows to add it.
+- **No default binding is currently suppressed**, so the marker is
+  exercised only by a user-added chord — which is exactly the case that
+  needs explaining. The DOM test injects `ArrowDown` onto `capture.clear`
+  to reach it. `Alt+←`, `Alt+→` and `Ctrl+Tab` are *not* suppressed
+  (modified navigation keys are global chords), which the unit test pins.
+
+### 2026-08-05 — D.3 exit-criteria sweep
+
+Verified by inspection of the tree at `5cdf53a`, criterion by criterion;
+the verdicts are the table at the foot of this entry group.
+
+- **Six surfaces on one implementation.** `SignalsPanel`, `ByIdTable`,
+  `TraceView`, `DbcPanel`, `RbsPanel` and `TransmitPanel` are the six
+  files that both call `useGridview` and carry the `data-gridview`
+  marker; no seventh, and no surface carries the marker without the hook.
+- **Both fzf copies are gone.** `import { Fzf }` survives in exactly two
+  files: `gridviewFilter.tsx` (the slot itself) and
+  `settingDescriptors.ts` (the settings-search index, never a gridview
+  and out of D14's scope). The DBC and RBS hits are prose in comments.
+- **DbcPanel's bespoke code is gone.** `onTreeKeyDown`,
+  `selectionAnchorRef`, `SearchEntry`, `MIN_RELATIVE_SCORE`,
+  `lazyMatcher`, `searchMatches` and `domRowId` return no hits outside
+  `settingDescriptors.ts`'s own search index.
+- **The five expansion-state shapes are one idiom.** Every surviving
+  expansion state is keyed by a stable string: `ReadonlySet<string>`
+  (by-ID, DBC, RBS, transmit) or `ReadonlyMap<string, number>` (chrono,
+  id → signal count, per C.1b). No index-keyed expansion remains.
+- **`docs/CONTEXT.md` carries the gridview terms** — Gridview, branch
+  row, leaf (and leaf-with-content), cursor, selection.
+- **The deferred list was left untouched**, as briefed: where it goes
+  next is a review decision.
+
+### 2026-08-05 — D.4 perf gate: a JS-heap regression, controlled
+
+**Run.** Release build via `pnpm --dir apps/gui tauri build --no-bundle`
+(a plain `cargo build --release` is not a substitute — without the
+tauri CLI's `custom-protocol` feature the binary still points at the dev
+server). Scenario matched to the committed baseline exactly: `ev-zonal`,
+`--connect-on-start`, `--perf-capture-secs 60`, `--perf-interact scrub`,
+against the two PEAK adapters. Gate:
+`cannet-perf-measurement --frontend-report <abs> --expected-rx-fps 1608
+--expected-tx-fps 1608 check`. No baseline was promoted — the run is a
+comparison against the committed `baseline.json`, and promoting one
+would have hidden what it found.
+
+**Result: `check FAILED`, one gated metric.** Every host tier
+(`tracebuffer`, `grpc`, `hardware-peak`) ok. The whole frontend CPU tier
+is *better* than baseline: `longtask_ms_per_s_mean` 1.30 → 0.00,
+`lag_ms_max` 27.1 → 15.0, `jank_fraction` 0.017 → 0.000,
+`flush_ms_mean` 3.30 (limit 25), `tx_late_ms_mean` 3.74 (limit 18),
+`rx_fps_expected` 1606.6 and `tx_fps_expected` 1608.7 against 1608.
+`rx_gap_p95_ratio_worst` 1.199 vs 1.196. The one failure:
+
+| metric | baseline | current | limit | result |
+| --- | --- | --- | --- | --- |
+| `jsheap_mb_drift_per_min` | 5.693 | 29.171 | 16.386 | **REGRESSED** |
+
+`jsheap_mb_peak` 98.2 (limit 207.2) and the other three memory tiers
+passed, but all read high: `renderer_mb_peak` 319.3 → 380.7,
+`tree_mb_peak` 743.3 → 816.5.
+
+**The drift metric is a least-squares slope over a sawtooth, so it was
+not trusted on one run.** Two experiments:
+
+1. *Variance.* A second capture on the identical binary: slope 28.28,
+   mean 58.37, max 103.9. Reproducible, so not run-to-run noise.
+2. *Control.* The committed baseline was captured on 2026-08-03 on a
+   possibly different machine state, so the pre-gridview merge base
+   (`c2b845c`) was checked out, built the same way, and captured twice
+   **the same day on the same machine**.
+
+| capture | build | jsheap mean | max | slope/min |
+| --- | --- | --- | --- | --- |
+| `baseline.json` (2026-08-03) | pre-gridview | 47.70 | 71.6 | 5.69 |
+| control run 1 | `c2b845c` pre-gridview | 48.94 | 79.0 | 10.21 |
+| control run 2 | `c2b845c` pre-gridview | 48.37 | 79.7 | 9.62 |
+| gridview run 1 | `5cdf53a` | 61.19 | 98.2 | 29.17 |
+| gridview run 2 | `5cdf53a` | 58.37 | 103.9 | 28.28 |
+
+Tight within each group, cleanly separated between them.
+**Conclusion: the gridview raises JS-heap pressure on the paged hot
+path — mean +~11 MB, peak +~22 MB, slope ~2.9× the same-day control.**
+The control also shows the machine reads ~1.8× the committed baseline on
+this metric today, which is why the control and not `baseline.json` is
+the comparison the conclusion rests on. All four captures are committed
+under `docs/performance-measurements/frontend/` as the evidence.
+
+**It is not extra renders.** The per-second render counters are within a
+few percent across control and gridview — `render.ByIdTable` 30.35 vs
+31.20, `render.TraceView` 10.67 vs 10.83, `render.SignalsPanel` 14.60 vs
+14.83, `render.PlotArea` 113.4 vs 114.4 — and no `DbcPanel` / `RbsPanel`
+counter appears at all, so those two panels are not open in this
+scenario and are not implicated. The panels render at the same rate and
+allocate more per render.
+
+**Leading hypothesis, *not* promoted to a root cause — no experiment has
+falsified it yet.** `GridviewRow` wraps every cell in a `<Fragment
+key=…>` so the panel's `renderCell` need not carry the key, where the
+pre-migration row put the key on the panel's own `<span>` and allocated
+no wrapper. That is one extra React element per cell per row per render
+on the three paged tables, which is the right order of magnitude for the
+observed delta. Second candidate: the per-row identity strings the
+parent now computes for every visible row on every render
+(`byIdRowKey(...)` for the `selected` prop, `rowDomId(...)`'s
+`encodeURIComponent` for the DOM id). Both are cheap to test by
+building a variant that skips them and re-capturing.
+
+#### Blockers / side effects
+
+- **The exit criterion "no regression on the ADR 0031 render-tier perf
+  gate" is NOT met, and no fix was attempted in this slice.** A perf fix
+  is a scope expansion on a finishing slice, and the working agreement
+  says to split rather than sprawl: it needs its own before/after
+  numbers, touches the layer and three panels, and the cause above is
+  still a hypothesis. Recording it here — not in `plans/backlog.md`, per
+  the brief — so the review decides whether it blocks the task or
+  becomes the next slice.
+- **`target/release/cannet-gui.exe` was rebuilt from this branch after
+  the control run**, so the checked-out binary matches the branch again.
+  The control build was made on a detached `c2b845c` and the branch was
+  restored immediately after; no history was modified.
+- **No Chromium layout measurement was taken**, so the D0 criterion's
+  second half is unmet in the strict reading — see the verdict table.
+
+### 2026-08-05 — exit-criteria verdicts
+
+| Criterion | Verdict |
+| --- | --- |
+| One implementation; six surfaces consume it; bespoke copies deleted | **Met** — verified by the D.3 sweep above. |
+| D3 nav + D4 multiselect where declared; D7–D11 drop matrix; failing-first tests | **Met with deviations recorded** — every slice landed test-first; the deviations are the per-slice blocker lists, chiefly the unreachable "patterns on empty plot space → new area" cell (B.3), Ctrl+A and multi-item drag reaching only the loaded page in the three paged views (B.2, C.1b), and by-ID keeping its own Enter/Space toggle where D0 outvoted ADR 0044 (C.1b). |
+| Visual parity (D0): DOM tests green; Chromium where jsdom can't see layout | **Met with deviation** — every pre-existing DOM test stayed green through every slice, and the deliberate pixel changes are enumerated (the DBC caret 0.8→1.1 rem, the `.trace-disclosure` hit target, `.trace-row.selected`). **No Chromium measurement was taken**: D16's alignment invariant is structural — one cell per visible column, in header order, in the header's tracks — and that is what the A.4 tests assert. What stays unmeasured is that CSS grid resolves those tracks identically to the hand-built rows. |
+| No regression on the ADR 0031 render-tier perf gate | **Not met** — `jsheap_mb_drift_per_min` 29.17 against a 16.39 limit, reproduced twice and confirmed against a same-day pre-gridview control (D.4). Every other gated metric passed and the CPU tier improved. |
+| Docs: ADRs 0044/0045 landed; shortcuts panel reflects the bindings; CONTEXT.md gains the terms; deferred list survives | **Met** — both ADRs are in `docs/adr/` and carry no plans/task reference; the shortcuts panel gained the key table and the per-binding contexts (D.2); `docs/CONTEXT.md` carries the gridview terms; the deferred list is untouched. |

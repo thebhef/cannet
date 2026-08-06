@@ -92,3 +92,59 @@ describe("ShortcutsPanel", () => {
     expect(setUser).toHaveBeenCalledWith(null);
   });
 });
+
+/**
+ * A binding is no longer one global fact (ADR 0044): grids consume the
+ * navigation keys before the dispatcher sees them, and Space runs a
+ * per-panel action. The view has to say so, or a user whose ↓ shortcut
+ * goes quiet inside the trace has nothing to read.
+ */
+describe("ShortcutsPanel binding contexts", () => {
+  /** The `.shortcut-chip` wrapping a rendered chord inside one row. */
+  function chip(rowLabel: string, chord: string): HTMLElement {
+    const el = within(row(rowLabel)).getByText(chord).closest(".shortcut-chip");
+    if (!(el instanceof HTMLElement)) throw new Error(`no chip for ${chord}`);
+    return el;
+  }
+
+  /** The `<fieldset>` a group legend heads. */
+  function group(legend: string): HTMLElement {
+    const el = screen.getByText(legend).closest("fieldset");
+    if (!(el instanceof HTMLElement)) throw new Error(`no group for ${legend}`);
+    return el;
+  }
+
+  it("marks the bindings a grid takes and leaves the rest plainly global", () => {
+    // No default binding uses a grid key, so the suppressed case is one
+    // the user could add — which is exactly when they need to be told.
+    renderPanel({
+      effective: [...DEFAULT_BINDINGS, { chord: "ArrowDown", commandId: "capture.clear" }],
+    });
+    const claimed = chip("Clear capture", "↓");
+    expect(claimed).toHaveTextContent("not in grids");
+    expect(claimed.getAttribute("title")).toMatch(/grid/i);
+
+    const global = chip("Show command palette", "Ctrl+Shift+P");
+    expect(global).not.toHaveTextContent("not in grids");
+    expect(global.getAttribute("title")).toMatch(/^Global —/);
+  });
+
+  it("lists the keys a grid view owns, Enter among them as unbound", () => {
+    renderPanel();
+    const grid = group("In a grid view");
+    for (const keys of ["↑ / ↓", "← / →", "Home / End", "PageUp / PageDown", "Ctrl+A", "Tab", "Space", "Enter"]) {
+      expect(within(grid).getByText(keys)).toBeInTheDocument();
+    }
+    expect(within(grid).getByText(/Unbound/)).toBeInTheDocument();
+    // Reference, not an editor — these keys belong to the layer and are
+    // not rebindable in place.
+    expect(within(grid).queryByRole("button")).toBeNull();
+  });
+
+  it("names the panel that defines a Space action", () => {
+    renderPanel();
+    const actions = group("Panel actions");
+    expect(within(actions).getByText(/Transmit/)).toBeInTheDocument();
+    expect(within(actions).getByText("Space")).toBeInTheDocument();
+  });
+});
