@@ -9,7 +9,7 @@
 
 import { useCallback, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import { GRIDVIEW_ATTR, isEditableTarget } from "./keybindings";
+import { GRIDVIEW_ATTR, isActivatableTarget, isEditableTarget } from "./keybindings";
 import {
   cursorAction,
   type GridviewAdapter,
@@ -156,6 +156,11 @@ export function useGridview({
       // unbound.
       if (e.key === "Tab" || e.key === "Enter") return;
       if (e.key === " ") {
+        // A focused button owns Space — pressing it is how a button is
+        // activated. The same exemption in spirit as the editable-target
+        // one above: the grid's action key must not double-fire a
+        // control the user is standing on.
+        if (isActivatableTarget(e.target)) return;
         if (!onPrimaryAction || cursor == null) return;
         e.preventDefault();
         onPrimaryAction(cursor);

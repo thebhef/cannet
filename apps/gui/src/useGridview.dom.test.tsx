@@ -248,6 +248,21 @@ describe("keys the layer does not bind", () => {
     expect(primaryAction).toHaveBeenCalledWith("bus");
   });
 
+  it("leaves Space to a focused button inside a row", () => {
+    // A button is activated by Space — that is the platform behaviour.
+    // The transmit panel puts its send button inside the grid, so a
+    // layer that also claimed the press would fire the action twice: the
+    // button's own, and the panel's primary action on the cursor's row.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
+    fireEvent.keyDown(button, { key: " " });
+    expect(primaryAction).not.toHaveBeenCalled();
+    // The grid still owns the press everywhere else on the row.
+    fireEvent.keyDown(view.grid, { key: " " });
+    expect(primaryAction).toHaveBeenCalledWith("bus");
+  });
+
   it("leaves an inline editor inside a row its own keys", () => {
     // Rows carry text fields (a section's name, an event row's label).
     // The grid consumes the navigation keys, so without the same

@@ -97,7 +97,10 @@ suppression for the keys the grid consumes (unmodified navigation
 keys, Space, Tab, Ctrl/Cmd+A). The grid makes that same
 editable-target exemption of its own: a text field inside a row (a
 section's name, an event row's label) keeps its keys, or the caret
-cannot be moved inside it. All other chords pass through. The
+cannot be moved inside it, and a **focused button keeps Space** — that
+is how a button is activated, so a grid claiming the press would fire
+both the button and the panel's primary action. All other chords pass
+through. The
 keybindings view states each binding's context — global, in-gridview,
 or per-panel action — so the suppression is legible to the user.
 

@@ -2736,6 +2736,14 @@ button.trace-event-swatch {
 .tx-frame-row:hover {
   background: #131923;
 }
+/* The gridview's cursor and selection (ADR 0044). */
+.tx-frame-row[data-active] {
+  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline-offset: -1px;
+}
+.tx-frame-row-selected {
+  background: #1b2740;
+}
 .tx-drag-handle {
   width: 0.45rem;
   flex: 0 0 auto;

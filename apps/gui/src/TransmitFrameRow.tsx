@@ -32,6 +32,18 @@ interface FrameRowProps {
   /// Drives the disabled-state of `send` / `start` / `stop` and the
   /// cyclic scheduler skips ticks while it's false.
   busConnected: boolean;
+  /// The gridview's DOM id for this row, what `aria-activedescendant`
+  /// names; whether the cursor is on it; whether it is in the selection.
+  domId: string;
+  active: boolean;
+  selected: boolean;
+  /// Feed a click on the tile to the gridview.
+  onRowClick: (e: MouseEvent<HTMLDivElement>) => void;
+  /// Expansion is the panel's now, keyed by frame id (ADR 0044) — a
+  /// per-component boolean carried an open face onto whatever frame the
+  /// list reorder moved into the slot.
+  expanded: boolean;
+  onSetExpanded: (expanded: boolean) => void;
   messageName: string | null;
   onChange: (mut: (f: TransmitFrameConfig) => TransmitFrameConfig) => void;
   onRemove: () => void;
@@ -46,6 +58,12 @@ export function TransmitFrameRow({
   frame,
   buses,
   busConnected,
+  domId,
+  active,
+  selected,
+  onRowClick: onGridRowClick,
+  expanded,
+  onSetExpanded,
   messageName,
   onChange,
   onRemove,
@@ -55,7 +73,6 @@ export function TransmitFrameRow({
   onStopCyclic,
   cyclicActive,
 }: FrameRowProps) {
-  const [expanded, setExpanded] = useState(false);
   const [pendingRemove, setPendingRemove] = useState(false);
   const set = <K extends keyof TransmitFrameConfig>(
     key: K,
@@ -144,6 +161,9 @@ export function TransmitFrameRow({
   const onRowClick = (e: MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     if (!rowRef.current?.contains(target)) return;
+    // Every click on the tile moves the gridview's cursor here…
+    onGridRowClick(e);
+    // …but only a click on the tile's own background toggles it.
     if (
       target.closest(
         "input, button, textarea, label, [contenteditable], [draggable=true]",
@@ -151,13 +171,16 @@ export function TransmitFrameRow({
     ) {
       return;
     }
-    setExpanded((v) => !v);
+    onSetExpanded(!expanded);
   };
 
   return (
     <div
       ref={rowRef}
-      className="tx-frame-row"
+      id={domId}
+      className={selected ? "tx-frame-row tx-frame-row-selected" : "tx-frame-row"}
+      data-active={active || undefined}
+      aria-selected={selected}
       onDragOver={onFrameRowDragOver}
       onDrop={(e) => onFrameRowDrop(e, frame.id, onReorder)}
       onClick={onRowClick}
@@ -214,7 +237,7 @@ export function TransmitFrameRow({
           <button
             type="button"
             className="tx-expand"
-            onClick={() => setExpanded((e) => !e)}
+            onClick={() => onSetExpanded(!expanded)}
             aria-expanded={expanded}
             title={expanded ? "collapse" : "expand"}
           >
