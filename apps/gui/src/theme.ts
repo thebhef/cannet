@@ -21,8 +21,11 @@
 /// Adding a theme is adding a {@link Theme} to {@link THEMES}, not a
 /// change of shape here or at any consumer.
 
-/// Theme identities. One today.
-export type ThemeName = "dark";
+import { useSyncExternalStore } from "react";
+
+/// Theme identities. Also the value of the `data-theme` attribute the
+/// stylesheet's token blocks key off, and of the host's `theme` setting.
+export type ThemeName = "dark" | "light";
 
 /// The semantic colors JS paints with. Names are roles, not shades —
 /// two entries that share a value today but mean different things stay
@@ -131,12 +134,121 @@ const DARK: Theme = {
   ],
 };
 
-export const THEMES: Readonly<Record<ThemeName, Theme>> = { dark: DARK };
+/// The light theme. Slot-matched to {@link DARK}: each wheel entry keeps
+/// its slot's hue (measurably — `palette.test.ts` bounds the per-slot
+/// hue distance) and is retuned in saturation and lightness until it
+/// clears its threshold against *this* theme's background. A signal or a
+/// bus therefore keeps its hue identity across a theme change, and a
+/// hash or a list position means the same thing in both wheels.
+const LIGHT: Theme = {
+  name: "light",
+  background: "#f4f5f7",
+  axisText: "#334155",
+  axisGrid: "#e2e6ec",
+  axisTicks: "#9aa5b4",
+  cursorA: "#b45309",
+  cursorB: "#be123c",
+  // The neutral grey the crosshair reads as over any series, light
+  // enough not to compete with the traces it crosses.
+  crosshair: "#78909c",
+  eventMarker: "#0369a1",
+  eventTruncation: "#9a6410",
+  // Effectively the canvas color, same as dark's: a chip is a backing
+  // that hides the series behind the label, not a visible plate.
+  canvasChipFill: "#ffffff",
+  laneFillDefault: "rgba(226, 232, 240, 0.75)",
+  busUnknown: "#5b6879",
+  busUnset: "#98a3b3",
+  graphNeutralEdge: "#5b6879",
+  graphBusNodeBase: "#eef1f6",
+  signalWheel: [
+    "#5a760f",
+    "#0873a0",
+    "#9d5c08",
+    "#8042f5",
+    "#c9340b",
+    "#806907",
+    "#227c38",
+    "#ba2ca6",
+    "#26786c",
+    "#d00b78",
+    "#1960f3",
+    "#4f7706",
+    "#da0b0b",
+    "#087694",
+    "#996008",
+    "#873df5",
+  ],
+  busWheel: [
+    "#3588ee", // blue
+    "#ab7f0c", // amber
+    "#299970", // teal
+    "#ed5151", // red
+    "#9171f1", // violet
+    "#e84a9d", // pink
+    "#d66910", // orange
+    "#1694a7", // cyan
+  ],
+};
+
+export const THEMES: Readonly<Record<ThemeName, Theme>> = { dark: DARK, light: LIGHT };
+
+/// The theme name every color decision resolves through. Module state
+/// rather than React state: the canvas draws outside React, and a
+/// stylesheet token is resolved by the cascade, so neither could read a
+/// hook. {@link setActiveTheme} is the one writer.
+let active: ThemeName = "dark";
 
 /// The theme every JS color decision reads. Call it at paint time, not
-/// at module scope: a theme setting flips what it returns.
+/// at module scope: the theme setting flips what it returns.
 export function theme(): Theme {
-  return THEMES.dark;
+  return THEMES[active];
+}
+
+/// Which theme is active. For consumers that need the *name* — the
+/// dockview theme object, a test — rather than a color.
+export function activeTheme(): ThemeName {
+  return active;
+}
+
+const listeners = new Set<() => void>();
+
+/// Switch themes, live. Writes `data-theme` on the root element (which
+/// is what re-resolves every CSS token — instant, no re-render), then
+/// notifies the JS consumers, which is what makes the canvas follow:
+/// uPlot draws imperatively, so a plot that isn't receiving samples
+/// would otherwise keep the old chrome until something else nudged it.
+export function setActiveTheme(name: ThemeName): void {
+  if (name === active) return;
+  active = name;
+  // Guarded because the wheels and their contrast tests are meant to be
+  // exercisable without a document (`palette.test.ts` runs in node).
+  if (typeof document !== "undefined") {
+    document.documentElement.dataset.theme = name;
+  }
+  for (const fn of [...listeners]) fn();
+}
+
+/// Subscribe to theme changes; returns the unsubscribe function. Shaped
+/// for `useSyncExternalStore` alongside {@link activeTheme}, which is
+/// how a component that resolves a color while rendering re-renders on
+/// a switch.
+export function subscribeTheme(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
+/// The active theme name, re-rendering the caller when it changes.
+///
+/// Every component that resolves a color *while rendering* — an inline
+/// swatch, a per-bus tint, a canvas draw — needs this, because
+/// {@link theme} is a plain function call and React has no way to know
+/// its answer moved. Components behind a `memo` boundary need it
+/// especially: their parent re-rendering doesn't reach them.
+export function useThemeName(): ThemeName {
+  return useSyncExternalStore(subscribeTheme, activeTheme, activeTheme);
 }
 
 /// Theme colors that are also written down as a CSS token, by token
