@@ -11,6 +11,7 @@
  * runtime dependency it takes is `hostSettings`, which {@link newPlotArea}
  * reads for the configured default y-axis mode.
  */
+import { READOUT_SIG_FIGS, formatFloat } from "./floatFormat";
 import { formatSignalValue } from "./format";
 import { hostSettings } from "./hostSettings";
 import { signalKey } from "./plotData";
@@ -396,47 +397,6 @@ export function signalValueFormats(
   return out;
 }
 
-/** Most decimal places a value renders plainly before it is easier to
- * read in exponential form. One threshold for every numeric readout the
- * plot draws — the signal area, the cursor readouts and the y-axis tick
- * labels — so a value cannot read `0.0001` in one and `1.0e-4` in
- * another. */
-export const MAX_PLAIN_DECIMALS = 5;
-
-/** Magnitude from which a value always reads exponentially, whatever
- * the decimal rule says. Unchanged from what both formatters did before
- * they shared this one: `toPrecision(6)` switches to exponential here,
- * and the tick labels tested for it explicitly. */
-const EXPONENTIAL_FROM = 1e6;
-
-/** Round to `sigFigs` significant figures and render plainly, unless
- * that would need more than {@link MAX_PLAIN_DECIMALS} decimals (or the
- * magnitude is past {@link EXPONENTIAL_FROM}) — then exponential, with
- * the mantissa's trailing zeros trimmed so `1e-6` doesn't read
- * `1.00000e-6`.
- *
- * The rule a signal falls to when its DBC declares no fixed precision,
- * and what the y-axis tick labels use (at their own, narrower, sig-fig
- * budget). */
-export function fmtSigFigs(v: number, sigFigs: number): string {
-  if (!Number.isFinite(v)) return "—";
-  const exponential = () => v.toExponential(sigFigs - 1).replace(/\.?0+e/, "e");
-  if (Math.abs(v) >= EXPONENTIAL_FROM) return exponential();
-  // `String` of the rounded value is its shortest exact rendering, so
-  // its fractional digits are exactly the decimals this value needs. It
-  // only goes exponential itself below 1e-6, which is past the
-  // threshold anyway.
-  const plain = String(Number(v.toPrecision(sigFigs)));
-  const dot = plain.indexOf(".");
-  const decimals = plain.includes("e") ? Infinity : dot < 0 ? 0 : plain.length - dot - 1;
-  return decimals > MAX_PLAIN_DECIMALS ? exponential() : plain;
-}
-
-/** Sig figs a value readout renders a float at — the plot's historical
- * `toPrecision(6)`, kept; what changes is that the padding and the
- * excess decimals it used to produce are gone. */
-const VALUE_SIG_FIGS = 6;
-
 /** Format a plotted value for a readout — the signal area, the cursor
  * readouts, the measurement strip.
  *
@@ -448,15 +408,16 @@ const VALUE_SIG_FIGS = 6;
  *   `decimals: 0` covers the unscaled integers, raw bit fields included.
  * - **hex**: a raw bit field whose DBC asked for it — the same
  *   rendering the trace rows and the signal view use.
- * - **float or unknown** (`fmt` omitted, or `decimals: null`):
- *   {@link fmtSigFigs} at 6 figures. Omitted where the number belongs to
- *   an axis rather than one signal (a y-cursor position, a scale bound),
- *   which may span several signals' formats. */
+ * - **float or unknown** (`fmt` omitted, or `decimals: null`): the
+ *   shared float rule ({@link formatFloat}) at the readouts' six
+ *   figures, read live from the settings. Omitted where the number
+ *   belongs to an axis rather than one signal (a y-cursor position, a
+ *   scale bound), which may span several signals' formats. */
 export function fmtVal(v: number | null | undefined, fmt?: SignalValueFormat | null): string {
   if (v == null || !Number.isFinite(v)) return "—";
   if (fmt?.hex) return formatSignalValue(v, true);
   if (fmt?.decimals != null) return v.toFixed(fmt.decimals);
-  return fmtSigFigs(v, VALUE_SIG_FIGS);
+  return formatFloat(v, READOUT_SIG_FIGS);
 }
 
 export function fmtCount(n: number): string {

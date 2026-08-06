@@ -83,9 +83,10 @@ export function floatFormatRule(): FloatFormatRule {
  *
  * For a formatter whose output is *cached* rather than recomputed each
  * render — a uPlot axis callback installed at construction — the
- * returned rule belongs in the deps that rebuild it. A component that
- * simply formats during render can call it and drop the result: the
- * re-render is the point. */
+ * rule's three numbers belong in the deps that rebuild it (the object
+ * itself is fresh each render, so it would rebuild every time). A
+ * component that simply formats during render can call it and drop the
+ * result: the re-render is the point. */
 export function useFloatFormatRule(): FloatFormatRule {
   const exponentialBelow = useSetting("float_exponential_below");
   const exponentialFrom = useSetting("float_exponential_from");
