@@ -87,6 +87,19 @@ export interface Gridview {
   onRowClick: (id: string, modifiers: GridviewClickModifiers) => void;
 }
 
+/// Drop the text selection a Shift+click extended on its way to the
+/// grid. The gesture selects rows, not text, and only some of the row
+/// surfaces are `user-select: none` — so the layer undoes the browser's
+/// side effect for all of them. A selection inside a text field is not
+/// the document's (the field owns its own), so this cannot reach one:
+/// the document selection is collapsed while focus sits in an input,
+/// and the collapsed case returns early.
+function collapseTextSelection(): void {
+  const selection = typeof window === "undefined" ? null : window.getSelection();
+  if (selection == null || selection.isCollapsed) return;
+  selection.removeAllRanges();
+}
+
 export function useGridview({
   adapter,
   pageRows,
@@ -191,6 +204,7 @@ export function useGridview({
 
   const onRowClick = useCallback(
     (id: string, modifiers: GridviewClickModifiers) => {
+      if (modifiers.shift) collapseTextSelection();
       // A non-row item has no place in the row space, so the cursor
       // stays where it is; only the selection moves.
       if (adapter.indexOf(id) >= 0) setCursor(id);

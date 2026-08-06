@@ -397,19 +397,44 @@ describe("DbcPanel", () => {
   });
 
   it("Ctrl+Shift-click adds the range from the anchor over visible rows", async () => {
-    // ADR 0044's multiselect: the additive range is Ctrl/Cmd+Shift+click;
-    // plain Shift+click is deliberately unassigned and replaces, like any
-    // other plain click.
+    // ADR 0044's multiselect: Ctrl/Cmd+Shift+click is the *additive*
+    // range, so what was selected outside it stays.
     renderPanel();
     await screen.findByText("EngineData");
     fireEvent.click(screen.getByText("EngineData")); // anchor
     fireEvent.click(screen.getByText("GearState"), { metaKey: true, shiftKey: true });
     expectRowSelected("EngineData");
     expectRowSelected("GearState");
-    // Plain Shift+click carries no range meaning.
-    fireEvent.click(screen.getByText("EngineData"), { shiftKey: true });
+  });
+
+  it("Shift-click replaces the selection with the range from the anchor", async () => {
+    // The file-explorer gesture, over the same anchor Ctrl+Shift+click
+    // uses. Containers aren't selectable, so the range walks the
+    // message and signal rows only.
+    renderPanel();
+    const msg = await screen.findByText("EngineData");
+    const chevron = msg.closest(".dbc-row")?.querySelector(".dbc-row-chevron") as HTMLElement;
+    fireEvent.click(chevron); // reveal EngineSpeed / EngineTemp
+    await screen.findByText("EngineSpeed");
+    fireEvent.click(screen.getByText("EngineData")); // anchor
+    fireEvent.click(screen.getByText("EngineTemp"), { shiftKey: true });
     expectRowSelected("EngineData");
+    expectRowSelected("EngineSpeed");
+    expectRowSelected("EngineTemp");
     expectRowNotSelected("GearState");
+    // A second Shift+click re-ranges from the same anchor rather than
+    // extending from the last target.
+    fireEvent.click(screen.getByText("EngineSpeed"), { shiftKey: true });
+    expectRowSelected("EngineData");
+    expectRowSelected("EngineSpeed");
+    expectRowNotSelected("EngineTemp");
+    // And it replaces: a row selected outside the new range goes.
+    fireEvent.click(screen.getByText("GearState"), { metaKey: true }); // re-anchors
+    fireEvent.click(screen.getByText("EngineTemp"), { shiftKey: true });
+    expectRowNotSelected("EngineData");
+    expectRowNotSelected("EngineSpeed");
+    expectRowSelected("EngineTemp");
+    expectRowSelected("GearState");
   });
 
   it("Ctrl/Cmd+A selects every selectable row and leaves the containers out", async () => {

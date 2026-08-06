@@ -314,6 +314,49 @@ describe("selection", () => {
     expect(selectedRows(view)).toEqual(["frame"]);
   });
 
+  it("replaces the selection with the anchor range on Shift+click", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" }); // open the container
+    fireEvent.click(view.getByTestId("row-msg")); // anchor
+    fireEvent.click(view.getByTestId("row-plain"), { shiftKey: true });
+    expect(selectedRows(view).sort()).toEqual(["frame", "msg", "plain"]);
+    // Re-ranging from the same anchor drops what fell outside.
+    fireEvent.click(view.getByTestId("row-frame"), { shiftKey: true });
+    expect(selectedRows(view).sort()).toEqual(["frame", "msg"]);
+  });
+
+  it("collapses the text selection a Shift+click drags across the rows", () => {
+    // Shift+click extends the document's text selection as a side
+    // effect, so the range gesture would leave the rows it covered
+    // highlighted as text.
+    const view = setup();
+    fireEvent.click(view.getByTestId("row-plain"));
+    const range = document.createRange();
+    range.selectNodeContents(view.getByTestId("row-plain"));
+    const docSelection = window.getSelection();
+    docSelection?.removeAllRanges();
+    docSelection?.addRange(range);
+    expect(window.getSelection()?.isCollapsed).toBe(false);
+    fireEvent.click(view.getByTestId("row-plain"), { shiftKey: true });
+    expect(window.getSelection()?.isCollapsed ?? true).toBe(true);
+  });
+
+  it("leaves the text selection alone on an unmodified click", () => {
+    // Only Shift+click makes one; a plain click has already collapsed
+    // it itself, and clearing regardless would fight a caret the user
+    // put somewhere else.
+    const view = setup();
+    const range = document.createRange();
+    range.selectNodeContents(view.getByTestId("row-plain"));
+    const docSelection = window.getSelection();
+    docSelection?.removeAllRanges();
+    docSelection?.addRange(range);
+    fireEvent.click(view.getByTestId("row-plain"));
+    expect(window.getSelection()?.isCollapsed).toBe(false);
+    window.getSelection()?.removeAllRanges();
+  });
+
   it("takes every selectable row on Ctrl+A, and no others", () => {
     const view = setup();
     fireEvent.keyDown(view.grid, { key: "ArrowDown" });
@@ -332,6 +375,13 @@ describe("selection", () => {
     // …and they range and select-all with the rows, in that order.
     fireEvent.click(view.getByTestId("row-chip-b"), { ctrlKey: true, shiftKey: true });
     expect(selectedRows(view).sort()).toEqual(["chip-a", "chip-b", "plain"]);
+    // A replacing range spans the same order: the anchor is the row,
+    // and the chips sit after it.
+    fireEvent.click(view.getByTestId("row-plain"));
+    fireEvent.click(view.getByTestId("row-chip-b"), { shiftKey: true });
+    expect(selectedRows(view).sort()).toEqual(["chip-a", "chip-b", "plain"]);
+    fireEvent.click(view.getByTestId("row-chip-a"), { shiftKey: true });
+    expect(selectedRows(view).sort()).toEqual(["chip-a", "plain"]);
     // Ctrl+A takes them too (the tree is closed, so "plain" is the
     // only selectable row in the space).
     fireEvent.keyDown(view.grid, { key: "a", ctrlKey: true });
