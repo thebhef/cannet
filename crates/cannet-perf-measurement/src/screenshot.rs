@@ -104,16 +104,21 @@ window.__shot = {
     await window.__shot.sleep(400);
   },
   /* Activate the dock tab with this exact title, in whichever group
-     holds it. A title that isn't open is a no-op. */
+     holds it. Dockview switches tabs on pointerdown, not click, so a
+     bare .click() leaves the group untouched — and a step that silently
+     changes nothing photographs the previous picture. Hence the pointer
+     events, and the throw when the title isn't open. */
   tab: async (title) => {
-    const t = [...document.querySelectorAll(".dv-tab")].find(
+    const el = [...document.querySelectorAll(".dv-default-tab-content")].find(
       (e) => e.textContent.trim() === title,
     );
-    if (t) {
-      t.click();
-      await window.__shot.settle();
-    }
-    return !!t;
+    if (!el) throw new Error("no dock tab " + JSON.stringify(title));
+    const opts = { bubbles: true, cancelable: true, composed: true, button: 0,
+                   pointerId: 1, isPrimary: true };
+    el.dispatchEvent(new PointerEvent("pointerdown", opts));
+    el.dispatchEvent(new PointerEvent("pointerup", opts));
+    el.click();
+    await window.__shot.settle();
   },
   /* Click a toolbar button by its exact label. */
   toolbar: async (label) => {
@@ -298,6 +303,7 @@ fn capture_with(cfg: &CaptureConfig) -> Result<CaptureOutcome, String> {
     )?;
 
     let mut files = Vec::new();
+    let mut shots: Vec<(&str, Vec<u8>)> = Vec::new();
     for step in SCENARIO {
         cdp.eval(PRELUDE_JS)?;
         cdp.eval(step.script)
@@ -308,14 +314,43 @@ fn capture_with(cfg: &CaptureConfig) -> Result<CaptureOutcome, String> {
                document.head.appendChild(s); }} s.textContent = {}; }})()",
             serde_json::to_string(MASK_CSS).unwrap_or_default()
         ))?;
-        cdp.eval("(async () => { await window.__shot.settle(); })()")?;
+        // Dockview's own tab-strip styling fades on a transition that
+        // `prefers-reduced-motion` doesn't gate (it isn't our stylesheet),
+        // and the shutter caught it mid-fade — a ≤3-per-channel ghost on
+        // the step that adds a panel. Wait it out rather than mask it.
+        cdp.eval(
+            "(async () => { await window.__shot.sleep(1200); \
+             await window.__shot.settle(); })()",
+        )?;
         let png = cdp.screenshot()?;
         let path = cfg.out_dir.join(format!("{}{}.png", cfg.prefix, step.name));
         std::fs::write(&path, &png).map_err(|e| format!("writing {}: {e}", path.display()))?;
         println!("captured {}", path.display());
         files.push(path);
+        shots.push((step.name, png));
+    }
+    // Every step changes what is on screen, so two identical captures
+    // mean a driving script did nothing — the failure mode that hid a
+    // no-op tab click behind nine plausible-looking PNGs.
+    if let Some(dup) = first_duplicate(&shots) {
+        return Err(dup);
     }
     Ok(CaptureOutcome { files })
+}
+
+/// Report the first pair of byte-identical captures, if any.
+fn first_duplicate(shots: &[(&str, Vec<u8>)]) -> Option<String> {
+    for (i, (name, bytes)) in shots.iter().enumerate() {
+        for (other, other_bytes) in &shots[i + 1..] {
+            if bytes == other_bytes {
+                return Some(format!(
+                    "steps {name} and {other} captured identical pixels — \
+                     the driving script for {other} changed nothing"
+                ));
+            }
+        }
+    }
+    None
 }
 
 fn spawn_gui(cfg: &CaptureConfig) -> Result<Child, String> {
@@ -776,6 +811,18 @@ mod tests {
             .filter(|c| !covered.contains(*c))
             .collect();
         assert!(missing.is_empty(), "panels never photographed: {missing:?}");
+    }
+
+    #[test]
+    fn a_step_that_changed_nothing_is_caught() {
+        let shots = vec![
+            ("01", vec![1u8, 2, 3]),
+            ("02", vec![9u8]),
+            ("03", vec![1u8, 2, 3]),
+        ];
+        let dup = first_duplicate(&shots).expect("01 and 03 are identical");
+        assert!(dup.contains("01") && dup.contains("03"), "{dup}");
+        assert!(first_duplicate(&shots[..2]).is_none());
     }
 
     #[test]
