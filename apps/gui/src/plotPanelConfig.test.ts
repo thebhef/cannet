@@ -7,8 +7,10 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...storedSettings } : null)),
 }));
 
+const { signalWheel } = await import("./palette");
+const TRACE_COLORS = signalWheel();
+
 const {
-  TRACE_COLORS,
   areasFromParams,
   cursorModeFromRaw,
   fmtCount,

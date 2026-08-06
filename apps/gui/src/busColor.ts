@@ -1,34 +1,24 @@
 // Shared bus-color logic. A bus carries a user-chosen `color`
-// (set via the project panel); when it's absent — an old project,
-// or a bus the user never recolored — the graph falls back to a
-// palette color derived from the bus's position in the list.
+// (set via the project panel) only once the user has picked one; until
+// then — and for an old project that never had one — its color is
+// derived from the bus's position in the list, over the active theme's
+// bus wheel (`theme.ts`), so an uncustomized bus follows the theme with
+// nothing stored.
 
 import type { Bus } from "./types";
-
-/// Default palette, cycled by a bus's index in the project bus list.
-/// `onAddBus` seeds a new bus's `color` from this; the graph uses it
-/// as the fallback for any bus still missing an explicit color.
-export const BUS_COLORS: readonly string[] = [
-  "#60a5fa", // blue
-  "#fbbf24", // amber
-  "#34d399", // teal
-  "#f87171", // red
-  "#a78bfa", // violet
-  "#f472b6", // pink
-  "#fb923c", // orange
-  "#22d3ee", // cyan
-];
+import { theme } from "./theme";
 
 /// Palette color for the bus at list position `index`.
 export function defaultBusColor(index: number): string {
-  return BUS_COLORS[index % BUS_COLORS.length];
+  const wheel = theme().busWheel;
+  return wheel[index % wheel.length];
 }
 
 /// The color to actually render a bus with: its explicit `color`
 /// if set, else the palette color for its position in `buses`.
-/// `#94a3b8` (neutral grey) when the id isn't in the list.
+/// A neutral grey when the id isn't in the list.
 export function effectiveBusColor(busId: string, buses: readonly Bus[]): string {
   const i = buses.findIndex((b) => b.id === busId);
-  if (i < 0) return "#94a3b8";
+  if (i < 0) return theme().busUnknown;
   return buses[i].color ?? defaultBusColor(i);
 }

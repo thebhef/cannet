@@ -15,18 +15,12 @@ import { READOUT_SIG_FIGS, formatFloat } from "./floatFormat";
 import { formatSignalValue } from "./format";
 import { hostSettings } from "./hostSettings";
 import { signalKey } from "./plotData";
-import { SIGNAL_WHEEL } from "./palette";
+import { wheelColor } from "./palette";
 import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKey } from "./plotCursors";
 import type { YAxisMode } from "./plotAxisDerivation";
 import type { AxisScalePatch } from "./plotAxisScale";
 import type { SignalDescriptorRecord } from "./types";
 import { parseSignalDragData } from "./dragSignals";
-
-/** The shared signal color wheel (ADR 0026, `palette.ts`) seeds a new
- * series' color: the index for a fresh series is `(signals already in
- * that plot area) % len`, so the first 16 series in any one area get
- * distinct hues. */
-export const TRACE_COLORS = SIGNAL_WHEEL;
 
 export type CursorMode = "off" | "x" | "y" | "note";
 
@@ -207,6 +201,10 @@ export function isSignalRefCore(v: unknown): v is Omit<SignalRef, "color"> {
   );
 }
 
+/** Fill in a series' color from the shared signal wheel (ADR 0026,
+ * `palette.ts`) when it carries none: the index for a fresh series is
+ * its position among the signals already in that plot area, so the
+ * first 16 series in any one area get distinct hues. */
 export function withColor(
   s: Omit<SignalRef, "color"> & { color?: unknown; busId?: unknown },
   fallbackIdx: number,
@@ -214,8 +212,7 @@ export function withColor(
   return {
     ...s,
     busId: typeof s.busId === "string" ? s.busId : null,
-    color:
-      typeof s.color === "string" ? s.color : TRACE_COLORS[fallbackIdx % TRACE_COLORS.length],
+    color: typeof s.color === "string" ? s.color : wheelColor(fallbackIdx),
   };
 }
 

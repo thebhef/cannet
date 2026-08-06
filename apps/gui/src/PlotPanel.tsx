@@ -23,7 +23,6 @@ import { stableSignalColor, wheelColor } from "./palette";
 import {
   SIGNALS_WIDTH_MAX,
   SIGNALS_WIDTH_MIN,
-  TRACE_COLORS,
   areasFromParams,
   cursorModeFromRaw,
   fmtCount,
@@ -785,7 +784,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           signalName: desc.signal_name,
           messageName: desc.message_name,
           unit: desc.unit,
-          color: TRACE_COLORS[seedIdx % TRACE_COLORS.length],
+          color: wheelColor(seedIdx),
         };
         const key = signalRefKey(ref);
         if (prev.some((a) => a.signals.some((s) => signalRefKey(s) === key))) return prev;
@@ -865,7 +864,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         // discard here so the wheel index is consistent regardless of
         // where the drag started.
         const seedIdx = target.signals.length;
-        const seeded: SignalRef = { ...ref, color: TRACE_COLORS[seedIdx % TRACE_COLORS.length] };
+        const seeded: SignalRef = { ...ref, color: wheelColor(seedIdx) };
         return prev.map((a) => {
           if (a.id !== toAreaId) return a;
           if (beforeKey == null) return { ...a, signals: [...a.signals, seeded] };

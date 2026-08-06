@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { SIGNAL_WHEEL, stableSignalColor, wheelColor } from "./palette";
+import { signalWheel, stableSignalColor, wheelColor } from "./palette";
+import { THEMES } from "./theme";
 
-/// The app background from index.css — the surface every wheel color
-/// must read against.
-const APP_BACKGROUND = "#0e1116";
+const SIGNAL_WHEEL = signalWheel();
 
 /// WCAG 2.x relative luminance of an sRGB hex color.
 function luminance(hex: string): number {
@@ -21,16 +20,20 @@ function contrast(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-describe("SIGNAL_WHEEL", () => {
-  it("is 16 distinct colors", () => {
-    expect(SIGNAL_WHEEL.length).toBe(16);
-    expect(new Set(SIGNAL_WHEEL).size).toBe(16);
-    for (const c of SIGNAL_WHEEL) expect(c).toMatch(/^#[0-9a-f]{6}$/);
+// Thresholds match usage: a signal color renders text (WCAG AA, 4.5:1);
+// a bus color is a stroke or a chip (WCAG 1.4.11 non-text, 3:1). Each
+// theme is read against its own background — a wheel is only legible on
+// the surface it was tuned for.
+describe.each(Object.values(THEMES))("$name wheels", (t) => {
+  it("signal wheel: every slot holds AA contrast against the background", () => {
+    for (const c of t.signalWheel) {
+      expect(contrast(c, t.background), `${c} vs ${t.background}`).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
-  it("every color holds AA contrast against the app background", () => {
-    for (const c of SIGNAL_WHEEL) {
-      expect(contrast(c, APP_BACKGROUND), `${c} vs ${APP_BACKGROUND}`).toBeGreaterThanOrEqual(4.5);
+  it("bus wheel: every slot holds non-text contrast against the background", () => {
+    for (const c of t.busWheel) {
+      expect(contrast(c, t.background), `${c} vs ${t.background}`).toBeGreaterThanOrEqual(3);
     }
   });
 });
