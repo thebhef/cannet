@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { COMMANDS, addBinding, type BindingSpec, type CommandSpec } from "./commands";
-import { chordFromEvent, formatChord, isMacPlatform, parseChord } from "./keybindings";
+import {
+  chordFromEvent,
+  chordSuppressedInGridview,
+  formatChord,
+  isMacPlatform,
+  parseChord,
+} from "./keybindings";
 import { useKeybindings } from "./keybindingsContext";
 
 /**
@@ -17,6 +23,13 @@ import { useKeybindings } from "./keybindingsContext";
  * colliding binding named (`addBinding`). A chord reused in a *disjoint*
  * context (e.g. a plot-only vs a trace-only command) is accepted — the same
  * per-context freedom the dispatcher already relies on.
+ *
+ * A binding is not one global fact, so the view states each one's context
+ * (ADR 0044). The editable list is the global one; a chip whose key a
+ * gridview consumes is marked, because the dispatcher will hold it back
+ * while focus is inside a grid. The two reference sections below the
+ * editor say what those grid keys do, and which panels define the
+ * per-panel Space action — neither is rebindable, so neither is an editor.
  */
 export function ShortcutsPanel(_props: IDockviewPanelProps) {
   const { effective, setUser } = useKeybindings();
@@ -97,13 +110,46 @@ export function ShortcutsPanel(_props: IDockviewPanelProps) {
     }
   };
 
+  /// Does a gridview eat this chord before the dispatcher sees it? A
+  /// chord that won't parse can't fire at all, so it isn't marked.
+  const gridTakes = (chord: string) => {
+    try {
+      return chordSuppressedInGridview(parseChord(chord));
+    } catch {
+      return false;
+    }
+  };
+
+  // ADR 0044's key table, as the user reads it. Only select-all needs
+  // platform formatting; the rest are the same keys everywhere.
+  const gridviewKeys = [
+    { keys: "↑ / ↓", what: "Move the cursor; the selection follows it" },
+    {
+      keys: "← / →",
+      what: "Collapse or expand, or step out to the parent and in to the first child",
+    },
+    { keys: "Home / End", what: "Jump to the first or last row" },
+    { keys: "PageUp / PageDown", what: "Move the cursor one viewport" },
+    { keys: display("Mod+A"), what: "Select every selectable row the view holds" },
+    { keys: "Tab", what: "Move into the row's own controls" },
+    { keys: "Space", what: "Run the panel's primary action, where it defines one" },
+    { keys: "Enter", what: "Unbound — free to bind to a command above" },
+  ];
+
+  // Panels that define a Space action (ADR 0044). Hand-kept: the action
+  // is an argument each panel passes to its own gridview, so there is
+  // nothing central to read it off. A panel that gains one belongs here.
+  const panelActions = [{ keys: "Space", what: "Transmit — send the cursor's frame once" }];
+
   return (
     <div className="settings-panel shortcuts-panel">
       <div className="shortcuts-header">
         <p className="settings-hint">
           Click <em>Set shortcut</em> and press a key combination. Reused
           chords are allowed only where they can't both fire at once;
-          conflicts are refused. Esc cancels a capture.
+          conflicts are refused. Esc cancels a capture. These shortcuts are
+          global — they fire wherever focus is, unless the chip says
+          otherwise.
         </p>
         <button className="shortcuts-reset" onClick={() => { setError(null); setUser(null); }}>
           Reset to defaults
@@ -123,18 +169,30 @@ export function ShortcutsPanel(_props: IDockviewPanelProps) {
               <div key={c.id} className="shortcut-row">
                 <span className="shortcut-label">{c.label}</span>
                 <span className="shortcut-chords">
-                  {bindings.map((b, i) => (
-                    <span key={`${b.chord}-${i}`} className="shortcut-chip">
-                      <kbd>{display(b.chord)}</kbd>
-                      <button
-                        className="shortcut-remove"
-                        aria-label={`Remove ${display(b.chord)} from ${c.label}`}
-                        onClick={() => removeBinding(b)}
+                  {bindings.map((b, i) => {
+                    const taken = gridTakes(b.chord);
+                    return (
+                      <span
+                        key={`${b.chord}-${i}`}
+                        className="shortcut-chip"
+                        title={
+                          taken
+                            ? "Global, except inside a grid view — grids own this key, so the shortcut goes quiet while one has focus."
+                            : "Global — fires wherever focus is."
+                        }
                       >
-                        ×
-                      </button>
-                    </span>
-                  ))}
+                        <kbd>{display(b.chord)}</kbd>
+                        {taken && <span className="shortcut-scope">not in grids</span>}
+                        <button
+                          className="shortcut-remove"
+                          aria-label={`Remove ${display(b.chord)} from ${c.label}`}
+                          onClick={() => removeBinding(b)}
+                        >
+                          ×
+                        </button>
+                      </span>
+                    );
+                  })}
                   {recording === c.id ? (
                     <span className="shortcut-recording">Press keys… (Esc to cancel)</span>
                   ) : (
@@ -154,6 +212,42 @@ export function ShortcutsPanel(_props: IDockviewPanelProps) {
           })}
         </fieldset>
       ))}
+      <fieldset className="settings-group">
+        <legend>In a grid view</legend>
+        <p className="settings-hint">
+          The trace, the signal view, the DBC and RBS trees and the transmit
+          list navigate with these keys, and take them while focus is inside
+          one — which is why a shortcut above bound to the same key doesn't
+          fire there. They aren't rebindable.
+        </p>
+        {gridviewKeys.map((k) => (
+          <div key={k.what} className="shortcut-row">
+            <span className="shortcut-label">{k.what}</span>
+            <span className="shortcut-chords">
+              <span className="shortcut-chip">
+                <kbd>{k.keys}</kbd>
+              </span>
+            </span>
+          </div>
+        ))}
+      </fieldset>
+      <fieldset className="settings-group">
+        <legend>Panel actions</legend>
+        <p className="settings-hint">
+          Space runs the focused grid's primary action, which each panel
+          defines for itself. Panels not listed here define none.
+        </p>
+        {panelActions.map((a) => (
+          <div key={a.what} className="shortcut-row">
+            <span className="shortcut-label">{a.what}</span>
+            <span className="shortcut-chords">
+              <span className="shortcut-chip">
+                <kbd>{a.keys}</kbd>
+              </span>
+            </span>
+          </div>
+        ))}
+      </fieldset>
     </div>
   );
 }

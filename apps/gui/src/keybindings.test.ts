@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   chordFromEvent,
+  chordSuppressedInGridview,
   dispatchStroke,
   formatChord,
   isGridviewKey,
@@ -273,6 +274,55 @@ describe("gridview key suppression", () => {
       inGridview: true,
     });
     expect(r.commandId).toBe("plot.fitXAxis");
+  });
+});
+
+describe("chordSuppressedInGridview", () => {
+  // The marker the shortcuts view shows against a binding must be true
+  // exactly when the dispatcher refuses that binding inside a grid. The
+  // two are proved against each other rather than restated, so the
+  // display can't drift away from the suppression it explains.
+  const cases: { chord: string; stroke: KeyStroke; suppressed: boolean }[] = [
+    { chord: "ArrowDown", stroke: plain("ArrowDown"), suppressed: true },
+    { chord: "Home", stroke: plain("Home"), suppressed: true },
+    { chord: "PageUp", stroke: plain("PageUp"), suppressed: true },
+    { chord: "Tab", stroke: plain("Tab"), suppressed: true },
+    { chord: "Mod+A", stroke: { ...plain("a"), ctrl: true }, suppressed: true },
+    { chord: "f", stroke: plain("f"), suppressed: false },
+    { chord: "Escape", stroke: plain("Escape"), suppressed: false },
+    { chord: "Alt+ArrowLeft", stroke: { ...plain("ArrowLeft"), alt: true }, suppressed: false },
+    { chord: "Shift+ArrowDown", stroke: { ...plain("ArrowDown"), shift: true }, suppressed: false },
+    { chord: "Ctrl+Tab", stroke: { ...plain("Tab"), ctrl: true }, suppressed: false },
+    {
+      chord: "Mod+Shift+P",
+      stroke: { ...plain("p"), ctrl: true, shift: true },
+      suppressed: false,
+    },
+  ];
+
+  it("agrees with what the dispatcher does inside a grid", () => {
+    for (const c of cases) {
+      const chord = parseChord(c.chord);
+      expect(chordSuppressedInGridview(chord), c.chord).toBe(c.suppressed);
+      const inside = dispatchStroke([], c.stroke, [{ chord, commandId: "x" }], {
+        isMac: false,
+        inEditable: false,
+        inGridview: true,
+      });
+      expect(inside.commandId == null, c.chord).toBe(c.suppressed);
+      // …and every one of them does fire outside a grid, so the cases
+      // above are testing suppression and not a typo in the stroke.
+      const outside = dispatchStroke([], c.stroke, [{ chord, commandId: "x" }], {
+        isMac: false,
+        inEditable: false,
+      });
+      expect(outside.commandId, c.chord).toBe("x");
+    }
+  });
+
+  it("marks a sequence when any step is one the grid takes", () => {
+    expect(chordSuppressedInGridview(parseChord("g r"))).toBe(false);
+    expect(chordSuppressedInGridview(parseChord("g Home"))).toBe(true);
   });
 });
 

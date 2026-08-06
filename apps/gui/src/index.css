@@ -4243,6 +4243,18 @@ button.trace-event-swatch {
   padding: 0.05rem 0.3rem;
   color: #a5b4fc;
 }
+/* The binding's context, where it isn't simply global (ADR 0044). */
+.shortcut-scope {
+  color: #94a3b8;
+  font-size: 0.7rem;
+  font-style: italic;
+}
+/* The two reference sections are read-only, so their hints sit tighter
+   under the legend than the editor's leading paragraph does. */
+.shortcuts-panel .settings-group > .settings-hint {
+  margin-bottom: 0.5rem;
+  font-size: 0.78rem;
+}
 .shortcut-remove {
   background: none;
   border: none;
