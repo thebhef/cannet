@@ -3,14 +3,26 @@ import { describe, expect, it } from "vitest";
 import css from "./index.css?raw";
 import { THEMES, TOKEN_MIRROR } from "./theme";
 
-/// Custom properties declared in the theme block at the top of
-/// `index.css`, by name. The block ends at its marker comment, so a
-/// `--x` further down the file (a theme override, later) can't be
-/// mistaken for the base declaration.
-function cssTokens(): Map<string, string> {
-  const end = css.indexOf("/* === end theme tokens === */");
-  expect(end, "no theme token block in index.css").toBeGreaterThan(-1);
-  const block = css.slice(0, end);
+/// Where each theme's token block ends in `index.css`. A block runs from
+/// the end of the previous one to its own marker comment, so a `--x`
+/// declared in an ordinary rule further down the file can't be mistaken
+/// for a token declaration.
+const BLOCK_END: Record<string, string> = {
+  dark: "/* === end theme tokens === */",
+  light: "/* === end light theme tokens === */",
+};
+
+/// Custom properties one theme's block declares, by name.
+function cssTokens(themeName: string): Map<string, string> {
+  const marker = BLOCK_END[themeName];
+  const end = css.indexOf(marker);
+  expect(end, `no ${themeName} token block in index.css`).toBeGreaterThan(-1);
+  // The dark block starts at the top of the file; every later block
+  // starts where its predecessor's marker left off.
+  const names = Object.keys(BLOCK_END);
+  const prev = names[names.indexOf(themeName) - 1];
+  const start = prev == null ? 0 : css.indexOf(BLOCK_END[prev]);
+  const block = css.slice(start, end);
   const tokens = new Map<string, string>();
   for (const m of block.matchAll(/^\s*(--[a-z0-9-]+):\s*([^;]+);/gm)) {
     tokens.set(m[1], m[2].trim());
@@ -18,24 +30,66 @@ function cssTokens(): Map<string, string> {
   return tokens;
 }
 
+/// Roles whose value is the same under every theme, and why. They are
+/// all colors that sit on a *solid* of their own — a filled badge, a
+/// selected row's accent fill, a focus ring drawn over both — so the
+/// surface underneath them doesn't change with the theme and neither
+/// should they.
+const THEME_INDEPENDENT = [
+  "--text-on-accent",
+  "--text-on-solid",
+  "--accent-selected-bg",
+  "--danger-badge",
+  "--border-search-focus",
+];
+
+describe("the stylesheet's theme blocks", () => {
+  // A theme is a set of *values* for one fixed set of roles. A block
+  // that omits a token silently falls back to the dark value it
+  // overrides — a dark remnant no rule and no grep would show — and one
+  // that invents a token names a role nothing reads.
+  it("declare the same roles, in the same order", () => {
+    const dark = [...cssTokens("dark").keys()];
+    const light = [...cssTokens("light").keys()];
+    expect(dark.length).toBeGreaterThan(100);
+    expect(light).toEqual(dark);
+  });
+
+  // Anything else carried over from dark is a remnant, not a decision.
+  it("re-value every role except the ones that are theme-independent", () => {
+    const dark = cssTokens("dark");
+    for (const [name, value] of cssTokens("light")) {
+      if (THEME_INDEPENDENT.includes(name)) {
+        expect(value, `${name} claims to be theme-independent`).toBe(dark.get(name));
+        continue;
+      }
+      expect(value, `${name} is unchanged from dark`).not.toBe(dark.get(name));
+    }
+  });
+});
+
 describe("TOKEN_MIRROR", () => {
   it("names tokens index.css actually declares", () => {
-    const tokens = cssTokens();
+    const tokens = cssTokens("dark");
     expect(tokens.size).toBeGreaterThan(100);
     for (const token of Object.values(TOKEN_MIRROR)) {
       expect(tokens.has(token), `index.css declares no ${token}`).toBe(true);
     }
   });
 
-  // The dark values live in `:root` — the block `cssTokens` reads. A
-  // second theme declares its own selector, and gets its own pass here.
-  it("agrees with the stylesheet, so the two color sources can't drift", () => {
-    const tokens = cssTokens();
-    for (const [key, token] of Object.entries(TOKEN_MIRROR)) {
-      const ts = THEMES.dark[key as keyof typeof TOKEN_MIRROR];
-      expect(ts, `theme.dark.${key} vs ${token}`).toBe(tokens.get(token));
-    }
-  });
+  // Every theme, against its own block: the mirror is a per-theme
+  // promise, so a light value that drifts from `:root[data-theme=light]`
+  // fails here exactly as a dark one does.
+  it.each(Object.keys(THEMES))(
+    "agrees with the %s stylesheet block, so the two color sources can't drift",
+    (name) => {
+      const tokens = cssTokens(name);
+      for (const [key, token] of Object.entries(TOKEN_MIRROR)) {
+        const ts = THEMES[name as keyof typeof THEMES][key as keyof typeof TOKEN_MIRROR];
+        expect(ts, `theme.${name}.${key} vs ${token}`).toBe(tokens.get(token));
+      }
+    },
+  );
 });
 
 describe("themes", () => {
