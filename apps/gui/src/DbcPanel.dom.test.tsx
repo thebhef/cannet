@@ -396,15 +396,71 @@ describe("DbcPanel", () => {
     expectRowSelected("GearState");
   });
 
-  it("Shift-click range-extends from the anchor over visible rows", async () => {
+  it("Ctrl+Shift-click adds the range from the anchor over visible rows", async () => {
+    // ADR 0044's multiselect: the additive range is Ctrl/Cmd+Shift+click;
+    // plain Shift+click is deliberately unassigned and replaces, like any
+    // other plain click.
     renderPanel();
     await screen.findByText("EngineData");
-    // Click to set anchor, then shift-click on the second row to
-    // grab both.
-    fireEvent.click(screen.getByText("EngineData"));
-    fireEvent.click(screen.getByText("GearState"), { shiftKey: true });
+    fireEvent.click(screen.getByText("EngineData")); // anchor
+    fireEvent.click(screen.getByText("GearState"), { metaKey: true, shiftKey: true });
     expectRowSelected("EngineData");
     expectRowSelected("GearState");
+    // Plain Shift+click carries no range meaning.
+    fireEvent.click(screen.getByText("EngineData"), { shiftKey: true });
+    expectRowSelected("EngineData");
+    expectRowNotSelected("GearState");
+  });
+
+  it("Ctrl/Cmd+A selects every selectable row and leaves the containers out", async () => {
+    renderPanel();
+    await screen.findByText("EngineData");
+    fireEvent.keyDown(screen.getByRole("tree"), { key: "a", ctrlKey: true });
+    expectRowSelected("EngineData");
+    expectRowSelected("GearState");
+    expect(screen.getByText("powertrain.dbc").closest(".dbc-row")).not.toHaveClass(
+      "dbc-row-selected",
+    );
+  });
+
+  it("Home / End take the cursor to the first and last row", async () => {
+    renderPanel();
+    await screen.findByText("EngineData");
+    const tree = screen.getByRole("tree");
+    fireEvent.keyDown(tree, { key: "End" });
+    // Rows on load: (All DBCs) → powertrain.dbc → EngineEcu → EngineData
+    // → (no transmitter) → GearState.
+    expect(screen.getByText("GearState").closest(".dbc-row")).toHaveClass(
+      "dbc-row-active",
+    );
+    fireEvent.keyDown(tree, { key: "Home" });
+    expect(screen.getByText(/All DBCs/i).closest(".dbc-row")).toHaveClass(
+      "dbc-row-active",
+    );
+    // The container row can hold the cursor but not the selection, so
+    // the row the End press had picked up is dropped.
+    expectRowNotSelected("GearState");
+  });
+
+  it("marks its tree as a gridview so the global dispatcher stays off its keys", async () => {
+    // ADR 0044's D10 suppression: the marker on the container is what
+    // the capture-phase dispatcher reads. (The end-to-end assertion over
+    // the real `useCommands` lives in `SignalsPanel.gridview.dom.test`.)
+    renderPanel();
+    await screen.findByText("EngineData");
+    expect(screen.getByRole("tree")).toHaveAttribute("data-gridview");
+  });
+
+  it("the disclosure is a real control, not a glyph span", async () => {
+    // ADR 0044's hit-target rule — a glyph-sized target is what shipped
+    // as a defect. The row keeps its own `aria-expanded`; the control
+    // carries one too and stays out of the Tab order.
+    renderPanel();
+    const eng = await screen.findByText("EngineData");
+    const chevron = eng.closest(".dbc-row")?.querySelector(".dbc-row-chevron");
+    expect(chevron?.tagName).toBe("BUTTON");
+    expect(chevron).toHaveAttribute("aria-expanded", "false");
+    expect(chevron).toHaveAttribute("tabindex", "-1");
   });
 
   it("chevron click toggles expand without changing selection", async () => {
@@ -716,7 +772,7 @@ describe("DbcPanel", () => {
     expect(screen.getByText("EngineData")).toBeInTheDocument();
   });
 
-  it("ArrowDown / ArrowUp move the active row; Enter selects it", async () => {
+  it("ArrowDown / ArrowUp move the active row, and the selection follows it", async () => {
     renderPanel();
     await screen.findByText("EngineData");
     const tree = screen.getByRole("tree");
@@ -736,8 +792,10 @@ describe("DbcPanel", () => {
     expect(screen.getByText("EngineEcu").closest(".dbc-row")).toHaveClass(
       "dbc-row-active",
     );
-    // Enter on a message row selects it.
+    // ADR 0044: the cursor carries the selection with it
+    // (single-select-follows-focus), and Enter ships unbound.
     fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expectRowSelected("EngineData");
     fireEvent.keyDown(tree, { key: "Enter" });
     expectRowSelected("EngineData");
   });
@@ -893,7 +951,7 @@ describe("DbcPanel", () => {
     // value tables inlined) and fzf's preprocessing of it are only worth
     // paying for once the user searches — and only once.
     await mockContent(bigTree(150));
-    const builds = () => diagCounts().get("dbcpanel.searchIndexBuild") ?? 0;
+    const builds = () => diagCounts().get("gridview.filterIndexBuild") ?? 0;
     const before = builds();
     renderPanel();
     await screen.findByText("PackMessage001");

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -20,6 +20,9 @@ import {
   recordToConfig,
   zeroDataHex,
 } from "./transmitFrameConfig";
+import { useGridview } from "./useGridview";
+import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
+import { toggleInSet } from "./toggleSet";
 
 /**
  * Transmit panel (thin view over the host model).
@@ -40,7 +43,17 @@ import {
  *
  * Reorderable: drag the bus-tinted handle on the left of a row to
  * insert that frame before another (rewrites the element's `frameIds`).
+ *
+ * Interaction is the shared gridview's (ADR 0044): each frame is a leaf
+ * whose expanded face is disclosed content, and Space is this panel's
+ * primary action — send the cursor's frame once. Everything a frame row
+ * can be edited through (byte cells, value cells, the bus picker) is
+ * reached by Tab, not by the grid cursor.
  */
+/// What PageUp / PageDown move by. Frame tiles vary in height with
+/// their disclosure, so there is no row count to derive; a handful of
+/// tiles is a screenful.
+const PAGE_ROWS = 6;
 export function TransmitPanel(props: IDockviewPanelProps) {
   const project = useProjectContext();
   const { elementId, registry, persist } = useElementPanel(props, "transmit");
@@ -286,12 +299,87 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   const sendOnce = useCallback((id: string) => {
     void invoke("transmit_frame_once", { id }).catch(() => {});
   }, []);
+  const isConnected = useCallback(
+    (busId: string | null) => busId !== null && project.connectedBusIds.includes(busId),
+    [project.connectedBusIds],
+  );
   const startCyclic = useCallback((id: string) => {
     void invoke("start_periodic_transmit", { id }).catch(() => {});
   }, []);
   const stopCyclic = useCallback((id: string) => {
     void invoke("stop_periodic_transmit", { id }).catch(() => {});
   }, []);
+
+  // --- the gridview (ADR 0044) ---
+  // The element's frame group *is* the row space: each frame a leaf that
+  // is always expandable, since its expanded face (frame shape,
+  // calculated fields, the DBC signals table) is disclosed content that
+  // grows the tile and adds no rows.
+  //
+  // Expansion moves here from the row component: it is keyed by frame id
+  // rather than by a per-component boolean, so reordering the list can no
+  // longer carry an open face onto a different frame. Ephemeral, like the
+  // panel's other view state.
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const gridRows = useMemo(
+    () =>
+      frames.map((f) => ({
+        id: f.id,
+        kind: "leaf" as const,
+        expandable: true,
+        depth: 0,
+      })),
+    [frames],
+  );
+  const setRowExpanded = useCallback((id: string, want: boolean) => {
+    setExpandedIds((prev) => (prev.has(id) === want ? prev : toggleInSet(new Set(prev), id)));
+  }, []);
+  const adapter = useMemo<GridviewAdapter>(() => {
+    const space = arrayRowSpace(gridRows, (id) => expandedIdsRef.current.has(id));
+    return {
+      ...space,
+      // The tiles are in the document (no virtualization), so this is
+      // the "scroll it just into view" arithmetic — `scrollIntoView`
+      // cannot be told to leave an already-visible row alone.
+      scrollToRow: (index) => {
+        const id = space.rowIdAt(index);
+        const container = listRef.current;
+        if (id == null || container == null) return;
+        const el = document.getElementById(rowDomIdRef.current(id));
+        if (el == null) return;
+        const c = container.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        if (r.top < c.top) container.scrollTop += r.top - c.top;
+        else if (r.bottom > c.bottom) container.scrollTop += r.bottom - c.bottom;
+      },
+      setExpanded: setRowExpanded,
+      isSelectable: () => true,
+    };
+  }, [gridRows, setRowExpanded]);
+  /// Read through refs by the memoised adapter, so neither the expansion
+  /// changing nor the hook's per-render identity rebuilds it.
+  const expandedIdsRef = useRef(expandedIds);
+  expandedIdsRef.current = expandedIds;
+  /// ADR 0044's Space: the panel's primary action on the cursor's row.
+  /// Gated exactly like the row's own send button — an unconnected bus
+  /// has nothing to send to.
+  const onPrimaryAction = useCallback(
+    (id: string) => {
+      const f = framesRef.current.find((x) => x.id === id);
+      if (!f || !isConnected(f.busId)) return;
+      sendOnce(id);
+    },
+    [isConnected, sendOnce],
+  );
+  const grid = useGridview({
+    adapter,
+    pageRows: PAGE_ROWS,
+    idPrefix: `tx-${elementId}`,
+    onPrimaryAction,
+  });
+  const rowDomIdRef = useRef(grid.rowDomId);
+  rowDomIdRef.current = grid.rowDomId;
 
   // Build the unique-by-(message_id, extended) catalog of DBC message
   // names so each row can resolve its id → message name.
@@ -332,7 +420,10 @@ export function TransmitPanel(props: IDockviewPanelProps) {
           + frame
         </button>
       </div>
-      <div className="tx-panel-list">
+      {/* The frame list is the gridview container: it holds focus and
+          names the active row, and its marker keeps the global
+          dispatcher off the keys the grid consumes (ADR 0044). */}
+      <div className="tx-panel-list" ref={listRef} {...grid.containerProps}>
         {frames.length === 0 && (
           <div className="tx-empty">
             No frames yet. Click "+ frame" to add one.
@@ -343,9 +434,15 @@ export function TransmitPanel(props: IDockviewPanelProps) {
             key={f.id}
             frame={f}
             buses={project.buses}
-            busConnected={
-              f.busId !== null && project.connectedBusIds.includes(f.busId)
+            busConnected={isConnected(f.busId)}
+            domId={grid.rowDomId(f.id)}
+            active={grid.cursor === f.id}
+            selected={grid.selection.has(f.id)}
+            onRowClick={(e) =>
+              grid.onRowClick(f.id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey })
             }
+            expanded={expandedIds.has(f.id)}
+            onSetExpanded={(want) => setRowExpanded(f.id, want)}
             messageName={
               messageNameByKey.get(`${f.extended ? "x" : "s"}:${f.canId}`) ?? null
             }

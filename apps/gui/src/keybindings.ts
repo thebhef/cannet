@@ -209,6 +209,16 @@ export function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
+/// Does this element activate on Space itself? A focused button (native
+/// or ARIA) is activated by Space — that is the platform behaviour — so
+/// anything binding Space above it has to leave it alone or the press
+/// fires twice. The gridview's panel-defined Space action makes this
+/// concrete: a transmit row's send button is inside the grid.
+export function isActivatableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target instanceof HTMLButtonElement || target.getAttribute("role") === "button";
+}
+
 /// Marker attribute a gridview container carries (ADR 0044). The
 /// command dispatcher is a capture-phase `document` listener, so it
 /// fires before any panel handler — without this, a global chord on an

@@ -2736,6 +2736,14 @@ button.trace-event-swatch {
 .tx-frame-row:hover {
   background: #131923;
 }
+/* The gridview's cursor and selection (ADR 0044). */
+.tx-frame-row[data-active] {
+  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline-offset: -1px;
+}
+.tx-frame-row-selected {
+  background: #1b2740;
+}
 .tx-drag-handle {
   width: 0.45rem;
   flex: 0 0 auto;
@@ -3319,9 +3327,22 @@ button.trace-event-swatch {
   outline-offset: -1px;
 }
 .dbc-row-chevron {
-  display: inline-block;
-  width: 0.8rem;
+  /* ADR 0044: a disclosure is a real control whose hit area is the full
+     row height and comfortably wide — the caret glyph inside it is
+     decoration. A glyph-sized target is what shipped as a defect. The
+     placeholder span on a childless row carries the same class so the
+     indents line up. */
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
   color: #64748b;
+  cursor: pointer;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
 }
 .dbc-row-bus .dbc-row-label {
   color: #fbbf24;
@@ -3494,13 +3515,30 @@ button.trace-event-swatch {
 .rbs-message { margin-left: 24px; }
 .rbs-message-row:hover { background: #16213c; }
 .rbs-inert { opacity: 0.45; }
+/* The gridview's cursor and selection (ADR 0044). */
+.rbs-bus-row[data-active],
+.rbs-ecu-row[data-active],
+.rbs-message-row[data-active] {
+  outline: 1px solid rgba(99, 102, 241, 0.9);
+  outline-offset: -1px;
+}
+.rbs-row-selected {
+  background: #1b2740;
+}
 .rbs-caret {
+  /* ADR 0044: a disclosure is a real control whose hit area is the full
+     row height and comfortably wide — the caret glyph inside it is
+     decoration. */
   background: none;
   border: none;
   color: #64748b;
   cursor: pointer;
-  width: 18px;
   padding: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
 }
 .rbs-dot {
   width: 8px;

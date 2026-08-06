@@ -761,3 +761,179 @@ the payload edge (D11). These slices added drag *sources* only.
   Twenty assertions in `gridviewRows.test.ts` now build the expectation
   through a `move(space, id)` helper, so the indices come from the
   independently-tested `indexOf` rather than from hand-counting.
+
+### 2026-08-05 — C2.0 the filter slot (D14)
+
+Branch `task51-dbc-rbs-transmit`, cut from `task51-trace-views`.
+`143f241`. `apps/gui/src/gridviewFilter.tsx` + `gridviewFilter.test.ts` +
+`gridviewFilter.dom.test.tsx`: `GridviewFilterEntry`
+(`{id, ancestors, haystack}`), `lazyGridviewMatcher`, `gridviewMatches`,
+the `useGridviewFilter` hook (debounce, `effectiveExpanded`) and the
+`GridviewFilterBox` affordance. The DBC panel's copy is the spec, so the
+two properties a naive `fzf.find` lacks came across with it: the index is
+built lazily — nothing is paid until the user types, and then once — and
+results are cut at `MIN_RELATIVE_SCORE` of the top score, because fzf
+accepts any subsequence and a tree shows every match with equal
+prominence.
+
+Client-held rows only, per D14's boundary. 5 unit tests + 3 DOM tests.
+Suite: 119 files / 1370 tests green; `pnpm build` green.
+
+The score-floor test **failed first for a real reason**: the initial junk
+fixture was a good enough match to clear the floor, so the assertion was
+proved to bite before the fixture was replaced with the user-reported
+shape (a module summary carrying p-r-e-s-s-u-r-e scattered across
+words).
+
+### 2026-08-05 — C2.1 DBC on the gridview
+
+`8adec42`. The panel that *was* the extraction spec now consumes the
+layer: **+186 / −326 in `DbcPanel.tsx`, a net −140 lines** (1555 → 1415).
+Deleted — the `activeId` cursor and its scroll effect, the `selection`
+set with `selectionAnchorRef`, `onTreeKeyDown`'s whole key table, the
+local `selectableIdsInOrder`, and `SearchEntry` / `MIN_RELATIVE_SCORE` /
+`FILTER_DEBOUNCE_MS` / `lazyMatcher` / `searchMatches` / the debounce
+effect / `domRowId`.
+
+The flattened tree is the row space (`arrayRowSpace` over
+`gridviewRowsOf(rows)`); `isSelectable` is the per-row predicate the A.4
+deviation exists for, because a message node is a *selectable branch*
+while bus / DBC / ECU nodes are unselectable ones. "Details" stays taller
+cell content, so no row is a leaf-with-content (D5). `idPrefix:
+"dbcnode"` keeps the row DOM ids byte-identical to what
+`aria-activedescendant` named before.
+
+The 41 pre-existing DBC DOM tests were the net; 39 passed unchanged and
+the two that did not are the two behaviours ADR 0044 deliberately
+changes (below). 4 new tests: Ctrl/Cmd+A over selectable rows only,
+Home/End, the gridview marker, and the disclosure being a real control.
+Suite: 119 files / 1374 tests green; `pnpm build` green.
+
+#### Blockers / side effects
+
+- **Two DBC behaviours changed, and their tests with them.** Plain
+  Shift+click no longer range-extends — D4 assigns the additive range to
+  Ctrl/Cmd+Shift+click and leaves plain Shift+click deliberately
+  unassigned — and Enter is unbound, with the selection following the
+  cursor instead. D0 protects each panel's *layout*, not the interaction
+  the task exists to replace, so these were re-specified rather than
+  preserved: the old tests became "Ctrl+Shift-click adds the range" (with
+  a plain-Shift-replaces assertion) and "ArrowDown / ArrowUp move the
+  active row, and the selection follows it".
+- **`buildRows` stopped taking the selection.** Selection now follows
+  every cursor move, so folding it into the row objects would allocate a
+  fresh `RenderRow` for every row on every arrow press and defeat
+  `DbcRow`'s memo — the exact thing task 41's "re-renders only the rows
+  whose props changed" test guards. The highlight is a per-row prop, and
+  `handleDragStart` resolves the selection and the row list through refs
+  at drag time (the ByIdTable pattern) so it, too, keeps a stable
+  identity. That memo test passes unchanged.
+- **The diagnostic counter was renamed** `dbcpanel.searchIndexBuild` →
+  `gridview.filterIndexBuild`, since the index build is the layer's now.
+  Nothing outside `DbcPanel.dom.test.tsx` referenced it.
+- **The caret is now a `<button>`, and childless rows keep an empty span
+  in the same slot.** ADR 0044's hit-target rule; `min-width` went from
+  0.8rem to 1.1rem, the one deliberate pixel change in this slice. It
+  carries `tabIndex={-1}`: a disclosure is not row content, so Tab must
+  not stop on every caret in a large tree.
+
+### 2026-08-05 — C2.2 RBS on the gridview
+
+`f0eeb6f`. Buses and ECUs are branches; a message row is a **leaf with
+content** — its signal table discloses in place and adds no rows, which
+is D5's reading of this surface. Selection stops at message rows. The
+second fzf copy is deleted into the filter slot, so RBS gains the
+debounce, the score floor, and ancestors-of-matches read as expanded — a
+hit inside a bus the user had closed is now on screen instead of behind
+a fold.
+
+`RbsPanel.gridview.dom.test.tsx`, 7 DOM tests (tree walk + selection
+stopping at messages, Left/Right over a branch, Right disclosing content
+without adding rows, the editable-target exemption inside a value cell,
+the filter pruning to matches + their path, a match's ancestors reading
+as expanded, the gridview marker). The 15 pre-existing `RbsPanel` tests
+are unchanged and green. Suite: 120 files / 1381 tests green; `pnpm
+build` green.
+
+#### Blockers / side effects
+
+- **"Headerless single-column instance" (D16) is implemented as *no
+  header and no column tracks*, not as a one-column `GridviewRow`.** The
+  column framework exists to align cells to headers by construction; with
+  one column there is nothing to align, and wrapping each RBS row's
+  content in a layer-owned grid container would change the rendered DOM,
+  which D0 forbids. The same reading was taken for the DBC panel and for
+  transmit. The degenerate shape is real — one implicit column, the row
+  *is* the cell — it simply needs no component.
+- **The DOM stays nested.** `.rbs-bus` / `.rbs-ecu` / `.rbs-message`
+  wrappers carry the tree's indentation in CSS, so flattening the render
+  to match the flat row space would have been a layout change. The
+  gridview is headless, so the two coexist: one `buildVisibleTree` pass
+  feeds both the nested renderers and `flattenRbsRows`, which is what
+  keeps them from disagreeing about what is on screen.
+- **Filtering now prunes buses, not just ECUs.** The old copy kept every
+  bus row visible whatever the query matched; the slot's
+  ancestors-of-matches rule removes a bus with no match in it, as the DBC
+  tree already did. There was no test on the old behaviour — the RBS
+  panel had no filter test at all — so this is a deliberate convergence,
+  not a silent regression.
+- **`PAGE_ROWS` is a constant (12).** The panel is not virtualized and
+  has no measured row geometry, so PageUp/PageDown move a fixed count
+  rather than a true viewport's worth. Measuring would mean adding a
+  `ResizeObserver` for one key binding.
+- **`scrollToRow` is hand-rolled, not `scrollIntoView`.** The layer's
+  contract is "bring this row into view", and `scrollIntoView` cannot be
+  told to leave an already-visible row alone — arrowing inside the
+  viewport would jerk the list on every press. The rect arithmetic is
+  also a no-op under jsdom (all-zero rects) rather than a `TypeError`,
+  which is how the first draft failed.
+
+### 2026-08-05 — C2.3 transmit on the gridview
+
+`b626860`. The first panel to define D3's primary action: **Space sends
+the cursor's frame once**, gated exactly like the row's own send button
+(an unconnected bus has nothing to send to). Each frame is a leaf whose
+expanded face is disclosed content. The grip drag-to-reorder is
+untouched, and the byte / value / bus-picker controls stay Tab-reached.
+
+Expansion moved out of `TransmitFrameRow`'s `useState` up to the panel,
+keyed by frame id (D13.1). The old boolean belonged to the tile
+*position*, so a reorder carried an open face onto whatever frame moved
+into the slot. Persistence is unchanged: there was none, and there still
+is none.
+
+6 new DOM tests appended to `TransmitPanel.dom.test.tsx` (cursor +
+selection over the tiles, Space sending the cursor's frame, Space
+refused on an unconnected bus, Right disclosing without adding rows,
+click-on-background-toggles vs click-on-control-only-moves-the-cursor,
+the gridview marker) plus 1 in `useGridview.dom.test.tsx`. The 25
+pre-existing transmit tests are unchanged and green. Suite: 120 files /
+1388 tests green; `pnpm build` green. No host code was touched, so no
+Rust run was needed.
+
+#### Blockers / side effects
+
+- **The layer changed: a focused button keeps Space.** `isEditableTarget`
+  covers inputs, textareas, selects and contenteditable — not buttons —
+  and a button is activated by Space. With a panel-defined Space action
+  and a send button *inside* the grid, the press would have fired both.
+  Added `isActivatableTarget` in `keybindings.ts`, applied in
+  `useGridview`'s Space branch only (arrows over a focused button should
+  still navigate), and **ADR 0044's suppression paragraph now states the
+  rule** — it is a durable decision, not an implementation detail.
+- **"Expansion follows the frame, not the slot" is asserted only
+  indirectly.** The intended test — expand a tile, drag it past its
+  neighbour, watch the open face travel — cannot run against the existing
+  harness: its mock element registry records `update` patches into a
+  local variable and never re-renders, so a reorder is invisible in the
+  DOM. Replaced with the click-target test, which is genuinely new
+  behaviour; the id-keying itself is structural (the state is a
+  `Set<frameId>` in the panel) rather than observable here.
+- **Transmit did not opt into the filter slot.** D14 says it *may*; the
+  slice's scope names the action key and the reorder, and the panel shows
+  a handful of tiles where a fuzzy search buys nothing yet. The slot is
+  one hook call away if that changes.
+- **No perf-harness run.** ADR 0031's render-tier gate is 51.D's, per the
+  brief; the three panels in this slice are not on the paged hot path,
+  and the DBC panel's two in-suite bounds (the memo criterion and the
+  viewport-bounded window) both stayed green.

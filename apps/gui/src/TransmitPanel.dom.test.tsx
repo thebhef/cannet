@@ -711,3 +711,83 @@ describe("TransmitPanel as a drop target", () => {
     expect(framesCreated()).toBe(0);
   });
 });
+
+/// The transmit panel on the shared gridview (ADR 0044). The tests above
+/// remain the panel's contract net; these cover only what the migration
+/// added — the cursor over the tiles, Space as the panel's primary
+/// action, and expansion keyed by frame id.
+describe("TransmitPanel on the gridview", () => {
+  const tiles = () => Array.from(document.querySelectorAll(".tx-frame-row"));
+  const list = () => document.querySelector(".tx-panel-list") as HTMLElement;
+
+  it("moves the cursor over the frame tiles and carries the selection with it", async () => {
+    POOL = [frame("a"), frame("b")];
+    renderPanel("el", ["a", "b"]);
+    await waitFor(() => expect(tiles()).toHaveLength(2));
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    expect(tiles()[0]).toHaveAttribute("data-active");
+    expect(tiles()[0]).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    expect(tiles()[1]).toHaveAttribute("data-active");
+    expect(tiles()[0]).toHaveAttribute("aria-selected", "false");
+    fireEvent.keyDown(list(), { key: "End" });
+    expect(tiles()[1]).toHaveAttribute("data-active");
+  });
+
+  it("Space sends the cursor's frame once", async () => {
+    POOL = [frame("a"), frame("b")];
+    renderPanel("el", ["a", "b"]);
+    await waitFor(() => expect(tiles()).toHaveLength(2));
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: " " });
+    await waitFor(() =>
+      expect(lastCall("transmit_frame_once")?.args).toMatchObject({ id: "b" }),
+    );
+  });
+
+  it("Space sends nothing when the frame's bus is not connected", async () => {
+    // Gated exactly like the row's own send button — `b2` is no bus this
+    // project routes.
+    POOL = [frame("a", { request: { ...frame("a").request, busId: "b2" } })];
+    renderPanel("el", ["a"]);
+    await waitFor(() => expect(tiles()).toHaveLength(1));
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: " " });
+    expect(lastCall("transmit_frame_once")).toBeUndefined();
+  });
+
+  it("Right discloses a tile's expanded face in place, adding no rows", async () => {
+    POOL = [frame("a")];
+    renderPanel("el", ["a"]);
+    await waitFor(() => expect(tiles()).toHaveLength(1));
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: "ArrowRight" });
+    expect(document.querySelector(".tx-expanded")).toBeInTheDocument();
+    // A leaf's content grows the row; it does not add rows.
+    expect(tiles()).toHaveLength(1);
+    fireEvent.keyDown(list(), { key: "ArrowLeft" });
+    expect(document.querySelector(".tx-expanded")).not.toBeInTheDocument();
+  });
+
+  it("a click on the tile's background both moves the cursor and toggles the face; a click on a control only moves the cursor", async () => {
+    POOL = [frame("a"), frame("b")];
+    renderPanel("el", ["a", "b"]);
+    await waitFor(() => expect(tiles()).toHaveLength(2));
+    // The description input is a control — the cursor follows, the face
+    // stays shut so the user isn't yanked around while editing.
+    fireEvent.click(screen.getAllByLabelText("frame description")[1]);
+    expect(tiles()[1]).toHaveAttribute("data-active");
+    expect(tiles()[1].querySelector(".tx-expanded")).not.toBeInTheDocument();
+    // The tile's own background is the disclosure.
+    fireEvent.click(tiles()[1].querySelector(".tx-frame-body") as HTMLElement);
+    expect(tiles()[1].querySelector(".tx-expanded")).toBeInTheDocument();
+  });
+
+  it("marks its list as a gridview so the global dispatcher stays off its keys", async () => {
+    POOL = [frame("a")];
+    renderPanel("el", ["a"]);
+    await waitFor(() => expect(tiles()).toHaveLength(1));
+    expect(list()).toHaveAttribute("data-gridview");
+  });
+});
