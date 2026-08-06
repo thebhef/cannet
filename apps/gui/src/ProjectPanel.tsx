@@ -8,6 +8,11 @@ import {
 } from "react";
 import type { IDockviewPanel, IDockviewPanelProps } from "dockview";
 
+import {
+  describeAppliedConfig,
+  describeBusConnState,
+  useConnectionStates,
+} from "./connectionStates";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry, type RegistryEntry } from "./projectElements";
 import { useSidecarStatus } from "./sidecarStatus";
@@ -156,6 +161,9 @@ export function ProjectPanel(props: IDockviewPanelProps) {
   }, [sidecarAddress, p.interfaceBindings]);
 
   const discovery = useInterfaceDiscovery(knownServers);
+  // Connection state is the host's model, not ours: we subscribe and
+  // render, never derive.
+  const connStates = useConnectionStates();
 
   // Inline "Add server…" form per bus: `addingForBus === bus.id` means
   // the bus row shows the new-server form. `null` = no row is in the
@@ -283,6 +291,15 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           // settings row for those bindings so the UI doesn't suggest
           // a knob that doesn't apply.
           const isLocalVbus = binding != null && localVbusId(binding) !== null;
+          // The bus row's marker mirrors its single binding's state —
+          // at most one binding per bus (ADR 0023), so there is nothing
+          // to aggregate.
+          const conn = describeBusConnState(connStates[bus.id], binding != null);
+          const connState = connStates[bus.id];
+          const appliedText =
+            connState?.kind === "connected"
+              ? describeAppliedConfig(connState.applied)
+              : null;
           return (
             <div className="project-bus-row" key={bus.id}>
               <div className="project-bus">
@@ -301,6 +318,13 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   onChange={(e) => p.onUpdateBus(bus.id, { name: e.target.value })}
                   aria-label={`bus ${bus.id} name`}
                 />
+                <span
+                  className={`project-bus-state ${conn.tone}`}
+                  title={conn.detail}
+                  data-testid={`bus-conn-state-${bus.id}`}
+                >
+                  {conn.text}
+                </span>
                 {pendingHwConfig && (
                   <span
                     className="project-bus-pending-hw"
@@ -313,6 +337,15 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   Remove
                 </button>
               </div>
+              {appliedText !== null && (
+                <div
+                  className="project-bus-applied"
+                  title="What the host actually put on the wire for this bus at connect — not what the fields below say."
+                  data-testid={`bus-applied-${bus.id}`}
+                >
+                  live: {appliedText}
+                </div>
+              )}
               <div className="project-bus-iface">
                 <BusInterfaceCombo
                   bus={bus}
@@ -417,6 +450,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           bindings={p.interfaceBindings}
           buses={p.buses}
           discoveries={discovery.entries}
+          connStates={connStates}
           onRefresh={() => {
             if (sidecarAddress) void discovery.refresh(sidecarAddress);
           }}
@@ -433,6 +467,7 @@ export function ProjectPanel(props: IDockviewPanelProps) {
               buses={p.buses}
               state={state}
               discoveries={discovery.entries}
+              connStates={connStates}
               onRefresh={() => void discovery.refresh(server)}
             />
           );
