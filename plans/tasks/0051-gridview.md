@@ -505,3 +505,33 @@ slice deferred**: a user-bound `ArrowDown` chord dispatched by the real
 fire inside its grid, while the grid's own cursor moves. Suite: 114
 files / 1315 tests green; `pnpm build` green; every pre-existing
 `SignalsPanel` DOM test unchanged and green (D0).
+
+### 2026-08-05 — B.2 signal view: drag sources and intra-panel drops
+
+Two commits. `6a4e780` lands the carrier and the pure pieces:
+`dragSignals.ts` grows `patterns` on the payload plus the two kind
+marker mimes a `dragover` reads (`DRAG_SIGNALS_MIME`,
+`DRAG_PATTERNS_MIME`), with `setSignalDragPayload` deduping signals and
+patterns at the edge (D11); `reorderSectionNames` in
+`signalSelection.ts` is the `names` permutation a header drop makes; a
+Rust test in `signal_snapshot.rs` proves the drag's permutation moves
+the headers *and* the pattern-claim priority together; and `useGridview`
+grows `extraSelectableIds`, the non-row selectable items D7's pattern
+chips need.
+
+The panel wiring: a signal row drags its concrete signal from the name
+cell, a section header drags the whole unit (its assigned signals and
+its live patterns) from its label, a pattern chip drags its pattern from
+a grip in `SignalPatternEditor` — and any of them, when the grabbed item
+is in the selection, drags the whole selection. Drops: signals onto a
+section (header **or** any row in its span) are assigned there,
+patterns merge into it, patterns onto the panel itself make a section
+carrying them, and a header dropped on another header reorders. The
+`.trace-disclosure` control took the D0 hit-target treatment (full row
+height, ~1.3rem wide, glyph as decoration).
+
+`SignalsPanel.dnd.dom.test.tsx`, 10 DOM tests over a real
+`DataTransfer` round trip; 6 new unit tests in `dragSignals.test.ts`, 3
+in `signalSelection.test.ts`, 1 in `useGridview.dom.test.tsx`, 1 in
+`signal_snapshot.rs`. Suite: 115 files / 1333 tests green; `pnpm build`
+green; `cargo test -p cannet-gui` green.

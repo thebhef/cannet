@@ -30,8 +30,13 @@ import {
 import { formatMsgRate, formatTimestamp } from "./format";
 import { buildColorResolver } from "./colorMap";
 import { SignalValueCell } from "./SignalValueCell";
-import { SignalPatternEditor } from "./SignalPatternEditor";
-import { effectiveSourceBuses, resolvePatterns, scopeCatalog } from "./signalSelection";
+import { SignalPatternEditor, type PatternGrip } from "./SignalPatternEditor";
+import {
+  effectiveSourceBuses,
+  reorderSectionNames,
+  resolvePatterns,
+  scopeCatalog,
+} from "./signalSelection";
 import { signalKey } from "./plotData";
 import { stableSignalColor } from "./palette";
 import { elementLabel } from "./elementLabel";
@@ -41,8 +46,9 @@ import {
   SIGNAL_DND_MIME,
   dedupeSignalRefs,
   parseSignalDragData,
-  setSignalDragData,
+  setSignalDragPayload,
   type DraggableSignalRef,
+  type SignalDragPayload,
 } from "./dragSignals";
 import { anchorFromScroll, maxScrollTop, ROW_HEIGHT, scrollForRow } from "./traceViewport";
 import { useGridview } from "./useGridview";
@@ -92,6 +98,26 @@ const signalRowId = (key: string) => `${SIGNAL_ROW_PREFIX}${key}`;
 /// The section a header row's id names, or `null` for a signal row.
 const sectionOfRowId = (id: string): string | null =>
   id.startsWith(SECTION_ROW_PREFIX) ? id.slice(SECTION_ROW_PREFIX.length) : null;
+/// The signal key a signal row's id names, or `null` for a header.
+const signalKeyOfRowId = (id: string): string | null =>
+  id.startsWith(SIGNAL_ROW_PREFIX) ? id.slice(SIGNAL_ROW_PREFIX.length) : null;
+
+/// A pattern chip's id in the gridview's selection set (ADR 0045):
+/// chips are selectable alongside rows without being rows. `section` is
+/// `null` for a view-level pattern. JSON so a section name or a pattern
+/// containing the separator can't forge another chip's id.
+const patternChipId = (section: string | null, pattern: string) =>
+  `pat:${JSON.stringify([section, pattern])}`;
+/// The pattern a chip id names, or `null` for anything else.
+const patternOfChipId = (id: string): string | null => {
+  if (!id.startsWith("pat:")) return null;
+  try {
+    const parsed: unknown = JSON.parse(id.slice(4));
+    return Array.isArray(parsed) && typeof parsed[1] === "string" ? parsed[1] : null;
+  } catch {
+    return null;
+  }
+};
 
 /// The view's user-authored sections: names in creation order, plus the
 /// canonical-identity → name assignment map. Project data — persisted on
@@ -304,6 +330,36 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   const assignSignal = useCallback((key: string, name: string) => {
     setSections((prev) => ({ ...prev, assignments: { ...prev.assignments, [key]: name } }));
   }, []);
+  /// The same move for a whole dropped payload, in one edit.
+  const assignSignals = useCallback((keys: readonly string[], name: string) => {
+    if (keys.length === 0) return;
+    setSections((prev) => {
+      const assignments = { ...prev.assignments };
+      for (const k of keys) assignments[k] = name;
+      return { ...prev, assignments };
+    });
+  }, []);
+  /// Fold dropped patterns into a section's own list, live (ADR 0045 —
+  /// a pattern never flattens to its matches by drop).
+  const mergeSectionPatterns = useCallback((name: string, incoming: readonly string[]) => {
+    setSections((prev) => ({
+      ...prev,
+      patterns: { ...prev.patterns, [name]: [...new Set([...(prev.patterns[name] ?? []), ...incoming])] },
+    }));
+  }, []);
+  /// Patterns dropped on the view itself land in a section of their own.
+  const createSectionForPatterns = useCallback(
+    (incoming: readonly string[]) => {
+      const name = starterSectionName(sections.names);
+      setSections((prev) => ({
+        ...prev,
+        names: [...prev.names, name],
+        patterns: { ...prev.patterns, [name]: [...new Set(incoming)] },
+      }));
+      setRenaming(name);
+    },
+    [sections.names],
+  );
 
   // Dual-write the persistable config (element + dockview params), the
   // same pattern as the trace/plot panels. `folded` goes to the params
@@ -489,12 +545,20 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   }, []);
   const onDrop = useCallback(
     (e: React.DragEvent) => {
-      const { signals } = parseSignalDragData(e.dataTransfer.getData(SIGNAL_DND_MIME));
-      if (signals.length === 0) return;
+      const { signals, patterns, sourcePanelId } = parseSignalDragData(
+        e.dataTransfer.getData(SIGNAL_DND_MIME),
+      );
+      // A drag that started here and landed on nothing in particular is
+      // not a gesture — it must not duplicate what it dragged.
+      if (sourcePanelId === elementId) return;
+      if (signals.length === 0 && patterns.length === 0) return;
       e.preventDefault();
       addKeys(dedupeSignalRefs(signals));
+      // Patterns land as a section of their own, still live: a later
+      // DBC load feeds it exactly as it feeds the source (ADR 0045).
+      if (patterns.length > 0) createSectionForPatterns(patterns);
     },
-    [addKeys],
+    [addKeys, createSectionForPatterns, elementId],
   );
 
   const [editOpen, setEditOpen] = useState(false);
@@ -649,10 +713,20 @@ export function SignalsPanel(props: IDockviewPanelProps) {
       isSelectable: () => true,
     };
   }, [count, rowModelAt, folded, scrollToRow, setRowExpanded]);
+  // Pattern chips are selectable items in the same set as the rows
+  // (ADR 0045), so one grab can carry rows and rules together.
+  const patternChipIds = useMemo(() => {
+    const out = selection.patterns.map((p) => patternChipId(null, p));
+    for (const name of sections.names) {
+      for (const p of sections.patterns[name] ?? EMPTY_PATTERNS) out.push(patternChipId(name, p));
+    }
+    return out;
+  }, [selection.patterns, sections]);
   const grid = useGridview({
     adapter,
     pageRows: Math.max(1, rows - 2),
     idPrefix: `signals-${elementId}`,
+    extraSelectableIds: patternChipIds,
   });
   const handleRowClick = useCallback(
     (id: string, e: React.MouseEvent) => {
@@ -663,6 +737,135 @@ export function SignalsPanel(props: IDockviewPanelProps) {
       if (target?.closest("button, input") == null) containerRef.current?.focus();
     },
     [grid, containerRef],
+  );
+
+  // --- drag sources and intra-panel drops (ADR 0045) ---
+  // What a selected signal row resolves to. The manual picks carry the
+  // full ref; anything else has to come from a row on screen.
+  const pageRefs = useMemo(() => {
+    const m = new Map<string, DraggableSignalRef>();
+    for (let i = firstVisibleRow; i < Math.min(count, firstVisibleRow + rows); i++) {
+      const s = signalOf(view.getRow(i));
+      if (!s) continue;
+      m.set(signalKey(s.bus_id, s.message_id, s.extended, s.signal_name), {
+        busId: s.bus_id,
+        messageId: s.message_id,
+        extended: s.extended,
+        signalName: s.signal_name,
+        messageName: s.message_name,
+        unit: s.unit,
+      });
+    }
+    return m;
+  }, [view, firstVisibleRow, rows, count]);
+  const refForKey = useCallback(
+    (key: string): DraggableSignalRef | null =>
+      selection.keys.find((k) => keyOf(k) === key) ?? pageRefs.get(key) ?? null,
+    [selection.keys, pageRefs],
+  );
+  /// The payload one grab produces. A grabbed item that is in the
+  /// selection drags the whole selection (the file-manager convention);
+  /// otherwise it drags alone. A section header drags the whole unit —
+  /// the signals assigned to it *and* its patterns, which stay live.
+  const payloadFor = useCallback(
+    (id: string): SignalDragPayload => {
+      const ids = grid.selection.has(id) ? [...grid.selection] : [id];
+      const signals: DraggableSignalRef[] = [];
+      const patterns: string[] = [];
+      for (const each of ids) {
+        const pattern = patternOfChipId(each);
+        if (pattern != null) {
+          patterns.push(pattern);
+          continue;
+        }
+        const section = sectionOfRowId(each);
+        if (section != null) {
+          for (const [key, name] of Object.entries(sections.assignments)) {
+            if (name !== section) continue;
+            const ref = refForKey(key);
+            if (ref) signals.push(ref);
+          }
+          patterns.push(...(sections.patterns[section] ?? EMPTY_PATTERNS));
+          continue;
+        }
+        const key = signalKeyOfRowId(each);
+        const ref = key == null ? null : refForKey(key);
+        if (ref) signals.push(ref);
+      }
+      return { signals, patterns, sourcePanelId: elementId };
+    },
+    [grid.selection, sections, refForKey, elementId],
+  );
+  /// The section header currently being dragged, if any. A header drag
+  /// that lands inside this panel reorders; the same header dragged out
+  /// exports the unit its payload carries (D8), so the two gestures are
+  /// told apart by where the drop lands, not by what is in the payload.
+  const draggingSection = useRef<string | null>(null);
+  const startRowDrag = useCallback(
+    (id: string, e: React.DragEvent) => {
+      e.stopPropagation();
+      draggingSection.current = sectionOfRowId(id);
+      setSignalDragPayload(e, payloadFor(id));
+    },
+    [payloadFor],
+  );
+  const endRowDrag = useCallback(() => {
+    draggingSection.current = null;
+  }, []);
+  const sectionDragOver = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes(SIGNAL_DND_MIME)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+  /// Drop onto a section — its header, or any row in its span. Signals
+  /// are *assigned* there, which beats every other section's pattern
+  /// (item 16's rule); patterns merge in; a header dragged within this
+  /// panel reorders instead.
+  const dropOnSection = useCallback(
+    (name: string, e: React.DragEvent) => {
+      if (!e.dataTransfer.types.includes(SIGNAL_DND_MIME)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const payload = parseSignalDragData(e.dataTransfer.getData(SIGNAL_DND_MIME));
+      const moved = draggingSection.current;
+      if (moved != null && payload.sourcePanelId === elementId) {
+        setSections((prev) => ({
+          ...prev,
+          // The implicit section is not in `names`; dropping on its
+          // header means "to the front".
+          names: [...reorderSectionNames(prev.names, moved, name === "" ? prev.names[0] ?? "" : name)],
+        }));
+        return;
+      }
+      const refs = dedupeSignalRefs(payload.signals);
+      addKeys(refs);
+      assignSignals(refs.map(keyOf), name);
+      if (payload.patterns.length === 0) return;
+      // The implicit section has no pattern list of its own to merge
+      // into — patterns landing there get a section, like a drop on the
+      // panel itself.
+      if (name === "") createSectionForPatterns(payload.patterns);
+      else mergeSectionPatterns(name, payload.patterns);
+    },
+    [addKeys, assignSignals, createSectionForPatterns, elementId, mergeSectionPatterns],
+  );
+  const patternGrip = useMemo<PatternGrip>(
+    () => ({
+      selected: (pattern) => grid.selection.has(patternChipId(null, pattern)),
+      onSelect: (pattern, modifiers) => grid.onRowClick(patternChipId(null, pattern), modifiers),
+      onDragStart: (pattern, e) => startRowDrag(patternChipId(null, pattern), e),
+    }),
+    [grid, startRowDrag],
+  );
+  const sectionPatternGrip = useCallback(
+    (section: string): PatternGrip => ({
+      selected: (pattern) => grid.selection.has(patternChipId(section, pattern)),
+      onSelect: (pattern, modifiers) =>
+        grid.onRowClick(patternChipId(section, pattern), modifiers),
+      onDragStart: (pattern, e) => startRowDrag(patternChipId(section, pattern), e),
+    }),
+    [grid, startRowDrag],
   );
 
   const visible = useMemo(() => columns.filter((c) => c.visible), [columns]);
@@ -708,6 +911,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
             catalog={scopedCatalog}
             busNames={lookup}
             onChange={(next) => setSectionPatterns(patternPopover.name, next)}
+            grip={sectionPatternGrip(patternPopover.name)}
             onClose={() => setPatternPopover(null)}
           />
         </div>
@@ -770,6 +974,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
             busNames={lookup}
             onChange={setPatterns}
             onMaterialize={materializePatterns}
+            grip={patternGrip}
           />
           {selection.keys.length > 0 && (
             <div className="signals-manual-list">
@@ -835,6 +1040,10 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                       domId={grid.rowDomId(rowId)}
                       selected={grid.selection.has(rowId)}
                       onRowClick={(e) => handleRowClick(rowId, e)}
+                      onGripDragStart={(e) => startRowDrag(rowId, e)}
+                      onGripDragEnd={endRowDrag}
+                      onDragOver={sectionDragOver}
+                      onDrop={(e) => dropOnSection(header.name, e)}
                       folded={folded.has(header.name)}
                       renaming={renaming === header.name}
                       patternCount={(sections.patterns[header.name] ?? EMPTY_PATTERNS).length}
@@ -871,6 +1080,12 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                     onRowClick={
                       signalRow == null ? undefined : (e) => handleRowClick(signalRow, e)
                     }
+                    onGripDragStart={
+                      signalRow == null ? undefined : (e) => startRowDrag(signalRow, e)
+                    }
+                    onGripDragEnd={endRowDrag}
+                    onDragOver={sectionDragOver}
+                    onDrop={(e) => dropOnSection(signal?.section ?? "", e)}
                     columns={visible}
                     gridTemplate={gridTemplate}
                     baseTimestamp={trace.baseTimestampSeconds}
@@ -937,6 +1152,10 @@ function SectionHeaderRow({
   domId,
   selected,
   onRowClick,
+  onGripDragStart,
+  onGripDragEnd,
+  onDragOver,
+  onDrop,
   folded,
   renaming,
   patternCount,
@@ -953,6 +1172,13 @@ function SectionHeaderRow({
   domId: string;
   selected: boolean;
   onRowClick: (e: React.MouseEvent) => void;
+  /// The row's drag grip is its label — the rest of it holds controls,
+  /// so the row itself is not draggable (ADR 0045). The implicit
+  /// section has no unit to drag and gets none.
+  onGripDragStart: (e: React.DragEvent) => void;
+  onGripDragEnd: () => void;
+  onDragOver: (e: React.DragEvent) => void;
+  onDrop: (e: React.DragEvent) => void;
   folded: boolean;
   renaming: boolean;
   patternCount: number;
@@ -970,6 +1196,8 @@ function SectionHeaderRow({
       className={`trace-row signals-section-header${selected ? " selected" : ""}`}
       aria-selected={selected}
       onClick={onRowClick}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
     >
       <button
@@ -991,7 +1219,19 @@ function SectionHeaderRow({
           onCancel={onCancelRename}
         />
       ) : (
-        <span className="signals-section-label">{label}</span>
+        <span
+          className="signals-section-label"
+          draggable={header.name !== ""}
+          title={
+            header.name === ""
+              ? undefined
+              : "drag this section: its signals and its patterns; drop it on another header to reorder"
+          }
+          onDragStart={header.name === "" ? undefined : onGripDragStart}
+          onDragEnd={header.name === "" ? undefined : onGripDragEnd}
+        >
+          {label}
+        </span>
       )}
       <span className="hint">({header.signal_count})</span>
       {header.name !== "" && !renaming && (
@@ -1031,6 +1271,7 @@ function SectionPatternPopover({
   catalog,
   busNames,
   onChange,
+  grip,
   onClose,
 }: {
   name: string;
@@ -1038,6 +1279,7 @@ function SectionPatternPopover({
   catalog: readonly SignalDescriptorRecord[];
   busNames: ReadonlyMap<string, string>;
   onChange: (next: string[]) => void;
+  grip: PatternGrip;
   onClose: () => void;
 }) {
   const ref = useDismissableMenu<HTMLDivElement>(true, onClose);
@@ -1049,6 +1291,7 @@ function SectionPatternPopover({
         catalog={catalog}
         busNames={busNames}
         onChange={onChange}
+        grip={grip}
       />
     </div>
   );
@@ -1117,6 +1360,12 @@ interface SignalRowProps {
   domId?: string;
   selected?: boolean;
   onRowClick?: (e: React.MouseEvent) => void;
+  /// The name cell is the row's drag grip — the section cell is a
+  /// control, so the row does not drag whole (ADR 0045).
+  onGripDragStart?: (e: React.DragEvent) => void;
+  onGripDragEnd?: () => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
   columns: readonly SignalColumnState[];
   gridTemplate: string;
   baseTimestamp: number | null;
@@ -1139,6 +1388,10 @@ function SignalRow({
   domId,
   selected = false,
   onRowClick,
+  onGripDragStart,
+  onGripDragEnd,
+  onDragOver,
+  onDrop,
   columns,
   gridTemplate,
   baseTimestamp,
@@ -1168,19 +1421,8 @@ function SignalRow({
             style={{ color: nameColor }}
             title={`${row.signal_name} — drag to a plot; right-click to recolor`}
             draggable
-            onDragStart={(e) => {
-              e.stopPropagation();
-              setSignalDragData(e, [
-                {
-                  busId: row.bus_id,
-                  messageId: row.message_id,
-                  extended: row.extended,
-                  signalName: row.signal_name,
-                  messageName: row.message_name,
-                  unit: row.unit,
-                },
-              ]);
-            }}
+            onDragStart={onGripDragStart}
+            onDragEnd={onGripDragEnd}
             onContextMenu={(e) => {
               // Right-click the name opens the native color picker —
               // the same affordance as a plot series swatch (ADR 0026).
@@ -1252,6 +1494,8 @@ function SignalRow({
       className={`trace-row ${row ? "" : "loading"}${selected ? " selected" : ""}`}
       aria-selected={selected}
       onClick={onRowClick}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
       renderCell={(column, className) => <span className={className}>{cell(column)}</span>}
     />
