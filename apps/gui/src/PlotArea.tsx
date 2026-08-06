@@ -64,7 +64,7 @@ import { laneBandsForVisible, laneTileBand, laneValueRange, normalizeIntoLane, t
 import { useDecimatedRange, type DecimatedOutcome } from "./useDecimatedRange";
 import { useFirstSampleWait } from "./useFirstSampleWait";
 import { diagCount, diagGauge } from "./diag"; // DIAG
-import { theme } from "./theme";
+import { theme, useThemeName } from "./theme";
 
 const ZOOM_STEP = 1.15;
 /** Floor for `sample_signals`' `max_points` (the host min/max-decimates
@@ -730,6 +730,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * readouts below re-render with this component. */
   const floatRule = useFloatFormatRule();
 
+  /** The active theme. Read here for two reasons: the side panel's
+   * swatches resolve a color while rendering (and this component is
+   * behind a `memo`, so nothing else would re-render it), and the
+   * canvas needs the redraw below. */
+  const themeName = useThemeName();
+
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The empty stand-in drawn in the canvas column while collapsed. */
   const placeholderRef = useRef<HTMLDivElement | null>(null);
@@ -857,6 +863,16 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   useEffect(() => {
     uplotRef.current?.redraw();
   }, [resolveColor]);
+
+  // Same reason, for a theme change: the axis stroke / grid / tick
+  // colors are functions uPlot resolves per draw and the draw hook
+  // reads `theme()` live, so one redraw is all it takes — but a plot
+  // that isn't receiving samples would keep the old chrome until
+  // something else nudged it, which is exactly the stale canvas the
+  // switch must not leave behind.
+  useEffect(() => {
+    uplotRef.current?.redraw();
+  }, [themeName]);
 
   // Value-table support for enum / state signals. When the
   // area shows *exactly one* signal *and* that signal's `VAL_`

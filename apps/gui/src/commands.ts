@@ -109,6 +109,11 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.add.colormap", label: "Add color map", category: "Panels" },
   { id: "project.saveAll", label: "Save all", category: "Project" },
   {
+    id: "project.clearColors",
+    label: "Clear project colors…",
+    category: "Project",
+  },
+  {
     id: "rbs.killSwitch",
     label: "RBS: toggle global kill-switch",
     category: "Panels",

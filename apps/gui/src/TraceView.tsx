@@ -10,7 +10,7 @@ import {
 } from "react";
 
 import type { TraceFrameRecord } from "./types";
-import { theme } from "./theme";
+import { theme, useThemeName } from "./theme";
 import type { TimelineEvent } from "./notes";
 import type { TraceRow } from "./trace";
 import { formatTimestamp, type CanIdFormat } from "./format";
@@ -817,6 +817,11 @@ function EventRow({
   domId: string;
   onSelect: (rowId: string, e: React.MouseEvent) => void;
 }) {
+  // An event with no color of its own takes the theme's. Subscribed
+  // here rather than in `Row`: this is the component that resolves the
+  // color, and `Row` is behind a `memo` that would swallow a parent
+  // re-render anyway.
+  useThemeName();
   const color = event.color ?? (EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note)();
   const editable = event.editable && actions != null;
   const onGoto = actions?.onGoto;

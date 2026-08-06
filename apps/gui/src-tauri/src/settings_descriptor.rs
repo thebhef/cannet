@@ -28,7 +28,8 @@ use serde::Serialize;
 use crate::persisted_json::{scope_of, Scope};
 use crate::settings::{
     Settings, CAN_ID_FORMATS, MIN_INTERVAL_MS, MIN_LOG_ROTATION_BYTES, MIN_SCRATCH_CAP_BYTES,
-    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, TRACE_MODES, Y_AXIS_MODES,
+    MIN_SYSTEM_LOG_RING, SCOPES, SIDECAR_LOG_LEVELS, SYSTEM_LOG_LEVELS, THEMES, TRACE_MODES,
+    Y_AXIS_MODES,
 };
 
 /// A whole-millisecond interval control: the shape every cadence
@@ -252,6 +253,26 @@ const DESCRIPTORS: &[Spec] = &[
         help: "",
         surfaces: &[Surface::General],
         kind: Kind::Behaviour,
+        control: Control::Bool,
+    },
+    Spec {
+        key: "theme",
+        backing: Backing::Field,
+        label: "Theme",
+        help: "Applies immediately. Colors you have picked yourself — a bus \
+               color, a signal color, a color-map rule — are stored with the \
+               project and render as chosen under either theme.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Enum { options: THEMES },
+    },
+    Spec {
+        key: "normal_mode",
+        backing: Backing::Field,
+        label: "Normal mode",
+        help: "Replaces the light theme. No effect on the dark theme.",
+        surfaces: &[Surface::General],
+        kind: Kind::Developer,
         control: Control::Bool,
     },
     Spec {
@@ -1066,6 +1087,19 @@ mod tests {
             .find(|s| s.key == "show_developer_settings")
             .expect("the toggle has a descriptor");
         assert_ne!(toggle.kind, Kind::Developer);
+    }
+
+    #[test]
+    fn normal_mode_is_a_developer_flag_that_is_off_by_default() {
+        let row = served()
+            .settings
+            .into_iter()
+            .find(|s| s.key == "normal_mode")
+            .expect("normal mode has a row");
+        assert_eq!(row.label, "Normal mode");
+        assert_eq!(row.kind, Kind::Developer);
+        assert_eq!(row.control, Control::Bool);
+        assert_eq!(row.default, serde_json::json!(false));
     }
 
     #[test]

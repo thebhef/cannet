@@ -25,6 +25,7 @@ import {
   elementPanelComponent,
 } from "./dockLayout";
 import { defaultBusColor } from "./busColor";
+import { useThemeName } from "./theme";
 import {
   AddServerInline,
   BusHardwareConfig,
@@ -95,6 +96,9 @@ function collapsedFromParams(raw: unknown): string[] {
  * per-type groups; what is folded is persisted in the panel params.
  */
 export function ProjectPanel(props: IDockviewPanelProps) {
+  // A bus row's swatch shows the theme's wheel entry for its list
+  // position until the user picks a color of their own.
+  useThemeName();
   const p = useProjectContext();
   const reg = useElementRegistry();
   const sidecar = useSidecarStatus();

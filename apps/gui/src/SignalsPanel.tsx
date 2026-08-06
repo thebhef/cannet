@@ -39,6 +39,7 @@ import {
 } from "./signalSelection";
 import { signalKey } from "./plotData";
 import { stableSignalColor } from "./palette";
+import { useThemeName } from "./theme";
 import { elementLabel } from "./elementLabel";
 import { SourcesContextMenu } from "./SourcesPicker";
 import { Combobox } from "./Combobox";
@@ -195,6 +196,9 @@ function foldedFromParams(raw: unknown): Set<string> {
  */
 export function SignalsPanel(props: IDockviewPanelProps) {
   diagCount("render.SignalsPanel"); // DIAG
+  // A signal with no stored override is colored from the theme's wheel
+  // by a hash of its key — here, and in every `SignalRow` below.
+  useThemeName();
   const registry = useElementRegistry();
   const { ensure, update } = registry;
   const project = useProjectContext();
@@ -1402,6 +1406,7 @@ function SignalRow({
   onSetSignalColor,
   onOpenSectionMenu,
 }: SignalRowProps) {
+  useThemeName();
   const key = row ? signalKey(row.bus_id, row.message_id, row.extended, row.signal_name) : "";
   const nameColor = row ? signalColors[key] ?? stableSignalColor(key) : undefined;
   const colorInputRef = useRef<HTMLInputElement>(null);

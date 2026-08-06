@@ -10,7 +10,7 @@ import { useTraceLive, useTraceModel } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { defaultBusColor } from "./busColor";
-import { theme } from "./theme";
+import { theme, useThemeName } from "./theme";
 import { buildColorResolver } from "./colorMap";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
@@ -1073,6 +1073,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
 
   const busNameLookup = useMemo(() => busLookup(buses), [buses]);
 
+  // The active theme. Both memos below resolve a themed color, so they
+  // are rebuilt when it changes rather than handing the areas colors
+  // from the theme that was active when the bus list last moved.
+  const themeName = useThemeName();
+
   // Bus id → render color (explicit `color`, else the palette color
   // for the bus's list position) — mirrors `effectiveBusColor` so the
   // swatch in a signal row matches the bus's graph color.
@@ -1080,7 +1085,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     const m = new Map<string, string>();
     buses.forEach((b, i) => m.set(b.id, b.color ?? defaultBusColor(i)));
     return m;
-  }, [buses]);
+  }, [buses, themeName]);
 
   // Signal value→color maps (ADR 0029): one resolver over every
   // colormap element, fed to each area so an enum lane box can be tinted
@@ -1414,7 +1419,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       // Matches the trace floor row.
       color: theme().eventTruncation,
     };
-  }, [model.truncationTsNs, baseSeconds]);
+  }, [model.truncationTsNs, baseSeconds, themeName]);
   const events = useMemo<NoteEvent[]>(
     () => [
       { id: "__t0", t: 0, label: "T0" },

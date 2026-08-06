@@ -515,6 +515,18 @@ replacement for it — the file is the durable contract and editing it by
 hand is a supported path (ADR 0034). Every row shows the field name it
 writes, so the panel teaches the file.
 
+- **Theme.** **General → Theme** switches between `dark` (the default)
+  and `light`. It applies immediately — no restart — and the whole
+  window follows, plot canvases included. Colors you picked yourself
+  (a bus color, a per-signal color, a color-map rule) are stored with
+  the project and render exactly as chosen under either theme; only the
+  colors the app derives follow the theme. **Clear project colors** in
+  the command palette discards the picked bus and signal colors so they
+  fall back to the current theme's defaults — it asks first, and it
+  leaves color-map rules alone.
+- **Normal mode.** **General → Normal mode** (a developer setting,
+  default off) replaces the light theme. It applies immediately, and
+  the dark theme is unaffected.
 - **Finding one.** Type in the search box. It matches a setting's name,
   its `settings.json` key, its help text, and its tags, so you can find
   a setting you can describe but can't name — searching *what it does*

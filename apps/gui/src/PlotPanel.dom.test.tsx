@@ -226,7 +226,9 @@ import { SignalCatalogProvider } from "./signalCatalogContext";
 import { wheelColor } from "./palette";
 import { freshTrace } from "./trace";
 import { diagCounts } from "./diag";
-import { hydrateSettings } from "./hostSettings";
+import { hydrateSettings, updateSettings } from "./hostSettings";
+import { THEMES, activeTheme, setActiveTheme } from "./theme";
+import { startThemeSync } from "./themeSync";
 
 class FakeResizeObserver {
   observe() {}
@@ -788,6 +790,85 @@ describe("PlotPanel", () => {
       // repaints at the new color instead of waiting for a tick.
       expect(uplotInstances.length).toBe(before);
       expect(inst.redraws).toBeGreaterThan(redrawsBefore);
+    });
+  });
+
+  // Flipping the theme setting has to reach the canvas. The tokens
+  // re-resolve on their own (a `data-theme` flip is all CSS needs), but
+  // uPlot draws imperatively: a plot that isn't receiving samples keeps
+  // whatever chrome it last drew until something asks it to redraw.
+  it("follows a theme change live: the attribute flips and every plot redraws", async () => {
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const stop = startThemeSync();
+      try {
+        const inst = liveInstanceIn("Area 1") as unknown as {
+          opts: { axes: { stroke?: unknown }[] };
+          redraws: number;
+        };
+        const redrawsBefore = inst.redraws;
+        await act(async () => {
+          await updateSettings({ theme: "light" });
+        });
+        // The stylesheet's half of the switch.
+        expect(document.documentElement.dataset.theme).toBe("light");
+        expect(activeTheme()).toBe("light");
+        // The canvas's half: a redraw, and an axis that resolves to the
+        // light theme's color when it happens. uPlot resolves axis
+        // strokes per draw, so the second is what makes the first
+        // enough.
+        expect(inst.redraws).toBeGreaterThan(redrawsBefore);
+        const stroke = inst.opts.axes[0].stroke;
+        expect(typeof stroke === "function" ? (stroke as () => string)() : stroke).toBe(
+          THEMES.light.axisText,
+        );
+      } finally {
+        stop();
+        setActiveTheme("dark");
+      }
+    });
+  });
+
+  // Normal mode is the other half of the applied theme, so it is a live
+  // switch on the same terms — same attribute, same redraw.
+  it("follows a normal mode change live, same as a theme change", async () => {
+    mockSettings.theme = "light";
+    await act(async () => {
+      await hydrateSettings();
+    });
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const stop = startThemeSync();
+      try {
+        const inst = liveInstanceIn("Area 1") as unknown as {
+          opts: { axes: { stroke?: unknown }[] };
+          redraws: number;
+        };
+        const redrawsBefore = inst.redraws;
+        await act(async () => {
+          await updateSettings({ normal_mode: true });
+        });
+        expect(document.documentElement.dataset.theme).toBe("normal");
+        expect(activeTheme()).toBe("normal");
+        expect(inst.redraws).toBeGreaterThan(redrawsBefore);
+        const stroke = inst.opts.axes[0].stroke;
+        expect(typeof stroke === "function" ? (stroke as () => string)() : stroke).toBe(
+          THEMES.normal.axisText,
+        );
+      } finally {
+        stop();
+        setActiveTheme("dark");
+      }
     });
   });
 

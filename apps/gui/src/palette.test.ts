@@ -20,6 +20,28 @@ function contrast(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+/// The color's hue in degrees, or `null` when it has none (a grey).
+function hue(hex: string): number | null {
+  const [r, g, b] = [0, 1, 2].map((i) => parseInt(hex.slice(1 + 2 * i, 3 + 2 * i), 16) / 255);
+  const max = Math.max(r, g, b);
+  const d = max - Math.min(r, g, b);
+  if (d === 0) return null;
+  let h: number;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  return h < 0 ? h + 360 : h;
+}
+
+/// Distance between two hues on the color circle, in degrees.
+function hueDistance(a: string, b: string): number {
+  const [ha, hb] = [hue(a), hue(b)];
+  if (ha == null || hb == null) return 0;
+  const d = Math.abs(ha - hb) % 360;
+  return d > 180 ? 360 - d : d;
+}
+
 // Thresholds match usage: a signal color renders text (WCAG AA, 4.5:1);
 // a bus color is a stroke or a chip (WCAG 1.4.11 non-text, 3:1). Each
 // theme is read against its own background — a wheel is only legible on
@@ -34,6 +56,40 @@ describe.each(Object.values(THEMES))("$name wheels", (t) => {
   it("bus wheel: every slot holds non-text contrast against the background", () => {
     for (const c of t.busWheel) {
       expect(contrast(c, t.background), `${c} vs ${t.background}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+});
+
+// Slot-matched wheels: every variant keeps the dark wheels' hues slot
+// for slot, retuned in saturation and lightness. That is what lets a
+// hash or a list position mean the same thing in all of them — a signal
+// keeps its hue identity across a theme change rather than becoming a
+// different-colored signal. Without this the wheels could all pass their
+// contrast tests while being unrelated palettes.
+//
+// How far a variant may travel is per theme, because it is a property of
+// the theme rather than of the check: `light` only retunes, so its slots
+// stay on their hue; `normal` additionally rotates every slot a fifth of
+// the way onto its own axis, which is what makes its wheels part of that
+// theme rather than the light wheels on a different background.
+const HUE_BOUND: Record<string, number> = { light: 8, normal: 36 };
+
+describe("wheels are slot-matched across themes", () => {
+  const themes = Object.values(THEMES);
+  const reference = THEMES.dark;
+
+  it.each(themes.filter((t) => t !== reference))("$name keeps dark's hue per slot", (t) => {
+    const bound = HUE_BOUND[t.name];
+    expect(bound, `${t.name} declares no hue bound`).toBeGreaterThan(0);
+    for (const key of ["signalWheel", "busWheel"] as const) {
+      expect(t[key].length, `${t.name} ${key} length`).toBe(reference[key].length);
+      t[key].forEach((c, i) => {
+        const ref = reference[key][i];
+        expect(
+          hueDistance(c, ref),
+          `${t.name} ${key}[${i}] ${c} vs dark ${ref}`,
+        ).toBeLessThanOrEqual(bound);
+      });
     }
   });
 });

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { DockviewDefaultTab, DockviewReact, themeAbyss } from "dockview";
+import { DockviewDefaultTab, DockviewReact, themeAbyss, themeLight } from "dockview";
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
@@ -83,6 +83,8 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
+import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
+import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
 import {
@@ -221,6 +223,13 @@ function withStoredPaths(project: Project, projectFilePath: string): Project {
 
 export function App() {
   diagCount("render.App"); // DIAG
+  // Dockview paints its own chrome from its own theme object rather
+  // than from our token layer, so the tab strip and group borders are
+  // the one piece of the window a `data-theme` flip cannot reach. Swap
+  // the object instead.
+  // Dockview ships two of them, so every light-background theme takes
+  // the light one.
+  const dockTheme = useThemeName() === "dark" ? themeAbyss : themeLight;
   useEffect(() => startDiagReporter(), []); // DIAG
   const [count, setCount] = useState(0);
   // Windowed-ring low-water mark from `trace-grew` (ADR 0002 DS-8): the
@@ -1771,6 +1780,27 @@ export function App() {
     [],
   );
 
+  /// Whether the "Clear project colors" confirmation is up. The command
+  /// discards deliberate choices with no partial undo, so it asks first.
+  const [confirmingClearColors, setConfirmingClearColors] = useState(false);
+
+  /// Drop every color the user picked: each bus's `color` field and the
+  /// whole `signal_colors` map, so both populations fall back to the
+  /// active theme's wheels. Color-map rules are deliberately untouched —
+  /// a rule says what a *value* means, which is authored data rather
+  /// than cosmetic identity.
+  const handleClearProjectColors = useCallback(() => {
+    setBuses((prev) =>
+      prev.map((b) => {
+        if (b.color == null) return b;
+        const { color: _dropped, ...rest } = b;
+        return rest;
+      }),
+    );
+    setSignalColors({});
+    setDirty(true);
+  }, []);
+
   /// Set (or clear, with `null`) one signal's project-level color
   /// override — a model edit, so it marks the project dirty.
   const handleSetSignalColor = useCallback((key: string, color: string | null) => {
@@ -2004,6 +2034,7 @@ export function App() {
     "panel.add.rbs": () => addPanel("rbs"),
     "panel.add.colormap": () => addPanel("colormap"),
     "project.saveAll": () => void handleSaveAllRef.current(),
+    "project.clearColors": () => setConfirmingClearColors(true),
     "rbs.killSwitch": toggleRbsKillSwitch,
     // Quit via the window's own close path: runs the unsaved-changes
     // prompt (`onCloseRequested`) and the clean-shutdown flush, exactly
@@ -2506,7 +2537,7 @@ export function App() {
                         eating the press. */}
                     <DockviewReact
                       className="dock-area"
-                      theme={themeAbyss}
+                      theme={dockTheme}
                       components={DOCK_COMPONENTS}
                       defaultTabComponent={DockviewDefaultTab}
                       onReady={handleDockReady}
@@ -2521,6 +2552,14 @@ export function App() {
       </ProjectContext.Provider>
       {commands.palettes}
       {pendingClose && <CloseConfirmModal onChoice={pendingClose.resolve} />}
+      {confirmingClearColors && (
+        <ClearColorsConfirmModal
+          onChoice={(confirmed) => {
+            setConfirmingClearColors(false);
+            if (confirmed) handleClearProjectColors();
+          }}
+        />
+      )}
       {pendingBlf && (
         <BlfChannelMapModal
           blfPath={pendingBlf.blfPath}

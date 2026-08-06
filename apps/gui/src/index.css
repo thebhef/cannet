@@ -155,6 +155,339 @@
 }
 /* === end theme tokens === */
 
+/* === Light theme tokens ===
+   The same 134 roles, valued for a light background. Selected by the
+   `data-theme` attribute the theme setting writes on the root element,
+   so switching is a re-resolve of these properties and nothing else in
+   this file changes.
+
+   Not an inversion pass. Each group is re-derived from what the role
+   *does*: the surface ramp turns over (a raised surface is white above
+   a grey app, where in dark it was grey above black), the text ramp
+   turns over with it (the emphatic end is darkest, not lightest), the
+   state tints become pale washes carrying dark text instead of deep
+   washes carrying bright text, and every translucent layer is re-mixed
+   — a white wash lightens a dark surface and does nothing to a light
+   one, so those become dark washes.
+*/
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* Surfaces — panel, row and control backgrounds */
+  --divider: #d3d8e0;
+  --divider-subtle: #e4e7ec;
+  --surface-app: #f4f5f7;
+  --surface-badge-info: #e6ecf8;
+  --surface-bus-row: #e8effb;
+  --surface-bus-row-hover: #dae5fa;
+  --surface-button-hover: #e6e9ee;
+  --surface-canvas: #ffffff;
+  --surface-cell-hover: #e7ecf3;
+  --surface-control: #ffffff;
+  --surface-control-hover: #d5dae2;
+  --surface-field: #ffffff;
+  --surface-graph-toolbar: #eef0f4;
+  --surface-hover: #eceff3;
+  --surface-hover-strong: #dde5f2;
+  --surface-hover-subtle: #f1f3f6;
+  --surface-overlay: #ffffff;
+  --surface-pop: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-row: #ffffff;
+  --surface-row-focused: #eaeff6;
+  --surface-row-primary: #e9f2f8;
+  --surface-row-selected: #d6e4fb;
+  --surface-section-header: #eaedf2;
+  --surface-sunken: #e9ebef;
+  --surface-toggle-active: #d9dfe8;
+  --surface-toggle-active-alt: #dae6f0;
+  --surface-toolbar-control: #e8ebf0;
+  --surface-toolbar-control-hover: #dbe0e9;
+  --surface-toolbar-summary: #eaedf2;
+  --surface-tx-toolbar: #eef0f4;
+
+  /* Text — the foreground ramp and the semantic text tints */
+  --text-applied: #0369a1;
+  --text-badge-info: #3b5a8c;
+  --text-body: #1f2937;
+  --text-data: #3b4757;
+  --text-debug: #6b7787;
+  --text-dim: #98a3b3;
+  --text-ecu: #0f766e;
+  --text-faint: #78849a;
+  --text-label: #0f172a;
+  --text-message: #1d4ed8;
+  --text-muted: #5b6879;
+  --text-on-accent: #f8fafc;
+  --text-on-solid: #fff;
+  --text-primary: #16202f;
+  --text-secondary: #334155;
+  --text-signal-value: #8a5a06;
+  --text-source: #4338ca;
+
+  /* Borders, dividers and focus rings */
+  --border-badge-info: #a8bad8;
+  --border-default: #ccd2db;
+  --border-dim: #8a94a3;
+  --border-dotted: #dfe3e9;
+  --border-hover: #98a3b3;
+  --border-list: #e5e8ee;
+  --border-row: #eceef2;
+  --border-row-subtle: #e2e5eb;
+  --border-search-focus: #2d5aa8;
+  --border-soft: #dce0e7;
+  --border-strong: #b3bcc9;
+  --border-subtle: #d8dce3;
+  --field-focus-border: #2563eb;
+  --focus-marker: #0284c7;
+  --focus-outline: #0284c7;
+
+  /* State: danger / warning / ok, plus markers and accents */
+  --accent-marker: #0369a1;
+  --accent-progress: #0284c7;
+  --accent-selected-bg: #1d4ed8;
+  --cursor-gold: #b45309;
+  --cursor-pink: #be123c;
+  --danger-badge: #dc2626;
+  --danger-border: #e9a8a8;
+  --danger-border-soft: #efd0d0;
+  --danger-surface: #fdecec;
+  --danger-surface-deep: #fbdcdc;
+  --danger-surface-dim: #fdf3f3;
+  --danger-surface-strong: #f6c9c9;
+  --danger-text: #b91c1c;
+  --danger-text-bright: #7f1d1d;
+  --danger-text-muted: #c07070;
+  --danger-text-soft: #991b1b;
+  --dev-border: #e0cfa4;
+  --dev-surface: #fdf6e3;
+  --dev-text: #8a5a10;
+  --modified-marker: #2563eb;
+  --modified-text: #1d4ed8;
+  --ok-border: #a8d8c6;
+  --ok-dot: #16a34a;
+  --ok-surface: #ecf8f2;
+  --ok-text: #15803d;
+  --scope-marker: #1c7a66;
+  --scope-text: #166f5c;
+  --warn-border: #d0a017;
+  --warn-border-dim: #eadfae;
+  --warn-border-notice: #e6c79a;
+  --warn-border-strong: #dbb083;
+  --warn-outline: #c2620a;
+  --warn-surface: #fdf0e0;
+  --warn-surface-dim: #fbf7e8;
+  --warn-surface-notice: #fdf6ec;
+  --warn-text: #a1620a;
+  --warn-text-bright: #7c4a06;
+  --warn-text-em: #8a5c08;
+  --warn-text-truncation: #9a6410;
+
+  /* Project-graph node identities (fill + outline per kind) */
+  --node-bus-bar: #1d4ed8;
+  --node-bus-border: #2563eb;
+  --node-bus-surface: #dbe7fd;
+  --node-filter-border: #71717a;
+  --node-filter-surface: #e6e6ea;
+  --node-gateway-border: #64748b;
+  --node-plot-border: #0d9488;
+  --node-plot-surface: #d5f0ec;
+  --node-signals-border: #0284c7;
+  --node-signals-surface: #dceaf7;
+  --node-surface: #eaedf2;
+  --node-trace-border: #059669;
+  --node-trace-surface: #d6f2e6;
+  --node-transmit-border: #6d28d9;
+  --node-transmit-surface: #eee0f5;
+
+  /* Translucent layers: shadows, backdrops and washes */
+  --shadow-menu: rgba(15, 23, 42, 0.18);
+  --shadow-modal: rgb(15 23 42 / 0.22);
+  --shadow-inset: rgba(15, 23, 42, 0.1);
+  --overlay-backdrop: rgb(15 23 42 / 0.35);
+  --wash-light: rgba(15, 23, 42, 0.06);
+  --border-wash: rgb(15 23 42 / 0.14);
+  --border-wash-strong: rgba(15, 23, 42, 0.2);
+  --glow-focus: rgba(37, 99, 235, 0.35);
+  --scroll-thumb: rgb(71 85 105 / 0.35);
+  --accent-tint: rgba(2, 132, 199, 0.22);
+  --select-tint-soft: rgba(79, 70, 229, 0.12);
+  --select-tint: rgba(79, 70, 229, 0.22);
+  --select-tint-strong: rgba(79, 70, 229, 0.3);
+  --select-outline: rgba(67, 56, 202, 0.9);
+  --border-row-fade: rgba(203, 213, 225, 0.7);
+  --surface-head-fade: rgba(226, 232, 240, 0.75);
+  --danger-tint: rgba(220, 38, 38, 0.28);
+}
+/* === end light theme tokens === */
+
+/* === Normal-mode tokens ===
+   The same 134 roles again, selected when normal mode is enabled
+   and the theme setting is `light`.
+
+   Derived from the light values rather than invented: every neutral
+   role — surface, text ramp, border, wash — is rotated onto a pink
+   axis, every accent onto a deeper magenta one, and the lightness is
+   re-solved so the token keeps its light counterpart's relative
+   luminance. Each contrast relationship the light set was built with
+   therefore carries over. The pale end is the one exception: a
+   near-white surface can only take a tint by giving up some
+   luminance, so the top of the ramp is solved for 0.86 of it.
+
+   Semantic hues stay where they are — danger, warning, ok, the
+   developer and scope chips, and the graph's per-kind node
+   identities. A status dot has to keep reading as a status dot.
+*/
+:root[data-theme="normal"] {
+  color-scheme: light;
+  /* Surfaces — panel, row and control backgrounds */
+  --divider: #fbb7cc;
+  --divider-subtle: #fccbda;
+  --surface-app: #fddde7;
+  --surface-badge-info: #fbd0ec;
+  --surface-bus-row: #fcd4ed;
+  --surface-bus-row-hover: #fac7e7;
+  --surface-button-hover: #fccedc;
+  --surface-canvas: #feeaf0;
+  --surface-cell-hover: #fdd1de;
+  --surface-control: #feeaf0;
+  --surface-control-hover: #fbbacd;
+  --surface-field: #feeaf0;
+  --surface-graph-toolbar: #fdd7e2;
+  --surface-hover: #fdd5e1;
+  --surface-hover-strong: #fac7e7;
+  --surface-hover-subtle: #fddae5;
+  --surface-overlay: #feeaf0;
+  --surface-pop: #feeaf0;
+  --surface-raised: #feeaf0;
+  --surface-row: #feeaf0;
+  --surface-row-focused: #fdd5e1;
+  --surface-row-primary: #fcd7ee;
+  --surface-row-selected: #fac5e7;
+  --surface-section-header: #fdd3df;
+  --surface-sunken: #fdd0de;
+  --surface-toggle-active: #fcc0d2;
+  --surface-toggle-active-alt: #fac7e7;
+  --surface-toolbar-control: #fdd0de;
+  --surface-toolbar-control-hover: #fcc2d3;
+  --surface-toolbar-summary: #fdd3df;
+  --surface-tx-toolbar: #fdd7e2;
+
+  /* Text — the foreground ramp and the semantic text tints */
+  --text-applied: #bd0f7d;
+  --text-badge-info: #ab0e71;
+  --text-body: #4d1224;
+  --text-data: #831f3d;
+  --text-debug: #d23d6a;
+  --text-dim: #d98ca3;
+  --text-ecu: #07766e;
+  --text-faint: #ca6181;
+  --text-label: #2e0b16;
+  --text-message: #af0e74;
+  --text-muted: #be2d58;
+  --text-on-accent: #f8fafc;
+  --text-on-solid: #fff;
+  --text-primary: #3d0e1c;
+  --text-secondary: #781c38;
+  --text-signal-value: #8c5900;
+  --text-source: #9c0d67;
+
+  /* Borders, dividers and focus rings */
+  --border-badge-info: #f49ed4;
+  --border-default: #fbafc6;
+  --border-dim: #d27893;
+  --border-dotted: #fcc6d6;
+  --border-hover: #d98ca3;
+  --border-list: #fcccdb;
+  --border-row: #fdd4e0;
+  --border-row-subtle: #fcc9d8;
+  --border-search-focus: #2d5aa8;
+  --border-soft: #fcc2d3;
+  --border-strong: #e3acbd;
+  --border-subtle: #fcbdcf;
+  --field-focus-border: #ce1189;
+  --focus-marker: #e7239f;
+  --focus-outline: #e7239f;
+
+  /* State: danger / warning / ok, plus markers and accents */
+  --accent-marker: #bd0f7d;
+  --accent-progress: #e7239f;
+  --accent-selected-bg: #1d4ed8;
+  --cursor-gold: #b85000;
+  --cursor-pink: #b22a53;
+  --danger-badge: #dc2626;
+  --danger-border: #eea6a6;
+  --danger-border-soft: #f2cfcf;
+  --danger-surface: #feecec;
+  --danger-surface-deep: #fddbdb;
+  --danger-surface-dim: #fef3f3;
+  --danger-surface-strong: #fac8c8;
+  --danger-text: #bd1010;
+  --danger-text-bright: #841515;
+  --danger-text-muted: #c76c6c;
+  --danger-text-soft: #9d1111;
+  --dev-border: #e3cf9b;
+  --dev-surface: #fff6dd;
+  --dev-text: #8d5807;
+  --modified-marker: #ce1189;
+  --modified-text: #af0e74;
+  --ok-border: #a0dac4;
+  --ok-dot: #0ba443;
+  --ok-surface: #eaf9f1;
+  --ok-text: #0c8138;
+  --scope-marker: #147b65;
+  --scope-text: #0f6f5b;
+  --warn-border: #d39f09;
+  --warn-border-dim: #eddfa1;
+  --warn-border-notice: #ebc690;
+  --warn-border-strong: #e1ae79;
+  --warn-outline: #c65f00;
+  --warn-surface: #fff0dd;
+  --warn-surface-dim: #fcf7e4;
+  --warn-surface-notice: #fef6ea;
+  --warn-text: #a56000;
+  --warn-text-bright: #7e4900;
+  --warn-text-em: #8d5b00;
+  --warn-text-truncation: #9e6205;
+
+  /* Project-graph node identities (fill + outline per kind) */
+  --node-bus-bar: #0f48e9;
+  --node-bus-border: #195ffa;
+  --node-bus-surface: #dae7ff;
+  --node-filter-border: #71717b;
+  --node-filter-surface: #e6e6eb;
+  --node-gateway-border: #62748f;
+  --node-plot-border: #039487;
+  --node-plot-surface: #d0f1ec;
+  --node-signals-border: #0084c8;
+  --node-signals-surface: #daeaf9;
+  --node-surface: #fdd3df;
+  --node-trace-border: #009668;
+  --node-trace-surface: #d1f3e5;
+  --node-transmit-border: #6c1de7;
+  --node-transmit-surface: #efdff7;
+
+  /* Translucent layers: shadows, backdrops and washes */
+  --shadow-menu: rgba(46, 11, 22, 0.18);
+  --shadow-modal: rgb(46 11 22 / 0.22);
+  --shadow-inset: rgba(46, 11, 22, 0.1);
+  --overlay-backdrop: rgb(46 11 22 / 0.35);
+  --wash-light: rgba(46, 11, 22, 0.06);
+  --border-wash: rgb(46 11 22 / 0.14);
+  --border-wash-strong: rgba(46, 11, 22, 0.2);
+  --glow-focus: rgba(206, 17, 137, 0.35);
+  --scroll-thumb: rgb(156 37 72 / 0.35);
+  --accent-tint: rgba(231, 35, 159, 0.22);
+  --select-tint-soft: rgba(182, 15, 121, 0.12);
+  --select-tint: rgba(182, 15, 121, 0.22);
+  --select-tint-strong: rgba(182, 15, 121, 0.3);
+  --select-outline: rgba(156, 13, 103, 0.9);
+  --border-row-fade: rgba(251, 178, 200, 0.7);
+  --surface-head-fade: rgba(252, 204, 218, 0.75);
+  --danger-tint: rgba(226, 21, 21, 0.28);
+}
+/* === end normal theme tokens === */
+
 
 
 
