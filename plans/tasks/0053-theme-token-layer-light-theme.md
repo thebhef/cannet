@@ -1,5 +1,9 @@
 # Task 53 — Theme Token Layer, then Light Theme
 
+**Status: implementation complete, pending human review (2026-08-06).**
+All four phases (53.A–53.D) are landed and every exit criterion is met;
+the evidence for each is in the status log below.
+
 A user asked for a light theme (captured in
 [task 52](0052-usage-feedback-round.md), item 3). The app is
 dark-only by construction, and the prerequisite is structural:
@@ -47,7 +51,8 @@ is not part of this task.
    live with a full plot redraw. Brings the slot-matched light
    wheels + threshold tests and the "clear project colors" palette
    command.
-5. **"Normal mode" (developer setting, default off).** When enabled,
+5. **"Normal mode" (developer setting, default off).** *Done
+   2026-08-06 — `2754e69`, `be04272`, `481d50d`.* When enabled,
    the `light` theme renders a candy-pink token set (think
    Hello-Kitty pastels: pale pink surfaces, deeper pink/red accents)
    with its own slot-matched pink-tinted wheels, in place of the
@@ -132,10 +137,11 @@ is not part of this task.
 - `onAddBus` no longer seeds `color`; only customized colors
   persist; the "clear project colors" palette command ships behind
   a confirm dialog with the documented scope.
-- "Normal mode" ships as a developer setting, default off; enabling
+- ~~"Normal mode" ships as a developer setting, default off; enabling
   it swaps the `light` token set and wheels for the pink set, live,
   under the same contrast tests. Docs/commits refer to it only as
-  "normal mode".
+  "normal mode".~~ Done 2026-08-06 — `2754e69`, `be04272`, `481d50d`;
+  see phase 53.D in the status log.
 
 ## Status log
 
@@ -585,3 +591,127 @@ made them light.
   (seen twice, once on a commit that touched only `settings.rs`); it
   passes on every isolated run and on a re-run of the full suite. Not
   caused by this phase and not touched by it.
+
+### 2026-08-06 — Phase 53.D, normal mode (shape-of-the-work item 5)
+
+**Resolution: a pair, not a third value of one setting.** `normal_mode`
+is a user-scoped boolean (default `false`, developer-tagged so the
+settings view hides it until `show_developer_settings` is on); `theme`
+still stores exactly `dark | light`. The applied theme comes from both:
+`resolveTheme(setting, normalMode)` returns `normal` for `light` + on
+and the setting itself otherwise, and `themeSync` — which used to pass
+`s.theme` straight to `setActiveTheme` — now passes the resolved value.
+So `normal` is a `ThemeName` (a `data-theme` value, a key of `THEMES`)
+but not a `ThemeSetting`, and the two types are now distinct in
+`hostSettings.ts`. Everything downstream is unchanged: the attribute
+flip, the `subscribeTheme` notification, the plot redraw and the
+dockview object swap all key off the applied name, and the swap now
+reads "dark takes the abyss object, every light-background theme takes
+the light one" rather than naming `light`.
+
+Three commits: the setting (`2754e69`), the values (`be04272`), the
+wiring (`481d50d`).
+
+**The token set is the light set re-hued at constant luminance.** All
+134 roles again, in the same order (the drift guards now run over every
+block that overrides `:root`, not over light alone). Each neutral role —
+surface ramp, text ramp, borders, washes — rotates onto one axis and
+each accent (the blue/indigo family that means marked / focused /
+selected / active) onto a deeper second one, and the lightness is
+re-solved so the token keeps its light counterpart's WCAG relative
+luminance. Every contrast relationship the light set was tuned for
+therefore carries over by construction rather than by re-checking 134
+values. Two deliberate exceptions:
+
+- *The pale end gives up 14 %.* A `#ffffff` surface cannot take a tint
+  at constant luminance — in HSL, luminance 1.0 is white at every
+  saturation — so anything above 0.62 luminance is solved for 0.86 of
+  it. That costs contrast on the surfaces: against `--surface-app`,
+  `--text-dim` (the de-emphasis end, the weakest pair in every theme)
+  reads **2.03:1** here against light's 2.34:1 and dark's 2.50:1. The
+  emphatic end is unaffected in practice — `--text-body` is **11.68:1**,
+  light's 13.46:1, dark's 14.00:1.
+- *Semantic hues stay put.* Danger, warning, ok, the developer and
+  scope chips, `--cursor-gold`, `--text-ecu`, `--text-signal-value`,
+  and the graph's fifteen per-kind node identities keep their own hue
+  at their own luminance. A status dot that isn't green, or a warning
+  wash whose text contrast moved, is a role failure — the point of the
+  set is that it is a usable theme.
+
+**Wheels, and a wider hue bound.** Same tuner as light's: take dark's
+slot, keep 0.9 of its saturation, take the lightest color that still
+clears the threshold against *this* theme's `--surface-app` (`#fddde7`).
+The one addition is a rotation — each slot moves a fifth of the way onto
+the theme's axis before tuning — because otherwise the wheels would be
+the light wheels on a different background rather than part of this
+theme.
+
+| wheel | threshold | worst slot | span | worst hue drift |
+| --- | --- | --- | --- | ---: |
+| signal (16) | 4.5:1 | **4.50** (slot 0 `#6f690e`) | 4.50–4.54 | **32.7°** (slot 8) |
+| bus (8) | 3:1 | **3.00** (slot 2 `#2d8ea9`) | 3.00–3.02 | **35.0°** (slot 2) |
+
+`palette.test.ts`'s slot-matching bound is therefore **per theme**:
+light keeps 8°, normal takes **36°**. The check still earns its place —
+36° is a rotation, 180° is an unrelated palette, and the whole point of
+slot-matching is that a hash means the same identity in every theme.
+Testing against `--surface-app` stays the conservative reading, as in
+53.C: `--surface-canvas` is lighter (`#feeaf0`), so a slot that passes
+on the app surface passes on the canvas.
+
+**Parity: zero differing pixels, in dark *and* in plain light.** Two
+release builds made and captured in the same session, as 53.C's lesson
+says to — a reference at 53.C's tip (`810a134`) and this branch's tip —
+against `ev-demo`, 1600×1000:
+
+| run | differing px / 1 600 000 | max Δchannel |
+| --- | ---: | ---: |
+| dark, all nine captures | **0** | 0 |
+| `theme: light`, all nine captures | **0** | 0 |
+
+Including `09-palette`, which came out the same bistable form in both
+runs, and `03-settings`: the new row is developer-tagged, so it is not
+rendered at the default `show_developer_settings: false` and the
+settings tree is byte-identical. Nothing this phase adds is visible
+until it is switched on.
+
+**Normal-mode captures** are committed for review at
+[`docs/review/0053-normal-mode/`](../../../docs/review/0053-normal-mode/)
+(nine PNGs plus a README saying what to look at). They were produced by
+writing `"theme": "light", "normal_mode": true` into the user
+`settings.json` and launching, so they are also the boot-path evidence
+for the resolved pair — the same thing 53.C's light captures did for the
+theme alone.
+
+**Tests.** Host 482 passing (the descriptor row's kind, control, label
+and default are asserted; the pre-existing anti-drift tests cover the
+key, the scope and the default by existing). Frontend 1484 over 130
+files, up 11 on 53.C: the stylesheet drift guards and the wheel checks
+now iterate a third theme, plus `resolveTheme`'s truth table, three
+`themeSync.dom.test.ts` cases (boot from the stored pair, the flag
+flipped both ways with one notification each, `dark` unmoved by the
+flag), and a `PlotPanel.dom.test.tsx` case that flips the flag on a live
+panel and requires the attribute, the redraw count and the axis stroke's
+resolved color all to move — the same falsifiable shape as 53.C's theme
+test.
+
+**Blockers / side effects.**
+
+- *No new hue-distinctness problem, but the inherited one is visible.*
+  Maximising lightness subject to a threshold packs every slot against
+  the limit (4.50–4.54 for signal), so slots that were already close in
+  dark — 0/11 (yellow-greens), 1/13 (cyans), 2/14 (oranges) — land
+  closer still. Light has the same property (4.77–4.88, warm end in the
+  browns); it is a consequence of AA on a light background, not of the
+  rotation.
+- *`--accent-selected-bg` and the other four theme-independent roles
+  stay as dark declares them.* They sit on a solid of their own, which
+  is why the drift test pins them — but it does mean a solid blue
+  selection fill on a pink surface. Changing that is a change to the
+  theme-independent list and to light as well, so it is not this
+  phase's to make.
+- *The 53.C flaky test flaked once more.* `PlotPanel.dom.test.tsx`'s
+  "re-renders no plot area when only panel-local state changes" failed
+  one full-suite run in this phase and passed the three either side of
+  it, including the pre-commit hook's. Same test, same intermittency,
+  still not touched.

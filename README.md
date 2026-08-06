@@ -524,6 +524,9 @@ writes, so the panel teaches the file.
   the command palette discards the picked bus and signal colors so they
   fall back to the current theme's defaults — it asks first, and it
   leaves color-map rules alone.
+- **Normal mode.** **General → Normal mode** (a developer setting,
+  default off) replaces the light theme. It applies immediately, and
+  the dark theme is unaffected.
 - **Finding one.** Type in the search box. It matches a setting's name,
   its `settings.json` key, its help text, and its tags, so you can find
   a setting you can describe but can't name — searching *what it does*
