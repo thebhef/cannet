@@ -307,6 +307,72 @@ mypy clean. Rust: +3 in `sidecar.rs` (`--log-file` on every launcher,
 `apps/gui/src`): `pnpm --dir apps/gui test` ran 1418 tests / 123 files
 with one flake — see below.
 
+### 2026-08-06 — item 4, STEP 0: the under-logging observation, root-caused
+
+Both recorded hypotheses are **falsified**. The cause is a third thing
+neither of them named.
+
+**Observation (raw).** During the joint log-reading session, several
+bitrate-adjust attempts in the UI produced exactly one `ConfigureBus`
+record in the sidecar logfile.
+
+**Hypothesis A** — the frontend swallows repeat attempts (a no-change
+guard misfiring). **Hypothesis B** — the command path under-logs.
+
+**Experiment 1 (falsifies B).** Enumerate every `ConfigureBus`
+send-site in the tree:
+`grep -rn "ConfigureBus\|configure_bus" --include=*.rs --include=*.py
+--include=*.proto --include=*.ts --include=*.tsx .`
+
+**Data.** The only sender is
+[`cannet-client/src/lib.rs:588`](../../crates/cannet-client/src/lib.rs#L588)
+— `run_session`'s pre-subscribe loop, which walks `subscriptions` once
+at session establishment and emits one `ConfigureBus` per subscription
+that carries a `PreSubscribeConfig`. The public
+`SessionTransmitter::configure_bus` (same file, line 467) exists and
+is documented, but `grep` over `apps/gui/src-tauri/src/` and
+`crates/` finds **zero call sites** outside the crate's own tests.
+So every `ConfigureBus` that can reach the sidecar is already logged
+by 52.B's `_handle_configure` record. Nothing is under-logged.
+
+**Experiment 2 (falsifies A).** Trace the UI edit path:
+`BusHardwareConfig`'s bitrate input → `onSetSpeed` →
+`p.onUpdateBus(bus.id, { speed_bps })` → `handleUpdateBus` in
+`App.tsx`.
+
+**Data.** `handleUpdateBus` mutates the project's `buses` array and
+nothing else — no `invoke`, no debounce, no guard. The bus's
+`speed_bps` / `fd` / `fd_data_speed_bps` are read exactly once, in
+`handleConnect`, where they become the `bindings` payload of
+`connect_remote_server`; the host turns them into
+`PreSubscribeConfig` via `presubscribe_config_from`
+([session.rs:212](../../apps/gui/src-tauri/src/session.rs#L212)).
+There is no guard to misfire: an edit while connected issues no
+command of any kind.
+
+**Conclusion (the third thing).** *There is no configure-while-
+connected path at all.* A hardware-config edit is a project-model
+edit; the value reaches the wire only as a pre-subscribe envelope on
+the next connect. N edits followed by one connect therefore produce
+exactly one `ConfigureBus` — which is what the log showed. Two
+corollaries fall out of the same read:
+
+- `presubscribe_config_from` returns `None` when **both** `speed_bps`
+  and `fd` are unset, so a bus left on the placeholder ("500 kbit/s"
+  greyed in the input) sends **no `ConfigureBus` whatsoever** and runs
+  on the driver's own default. The UI gives no hint that the number
+  it is showing was never sent.
+- The only existing acknowledgement is the `pending` chip on the bus
+  row (`busesWithPendingHwConfig`), which says "reconnect to apply"
+  but not *what is live now*.
+
+**Not a code defect; a missing capability.** No failing test was
+landed for the observation itself, because nothing in the shipped code
+does the wrong thing — it does nothing, by construction. What item 4
+lands instead is the display that makes the construction visible (see
+the item-4 entry below), and the real defect found while tracing the
+same path (silently-dropped bindings) *does* get a failing test first.
+
 ### Blockers / side effects
 
 - **One `PlotPanel.dom.test.tsx` case flaked under full-suite load**
