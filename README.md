@@ -535,8 +535,8 @@ writes, so the panel teaches the file.
   overrode which key, with both values, so the file never quietly shows
   something the app isn't using. The three settings the sidecar is
   launched with — its directory, its driver module, its log level —
-  are re-read on every spawn, so **Restart sidecar** applies a change
-  without relaunching cannet.
+  are re-read on every spawn, so the project panel's **Local
+  interfaces → Restart** applies a change without relaunching cannet.
 - **Defaults you can still change per view.** Some settings only decide
   what a *new* view starts as — the trace panel's **Default trace
   view**, **Default auto-scroll**, and **Default events overlay**, the
@@ -1176,8 +1176,9 @@ user can bind interfaces without typing an address. The sidecar's
 stdout / stderr and exit code feed the **System Messages** panel
 tagged `sidecar:python-can`. A crashing sidecar gets a budget of
 auto-restart attempts per session (`sidecar_restart_budget`, three by
-default); once the budget is exhausted, the **Restart sidecar** Tauri
-command clears it.
+default); once the budget is exhausted, the `restart_sidecar` Tauri
+command — the project panel's **Local interfaces → Restart** button —
+clears it.
 
 **Lifecycle: dies with the host**. The host pipes the sidecar's
 stdin and writes nothing to it. When the host process exits (clean
