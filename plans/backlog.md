@@ -221,6 +221,22 @@ trip over it.
   ripgrep classifies the file as binary and content search skips it.
   Replace with `\u0000` escapes. Pre-existing, surfaced 2026-07-26.
 
+- `[feat]` **Sorting signals in the plot signal panel** would be nice;
+  maybe difficult with inconsistent signal names. (Owner test drive
+  2026-08-07. Task 56's regex generators may supply the sort key.)
+- `[ui]` **Individual y-axis mode can blow up the plot window** — 16
+  signals means 16 axes and the panel is basically taken over.
+  (Owner test drive 2026-08-07; task 55's collapsible plot areas may
+  mitigate.)
+- `[idea]` **Per-area color-wheel indices.** Four areas × 16 signals
+  didn't get consistent color slots across areas; owner's first
+  conclusion was a per-area running index. The inconsistency is
+  `stableSignalColor` hashing working as designed (ADR 0026 one
+  wheel), so this is a rule change, not a bug — and task 56's regex
+  generators solve the motivating Cell1–16 case better (Cell N →
+  slot N, stable everywhere). Revisit only if generators don't
+  cover it. (Dropped from task 55, 2026-08-07.)
+
 ### DBC view
 
 - `[ui]` **DBC panel table-tree rework.** The current per-signal detail
