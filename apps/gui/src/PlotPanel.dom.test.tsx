@@ -33,10 +33,19 @@ vi.mock("uplot", () => {
     data: unknown = [[]];
     width = 600;
     cursor = { left: -10 };
-    opts: { hooks?: Record<string, ((u: FakeUPlot) => void)[]> };
+    opts: {
+      hooks?: Record<string, ((u: FakeUPlot) => void)[]>;
+      series?: { width?: number }[];
+    };
     root: HTMLElement;
+    /** The live series objects, as real uPlot exposes them off the
+     * options it was constructed with. Their `width` is read back on
+     * every draw, so writing to it is how a restyle that changes no
+     * data (a bolded selection) reaches the canvas. */
+    series: { width?: number }[];
     constructor(opts: FakeUPlot["opts"], data: unknown, el: HTMLElement) {
       this.opts = opts;
+      this.series = opts.series ?? [];
       this.root = el;
       this.data = data;
       el.appendChild(document.createElement("canvas"));
@@ -207,6 +216,7 @@ type FakeUPlotInst = {
   root: HTMLElement;
   over: HTMLElement;
   data: unknown;
+  series: { width?: number }[];
   scales: Record<string, { min?: number; max?: number }>;
   xCalls: { min: number; max: number }[];
   redraws: number;
@@ -3045,6 +3055,62 @@ describe("PlotPanel signal-row selection", () => {
     expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
     expect(selectedNames()).toEqual(["EngineSpeed"]);
     expect(primaryName()).toBe("EngineSpeed");
+  });
+
+  it("draws the selected series bold, without rebuilding the chart", async () => {
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await addToFocused(["EngineSpeed", "EngineTemp"]);
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const inst = liveInstanceIn("Area 1");
+      // series[0] is x; the signal series follow in order.
+      const widths = () => inst.series.slice(1).map((s) => s.width);
+      expect(widths()).toEqual([1, 1]);
+
+      const redraws = inst.redraws;
+      await act(async () => {
+        clickRow("EngineTemp", { ctrlKey: true });
+      });
+      expect(widths()).toEqual([1, 2]);
+      // The same instance, restyled and redrawn — a rebuild would cost a
+      // cold whole-window refetch on every selection click.
+      expect(liveInstanceIn("Area 1")).toBe(inst);
+      expect(inst.redraws).toBeGreaterThan(redraws);
+
+      // Deselecting puts the line back.
+      await act(async () => {
+        clickRow("EngineTemp", { ctrlKey: true });
+      });
+      expect(widths()).toEqual([1, 1]);
+      expect(liveInstanceIn("Area 1")).toBe(inst);
+    });
+  });
+
+  it("keeps the selection bold across a rebuild of the chart", async () => {
+    // A signal-set change does rebuild the instance; the fresh one has
+    // to open with the widths the standing selection implies, or the
+    // bolding silently drops off the moment a signal is added.
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await addToFocused(["EngineSpeed", "EngineTemp"]);
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const before = liveInstanceIn("Area 1");
+      await act(async () => {
+        clickRow("EngineSpeed", { ctrlKey: true });
+      });
+
+      await addToFocused(["LimitNominal"]);
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const after = liveInstanceIn("Area 1");
+      expect(after).not.toBe(before);
+      expect(after.series.slice(1).map((s) => s.width)).toEqual([2, 1, 1]);
+    });
   });
 
   it("re-renders no plot area that holds none of the affected rows", async () => {

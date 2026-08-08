@@ -67,6 +67,10 @@ import { diagCount, diagGauge } from "./diag"; // DIAG
 import { theme, useThemeName } from "./theme";
 
 const ZOOM_STEP = 1.15;
+/** Line width (CSS px) for a *selected* series, against 1 for the rest.
+ * Enough to pick one trace out of a dense area at a glance without the
+ * line reading as a band. */
+const SELECTED_SERIES_WIDTH = 2;
 /** Floor for `sample_signals`' `max_points` (the host min/max-decimates
  * to at most `2 * max_points`). We ask for ~1× the canvas width — 2
  * points per pixel after the host's 2× envelope, the full resolution a
@@ -851,6 +855,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * `hidden` and `color`, so neither rebuilds the instance. */
   const signalsRef = useRef(signals);
   signalsRef.current = signals;
+  /** Live mirror of the selection for the construction effect, which is
+   * not re-run on a selection change (that is the point) but must build
+   * a rebuilt instance with the widths the selection already implies. */
+  const selectedKeysRef = useRef(selectedKeys);
+  selectedKeysRef.current = selectedKeys;
   /** Which signal's raw range / unit drives the y-axis labels. Falls
    * back to the first non-hidden signal if the configured key is no
    * longer present (signal removed). `null` when the area is empty. */
@@ -893,6 +902,26 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   useEffect(() => {
     uplotRef.current?.redraw();
   }, [themeName]);
+
+  // Draw the selection in the plot: a selected series gets a bold line.
+  // uPlot re-reads `series[i].width` on every draw, so applying the
+  // selection is a write onto the live instance plus a redraw — never a
+  // rebuild, which at the series counts this panel targets is the cost
+  // the pacing work exists to avoid.
+  useEffect(() => {
+    const u = uplotRef.current;
+    if (!u) return;
+    let changed = false;
+    signals.forEach((s, i) => {
+      const series = u.series[i + 1]; // series[0] is x
+      if (!series) return;
+      const w = selectedKeys.has(signalRefKey(s)) ? SELECTED_SERIES_WIDTH : 1;
+      if (series.width === w) return;
+      series.width = w;
+      changed = true;
+    });
+    if (changed) u.redraw();
+  }, [selectedKeys, signals]);
 
   // Value-table support for enum / state signals. When the
   // area shows *exactly one* signal *and* that signal's `VAL_`
@@ -1751,7 +1780,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // construction-time color is the fallback for the one render
           // between a signal-set change and the rebuild it triggers.
           stroke: () => signalsRef.current[i]?.color ?? s.color,
-          width: 1,
+          // Selected series draw bold. Unlike `stroke`, uPlot does not
+          // call a function for `width` — it reads the number off the
+          // series object on every draw — so the selection is applied by
+          // writing it there (the effect below) and this is only the
+          // starting value a (re)built instance opens with.
+          width: selectedKeysRef.current.has(signalRefKey(s)) ? SELECTED_SERIES_WIDTH : 1,
           // `auto` defers to uPlot's density default; `off` never draws
           // markers; `on` always draws them but capped at a flat max across
           // the visible range so a zoomed-out window doesn't render a

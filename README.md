@@ -686,7 +686,9 @@ resample at the end.
   units label the y axis) — the long-standing promote gesture, now with
   a highlight. **Ctrl/⌘-click** adds or removes a row from the
   selection and **shift-click** takes the range from the last row
-  clicked; neither of those moves the primary. A selection belongs to
+  clicked; neither of those moves the primary. A selected signal's line
+  is drawn **bold** in the plot, so the selection reads on the canvas
+  and not only in the side panel. A selection belongs to
   **one plot area**: clicking a row in another area starts that area's
   selection and clears the first, and a shift-range runs over the whole
   area's signal list — in `per-unit` / `individual` mode that means
