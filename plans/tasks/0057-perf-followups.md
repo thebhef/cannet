@@ -442,3 +442,14 @@ order), same branch.**
 - Docs: `DecimatedRequest.descriptor`'s rustdoc-equivalent comment now
   states the membership rule (and why order must stay out of it) in the
   same commit as the code.
+- Two review tidy-ups after the fact, no behavior change: `1b55f3a`
+  (the membership key written down among `resample`'s dependencies —
+  it is derived from `signals`, which was already listed) and `497f30b`
+  (the scoped-catalog doc comment put back on the scoped catalog after
+  the filter-element hoist landed between them).
+
+**Phase 57.B closing state.** Items 1 and 3 meet their exit criteria
+(`areas` edits scoped by render-count test; order-only changes repaint
+from cache, membership changes fetch, both tested). Items 4
+(capture-restore startup cost) and the ADR-0031 gate re-run are
+untouched — the gate is the orchestrator's to run after this phase.
