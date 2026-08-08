@@ -412,6 +412,14 @@ impl TraceStore {
             return false;
         };
         inner.raw = Box::new(reopened);
+        // The mux index describes frames that went through the extractor on
+        // append; none of the reloaded ones did. Re-root its coverage at the
+        // new tip — same promise `set_mux_extractor` makes — so queries over
+        // the restored history take the bounded backward scan instead of
+        // reading an empty map as proof that no group ever matched.
+        inner.latest_mux = HashMap::new();
+        inner.mux_rates = HashMap::new();
+        inner.mux_index_from = inner.raw.len();
         // Restore the derived state the by-id view and filter resolution
         // read. Rates are left with only their count (a reloaded trace is
         // stopped, so every rate reads zero); the newest-index and frame are
@@ -1042,6 +1050,50 @@ mod tests {
         assert_eq!(
             by_bus,
             vec![(Some("body".into()), 1), (Some("pt".into()), 2)]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn try_reload_leaves_no_false_mux_coverage_over_the_restored_history() {
+        // `mux_index_from` promises "every frame at or above me passed
+        // through the current extractor". A reload swaps in frames that
+        // never did, so the promise has to be re-made at the new tip —
+        // otherwise a launch (where the DBC set installs its extractor over
+        // an *empty* store, leaving the mark at 0) claims coverage of the
+        // whole restored history and every mux group reads blank.
+        let dir = std::env::temp_dir().join(format!("cannet-muxreload-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        let muxed = |ts: u64, sel: u8| RawTraceFrame {
+            payload: CanFramePayload::Classic(vec![sel]),
+            ..dummy(ts, 0x10)
+        };
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            store.write_scratch_identity(Some(pid));
+            store.append(muxed(1_000, 0));
+            store.append(muxed(2_000, 1));
+            store.append(muxed(3_000, 0));
+            store.flush().unwrap();
+        }
+        let booted = TraceStore::new_disk(&dir).unwrap();
+        // The open path's order: the DBC set installs the extractor while
+        // the store is still empty, then the capture is restored.
+        booted.set_mux_extractor(Some(std::sync::Arc::new(|f: &RawTraceFrame| {
+            f.payload.data().first().copied().map(u64::from)
+        })));
+        assert!(booted.try_reload(pid));
+        let got = booted.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, usize::MAX);
+        assert_eq!(
+            got.get(&0).map(|(i, f)| (*i, f.timestamp_ns)),
+            Some((2, 3_000)),
+            "group 0's latest restored frame"
+        );
+        assert_eq!(
+            got.get(&1).map(|(i, f)| (*i, f.timestamp_ns)),
+            Some((1, 2_000)),
+            "group 1's latest restored frame"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
