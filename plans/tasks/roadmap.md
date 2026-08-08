@@ -17,6 +17,15 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
+0. [Task 57 — Perf Follow-Ups from the 54–56 Slice](0057-perf-followups.md)
+   — five items from the slice's status logs and the 2026-08-08
+   sidecar-logging investigation: per-area scoping of the plot's
+   derived configs (kill the stack-wide re-render), stop collapsed-
+   area resampling, split `signalSetKey` membership from order,
+   profile the capture-restore startup cost, and make an unconnected
+   perf capture fail loudly instead of writing an empty report.
+   (Numbered 0 pending retirement of the completed 54/55/49/56
+   entries below with the owner.)
 1. [Task 54 — Gridview Test-Drive
    Feedback](0054-gridview-test-drive-feedback.md) — two defects
    from the first drive of the task-51 gridview: the signal-row
