@@ -287,3 +287,35 @@ likely during this task's later perf-gate runs.
 - No changes to items 1-4 (per-area plot scoping, dropped item,
   `signalSetKey`, capture-restore cost) or the ADR-0031 gate re-run —
   out of this phase's scope (item 5 only).
+
+**2026-08-08 — follow-up: the outer `catch` was still a quiet-exit-0
+hole.** Review found that an exception during the capture window
+(`handleConnect` rejecting instead of just failing to land a session,
+or `beginDiagCapture` throwing) skipped the retry/assert logic
+entirely — `failed` stayed `false`, the outer `catch` only
+`console.error`d, and `finally` fell through to `getCurrentWindow().
+destroy()`: exit 0, no report, the exact quiet success the failure
+contract exists to prevent, just reached via a rejection instead of a
+readiness timeout.
+
+Fix: on a capture run (`captureSecs != null`), the `catch` block now
+also logs the cause via `logAutomation("error", ...)`, sets `failed =
+true`, and calls `exit_process(1)` — the same failure path as the
+retry-exhausted and never-ready branches, reusing the `finally` block's
+existing `!failed` guard against `destroy()`. A non-capture run is
+unaffected: `console.error` only, app stays open. There's no code
+after `endDiagCapture` inside the `try`, so any capture-run exception
+means the report is absent or unfinished — exit non-zero is always the
+right call, not just for the two branches already covered.
+
+TDD: added a failing test first
+(`App.perfCaptureConnect.dom.test.tsx`, "an exception during the
+capture window (connected, but beginDiagCapture throws) fails the run")
+— connect succeeds on the first attempt (so the retry logic never sets
+`failed`), then `diag_capture_start` is made to throw, exercising the
+outer `catch` in isolation from the retry/assert paths. Confirmed red
+(`exitCalls` empty) against the pre-fix code, then green after the fix.
+
+- Test counts: JS 137 files / 1652 tests (was 1651) all green
+  (`pnpm --dir apps/gui test`); `tsc --noEmit` clean. No Rust files
+  touched by this follow-up.

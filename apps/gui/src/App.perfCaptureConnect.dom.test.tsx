@@ -35,6 +35,10 @@ const knobs = {
   // ever reaches "running" — this is how a test forces the retry budget
   // to exhaust.
   connectAlwaysFails: false,
+  // When set, `diag_capture_start` rejects — simulates an exception
+  // inside the capture window's try block *after* a successful connect,
+  // where the retry/failed logic above has already finished running.
+  throwOnDiagCaptureStart: false,
 };
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -71,6 +75,11 @@ vi.mock("@tauri-apps/api/core", () => ({
           interfaces: [],
           subscriptions: [{ interface_id: "if0", channel: 0 }],
         };
+      case "diag_capture_start":
+        if (knobs.throwOnDiagCaptureStart) {
+          throw new Error("diag capture failed to arm");
+        }
+        return null;
       case "gui_emit_system_log":
         systemLogCalls.push({
           level: String(args?.level),
@@ -187,6 +196,7 @@ beforeEach(async () => {
   knobs.captureSecs = null;
   knobs.bindings = [];
   knobs.connectAlwaysFails = false;
+  knobs.throwOnDiagCaptureStart = false;
   await hydrateState();
 });
 
@@ -299,6 +309,32 @@ describe("perf-harness connect robustness", () => {
     ).toBe(true);
     expect(connectRemoteServerCalls).toBe(0);
     expect(exitCalls).toEqual([]);
+    expect(windowDestroy).not.toHaveBeenCalled();
+  });
+
+  it("an exception during the capture window (connected, but beginDiagCapture throws) fails the run: no report, exit non-zero, no destroy", async () => {
+    useAutomationFakeTimers();
+    knobs.connectOnStart = true;
+    knobs.captureSecs = 5;
+    knobs.bindings = [
+      { kind: "remote", server: "127.0.0.1:9999", interface: "if0", bus_id: "b1" },
+    ];
+    // Connect succeeds on the first attempt — the retry/failed logic
+    // never sets `failed`, so this exception can only be caught by the
+    // outer `catch`, not the earlier connectedness assertion.
+    knobs.connectAlwaysFails = false;
+    knobs.throwOnDiagCaptureStart = true;
+
+    render(<App />);
+    // Readiness + one successful connect attempt is near-instant; only
+    // the AUTOMATION_SETTLE_MS (2s) sleep before `beginDiagCapture`
+    // needs draining.
+    await runAutomationTimers(3000);
+
+    expect(connectRemoteServerCalls).toBe(1);
+    expect(invokeOrder).toContain("diag_capture_start");
+    expect(invokeOrder).not.toContain("diag_capture_finish");
+    expect(exitCalls).toEqual([1]);
     expect(windowDestroy).not.toHaveBeenCalled();
   });
 });

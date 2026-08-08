@@ -1663,6 +1663,22 @@ export function App() {
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("perf automation run failed", err);
+        // A capture run has no code after `endDiagCapture` inside the
+        // try, so any exception here — a rejected `handleConnect`, a
+        // `beginDiagCapture` failure, anything — means the report is
+        // absent or unfinished. Same failure contract as a never-
+        // connected run: fail loudly and exit non-zero instead of the
+        // `finally` block's normal `destroy()`, which would otherwise
+        // reach the same quiet exit-0-no-report outcome the retry/
+        // assert logic above exists to prevent.
+        if (captureSecs != null) {
+          logAutomation(
+            "error",
+            `perf automation: capture run failed: ${String(err)}`,
+          );
+          failed = true;
+          await invoke("exit_process", { code: 1 }).catch(() => {});
+        }
       } finally {
         stopInteraction?.();
         // A capture run is unattended — exit so the launching CLI
