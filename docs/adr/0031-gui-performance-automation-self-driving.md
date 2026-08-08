@@ -109,7 +109,11 @@ the decision to touch interfaces, and the decision to record.
   is the one failure signal no consumer can misread) and the process
   exits non-zero. The frontend has no other way to set a process exit
   code, so this is the one host (Tauri) command in the automation surface
-  that isn't just mirroring a user-clickable action. A marked-failed
+  that isn't just mirroring a user-clickable action — and the host runs
+  its event loop with `run_return` so the requested code reaches the OS
+  at all: the runtime turns an exit request into a plain "stop the loop",
+  dropping the code, and a failed run that exits 0 is exactly the quiet
+  success this contract exists to prevent. A marked-failed
   report was considered and rejected: every consumer would need to learn
   the marker, and an unaware one reads the fps-0 shape as real idle data
   — the trap this closes.
