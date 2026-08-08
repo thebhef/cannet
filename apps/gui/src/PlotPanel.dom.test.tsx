@@ -4667,3 +4667,131 @@ describe("PlotPanel per-area render scoping", () => {
     expect(counter("render.PlotArea") - before).toBe(0);
   });
 });
+
+describe("PlotPanel signal set: membership vs order", () => {
+  const counter = (k: string) => diagCounts().get(k) ?? 0;
+  const sig = (signalName: string, unit: string) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+    color: "#4ecbff",
+  });
+
+  /// A stopped two-area panel whose first area holds two same-unit rows,
+  /// settled past the post-mount rebuild and every async first fetch, so
+  /// the counts below measure the gesture alone.
+  async function settledPanel(elementId: string) {
+    const registry = makeRegistry({
+      id: elementId,
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("LimitNominal", "A"), sig("LimitEffective", "A")] },
+          { id: "a2", signals: [sig("EngineSpeed", "rpm")] },
+        ],
+      },
+      trace: { start: 0, end: 60, isPaused: false },
+    });
+    const panel = renderPanel({ params: { elementId }, registry });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    for (let i = 0; i < 20; i++) {
+      const settled = sampleCalls() + counter("render.PlotArea");
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+      });
+      if (sampleCalls() + counter("render.PlotArea") === settled) break;
+    }
+    return panel;
+  }
+
+  const rowNamed = (name: string): HTMLElement => {
+    const found = Array.from(document.querySelectorAll(".plot-signal-row")).find(
+      (r) => r.querySelector(".plot-signal-name")?.textContent === name,
+    );
+    if (!found) throw new Error(`no signal row for ${name}`);
+    return found as HTMLElement;
+  };
+  /// Drag one row onto another inside the same panel — an internal move,
+  /// which for two rows of one area is a reorder.
+  function reorderRow(from: string, onto: string) {
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(rowNamed(from), { dataTransfer: dt });
+    fireEvent.dragOver(rowNamed(onto), { dataTransfer: dt });
+    fireEvent.drop(rowNamed(onto), { dataTransfer: dt });
+  }
+  const namesIn = (areaLabel: string) =>
+    Array.from(
+      screen.getByText(areaLabel).closest(".plot-area")!.querySelectorAll(".plot-signal-name"),
+    ).map((n) => n.textContent);
+
+  it("repaints a reordered area from cache instead of refetching it", async () => {
+    // Reordering an area's rows changes nothing about *which* samples it
+    // holds, and the decimation cache is keyed by signal — so the uPlot
+    // rebuild the new series order needs must repaint from that cache
+    // rather than dropping it for a cold whole-window fetch (and the
+    // "building…" gate that comes with one).
+    await withSizedCanvas(async () => {
+      await settledPanel("el-order-nofetch");
+      const instance = liveInstanceIn("Area 1");
+      const drawn = drawnPoints(instance);
+      expect(drawn).toBeGreaterThan(0);
+      const before = sampleCalls();
+      expect(before).toBeGreaterThan(0);
+
+      await act(async () => {
+        reorderRow("LimitEffective", "LimitNominal");
+        await new Promise((r) => setTimeout(r, 200));
+      });
+
+      expect(namesIn("Area 1")).toEqual(["LimitEffective", "LimitNominal"]);
+      expect(sampleCalls()).toBe(before);
+      // The series array is index-parallel with the signals, so the new
+      // order does cost a fresh uPlot instance — that is the accepted
+      // half of the trade — but it comes up already drawing the window
+      // the old one had.
+      const rebuilt = liveInstanceIn("Area 1");
+      expect(rebuilt).not.toBe(instance);
+      expect(drawnPoints(rebuilt)).toBe(drawn);
+      expect(document.querySelector(".plot-area-building")).toBeNull();
+    });
+  });
+
+  it("refetches when the signal set's membership changes", async () => {
+    // The other direction of the same rule: a row joining the area is a
+    // set the cache has never been anchored to, so it must fetch.
+    await withSizedCanvas(async () => {
+      await settledPanel("el-order-membership");
+      const before = sampleCalls();
+
+      await act(async () => {
+        dropSignal("Area 1", "EngineTemp", "degC");
+        await new Promise((r) => setTimeout(r, 200));
+      });
+
+      expect(namesIn("Area 1")).toContain("EngineTemp");
+      expect(sampleCalls()).toBeGreaterThan(before);
+    });
+  });
+
+  it("reordering rows inside one area re-renders only that area", async () => {
+    // A reorder rewrites one area's `signals`; every other area holds
+    // exactly what it held, panel-level value-table state included.
+    await settledPanel("el-order-renders");
+    // Past the first-sample gate, which never settles without a canvas.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, FIRST_SAMPLE_INDICATOR_MS + 100));
+    });
+    const before = counter("render.PlotArea");
+    await act(async () => {
+      reorderRow("LimitEffective", "LimitNominal");
+    });
+    expect(namesIn("Area 1")).toEqual(["LimitEffective", "LimitNominal"]);
+    // The dragged area renders for the reorder and for dropping its own
+    // drag-over state; the point is that the other area renders at all.
+    expect(counter("render.PlotArea") - before).toBeLessThanOrEqual(2);
+  });
+});

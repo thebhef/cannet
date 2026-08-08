@@ -931,8 +931,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   /** The host's per-signal all-time extents from the most recent fetch
    * that asked for them, so a repaint normalises against the same range
    * the drawn window was normalised against (ADR 0025 — the extent is a
-   * model fact; this is just the last answer, not a substitute for it). */
-  const hostExtentsRef = useRef<(SignalExtent | null)[] | null>(null);
+   * model fact; this is just the last answer, not a substitute for it).
+   * Keyed by signal, like the decimation cache, so it survives a
+   * reorder of the very list the sidecar answered in. */
+  const hostExtentsRef = useRef<ReadonlyMap<string, SignalExtent> | null>(null);
   const lastResampleTsRef = useRef(0);
   const rateEmaRef = useRef(0);
   /** Synchronous cost (ms) of the last resample's render section — what
@@ -954,14 +956,26 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
 
   const areaId = area.id;
   const signals = area.signals;
+  /** The signal list in **order** — what the uPlot instance is built
+   * against, since its series array is index-parallel with `signals`.
+   * Only the instance keys on this: reordering the rows does cost a
+   * destroy + rebuild, and nothing else. */
   const signalSetKey = signals.map(signalRefKey).join("|");
+  /** The same list as a **set** — what the sampled data keys on. The
+   * decimation cache is a map from signal key to series, so a reorder
+   * leaves every sample it holds valid; only a signal joining or leaving
+   * makes it stale. Deriving both from one place (rather than spelling
+   * the join out again at each use) is what keeps the cache descriptor
+   * and the built-instance compare from drifting apart. */
+  const signalMembershipKey = signals.map(signalRefKey).sort().join("|");
   /** "Nothing drawn *yet*" for the current signal set, as opposed to
-   * "nothing to draw". A signal-set change re-anchors the windowed
+   * "nothing to draw". A membership change re-anchors the windowed
    * source, so the next sample is a cold whole-window one — seconds
    * against a large buffer with a cold decimation cache. Gated behind a
-   * short delay so a fast add never flashes it. */
+   * short delay so a fast add never flashes it. A reorder keeps the
+   * cache, so it isn't a wait at all. */
   const { waiting: buildingFirstSample, settled: firstSampleSettled } = useFirstSampleWait(
-    signals.length > 0 ? signalSetKey : null,
+    signals.length > 0 ? signalMembershipKey : null,
   );
   /** Live mirror of `signals` for the uPlot draw hook, which is
    * captured at construction and so would otherwise see the signal
@@ -1310,10 +1324,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       const cached = repaintFromCacheRef.current ? currentRange() : null;
       repaintFromCacheRef.current = false;
       const outcome: DecimatedOutcome<(SignalExtent | null)[]> = cached
-        ? { kind: "sampled", snapshot: cached, extra: hostExtentsRef.current }
+        ? { kind: "sampled", snapshot: cached, extra: null }
         : await sampleRange<(SignalExtent | null)[]>(
             {
-              descriptor: signals.map(signalRefKey).join("|"),
+              // Membership, not order: the cache is keyed by signal, so
+              // re-anchoring it on a reorder would throw away a window
+              // every sample of which is still valid.
+              descriptor: signalMembershipKey,
               signals: signals.map((s) => ({
                 key: signalRefKey(s),
                 busId: s.busId,
@@ -1370,8 +1387,20 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
 
       // outcome.kind === "sampled" — render the fresh window.
       const { snapshot } = outcome;
-      const hostExtents = outcome.extra;
-      if (hostExtents) hostExtentsRef.current = hostExtents;
+      // Keyed by signal, not by position: the sidecar answers in the
+      // order it was asked, but the answer outlives that order (a
+      // reorder rebuilds the chart and repaints from cache without
+      // re-asking), and a positional read would then normalise each
+      // series against another signal's extent.
+      if (outcome.extra) {
+        const extents = new Map<string, SignalExtent>();
+        signals.forEach((s, i) => {
+          const e = outcome.extra?.[i];
+          if (e) extents.set(signalRefKey(s), e);
+        });
+        hostExtentsRef.current = extents;
+      }
+      const hostExtents = hostExtentsRef.current;
       const base = snapshot.base;
       lr.reports.hostMs(areaId, snapshot.sliceMs + snapshot.decodeMs);
       // Areas share x, so a panel-level base from any area lets
@@ -1431,7 +1460,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           return;
         }
         if (lr.followLive) {
-          const e = hostExtents?.[i];
+          const e = hostExtents?.get(key);
           if (e) ranges.set(key, { lo: e.lo, hi: e.hi });
           return;
         }
@@ -2351,19 +2380,20 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     });
     uplotRef.current = u;
     registerInstance(areaId, u);
-    // Only a changed signal set makes the cached window stale (it is
-    // anchored to the old set) — drop it, and the host extents that go
-    // with it, so the re-sample below rebuilds both from a full fetch.
-    // Every other reason this effect re-runs (the post-mount layout
-    // rebuild below, a resize, an axis / value-table change) leaves the
-    // cache valid over an empty instance, so repaint from it instead:
-    // throwing it away costs a full-window round-trip and shows a blank
-    // panel until that lands. Also clear the busy-guard (a re-sample for
-    // the *previous* uPlot may still be in flight; it'll no-op once it
-    // sees `uplotRef.current` moved on) so this fresh instance gets its
-    // data even when the trace isn't running (no timer to retry it).
-    if (builtSignalSetRef.current !== signalSetKey) {
-      builtSignalSetRef.current = signalSetKey;
+    // Only a changed signal *membership* makes the cached window stale
+    // (it is anchored to the old set) — drop it, and the host extents
+    // that go with it, so the re-sample below rebuilds both from a full
+    // fetch. Every other reason this effect re-runs (a reorder, the
+    // post-mount layout rebuild below, a resize, an axis / value-table
+    // change) leaves the cache valid over an empty instance, so repaint
+    // from it instead: throwing it away costs a full-window round-trip
+    // and shows a blank panel until that lands. Also clear the
+    // busy-guard (a re-sample for the *previous* uPlot may still be in
+    // flight; it'll no-op once it sees `uplotRef.current` moved on) so
+    // this fresh instance gets its data even when the trace isn't
+    // running (no timer to retry it).
+    if (builtSignalSetRef.current !== signalMembershipKey) {
+      builtSignalSetRef.current = signalMembershipKey;
       hostExtentsRef.current = null;
       resetRange();
     } else {
