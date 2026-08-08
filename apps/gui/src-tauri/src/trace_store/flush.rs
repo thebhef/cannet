@@ -391,25 +391,29 @@ impl TraceStore {
     /// the scratch's recorded identity matches `project_id` (ADR 0002
     /// DS-7). On a match with a reopenable store, this swaps in the
     /// disk-spill store, restores the derived state and session-start
-    /// anchor, and returns `true`; otherwise it leaves the store untouched
-    /// (the scratch stays on disk, neither loaded nor wiped) and returns
-    /// `false`. The reloaded trace's per-id rates read zero — it isn't
-    /// live.
-    pub fn try_reload(&self, project_id: Uuid) -> bool {
+    /// anchor, and returns the reload's per-phase cost breakdown ready to
+    /// log; otherwise it leaves the store untouched (the scratch stays on
+    /// disk, neither loaded nor wiped) and returns `None`. The reloaded
+    /// trace's per-id rates read zero — it isn't live.
+    ///
+    /// The breakdown is a deliverable, not scaffolding: reloading is the
+    /// one place a launch pays `O(segments)` before the user sees anything
+    /// (ADR 0002 DS-7), and its phases have wildly different costs
+    /// depending on how many segment files the capture spans, so every
+    /// restore says where its time went and on how many files.
+    pub fn try_reload(&self, project_id: Uuid) -> Option<String> {
         let started = Instant::now();
         let mut inner = self.lock_inner();
-        let Some(dir) = inner.scratch_dir.clone() else {
-            return false;
-        };
+        let dir = inner.scratch_dir.clone()?;
         let identity_at = Instant::now();
         let matches = read_json::<ScratchIdentity>(&dir.join(IDENTITY_FILE))
             .is_some_and(|id| id.project_id == project_id);
         if !matches {
-            return false;
+            return None;
         }
         let identity_ms = ms_since(identity_at);
         let Ok(Some((reopened, reopen))) = DiskRawStore::reopen_timed(&dir) else {
-            return false;
+            return None;
         };
         inner.raw = Box::new(reopened);
         // The mux index describes frames that went through the extractor on
@@ -456,17 +460,13 @@ impl TraceStore {
                 );
             }
         }
-        // The one place a launch pays `O(segments)` before the user sees
-        // anything (ADR 0002 DS-7), so every restore says what it cost and
-        // on how much: durations only read as fast or slow beside the file
-        // counts. One line per restore, at INFO.
-        tracing::info!(
-            target: "restore",
-            "reopen {frames} frames in {total:.0} ms: identity {identity_ms:.0} \
-             manifest {manifest:.0} byid {byid:.0} ({byid_files} files, {byid_ids} ids) \
+        // Durations only read as fast or slow beside the file counts, so
+        // each phase carries how much work it did.
+        Some(format!(
+            "reload {total:.0} ms: identity {identity_ms:.0} manifest {manifest:.0} \
+             byid {byid:.0} ({byid_files} files, {byid_ids} ids) \
              meta {meta:.0} ({meta_files} files) payload {payload:.0} ({payload_files} files) \
              ring {ring:.0} ({ring_frames} frames) derived {derived:.0} ({derived_entries} keys)",
-            frames = inner.raw.len(),
             total = ms_since(started),
             manifest = reopen.manifest_ms,
             byid = reopen.byid_ms,
@@ -479,8 +479,7 @@ impl TraceStore {
             ring = reopen.ring_ms,
             ring_frames = reopen.ring_frames,
             derived = ms_since(derived_at),
-        );
-        true
+        ))
     }
 }
 
@@ -776,7 +775,7 @@ mod tests {
             assert!(store.slice(0, 1).is_empty(), "evicted before reopen");
         }
         let booted = TraceStore::new_disk(&dir).unwrap();
-        assert!(booted.try_reload(pid), "matching project reloads");
+        assert!(booted.try_reload(pid).is_some(), "matching project reloads");
         let rare = booted
             .latest_since(0)
             .into_iter()
@@ -1032,11 +1031,11 @@ mod tests {
         let booted = TraceStore::new_disk(&dir).unwrap();
         assert_eq!(booted.len(), 0);
         // Mismatched project: nothing loads, the scratch is left intact.
-        assert!(!booted.try_reload(uuid::Uuid::new_v4()));
+        assert!(booted.try_reload(uuid::Uuid::new_v4()).is_none());
         assert_eq!(booted.len(), 0);
         // Matching project: reloads as a stopped trace with derived state
         // and the session-start anchor restored.
-        assert!(booted.try_reload(pid));
+        assert!(booted.try_reload(pid).is_some());
         assert_eq!(booted.len(), 3);
         assert_eq!(booted.session_start_ns(), 1_000);
         // Multi-bus same-id stays faithful (fork P persists the full key):
@@ -1083,7 +1082,7 @@ mod tests {
         booted.set_mux_extractor(Some(std::sync::Arc::new(|f: &RawTraceFrame| {
             f.payload.data().first().copied().map(u64::from)
         })));
-        assert!(booted.try_reload(pid));
+        assert!(booted.try_reload(pid).is_some());
         let got = booted.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, usize::MAX);
         assert_eq!(
             got.get(&0).map(|(i, f)| (*i, f.timestamp_ns)),
@@ -1112,12 +1111,15 @@ mod tests {
         {
             // A Clear / new-capture reset wipes the scratch identity.
             let store = TraceStore::new_disk(&dir).unwrap();
-            assert!(store.try_reload(pid));
+            assert!(store.try_reload(pid).is_some());
             store.start_session(0);
             store.flush().unwrap();
         }
         let booted = TraceStore::new_disk(&dir).unwrap();
-        assert!(!booted.try_reload(pid), "wiped identity must not reload");
+        assert!(
+            booted.try_reload(pid).is_none(),
+            "wiped identity must not reload"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
