@@ -149,3 +149,38 @@ Dropped to backlog 2026-08-07: per-area color-wheel indices (the
 observed inconsistency is `stableSignalColor` hashing working as
 designed; task 56's generators cover the motivating Cell1–16 case
 better).
+
+## Status log
+
+- **2026-08-08 (item 1, manual-range regression matrix):** Landed on
+  `task55a-manual-range-matrix`. Test-only, no behavior change — the
+  grooming note's repro (a manual range within a 0.0-1.0-valued
+  signal's own band rendering offscreen) does not reproduce; every new
+  test passed on its first run. `a3f1365` pins `resolveAxisRange`'s
+  engineering-units contract in `plotAxisScale.test.ts` for the three
+  value shapes (float 0.0-1.0, uint 0-255, signed int -128..127), each
+  with a manual range wider than the auto/follow-live extent so a
+  broken override would be observable; `resolveAxisRange` takes no
+  y-axis-mode argument, so the mode dimension isn't meaningful at that
+  level. `68485dd` walks the real pipeline
+  (`PlotPanel.dom.test.tsx`'s "PlotArea y-normalisation" suite, new
+  "manual-range regression matrix (task 55 item 1)" block): float
+  across all three y-axis modes (unified/per-unit/individual, per the
+  grooming note), plus one DOM spot check each for int (per-unit) and
+  uint (individual) — 5 new DOM tests plus 3 new pure tests. `apps/gui`
+  test suite: 1496 → 1504 passing (130 files), `pnpm --dir apps/gui
+  build` green throughout. Matrix coverage:
+
+  | value shape | unified | per-unit | individual |
+  | --- | --- | --- | --- |
+  | float (0.0-1.0) | DOM | DOM | DOM |
+  | int (-128..127) | pure | DOM | pure |
+  | uint (0-255) | pure | pure | DOM |
+
+  ("pure" = `resolveAxisRange`-level in `plotAxisScale.test.ts`,
+  mode-invariant by construction; "DOM" = the full normalisation
+  pipeline in `PlotPanel.dom.test.tsx`.)
+
+## Blockers / side effects
+
+- None. No matrix cell failed; nothing to fix in this phase.
