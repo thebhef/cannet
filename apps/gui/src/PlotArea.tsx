@@ -391,8 +391,9 @@ interface PlotAreaProps {
    * Applied inline on the root; the browser distributes stack height
    * proportionally. Undefined falls back to the CSS default (1). */
   flexGrow?: number;
-  /** True when every signal on this axis is hidden. The canvas collapses
-   * (no reserved plot height) while the side-panel rows stay visible so
+  /** True when this axis draws nothing — the parent area is collapsed,
+   * or every signal on the axis is hidden. The canvas collapses (no
+   * reserved plot height) while the side-panel rows stay visible so
    * they remain un-hideable (ADR 0026). */
   collapsed?: boolean;
   /** True when this axis is the shared per-unit enum-lanes axis (all of
@@ -491,6 +492,9 @@ interface PlotAreaProps {
   onSetPrimarySignal: (key: string | null) => void;
   /** Set the area's y-axis mode (unified / per-unit / individual). */
   onSetYAxisMode: (mode: YAxisMode) => void;
+  /** Collapse the parent area if expanded, expand it if collapsed —
+   * one collapse state per logical area (ADR 0026). */
+  onToggleCollapsed: () => void;
   onFocus: () => void;
   onRemoveArea: () => void;
   /** Another area of this panel was dropped on this one: move it to
@@ -687,6 +691,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     showDiag,
     onSetPrimarySignal,
     onSetYAxisMode,
+    onToggleCollapsed,
     onFocus,
     onRemoveArea,
     onReorderArea,
@@ -2687,6 +2692,33 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             >
               ⠿
             </span>
+          )}
+          {isParentHead && (
+            // One collapse state per logical area (ADR 0026), so the
+            // toggle renders on the parent head only — however many
+            // derived axes that area stacks. An area whose signals are
+            // all hidden collapses on its own and has no expanded form
+            // to go to (there is nothing to draw), so the toggle is
+            // inert there and says why.
+            <button
+              className="plot-area-collapse"
+              aria-label={collapsed ? "expand plot area" : "collapse plot area"}
+              aria-expanded={!collapsed}
+              disabled={!!collapsed && area.collapsed !== true}
+              title={
+                !!collapsed && area.collapsed !== true
+                  ? "every signal on this area is hidden — un-hide one to expand it"
+                  : collapsed
+                    ? "expand this plot area"
+                    : "collapse this plot area — it gives up its plot height, its rows stay listed"
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleCollapsed();
+              }}
+            >
+              {collapsed ? "▸" : "▾"}
+            </button>
           )}
           <span
             className="plot-area-label"

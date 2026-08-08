@@ -118,6 +118,17 @@ equalizes them. A y-axis-mode change produces new axis ids and so
 resets an area's custom weights; the shared enum-lanes axis keeps a
 membership-stable id so lane churn doesn't reset its weight.
 
+**An area can be collapsed, and a collapsed area gives up its plot
+height.** A plot area carries a persisted `collapsed` flag: every axis
+it derives drops its canvas and leaves the fit-to-panel height
+distribution, while its side-panel rows stay — so the toggle back, and
+the swatches that un-hide signals, stay in reach. The flag is per
+*area*, not per axis, because an area is the curated thing and its axes
+are derived: one collapse state, however many axes the mode stacks. An
+area whose signals are **all hidden** is collapsed regardless of the
+flag — there is nothing to draw on it — which is the rule that already
+collapses a fully-hidden axis.
+
 **Each axis maps to one uPlot instance.** This keeps us consistent
 with [ADR 0007](0007-uplot-plot-renderer.md):
 
@@ -352,6 +363,16 @@ below:
     gestures on a live axis's surface, since it has no uPlot of its own
     to receive them. This covers a fully-hidden numeric axis and a
     fully-hidden enum-lanes axis alike.
+- **Area collapse rides that same path.** `PlotAreaConfig.collapsed` is
+  folded into the per-axis collapsed flag the panel derives — an axis is
+  collapsed when its parent area's flag is set *or* every signal on it
+  is hidden — so the flag inherits the whole treatment above: flex-grow
+  0, no canvas, compact rows, splitter suppression and reach-over, and
+  the gesture-replaying placeholder. The **▾ / ▸ toggle** sits on the
+  parent head beside the reorder grip (one per logical area, like the
+  remove ×), and is inert on an area collapsed only by the all-hidden
+  rule: there is no expanded form to go to, and its rows are already
+  listed for un-hiding.
 
 What's still rough:
 

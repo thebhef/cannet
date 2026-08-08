@@ -2379,6 +2379,27 @@ button.trace-event-swatch {
   cursor: grabbing;
 }
 
+/* Collapse / expand the whole plot area (ADR 0026). Sits on the parent
+   head beside the grip, so it stays reachable in the collapsed strip. */
+.plot-area-collapse {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0 0.2rem 0 0;
+}
+
+.plot-area-collapse:hover:not(:disabled) {
+  color: var(--text-muted);
+}
+
+.plot-area-collapse:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
 .plot-area-remove,
 .plot-signal-remove {
   background: none;

@@ -680,6 +680,15 @@ resample at the end.
   doesn't recolor it. The shared x-axis spans 0 to the longest plotted
   signal across the panel's areas, so a signal added late still shows
   over the existing span.
+- **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
+  plot area's signal-panel heading (beside the grip) collapses that
+  area: it gives up its plot height entirely — every axis it derives
+  drops its canvas — while its signal rows stay listed, so the toggle
+  back and the swatches are still in reach. One toggle per plot area
+  however many axes its y-axis mode stacks, and the state persists in
+  the project file. An area whose signals are **all hidden** collapses
+  on its own (there is nothing to draw); its toggle is inert until you
+  un-hide one.
 - **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
   wheel** pans x (synced); **right-drag** box-zooms x; **⌘/ctrl +
   wheel** zooms y on the hovered area (buried — y is usually set with

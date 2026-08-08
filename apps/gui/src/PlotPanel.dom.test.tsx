@@ -2772,6 +2772,85 @@ describe("PlotPanel All data button", () => {
   });
 });
 
+describe("PlotPanel area collapse", () => {
+  const sig = (signalName: string, unit: string, hidden?: boolean) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+    color: "#4ecbff",
+    ...(hidden ? { hidden: true } : {}),
+  });
+
+  /// The `areas` list in the panel's most recent persist.
+  function persistedAreas(api: { updateParameters: { mock: { calls: unknown[][] } } }) {
+    const calls = api.updateParameters.mock.calls;
+    const last = (calls[calls.length - 1]?.[0] ?? {}) as {
+      areas?: Array<Record<string, unknown>>;
+    };
+    return last.areas ?? [];
+  }
+
+  it("collapses and expands an area from its head toggle, persisting the flag", () => {
+    const registry = makeRegistry({
+      id: "el-collapse",
+      config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }] },
+    });
+    const { api } = renderPanel({ params: { elementId: "el-collapse" }, registry });
+    const area = () => document.querySelector(".plot-area") as HTMLElement;
+    expect(area().classList.contains("collapsed")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "collapse plot area" }));
+    expect(area().classList.contains("collapsed")).toBe(true);
+    expect(area().style.flexGrow).toBe("0");
+    expect(persistedAreas(api)[0]?.collapsed).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "expand plot area" }));
+    expect(area().classList.contains("collapsed")).toBe(false);
+    expect(persistedAreas(api)[0]?.collapsed).toBeFalsy();
+  });
+
+  it("collapses every derived axis of the area in individual mode", () => {
+    // One logical area is one collapse state, however many `PlotArea`
+    // instances render it (ADR 0026).
+    const registry = makeRegistry({
+      id: "el-collapse-individual",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            yAxisMode: "individual",
+            collapsed: true,
+            signals: [sig("EngineSpeed", "rpm"), sig("EngineTemp", "degC")],
+          },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-collapse-individual" }, registry });
+    const areas = Array.from(document.querySelectorAll(".plot-area")) as HTMLElement[];
+    expect(areas.length).toBe(2);
+    expect(areas.every((a) => a.classList.contains("collapsed"))).toBe(true);
+    expect(screen.getAllByRole("button", { name: "expand plot area" }).length).toBe(1);
+  });
+
+  it("gives an area with no visible signals no expand affordance to click", () => {
+    // A fully-hidden area collapses because there is nothing to draw —
+    // expanding it would only reserve height for a blank canvas. Its
+    // rows stay in the side panel, so un-hiding one is the way back
+    // (ADR 0026 hidden-signal handling).
+    const registry = makeRegistry({
+      id: "el-collapse-auto",
+      config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm", true)] }] },
+    });
+    renderPanel({ params: { elementId: "el-collapse-auto" }, registry });
+    const area = document.querySelector(".plot-area") as HTMLElement;
+    expect(area.classList.contains("collapsed")).toBe(true);
+    expect(screen.getByRole("button", { name: "expand plot area" })).toBeDisabled();
+  });
+});
+
 describe("PlotPanel follow-live slide cadence", () => {
   /// `performance.now()` that steps forward a fixed amount per read. Real
   /// areas resample milliseconds apart, so each one evaluates the
