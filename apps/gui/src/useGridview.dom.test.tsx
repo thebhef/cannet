@@ -280,13 +280,77 @@ describe("keys the layer does not bind", () => {
     expect(selectedRows(view)).toEqual([]);
   });
 
-  it("lets Tab through to the row's interactive content", () => {
+});
+
+describe("Tab into the row's content", () => {
+  it("moves focus to the cursor row's first control", () => {
+    // jsdom has no native tab traversal, so the assertion is on what
+    // the layer focuses, which is the whole point: without it Tab lands
+    // on the container's first tab stop, not the cursor's row.
     const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    expect(cursor(view.grid)).toBe("plain");
     const handled = fireEvent.keyDown(view.grid, { key: "Tab" });
-    // `fireEvent` returns false when a handler called preventDefault:
-    // the grid must not consume Tab, or the button inside a row is
-    // unreachable.
-    expect(handled).toBe(true);
+    // `fireEvent` returns false when a handler called preventDefault.
+    expect(handled).toBe(false);
+    expect(document.activeElement).toBe(view.getByTestId("row-plain").querySelector("button"));
+  });
+
+  it("moves to the row's last control on Shift+Tab", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(view.getByLabelText("rename bus"));
+  });
+
+  it("leaves Tab to the browser once focus is inside a row", () => {
+    // Walking between a row's own controls, and out of the last one, is
+    // the browser's job — the layer only owns the way in.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
+    button.focus();
+    expect(fireEvent.keyDown(button, { key: "Tab" })).toBe(true);
+    expect(document.activeElement).toBe(button);
+  });
+
+  it("leaves Tab to the browser when there is no cursor row on screen", () => {
+    // A paged viewport names rows it has not rendered; there is nothing
+    // to focus, so the press must not be swallowed.
+    const view = setup({ rendered: 0 });
+    fireEvent.keyDown(view.grid, { key: "End" });
+    expect(cursor(view.grid)).toBe("plain");
+    expect(fireEvent.keyDown(view.grid, { key: "Tab" })).toBe(true);
+  });
+
+  it("takes the keyboard back when a row's editor ends its edit", () => {
+    // `ValidatedInput` and friends commit on Enter and revert on Escape
+    // by blurring themselves; without this the keyboard would land on
+    // `<body>` and the grid would go dead.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    const field = view.getByLabelText("rename bus") as HTMLElement;
+    for (const key of ["Enter", "Escape"]) {
+      field.focus();
+      expect(document.activeElement).toBe(field);
+      field.blur(); // what the editor does for itself on the same press
+      fireEvent.keyDown(field, { key });
+      expect(document.activeElement).toBe(view.grid);
+    }
+    // The cursor survived, so the arrows work straight away.
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    expect(cursor(view.grid)).toBe("plain");
+  });
+
+  it("leaves focus alone when a row's editor moved it somewhere itself", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    const field = view.getByLabelText("rename bus") as HTMLElement;
+    const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
+    button.focus();
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(document.activeElement).toBe(button);
   });
 });
 

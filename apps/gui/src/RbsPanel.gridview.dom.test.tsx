@@ -225,6 +225,44 @@ describe("RbsPanel on the gridview", () => {
     expect(rowOf("Powertrain")).toHaveAttribute("data-active");
   });
 
+  it("Tab from the tree enters the cursor row's own controls", async () => {
+    // ADR 0044's Tab rule, end to end and keyboard-only: with the tree
+    // focused and the cursor on a message, Tab has to land inside that
+    // row — not on the first tab stop of the whole tree.
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    tree.focus();
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(rowOf("PackStatus")).toHaveAttribute("data-active");
+    fireEvent.keyDown(tree, { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByLabelText("0x100 enabled"));
+    // Shift+Tab from the container is the mirror: the row's last control.
+    tree.focus();
+    fireEvent.keyDown(tree, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(screen.getByLabelText("0x100 period"));
+  });
+
+  it("hands the keyboard back to the tree when a value cell ends its edit", async () => {
+    // The value cells blur themselves on Enter and Escape. Left alone
+    // that drops focus on `<body>`, so the next Tab restarts from the
+    // top of the document and the arrows are dead.
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    tree.focus();
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowRight" }); // disclose the signals
+    const input = await screen.findByLabelText("PackVoltage value");
+    input.focus();
+    fireEvent.change(input, { target: { value: "42" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(document.activeElement).toBe(tree);
+    // …and the cursor is still where it was, so the arrows work again.
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(rowOf("Inverter")).toHaveAttribute("data-active");
+  });
+
   it("filters through the shared slot: matches keep their bus and ECU, the rest go", async () => {
     vi.useFakeTimers();
     renderPanel();

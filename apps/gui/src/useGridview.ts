@@ -39,6 +39,21 @@ const NAV_KEYS = new Set<string>([
   "PageDown",
 ]);
 
+/// Everything that can hold DOM focus, before the tab-order filter
+/// below. `[tabindex]` catches the composite controls (a combobox is a
+/// div that takes focus itself).
+const FOCUSABLE_SELECTOR = "a[href], button, input, select, textarea, [tabindex]";
+
+/// The row's own controls, in tab order. A row's decorative buttons opt
+/// out with `tabindex="-1"` — a caret whose job Left/Right already does,
+/// a clear-override ×  — and Tab into the row must land where the
+/// keyboard can then walk, so they are skipped here too.
+function rowTabbables(row: HTMLElement): HTMLElement[] {
+  return Array.from(row.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (el) => el.tabIndex >= 0 && !(el as HTMLInputElement).disabled,
+  );
+}
+
 export interface UseGridviewOptions {
   /// The panel's row space plus the operations only it can perform.
   adapter: GridviewAdapter;
@@ -149,12 +164,28 @@ export function useGridview({
 
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent) => {
+      const container = e.currentTarget as HTMLElement;
       // A text field inside a row owns its own keys: the arrows move
       // the caret, Home/End jump within the value, Ctrl+A selects the
       // text. The rows carry inline editors (a section's name, an event
       // row's label), so the grid makes the same exemption the global
       // dispatcher does rather than swallowing them.
-      if (isEditableTarget(e.target)) return;
+      if (isEditableTarget(e.target)) {
+        // Those editors end an edit by blurring — commit on Enter,
+        // revert on Escape — and a blur with nowhere to go leaves focus
+        // on the document body, where the arrows are dead and the next
+        // Tab restarts from the top of the page. The grid takes the
+        // keyboard back, so the cursor's row is still where it is. Only
+        // when focus was dropped: a control that moves it somewhere of
+        // its own choosing is left alone.
+        if (
+          (e.key === "Enter" || e.key === "Escape") &&
+          (document.activeElement == null || document.activeElement === document.body)
+        ) {
+          container.focus();
+        }
+        return;
+      }
       // Ctrl/Cmd+A — the one modified chord the layer claims.
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "a") {
         e.preventDefault();
@@ -162,12 +193,30 @@ export function useGridview({
         setSelection((current) => selectAll(current, order));
         return;
       }
+      // Tab moves into the cursor row's own controls (ADR 0044), and
+      // Shift+Tab into them from the far end. Only from the container
+      // itself: the container is the one thing in the grid that holds
+      // focus, so a Tab arriving here is a Tab from the grid, and once
+      // focus is inside a row, Tab is the browser's again — it walks
+      // that row's controls and then out of the row. A cursor with no
+      // row on screen (a paged viewport names rows it has not rendered)
+      // or a row with no controls has nothing to move to, so the press
+      // stays the browser's.
+      if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (e.target !== container || cursor == null) return;
+        const row = document.getElementById(rowDomId(cursor));
+        const tabbables = row == null ? [] : rowTabbables(row);
+        const target = e.shiftKey ? tabbables[tabbables.length - 1] : tabbables[0];
+        if (target == null) return;
+        e.preventDefault();
+        target.focus();
+        return;
+      }
       // Every other chord belongs to the command dispatcher, and
       // Shift+arrow to nobody — there is no keyboard multiselect.
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-      // Tab passes into the row's interactive content; Enter ships
-      // unbound.
-      if (e.key === "Tab" || e.key === "Enter") return;
+      // Enter ships unbound.
+      if (e.key === "Enter") return;
       if (e.key === " ") {
         // A focused button owns Space — pressing it is how a button is
         // activated. The same exemption in spirit as the editable-target
@@ -199,7 +248,7 @@ export function useGridview({
           break;
       }
     },
-    [adapter, cursor, moveCursor, onPrimaryAction, pageRows, selectionOrder],
+    [adapter, cursor, moveCursor, onPrimaryAction, pageRows, rowDomId, selectionOrder],
   );
 
   const onRowClick = useCallback(

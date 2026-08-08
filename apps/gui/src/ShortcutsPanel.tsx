@@ -131,7 +131,7 @@ export function ShortcutsPanel(_props: IDockviewPanelProps) {
     { keys: "Home / End", what: "Jump to the first or last row" },
     { keys: "PageUp / PageDown", what: "Move the cursor one viewport" },
     { keys: display("Mod+A"), what: "Select every selectable row the view holds" },
-    { keys: "Tab", what: "Move into the row's own controls" },
+    { keys: "Tab / Shift+Tab", what: "Move into the cursor row's own controls, first or last" },
     { keys: "Space", what: "Run the panel's primary action, where it defines one" },
     { keys: "Enter", what: "Unbound — free to bind to a command above" },
   ];

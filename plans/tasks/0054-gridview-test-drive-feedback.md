@@ -89,6 +89,26 @@ focus-on-click get it.
   and after. `SectionHeaderRow` (the section header's own drag grip)
   is untouched — out of scope for item 1, which is signal rows only.
 
+- **2026-08-07 (item 2, the Tab contract in the shared layer):** Landed
+  on `task54b-gridview-tab-contract`. The keyboard-only path now works
+  end to end from `useGridview.ts`: Tab pressed on the container moves
+  focus to the cursor row's first tabbable control (`document.getElementById(rowDomId(cursor))`,
+  `tabindex="-1"` and disabled controls skipped), Shift+Tab to its last,
+  and both leave the press to the browser when the cursor names a row
+  that is not on screen or the row has no controls. Focus inside a row
+  keeps native Tab. Enter/Escape on an editable inside the container
+  reclaims focus for the container **only when the press left focus on
+  `<body>`** — the editors blur themselves, and this rescues what they
+  drop without fighting one that moves focus deliberately.
+  `docs/adr/0044-gridview-interaction-base.md` gains the paragraph
+  describing all of that and its key-table row now reads
+  "Tab / Shift+Tab"; `ShortcutsPanel.tsx`'s user-facing table matches.
+  Tests: 3 failing RBS DOM tests written first
+  (`RbsPanel.gridview.dom.test.tsx`), then 6 shared-layer tests in
+  `useGridview.dom.test.tsx` replacing the one that pinned "the grid
+  must not consume Tab". `apps/gui` suite 1485/1485 → 1492/1492 (130
+  files), `pnpm --dir apps/gui build` green.
+
 ## Blockers / side effects
 
 - Verified the other gridview-migrated surfaces already drag whole-row
