@@ -1306,16 +1306,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return (s: SignalRef) => resolve(signalRefKey(s), s.colorPick);
   }, [generatorIndexes]);
 
+  /// The filters this plot's `sources` wiring can resolve through, held
+  /// by their own identity rather than the registry's — same reason as
+  /// `colorMapElements` above, and this one matters more: it feeds the
+  /// `catalog` prop and through it every derived value the areas read.
+  const filterElements = useStableMembers(
+    registry.entries.filter((e) => e.element.kind === "filter").map((e) => e.element),
+  );
   /// The catalog restricted to the plot's effective `sources` wiring
   /// (`signalSelection.ts`): the picker and the patterns only offer /
   /// match signals on buses this plot can actually sample. Unwired or
   /// `"*"` = the full catalog.
-  /// Keyed on the filter elements, not on `registry.entries` — see
-  /// `colorMapElements` above; this one feeds the `catalog` prop, and
-  /// through it every derived value the areas read.
-  const filterElements = useStableMembers(
-    registry.entries.filter((e) => e.element.kind === "filter").map((e) => e.element),
-  );
   const scopedCatalog = useMemo(() => {
     const filterSources = new Map<string, readonly string[]>(
       filterElements.map((e) => [e.id, (e as { sources?: string[] }).sources ?? []]),
