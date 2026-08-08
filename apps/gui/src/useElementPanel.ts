@@ -93,8 +93,8 @@ export interface ElementSources {
 
 /// Sources-picker wiring for an element whose kind carries a `sources`
 /// field (trace, plot, signals, filter — not transmit/rbs, which are
-/// sinks/replayers with no sources concept, nor colormap, an ambient
-/// element not wired through the graph). `["*"]` (every bus) is the
+/// sinks/replayers with no sources concept, nor colormap / generator,
+/// ambient elements not wired through the graph). `["*"]` (every bus) is the
 /// defensive default for a still-healing or legacy-shaped element, so
 /// the picker never reads from `undefined`.
 /// The unwired default ("every bus"), as one shared array. A fresh
@@ -109,7 +109,11 @@ export function useElementSources(
   element: ProjectElement | undefined,
 ): ElementSources {
   const currentSources =
-    element && element.kind !== "transmit" && element.kind !== "rbs" && element.kind !== "colormap"
+    element &&
+    element.kind !== "transmit" &&
+    element.kind !== "rbs" &&
+    element.kind !== "colormap" &&
+    element.kind !== "generator"
       ? element.sources ?? ALL_BUSES
       : ALL_BUSES;
   // Filters available to wire upstream of this element. Exclude any

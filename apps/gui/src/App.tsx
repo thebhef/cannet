@@ -46,6 +46,7 @@ import { SignalsPanel } from "./SignalsPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
 import { ColorMapPanel } from "./ColorMapPanel";
+import { GeneratorPanel } from "./GeneratorPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DbcPanel } from "./DbcPanel";
 import { SettingsPanel } from "./SettingsPanel";
@@ -112,6 +113,7 @@ import {
   PROJECT_PANEL_COMPONENT,
   PROJECT_PANEL_ID,
   COLORMAP_PANEL_COMPONENT,
+  GENERATOR_PANEL_COMPONENT,
   RBS_PANEL_COMPONENT,
   SETTINGS_PANEL_COMPONENT,
   ABOUT_PANEL_COMPONENT,
@@ -188,6 +190,7 @@ const DOCK_COMPONENTS = {
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
   [RBS_PANEL_COMPONENT]: RbsPanel,
   [COLORMAP_PANEL_COMPONENT]: ColorMapPanel,
+  [GENERATOR_PANEL_COMPONENT]: GeneratorPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DbcPanel,
@@ -456,6 +459,10 @@ export function App() {
         // A signal value→color map (ADR 0029): the target signal and
         // rules are filled in via its config panel; it starts inert.
         return { kind, id, name, busId: null, messageId: 0, extended: false, signalName: "", rules: [] };
+      case "generator":
+        // Signal-name generator rules (ADR 0026): written in its own
+        // editor, so a fresh one claims no signal.
+        return { kind, id, name, rules: [] };
       default:
         return { kind, id, name, sources: ["*"] };
     }
@@ -2033,6 +2040,7 @@ export function App() {
     "panel.add.transmit": () => addPanel("transmit"),
     "panel.add.rbs": () => addPanel("rbs"),
     "panel.add.colormap": () => addPanel("colormap"),
+    "panel.add.generator": () => addPanel("generator"),
     "project.saveAll": () => void handleSaveAllRef.current(),
     "project.clearColors": () => setConfirmingClearColors(true),
     "rbs.killSwitch": toggleRbsKillSwitch,
@@ -2420,6 +2428,7 @@ export function App() {
     { id: "panel.add.transmit", label: "Add transmit panel" },
     { id: "panel.add.rbs", label: "Add RBS panel" },
     { id: "panel.add.colormap", label: "Add color map" },
+    { id: "panel.add.generator", label: "Add generator" },
     { id: "panel.show.dbc", label: "DBC panel" },
     { id: "panel.show.projectGraph", label: "Graph panel" },
     { id: "panel.show.events", label: "Events panel" },

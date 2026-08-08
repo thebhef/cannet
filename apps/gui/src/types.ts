@@ -398,6 +398,19 @@ export interface ColorRule {
   color: string;
 }
 
+/// One rule in a {@link ProjectElement} `generator`: a partial-match
+/// regex over a signal's display name whose first capture group,
+/// parsed as an integer, is that signal's color-wheel slot — so
+/// `Cell(\d+)` gives `Cell1…Cell16` sixteen aligned slots wherever
+/// they appear (ADR 0026). Rules are ordered and the first that both
+/// matches and yields a usable capture wins; `enabled: false` parks a
+/// rule without deleting it. The pattern is user input and is
+/// compiled and evaluated **host-side** — never by a JS `RegExp`.
+export interface GeneratorRule {
+  pattern: string;
+  enabled: boolean;
+}
+
 /// A view-backed element's persisted panel configuration: an opaque
 /// blob the panel writes and reads, the model stores without
 /// interpreting. Each panel owns its own keys and parses them
@@ -427,6 +440,18 @@ export type ProjectElement =
       extended: boolean;
       signalName: string;
       rules: ColorRule[];
+    }
+  | {
+      /// An ambient, project-scoped list of {@link GeneratorRule}s
+      /// (ADR 0026): not a graph node, not wired through `sources`.
+      /// Every surface that colors a signal resolves through the
+      /// project's generators before falling back to the identity
+      /// hash. Several generator elements may coexist; their rules
+      /// concatenate in element order.
+      kind: "generator";
+      id: string;
+      name?: string;
+      rules: GeneratorRule[];
     }
   | {
       kind: "transmit";

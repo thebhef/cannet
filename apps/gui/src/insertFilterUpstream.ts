@@ -20,7 +20,8 @@ export function insertFilterUpstream(
     !current ||
     current.kind === "transmit" ||
     current.kind === "rbs" ||
-    current.kind === "colormap"
+    current.kind === "colormap" ||
+    current.kind === "generator"
   ) {
     return null;
   }

@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react";
 
-import type { ColorRule, ProjectElement, ProjectElementKind } from "./types";
+import type { ColorRule, GeneratorRule, ProjectElement, ProjectElementKind } from "./types";
 import type { TraceState } from "./trace";
 
 /// A registry entry: the persisted project element plus its runtime
@@ -67,7 +67,8 @@ export function isProjectElement(v: unknown): v is ProjectElement {
       o.kind === "transmit" ||
       o.kind === "filter" ||
       o.kind === "rbs" ||
-      o.kind === "colormap") &&
+      o.kind === "colormap" ||
+      o.kind === "generator") &&
     typeof o.id === "string"
   );
 }
@@ -127,6 +128,14 @@ export function normalizeElement(el: ProjectElement): ProjectElement {
       rules: normalizeColorRules(o.rules),
     };
   }
+  if (el.kind === "generator") {
+    // Signal-name generator rules (ADR 0026): ambient like a colormap,
+    // so no `sources`. Rule order is the evaluation order, so the list
+    // is filtered — never reordered — and a rule with no usable
+    // pattern is dropped rather than loaded as a blank match-all.
+    const o = el as unknown as { rules?: unknown };
+    return { ...el, name, rules: normalizeGeneratorRules(o.rules) };
+  }
   const raw = (el as unknown as { sources?: unknown }).sources;
   // `config` (model-owned panel state — see `PanelViewConfig`): a
   // view-backed element's panel setup. Keep a plain object, drop
@@ -151,6 +160,23 @@ function normalizeColorRules(v: unknown): ColorRule[] {
     if (typeof o.min === "number" && typeof o.max === "number" && typeof o.color === "string") {
       out.push({ min: o.min, max: o.max, color: o.color });
     }
+  }
+  return out;
+}
+
+/// Coerce an unknown value to a well-formed `GeneratorRule[]` (ADR
+/// 0026), dropping any entry without a string `pattern`. Only an
+/// explicit `enabled: false` disables a rule — a missing or malformed
+/// flag reads as enabled, so a project saved before the flag existed
+/// keeps working.
+function normalizeGeneratorRules(v: unknown): GeneratorRule[] {
+  if (!Array.isArray(v)) return [];
+  const out: GeneratorRule[] = [];
+  for (const r of v) {
+    if (r == null || typeof r !== "object") continue;
+    const o = r as { pattern?: unknown; enabled?: unknown };
+    if (typeof o.pattern !== "string") continue;
+    out.push({ pattern: o.pattern, enabled: o.enabled !== false });
   }
   return out;
 }

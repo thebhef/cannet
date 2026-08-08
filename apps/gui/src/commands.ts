@@ -22,6 +22,7 @@ export const FOCUSED_PANEL_KINDS = [
   "transmit",
   "rbs",
   "colormap",
+  "generator",
   "project",
   "project-graph",
   "system-messages",
@@ -79,6 +80,7 @@ const RENAMEABLE_PANEL_KINDS: readonly (FocusedPanelKind | null)[] = [
   "transmit",
   "rbs",
   "colormap",
+  "generator",
 ];
 const renameablePanelFocused = (ctx: CommandContext) =>
   RENAMEABLE_PANEL_KINDS.includes(ctx.focusedPanelKind);
@@ -107,6 +109,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.add.transmit", label: "Add transmit panel", category: "Panels" },
   { id: "panel.add.rbs", label: "Add RBS panel", category: "Panels" },
   { id: "panel.add.colormap", label: "Add color map", category: "Panels" },
+  { id: "panel.add.generator", label: "Add generator", category: "Panels" },
   { id: "project.saveAll", label: "Save all", category: "Project" },
   {
     id: "project.clearColors",

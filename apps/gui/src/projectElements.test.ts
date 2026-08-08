@@ -17,6 +17,7 @@ describe("isProjectElement", () => {
     expect(isProjectElement({ kind: "transmit", id: "x" })).toBe(true);
     expect(isProjectElement({ kind: "rbs", id: "r" })).toBe(true);
     expect(isProjectElement({ kind: "colormap", id: "c" })).toBe(true);
+    expect(isProjectElement({ kind: "generator", id: "g" })).toBe(true);
   });
 
   it("rejects unknown kinds, non-strings, and primitives", () => {
@@ -166,6 +167,52 @@ describe("normalizeElement", () => {
     });
     // A colormap never gains a `sources` field (it's not a consumer).
     expect((normalizeElement(bare) as { sources?: unknown }).sources).toBeUndefined();
+  });
+
+  it("normalises a generator: ordered rules, malformed ones dropped, enabled defaults on", () => {
+    // A bare / hand-edited generator loads inert and editable.
+    const bare = { kind: "generator", id: "g" } as unknown as ProjectElement;
+    expect(normalizeElement(bare)).toMatchObject({ kind: "generator", rules: [] });
+    // A generator never gains a `sources` field (it's ambient, not a consumer).
+    expect((normalizeElement(bare) as { sources?: unknown }).sources).toBeUndefined();
+
+    const full = {
+      kind: "generator",
+      id: "g",
+      rules: [
+        { pattern: "Cell(\\d+)" }, // no flag → enabled
+        { pattern: "Temp(\\d+)", enabled: false },
+        { enabled: true }, // no pattern → dropped
+        { pattern: 7 }, // non-string pattern → dropped
+        "nope", // not an object → dropped
+        { pattern: "Mod(\\d+)", enabled: "yes" }, // only `false` disables
+      ],
+    } as unknown as ProjectElement;
+    // Rule order is the evaluation order, so it must survive verbatim.
+    expect(normalizeElement(full)).toMatchObject({
+      rules: [
+        { pattern: "Cell(\\d+)", enabled: true },
+        { pattern: "Temp(\\d+)", enabled: false },
+        { pattern: "Mod(\\d+)", enabled: true },
+      ],
+    });
+  });
+
+  it("round-trips a generator through a project file's JSON", () => {
+    // `elements` is stored opaquely by the host, so the save/load
+    // round-trip is JSON out and `normalizeElement` back in.
+    const saved: ProjectElement = {
+      kind: "generator",
+      id: "g",
+      name: "Cells",
+      rules: [
+        { pattern: "Cell(\\d+)", enabled: true },
+        { pattern: "Mod(\\d+)", enabled: false },
+      ],
+    };
+    const loaded = JSON.parse(JSON.stringify(saved)) as unknown;
+    expect(isProjectElement(loaded)).toBe(true);
+    expect(normalizeElement(loaded as ProjectElement)).toEqual(saved);
   });
 
   it("preserves a well-formed `config` blob on a view-backed element", () => {

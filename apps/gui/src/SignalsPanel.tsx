@@ -378,7 +378,11 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   // the rows to the buses this view consumes.
   const element = registry.get(elementId)?.element;
   const currentSources =
-    element && element.kind !== "transmit" && element.kind !== "rbs" && element.kind !== "colormap"
+    element &&
+    element.kind !== "transmit" &&
+    element.kind !== "rbs" &&
+    element.kind !== "colormap" &&
+    element.kind !== "generator"
       ? element.sources ?? ["*"]
       : ["*"];
   const availableFilters = useMemo(
