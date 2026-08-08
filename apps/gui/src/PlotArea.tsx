@@ -396,6 +396,9 @@ interface PlotAreaProps {
    * reserved plot height) while the side-panel rows stay visible so
    * they remain un-hideable (ADR 0026). */
   collapsed?: boolean;
+  /** True when this collapsed axis heads a contiguous run of collapsed
+   * axes — it draws the run's single shared drag handle (ADR 0026). */
+  collapsedRunHead?: boolean;
   /** True when this axis is the shared per-unit enum-lanes axis (all of
    * an area's enums stacked as logic-analyzer lanes, ADR 0026). The
    * lane render lands in a later slice; today the axis draws as plain
@@ -650,6 +653,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     area,
     flexGrow,
     collapsed,
+    collapsedRunHead,
     enumLanes,
     label,
     isFirst,
@@ -2622,7 +2626,30 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           onClose={() => setAxisMenu(null)}
         />
       )}
-      {collapsed && <div className="plot-area-placeholder" ref={placeholderRef} />}
+      {collapsed && (
+        <div className="plot-area-placeholder" ref={placeholderRef}>
+          {collapsedRunHead && (
+            // One handle per contiguous run of collapsed axes, on the
+            // run's first axis (ADR 0026). It drags this axis's parent
+            // area, the same payload the head grip carries — a
+            // collapsed area has to stay reorderable, and the empty
+            // canvas column is the obvious thing to grab. A drop lands
+            // on whichever area's row it was released over, so
+            // targeting a specific area inside a run means dropping on
+            // that area's own side-panel strip.
+            <div
+              className="plot-area-collapsed-handle"
+              aria-label="reorder collapsed plot area"
+              title="drag to reorder this plot area"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData(PLOT_AREA_DND_MIME, parentAreaId);
+                e.dataTransfer.effectAllowed = "move";
+              }}
+            />
+          )}
+        </div>
+      )}
       {buildingFirstSample && !collapsed && (
         // Overlaid on the canvas column rather than placed in the flow,
         // so nothing moves when it clears. The side panel keeps its own

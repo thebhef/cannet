@@ -224,6 +224,7 @@ import {
   type AxisWeights,
   applySplitterDelta,
   axisWeightsFromRaw,
+  collapsedRunHeads,
   equalizePair,
   pruneAxisWeights,
   resolveAxisWeights,
@@ -1415,6 +1416,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     () => derivedAreaConfigs.map((d) => d.collapsed),
     [derivedAreaConfigs],
   );
+  /// Which collapsed axis heads each contiguous run of them — one
+  /// shared drag handle per run rather than one per axis (ADR 0026).
+  const runHeadFlags = useMemo(() => collapsedRunHeads(collapsedFlags), [collapsedFlags]);
 
   // Iterate the *derived* axes, not the parent areas: `reportSeries`
   // stores each axis's sampled series under its derived id (which in
@@ -1710,6 +1714,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 area={d.area}
                 flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
                 collapsed={d.collapsed}
+                collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}
                 yScale={axisScales[d.area.id]}
               label={

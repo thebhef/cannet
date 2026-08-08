@@ -2151,6 +2151,36 @@ button.trace-event-swatch {
 .plot-area-placeholder {
   flex: 1 1 auto;
   min-width: 0;
+  position: relative;
+}
+/* The shared drag handle for a contiguous run of collapsed axes: one
+   per run, drawn on the run's first axis (ADR 0026). Thin visual line,
+   padded hit area — the band a collapsed run leaves is meant to read as
+   a hairline, but it still has to be grabbable. */
+.plot-area-collapsed-handle {
+  position: absolute;
+  left: 0.4rem;
+  right: 0.4rem;
+  top: 50%;
+  height: 10px;
+  margin-top: -5px;
+  cursor: grab;
+}
+.plot-area-collapsed-handle::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 4px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--border-subtle);
+}
+.plot-area-collapsed-handle:hover::before {
+  background: var(--text-dim);
+}
+.plot-area-collapsed-handle:active {
+  cursor: grabbing;
 }
 .plot-area.collapsed .plot-area-signals {
   max-height: 8rem;

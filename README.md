@@ -688,7 +688,10 @@ resample at the end.
   however many axes its y-axis mode stacks, and the state persists in
   the project file. An area whose signals are **all hidden** collapses
   on its own (there is nothing to draw); its toggle is inert until you
-  un-hide one.
+  un-hide one. Stacked collapsed areas leave a band of empty canvas
+  column with **one drag handle for the whole run** — grab it to
+  reorder the run's first area; to move a specific area buried inside
+  a run, drag its own grip or drop onto its side-panel strip.
 - **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
   wheel** pans x (synced); **right-drag** box-zooms x; **⌘/ctrl +
   wheel** zooms y on the hovered area (buried — y is usually set with

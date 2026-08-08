@@ -372,7 +372,15 @@ below:
   parent head beside the reorder grip (one per logical area, like the
   remove ×), and is inert on an area collapsed only by the all-hidden
   rule: there is no expanded form to go to, and its rows are already
-  listed for un-hiding.
+  listed for un-hiding. A contiguous run of collapsed axes carries **one
+  shared drag handle**, on the run's first axis
+  (`collapsedRunHeads`) — a band of empty canvas column reads as one
+  thing to grab, and a handle per collapsed axis would be a ladder of
+  them saying nothing extra. It drags that axis's parent area with the
+  same payload the head grip carries, so a collapsed area stays
+  reorderable; a drop targets whichever area's row it was released
+  over, so an area buried inside a run is targeted by dropping on its
+  own side-panel strip.
 
 What's still rough:
 

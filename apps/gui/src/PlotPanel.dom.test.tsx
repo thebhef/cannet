@@ -2835,6 +2835,69 @@ describe("PlotPanel area collapse", () => {
     expect(screen.getAllByRole("button", { name: "expand plot area" }).length).toBe(1);
   });
 
+  it("gives a contiguous run of collapsed axes one shared drag handle", () => {
+    // Four axes, the middle two collapsed: the run shows a single
+    // handle (on its first axis), not one per collapsed axis.
+    const registry = makeRegistry({
+      id: "el-collapse-run",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            yAxisMode: "individual",
+            signals: [
+              sig("Top", "rpm"),
+              sig("Mid1", "V", true),
+              sig("Mid2", "degC", true),
+              sig("Bottom", "A"),
+            ],
+          },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-collapse-run" }, registry });
+    const areas = Array.from(document.querySelectorAll(".plot-area")) as HTMLElement[];
+    expect(areas.map((a) => a.classList.contains("collapsed"))).toEqual([
+      false,
+      true,
+      true,
+      false,
+    ]);
+    const handles = document.querySelectorAll(".plot-area-collapsed-handle");
+    expect(handles.length).toBe(1);
+    expect(areas[1].contains(handles[0])).toBe(true);
+  });
+
+  it("reorders the panel by dragging a collapsed run's shared handle", () => {
+    // A collapsed area still has to be draggable — that is what the
+    // run's handle is for. It carries the run's first area, and a drop
+    // targets the area whose row it was released on.
+    const registry = makeRegistry({
+      id: "el-collapse-drag",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("TopSignal", "rpm")] },
+          { id: "a2", collapsed: true, signals: [sig("BottomSignal", "rpm")] },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-collapse-drag" }, registry });
+    const stackedSignal = () =>
+      Array.from(document.querySelectorAll(".plot-area")).map(
+        (el) => el.querySelector(".plot-signal-name")?.textContent,
+      );
+    expect(stackedSignal()).toEqual(["TopSignal", "BottomSignal"]);
+
+    const handle = document.querySelector(".plot-area-collapsed-handle")!;
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(handle, { dataTransfer: dt });
+    const first = document.querySelectorAll(".plot-area")[0];
+    fireEvent.dragOver(first, { dataTransfer: dt });
+    fireEvent.drop(first, { dataTransfer: dt });
+
+    expect(stackedSignal()).toEqual(["BottomSignal", "TopSignal"]);
+  });
+
   it("gives an area with no visible signals no expand affordance to click", () => {
     // A fully-hidden area collapses because there is nothing to draw —
     // expanding it would only reserve height for a blank canvas. Its
