@@ -454,6 +454,10 @@ interface PlotAreaProps {
    * reserved plot height) while the side-panel rows stay visible so
    * they remain un-hideable (ADR 0026). */
   collapsed?: boolean;
+  /** True when the *solo* mask (`plotSolo.ts`), not the user's own
+   * hide state, is what left this axis with nothing to draw — the
+   * head toggle's inert state says so instead of blaming hidden rows. */
+  collapsedBySolo?: boolean;
   /** True when this collapsed axis heads a contiguous run of collapsed
    * axes — it draws the run's single shared drag handle (ADR 0026). */
   collapsedRunHead?: boolean;
@@ -727,6 +731,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     area,
     flexGrow,
     collapsed,
+    collapsedBySolo,
     collapsedRunHead,
     enumLanes,
     label,
@@ -2532,10 +2537,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // Show / hide series in place when the per-signal `hidden` flags
   // change — no uPlot re-create needed (`signalSetKey` excludes it).
   // `setSeries` alone left the area blank until the next pan/zoom
-  // forced a resample, so take that proven path directly: drop the
-  // fetch memo and resample, which re-sets the data and re-pins the
-  // scales the same way a zoom does. One host fetch per toggle — a
-  // user gesture, not a hot path.
+  // forced a resample, because what a visibility change really moves is
+  // the *normalisation* (a hidden series contributes nothing to its
+  // group's scale) and that only happens on a resample. So resample —
+  // but from the window already cached, not from the host: the fetch
+  // covers hidden signals too, so every sample this needs is in hand
+  // and a round-trip would return the same bytes. That matters beyond
+  // one swatch click: solo's step mode flips visibility per keystroke.
   const hiddenKey = signals.map((s) => (s.hidden ? "1" : "0")).join("");
   const hiddenKeyPrevRef = useRef(hiddenKey);
   useEffect(() => {
@@ -2544,7 +2552,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     const u = uplotRef.current;
     if (!u) return;
     signals.forEach((s, i) => u.setSeries(i + 1, { show: !s.hidden }));
-    resetRange();
+    // Falls back to a real fetch on its own when there is no cached
+    // window yet (`resample` reads `currentRange()` through this flag).
+    repaintFromCacheRef.current = true;
     void resampleRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hiddenKey]);
@@ -2853,7 +2863,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               disabled={!!collapsed && area.collapsed !== true}
               title={
                 !!collapsed && area.collapsed !== true
-                  ? "every signal on this area is hidden — un-hide one to expand it"
+                  ? collapsedBySolo
+                    ? "no signal on this area matches the solo pattern — clear solo to expand it"
+                    : "every signal on this area is hidden — un-hide one to expand it"
                   : collapsed
                     ? "expand this plot area"
                     : "collapse this plot area — it gives up its plot height, its rows stay listed"

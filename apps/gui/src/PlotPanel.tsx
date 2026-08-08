@@ -235,6 +235,17 @@ import {
   selectPlotSignal,
   type PlotSignalSelection,
 } from "./plotAreaSelection";
+import {
+  SOLO_OFF,
+  soloFromRaw,
+  soloMaskSignals,
+  soloMatches,
+  soloPatternInvalid,
+  soloRegex,
+  soloToParams,
+  soloVisibleKeys,
+  type SoloState,
+} from "./plotSolo";
 import { setSignalDragData } from "./dragSignals";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
@@ -296,6 +307,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [axisScales, setAxisScales] = useState<AxisScales>(() =>
     axisScalesFromRaw(savedConfig?.axisScales),
   );
+  /** Solo (`plotSolo.ts`): a panel-wide regex over the series display
+   * names, masking everything it doesn't match out of the *view*. It
+   * never rewrites a series' persisted `hidden` flag — clearing solo
+   * restores exactly the visibility the user had. Persisted with the
+   * panel config like the other view params, sparsely (absent = off). */
+  const [solo, setSolo] = useState<SoloState>(() => soloFromRaw(savedConfig?.solo));
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   /** The signal rows the user has selected, in one logical area
    * (`plotAreaSelection.ts`). Transient view state — deliberately not in
@@ -714,10 +731,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
       showPoints,
       axisWeights,
       axisScales,
+      solo: soloToParams(solo),
     });
   }, [
     persist,
     areas,
+    solo,
     followLive,
     cursorMode,
     measEnabled,
@@ -1152,6 +1171,32 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [areas, scopedCatalog, busNameLookup],
   );
 
+  /// The solo match list — every plotted series whose display name the
+  /// pattern matches, in panel order (areas in stack order, rows in area
+  /// order). Taken from the *effective* areas, so pattern-derived rows
+  /// are solo-able like manual picks. Empty while the pattern is empty
+  /// or unparseable, which is what makes an invalid pattern inert.
+  const soloMatchList = useMemo(
+    () => soloMatches(effectiveAreas, solo.pattern),
+    [effectiveAreas, solo.pattern],
+  );
+  const soloActive = soloRegex(solo.pattern) != null;
+  /// The `soloMaskKey`s solo leaves visible — every match, or the
+  /// stepped / checked subset of them.
+  const soloVisible = useMemo(
+    () => soloVisibleKeys(soloMatchList, solo.indices),
+    [soloMatchList, solo.indices],
+  );
+  const soloInvalid = soloPatternInvalid(solo.pattern);
+  /// Editing the pattern drops any stepped / checked subset: the
+  /// positions index the *old* match list, and a new pattern is a new
+  /// list — so a fresh pattern always starts as the matches-only view.
+  const setSoloPattern = useCallback(
+    (pattern: string) => setSolo({ pattern, indices: null }),
+    [],
+  );
+  const clearSolo = useCallback(() => setSolo(SOLO_OFF), []);
+
   /// Per-area manual-pick keys (from *stored* state, not the effective
   /// list) — how the row renderer tells a manual pick from a
   /// pattern-derived row (which gets no per-row × and a pattern badge).
@@ -1312,38 +1357,53 @@ export function PlotPanel(props: IDockviewPanelProps) {
       // The parent area's own collapse flag drove it (as opposed to the
       // all-hidden rule) — what the head toggle can undo.
       collapsedByFlag: boolean;
+      // Solo left this axis with nothing visible — the same view-level
+      // collapse as all-hidden, and equally not the area's own flag.
+      collapsedBySolo: boolean;
     }> = [];
     const isEnum = (k: string) => enumKeys.has(k);
     for (const a of effectiveAreas) {
       const mode = a.yAxisMode ?? "unified";
       const axes = deriveAxesForArea(a.id, a.signals, mode, isEnum);
       axes.forEach((ax, i) => {
+        // Solo masks *after* the axes are derived, never before: the
+        // axis set (and so every id keyed by it — weights, manual
+        // ranges, uPlot instances) is a function of the area's signals
+        // and its y-axis mode, and a view mask must not move it. What
+        // the mask changes is only which of an axis's series draw
+        // (`plotSolo.ts`) — the same lever `hidden` pulls, composed on
+        // top of it and never written back.
+        const signals = soloActive ? soloMaskSignals(a.id, ax.signals, soloVisible) : ax.signals;
         // The derived `PlotAreaConfig` carries the axis's slice of
         // signals. `patterns` is preserved only on the first
         // derived axis so the filter UI / status bar doesn't render N
         // times for one logical area.
         const derivedArea: PlotAreaConfig = {
           id: ax.id,
-          signals: ax.signals,
+          signals,
           yAxisMode: a.yAxisMode,
           primarySignalKey: a.primarySignalKey,
           patterns: i === 0 ? a.patterns : undefined,
           collapsed: a.collapsed,
         };
+        const allHidden = signals.length > 0 && signals.every((s) => s.hidden);
         out.push({
           area: derivedArea,
           parentArea: a,
           isFirstOfParent: i === 0,
           subtitle: ax.subtitle,
           enumLanes: ax.kind === "enum-lanes",
-          collapsed:
-            a.collapsed === true || (ax.signals.length > 0 && ax.signals.every((s) => s.hidden)),
+          collapsed: a.collapsed === true || allHidden,
           collapsedByFlag: a.collapsed === true,
+          // An axis whose only reason to be blank is the solo mask —
+          // it collapses like any all-hidden axis, but says why, and
+          // its area's persisted `collapsed` stays untouched.
+          collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
         });
       });
     }
     return out;
-  }, [effectiveAreas, enumKeys]);
+  }, [effectiveAreas, enumKeys, soloActive, soloVisible]);
 
   /// Per-*derived-axis* slice of the selection — the shape that keeps a
   /// selection click off the memoised areas that hold none of the
@@ -1631,6 +1691,38 @@ export function PlotPanel(props: IDockviewPanelProps) {
           />
         </label>
         <span className="plot-toolbar-sep" />
+        <label
+          className="plot-solo"
+          title="solo: show only the series whose name matches this regex (case-insensitive, partial). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back."
+        >
+          solo
+          <input
+            className="plot-solo-input"
+            aria-label="solo pattern"
+            aria-invalid={soloInvalid || undefined}
+            placeholder="regex"
+            value={solo.pattern}
+            onChange={(e) => setSoloPattern(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                clearSolo();
+              }
+            }}
+          />
+          {soloInvalid && <span className="plot-solo-error">bad regex</span>}
+          {solo.pattern !== "" && (
+            <button
+              className="plot-solo-clear"
+              aria-label="clear solo"
+              title="clear solo — every series goes back to its own visibility"
+              onClick={clearSolo}
+            >
+              ×
+            </button>
+          )}
+        </label>
+        <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
           cursors
           <Combobox
@@ -1786,6 +1878,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 area={d.area}
                 flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
                 collapsed={d.collapsed}
+                collapsedBySolo={d.collapsedBySolo}
                 collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}
                 yScale={axisScales[d.area.id]}

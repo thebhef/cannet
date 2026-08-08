@@ -3172,6 +3172,44 @@ button.trace-event-swatch {
   font: inherit;
   font-size: 0.8rem;
 }
+/* Solo control: the panel-wide "show only these series" regex box, its
+   step controls and its position read-out. */
+.plot-solo {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.plot-solo-input {
+  width: 7rem;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.plot-solo-input[aria-invalid="true"] {
+  border-color: var(--danger-text);
+}
+.plot-solo-error {
+  color: var(--danger-text);
+  font-size: 0.72rem;
+}
+.plot-solo-clear {
+  background: none;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+}
+.plot-solo-clear:hover {
+  background: var(--surface-control-hover);
+}
 .plot-perf {
   margin-left: auto;
   font-size: 0.72rem;

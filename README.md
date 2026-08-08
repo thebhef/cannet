@@ -705,6 +705,19 @@ resample at the end.
   once, the same convention the DBC panel's multi-select drag uses;
   dragging a row that isn't selected drags only that row and leaves the
   selection as it was.
+- **Solo (show only these series).** The toolbar's **solo** box takes a
+  regex — case-insensitive and partial, so `Cell16` finds `Cell16`
+  wherever it sits in a signal's name — and masks every series it
+  doesn't match out of the *view*, across every area of the panel. It
+  is a view mask, not a bulk hide: no series' own hide state is
+  touched, so clearing the box (or **Escape**, or the **×**) brings the
+  full view back exactly as it was, and a signal you really did hide
+  stays hidden. An unparseable pattern is inert — the box marks itself
+  **bad regex** and nothing is filtered — so a half-typed regex never
+  blanks the plot. An area left with no visible series gives up its
+  plot height like any all-hidden area, without touching its own
+  collapse toggle. The pattern is saved with the panel in the project
+  file.
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives
