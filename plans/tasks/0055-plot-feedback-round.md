@@ -395,6 +395,88 @@ better).
     "solo masks the view, never rewrites what is hidden" decision
     paragraph and an implementation-status bullet.
 
+- **2026-08-08 (item 6, drag a plot area between panels):** Landed on
+  `task55e-area-drag` in three commits. The gesture already existed (the
+  intra-panel reorder); what it carried did not.
+  - `0763b7b` — **the pure transfer model** (`plotAreaTransfer.ts` + 12
+    tests): the payload (`{area, axisScales, sourcePanelId}`) over the
+    existing `PLOT_AREA_DND_MIME`, its tolerant decode, the key
+    arithmetic that scopes a panel's manual ranges to one area
+    (`areaAxisScales`) and re-keys them onto a copy's fresh id
+    (`rekeyAxisScales`), `copyOfArea`, `insertAreaAt`, and the claim
+    registry. **Design decision — the area payload is decoded by the
+    same parser that reads a saved project** (`areasFromParams([raw])`):
+    a transferred area and a restored one are the same thing, so there
+    is one definition of what an area is and no second field list to
+    drift.
+  - `39139c0` — **the drag source.** The grip and the collapsed run's
+    handle stop writing a bare id and call the panel, which builds both
+    payloads — the area (with its `axisScales` slice) *and* the ADR 0045
+    signal payload (the area's manual picks + its live patterns), so a
+    signal-only target reads the same gesture as an add and needs no
+    change. **Design decision — inside a plot panel the area half
+    wins**: `signalDragOver` / `signalDrop` stand down whenever the area
+    mime is in flight. Without that, the new signal half would make an
+    area drag released on a *signal row* empty the dragged area into
+    that row (the row is a signal drop target of its own); the guard is
+    one predicate and is pinned by a test. Built panel-side through refs
+    (`areasRef` / `axisScalesRef`, the `selectedRefsFor` precedent) so
+    `areaHandlers` doesn't remint on every area edit or range change.
+    `parentAreaId` was the old encoding's only reader and goes with it.
+  - `2191879` — **move / Ctrl-copy / claim.** Cross-panel drop inserts
+    at the target area's position, merges the transferred ranges, and
+    focuses the arrival. **Design decision — Ctrl is read at the drop**
+    (`e.ctrlKey` on the drop event), not at the grab and not off
+    `dataTransfer.dropEffect`: the modifier the user is holding when
+    they let go is the decision they are making, and `dropEffect` is
+    the very value webviews are inconsistent about. **Design decision —
+    the source-removal seam is a claim from the target**
+    (`claimPlotArea(sourcePanelId, areaId)` → the source panel's
+    `onPlotAreaClaimed` subscription, keyed by element id, in the same
+    React event so both panels commit together). `dragend` +
+    `dropEffect` was rejected in the ADR: the source cannot tell a move
+    from the degraded signal payload being *added* somewhere else, which
+    must leave it alone, and the target knows both. Cancelled drags
+    claim nothing by construction. **Design decision — the grip renders
+    on a single-area panel now**: reorder needs a second area, moving to
+    another panel does not, so the `reorderable` gate (and prop) went
+    away; the superseded "offers no reorder grip while a panel holds a
+    single area" test is replaced by its inverse.
+  - **Re-keying:** derived-axis ids are `areaId`, `${areaId}/u:enum`,
+    `${areaId}/u:unit:<unit>`, `${areaId}/i:<signalKey>`, so a move
+    (which keeps the id) transfers `axisScales` keys verbatim and only a
+    copy re-keys — prefix-swap on the area id, with the `a1` / `a12`
+    false-prefix case pinned. The source's stale entries need no
+    cleanup: the existing `retainedScaleIds` prune drops them the moment
+    the area leaves.
+  - Tests: `apps/gui` suite 1593 → 1613 passing (132 → 133 files) — 12
+    pure in `plotAreaTransfer.test.ts`, 9 DOM in `PlotPanel.dom.test.tsx`
+    (two new suites: the payload — full area + only that area's ranges,
+    from the grip and from a collapsed run's handle, and the row-drop
+    guard; and the cross-panel behaviour — move to the drop position
+    with series/patterns/mode/primary/collapsed and ranges under the
+    target's keys while the source loses it, Ctrl-copy with a fresh id
+    and re-keyed ranges, same-panel drop still a reorder with Ctrl held,
+    a cancelled drag changing nothing, the last-area case, and the grip
+    on a single-area panel), minus the one superseded test.
+    `pnpm --dir apps/gui build` green at every commit; the standing memo
+    guard ("re-renders no plot area when only panel-local state
+    changes") stayed green throughout.
+  - **Test-harness note:** jsdom implements no `DragEvent`, so
+    `fireEvent.drop(el, {ctrlKey: true})` builds a plain `Event` and
+    silently drops every `MouseEventInit` field — the Ctrl-copy test
+    failed as a *move* until the modifier was defined on the event
+    object itself (`dropWithCtrl` in the DOM suite). Measured with a
+    throwaway probe: a React `onDrop` saw `nativeEvent.constructor.name
+    === "Event"` and `ctrlKey === undefined`.
+  - Docs in the same commits: ADR 0045 gains the plot-area payload (and
+    the both-payloads-one-gesture rule), a `Plot area` row in the
+    drop-semantics table, the move / Ctrl-copy and target-tells-source
+    paragraphs, and a rejected-alternative for `dragend` + `dropEffect`;
+    README's plot section rewrites the grip bullet (drag within the
+    panel or onto another one, Ctrl to copy, what travels and what does
+    not) and the collapsed-run handle sentence.
+
 ## Blockers / side effects
 
 - None from item 1. No matrix cell failed; nothing to fix in that phase.
@@ -481,3 +563,24 @@ better).
   rendered result — the fetch already covers hidden signals — and it
   falls back to a real fetch when there is no cached window yet; noting
   it because the change is wider than solo.
+- Item 6, **"the area leaves the source panel" meets the one-area
+  invariant.** A plot panel always renders at least one area — that is
+  what an empty panel offers to drop into, and `areasFromParams` has
+  always manufactured one for an empty list. So a panel whose *only*
+  area is moved out keeps a fresh empty area rather than becoming an
+  empty panel. Closest faithful reading of the grooming note; recorded
+  because the literal sentence admits an empty-panel reading.
+- Item 6, **a moved area's transient per-area state does not travel.**
+  Its y-cursors (`cursorYByArea`) and last-sampled series are dropped at
+  the source and start empty at the target, along with its vertical
+  weight. The groomed payload lists the area config plus the manual
+  ranges and explicitly excludes weights, so this follows it; noting it
+  because a user who had H1/H2 placed on an area will find them gone
+  after the move.
+- Item 6, **an area drag over a plot panel shows the move cursor even
+  with Ctrl held.** `dragover` gets the mime list, never the data
+  (ADR 0045), so it cannot tell a same-panel reorder — where Ctrl means
+  nothing — from a cross-panel copy; a Ctrl-driven `dropEffect` would
+  promise "copy" on gestures that reorder. The cursor therefore says
+  "move" for every area drag and the drop decides for real. The copy
+  still happens; only the cursor does not say so.
