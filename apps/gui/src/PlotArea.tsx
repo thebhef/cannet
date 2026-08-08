@@ -1714,7 +1714,17 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       renderCostMsRef.current = performance.now() - syncStart;
       resampleBusyRef.current = false;
     }
-  }, [signals, areaId, withSuppressed, recordRate, sampleRange, currentRange, resetRange, firstSampleSettled]);
+  }, [
+    signals,
+    signalMembershipKey,
+    areaId,
+    withSuppressed,
+    recordRate,
+    sampleRange,
+    currentRange,
+    resetRange,
+    firstSampleSettled,
+  ]);
 
   const resampleRef = useRef(resample);
   useEffect(() => {
