@@ -34,6 +34,11 @@
 //! `O(segments)` with no capture rebuild scan. The un-flushed RAM-ring
 //! tail is not in the manifest: a crash loses only frames appended since
 //! the last flush.
+//!
+//! Those `O(segments)` mappings are the whole cost of a restore, and each
+//! one is latency- rather than CPU-bound, so they are taken in parallel
+//! ([`crate::seg::open_segments`]); [`DiskRawStore::reopen_timed`] reports
+//! what each phase spent and how many files it mapped.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -43,7 +48,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::byid::{ByIdIndex, BYID_PREFIX};
 use crate::record::{rebuild_payload, split_payload, MetaRecord, BUS_NONE, RECORD_SIZE};
-use crate::seg::{open_segment, remove_files_with_prefixes, Segment};
+use crate::seg::{open_segments, remove_files_with_prefixes, Segment};
 use crate::seg_chain::{evict_leading, grow_fixed};
 use crate::{RawStore, RawTraceFrame};
 
@@ -351,10 +356,10 @@ impl DiskRawStore {
         // the count the watermark implies.
         let meta_segs_count = len.div_ceil(cfg.records_per_seg);
         let phase = std::time::Instant::now();
-        for i in meta_seg_base..meta_segs_count {
-            let path = meta_seg_path(&store.dir, i);
-            store.meta_segs.push(open_segment(&path)?);
-        }
+        let meta_paths: Vec<PathBuf> = (meta_seg_base..meta_segs_count)
+            .map(|i| meta_seg_path(&store.dir, i))
+            .collect();
+        store.meta_segs = open_segments(&meta_paths)?;
         stats.meta_ms = ms_since(phase);
         stats.meta_files = store.meta_segs.len();
         // The lowest live payload byte is the first live row's payload
@@ -375,10 +380,10 @@ impl DiskRawStore {
                 + 1
         };
         let phase = std::time::Instant::now();
-        for i in store.payload_seg_base..payload_segs_count {
-            let path = payload_seg_path(&store.dir, i);
-            store.payload_segs.push(open_segment(&path)?);
-        }
+        let payload_paths: Vec<PathBuf> = (store.payload_seg_base..payload_segs_count)
+            .map(|i| payload_seg_path(&store.dir, i))
+            .collect();
+        store.payload_segs = open_segments(&payload_paths)?;
         stats.payload_ms = ms_since(phase);
         stats.payload_files = store.payload_segs.len();
         // Refill the RAM ring from the durable tail so a follow-live read
