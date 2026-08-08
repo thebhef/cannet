@@ -72,6 +72,25 @@ through the explicit materialize path — never silently by drop.
 | Signal(s) | add series | one TX frame per distinct message | add to manual picks | add + assign to that section |
 | Message | add all its signals as series | one TX frame | add its signals to picks | add + assign |
 | Pattern(s) | append to area patterns, live | rejected (no concrete message set) | new section carrying the patterns | merge into target section |
+| Plot area | reorder (same panel) / move here, Ctrl to copy | as its signal half, above | as its signal half, above | as its signal half, above |
+
+**A plot area dropped on another plot panel moves; Ctrl copies.** The
+area leaves its source panel and lands at the drop position in the
+target's stack, keeping its id — so its manual ranges land under the
+keys they already had. Holding Ctrl *at the drop* (the modifier the
+user was holding when they let go, not when they grabbed) makes it a
+copy under a fresh id, ranges re-keyed to match, and the source keeps
+its own. A drop back on the panel the drag started in is the stack
+reorder it has always been, Ctrl or no Ctrl. A panel that gives up its
+last area keeps a fresh empty one — there has to be something to drop
+into.
+
+**The target tells the source what happened.** Only the drop knows
+whether a gesture was a move, a copy, or an add of the degraded signal
+payload somewhere else, so removal from the source panel is driven from
+the target: it claims the area from the panel named by `sourcePanelId`,
+which is subscribed by element id. A cancelled drag claims nothing, so
+both panels are left exactly as they were.
 
 Within the signal view: signals dropped on a section (header or row
 span) move their assignment there — an explicit assignment, which
@@ -129,6 +148,11 @@ fields that a grip was already the proven answer.
   what it carries, not where it came from; `sourcePanelId` already
   covers the one case that needs provenance (move-vs-add within a
   panel).
+- **`dragend` + `dropEffect` to remove a moved area from its source.**
+  The source would have to infer what the target did from a value
+  webviews set inconsistently, and it cannot tell a move from the
+  degraded signal payload being *added* somewhere — which must leave
+  the source alone. The target knows both, and says so.
 - **Confirmation on wide drops.** Chrome for a reversible action.
 
 ## Consequences

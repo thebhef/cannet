@@ -172,8 +172,9 @@ export interface AxisHandlers {
    * drag: write the area's payloads onto the transfer (ADR 0045). */
   onDragArea: (dataTransfer: DataTransfer) => void;
   /** A plot-area drag was released on this area — the panel decides
-   * what that means from the payload's source panel. */
-  onDropArea: (payload: PlotAreaDragPayload) => void;
+   * what that means from the payload's source panel and whether Ctrl
+   * was held at the drop (`copy`). */
+  onDropArea: (payload: PlotAreaDragPayload, copy: boolean) => void;
   onRemoveSignal: (key: string) => void;
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (ref: SignalRef) => void;

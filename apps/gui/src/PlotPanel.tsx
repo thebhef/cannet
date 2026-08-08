@@ -252,6 +252,11 @@ import {
 import { setSignalDragData, setSignalDragPayload } from "./dragSignals";
 import {
   areaAxisScales,
+  claimPlotArea,
+  copyOfArea,
+  insertAreaAt,
+  onPlotAreaClaimed,
+  rekeyAxisScales,
   setPlotAreaDragData,
   type PlotAreaDragPayload,
 } from "./plotAreaTransfer";
@@ -820,12 +825,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return [...prev, next];
     });
   }, []);
-  const removeArea = useCallback((id: string) => {
-    setAreas((prev) => (prev.length <= 1 ? prev : prev.filter((a) => a.id !== id)));
-    // Per-axis state is keyed by *derived* axis id: the parent's id in
-    // unified mode, `${parentId}/…` per derived axis otherwise. Match
-    // both so a per-unit / individual area doesn't leak its axes'
-    // entries on removal.
+  /// Drop the transient per-axis state of an area that has left the
+  /// panel — removed, or moved to another panel. Keyed by *derived*
+  /// axis id: the parent's id in unified mode, `${parentId}/…` per
+  /// derived axis otherwise. Match both so a per-unit / individual area
+  /// doesn't leak its axes' entries. (The manual y ranges retire on
+  /// their own rule — see `retainedScaleIds`.)
+  const forgetAreaState = useCallback((id: string) => {
     const belongsToArea = (k: string) => k === id || k.startsWith(`${id}/`);
     setCursorYByArea((prev) => {
       const keys = Object.keys(prev).filter(belongsToArea);
@@ -842,6 +848,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
       return next;
     });
   }, []);
+  const removeArea = useCallback(
+    (id: string) => {
+      setAreas((prev) => (prev.length <= 1 ? prev : prev.filter((a) => a.id !== id)));
+      forgetAreaState(id);
+    },
+    [forgetAreaState],
+  );
   /// Drag-reorder: move `draggedId` to where `targetId` sits in the
   /// stack. Ordering is the `areas` array itself, so this is a pure
   /// permutation — everything else about an area (weights, cursors,
@@ -1456,12 +1469,56 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
 
   /// A plot-area drag was released on `targetAreaId`. A drag that
-  /// started in this panel is the stack reorder it has always been.
+  /// started in this panel is the stack reorder it has always been; one
+  /// from another plot panel brings the area here — a **move** by
+  /// default, a **copy** while Ctrl is held (read from the drop event,
+  /// so the decision is the one the user was holding when they let go).
+  ///
+  /// A move keeps the area's id, so its manual y ranges land under the
+  /// keys they already had; a copy is a second area, so its ranges are
+  /// re-keyed onto the fresh id. Layout weights don't travel — they
+  /// describe the stack the area left, not the area.
   const dropArea = useCallback(
-    (payload: PlotAreaDragPayload, targetAreaId: string) => {
-      if (payload.sourcePanelId === elementId) reorderArea(payload.area.id, targetAreaId);
+    (payload: PlotAreaDragPayload, targetAreaId: string, copy: boolean) => {
+      if (payload.sourcePanelId === elementId) {
+        reorderArea(payload.area.id, targetAreaId);
+        return;
+      }
+      const incoming = copy ? copyOfArea(payload.area) : payload.area;
+      const scales = copy
+        ? rekeyAxisScales(payload.axisScales, payload.area.id, incoming.id)
+        : payload.axisScales;
+      setAreas((prev) => insertAreaAt(prev, incoming, targetAreaId));
+      setAxisScales((prev) =>
+        Object.keys(scales).length === 0 ? prev : { ...prev, ...scales },
+      );
+      setFocusedAreaId(incoming.id);
+      // Only a plot panel's drop consumes the move: the source is told
+      // here, and nowhere else, so a cancelled drag — or the degraded
+      // signal payload landing on some other receptive panel, which is
+      // an add — leaves it holding its area.
+      if (!copy) claimPlotArea(payload.sourcePanelId, payload.area.id);
     },
     [elementId, reorderArea],
+  );
+
+  /// Another plot panel took one of our areas. The drop is the only
+  /// place that knows the gesture was a move rather than a copy or an
+  /// add, so the removal is driven from there, back to this panel by
+  /// element id.
+  useEffect(
+    () =>
+      onPlotAreaClaimed(elementId, (areaId) => {
+        setAreas((prev) => {
+          if (!prev.some((a) => a.id === areaId)) return prev;
+          // A plot panel always shows at least one area — there has to
+          // be something to drop into. Giving up the last one leaves a
+          // fresh empty area rather than an empty panel.
+          return prev.length === 1 ? [newPlotArea()] : prev.filter((a) => a.id !== areaId);
+        });
+        forgetAreaState(areaId);
+      }),
+    [elementId, forgetAreaState],
   );
 
   /// Per-area pattern resolutions for the filter UI (match counts,
@@ -1691,7 +1748,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onFocus: () => setFocusedAreaId(parent.id),
         onRemoveArea: () => removeArea(parent.id),
         onDragArea: (dataTransfer) => dragArea(parent.id, dataTransfer),
-        onDropArea: (payload) => dropArea(payload, parent.id),
+        onDropArea: (payload, copy) => dropArea(payload, parent.id, copy),
         onRemoveSignal: (key) => removeSignal(parent.id, key),
         onDropSignal: (ref, beforeKey, isInternalMove) =>
           placeSignal(ref, parent.id, beforeKey, isInternalMove),
@@ -2122,10 +2179,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
               // first derived axis of each parent so we don't render N
               // remove buttons for one logical area.
               removable={effectiveAreas.length > 1 && d.isFirstOfParent}
-              // Reorder is parent-area level too: one grip per logical
-              // area, and only once there is another area to trade
-              // places with.
-              reorderable={effectiveAreas.length > 1}
               // Per-axis chrome (y-axis-mode selector, filter editor,
               // primary-signal click) lives on the first derived axis
               // of each parent so the user has one source of truth.
