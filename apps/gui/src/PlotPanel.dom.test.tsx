@@ -519,6 +519,11 @@ describe("PlotPanel", () => {
     expect(document.querySelector(".plot-meas-strip")).toBeNull();
   });
 
+  it("offers no toolbar single-pick add-signal combobox — drag and patterns are the add paths", () => {
+    renderPanel();
+    expect(screen.queryByLabelText("add signal to focused plot area")).not.toBeInTheDocument();
+  });
+
   it("adds plot areas and exposes a remove affordance per area when >1", () => {
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
@@ -3108,6 +3113,225 @@ describe("PlotPanel signal-row selection", () => {
       });
       expect(selectedNames()).toEqual(["LimitNominal"]);
       expect(counter("render.PlotArea") - before).toBe(2);
+    });
+  });
+
+  /// The `areas` list persisted so far, one entry per `updateParameters`
+  /// call — used to count persists, not just read the latest one.
+  const persistCalls = (api: { updateParameters: { mock: { calls: unknown[][] } } }) =>
+    api.updateParameters.mock.calls.length;
+
+  it("bulk-hides the selection from its context menu, in one persist", async () => {
+    const { api } = renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    clickRow("EngineSpeed");
+    clickRow("LimitNominal", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "LimitNominal"]);
+
+    const before = persistCalls(api);
+    fireEvent.contextMenu(row("EngineSpeed"));
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+
+    expect(row("EngineSpeed").classList.contains("hidden")).toBe(true);
+    expect(row("LimitNominal").classList.contains("hidden")).toBe(true);
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(false);
+    // One setAreas/persist for the whole batch, not one per touched row.
+    expect(persistCalls(api) - before).toBe(1);
+  });
+
+  it("un-hides the selection from the context menu's Show", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp"]);
+    clickRow("EngineSpeed");
+    clickRow("EngineTemp", { ctrlKey: true });
+    fireEvent.contextMenu(row("EngineSpeed"));
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(row("EngineSpeed").classList.contains("hidden")).toBe(true);
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
+
+    fireEvent.contextMenu(row("EngineSpeed"));
+    fireEvent.click(screen.getByRole("button", { name: "Show" }));
+    expect(row("EngineSpeed").classList.contains("hidden")).toBe(false);
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(false);
+  });
+
+  it("bulk-hides a selection spanning a per-unit area's derived axes, in one persist", async () => {
+    // One logical area, four signals, three units → three `PlotArea`
+    // instances (ADR 0026). A range across them (49A) still resolves to
+    // one logical area's selection, so the bulk action still touches
+    // that one area's persisted `signals` list in one `setAreas` call.
+    const { api } = renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal", "LimitEffective"]);
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    expect(document.querySelectorAll(".plot-area").length).toBe(3);
+
+    clickRow("EngineSpeed");
+    clickRow("LimitNominal", { shiftKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+
+    const before = persistCalls(api);
+    fireEvent.contextMenu(row("EngineSpeed"));
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+
+    expect(row("EngineSpeed").classList.contains("hidden")).toBe(true);
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
+    expect(row("LimitNominal").classList.contains("hidden")).toBe(true);
+    expect(row("LimitEffective").classList.contains("hidden")).toBe(false);
+    expect(persistCalls(api) - before).toBe(1);
+  });
+
+  it("bulk-hides pattern-derived rows, materializing each into a manual pick, patterns left live", async () => {
+    // "Engine" matches both fixture signals under the EngineEcu/
+    // EngineData ancestry (EngineSpeed, EngineTemp) and neither Limit
+    // signal.
+    const registry = makeRegistry({
+      id: "el-sel-patterns",
+      config: { areas: [{ id: "a1", signals: [], patterns: ["Engine"] }] },
+    });
+    const { api } = renderPanel({ params: { elementId: "el-sel-patterns" }, registry });
+    await waitFor(() => expect(row("EngineSpeed")).toBeInTheDocument());
+    expect(row("EngineTemp")).toBeInTheDocument();
+    // Both start pattern-derived: a badge, no remove button.
+    expect(row("EngineSpeed").querySelector(".plot-signal-remove")).toBeNull();
+    expect(row("EngineTemp").querySelector(".plot-signal-remove")).toBeNull();
+
+    clickRow("EngineSpeed");
+    clickRow("EngineTemp", { ctrlKey: true });
+
+    const before = persistCalls(api);
+    fireEvent.contextMenu(row("EngineSpeed"));
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+
+    expect(row("EngineSpeed").classList.contains("hidden")).toBe(true);
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
+    // Materialized: each is now a manual pick (remove button, no badge).
+    expect(row("EngineSpeed").querySelector(".plot-signal-remove")).not.toBeNull();
+    expect(row("EngineTemp").querySelector(".plot-signal-remove")).not.toBeNull();
+    // The pattern itself is untouched — still live, still the one entry.
+    expect(screen.getByRole("button", { name: /patterns \(1\)/ })).toBeInTheDocument();
+    expect(persistCalls(api) - before).toBe(1);
+  });
+
+  it("right-clicking a row outside the selection replaces it with just that row", async () => {
+    // The platform norm (Explorer / Finder / VS Code): a context menu
+    // needs an unambiguous, on-screen answer to "what does this act
+    // on", so right-clicking outside the selection redefines it first.
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    clickRow("EngineSpeed");
+    clickRow("LimitNominal", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "LimitNominal"]);
+
+    fireEvent.contextMenu(row("EngineTemp"));
+    expect(selectedNames()).toEqual(["EngineTemp"]);
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
+    expect(row("EngineSpeed").classList.contains("hidden")).toBe(false);
+    expect(row("LimitNominal").classList.contains("hidden")).toBe(false);
+  });
+
+  it("right-clicking the swatch still opens the color picker, not the selection menu", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp"]);
+    clickRow("EngineSpeed");
+    fireEvent.contextMenu(row("EngineTemp").querySelector(".plot-signal-swatch")!);
+    expect(document.querySelector(".plot-selection-menu")).toBeNull();
+    // The row's own context-menu handler never saw the event either —
+    // the selection is unchanged.
+    expect(selectedNames()).toEqual(["EngineSpeed"]);
+  });
+
+  it("drags the whole selection when a selected row starts the drag", async () => {
+    // DbcPanel precedent (ADR 0045): a grab that lands on a row already
+    // in the selection carries every selected row's signal.
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    clickRow("EngineSpeed");
+    clickRow("LimitNominal", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "LimitNominal"]);
+
+    const store: Record<string, string> = {};
+    const dt = {
+      setData: (t: string, v: string) => {
+        store[t] = v;
+      },
+      getData: (t: string) => store[t] ?? "",
+      types: [] as string[],
+      effectAllowed: "" as DataTransfer["effectAllowed"],
+      dropEffect: "" as DataTransfer["dropEffect"],
+    };
+    Object.defineProperty(dt, "types", { get: () => Object.keys(store) });
+    fireEvent.dragStart(row("EngineSpeed"), { dataTransfer: dt });
+
+    const payload = JSON.parse(store["application/x-cannet-plot-signal"]) as {
+      signals: { signalName: string }[];
+    };
+    expect(payload.signals.map((s) => s.signalName).sort()).toEqual(
+      ["EngineSpeed", "LimitNominal"].sort(),
+    );
+  });
+
+  it("dragging an unselected row drags just that row, leaving the selection untouched", async () => {
+    // DbcPanel precedent: "the panel's visible selection is unchanged
+    // so the user can keep it" — a drag has no on-screen moment that
+    // needs the selection to visibly repoint the way a context menu
+    // does.
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    clickRow("EngineSpeed");
+    clickRow("LimitNominal", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "LimitNominal"]);
+
+    const store: Record<string, string> = {};
+    const dt = {
+      setData: (t: string, v: string) => {
+        store[t] = v;
+      },
+      getData: (t: string) => store[t] ?? "",
+      types: [] as string[],
+      effectAllowed: "" as DataTransfer["effectAllowed"],
+      dropEffect: "" as DataTransfer["dropEffect"],
+    };
+    Object.defineProperty(dt, "types", { get: () => Object.keys(store) });
+    fireEvent.dragStart(row("EngineTemp"), { dataTransfer: dt });
+
+    const payload = JSON.parse(store["application/x-cannet-plot-signal"]) as {
+      signals: { signalName: string }[];
+    };
+    expect(payload.signals.map((s) => s.signalName)).toEqual(["EngineTemp"]);
+    expect(selectedNames()).toEqual(["EngineSpeed", "LimitNominal"]);
+  });
+
+  it("hides a two-signal selection sharing one axis with at most one extra resample", async () => {
+    // The batching property at the seam that actually costs something:
+    // one signal-set change on the touched axis, not one per row.
+    await withSizedCanvas(async () => {
+      const registry = makeRegistry({
+        id: "el-sel-resample",
+        config: { areas: [{ id: "a1", signals: [] }] },
+        trace: { start: 0, end: 60, isPaused: false },
+      });
+      renderPanel({ params: { elementId: "el-sel-resample" }, registry });
+      await addToFocused(["EngineSpeed", "EngineTemp"]);
+      const counter = (k: string) => diagCounts().get(k) ?? 0;
+      // Settle whatever mount kicked off before measuring.
+      for (let i = 0; i < 20; i++) {
+        const settled = counter("plotarea.resample");
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 60));
+        });
+        if (counter("plotarea.resample") === settled) break;
+      }
+      clickRow("EngineSpeed");
+      clickRow("EngineTemp", { ctrlKey: true });
+
+      const before = counter("plotarea.resample");
+      fireEvent.contextMenu(row("EngineSpeed"));
+      fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      expect(counter("plotarea.resample") - before).toBeLessThanOrEqual(2);
     });
   });
 });

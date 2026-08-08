@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
-import { isEnumValueTable, type Bus, type SignalDescriptorRecord } from "./types";
+import { isEnumValueTable, type Bus } from "./types";
 import { useTraceLive, useTraceModel } from "./traceData";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
@@ -17,7 +17,7 @@ import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
 import { TRUNCATION_EVENT_ID } from "./notes";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
-import { mergeSeries, signalKey } from "./plotData";
+import { mergeSeries } from "./plotData";
 import { hostSettings, useSetting } from "./hostSettings";
 import { fetchWindowExtent } from "./useDecimatedRange";
 import { stableSignalColor, wheelColor } from "./palette";
@@ -235,6 +235,7 @@ import {
   selectPlotSignal,
   type PlotSignalSelection,
 } from "./plotAreaSelection";
+import { setSignalDragData } from "./dragSignals";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
 import { PlotArea } from "./PlotArea";
@@ -813,32 +814,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [],
   );
 
-  const addSignalToFocused = useCallback(
-    (desc: SignalDescriptorRecord) => {
-      setAreas((prev) => {
-        const targetId = prev.some((a) => a.id === focusedAreaId) ? focusedAreaId : prev[0]?.id;
-        const target = prev.find((a) => a.id === targetId);
-        // Color-wheel index is the count of signals *already in this
-        // plot area*, per ADR 0026 — so the first 16 series in any
-        // one area get distinct hues regardless of what other areas
-        // hold.
-        const seedIdx = target?.signals.length ?? 0;
-        const ref: SignalRef = {
-          busId: desc.bus_id,
-          messageId: desc.message_id,
-          extended: desc.extended,
-          signalName: desc.signal_name,
-          messageName: desc.message_name,
-          unit: desc.unit,
-          color: wheelColor(seedIdx),
-        };
-        const key = signalRefKey(ref);
-        if (prev.some((a) => a.signals.some((s) => signalRefKey(s) === key))) return prev;
-        return prev.map((a) => (a.id === targetId ? { ...a, signals: [...a.signals, ref] } : a));
-      });
-    },
-    [focusedAreaId],
-  );
   const removeSignal = useCallback((areaId: string, key: string) => {
     // Only manual picks are removable row-by-row; a pattern-derived
     // row has no manual entry (this is then a no-op) and is removed by
@@ -1202,6 +1177,85 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [selectionOrderByArea],
   );
 
+  /// Live mirrors of the selection and the effective (materialized)
+  /// areas, read by the selection's bulk-visibility action and its drag
+  /// payload below. Both callbacks are bound once per axis in
+  /// `areaHandlers` (task 49.B), so they read the *current* selection
+  /// through a ref rather than closing over it — closing over either
+  /// value would remint the callback (and so `areaHandlers`) on every
+  /// selection click or catalog re-evaluation, defeating the memoised
+  /// `PlotArea`'s per-axis guard the same way a fresh callback identity
+  /// always does in this file.
+  const signalSelectionRef = useRef(signalSelection);
+  signalSelectionRef.current = signalSelection;
+  const effectiveAreasRef = useRef(effectiveAreas);
+  effectiveAreasRef.current = effectiveAreas;
+
+  /// The parent area's current selection, resolved to its *effective*
+  /// `SignalRef`s (manual picks + live pattern matches, spanning every
+  /// derived axis the y-axis mode splits the area across) — `[]` when
+  /// the selection belongs to a different area or is empty.
+  const selectedRefsFor = useCallback((areaId: string): SignalRef[] => {
+    const sel = signalSelectionRef.current;
+    if (sel.areaId !== areaId || sel.ids.size === 0) return [];
+    const parent = effectiveAreasRef.current.find((a) => a.id === areaId);
+    if (!parent) return [];
+    return parent.signals.filter((s) => sel.ids.has(signalRefKey(s)));
+  }, []);
+
+  /// Bulk hide/show over the parent area's current selection — the
+  /// selection's context menu Hide / Show (task 49.B). The batched
+  /// sibling of `toggleSignalHidden` above: same per-row materialization
+  /// rule (a touched pattern-derived row becomes a manual pick), applied
+  /// to every selected row in **one** `setAreas` call — one persist, one
+  /// resample per touched derived axis, not N single-row toggles.
+  const setSelectionHidden = useCallback(
+    (areaId: string, hidden: boolean) => {
+      const refs = selectedRefsFor(areaId);
+      if (refs.length === 0) return;
+      const keys = new Set(refs.map(signalRefKey));
+      setAreas((prev) =>
+        prev.map((a) => {
+          if (a.id !== areaId) return a;
+          const existingKeys = new Set(a.signals.map(signalRefKey));
+          const updated = a.signals.map((s) =>
+            keys.has(signalRefKey(s)) ? { ...s, hidden } : s,
+          );
+          const toAppend = refs
+            .filter((r) => !existingKeys.has(signalRefKey(r)))
+            .map((r) => ({ ...r, hidden }));
+          return { ...a, signals: [...updated, ...toAppend] };
+        }),
+      );
+    },
+    [selectedRefsFor],
+  );
+
+  /// A selected row started a drag: fan the whole selection into the
+  /// drag payload (DbcPanel precedent, ADR 0045) instead of just the
+  /// grabbed row. A no-op when the parent area's selection is empty or
+  /// belongs to a different area — the row's own single-ref drag covers
+  /// that case (`PlotArea`).
+  const dragSelection = useCallback(
+    (areaId: string, dataTransfer: DataTransfer) => {
+      const refs = selectedRefsFor(areaId);
+      if (refs.length === 0) return;
+      setSignalDragData(
+        { dataTransfer },
+        refs.map((r) => ({
+          busId: r.busId,
+          messageId: r.messageId,
+          extended: r.extended,
+          signalName: r.signalName,
+          messageName: r.messageName,
+          unit: r.unit,
+        })),
+        elementId,
+      );
+    },
+    [selectedRefsFor, elementId],
+  );
+
   /// Per-area pattern resolutions for the filter UI (match counts,
   /// invalid flags) — evaluated against the same catalog the effective
   /// series come from.
@@ -1381,35 +1435,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
     lastMatchCountsRef.current = next;
     lastBusesRef.current = buses;
   }, [patternResolutionsByArea, buses]);
-  const catalogOptions = useMemo(() => {
-    const opts = scopedCatalog.map((s) => {
-      const busLabel =
-        s.bus_id == null
-          ? null
-          : busNameLookup.get(s.bus_id) ?? s.bus_id;
-      // The bus → ECU → message ancestry renders as combobox group
-      // headers (the same hierarchy the DBC panel's tree uses), so
-      // two signals named the same on different buses are pickable
-      // separately and the message name explicitly groups its
-      // signals. "(no transmitter)" mirrors the DBC/RBS panels'
-      // fallback for `Vector__XXX` messages.
-      const ecu = s.transmitter ?? "(no transmitter)";
-      return {
-        value: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
-        path: busLabel ? [busLabel, ecu, s.message_name] : [ecu, s.message_name],
-        label: `${s.signal_name}${s.unit ? ` [${s.unit}]` : ""}`,
-        desc: s,
-      };
-    });
-    // The catalog arrives (bus, message-id)-ordered, which interleaves
-    // ECUs; sort by ancestry path (stable, so signals keep their
-    // host order within a message) so each group renders one header.
-    return opts.sort((a, b) => {
-      const pa = a.path.join(" ");
-      const pb = b.path.join(" ");
-      return pa < pb ? -1 : pa > pb ? 1 : 0;
-    });
-  }, [scopedCatalog, busNameLookup]);
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
   /// Per-derived-axis callback bundle, rebuilt only when the axis set
@@ -1439,6 +1464,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onSetPatterns: (ps) => setAreaPatterns(parent.id, ps),
         onMaterializePatterns: () => materializePatterns(parent.id, parent.signals),
         onSetYScale: (patch) => setAxisScales((prev) => setAxisScale(prev, axisId, patch)),
+        onSetSelectionHidden: (hidden) => setSelectionHidden(parent.id, hidden),
+        onDragSelection: (dataTransfer) => dragSelection(parent.id, dataTransfer),
       });
     }
     return m;
@@ -1457,6 +1484,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setSignalColor,
     setAreaPatterns,
     materializePatterns,
+    setSelectionHidden,
+    dragSelection,
   ]);
   const resizeSignalsWidth = useCallback(
     (w: number) => setSignalsWidth(Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, w))),
@@ -1577,16 +1606,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
           onAllData={handleAllData}
         />
         <span className="plot-toolbar-sep" />
-        <Combobox
-          options={catalogOptions}
-          value=""
-          onChange={(v) => {
-            const opt = catalogOptions.find((o) => o.value === v);
-            if (opt) addSignalToFocused(opt.desc);
-          }}
-          placeholder={catalog.length === 0 ? "no DBC attached" : "add signal…"}
-          ariaLabel="add signal to focused plot area"
-        />
         <button onClick={refreshCatalog} title="reload signal list from the attached DBC">
           ↻
         </button>

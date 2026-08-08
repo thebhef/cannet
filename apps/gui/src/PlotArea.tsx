@@ -389,6 +389,60 @@ function YAxisScaleMenu({
   );
 }
 
+/**
+ * The signal-row selection's context menu (task 49.B): bulk Hide /
+ * Show over whatever is currently selected in this area. Opened by
+ * right-clicking a selected row (or, per the row's own handler, a row
+ * that becomes the sole selection because it wasn't one already —
+ * the platform norm: right-click on an unselected item replaces the
+ * selection with it before showing the item's menu). Same floating
+ * shell as the y-axis menu (`YAxisScaleMenu`) and the sources picker's
+ * context menu.
+ *
+ * No bulk recolor and no dedicated bulk-remove affordance here
+ * (grooming #3): visibility and drag-out are the whole surface.
+ */
+function SignalSelectionMenu({
+  position,
+  onHide,
+  onShow,
+  onClose,
+}: {
+  position: { x: number; y: number };
+  onHide: () => void;
+  onShow: () => void;
+  onClose: () => void;
+}) {
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
+  return (
+    <div
+      ref={menuRef}
+      className="plot-selection-menu"
+      style={{ left: position.x, top: position.y }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <button
+        className="plot-selection-menu-action"
+        onClick={() => {
+          onHide();
+          onClose();
+        }}
+      >
+        Hide
+      </button>
+      <button
+        className="plot-selection-menu-action"
+        onClick={() => {
+          onShow();
+          onClose();
+        }}
+      >
+        Show
+      </button>
+    </div>
+  );
+}
+
 interface PlotAreaProps {
   area: PlotAreaConfig;
   /** Vertical flex-grow weight for this axis (ADR 0026 fit-to-panel).
@@ -576,6 +630,13 @@ interface PlotAreaProps {
    * everything else (DBC panel, trace cell, another plot panel) is
    * an add. */
   panelElementId: string;
+  /** Bulk-set the parent area's current selection hidden/shown — the
+   * selection's context menu Hide / Show (task 49.B). */
+  onSetSelectionHidden: (hidden: boolean) => void;
+  /** A selected row started a drag: fan the whole selection into the
+   * drag payload instead of just the grabbed row (task 49.B, DbcPanel
+   * precedent, ADR 0045). */
+  onDragSelection: (dataTransfer: DataTransfer) => void;
 }
 
 /** Draw the logic-analyzer value tiles for one enum series into a
@@ -731,6 +792,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     valueFormats,
     resolveColor,
     panelElementId,
+    onSetSelectionHidden,
+    onDragSelection,
   } = p;
 
   /** Fold dropped patterns into this area's own list (ADR 0045): live,
@@ -1003,6 +1066,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   /** Where the axis's scale menu is open, in client coordinates.
    * `null` when closed. */
   const [axisMenu, setAxisMenu] = useState<{ x: number; y: number } | null>(null);
+  /** Where the selection's context menu (Hide / Show, task 49.B) is
+   * open, in client coordinates. `null` when closed. */
+  const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number } | null>(null);
   /** Width the y gutter currently reserves — what tells a right-click
    * on the *axis* from one in the plot box, where uPlot owns the
    * gesture (right-drag box zoom). Tracked from the same `axis.size`
@@ -2671,6 +2737,14 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           onClose={() => setAxisMenu(null)}
         />
       )}
+      {selectionMenu && (
+        <SignalSelectionMenu
+          position={selectionMenu}
+          onHide={() => onSetSelectionHidden(true)}
+          onShow={() => onSetSelectionHidden(false)}
+          onClose={() => setSelectionMenu(null)}
+        />
+      )}
       {collapsed && (
         <div className="plot-area-placeholder" ref={placeholderRef}>
           {collapsedRunHead && (
@@ -2939,8 +3013,41 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   // selection, leaving the primary where it is.
                   if (!mod && !e.shiftKey) onSetPrimarySignal(key);
                 }}
+                onContextMenu={(e) => {
+                  // The swatch's own context-menu handler (color
+                  // picker) stops propagation, so this never fires for
+                  // a right-click aimed at it.
+                  if (e.defaultPrevented) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // Platform norm: right-click on a row outside the
+                  // selection replaces the selection with just that
+                  // row before showing its menu (Explorer / Finder /
+                  // VS Code); right-click on a row already in the
+                  // selection acts on the whole thing. A drag has no
+                  // such moment to visibly repoint the selection to
+                  // (DbcPanel's precedent leaves it alone, see the
+                  // drag handler below), but a context menu inherently
+                  // asks "what does this apply to" and needs an
+                  // unambiguous, on-screen answer.
+                  if (!isSelected) onSelectSignal(key, { mod: false, shift: false });
+                  setSelectionMenu({ x: e.clientX, y: e.clientY });
+                }}
                 draggable
                 onDragStart={(e) => {
+                  // A grab that lands on a row already in the
+                  // selection drags the whole selection (DbcPanel
+                  // precedent, ADR 0045); the panel resolves it from
+                  // the parent area's full effective signal list, since
+                  // this axis may hold only part of it (per-unit /
+                  // individual mode). Otherwise, drag just this row —
+                  // and leave the selection exactly as it is, matching
+                  // DbcPanel: "the panel's visible selection is
+                  // unchanged so the user can keep it".
+                  if (isSelected) {
+                    onDragSelection(e.dataTransfer);
+                    return;
+                  }
                   // Always emit the array form — the receiving panel
                   // parses both shapes, but the new shape is one less
                   // case to maintain downstream. Strip `color` /

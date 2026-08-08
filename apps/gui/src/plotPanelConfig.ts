@@ -172,6 +172,16 @@ export interface AxisHandlers {
    * bound clears it (back to automatic); an absent key leaves it
    * alone. The panel owns the sparse store (ADR 0026). */
   onSetYScale: (patch: AxisScalePatch) => void;
+  /** Bulk-set the parent area's current *selection* hidden/shown in one
+   * batch — the selection's context menu (task 49.B). Same
+   * materialization rule as `onToggleHidden`, applied to every selected
+   * row in one persist / one resample rather than N single-row calls.
+   * A no-op if the parent area's selection is empty. */
+  onSetSelectionHidden: (hidden: boolean) => void;
+  /** A selected row started a drag: fan the whole selection into the
+   * drag payload instead of just the grabbed row (DbcPanel precedent,
+   * ADR 0045). A no-op if the parent area's selection is empty. */
+  onDragSelection: (dataTransfer: DataTransfer) => void;
 }
 
 /** The shared current x-window + a suppress flag so a programmatic
