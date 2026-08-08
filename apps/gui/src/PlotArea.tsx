@@ -2911,7 +2911,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           </div>
         )}
         {signals.length === 0 ? (
-          <div className="plot-area-empty">{focused ? "pick a signal above" : "click here, then pick a signal"}</div>
+          <div className="plot-area-empty">drag a signal here, or add a pattern above</div>
         ) : (
           signals.map((s) => {
             const key = signalRefKey(s);
