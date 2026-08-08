@@ -101,6 +101,18 @@ the decision to touch interfaces, and the decision to record.
   re-run" treatment a hardware-only mode gets when the rig is absent).
 - No dependency on `tauri-driver`, platform WebDriver binaries, or a
   separate browser-automation stack.
+- **A `--perf-capture-secs` run under `--connect-on-start` cannot produce
+  a passing-shaped report without a connection.** The connect is retried
+  a bounded number of times (bounding only *when* the capture window
+  starts, never its length); if the capture window would start without a
+  session up, the run fails outright — no report is written (its absence
+  is the one failure signal no consumer can misread) and the process
+  exits non-zero. The frontend has no other way to set a process exit
+  code, so this is the one host (Tauri) command in the automation surface
+  that isn't just mirroring a user-clickable action. A marked-failed
+  report was considered and rejected: every consumer would need to learn
+  the marker, and an unaware one reads the fps-0 shape as real idle data
+  — the trap this closes.
 - The self-driving flags are an automation surface on the shipping
   binary. They default off (a normal launch is unaffected) and are
   additive; the manual console capture remains for interactive use.
