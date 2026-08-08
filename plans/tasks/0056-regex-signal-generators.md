@@ -106,3 +106,110 @@ item names this task).
 - Persistence in the project file, with tests; docs updated
   (CONTEXT.md gains the term "generator"; README's plot/project
   sections updated).
+
+## Status log
+
+### 2026-08-08 — phase 56.A: the shared signal-color resolver
+
+Landed on `task56a-color-resolver` (from `task55e-area-drag`):
+
+| commit | subject |
+| --- | --- |
+| `2a44431` | `docs(perf): post-55e gate reports` |
+| `f09af6a` | `feat(gui): one place decides a signal's color — pick, generator, hash` |
+| `55c5046` | `feat(gui): plot series resolve their color instead of seeding it` |
+
+Frontend suite 1613 → 1625 tests (133 → 134 files), all green;
+`pnpm --dir apps/gui build` clean. No Rust changes.
+
+What landed:
+
+- **`apps/gui/src/signalColorResolver.ts`** — the single resolution
+  point: `resolveSignalColor(key, pick, generator)` (pure, the
+  precedence rule itself) and `buildSignalColorResolver(elements)`,
+  which compiles the project's rules once per render the way
+  `buildColorResolver` does for value color maps. 7 unit tests.
+- **Signal view** (`SignalsPanel`) resolves its name text through it;
+  the `signal_colors` project entry is the pick. Row prop
+  `signalColors` → `signalColor(key)`.
+- **Plot**: `SignalRef.color` → `SignalRef.colorPick`, written only by
+  the swatch's color picker. Area-position seeding is gone from
+  `placeSignal`, `parseDroppedSignals` and the config parser
+  (`withColor` → `signalRefFromRaw`); `signalsFromPatterns` no longer
+  bakes the hash into a pattern row. `PlotArea` takes a `seriesColor`
+  prop and reads it live through a ref for the series stroke, the enum
+  lane accent, the primary-signal axis color and the side-panel
+  swatch — so a recolor still needs no uPlot rebuild.
+- ADR 0026 gains the one-wheel / one-resolution-point decision and the
+  implementation-status bullet that replaces the seeding one; README's
+  plot section says a series' color comes from the signal's identity
+  and only a pick is stored.
+
+**Upgrade semantics — the reading implemented, and its cost.** The
+grooming accepted "previously position-seeded unpicked plot series
+re-resolve on upgrade". A stored `SignalRef.color` cannot be told
+apart from an old explicit pick, so *every* stored `color` is dropped
+at parse time and the series re-resolves; picks made from now on live
+in the new `colorPick` field and persist. **Cost:** a color a user
+explicitly picked on a plot series before this change is lost and
+re-resolves like any other series (the signal view's `signal_colors`
+picks and bus colors are untouched). This is the trade the grooming
+chose — it is also the fix for the 4-areas × 16-signals inconsistency
+from the owner's test drive — but it is a one-time visible change to
+existing projects, so it wants an explicit nod at the completion
+review.
+
+**The generator slot 56.B fills.** `signalColorResolver.ts`:
+
+```ts
+export type SignalColorGenerator = (key: string) => number | null;
+
+function buildSignalColorGenerator(
+  _elements: readonly ProjectElement[],
+): SignalColorGenerator {
+  return () => null; // nothing declares a generator yet
+}
+```
+
+`key` is the canonical `signalKey(busId, messageId, extended,
+signalName)` — the same key the color maps and every caller use. The
+return is a **color-wheel index** (`wheelColor` wraps it; `0` is a
+real answer, `null` means "no rule claims this signal"), which is what
+the groomed capture semantics produce (first capture group parsed as
+an integer). 56.B replaces the body with a compile of the project's
+ordered `generator` elements, evaluated **host-side** (Rust `regex`,
+`size_limit`, entry-time compile errors) per the exit criteria: the
+frontend gets a key → index answer and never runs a user regex.
+Nothing else has to move — both surfaces already call
+`buildSignalColorResolver(elements)`, and both re-render when the
+element set changes.
+
+Two live-recolor seams worth knowing for 56.B:
+
+- A plot's uPlot instance resolves its stroke through
+  `seriesColorRef` per draw, so a generator change repaints on the
+  next draw — but a **stopped** plot needs a nudge. The colormap
+  resolver has one (`useEffect(() => uplotRef.current?.redraw(), [resolveColor])`
+  in `PlotArea`); the series resolver will want the same effect keyed
+  on `seriesColor` once its identity can actually change.
+- `PlotPanel.seriesColor` / `SignalsPanel.signalColor` are memoised on
+  `registry.entries`, so a generator edit invalidates them for free.
+
+## Blockers / side effects
+
+- **Pre-upgrade explicit plot picks re-resolve.** See the upgrade
+  reading above: dropping every stored `SignalRef.color` is the only
+  way to re-resolve the position-seeded ones, because nothing
+  distinguishes the two populations. Signal-view picks
+  (`signal_colors`) and bus colors are unaffected.
+- **"Clear project colors" doesn't reach a plot series' pick.** The
+  command (`ClearColorsConfirmModal`, `App.tsx`) clears bus colors and
+  the `signal_colors` map. Before this phase a plot's `color` was a
+  seed, so leaving it alone was right; now `colorPick` is a genuine
+  user pick and the command arguably should discard it too. Out of
+  scope here (it reaches into every plot element's config) and left
+  unchanged — worth an owner ruling.
+- **A stopped plot won't repaint on a generator change** until the
+  redraw effect noted above is added. Nothing to fix today (the slot
+  answers `null` for every signal, so `seriesColor`'s identity only
+  changes when the element set does, which already re-renders).
