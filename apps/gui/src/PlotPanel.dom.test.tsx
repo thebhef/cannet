@@ -241,6 +241,7 @@ import { stableSignalColor, wheelColor } from "./palette";
 import { signalKey } from "./plotData";
 import { freshTrace } from "./trace";
 import { diagCounts } from "./diag";
+import { FIRST_SAMPLE_INDICATOR_MS } from "./useFirstSampleWait";
 import { hydrateSettings, updateSettings } from "./hostSettings";
 import { THEMES, activeTheme, setActiveTheme } from "./theme";
 import { startThemeSync } from "./themeSync";
@@ -3603,9 +3604,10 @@ describe("PlotPanel signal-row selection", () => {
     // The selection reaches each `PlotArea` as an area-scoped slice, so
     // a click that changes it must not invalidate the memo on areas that
     // hold neither the rows leaving the selection nor the ones joining
-    // it. Ctrl-clicks throughout: a plain click also moves the primary,
-    // which rewrites the areas list and legitimately re-renders the
-    // stack.
+    // it. Ctrl-clicks throughout, so this measures the selection alone: a
+    // plain click also moves the primary, which is an `areas` edit (and
+    // scoped to its own area in its own right — see "PlotPanel per-area
+    // render scoping").
     await withSizedCanvas(async () => {
       // Three areas seeded from a saved config, so they all mount
       // together and no area's own settling (first-sample wait, the
@@ -4539,5 +4541,129 @@ describe("PlotPanel area drag between panels", () => {
     // Reorder needs a second area; moving to another panel does not.
     renderPanel();
     expect(screen.getAllByLabelText("reorder plot area").length).toBe(1);
+  });
+});
+
+describe("PlotPanel per-area render scoping", () => {
+  const counter = (k: string) => diagCounts().get(k) ?? 0;
+  const sig = (signalName: string) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit: "V",
+    color: "#4ecbff",
+  });
+
+  /// Three logical areas of two rows each, mounted together from a saved
+  /// config on a *stopped* trace, and left alone until the mount's async
+  /// work (value tables, settings hydration, the first-sample gate) has
+  /// stopped re-rendering the stack — so a count taken afterwards
+  /// measures the edit and only the edit.
+  ///
+  /// Deliberately *without* a sized canvas: with no uPlot instance an
+  /// area's own fetch/redraw machinery is inert, so every render it does
+  /// is one React handed it because a prop's identity moved. That is
+  /// exactly what per-area scoping governs, and measuring it without the
+  /// resample loop's renders on top makes the counts exact rather than
+  /// bounded.
+  async function threeAreas(elementId: string) {
+    const registry = makeRegistry({
+      id: elementId,
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Alpha1"), sig("Alpha2")] },
+          { id: "a2", signals: [sig("Beta1"), sig("Beta2")] },
+          { id: "a3", signals: [sig("Gamma1"), sig("Gamma2")] },
+        ],
+      },
+      trace: { start: 0, end: 60, isPaused: false },
+    });
+    const panel = renderPanel({ params: { elementId }, registry });
+    expect(document.querySelectorAll(".plot-area").length).toBe(3);
+    // Past the first-sample gate (`useFirstSampleWait`): with no canvas
+    // nothing ever settles it, so each area's "building…" timer fires on
+    // its own ~300 ms after mount — mount noise that lands in whatever
+    // `act` window is open when it does, quiet-loop or measurement.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, FIRST_SAMPLE_INDICATOR_MS + 100));
+    });
+    for (let i = 0; i < 20; i++) {
+      const settled = counter("render.PlotArea");
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 60));
+      });
+      if (counter("render.PlotArea") === settled) break;
+    }
+    return panel;
+  }
+
+  /// The n-th stacked area (0-based).
+  const areaAt = (i: number) => document.querySelectorAll(".plot-area")[i] as HTMLElement;
+  /// A signal row by name, anywhere in the panel.
+  const rowNamed = (name: string): HTMLElement => {
+    const found = Array.from(document.querySelectorAll(".plot-signal-row")).find(
+      (r) => r.querySelector(".plot-signal-name")?.textContent === name,
+    );
+    if (!found) throw new Error(`no signal row for ${name}`);
+    return found as HTMLElement;
+  };
+
+  it("collapsing one area re-renders that area alone", async () => {
+    // An `areas` edit rewrites one entry of the list; every other area's
+    // derived config — and so the memoised `PlotArea` reading it — must
+    // come through the edit untouched.
+    await threeAreas("el-scope-collapse");
+    const before = counter("render.PlotArea");
+    await act(async () => {
+      fireEvent.click(within(areaAt(1)).getByRole("button", { name: "collapse plot area" }));
+    });
+    expect(areaAt(1).classList.contains("collapsed")).toBe(true);
+    expect(counter("render.PlotArea") - before).toBe(1);
+  });
+
+  it("hiding a row re-renders only its own area", async () => {
+    await threeAreas("el-scope-hide");
+    const before = counter("render.PlotArea");
+    await act(async () => {
+      fireEvent.click(within(areaAt(2)).getAllByTitle(/^hide this signal/)[0]);
+    });
+    expect(within(areaAt(2)).getByTitle(/^show this signal/)).toBeInTheDocument();
+    expect(counter("render.PlotArea") - before).toBe(1);
+  });
+
+  it("promoting a row to primary re-renders only its own area", async () => {
+    // A plain click both moves the selection and rewrites the parent
+    // area's `primarySignalKey` — an `areas` edit, and the one the
+    // selection guard above deliberately avoids by ctrl-clicking.
+    await threeAreas("el-scope-primary");
+    const before = counter("render.PlotArea");
+    await act(async () => {
+      fireEvent.click(rowNamed("Beta2"));
+    });
+    expect(rowNamed("Beta2").classList.contains("primary")).toBe(true);
+    expect(counter("render.PlotArea") - before).toBe(1);
+  });
+
+  it("does not fan out through the registry when the panel re-renders after a persist", async () => {
+    // Persisting the edit replaces the element registry's entries array,
+    // and in the app that lands as a re-render of every panel. Nothing a
+    // plot area is handed may be derived from the *array* — only from
+    // the elements it actually reads (this panel's own config change
+    // must not re-mint the signal catalog it scopes) — or the scoping
+    // above is undone one render later.
+    await threeAreas("el-scope-persist");
+    await act(async () => {
+      fireEvent.click(within(areaAt(1)).getByRole("button", { name: "collapse plot area" }));
+    });
+    const before = counter("render.PlotArea");
+    // Purely panel-local, so this render's only new input is the entries
+    // array the persist above replaced.
+    await act(async () => {
+      fireEvent.contextMenu(document.querySelector(".plot-panel-toolbar")!);
+    });
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(counter("render.PlotArea") - before).toBe(0);
   });
 });

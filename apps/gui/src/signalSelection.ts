@@ -155,22 +155,34 @@ export function scopeCatalog(
   return catalog.filter((s) => s.bus_id != null && buses.has(s.bus_id));
 }
 
-/// Apply each area's `patterns` to the catalog, returning the area
-/// list the renderer should treat as authoritative: the manual
-/// `signals` plus the pattern matches not already picked manually.
-/// The persisted `signals` on the source areas is left intact.
+/// Apply one area's `patterns` to the catalog, returning the area the
+/// renderer should treat as authoritative: the manual `signals` plus the
+/// pattern matches not already picked manually. The persisted `signals`
+/// is left intact, and an area with no patterns is returned *as it came
+/// in* — callers rely on that identity to tell an untouched area from an
+/// edited one.
+export function applyAreaSelection<A extends SelectableArea>(
+  area: A,
+  catalog: readonly SignalDescriptorRecord[],
+  busNames: ReadonlyMap<string, string>,
+): A {
+  if (!area.patterns?.length) return area;
+  return {
+    ...area,
+    signals: [
+      ...area.signals,
+      ...signalsFromPatterns(area.patterns, catalog, busNames, area.signals),
+    ],
+  };
+}
+
+/// [`applyAreaSelection`] over a whole area list.
 export function applyAreaSelections<A extends SelectableArea>(
   areas: readonly A[],
   catalog: readonly SignalDescriptorRecord[],
   busNames: ReadonlyMap<string, string>,
 ): A[] {
-  return areas.map((a) => {
-    if (!a.patterns?.length) return a;
-    return {
-      ...a,
-      signals: [...a.signals, ...signalsFromPatterns(a.patterns, catalog, busNames, a.signals)],
-    };
-  });
+  return areas.map((a) => applyAreaSelection(a, catalog, busNames));
 }
 
 /// Move section `moved` to where `target` currently sits in the view's
