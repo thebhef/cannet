@@ -314,6 +314,46 @@ Phase 57.B (items 1 and 3):
   instance — the scope ruling's accepted half of the trade, now pinned
   by a test so a future reader doesn't take it for an oversight.
 
+Phase 57.C (item 4, first half):
+
+- **`try_reload` changed shape**: `bool` → `Option<String>` (the reload's
+  cost breakdown, ready to log). Six test call sites moved to
+  `.is_some()` / `.is_none()`; the restore command is the only production
+  caller.
+- **The restore's INFO line changed text**, from `restored N frames from
+  prior capture` to `... in {ms} ms`. Nothing parses it, but it is the
+  line a user sees in System Messages, so it is a visible change.
+- **`open_segments` is the crate's first threading.** It is
+  `std::thread::scope` over contiguous chunks of a path list with no
+  shared state and no dependency added, which is the smallest shape that
+  buys the 13x — but `cannet-spill` was single-threaded before this and a
+  reviewer should know that changed.
+- **The ADR-0031 gate was not re-run.** This phase touched only the host
+  restore path, which no render-tier measurement exercises (the harness
+  starts a *fresh* capture, so it never reopens one), and the gate is the
+  orchestrator's to run. The two post-57.B reports are committed at
+  `35312a2`.
+- **Item 5's flake reproduced, twice, with its cause named.** Two of six
+  perf captures run in this phase failed with `ERROR automation: perf
+  automation: connect preconditions not ready after 30000ms (bindings=2,
+  sidecar=not ready)` — so it is **sidecar readiness**, not bindings,
+  that times out, which is evidence for item 5's flake follow-through
+  (the AV-scan-of-the-frozen-sidecar suspicion is consistent with this
+  phase's finding that a first open after a write costs ~14 ms/file, but
+  that link is unproven). Both runs correctly wrote **no report**.
+  However, **the process still exited 0** in both cases (`echo $?` from
+  the launching shell), so the "exit non-zero" half of the 57.A failure
+  contract did not come through in a real run — the dom tests assert
+  `exit_process` is *called*, not that the code reaches the OS. Recorded
+  for the owner; verifying it is item 5's, not this phase's.
+- **Scratch left behind, not cleanable from here.** The profiling used an
+  isolated copy of `examples/ev-zonal` under the session scratchpad and
+  its own cache directory (`.../dev.cannet.app/cache/96e8f5695237
+  5e0eabc0ddece4f37234`, created by the app for that copy — the user's
+  real project caches were never written to). `rm -rf` is not permitted
+  from this session, so both are left in place; the scratchpad copy of a
+  216k-frame capture (~16 MB) is there too.
+
 **2026-08-08 — follow-up: the outer `catch` was still a quiet-exit-0
 hole.** Review found that an exception during the capture window
 (`handleConnect` rejecting instead of just failing to land a session,
@@ -453,3 +493,166 @@ order), same branch.**
 from cache, membership changes fetch, both tested). Items 4
 (capture-restore startup cost) and the ADR-0031 gate re-run are
 untouched — the gate is the orchestrator's to run after this phase.
+
+**2026-08-08 — Phase 57.C, item 4 first half (profile the capture-restore
+startup cost and land the synchronous wins), branch
+`task57c-restore-profile`.**
+
+Commits: `35312a2` (the two post-57.B gate reports, content unmodified),
+`9c4af47` (instrumentation), `ae9622a` (mux fix), `fd857b1` (the
+synchronous win), `92b99ac` (instrumentation into `cannet.log`).
+
+Test counts: Rust 496 passed / 0 failed / 2 ignored (`cargo test -p
+cannet-gui`, was 495) and 57 passed / 0 failed / 1 ignored (`cargo test
+-p cannet-spill`, was 56); `cargo clippy -p cannet-gui -p cannet-spill
+--all-targets` clean. No frontend files touched.
+
+### Attribution: observation → hypothesis → experiment → data → conclusion
+
+**Observation.** From `cannet.log`, 18 restores logged 2026-08-08. The
+gap from the last line before the restore (`rbs: loaded RBS config`) to
+`restored N frames`: 9.5–10.4 s for ~190–216k frames, 15.25 s for 1.07M,
+20.68 s for 4.07M — and **0.09 s / 0.11 s** for exactly two of them.
+
+**H1 — the reopen's `O(segments)` mmaps are the cost.** Experiment: a
+standalone binary calling `DiskRawStore::reopen_timed` on copies of real
+captures, with a `FILE_FLAG_NO_BUFFERING` sweep to purge the OS page
+cache. Data: a 216k-frame / 766-file capture reopened in **64–92 ms**
+warm and **67–70 ms** page-cache-cold; a 90.5M-frame / 3.9 GB /
+3040-file capture in **247 ms** warm and **323 ms** cold. **Refuted** as
+stated — mapping a segment is ~0.1 ms, and neither the page cache nor
+capture size explains 10 s.
+
+**H2 — the gap is outside the command** (the frontend's
+`api.fromJSON(layout)`, the flusher's directory walks, an eviction on the
+first tick). Experiment: instrument the command end to end (`9c4af47`)
+and launch the release build against an isolated copy of the ev-zonal
+project with its own capture. Data: a 10.29 s log gap, of which
+`restore_scratch_capture` reported **10290 ms**. **Refuted** — the whole
+gap is inside the command, and the phase split named it:
+
+| phase | ms | work |
+| --- | --- | --- |
+| identity read | 0 | 1 file |
+| manifest read | 0 | 1 file |
+| **by-id mmaps** | **10231** | **761 files, 179 ids** |
+| meta mmaps | 45 | 4 files |
+| payload mmaps | 11 | 1 file |
+| ring refill | 1 | 4096 frames |
+| derived read | 1 | 358 keys |
+| notes restore | 0 | — |
+| **command total** | **10290** | 201 337 frames |
+
+**H3 — something about the `cannet-gui` process** (its address space, the
+store mutex, Tauri's dispatch). Experiment: run the standalone probe on
+*the very same directory* immediately afterwards. Data: **59–75 ms**.
+**Refuted.**
+
+**H4 — it is the first open of a *just-written* file.** Experiment: a
+fresh 20 s capture, then the standalone probe first. Data: by-id
+**8018 ms / 559 files = 14.3 ms/file**; the same directory again
+immediately: **42 ms**. Splitting open from map on another fresh
+capture: read-only `open` (no mmap) **14.2 ms/file**, read-write `open`
+**14.9 ms/file** — so it is the *open*, not the mapping, not the access
+mode, and not the bytes (those 559 files hold ~1.3 MB in total).
+**Confirmed.**
+
+**Conclusion.** The restore cost is `files × ~14 ms`, paid once per
+segment file on the first open after it was written, and ~0.1 ms
+thereafter. The mechanism is the Windows filesystem filter stack —
+real-time antivirus scanning each newly written file (`Get-MpComputer
+Status`: `RealTimeProtectionEnabled=True`, `AMRunningMode=Normal`;
+exclusions not readable without admin). Three independent facts agree:
+the only two fast restores in the log are the two relaunches where **no
+capture ran in between**, so the files had already been opened since
+their last write; a byte-identical *copy* of an already-scanned capture
+shows no toll at all (76 ms for 3040 files); and two of this session's
+captures failed to connect, wrote nothing, and the following restore was
+correspondingly fast. The by-id index is one geometric chain per id, so a
+179-id capture pays the toll hundreds of times for ~1 MB of postings —
+which is why the cost tracks file count, not frame count.
+
+### The synchronous win (`fd857b1`)
+
+Waiting parallelises. Measured on one freshly-written capture, serial vs
+16-way over the same file set: **14.30 ms/file → 1.08 ms/file (13x)**.
+`seg::open_segments` maps a path list on a fixed 16-thread scoped pool
+and returns the mappings in order (a unit test pins the ordering and the
+error propagation); the by-id reopen pools *every* id's paths into one
+pass, so a capture with few deep chains parallelises as well as one with
+many shallow ones, and the raw meta and payload families use it too. The
+thread count is a constant, not `available_parallelism`, because the work
+is external wait rather than CPU — the rationale and the measurement are
+in the constant's rustdoc.
+
+**Before → after, same project, same shape** (release build, fresh
+capture then `--project` launch, 201k frames / 179 ids / 761 by-id
+files):
+
+| | before | after |
+| --- | --- | --- |
+| by-id mmaps | 10231 ms (13.4 ms/file) | 844–1037 ms (1.1–1.4 ms/file) |
+| meta + payload | 56 ms | 23–24 ms |
+| command total | 10290 ms | **877 / 1062 ms** |
+| `cannet.log` launch gap | 10.29 s | **0.88 s** |
+
+An already-scanned capture (relaunch with no capture in between) now
+restores in **23 ms**, logged.
+
+### Instrumentation (a deliverable, `9c4af47` + `92b99ac`)
+
+`DiskRawStore::reopen_timed` returns a `ReopenStats` splitting manifest /
+by-id / meta / payload / ring, each with the file count that makes its
+duration readable; `reopen` delegates and drops it, so no other caller
+changed. `try_reload` returns the formatted breakdown (it used to return
+`bool`), the restore command puts the **total on the INFO line the user
+already sees** (`restored N frames from prior capture in 877 ms`) and the
+phase split behind it at debug. Both land in `cannet.log`, which carries
+the system log only — the first cut used `tracing::info!` and was
+invisible there, which is why `92b99ac` exists.
+
+### Mux disposition (`ae9622a`) — a bug, worse than the grooming map said
+
+The grooming map expected mux queries over restored history to fall back
+to the bounded backward scan. They did not: at launch the DBC set
+installs the mux extractor while the store is still **empty**, so
+`mux_index_from` is 0; `try_reload` then swaps in N frames that never
+passed through the extractor and leaves the mark at 0, which
+`latest_mux_in_window` reads as "coverage proves absence" — returning
+**nothing**, with no scan attempted. Every mux group blank over the whole
+restored history. Regression test written first and confirmed returning
+`None`; the fix re-roots the index at the new tip exactly as
+`set_mux_extractor` does. Small and surgical, so landed rather than
+deferred.
+
+### Verdict for 57.D
+
+- **What a large restore costs now.** The remaining cost is
+  `files × ~1.1 ms`. Measured: 761 files → 0.88–1.06 s. Projected from
+  that per-file constant: the observed 4.07M-frame case (~1555 files)
+  goes 20.7 s → **~1.7 s**; the 90.5M-frame capture in this machine's
+  real cache (3040 files) goes ~43 s → **~3.4 s**. These two are
+  projections, not measurements: a large capture could not be re-measured
+  with the toll present, because copying one preserves already-scanned
+  content and reopens in 76 ms.
+- **Further raw speedup is bounded, and why.** What is left is external
+  wait we can overlap but not remove. 16-way already recovers ~92% of it;
+  the floor without the toll is ~0.08 ms/file (the 23 ms already-scanned
+  restore), so the residual ~1 ms/file *is* the toll. The only structural
+  lever left is **mapping fewer files** — defer a by-id chain to its first
+  query, or coarsen the geometry (`BASE_ENTRIES` is 64, i.e. a 512-byte
+  first segment, so ~10 tiny files per id before the cap). Neither was
+  attempted here: neither is named by the profile as necessary once the
+  cost is ~1 s, and both change the on-disk shape.
+- **Where the first-use rebuild cost lives — the bigger number.**
+  `SignalCache::catch_up` asks `matching_frames_indexed` for **every**
+  matching frame as an owned `Vec` before decoding a single sample, under
+  the store lock. Measured on a real capture: **0.30 µs/frame** and
+  **116 B/frame** resident (working-set delta over 1.25M held frames; the
+  struct alone is 72 B, the rest is the per-frame payload `Vec` and
+  `bus_id` `String` allocations). The id with 17.5M postings in this
+  machine's real cache therefore costs **≈5.3 s and ≈2.0 GB** in the
+  materialization alone, before any decoding — five times the restore it
+  follows, and unbounded in capture length rather than in file count.
+  That is where 57.D's chunked/streaming decode has to bite; a background
+  restore would hide the ~1–3 s reopen, but it would not touch this.
