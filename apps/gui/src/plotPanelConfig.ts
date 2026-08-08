@@ -150,6 +150,11 @@ export interface PlotAreaReports {
 export interface AxisHandlers {
   onPlaceCursorY: (which: "h1" | "h2", v: number) => void;
   onSetPrimarySignal: (key: string | null) => void;
+  /** A signal row was clicked: apply the click to the *parent area's*
+   * selection (`plotAreaSelection.ts`). Routed to the parent, not the
+   * derived axis, so a Shift range spans the axes a per-unit /
+   * individual y-axis mode splits the area's rows across. */
+  onSelectSignal: (key: string, modifiers: { mod: boolean; shift: boolean }) => void;
   onSetYAxisMode: (mode: YAxisMode) => void;
   /** Collapse the parent area if expanded, expand it if collapsed —
    * one collapse state per logical area (ADR 0026). */

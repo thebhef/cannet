@@ -230,6 +230,11 @@ import {
   resolveAxisWeights,
   splitterPartnerAbove,
 } from "./plotAreaLayout";
+import {
+  NO_PLOT_SIGNAL_SELECTION,
+  selectPlotSignal,
+  type PlotSignalSelection,
+} from "./plotAreaSelection";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
 import { PlotArea } from "./PlotArea";
@@ -291,6 +296,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
     axisScalesFromRaw(savedConfig?.axisScales),
   );
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
+  /** The signal rows the user has selected, in one logical area
+   * (`plotAreaSelection.ts`). Transient view state — deliberately not in
+   * `savedConfig`, so it neither persists nor marks the project dirty. */
+  const [signalSelection, setSignalSelection] = useState<PlotSignalSelection>(
+    NO_PLOT_SIGNAL_SELECTION,
+  );
   const { catalog, refresh: refreshCatalog } = useSignalCatalog();
 
   const [cursorX, setCursorX] = useState<XCursors>(() => {
@@ -1174,6 +1185,23 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [areas],
   );
 
+  /// Each logical area's signal keys in the panel's canonical order —
+  /// what a Shift+click range walks. Taken from the *effective* area, so
+  /// the range spans every derived axis the area's y-axis mode splits
+  /// its rows across (ADR 0026): the order is the area's, not any one
+  /// axis's.
+  const selectionOrderByArea = useMemo(
+    () => new Map(effectiveAreas.map((a) => [a.id, a.signals.map((s) => signalRefKey(s))])),
+    [effectiveAreas],
+  );
+  const selectSignal = useCallback(
+    (areaId: string, key: string, modifiers: { mod: boolean; shift: boolean }) => {
+      const order = selectionOrderByArea.get(areaId) ?? [];
+      setSignalSelection((prev) => selectPlotSignal(prev, areaId, key, modifiers, order));
+    },
+    [selectionOrderByArea],
+  );
+
   /// Per-area pattern resolutions for the filter UI (match counts,
   /// invalid flags) — evaluated against the same catalog the effective
   /// series come from.
@@ -1262,6 +1290,29 @@ export function PlotPanel(props: IDockviewPanelProps) {
     }
     return out;
   }, [effectiveAreas, enumKeys]);
+
+  /// Per-*derived-axis* slice of the selection — the shape that keeps a
+  /// selection click off the memoised areas that hold none of the
+  /// affected rows. Every axis outside the selected area (and every one
+  /// inside it holding no selected row) gets the shared empty set, so
+  /// its `PlotArea` sees an unchanged prop identity and does not
+  /// re-render.
+  const selectedKeysByAxis = useMemo(() => {
+    const m = new Map<string, ReadonlySet<string>>();
+    for (const d of derivedAreaConfigs) {
+      if (d.parentArea.id !== signalSelection.areaId) {
+        m.set(d.area.id, EMPTY_KEY_SET);
+        continue;
+      }
+      const slice = new Set<string>();
+      for (const s of d.area.signals) {
+        const key = signalRefKey(s);
+        if (signalSelection.ids.has(key)) slice.add(key);
+      }
+      m.set(d.area.id, slice.size === 0 ? EMPTY_KEY_SET : slice);
+    }
+    return m;
+  }, [derivedAreaConfigs, signalSelection]);
 
   // Fit-to-panel weights (ADR 0026): resolve a flex-grow for every
   // live derived axis (stored value or default 1), and prune stored
@@ -1374,6 +1425,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       m.set(axisId, {
         onPlaceCursorY: (which, v) => placeCursorY(axisId, which, v),
         onSetPrimarySignal: (k) => setAreaPrimarySignal(parent.id, k),
+        onSelectSignal: (key, modifiers) => selectSignal(parent.id, key, modifiers),
         onSetYAxisMode: (mode) => setAreaYAxisMode(parent.id, mode),
         onToggleCollapsed: () => toggleAreaCollapsed(parent.id),
         onFocus: () => setFocusedAreaId(parent.id),
@@ -1394,6 +1446,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     derivedAreaConfigs,
     placeCursorY,
     setAreaPrimarySignal,
+    selectSignal,
     setAreaYAxisMode,
     toggleAreaCollapsed,
     removeArea,
@@ -1772,6 +1825,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               fitYEpoch={fitYEpoch}
               showDiag={showDiag}
               {...handlers}
+              selectedKeys={selectedKeysByAxis.get(d.area.id) ?? EMPTY_KEY_SET}
               manualKeys={manualKeysByArea.get(parent.id) ?? EMPTY_KEY_SET}
               patternResolutions={patternResolutionsByArea.get(parent.id) ?? EMPTY_RESOLUTIONS}
               catalog={scopedCatalog}

@@ -493,6 +493,10 @@ interface PlotAreaProps {
   /** Set this area's primary signal (drives y-axis labels/units).
    * `null` reverts to the first-non-hidden default. */
   onSetPrimarySignal: (key: string | null) => void;
+  /** A signal row was clicked — apply it to the parent area's selection
+   * (`plotAreaSelection.ts`). Plain click also promotes the row to
+   * primary (see the row's handler); Ctrl and Shift only select. */
+  onSelectSignal: (key: string, modifiers: { mod: boolean; shift: boolean }) => void;
   /** Set the area's y-axis mode (unified / per-unit / individual). */
   onSetYAxisMode: (mode: YAxisMode) => void;
   /** Collapse the parent area if expanded, expand it if collapsed —
@@ -531,6 +535,11 @@ interface PlotAreaProps {
   /** Keys of this area's *manual* picks — how the row renderer tells
    * a manual pick (removable) from a pattern-derived row (removed by
    * editing the pattern; shows a pattern badge instead of ×). */
+  /** This axis's slice of the parent area's selected signal keys — the
+   * rows drawn highlighted, and the series drawn bold. The panel scopes
+   * it per axis so a selection click leaves the memoised areas that
+   * hold no selected row untouched. */
+  selectedKeys: ReadonlySet<string>;
   manualKeys: ReadonlySet<string>;
   /** The area's patterns evaluated against the catalog: per-pattern
    * match counts / invalid flags for the filter status line. */
@@ -694,6 +703,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     fitYEpoch,
     showDiag,
     onSetPrimarySignal,
+    onSelectSignal,
     onSetYAxisMode,
     onToggleCollapsed,
     onFocus,
@@ -707,6 +717,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onMaterializePatterns,
     yScale,
     onSetYScale,
+    selectedKeys,
     manualKeys,
     patternResolutions,
     catalog,
@@ -2872,17 +2883,27 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             const key = signalRefKey(s);
             const v = displayValueFor(key);
             const isPrimary = key === primaryKey;
+            const isSelected = selectedKeys.has(key);
             return (
               <div
-                className={`plot-signal-row${s.hidden ? " hidden" : ""}${isPrimary ? " primary" : ""}`}
+                className={`plot-signal-row${s.hidden ? " hidden" : ""}${isPrimary ? " primary" : ""}${isSelected ? " selected" : ""}`}
                 key={key}
-                title={isPrimary ? "primary signal (drives the y-axis units)" : "click to make this the primary signal for this area"}
+                title={
+                  isPrimary
+                    ? "primary signal (drives the y-axis units) · ctrl-click / shift-click to select several"
+                    : "click to select this signal and make it this area's primary · ctrl-click / shift-click to select several"
+                }
                 onClick={(e) => {
-                  // Don't promote on a click that originated on the
+                  // Don't act on a click that originated on the
                   // swatch / value / remove button — those have their
                   // own handlers (`stopPropagation`).
                   if (e.defaultPrevented) return;
-                  onSetPrimarySignal(key);
+                  const mod = e.ctrlKey || e.metaKey;
+                  onSelectSignal(key, { mod, shift: e.shiftKey });
+                  // A plain click is today's promote gesture plus the
+                  // highlight; the modified chords only build the
+                  // selection, leaving the primary where it is.
+                  if (!mod && !e.shiftKey) onSetPrimarySignal(key);
                 }}
                 draggable
                 onDragStart={(e) => {
