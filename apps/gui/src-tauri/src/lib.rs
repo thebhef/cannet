@@ -655,7 +655,7 @@ pub fn run() -> ! {
                 *exit_code_slot.lock().expect("exit code mutex poisoned") = code;
             }
             // Opt-in "clear scratch cache on exit" (Settings, ADR 0002
-                // DS-7): wipe the session buffer so the prior session isn't
+            // DS-7): wipe the session buffer so the prior session isn't
             // reloaded next launch. This is the same reset the Clear
             // command runs — it clears the live, still-mapped scratch in
             // place (dropping segments + manifest + identity/derived), so
@@ -670,7 +670,9 @@ pub fn run() -> ! {
             }
         }
     });
-    let requested = *requested_exit_code.lock().expect("exit code mutex poisoned");
+    let requested = *requested_exit_code
+        .lock()
+        .expect("exit code mutex poisoned");
     std::process::exit(final_exit_code(requested, event_loop_code));
 }
 
