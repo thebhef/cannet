@@ -396,3 +396,25 @@ the cached `signalKey → slot` map.
   effects. The single-line pattern field can't produce one, but a
   hand-edited project file could; the result is a mis-keyed refresh,
   not a crash or a wrong match.
+
+## Exit criteria walk (2026-08-08)
+
+- **Ordered `generator` elements map a name-regex capture to a wheel
+  index; matching signals render the derived color everywhere through
+  the shared resolver (pick → generator → hash), plot included** —
+  MET (56.A resolver + 56.B rules/editor/wiring).
+- **Plot area-position seeding removed; unpicked series resolve
+  live** — MET (56.A; stored `SignalRef.color` re-resolves on load,
+  new picks persist as `colorPick` — the accepted upgrade reading).
+- **Host-side validation/evaluation (Rust `regex`, `size_limit`,
+  entry-time errors); frontend never executes user regex** — MET
+  (56.B `signal_generator.rs`; caps 512 chars / 64 KiB; editor shows
+  host errors at entry).
+- **One-shot "sort area" context-menu action by (generator index,
+  name); signal-view sort column deferred** — MET (56.C; deferral
+  recorded in Grooming).
+- **Project persistence with tests; docs (CONTEXT.md "generator",
+  README)** — MET (round-trip tests; CONTEXT.md + README landed with
+  56.B/56.C).
+
+Task complete; all criteria verified.

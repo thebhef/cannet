@@ -372,3 +372,24 @@ this task carries the bulk actions. Rulings so far:
     exist per the exit criteria's own list; the render-count guard is
     unchanged and still green; README documents the interaction. This
     closes task 49.
+
+## Exit criteria walk (2026-08-08)
+
+- **Ctrl-toggle/shift-range selection per area, context-menu
+  hide/show, one-payload drag, every y-axis mode; no bulk recolor;
+  combobox removed** — MET (49.A `d37e28a`/`71ccdcc`/`555eb41`,
+  49.B `9bade33`/`ee36e93`).
+- **Design questions answered in-file before dependent code** — MET
+  (Grooming section + status-log design readings).
+- **Reducer covered pure; bulk edits covered in
+  `PlotPanel.dom.test.tsx` incl. per-unit spanning and
+  pattern-derived rows** — MET (`plotAreaSelection.test.ts`; batched
+  single-persist asserted).
+- **Standing memo guard green; selection click re-renders no
+  unaffected area** — MET, with the recorded caveat that a *plain*
+  click legitimately fans out (it moves the primary — pre-existing
+  `areas`-edit behavior); the slice guard is asserted with
+  ctrl-clicks.
+- **README documents the interaction incl. the plain click** — MET.
+
+Task complete; all criteria verified.

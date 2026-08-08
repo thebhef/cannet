@@ -176,3 +176,21 @@ focus-on-click get it.
   cells, cyclic-send controls, a bus combobox, buttons) — the "proven
   necessary" grip case the amended ADR 0045 still allows — so left
   alone as out of scope for item 1, which only ruled on signal rows.
+
+## Exit criteria walk (2026-08-08)
+
+- **Signal row drags from anywhere, test pins it, ADR 0045 amended
+  same-change** — MET (54.A, `766e9d7`: drag source moved to
+  `GridviewRow`, value-cell drag test, grip rule flipped to
+  whole-row-norm with the transmit/plot-grip exceptions recorded).
+- **Keyboard-only Tab into RBS row content, DOM test first, contract
+  in the shared layer, three panels gain focus-on-click,
+  commit/Escape returns focus, ADR 0044 matches** — MET (54.B,
+  `aaab03d`/`fa125a4`/`601270e`: Tab/Shift+Tab in `useGridview`,
+  focus rescue on body-dropping Enter/Escape, focus-on-click in
+  RBS/DBC/Transmit, ADR + ShortcutsPanel + dispatcher predicates
+  aligned). Recorded limitation: "the row" means the row element —
+  the RBS content block is a DOM sibling reached by native Tab
+  continuation, which the end-to-end path exercises.
+
+Task complete; both items verified by the walk above.

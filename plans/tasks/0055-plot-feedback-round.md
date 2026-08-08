@@ -584,3 +584,27 @@ better).
   promise "copy" on gestures that reorder. The cursor therefore says
   "move" for every area drag and the drop decides for real. The copy
   still happens; only the cursor does not say so.
+
+## Exit criteria walk (2026-08-08)
+
+- **Manual-range regression matrix exists and passes** (float/int/uint
+  × unified/per-unit/individual, no behavior change) — MET (55.A).
+- **Solo ships** (panel regex box, matches-only, step mode with
+  next/prev + PgUp/PgDn + indicator, checked-subset context menu,
+  other series' `hidden` never mutated) — MET (55.D). Recorded
+  deviation: the read-out shows a bare match count until step/subset
+  narrows it (a `17/17` spelling would read as a position).
+- **"All data" beside Clear; documented recovery path** — MET (55.B).
+  Recorded reading: a running trace widens to `{start: 0, end: null}`
+  so it truly keeps following live.
+- **Per-area collapse; no-visible-signal areas fully collapse to one
+  handle per contiguous run; slim splitters, intact grab targets** —
+  MET (55.C).
+- **Selected series render bold** — MET (49.A; live width applied by
+  write+redraw because uPlot resolves `width` as a number — recorded).
+- **Area drags between panels, move / Ctrl-copy, carries
+  series/patterns/mode/primary/collapsed + manual ranges, weights
+  stay, non-plot targets get the ADR-0045 signal payload** — MET
+  (55.E).
+
+Task complete; all criteria verified.
