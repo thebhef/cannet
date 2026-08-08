@@ -2334,7 +2334,7 @@ button.trace-event-swatch {
 }
 
 /* The signal-row selection's context menu (task 49.B): bulk Hide /
-   Show, plus the area-wide one-shot Sort area action (task 56.C). Same
+   Show, plus the area-wide one-shot Sort area action. Same
    floating shell as `.plot-axis-menu` and the action-item layout
    `.sources-context-menu-action` uses. */
 .plot-selection-menu {

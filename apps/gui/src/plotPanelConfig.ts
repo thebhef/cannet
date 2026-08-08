@@ -196,7 +196,7 @@ export interface AxisHandlers {
    * drag payload instead of just the grabbed row (DbcPanel precedent,
    * ADR 0045). A no-op if the parent area's selection is empty. */
   onDragSelection: (dataTransfer: DataTransfer) => void;
-  /** The one-shot "sort area" action (task 56.C): sort the *parent*
+  /** The one-shot "sort area" action: sort the *parent*
    * area's whole manual `signals` list by (generator index, name) —
    * routed to the parent like `onSetPrimarySignal`, not the derived
    * axis, so invoking it from a per-unit / individual axis still sorts
@@ -392,7 +392,7 @@ export function reorderAreas(
   return next;
 }
 
-/** The one-shot "sort area" action (task 56.C): reorders `signals` by
+/** The one-shot "sort area" action: reorders `signals` by
  * (generator wheel index, then display name) once — the result is
  * written back into the persisted manual list like any other reorder,
  * and drag order stays the primary model afterward. A generator-claimed

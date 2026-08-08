@@ -1428,7 +1428,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [selectedRefsFor, elementId],
   );
 
-  /// The one-shot "sort area" action (task 56.C): reorder the area's
+  /// The one-shot "sort area" action: reorder the area's
   /// whole manual `signals` list by (generator index, then name) and
   /// write it back in one `setAreas` call — the same shape as every
   /// other area-level edit here. Ignores the current selection (unlike
