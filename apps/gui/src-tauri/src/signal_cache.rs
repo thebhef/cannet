@@ -1169,4 +1169,100 @@ mod tests {
         let after = std::fs::read_dir(dir.path()).unwrap().count();
         assert!(after < before, "pyramid disk reclaimed: {after} < {before}");
     }
+
+    // ---- First-use rebuild benchmark --------------------------------
+    //
+    // Not part of the default suite (`#[ignore]`d; it writes a
+    // multi-million-frame capture into a temp dir and runs for tens of
+    // seconds). It measures what the first plot over a *restored* capture
+    // pays (ADR 0002 DS-7): the catch-up's wall clock, and the process
+    // working-set high-water mark across it, sampled while it runs. Run
+    // with:
+    //
+    //   cargo test -p cannet-gui --release bench_first_use_rebuild \
+    //       -- --ignored --nocapture
+    //
+    // The working set counts the store's mapped pages the scan touches as
+    // well as its heap, so read the delta as "everything the rebuild made
+    // resident", not as heap alone. The number that matters is how it
+    // scales: the mapped share grows with the capture, the materialized
+    // share must not.
+
+    #[test]
+    #[ignore = "first-use rebuild benchmark; run with --ignored --nocapture"]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    fn bench_first_use_rebuild() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::Arc;
+
+        /// Frames in the synthetic capture, all carrying the decodable id —
+        /// the worst case the profile named (one very dense id).
+        const FRAMES: usize = 4_000_000;
+
+        fn rss() -> u64 {
+            use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+            let pid = Pid::from_u32(std::process::id());
+            let mut sys = System::new();
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_memory(),
+            );
+            sys.process(pid).map_or(0, sysinfo::Process::memory)
+        }
+
+        let scratch = TempDir::new().unwrap();
+        let raw_dir = scratch.path().join("raw");
+        std::fs::create_dir_all(&raw_dir).unwrap();
+        let store = TraceStore::new_disk(&raw_dir).unwrap();
+        let wrote = std::time::Instant::now();
+        for i in 0..FRAMES {
+            store.append(val_frame(i as u64 * 1_000_000, (i % 4096) as u16));
+        }
+        println!(
+            "[bench] wrote {FRAMES} frames in {:.1} s",
+            wrote.elapsed().as_secs_f64(),
+        );
+
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let pyramids = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(pyramids.path());
+
+        // Sample the working set while the rebuild runs — the spike the
+        // chunked scan exists to remove is transient, so an after-the-fact
+        // reading would miss it.
+        let base = rss();
+        let peak = Arc::new(AtomicU64::new(base));
+        let stop = Arc::new(AtomicBool::new(false));
+        let sampler = {
+            let (peak, stop) = (Arc::clone(&peak), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    peak.fetch_max(rss(), Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            })
+        };
+
+        let started = std::time::Instant::now();
+        let pts = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 2000, &store, dbs);
+        let secs = started.elapsed().as_secs_f64();
+        stop.store(true, Ordering::Relaxed);
+        sampler.join().unwrap();
+
+        let peak = peak.load(Ordering::Relaxed).max(rss());
+        let delta = peak.saturating_sub(base);
+        println!(
+            "[bench] first-use rebuild: {FRAMES} frames in {:.2} s ({:.3} us/frame), \
+             working set {:.0} -> {:.0} MB (+{:.0} MB = {:.0} B/frame), {} points served",
+            secs,
+            secs * 1e6 / FRAMES as f64,
+            base as f64 / 1e6,
+            peak as f64 / 1e6,
+            delta as f64 / 1e6,
+            delta as f64 / FRAMES as f64,
+            pts.len(),
+        );
+    }
 }
