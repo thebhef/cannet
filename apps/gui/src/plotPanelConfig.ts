@@ -196,6 +196,12 @@ export interface AxisHandlers {
    * drag payload instead of just the grabbed row (DbcPanel precedent,
    * ADR 0045). A no-op if the parent area's selection is empty. */
   onDragSelection: (dataTransfer: DataTransfer) => void;
+  /** The one-shot "sort area" action (task 56.C): sort the *parent*
+   * area's whole manual `signals` list by (generator index, name) —
+   * routed to the parent like `onSetPrimarySignal`, not the derived
+   * axis, so invoking it from a per-unit / individual axis still sorts
+   * every unit's signals, not just the ones that axis shows. */
+  onSortArea: () => void;
 }
 
 /** The shared current x-window + a suppress flag so a programmatic

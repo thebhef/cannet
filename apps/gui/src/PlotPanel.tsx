@@ -34,6 +34,7 @@ import {
   reorderAreas,
   signalRefKey,
   signalValueFormats,
+  sortAreaSignals,
   signalsWidthFromRaw,
   type AxisHandlers,
   type CursorMode,
@@ -1427,6 +1428,24 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [selectedRefsFor, elementId],
   );
 
+  /// The one-shot "sort area" action (task 56.C): reorder the area's
+  /// whole manual `signals` list by (generator index, then name) and
+  /// write it back in one `setAreas` call — the same shape as every
+  /// other area-level edit here. Ignores the current selection (unlike
+  /// `setSelectionHidden`/`dragSelection` above): the action targets
+  /// the area, not whatever rows happen to be selected when the row
+  /// context menu was opened.
+  const sortArea = useCallback(
+    (areaId: string) => {
+      setAreas((prev) =>
+        prev.map((a) =>
+          a.id === areaId ? { ...a, signals: sortAreaSignals(a.signals, generatorIndexes) } : a,
+        ),
+      );
+    },
+    [generatorIndexes],
+  );
+
   /// Read through refs for the same reason `selectedRefsFor` does:
   /// `dragArea` goes into `areaHandlers`, and closing over either value
   /// would remint every area's callback bundle on any area edit or
@@ -1769,6 +1788,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onSetYScale: (patch) => setAxisScales((prev) => setAxisScale(prev, axisId, patch)),
         onSetSelectionHidden: (hidden) => setSelectionHidden(parent.id, hidden),
         onDragSelection: (dataTransfer) => dragSelection(parent.id, dataTransfer),
+        onSortArea: () => sortArea(parent.id),
       });
     }
     return m;
@@ -1790,6 +1810,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     materializePatterns,
     setSelectionHidden,
     dragSelection,
+    sortArea,
   ]);
   const resizeSignalsWidth = useCallback(
     (w: number) => setSignalsWidth(Math.max(SIGNALS_WIDTH_MIN, Math.min(SIGNALS_WIDTH_MAX, w))),

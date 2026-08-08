@@ -419,16 +419,27 @@ function YAxisScaleMenu({
  *
  * No bulk recolor and no dedicated bulk-remove affordance here
  * (grooming #3): visibility and drag-out are the whole surface.
+ *
+ * **Sort area** (task 56.C) rides along on this same menu: the row
+ * context menu is the "context menu on the plot area's signal panel"
+ * the grooming asks for, so a one-shot area-wide sort sits alongside
+ * the selection-scoped Hide/Show rather than opening a second menu.
+ * Unlike Hide/Show it ignores the selection entirely — it reorders the
+ * *whole* parent area's manual `signals` list by (generator index,
+ * name), once, and drag order is the primary model again the moment
+ * it's done.
  */
 function SignalSelectionMenu({
   position,
   onHide,
   onShow,
+  onSortArea,
   onClose,
 }: {
   position: { x: number; y: number };
   onHide: () => void;
   onShow: () => void;
+  onSortArea: () => void;
   onClose: () => void;
 }) {
   const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
@@ -456,6 +467,16 @@ function SignalSelectionMenu({
         }}
       >
         Show
+      </button>
+      <button
+        className="plot-selection-menu-action"
+        title="reorder this area's signal list by generator index, then name — a one-time sort, not a live mode"
+        onClick={() => {
+          onSortArea();
+          onClose();
+        }}
+      >
+        Sort area
       </button>
     </div>
   );
@@ -662,6 +683,9 @@ interface PlotAreaProps {
    * drag payload instead of just the grabbed row (task 49.B, DbcPanel
    * precedent, ADR 0045). */
   onDragSelection: (dataTransfer: DataTransfer) => void;
+  /** The row context menu's one-shot "Sort area" action (task 56.C):
+   * reorders the *parent* area's whole manual `signals` list. */
+  onSortArea: () => void;
 }
 
 /** Draw the logic-analyzer value tiles for one enum series into a
@@ -820,6 +844,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     panelElementId,
     onSetSelectionHidden,
     onDragSelection,
+    onSortArea,
   } = p;
 
   /** Fold dropped patterns into this area's own list (ADR 0045): live,
@@ -2789,6 +2814,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           position={selectionMenu}
           onHide={() => onSetSelectionHidden(true)}
           onShow={() => onSetSelectionHidden(false)}
+          onSortArea={onSortArea}
           onClose={() => setSelectionMenu(null)}
         />
       )}

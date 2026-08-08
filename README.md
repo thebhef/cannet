@@ -715,7 +715,13 @@ resample at the end.
   it on another area or panel to move or copy the whole selection at
   once, the same convention the DBC panel's multi-select drag uses;
   dragging a row that isn't selected drags only that row and leaves the
-  selection as it was.
+  selection as it was. The same context menu carries **Sort area**, a
+  one-shot reorder of the whole area's signal list by generator index,
+  then name (case-insensitive) — unlike Hide/Show it ignores the
+  current selection and acts on every signal in the area. It's a single
+  reorder, not a live sort mode: drag stays the way to reorder
+  afterward, and a signal a pattern added (not a manual pick) keeps
+  following its pattern rather than moving.
 - **Solo (show only these series).** The toolbar's **solo** box takes a
   regex — case-insensitive and partial, so `Cell16` finds `Cell16`
   wherever it sits in a signal's name — and masks every series it
