@@ -288,6 +288,32 @@ likely during this task's later perf-gate runs.
   `signalSetKey`, capture-restore cost) or the ADR-0031 gate re-run —
   out of this phase's scope (item 5 only).
 
+Phase 57.B (items 1 and 3):
+
+- `useValueTables` is shared (plot, colormap, transmit, RBS panels), so
+  the sorted fetch key changes all of them: a caller that reorders the
+  same signals no longer refetches. The hook's result has always been a
+  map keyed by signal, so no caller can observe a difference beyond the
+  saved round-trips and the map's identity holding still.
+- `patternResolutionsByArea` no longer carries an entry for an area
+  without patterns (it used to hold a fresh empty array). The two
+  readers both cope — the render falls back to the shared
+  `EMPTY_RESOLUTIONS`, the bus-rename warning effect iterates what is
+  there — but a future reader must not assume one entry per area.
+- `scopedCatalog` / `resolveColor` now key on the filter / colormap
+  *elements* rather than on `registry.entries`. That relies on
+  `applyElementPatch` replacing the element object it patches (it does,
+  and its no-op short-circuit returns the array unchanged); an element
+  mutated **in place** would no longer reach these memos.
+- While solo is active, an `areas` edit still re-derives every axis in
+  the panel: the mask's visible set is rebuilt from the areas on every
+  edit, and a non-matching area's rows all read hidden, so the mask is
+  panel-wide by construction. Unchanged from before this phase, and
+  stated in the code where the dependency is taken.
+- Reordering an area's rows still destroys and rebuilds its uPlot
+  instance — the scope ruling's accepted half of the trade, now pinned
+  by a test so a future reader doesn't take it for an oversight.
+
 **2026-08-08 — follow-up: the outer `catch` was still a quiet-exit-0
 hole.** Review found that an exception during the capture window
 (`handleConnect` rejecting instead of just failing to land a session,
@@ -374,3 +400,45 @@ derived configs), branch `task57b-render-path-scoping`.**
   otherwise lands inside the measurement window.
 - Test counts: JS 138 files / 1660 tests (was 1652) all green
   (`pnpm --dir apps/gui test`); `tsc --noEmit` clean. No Rust touched.
+
+**2026-08-08 — Phase 57.B, item 3 (`signalSetKey`: membership vs
+order), same branch.**
+
+- `ea75ae6` — `perf(gui): key a plot area's sampled data on membership,
+  not order`.
+- The split, as groomed: `signalSetKey` (ordered) still keys the uPlot
+  construction effect — the destroy+rebuild on reorder stays, per the
+  scope ruling, and no series-remap path was built. A new
+  `signalMembershipKey` (the same keys, sorted) keys everything about
+  the *data*: the decimation cache `descriptor` inside `resample`, the
+  `builtSignalSetRef` compare (so a reorder takes the
+  repaint-from-cache else-branch instead of `resetRange()`), and
+  `useFirstSampleWait` (so no "building…" flash). The two copies of the
+  descriptor string the grooming map warned about are now one
+  expression, read from both places.
+- Two order dependencies had to move with it, or the split would have
+  been wrong rather than merely ineffective:
+  - `hostExtentsRef` held the `signal_min_max` sidecar's answer as an
+    array parallel to the signals *at fetch time*, read positionally
+    (`hostExtents?.[i]`). Keeping it across a reorder-driven repaint
+    would have normalised each series against its neighbour's all-time
+    range. It is a `Map` keyed by signal key now, like the decimation
+    cache beside it.
+  - `useValueTables` keyed its fetch on the ordered key, so a reorder
+    refetched every table and replaced the result map — which
+    `PlotPanel` turns into `enumKeys`, a dependency of every area's axis
+    derivation. One area's reorder re-derived the whole panel. Its key
+    is sorted now (the result was always keyed by signal, so order
+    cannot change the answer); pinned by a new unit test, confirmed red
+    against the unsorted key first.
+- Tests: new `describe("PlotPanel signal set: membership vs order")` in
+  `PlotPanel.dom.test.tsx` — order-only change repaints from cache (no
+  new `sample_signals`, no "building…", same drawn point count, and the
+  expected fresh uPlot instance), membership change still fetches, and
+  the reorder render-scoping test deferred from item 1 (the other area
+  does not re-render). Plus one `useValueTables.test.ts` case.
+- Test counts: JS 138 files / 1664 tests (was 1660) all green
+  (`pnpm --dir apps/gui test`); `tsc --noEmit` clean. No Rust touched.
+- Docs: `DecimatedRequest.descriptor`'s rustdoc-equivalent comment now
+  states the membership rule (and why order must stay out of it) in the
+  same commit as the code.
