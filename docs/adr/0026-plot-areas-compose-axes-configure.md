@@ -129,6 +129,19 @@ area whose signals are **all hidden** is collapsed regardless of the
 flag — there is nothing to draw on it — which is the rule that already
 collapses a fully-hidden axis.
 
+**Solo masks the view; it never rewrites what is hidden.** A panel-wide
+regex over the series display names can restrict the panel to the
+series it matches. That is a *view* mask composed on top of each
+series' own `hidden` flag — a series draws when it is not hidden **and**
+(solo is off, or it is in solo's visible set) — not a bulk edit of the
+other series' flags. Solo is a question ("show me these"), and answering
+it by writing `hidden: true` across the panel would destroy the answer
+to a different question the user already gave; clearing solo must
+restore the view verbatim, hidden rows included. It follows that an
+area left with no *solo-visible* series collapses by the same
+all-hidden rule above, and equally without touching its persisted
+`collapsed` flag.
+
 **Each axis maps to one uPlot instance.** This keeps us consistent
 with [ADR 0007](0007-uplot-plot-renderer.md):
 
@@ -387,6 +400,21 @@ below:
   reorderable; a drop targets whichever area's row it was released
   over, so an area buried inside a run is targeted by dropping on its
   own side-panel strip.
+
+- **Solo is applied per derived axis, after the axes are derived.**
+  `plotSolo.ts` holds the pure model (matcher, match list in panel
+  order, visible set, wrapping step, checked subset, sparse persisted
+  shape); the panel applies it in `derivedAreaConfigs`, mapping only the
+  `hidden` the renderer reads. Masking *after* derivation is what keeps
+  a solo change from moving anything structural — the axis set, and so
+  every id keyed by it (weights, manual ranges, uPlot instances), is a
+  function of the area's signals and its y-axis mode, which the mask
+  does not touch. So the whole feature reduces to the hidden-signal
+  treatment above: scale unions, lane re-flow, the collapse of an axis
+  with nothing left to draw, all for free. A visibility flip repaints
+  from the window the area already holds rather than refetching (the
+  fetch covers hidden signals, so the bytes would be identical); it
+  still resamples, because normalisation happens there.
 
 What's still rough:
 
