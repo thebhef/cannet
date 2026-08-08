@@ -3198,6 +3198,14 @@ button.trace-event-swatch {
   color: var(--danger-text);
   font-size: 0.72rem;
 }
+.plot-solo-pos {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 2.5rem;
+  text-align: center;
+}
+.plot-solo-step,
 .plot-solo-clear {
   background: none;
   border: 1px solid var(--border-strong);
@@ -3207,6 +3215,7 @@ button.trace-event-swatch {
   padding: 0 0.3rem;
   border-radius: 3px;
 }
+.plot-solo-step:hover,
 .plot-solo-clear:hover {
   background: var(--surface-control-hover);
 }

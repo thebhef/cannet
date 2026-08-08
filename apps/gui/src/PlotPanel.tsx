@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -241,9 +241,11 @@ import {
   soloMaskSignals,
   soloMatches,
   soloPatternInvalid,
+  soloPositionLabel,
   soloRegex,
   soloToParams,
   soloVisibleKeys,
+  stepSolo,
   type SoloState,
 } from "./plotSolo";
 import { setSignalDragData } from "./dragSignals";
@@ -1196,6 +1198,37 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [],
   );
   const clearSolo = useCallback(() => setSolo(SOLO_OFF), []);
+  /// Step mode: next / previous walk the match list one at a time,
+  /// wrapping, and entering it from the matches-only view lands on the
+  /// first (forward) or last (backward) match. A no-op with nothing to
+  /// step through, so the keyboard binding below can stay unconditional.
+  const soloMatchCount = soloMatchList.length;
+  const stepSoloBy = useCallback(
+    (delta: 1 | -1) => {
+      if (soloMatchCount === 0) return;
+      setSolo((s) => ({ ...s, indices: stepSolo(s.indices, soloMatchCount, delta) }));
+    },
+    [soloMatchCount],
+  );
+  /// PgDn / PgUp cycle the matches, scoped to the plot panel: this is a
+  /// `keydown` on the panel root, so it acts only while focus is inside
+  /// the panel — which after typing a pattern or clicking a step control
+  /// is where it already is. Deliberately not a global command (ADR
+  /// 0018): PageUp / PageDown are the gridview's navigation keys
+  /// (`keybindings.ts`), and while the plot panel is not a gridview, a
+  /// global binding on them would be suppressed in every panel that is.
+  /// Nothing else claims them, and the keys pass through untouched
+  /// whenever solo has no matches to step.
+  const onPanelKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key !== "PageDown" && e.key !== "PageUp") return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if (soloMatchCount === 0) return;
+      e.preventDefault();
+      stepSoloBy(e.key === "PageDown" ? 1 : -1);
+    },
+    [soloMatchCount, stepSoloBy],
+  );
 
   /// Per-area manual-pick keys (from *stored* state, not the effective
   /// list) — how the row renderer tells a manual pick from a
@@ -1642,7 +1675,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
 
   return (
-    <div className="plot-panel">
+    <div className="plot-panel" onKeyDown={onPanelKeyDown}>
       <div
         className="plot-panel-toolbar"
         onContextMenu={(e) => {
@@ -1711,6 +1744,33 @@ export function PlotPanel(props: IDockviewPanelProps) {
             }}
           />
           {soloInvalid && <span className="plot-solo-error">bad regex</span>}
+          {solo.pattern !== "" && !soloInvalid && (
+            <>
+              <button
+                className="plot-solo-step"
+                aria-label="previous solo match"
+                title="previous match (PgUp) — show one match at a time"
+                onClick={() => stepSoloBy(-1)}
+              >
+                ‹
+              </button>
+              <span
+                className="plot-solo-pos"
+                aria-label="solo position"
+                title="the visible match's position in the match list, or the number of matches when they are all shown"
+              >
+                {soloPositionLabel(solo.indices, soloMatchCount)}
+              </span>
+              <button
+                className="plot-solo-step"
+                aria-label="next solo match"
+                title="next match (PgDn) — show one match at a time"
+                onClick={() => stepSoloBy(1)}
+              >
+                ›
+              </button>
+            </>
+          )}
           {solo.pattern !== "" && (
             <button
               className="plot-solo-clear"

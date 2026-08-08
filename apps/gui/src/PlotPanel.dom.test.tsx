@@ -3045,6 +3045,117 @@ describe("PlotPanel solo", () => {
     ]);
   });
 
+  /// Three matching series across two areas — a match list long enough
+  /// to step through and to wrap around.
+  const stepRegistry = (id: string, config?: Record<string, unknown>) =>
+    makeRegistry({
+      id,
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1"), sig("Cell2")] },
+          { id: "a2", signals: [sig("Cell3"), sig("PackVoltage")] },
+        ],
+        ...config,
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+
+  const soloPosition = () => screen.getByLabelText("solo position").textContent;
+  const visibleNames = () =>
+    rowVisibility()
+      .filter(([, visible]) => visible)
+      .map(([name]) => name);
+
+  it("steps one match at a time with next / previous, wrapping at both ends", () => {
+    const registry = stepRegistry("el-solo-step");
+    renderPanel({ params: { elementId: "el-solo-step" }, registry });
+    typeSolo("Cell");
+    // Matches-only until a step control is used: every match visible,
+    // and the read-out is the bare count, not a position.
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3"]);
+    expect(soloPosition()).toBe("3");
+
+    const next = screen.getByRole("button", { name: "next solo match" });
+    const prev = screen.getByRole("button", { name: "previous solo match" });
+    fireEvent.click(next);
+    expect(visibleNames()).toEqual(["Cell1"]);
+    expect(soloPosition()).toBe("1/3");
+    // …stepping across the area boundary in panel order.
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(visibleNames()).toEqual(["Cell3"]);
+    expect(soloPosition()).toBe("3/3");
+    // Wraps forward…
+    fireEvent.click(next);
+    expect(visibleNames()).toEqual(["Cell1"]);
+    // …and backward.
+    fireEvent.click(prev);
+    expect(visibleNames()).toEqual(["Cell3"]);
+    expect(soloPosition()).toBe("3/3");
+  });
+
+  it("cycles the matches with PgDn / PgUp while the panel has focus", () => {
+    const registry = stepRegistry("el-solo-keys");
+    renderPanel({ params: { elementId: "el-solo-keys" }, registry });
+    typeSolo("Cell");
+    const panel = document.querySelector(".plot-panel")!;
+
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1"]);
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell2"]);
+    // Wrapping, both ways — the keys are the step buttons' twins.
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1"]);
+    fireEvent.keyDown(panel, { key: "PageUp" });
+    expect(visibleNames()).toEqual(["Cell3"]);
+
+    // …and from inside the solo box itself, which is where focus sits
+    // right after typing a pattern.
+    fireEvent.keyDown(soloBox(), { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1"]);
+  });
+
+  it("ignores PgDn / PgUp while no solo pattern is matching", () => {
+    const registry = stepRegistry("el-solo-keys-off");
+    renderPanel({ params: { elementId: "el-solo-keys-off" }, registry });
+    const panel = document.querySelector(".plot-panel")!;
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3", "PackVoltage"]);
+    // A pattern that matches nothing has nothing to step through either.
+    typeSolo("Nope");
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual([]);
+    expect(soloPosition()).toBe("0");
+  });
+
+  it("restores the full view from step mode on Escape", () => {
+    const registry = stepRegistry("el-solo-step-escape");
+    const { api } = renderPanel({ params: { elementId: "el-solo-step-escape" }, registry });
+    typeSolo("Cell");
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(visibleNames()).toEqual(["Cell1"]);
+    expect(persistedSolo(api)).toEqual({ pattern: "Cell", indices: [0] });
+
+    fireEvent.keyDown(soloBox(), { key: "Escape" });
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3", "PackVoltage"]);
+    expect(persistedSolo(api)).toBeUndefined();
+  });
+
+  it("starts a re-typed pattern back at the matches-only view", () => {
+    // The indices are positions in the *old* match list; a new pattern
+    // is a new list, so they cannot carry over.
+    const registry = stepRegistry("el-solo-retype");
+    renderPanel({ params: { elementId: "el-solo-retype" }, registry });
+    typeSolo("Cell");
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(soloPosition()).toBe("1/3");
+    typeSolo("Cell2");
+    expect(visibleNames()).toEqual(["Cell2"]);
+    expect(soloPosition()).toBe("1");
+  });
+
   it("flips visibility without a host round-trip or a chart rebuild", async () => {
     // Every plotted signal is already sampled — hidden ones included —
     // so a solo change is a re-normalise + redraw of the window each

@@ -718,6 +718,16 @@ resample at the end.
   plot height like any all-hidden area, without touching its own
   collapse toggle. The pattern is saved with the panel in the project
   file.
+- **Stepping the matches.** The **‹ / ›** controls beside the solo box
+  (and **PgUp / PgDn** while the plot panel has focus, which is where
+  it is right after typing a pattern) walk the match list **one series
+  at a time**, wrapping at both ends — the item-by-item workflow the
+  box exists for. The read-out between them is the position, `3/17`;
+  before you step, it is the bare match count. Stepping runs in panel
+  order — areas top to bottom, rows within each area — so it crosses
+  area boundaries on its own. **Escape** (or clearing the box) leaves
+  step mode and the whole solo view at once, and editing the pattern
+  starts the new match list back at "all matches visible".
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives

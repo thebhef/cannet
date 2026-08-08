@@ -161,16 +161,16 @@ describe("soloPositionLabel", () => {
     expect(soloPositionLabel([2], 17)).toBe("3/17");
   });
 
-  it("counts the whole match list when every match is visible", () => {
-    expect(soloPositionLabel(null, 17)).toBe("17/17");
+  it("is a bare count when every match is visible — there is no position", () => {
+    expect(soloPositionLabel(null, 17)).toBe("17");
   });
 
   it("counts the checked subset when several are visible", () => {
     expect(soloPositionLabel([1, 4, 9], 17)).toBe("3/17");
   });
 
-  it("reads 0/0 with no matches", () => {
-    expect(soloPositionLabel(null, 0)).toBe("0/0");
+  it("reads 0 with no matches", () => {
+    expect(soloPositionLabel(null, 0)).toBe("0");
   });
 });
 
