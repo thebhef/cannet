@@ -332,7 +332,13 @@ below:
   `plotAreaLayout` owns the weight maths (resolve, splitter-delta with
   pair-sum conservation + min-px clamp, equalize) under unit tests. A
   `role="separator"` handle between adjacent axes drags the pair's
-  weights and double-clicks to equalize.
+  weights and double-clicks to equalize. Its grab band and its visual
+  are deliberately separate: a 12px hit area straddling the shared
+  border, drawing a 2px line *on* that border when hovered or dragged.
+  Plot height is the scarce thing in this panel, so a handle that lights
+  up a fat band costs more than it explains — and the grab target need
+  not shrink with the ink. The collapsed run's handle follows the same
+  split.
 - **A hidden signal leaves the layouts it would otherwise drive.**
   Hiding is not just "don't stroke this line": the signal drops out of
   the y-scale union (above), out of the enum-lanes stack, and — when

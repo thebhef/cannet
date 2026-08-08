@@ -2087,7 +2087,13 @@ button.trace-event-swatch {
    0-height flex child so it takes no room in the fit-to-panel
    distribution; its grab target is an overlaid pseudo-element
    straddling the shared border (row-resize cursor, hit-slop margins,
-   the same idiom as the side-panel resizer). */
+   the same idiom as the side-panel resizer).
+
+   Hit area (`::before`) and visual (`::after`) are separate on purpose:
+   the band the user can grab is 12px tall, while what it *draws* when
+   grabbed is a 2px line on the border it straddles. Plot height is the
+   scarce thing in this panel, so a handle that lights up a fat band
+   costs more than it explains. */
 .plot-area-splitter {
   flex: 0 0 0px;
   position: relative;
@@ -2100,12 +2106,20 @@ button.trace-event-swatch {
   position: absolute;
   left: 0;
   right: 0;
-  top: -4px;
-  height: 8px;
+  top: -6px;
+  height: 12px;
 }
-.plot-area-splitter:hover::before,
-.plot-area-splitter:active::before {
-  background: var(--accent-tint);
+.plot-area-splitter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 2px;
+}
+.plot-area-splitter:hover::after,
+.plot-area-splitter:active::after {
+  background: var(--accent-marker);
 }
 
 .plot-area-ycursors {
