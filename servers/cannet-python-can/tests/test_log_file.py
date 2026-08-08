@@ -33,6 +33,7 @@ def _restore_logging():
     root = logging.getLogger()
     saved_root = (list(root.handlers), root.level)
     saved_banner = (list(entry.BANNER.handlers), entry.BANNER.level)
+    saved_pcan_level = logging.getLogger("can.pcan").level
     yield
     for h in list(root.handlers):
         if h not in saved_root[0]:
@@ -41,6 +42,7 @@ def _restore_logging():
     root.setLevel(saved_root[1])
     entry.BANNER.handlers[:] = saved_banner[0]
     entry.BANNER.setLevel(saved_banner[1])
+    logging.getLogger("can.pcan").setLevel(saved_pcan_level)
 
 
 def _file_handlers(logger: logging.Logger) -> list[RotatingFileHandler]:
@@ -122,3 +124,36 @@ def test_an_unopenable_log_file_does_not_stop_the_sidecar(tmp_path: Path) -> Non
     blocker.write_text("", encoding="utf-8")
     assert entry._configure_logging("info", str(blocker / "s.log")) is None
     assert _file_handlers(root) == []
+
+
+def test_pcan_per_frame_debug_records_are_capped_out_of_the_file(
+    tmp_path: Path,
+) -> None:
+    """python-can's PCAN backend (``can.pcan``) logs two DEBUG records
+    per transmitted frame inside ``send()`` — at the file's always-debug
+    level that is ~3,200 records/s at design load, enough to throttle
+    the transmit path it's supposed to be diagnosing. The boundary this
+    module documents ("lifecycle and faults, never per-frame content")
+    applies to third-party interface loggers too, so the file caps
+    ``can.pcan`` at INFO while everything else stays at DEBUG.
+    """
+    root = logging.getLogger()
+    root.handlers[:] = []
+    path = tmp_path / "s.log"
+
+    assert entry._configure_logging("info", str(path)) == path
+
+    pcan_log = logging.getLogger("can.pcan")
+    pcan_log.debug("Data: bytearray(b'\\x01\\x02')")
+    pcan_log.info("channel opened")
+    other_log = logging.getLogger("cannet_python_can.test")
+    other_log.debug("a debug detail")
+    for h in root.handlers:
+        h.flush()
+
+    text = path.read_text(encoding="utf-8")
+    assert "Data: bytearray" not in text, (
+        "per-frame can.pcan DEBUG must not reach the file"
+    )
+    assert "channel opened" in text, "can.pcan INFO must still reach the file"
+    assert "a debug detail" in text, "other loggers must stay at DEBUG in the file"

@@ -82,7 +82,12 @@ command": transmit and receive log their lifecycle and faults
 (channel open / reconfigure / close, rejections, pump crashes, plus
 the existing periodic rx/tx rate lines) but never per-frame content.
 A record per frame would rotate the whole budget away in seconds on a
-busy bus and put a logging call on the hot path.
+busy bus and put a logging call on the hot path. The same boundary is
+enforced on bundled python-can interfaces that log per frame
+internally: PCAN's backend (`can.pcan`) logs two debug records per
+transmitted frame inside its own `send()`, so it is capped at `info`
+in the file — otherwise design-load traffic through the file handler
+throttles the very transmit path the file exists to diagnose.
 
 ## Wire model
 
