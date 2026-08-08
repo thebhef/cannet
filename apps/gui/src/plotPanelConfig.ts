@@ -187,7 +187,7 @@ export interface AxisHandlers {
    * alone. The panel owns the sparse store (ADR 0026). */
   onSetYScale: (patch: AxisScalePatch) => void;
   /** Bulk-set the parent area's current *selection* hidden/shown in one
-   * batch — the selection's context menu (task 49.B). Same
+   * batch — the selection's context menu. Same
    * materialization rule as `onToggleHidden`, applied to every selected
    * row in one persist / one resample rather than N single-row calls.
    * A no-op if the parent area's selection is empty. */

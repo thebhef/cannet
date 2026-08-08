@@ -408,7 +408,7 @@ function YAxisScaleMenu({
 }
 
 /**
- * The signal-row selection's context menu (task 49.B): bulk Hide /
+ * The signal-row selection's context menu: bulk Hide /
  * Show over whatever is currently selected in this area. Opened by
  * right-clicking a selected row (or, per the row's own handler, a row
  * that becomes the sole selection because it wasn't one already —
@@ -417,8 +417,8 @@ function YAxisScaleMenu({
  * shell as the y-axis menu (`YAxisScaleMenu`) and the sources picker's
  * context menu.
  *
- * No bulk recolor and no dedicated bulk-remove affordance here
- * (grooming #3): visibility and drag-out are the whole surface.
+ * No bulk recolor and no dedicated bulk-remove affordance here —
+ * visibility and drag-out are the whole surface.
  *
  * **Sort area** rides along on this same menu: the row
  * context menu is the "context menu on the plot area's signal panel"
@@ -677,10 +677,10 @@ interface PlotAreaProps {
    * an add. */
   panelElementId: string;
   /** Bulk-set the parent area's current selection hidden/shown — the
-   * selection's context menu Hide / Show (task 49.B). */
+   * selection's context menu Hide / Show. */
   onSetSelectionHidden: (hidden: boolean) => void;
   /** A selected row started a drag: fan the whole selection into the
-   * drag payload instead of just the grabbed row (task 49.B, DbcPanel
+   * drag payload instead of just the grabbed row (DbcPanel
    * precedent, ADR 0045). */
   onDragSelection: (dataTransfer: DataTransfer) => void;
   /** The row context menu's one-shot "Sort area" action: reorders
@@ -1131,7 +1131,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   /** Where the axis's scale menu is open, in client coordinates.
    * `null` when closed. */
   const [axisMenu, setAxisMenu] = useState<{ x: number; y: number } | null>(null);
-  /** Where the selection's context menu (Hide / Show, task 49.B) is
+  /** Where the selection's context menu (Hide / Show) is
    * open, in client coordinates. `null` when closed. */
   const [selectionMenu, setSelectionMenu] = useState<{ x: number; y: number } | null>(null);
   /** Width the y gutter currently reserves — what tells a right-click

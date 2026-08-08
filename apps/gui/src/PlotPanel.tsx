@@ -1352,7 +1352,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// Live mirrors of the selection and the effective (materialized)
   /// areas, read by the selection's bulk-visibility action and its drag
   /// payload below. Both callbacks are bound once per axis in
-  /// `areaHandlers` (task 49.B), so they read the *current* selection
+  /// `areaHandlers`, so they read the *current* selection
   /// through a ref rather than closing over it — closing over either
   /// value would remint the callback (and so `areaHandlers`) on every
   /// selection click or catalog re-evaluation, defeating the memoised
@@ -1376,7 +1376,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, []);
 
   /// Bulk hide/show over the parent area's current selection — the
-  /// selection's context menu Hide / Show (task 49.B). The batched
+  /// selection's context menu Hide / Show. The batched
   /// sibling of `toggleSignalHidden` above: same per-row materialization
   /// rule (a touched pattern-derived row becomes a manual pick), applied
   /// to every selected row in **one** `setAreas` call — one persist, one

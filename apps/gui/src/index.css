@@ -2333,7 +2333,7 @@ button.trace-event-swatch {
   font-style: italic;
 }
 
-/* The signal-row selection's context menu (task 49.B): bulk Hide /
+/* The signal-row selection's context menu: bulk Hide /
    Show, plus the area-wide one-shot Sort area action. Same
    floating shell as `.plot-axis-menu` and the action-item layout
    `.sources-context-menu-action` uses. */
