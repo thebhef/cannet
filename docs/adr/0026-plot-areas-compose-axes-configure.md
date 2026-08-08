@@ -142,6 +142,20 @@ area left with no *solo-visible* series collapses by the same
 all-hidden rule above, and equally without touching its persisted
 `collapsed` flag.
 
+**One wheel, and one point where a signal's color is decided.** Every
+surface that draws a signal in its own color — the signal view's name
+text, a plot series' stroke and swatch — resolves it through a single
+precedence rule: an **explicit user pick** (the signal view's
+project-level `signal_colors` entry; a plot series' picked color) → a
+**generator**, when the project declares a rule deriving a wheel index
+from the signal's identity → the **stable-by-identity hash** of the
+signal's canonical `(bus, message, signal)` key. One key, one theme
+wheel, one rule, so a signal nobody picked a color for reads the same
+in every view with nothing persisted to make it so. (This is signal
+*identity* color. A value→color map ([ADR 0029](0029-signal-value-color-maps.md))
+tints a signal's *value* and is a separate question with its own
+resolver.)
+
 **Each axis maps to one uPlot instance.** This keeps us consistent
 with [ADR 0007](0007-uplot-plot-renderer.md):
 

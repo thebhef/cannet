@@ -94,6 +94,8 @@ import { freshTrace } from "./trace";
 import { SIGNAL_DND_MIME } from "./dragSignals";
 import { openCombobox } from "./comboboxTestKit";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import { signalKey } from "./plotData";
+import { stableSignalColor } from "./palette";
 
 class FakeResizeObserver {
   observe() {}
@@ -181,13 +183,17 @@ const projectCtx: ProjectContextValue = {
   onSetSignalColor: () => {},
 };
 
-function renderPanel(opts?: { params?: Record<string, unknown> }) {
+function renderPanel(opts?: {
+  params?: Record<string, unknown>;
+  signalColors?: Record<string, string>;
+}) {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof SignalsPanel>[0];
   const registry = makeRegistry();
+  const ctx = opts?.signalColors ? { ...projectCtx, signalColors: opts.signalColors } : projectCtx;
   render(
     <TraceDataProvider value={traceData}>
-      <ProjectContext.Provider value={projectCtx}>
+      <ProjectContext.Provider value={ctx}>
         <SignalCatalogProvider>
           <ElementRegistryContext.Provider value={registry}>
             <SignalsPanel {...props} />
@@ -255,6 +261,23 @@ describe("SignalsPanel", () => {
     // A never-seen descriptor still gets a (blank) row.
     expect(screen.getByText(/DeadSignal/)).toBeInTheDocument();
     expect(screen.getByText("DeadEcu")).toBeInTheDocument();
+  });
+
+  it("colors a signal name through the shared resolver: the project pick, else the identity hash", async () => {
+    // ADR 0026's one wheel, one resolution point: the signal view reads
+    // the same precedence (pick → generator → hash) the plot does. An
+    // unpicked signal is colored by its identity alone, so it keeps that
+    // color across sorts, views and sessions with nothing stored.
+    const picked = signalKey("p", 256, false, "EngineSpeed");
+    const unpicked = signalKey("p", 512, false, "DeadSignal");
+    renderPanel({ signalColors: { [picked]: "#ff00ff" } });
+    await waitFor(() => {
+      expect(screen.getByText(/EngineSpeed/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/EngineSpeed/)).toHaveStyle({ color: "#ff00ff" });
+    expect(screen.getByText(/DeadSignal/)).toHaveStyle({
+      color: stableSignalColor(unpicked),
+    });
   });
 
   it("renders a raw bit field in hex only when the DBC asked for it", async () => {
