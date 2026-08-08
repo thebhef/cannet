@@ -533,6 +533,7 @@ pub(crate) fn restore_scratch_capture(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> RestoredCapture {
+    let started = std::time::Instant::now();
     let active = *state.active_project_id();
     if !active.is_some_and(|pid| state.trace_store.try_reload(pid)) {
         return RestoredCapture {
@@ -547,9 +548,19 @@ pub(crate) fn restore_scratch_capture(
     let session_start_ns = state.trace_store.session_start_ns();
     // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the
     // scratch's own copy, independent of any BLF round-trip.
+    let notes_at = std::time::Instant::now();
     if let Some(restored) = state.notes.restore() {
         let _ = app.emit("notes-changed", restored);
     }
+    let notes_ms = notes_at.elapsed().as_secs_f64() * 1000.0;
+    // The command's own wall clock, next to the reopen breakdown the store
+    // logs: together they say whether a slow launch is spent restoring or
+    // waiting to be asked to (ADR 0002 DS-7).
+    tracing::info!(
+        target: "restore",
+        "restore_scratch_capture {ms:.0} ms (notes {notes_ms:.0} ms)",
+        ms = started.elapsed().as_secs_f64() * 1000.0,
+    );
     sys_info!(
         &app,
         "project",

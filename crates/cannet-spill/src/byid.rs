@@ -176,6 +176,18 @@ impl ByIdIndex {
         Ok(Self { dir, map })
     }
 
+    /// Total posting segment files currently mapped, across every id —
+    /// the "how much work did it do" companion to the reopen timing
+    /// breakdown (ADR 0002 DS-7).
+    pub(crate) fn segment_count(&self) -> usize {
+        self.map.values().map(|p| p.segs.len()).sum()
+    }
+
+    /// Distinct ids with a posting chain.
+    pub(crate) fn id_count(&self) -> usize {
+        self.map.len()
+    }
+
     /// The persisted directory: one `(id, extended, len, first_slot)` per
     /// posting list. `first_slot` is the windowed-ring floor (DS-8), so a
     /// reopen across an eviction maps only the surviving segments. Written

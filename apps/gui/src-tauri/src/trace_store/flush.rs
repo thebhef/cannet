@@ -396,16 +396,19 @@ impl TraceStore {
     /// `false`. The reloaded trace's per-id rates read zero — it isn't
     /// live.
     pub fn try_reload(&self, project_id: Uuid) -> bool {
+        let started = Instant::now();
         let mut inner = self.lock_inner();
         let Some(dir) = inner.scratch_dir.clone() else {
             return false;
         };
+        let identity_at = Instant::now();
         let matches = read_json::<ScratchIdentity>(&dir.join(IDENTITY_FILE))
             .is_some_and(|id| id.project_id == project_id);
         if !matches {
             return false;
         }
-        let Ok(Some(reopened)) = DiskRawStore::reopen(&dir) else {
+        let identity_ms = ms_since(identity_at);
+        let Ok(Some((reopened, reopen))) = DiskRawStore::reopen_timed(&dir) else {
             return false;
         };
         inner.raw = Box::new(reopened);
@@ -416,7 +419,10 @@ impl TraceStore {
         inner.per_key = HashMap::new();
         inner.key_generation = inner.key_generation.wrapping_add(1);
         inner.session_start_ns = 0;
+        let derived_at = Instant::now();
+        let mut derived_entries = 0usize;
         if let Some(derived) = read_json::<DerivedState>(&dir.join(DERIVED_FILE)) {
+            derived_entries = derived.entries.len();
             inner.session_start_ns = derived.session_start_ns;
             let now = Instant::now();
             for e in derived.entries {
@@ -442,8 +448,37 @@ impl TraceStore {
                 );
             }
         }
+        // The one place a launch pays `O(segments)` before the user sees
+        // anything (ADR 0002 DS-7), so every restore says what it cost and
+        // on how much: durations only read as fast or slow beside the file
+        // counts. One line per restore, at INFO.
+        tracing::info!(
+            target: "restore",
+            "reopen {frames} frames in {total:.0} ms: identity {identity_ms:.0} \
+             manifest {manifest:.0} byid {byid:.0} ({byid_files} files, {byid_ids} ids) \
+             meta {meta:.0} ({meta_files} files) payload {payload:.0} ({payload_files} files) \
+             ring {ring:.0} ({ring_frames} frames) derived {derived:.0} ({derived_entries} keys)",
+            frames = inner.raw.len(),
+            total = ms_since(started),
+            manifest = reopen.manifest_ms,
+            byid = reopen.byid_ms,
+            byid_files = reopen.byid_files,
+            byid_ids = reopen.byid_ids,
+            meta = reopen.meta_ms,
+            meta_files = reopen.meta_files,
+            payload = reopen.payload_ms,
+            payload_files = reopen.payload_files,
+            ring = reopen.ring_ms,
+            ring_frames = reopen.ring_frames,
+            derived = ms_since(derived_at),
+        );
         true
     }
+}
+
+/// Wall-clock milliseconds elapsed since `t`, for the restore breakdown.
+fn ms_since(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
 }
 
 impl Inner {
