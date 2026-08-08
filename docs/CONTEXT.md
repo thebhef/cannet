@@ -78,6 +78,16 @@ lists them in order, the filtered By-ID view is a keyed snapshot
 recomputed over them. The predicate defines the subset; it is not
 itself a view.
 
+**Generator**:
+A project rule that _derives_ a signal attribute from a partial regex
+match on the signal's name — `Cell(\d+)` makes the captured number the
+signal's color-wheel slot, so `Cell1…Cell16` read consistently
+wherever they appear instead of taking hash-assigned colors. Rules are
+ordered and the first one that both matches and yields a usable
+capture wins; a signal no rule claims keeps its identity-hash color.
+_Avoid_: "signal filter" — a generator selects nothing, it only
+derives.
+
 ### Transmit
 
 **Calculated field**:

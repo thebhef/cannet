@@ -80,6 +80,7 @@ mod state;
 // missing-panics lint is suppressed here rather than papered over.
 #[allow(clippy::missing_panics_doc, clippy::new_without_default)]
 pub mod signal_cache;
+mod signal_generator;
 pub mod signal_sampler;
 mod signal_snapshot;
 mod system_log;
@@ -528,6 +529,8 @@ pub fn run() {
             diag::diag_capture_finish,
             diag::diag_autostart,
             report_js_heap,
+            signal_generator::validate_signal_generator,
+            signal_generator::evaluate_signal_generators,
         ])
         .setup(move |app| {
             // Resolve the session's project directory (ADR 0042) now that
