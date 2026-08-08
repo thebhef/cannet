@@ -59,6 +59,45 @@ missing on the add side is a multi-pick in the plot toolbar's own
   on a bulk edit: selection is a frontend view concern over data the
   panel already holds.
 
+## Grooming (2026-08-07)
+
+Pulled into the task-54/55/56 implementation slice; the selection
+model and bolding of selected series land with task 55's item 5,
+this task carries the bulk actions. Rulings so far:
+
+- **#1 Extent: per logical area only** (owner ruling). The range
+  anchor and select-all are area-scoped; a selection never spans
+  areas.
+- **Not a grid derivative** (owner ruling): the plot side panel does
+  not adopt the gridview machinery (`useGridview` container/cursor).
+  The pure `gridviewSelection` reducer may be reused only if it
+  drops in cleanly over an area's ordered key list; otherwise a
+  small area-local reducer is fine. Follows that **#6 keyboard**:
+  selection is mouse-only in this task.
+- **#4 Materialization**: bulk edits materialize only the touched
+  rows and leave the patterns live — same semantics as today's
+  single-row toggle, batched (one persist, one resample). Task 55's
+  solo covers non-destructive mass-hide.
+- **#2 Plain click** (owner agreed): plain click selects that row
+  (selection of one) *and* promotes it to primary — today's gesture
+  plus a highlight. Ctrl+click toggles membership, Shift+click
+  range-selects from the anchor; neither touches primary. Bolding
+  (task 55 item 5) applies to the selection; primary keeps meaning
+  "the signal whose units label the axis."
+- **#3 Bulk actions** (owner ruling): **no bulk recolor.** The bulk
+  actions are **visibility (hide/show) from a context menu** on the
+  selection, and **drag-and-drop of the selection** (the drag
+  payload carries every selected row, DbcPanel precedent). Bulk
+  remove only as far as drag-out implies it; no dedicated bulk
+  remove affordance.
+- **Add side** (owner ruling): **remove the toolbar's single-pick
+  `add signal…` Combobox entirely.** Adding signals to an area is
+  done by drag (DBC panel multi-select, other panels, cross-area
+  selection drag) and by the patterns editor.
+- **#5 Shared primitive / #7 re-render**: see above; selection
+  reaches each `PlotArea` as an area-scoped slice so the standing
+  "re-renders no plot area on panel-local state" guard stays green.
+
 ## Design questions
 
 1. **Extent.** Is selection per logical area, or panel-wide across
@@ -100,8 +139,10 @@ missing on the add side is a multi-pick in the plot toolbar's own
 
 ## Exit criteria
 
-- Several signals can be selected in a plot panel and hidden/shown,
-  removed, and recolored in one gesture, in every y-axis mode.
+- Several signals can be selected within a plot area (ctrl-toggle,
+  shift-range) and hidden/shown from the selection's context menu or
+  dragged as one payload, in every y-axis mode. No bulk recolor. The
+  toolbar's single-pick `add signal…` Combobox is removed.
 - Each design question above is answered in this file (or in an ADR
   where it is a durable rule) before the code that assumes the answer
   lands.

@@ -1063,3 +1063,13 @@ next planning pass.
   settings publish can land inside a later test
   (`plot_fetch_interval_ms` case). Reproduced across several
   full-suite runs during tasks 52–53; passes isolated.
+- `[feat]` **DBC-carried generator rules (`Cannet*` database-level
+  `BA_`).** Task 56 v1 stores regex generators project-side; the
+  DBC-carried form — so a BMS DBC ships its own `/Cell(\d+)/`
+  coloration to anyone who opens it — is deferred, not rejected.
+  Confirmed feasible with zero library work: `can-dbc` already
+  parses database-scope `BA_ "Name" "value";` into
+  `attribute_values_database`, which `parse.rs` never reads. Open
+  design point: encoding several rules in one STRING value (one
+  value per attribute name at database scope; ADR 0043 rules out
+  JSON-in-STRING). (Owner, task-56 grooming 2026-08-07.)

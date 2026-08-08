@@ -23,54 +23,56 @@ the order below is the order of work, top first.
    drag source is only the name text (should be the whole row),
    and keyboard-only entry into RBS row content regressed.
 2. [Task 55 — Plot Feedback Round](0055-plot-feedback-round.md)
-   — plot-session feedback 2026-08-07: manual range broken under
-   the normalized scale, hide-others matcher, clear-plot +
-   reset-start-time recovery after a DBC reload, collapsible plot
-   areas, bold selected series, and drag plot areas between panels
-   (moved out of task 23). Placed after task 54 provisionally.
-3. [Task 56 — Regex-Derived Signal Attributes
-   (Generators)](0056-regex-signal-generators.md) — project-level
-   rules deriving per-signal attributes from signal-name regex
-   captures: `/Cell(\d+)/` → color-wheel index; sort keys as the
-   second use. Needs grooming before implementation. Placed after
-   task 55 provisionally.
-4. [Task 41 — Production Cannet Server](0041-production-cannet-server.md)
+   — plot-session feedback 2026-08-07, groomed same day: a
+   manual-range regression matrix (the 0.7.0 repro no longer
+   reproduces), a solo mode for series, an "All data" button for
+   DBC-reload recovery, collapsible plot areas, bold selected
+   series, and drag plot areas between panels — move, Ctrl-copy
+   (moved out of task 23).
+3. [Task 49 — Multi-Select Signals in the Plot Panel](0049-plot-signal-multi-select.md)
+   — per-area multi-select over a plot area's signal rows: bulk
+   visibility from a context menu and selection drag (no bulk
+   recolor; the add combobox goes away). Pulled into this
+   implementation slice 2026-08-07 — the selection model itself
+   lands with task 55's bold-selected item.
+4. [Task 56 — Regex-Derived Signal Attributes
+   (Generators)](0056-regex-signal-generators.md) — project-stored
+   rules (like color maps) deriving per-signal attributes from
+   signal-name regex captures: `/Cell(\d+)/` → color-wheel index
+   through a new shared color resolver (pick → generator → hash),
+   plus a one-shot sort-area action. Groomed 2026-08-07; the
+   DBC-carried form is backlogged.
+5. [Task 41 — Production Cannet Server](0041-production-cannet-server.md)
    — `cannet-server` becomes the production server (ADR 0040):
    operator-launched CLI that supervises the frozen python-can sidecar
    and proxies its interfaces, under their real identities, at one
    network endpoint. Sidecar supervision factored out of the GUI host
    and shared; per-OS distribution archive.
-5. [Task 42 — Server Connection Security](0042-server-connection-security.md)
+6. [Task 42 — Server Connection Security](0042-server-connection-security.md)
    — TLS (rustls via tonic) with an auto-generated self-signed server
    cert, TOFU fingerprint pinning in the GUI, and bearer-token client
    auth (ADR 0041). Non-loopback binds require TLS + token unless
    `--insecure`.
-6. [Task 43 — Server Discovery](0043-server-discovery.md)
+7. [Task 43 — Server Discovery](0043-server-discovery.md)
    — the server advertises `_cannet._tcp` via mDNS/DNS-SD (name + TXT
    labels, `--no-mdns` opt-out); the GUI shows a fuzzy-searchable
    browse list beside manual host:port entry. mDNS-crate
    evaluate-dependency pass is the blocking prerequisite.
-7. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+8. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
    — crash on exit (wry/WebKit layer-tree teardown race) and missing
    Spotlight bundle metadata. Independently-shippable macOS fixes.
-8. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
+9. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — the remaining argument-taking commands (go-to-row / -time,
    set-visible-range) and the shared input-prompt UI, on top of the
    command / palette framework. Save-with-picker (`capture.save`), the
    close commands, and a list-select go-to-event palette shipped with
    Task 37; what's left is the typed-argument prompt infrastructure.
-9. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+10. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the hardware/virtual-bus verify-and-fix pass (post-clear negative
    timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
    plot-color bug and the `decimatePoints` dead-code removal.
-10. [Task 22 — CANopen](0022-canopen.md)
+11. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-11. [Task 49 — Multi-Select Signals in the Plot Panel](0049-plot-signal-multi-select.md)
-   — hide, remove, recolor and add several of a plot area's signals at
-   once. Split out of task 48's item 14 once it proved to need a
-   selection model threaded through the signal rows, the derived axes
-   and the pattern-materialization path. Ahead of task 23 so its
-   per-series features can act on a selection that already exists.
 12. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
     — triggers, math channels, per-series offset / gain, export.
     (Drag-a-plot-area-between-panels moved to task 55, 2026-08-07.)
