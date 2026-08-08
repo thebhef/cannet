@@ -246,6 +246,7 @@ import {
   soloToParams,
   soloVisibleKeys,
   stepSolo,
+  toggleSoloIndex,
   type SoloState,
 } from "./plotSolo";
 import { setSignalDragData } from "./dragSignals";
@@ -254,6 +255,60 @@ import { usePlotBadge } from "./usePlotBadge";
 import { PlotArea } from "./PlotArea";
 import { MeasurementMenu, PlotMeasurementStrip, type PlottedSignal } from "./PlotMeasurements";
 
+
+/**
+ * The solo control's context menu: the current match list, one
+ * checkbox per match, so the visible set generalizes from the
+ * one-at-a-time step to any subset the user checks. Same floating
+ * shell as the plot's other context menus (`SignalSelectionMenu` /
+ * `YAxisScaleMenu` in `PlotArea.tsx`).
+ *
+ * It stays open while items are checked — building a subset is
+ * inherently several clicks — and dismisses the way every other menu
+ * here does (click away / Escape, via `useDismissableMenu`).
+ */
+function SoloMatchMenu({
+  position,
+  items,
+  onToggle,
+  onClose,
+}: {
+  position: { x: number; y: number };
+  /// One entry per match, in match-list order: its label (area + signal
+  /// name, so the same signal in two areas reads apart) and whether it
+  /// is currently visible.
+  items: readonly { label: string; checked: boolean }[];
+  onToggle: (index: number) => void;
+  onClose: () => void;
+}) {
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
+  return (
+    <div
+      ref={menuRef}
+      className="plot-solo-menu"
+      role="menu"
+      style={{ left: position.x, top: position.y }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="plot-solo-menu-title">solo matches</div>
+      {items.map((it, i) => (
+        <button
+          key={`${it.label}#${i}`}
+          type="button"
+          role="menuitemcheckbox"
+          aria-label={it.label}
+          aria-checked={it.checked}
+          onClick={() => onToggle(i)}
+        >
+          <span className="plot-solo-menu-mark" aria-hidden="true">
+            {it.checked ? "✓" : ""}
+          </span>
+          {it.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function PlotPanel(props: IDockviewPanelProps) {
   diagCount("render.PlotPanel"); // DIAG
@@ -1210,6 +1265,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [soloMatchCount],
   );
+  /// Check / uncheck one match from the solo control's context menu —
+  /// the visible set generalized from step mode's one-at-a-time to any
+  /// subset. Unchecking out of the matches-only view materializes the
+  /// rest (`toggleSoloIndex`).
+  const toggleSoloMatch = useCallback(
+    (index: number) => {
+      setSolo((s) => ({ ...s, indices: toggleSoloIndex(s.indices, soloMatchCount, index) }));
+    },
+    [soloMatchCount],
+  );
   /// PgDn / PgUp cycle the matches, scoped to the plot panel: this is a
   /// `keydown` on the panel root, so it acts only while focus is inside
   /// the panel — which after typing a pattern or clicking a step control
@@ -1530,6 +1595,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
   }, [patternResolutionsByArea, buses]);
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
 
+  /// The solo control's context menu: one checkbox per match, labelled
+  /// by area + signal name so the same signal plotted in two areas
+  /// reads apart. Checked = currently visible.
+  const soloMenuItems = useMemo(
+    () =>
+      soloMatchList.map((m, i) => ({
+        label: `${areaLabels.get(m.areaId) ?? "Area"} · ${m.name}`,
+        checked: solo.indices == null || solo.indices.includes(i),
+      })),
+    [soloMatchList, areaLabels, solo.indices],
+  );
+
   /// Per-derived-axis callback bundle, rebuilt only when the axis set
   /// itself changes. Building these inline in the render loop handed
   /// every `PlotArea` a dozen fresh function identities per panel
@@ -1673,6 +1750,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const toolbarMenuRef = useDismissableMenu<HTMLDivElement>(toolbarMenuAt != null, () =>
     setToolbarMenuAt(null),
   );
+  /** Where the solo control's match menu is anchored, or `null` when
+   * it's closed. */
+  const [soloMenuAt, setSoloMenuAt] = useState<{ x: number; y: number } | null>(null);
 
   return (
     <div className="plot-panel" onKeyDown={onPanelKeyDown}>
@@ -1726,7 +1806,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
         <span className="plot-toolbar-sep" />
         <label
           className="plot-solo"
-          title="solo: show only the series whose name matches this regex (case-insensitive, partial). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back."
+          title="solo: show only the series whose name matches this regex (case-insensitive, partial). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back. Right-click for the match list."
+          onContextMenu={(e) => {
+            // The control's own menu, not the toolbar's — stop the
+            // event either way, so a right-click aimed at solo never
+            // opens the unrelated panel menu behind it.
+            e.preventDefault();
+            e.stopPropagation();
+            if (soloMenuItems.length === 0) return;
+            setSoloMenuAt({ x: e.clientX, y: e.clientY });
+          }}
         >
           solo
           <input
@@ -1811,6 +1900,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
           {dpr.toFixed(2)} · win {fmtCount(winFrames)} · cache {fmtCount(badge.value.cachePts)}
         </span>
       </div>
+      {soloMenuAt && soloMenuItems.length > 0 && (
+        <SoloMatchMenu
+          position={soloMenuAt}
+          items={soloMenuItems}
+          onToggle={toggleSoloMatch}
+          onClose={() => setSoloMenuAt(null)}
+        />
+      )}
       {toolbarMenuAt && (
         <div
           ref={toolbarMenuRef}

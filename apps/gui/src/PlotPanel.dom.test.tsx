@@ -3156,6 +3156,71 @@ describe("PlotPanel solo", () => {
     expect(soloPosition()).toBe("1");
   });
 
+  /// Open the solo control's context menu and read its checkbox items.
+  const openSoloMenu = () => fireEvent.contextMenu(document.querySelector(".plot-solo")!);
+  const menuItems = () =>
+    Array.from(document.querySelectorAll('[role="menuitemcheckbox"]')).map(
+      (b) => [b.getAttribute("aria-label"), b.getAttribute("aria-checked") === "true"] as const,
+    );
+
+  it("lists the current matches as checkboxes, every one checked in the matches-only view", () => {
+    const registry = stepRegistry("el-solo-menu");
+    renderPanel({ params: { elementId: "el-solo-menu" }, registry });
+    typeSolo("Cell");
+    openSoloMenu();
+    expect(menuItems()).toEqual([
+      ["Area 1 · Cell1", true],
+      ["Area 1 · Cell2", true],
+      ["Area 2 · Cell3", true],
+    ]);
+  });
+
+  it("shows any checked subset of the matches, and stays open while checking", () => {
+    const registry = stepRegistry("el-solo-subset");
+    const { api } = renderPanel({ params: { elementId: "el-solo-subset" }, registry });
+    typeSolo("Cell");
+    openSoloMenu();
+
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Area 1 · Cell2" }));
+    expect(visibleNames()).toEqual(["Cell1", "Cell3"]);
+    expect(soloPosition()).toBe("2/3");
+    // The menu stays up so several can be checked in one visit.
+    expect(menuItems()).toEqual([
+      ["Area 1 · Cell1", true],
+      ["Area 1 · Cell2", false],
+      ["Area 2 · Cell3", true],
+    ]);
+    expect(persistedSolo(api)).toEqual({ pattern: "Cell", indices: [0, 2] });
+  });
+
+  it("generalizes step mode to a subset — the stepped match plus whatever is checked", () => {
+    const registry = stepRegistry("el-solo-subset-step");
+    renderPanel({ params: { elementId: "el-solo-subset-step" }, registry });
+    typeSolo("Cell");
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(visibleNames()).toEqual(["Cell1"]);
+
+    openSoloMenu();
+    expect(menuItems()).toEqual([
+      ["Area 1 · Cell1", true],
+      ["Area 1 · Cell2", false],
+      ["Area 2 · Cell3", false],
+    ]);
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Area 2 · Cell3" }));
+    expect(visibleNames()).toEqual(["Cell1", "Cell3"]);
+    expect(soloPosition()).toBe("2/3");
+  });
+
+  it("offers no match menu while the pattern is empty or unparseable", () => {
+    const registry = stepRegistry("el-solo-menu-off");
+    renderPanel({ params: { elementId: "el-solo-menu-off" }, registry });
+    openSoloMenu();
+    expect(menuItems()).toEqual([]);
+    typeSolo("Cell(");
+    openSoloMenu();
+    expect(menuItems()).toEqual([]);
+  });
+
   it("flips visibility without a host round-trip or a chart rebuild", async () => {
     // Every plotted signal is already sampled — hidden ones included —
     // so a solo change is a re-normalise + redraw of the window each

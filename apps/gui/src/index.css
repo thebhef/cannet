@@ -3295,6 +3295,58 @@ button.trace-event-swatch {
   text-align: center;
 }
 
+/* Solo control's match menu — the same floating shell as the toolbar
+ * menu, one checkbox row per current match. Scrolls: a broad pattern
+ * can match every series on the panel. */
+.plot-solo-menu {
+  position: fixed;
+  z-index: 30;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  white-space: nowrap;
+  max-height: 60vh;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px var(--shadow-menu);
+}
+.plot-solo-menu-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 0.1rem 0.4rem 0.2rem;
+  border-bottom: 1px solid var(--border-default);
+}
+.plot-solo-menu button {
+  appearance: none;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  padding: 0.25rem 0.4rem;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.plot-solo-menu button:hover,
+.plot-solo-menu button:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+.plot-solo-menu-mark {
+  display: inline-block;
+  width: 0.9em;
+  text-align: center;
+}
+
 .plot-meas-menu-pop .checkbox {
   display: flex;
   align-items: center;

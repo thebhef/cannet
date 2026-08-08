@@ -728,6 +728,11 @@ resample at the end.
   area boundaries on its own. **Escape** (or clearing the box) leaves
   step mode and the whole solo view at once, and editing the pattern
   starts the new match list back at "all matches visible".
+  **Right-click the solo control** for the match list itself — one
+  checkbox per match, labelled by area and signal — and check any
+  subset to show exactly those, which is the same mechanism as
+  stepping with more than one box ticked. The menu stays open while you
+  tick, and the position read-out becomes "how many of how many".
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives
