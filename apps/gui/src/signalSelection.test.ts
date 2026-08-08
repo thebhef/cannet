@@ -16,8 +16,6 @@ import {
   signalsFromPatterns,
   type SelectableArea,
 } from "./signalSelection";
-import { signalKey } from "./plotData";
-import { stableSignalColor } from "./palette";
 import type { SignalRef } from "./plotPanelConfig";
 import type { SignalDescriptorRecord } from "./types";
 
@@ -120,20 +118,20 @@ describe("signalsFromPatterns", () => {
       signalName: "EngineSpeed",
       messageName: "EngineData",
       unit: "rpm",
-      color: "#ff0",
+      colorPick: "#ff0",
     };
     const out = signalsFromPatterns(["^powertrain/"], CATALOG, BUSES, [manual]);
     expect(out.map((s) => s.signalName)).toEqual(["EngineTemp"]);
   });
 
-  it("colors matches stable-by-identity, independent of match order", () => {
+  it("leaves a match's color to the resolver — a pattern row picks nothing", () => {
+    // A pattern-derived row used to bake in the identity hash. It now
+    // carries no color at all and resolves like any unpicked series
+    // (ADR 0026), so a generator or a theme change recolors it live.
     const wide = signalsFromPatterns(["."], CATALOG, BUSES);
-    const narrow = signalsFromPatterns(["EngineTemp"], CATALOG, BUSES);
-    const temp = (list: SignalRef[]) => list.find((s) => s.signalName === "EngineTemp");
-    expect(temp(wide)?.color).toBe(temp(narrow)?.color);
-    expect(temp(wide)?.color).toBe(
-      stableSignalColor(signalKey("bus-a", 256, false, "EngineTemp")),
-    );
+    const temp = wide.find((s) => s.signalName === "EngineTemp");
+    expect(temp?.colorPick).toBeUndefined();
+    expect((temp as unknown as Record<string, unknown>).color).toBeUndefined();
   });
 });
 
@@ -177,7 +175,7 @@ describe("applyAreaSelections", () => {
     signalName: "Mode",
     messageName: "GearState",
     unit: "",
-    color: "#ff0",
+    colorPick: "#ff0",
   };
   const area: SelectableArea = { id: "area-1", signals: [manual] };
 
@@ -192,10 +190,10 @@ describe("applyAreaSelections", () => {
       patterns: ["^chassis/", "^powertrain/[^/]*/EngineData/EngineTemp$"],
     };
     const out = applyAreaSelections([withPatterns], CATALOG, BUSES);
-    // Manual "Mode" keeps its slot and color; the chassis pattern's
+    // Manual "Mode" keeps its slot and its pick; the chassis pattern's
     // duplicate of it is dropped; the temp match lands after.
     expect(out[0].signals.map((s) => s.signalName)).toEqual(["Mode", "EngineTemp"]);
-    expect(out[0].signals[0].color).toBe("#ff0");
+    expect(out[0].signals[0].colorPick).toBe("#ff0");
   });
 
   it("does not mutate the source area object", () => {

@@ -643,6 +643,11 @@ interface PlotAreaProps {
   /** Signal value→color resolver (ADR 0029): tints an enum lane box by
    * its held value. Read live in the draw hook via a ref. */
   resolveColor: ColorResolver;
+  /** A series' render color, through the panel's shared resolution
+   * point (ADR 0026): the user's pick on that series, else what the
+   * signal's identity resolves to. Nothing is stored for an unpicked
+   * series, so this is read live — via a ref in the draw hooks. */
+  seriesColor: (s: SignalRef) => string;
   /** The owning plot panel's element id. Stamped on this panel's
    * internal signal-row drags via `setSignalDragData(..., elementId)`
    * and compared against the dropped payload's `sourcePanelId` so
@@ -811,6 +816,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     ecuLookup,
     valueFormats,
     resolveColor,
+    seriesColor,
     panelElementId,
     onSetSelectionHidden,
     onDragSelection,
@@ -935,7 +941,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   /** Live mirror of `signals` for the uPlot draw hook, which is
    * captured at construction and so would otherwise see the signal
    * list as it was then — `signalSetKey` deliberately excludes
-   * `hidden` and `color`, so neither rebuilds the instance. */
+   * `hidden` and carries no color, so neither rebuilds the instance. */
   const signalsRef = useRef(signals);
   signalsRef.current = signals;
   /** Live mirror of the selection for the construction effect, which is
@@ -962,8 +968,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   primaryKeyRef.current = primaryKey;
   // Same problem for the primary's color, which the y-axis stroke /
   // ticks / labels read each draw to match the trace.
-  const primaryColorRef = useRef<string | null>(primarySignal?.color ?? null);
-  primaryColorRef.current = primarySignal?.color ?? null;
+  const primaryColorRef = useRef<string | null>(
+    primarySignal ? seriesColor(primarySignal) : null,
+  );
+  primaryColorRef.current = primarySignal ? seriesColor(primarySignal) : null;
+  /** Live mirror of the series-color resolver, for the same reason as
+   * `signalsRef`: the draw hooks and the function strokes are captured
+   * at construction, and a recolor must not need a rebuild. */
+  const seriesColorRef = useRef(seriesColor);
+  seriesColorRef.current = seriesColor;
   // Live value→color resolver for the draw hook (ADR 0029): updated each
   // render so a colormap edit re-tints the enum lane on the next draw
   // without rebuilding the uPlot instance.
@@ -1857,15 +1870,17 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         {},
         ...signals.map((s, i) => ({
           label: `${s.messageName}.${s.signalName}`,
-          // Read live per draw, like the y-axis stroke below: `signalSetKey`
-          // excludes `color`, so this instance is never rebuilt for a
-          // recolor and a captured string would keep the color the series
-          // had when it was constructed. uPlot resolves a function stroke
-          // on every draw (and hands the same function to the point
-          // markers), so the next redraw carries the new color. The
-          // construction-time color is the fallback for the one render
-          // between a signal-set change and the rebuild it triggers.
-          stroke: () => signalsRef.current[i]?.color ?? s.color,
+          // Resolved live per draw, like the y-axis stroke below:
+          // `signalSetKey` carries no color, so this instance is never
+          // rebuilt for a recolor and a captured string would keep the
+          // color the series had when it was constructed. uPlot resolves
+          // a function stroke on every draw (and hands the same function
+          // to the point markers), so the next redraw carries the new
+          // color — a pick, a generator change, or a theme switch alike.
+          // The construction-time series is the fallback for the one
+          // render between a signal-set change and the rebuild it
+          // triggers.
+          stroke: () => seriesColorRef.current(signalsRef.current[i] ?? s),
           // Selected series draw bold. Unlike `stroke`, uPlot does not
           // call a function for `width` — it reads the number off the
           // series object on every draw — so the selection is applied by
@@ -2018,7 +2033,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   resolveColor: colorResolverRef.current,
                   bandTop: u.valToPos(tileNorm.hi, "y", true),
                   bandBot: u.valToPos(tileNorm.lo, "y", true),
-                  accent: s.color,
+                  accent: seriesColorRef.current(signalsRef.current[i] ?? s),
                   left,
                   width,
                   ratio,
@@ -3104,7 +3119,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               >
                 <SignalSwatch
                   hidden={!!s.hidden}
-                  color={s.color}
+                  color={seriesColor(s)}
                   onToggleHidden={() => onToggleHidden(s)}
                   onPickColor={(c) => onSetSignalColor(s, c)}
                 />

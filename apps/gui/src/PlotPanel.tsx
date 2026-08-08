@@ -12,6 +12,7 @@ import { useSignalCatalog } from "./signalCatalogContext";
 import { defaultBusColor } from "./busColor";
 import { theme, useThemeName } from "./theme";
 import { buildColorResolver } from "./colorMap";
+import { buildSignalColorResolver } from "./signalColorResolver";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
@@ -20,7 +21,7 @@ import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { mergeSeries } from "./plotData";
 import { hostSettings, useSetting } from "./hostSettings";
 import { fetchWindowExtent } from "./useDecimatedRange";
-import { stableSignalColor, wheelColor } from "./palette";
+import { wheelColor } from "./palette";
 import {
   SIGNALS_WIDTH_MAX,
   SIGNALS_WIDTH_MIN,
@@ -944,16 +945,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
         if (isInternalMove) {
           // Move: the ref already lives in some area of this panel.
           // Strip it from its origin area (could be the target — that's
-          // a reorder), and insert at the new position. Preserves the
-          // original color by reusing the in-state ref. (Dragging a
-          // pattern-derived row has no manual entry to strip — the
-          // insert below materializes it as a manual pick, keeping the
-          // dragged ref's stable color.)
+          // a reorder), and insert at the new position. Reusing the
+          // in-state ref preserves whatever the user picked on it.
+          // (Dragging a pattern-derived row has no manual entry to
+          // strip — the insert below materializes it as a manual pick,
+          // and it keeps resolving its color like any unpicked series.)
           const existing = prev.flatMap((a) => a.signals).find((s) => signalRefKey(s) === key);
-          // The drag payload carries no color; a materializing
-          // pattern row keeps the stable-by-identity color it was
-          // already rendered with.
-          const moved = existing ?? { ...ref, color: ref.color || stableSignalColor(key) };
+          const moved = existing ?? ref;
           const stripped = prev.map((a) => ({
             ...a,
             signals: a.signals.filter((s) => signalRefKey(s) !== key),
@@ -971,21 +969,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
         // semantic value to plotting the identical series twice on
         // one axis); duplicates across different areas are fine.
         if (target.signals.some((s) => signalRefKey(s) === key)) return prev;
-        // Re-seed the color from the *target area's* wheel index, per
-        // ADR 0026: a dragged-in series picks the color at the
-        // position equal to the count of series already in the area.
-        // Cross-panel drags preserve the source ref's color
-        // (`parseDroppedSignals` passes it through as-is), which we
-        // discard here so the wheel index is consistent regardless of
-        // where the drag started.
-        const seedIdx = target.signals.length;
-        const seeded: SignalRef = { ...ref, color: wheelColor(seedIdx) };
+        // No color is written here. Seeding one from the series' position
+        // in the target area is what made the same signal read
+        // differently in two areas; an added series carries no color and
+        // resolves it live (ADR 0026), so only a pick is ever stored.
         return prev.map((a) => {
           if (a.id !== toAreaId) return a;
-          if (beforeKey == null) return { ...a, signals: [...a.signals, seeded] };
+          if (beforeKey == null) return { ...a, signals: [...a.signals, ref] };
           const idx = a.signals.findIndex((s) => signalRefKey(s) === beforeKey);
-          if (idx < 0) return { ...a, signals: [...a.signals, seeded] };
-          return { ...a, signals: [...a.signals.slice(0, idx), seeded, ...a.signals.slice(idx)] };
+          if (idx < 0) return { ...a, signals: [...a.signals, ref] };
+          return { ...a, signals: [...a.signals.slice(0, idx), ref, ...a.signals.slice(idx)] };
         });
       });
     },
@@ -1002,9 +995,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
       prev.map((a) => {
         if (a.id !== areaId) return a;
         if (a.signals.some((s) => signalRefKey(s) === key)) {
-          return { ...a, signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, color } : s)) };
+          return {
+            ...a,
+            signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, colorPick: color } : s)),
+          };
         }
-        return { ...a, signals: [...a.signals, { ...ref, color }] };
+        return { ...a, signals: [...a.signals, { ...ref, colorPick: color }] };
       }),
     );
   }, []);
@@ -1211,6 +1207,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
     () => buildColorResolver(registry.entries.map((e) => e.element)),
     [registry.entries],
   );
+
+  /// A series' color, through the one shared resolution point
+  /// (ADR 0026): the pick the user made on this series, else what the
+  /// resolver derives from the signal's identity. Nothing is stored for
+  /// an unpicked series, so it recolors live.
+  const seriesColor = useMemo(() => {
+    const resolve = buildSignalColorResolver(registry.entries.map((e) => e.element));
+    return (s: SignalRef) => resolve(signalRefKey(s), s.colorPick);
+  }, [registry.entries]);
 
   /// The catalog restricted to the plot's effective `sources` wiring
   /// (`signalSelection.ts`): the picker and the patterns only offer /
@@ -1809,11 +1814,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
         const key = signalRefKey(s);
         // The strip's cells are per-signal readouts, so they format by
         // the same DBC facts the side panel's rows do.
-        out.push({ key, ref: s, color: s.color, areaId: d.area.id, fmt: valueFormats.get(key) });
+        out.push({ key, ref: s, color: seriesColor(s), areaId: d.area.id, fmt: valueFormats.get(key) });
       }
     }
     return out;
-  }, [derivedAreaConfigs, valueFormats]);
+  }, [derivedAreaConfigs, valueFormats, seriesColor]);
   const seriesFor = useCallback(
     (areaId: string, key: string): Series | undefined => seriesByArea.get(areaId)?.get(key),
     [seriesByArea],
@@ -2222,6 +2227,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               ecuLookup={ecuLookup}
               valueFormats={valueFormats}
               resolveColor={resolveColor}
+              seriesColor={seriesColor}
               panelElementId={elementId}
               />
             </Fragment>

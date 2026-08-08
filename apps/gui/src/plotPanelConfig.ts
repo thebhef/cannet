@@ -15,7 +15,6 @@ import { READOUT_SIG_FIGS, formatFloat } from "./floatFormat";
 import { formatSignalValue } from "./format";
 import { hostSettings } from "./hostSettings";
 import { signalKey } from "./plotData";
-import { wheelColor } from "./palette";
 import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKey } from "./plotCursors";
 import type { YAxisMode } from "./plotAxisDerivation";
 import type { AxisScalePatch } from "./plotAxisScale";
@@ -38,9 +37,11 @@ export interface SignalRef {
   signalName: string;
   messageName: string;
   unit: string;
-  /** Plot color — assigned when the signal is added and carried with
-   * it (so re-ordering / moving between areas doesn't recolor it). */
-  color: string;
+  /** The color the user picked for this series, and nothing else
+   * (ADR 0026). A series nobody recolored carries none and resolves
+   * its color live through `signalColorResolver.ts`, so a generator or
+   * a theme change recolors it without rewriting stored state. */
+  colorPick?: string;
   /** Hidden = line not drawn on the plot (swatch dimmed); the
    * side-panel value still updates. Absent ⇒ visible. */
   hidden?: boolean;
@@ -223,7 +224,7 @@ export function signalRefKey(s: SignalRef): string {
   return signalKey(s.busId, s.messageId, s.extended, s.signalName);
 }
 
-export function isSignalRefCore(v: unknown): v is Omit<SignalRef, "color"> {
+export function isSignalRefCore(v: unknown): v is Omit<SignalRef, "colorPick"> {
   if (typeof v !== "object" || v === null) return false;
   const o = v as Record<string, unknown>;
   // `busId` is the new field. Old saved layouts (no `busId`) load
@@ -238,19 +239,30 @@ export function isSignalRefCore(v: unknown): v is Omit<SignalRef, "color"> {
   );
 }
 
-/** Fill in a series' color from the shared signal wheel (ADR 0026,
- * `palette.ts`) when it carries none: the index for a fresh series is
- * its position among the signals already in that plot area, so the
- * first 16 series in any one area get distinct hues. */
-export function withColor(
-  s: Omit<SignalRef, "color"> & { color?: unknown; busId?: unknown },
-  fallbackIdx: number,
+/** Normalize a parsed or dropped series into a {@link SignalRef}: a
+ * non-string `busId` becomes the legacy `null`, and the only color
+ * carried through is an explicit **pick**.
+ *
+ * A `color` written before the shared resolver existed is dropped
+ * rather than read as a pick (ADR 0026). The panel used to seed one
+ * from the series' position in its area, and nothing distinguishes
+ * those from a color the user chose — so every stored one goes and the
+ * series re-resolve, which is what makes several areas holding the
+ * same signals agree on their colors again. */
+export function signalRefFromRaw(
+  s: Omit<SignalRef, "colorPick"> & { colorPick?: unknown; busId?: unknown },
 ): SignalRef {
-  return {
-    ...s,
+  const ref: SignalRef = {
     busId: typeof s.busId === "string" ? s.busId : null,
-    color: typeof s.color === "string" ? s.color : wheelColor(fallbackIdx),
+    messageId: s.messageId,
+    extended: s.extended,
+    signalName: s.signalName,
+    messageName: s.messageName,
+    unit: s.unit,
   };
+  if (s.hidden) ref.hidden = true;
+  if (typeof s.colorPick === "string") ref.colorPick = s.colorPick;
+  return ref;
 }
 
 /** Parse a drop event's mime data into colored `SignalRef`s + the
@@ -272,7 +284,7 @@ export function parseDroppedSignals(s: string): {
 } {
   const parsed = parseSignalDragData(s);
   return {
-    refs: parsed.signals.map((r, i) => withColor(r, i)),
+    refs: parsed.signals.map(signalRefFromRaw),
     patterns: parsed.patterns,
     sourcePanelId: parsed.sourcePanelId,
   };
@@ -308,7 +320,7 @@ export function areasFromParams(raw: unknown): PlotAreaConfig[] {
       if (typeof a !== "object" || a === null) continue;
       const o = a as Record<string, unknown>;
       const id = typeof o.id === "string" ? o.id : crypto.randomUUID();
-      const signals = (Array.isArray(o.signals) ? o.signals.filter(isSignalRefCore) : []).map((s, i) => withColor(s, i));
+      const signals = (Array.isArray(o.signals) ? o.signals.filter(isSignalRefCore) : []).map(signalRefFromRaw);
       // `yMode` from a v7-and-earlier panel is still ignored, and
       // deliberately not migrated onto the per-axis manual range that
       // replaced it (`axisScales`). It was a per-*area* fixed range,

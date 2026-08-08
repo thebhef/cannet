@@ -227,7 +227,7 @@ const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[]
 import { invoke } from "@tauri-apps/api/core";
 
 import { PlotPanel } from "./PlotPanel";
-import { PLOT_AREA_DND_MIME } from "./plotPanelConfig";
+import { PLOT_AREA_DND_MIME, type PlotAreaConfig } from "./plotPanelConfig";
 import { parsePlotAreaDragData } from "./plotAreaTransfer";
 import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
@@ -236,7 +236,8 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
-import { wheelColor } from "./palette";
+import { stableSignalColor, wheelColor } from "./palette";
+import { signalKey } from "./plotData";
 import { freshTrace } from "./trace";
 import { diagCounts } from "./diag";
 import { hydrateSettings, updateSettings } from "./hostSettings";
@@ -391,6 +392,18 @@ function renderPanel(opts?: {
     /// what a `trace-grew` event does, and what moves the plot's `winEnd`.
     growTrace: (count: number) => rerender(build({ ...traceData, count })),
   };
+}
+
+/// The areas as the panel last persisted them — what a reload would
+/// parse back. `persist` dual-writes into the dockview params, so the
+/// newest `updateParameters` call carrying an `areas` array is it.
+function persistedAreas(api: { updateParameters: ReturnType<typeof vi.fn> }): PlotAreaConfig[] {
+  const calls = api.updateParameters.mock.calls as unknown as [Record<string, unknown>][];
+  for (let i = calls.length - 1; i >= 0; i--) {
+    const areas = calls[i][0]?.areas;
+    if (Array.isArray(areas)) return areas as PlotAreaConfig[];
+  }
+  throw new Error("the panel has not persisted any areas");
 }
 
 /// How many `sample_signals` round-trips the panel has made so far —
@@ -735,21 +748,99 @@ describe("PlotPanel", () => {
     expect(screen.getByText("Δt")).toBeInTheDocument();
   });
 
-  it("seeds a dropped signal's color from the target area's existing series count", async () => {
-    // Drop two signals onto Area 1 in succession; the second should get
-    // a different color from the first (target.signals.length grows).
-    renderPanel();
+  it("stores no color for a dropped signal and renders the resolved one", async () => {
+    // Adding a series used to seed its color from its position in the
+    // target area, so the same signal read differently in two areas.
+    // Nothing is stored now: the swatch shows what the shared resolver
+    // answers for that signal's identity (ADR 0026).
+    const { api } = renderPanel();
     addFocusedSignal("EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     addFocusedSignal("EngineTemp");
     await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
     const swatches = document.querySelectorAll(".plot-signal-swatch");
     expect(swatches.length).toBe(2);
-    const c1 = (swatches[0] as HTMLElement).style.background;
-    const c2 = (swatches[1] as HTMLElement).style.background;
-    expect(c1).not.toBe("");
-    expect(c2).not.toBe("");
-    expect(c1).not.toBe(c2);
+    expect(swatches[0]).toHaveStyle({
+      background: stableSignalColor(signalKey(null, 256, false, "EngineSpeed")),
+    });
+    expect(swatches[1]).toHaveStyle({
+      background: stableSignalColor(signalKey(null, 256, false, "EngineTemp")),
+    });
+    const stored = persistedAreas(api)[0].signals;
+    expect(stored.map((s) => s.signalName)).toEqual(["EngineSpeed", "EngineTemp"]);
+    for (const s of stored) {
+      expect(s.colorPick).toBeUndefined();
+      expect((s as unknown as Record<string, unknown>).color).toBeUndefined();
+    }
+  });
+
+  it("strokes an unpicked series with the resolver's color", async () => {
+    await withSizedCanvas(async () => {
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = liveInstanceIn("Area 1") as unknown as {
+        opts: { series: { stroke?: unknown }[] };
+      };
+      const s = inst.opts.series[1];
+      const stroke = typeof s.stroke === "function" ? (s.stroke as () => string)() : s.stroke;
+      expect(stroke).toBe(stableSignalColor(signalKey(null, 256, false, "EngineSpeed")));
+    });
+  });
+
+  it("persists a picked color as the series' pick, and the pick wins", async () => {
+    const { api } = renderPanel();
+    addFocusedSignal("EngineSpeed");
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("pick series color"), {
+      target: { value: "#123456" },
+    });
+    const swatch = document.querySelector(".plot-signal-swatch") as HTMLElement;
+    expect(swatch.style.background).toBe("rgb(18, 52, 86)");
+    await waitFor(() =>
+      expect(persistedAreas(api)[0].signals[0].colorPick).toBe("#123456"),
+    );
+  });
+
+  it("re-resolves a series whose stored color came from the old seeding, and honours a stored pick", async () => {
+    // The upgrade case. A `color` written before the resolver is
+    // indistinguishable from an explicit pick, so it is dropped and the
+    // series re-resolves — which is what makes several areas holding the
+    // same signals agree again. A `colorPick` is a real pick and stands.
+    const sig = (signalName: string, over: Record<string, unknown>) => ({
+      busId: null,
+      messageId: 256,
+      extended: false,
+      signalName,
+      messageName: "EngineData",
+      unit: "rpm",
+      ...over,
+    });
+    const registry = makeRegistry({
+      id: "el-upgrade",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [
+              sig("EngineSpeed", { color: "#ff0000" }),
+              sig("EngineTemp", { colorPick: "#00ff00" }),
+            ],
+          },
+        ],
+      },
+    });
+    const { api } = renderPanel({ params: { elementId: "el-upgrade" }, registry });
+    const swatches = document.querySelectorAll(".plot-signal-swatch");
+    expect(swatches[0]).toHaveStyle({
+      background: stableSignalColor(signalKey(null, 256, false, "EngineSpeed")),
+    });
+    expect(swatches[1]).toHaveStyle({ background: "#00ff00" });
+    await waitFor(() => expect(persistedAreas(api)[0].signals).toHaveLength(2));
+    const stored = persistedAreas(api)[0].signals;
+    expect(stored[0].colorPick).toBeUndefined();
+    expect((stored[0] as unknown as Record<string, unknown>).color).toBeUndefined();
+    expect(stored[1].colorPick).toBe("#00ff00");
   });
 
   it("changing a series' color via the swatch picker updates the swatch", async () => {

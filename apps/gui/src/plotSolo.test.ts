@@ -28,7 +28,6 @@ function sig(signalName: string, hidden?: boolean): SignalRef {
     signalName,
     messageName: "Pack",
     unit: "V",
-    color: "#4ecbff",
     ...(hidden ? { hidden: true } : {}),
   };
 }
