@@ -188,3 +188,102 @@ but the claim needs the signal's evidence, not an assumption.
   path allows).
 - ADR-0031 gate green (multi-run) after the render-path work and
   at completion; docs updated where behavior changed.
+
+## Status log
+
+**2026-08-08 — Phase 57.A, item 5 (perf-harness connect robustness),
+branch `task57a-capture-fail-loudly`.**
+
+Landed the failure contract for a `--perf-capture-secs` run under
+`--connect-on-start` that never connects: no report, non-zero exit.
+
+- `f8f37de` — planning docs commit (this file + the roadmap edit),
+  content unmodified.
+- `5236470` — `fix(gui): fail a never-connected perf capture loudly
+  instead of writing an empty report`.
+  - Logs the `!ready` branch (binding count, sidecar readiness) to the
+    system log / `cannet.log` instead of silently skipping connect —
+    applies to any `--connect-on-start` run, not just a capture.
+  - Bounded connect retry, scoped to `captureSecs != null` only (a
+    plain `--connect-on-start` still connects once, unretried — there's
+    no capture window whose absence needs a report suppressed): 3
+    attempts, each given 3 s to land a "running" session before
+    retrying, 1 s between attempts. Chosen bound + rationale: these
+    numbers only delay *when* the capture window opens (worst case
+    ~11 s added before `beginDiagCapture`), never its length (the
+    `captureSecs` sleep is unchanged) — "retry over the pre-capture
+    window" from the grooming map, read literally.
+  - Connectedness is asserted before the capture window opens (at the
+    top of the `captureSecs != null` block, i.e. before the interact
+    warm-up and settle sleep too, which is strictly earlier than
+    "before `beginDiagCapture`"). A failed run never calls
+    `beginDiagCapture`/`endDiagCapture` — the host never arms, so no
+    report is written; a marked-failed report was ruled out, so this is
+    the whole suppression mechanism, not a Rust-side guard.
+  - New host command `exit_process(code)` (`diag.rs`, wraps
+    `AppHandle::exit`) — the frontend's only way to set a process exit
+    code. The failure path calls it with `code: 1` and returns before
+    the `finally` block's normal `destroy()` (added a `failed` flag so
+    the two exit paths don't race).
+  - Tests: `apps/gui/src/App.perfCaptureConnect.dom.test.tsx` (3 new
+    dom tests — never-ready capture, retries-exhausted capture, and a
+    plain connect-on-start's `!ready` log without retry/exit), fake
+    timers with `performance` added to `toFake` (vitest's default
+    doesn't fake `performance`, and the automation code's `waitUntil`
+    bounds itself with `performance.now()` — without this the poll
+    loops never see elapsed time pass and hang). `App.bootOpenOnce.
+    dom.test.tsx` re-run unchanged and green (the pinned splash/boot
+    ordering, non-capture connect-only path, is untouched).
+  - Test counts: JS 137 files / 1651 tests (was 1648) all green
+    (`pnpm --dir apps/gui test`); Rust 495 passed / 0 failed / 2 ignored
+    (`cargo test -p cannet-gui`); `cargo clippy -p cannet-gui
+    --all-targets` clean; `pnpm --dir apps/gui build` clean.
+  - Docs: README § Self-driving performance runs and ADR 0031's
+    Consequences both updated with the retry/no-report/exit-non-zero
+    contract, in the same commit.
+
+**Conflict with the setup brief, recorded per the "no silent
+redesign" rule:** the task brief asked for "Rust tests for the
+report-suppression and exit-code command." Report suppression turned
+out to need no new Rust logic — the frontend simply never calls
+`diag_capture_start`/`diag_capture_finish` on a failed connect, so the
+pre-existing `diag_capture_finish` empty-samples guard (already
+untested, unrelated to this change) is never exercised by this path.
+`exit_process` is a one-line `AppHandle::exit` wrapper; calling it in a
+test would attempt to exit the test process, and the crate has no
+`tauri::test` harness (`State`'s inner field is private outside
+`tauri::state`, so a command taking `State<'_, T>` can't be
+constructed standalone either) — adding one is a new-dependency
+decision out of this phase's scope. Closest faithful reading: both
+behaviors are tested at the frontend orchestration seam instead (dom
+tests assert `exit_process` is called with `code: 1` and the diag
+commands are never called), which is where the decision is actually
+made and is exactly the "whatever seam the capture path allows"
+language in the exit criteria.
+
+**Flake follow-through (owner ruling): pending, not attempted.** The
+underlying first-run-after-a-fresh-build 30 s readiness timeout
+(suspected AV scan of the just-frozen sidecar) has not recurred since
+2026-08-08 and was not reproduced or root-caused in this phase, per the
+ruling — root-causing happens on the signal's first real occurrence
+(now that a never-connected run fails loudly instead of silently),
+likely during this task's later perf-gate runs.
+
+## Blockers / side effects
+
+- The `!ready` log line fires for *any* `--connect-on-start` run, not
+  only a perf capture (item 1 of the grooming map is written that
+  generally). Side effect, not a scope creep: a plain connect-on-start
+  launch that times out now leaves a system-log line where it used to
+  leave silence, with no other behavior change (still no retry, still
+  no exit) — verified by a dedicated test.
+- Added a second, stricter "is a session up" boolean
+  (`remoteConnectedRef`, `kind === "running"` only) alongside the
+  existing `remoteConnected` (`"running" || "connecting"`, used
+  elsewhere for the status line). The retry-confirmation loop needs the
+  strict version — a "connecting" session is exactly the state a retry
+  must not mistake for success — so this is a second derived value, not
+  a reuse of the existing one.
+- No changes to items 1-4 (per-area plot scoping, dropped item,
+  `signalSetKey`, capture-restore cost) or the ADR-0031 gate re-run —
+  out of this phase's scope (item 5 only).
