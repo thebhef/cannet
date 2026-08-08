@@ -671,16 +671,15 @@ resample at the end.
   their own lines with their times.) The signal-panel head shows
   the H1/H2 Y-cursor values + ΔH when those are placed; y scales are
   always auto-derived (per ADR 0026) and **fit y** refits the
-  auto-norm latch to the visible window. With a DBC
-  attached, the toolbar's **add signal…** dropdown lists every
-  `(message, signal)` pair the database defines; picking one drops it
-  into the *focused* plot area (click an area to focus it). **Drag a
-  signal row** to re-order it, onto another plot area, or onto another
-  plot panel (cross-panel drops in a copy); **×** removes it. A signal
-  keeps the color it was given when added — re-ordering / moving
-  doesn't recolor it. The shared x-axis spans 0 to the longest plotted
-  signal across the panel's areas, so a signal added late still shows
-  over the existing span.
+  auto-norm latch to the visible window. Signals are added by **drag**
+  — from the DBC panel, the signal view, the trace, or another plot
+  area or panel — or by an area's **patterns…** regex editor; there is
+  no separate add-signal picker. **Drag a signal row** to re-order it,
+  onto another plot area, or onto another plot panel (cross-panel drops
+  in a copy); **×** removes it. A signal keeps the color it was given
+  when added — re-ordering / moving doesn't recolor it. The shared
+  x-axis spans 0 to the longest plotted signal across the panel's
+  areas, so a signal added late still shows over the existing span.
 - **Selecting signal rows.** A **plain click** on a signal row selects
   that row *and* promotes it to the area's primary (the signal whose
   units label the y axis) — the long-standing promote gesture, now with
@@ -696,6 +695,16 @@ resample at the end.
   view state; it is not saved with the project. The swatch's hide/show
   click and its right-click color picker are not selection gestures and
   leave the selection where it is.
+  **Right-click** a row in the selection for a context menu with
+  **Hide** / **Show**, applied to the whole selection in one batch (no
+  bulk recolor, and no dedicated bulk-remove — drag the selection out
+  instead). Right-clicking a row outside the selection selects just
+  that row first, then opens its menu. **Dragging** a row already in
+  the selection carries every selected row in the drag payload — drop
+  it on another area or panel to move or copy the whole selection at
+  once, the same convention the DBC panel's multi-select drag uses;
+  dragging a row that isn't selected drags only that row and leaves the
+  selection as it was.
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives
