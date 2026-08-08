@@ -2106,7 +2106,7 @@ describe("PlotArea y-normalisation", () => {
   /// the only way to pin a *known* axis id: a freshly added area's id
   /// is a UUID, and the derived-axis ids the settings key off are built
   /// from it.
-  function renderSeeded(opts: { signals: string[]; axisScales?: Record<string, unknown> }) {
+  function renderSeeded(opts: { signals: string[]; axisScales?: Record<string, unknown>; mode?: string }) {
     const elementId = `el-scale-${seedCounter++}`;
     return renderPanel({
       params: { elementId },
@@ -2125,6 +2125,7 @@ describe("PlotArea y-normalisation", () => {
                 unit: unitOf(n),
                 color: "#4ecbff",
               })),
+              ...(opts.mode ? { yAxisMode: opts.mode } : {}),
             },
           ],
           ...(opts.axisScales ? { axisScales: opts.axisScales } : {}),
@@ -2417,6 +2418,123 @@ describe("PlotArea y-normalisation", () => {
     } finally {
       restore();
     }
+  });
+
+  describe("manual-range regression matrix (task 55 item 1)", () => {
+    // Owner's 0.7.0 repro: a manual range set within a 0.0-1.0-valued
+    // float signal's own band rendered offscreen. Grooming confirmed it
+    // does not reproduce (`plans/tasks/0055-plot-feedback-round.md` item
+    // 1) and called for regression-pinning across value shapes
+    // (float/int/uint) and y-axis modes (unified/per-unit/individual)
+    // rather than a bisect. `resolveAxisRange` is pinned per shape in
+    // `plotAxisScale.test.ts`; these walk the real normalisation
+    // pipeline (`PlotArea.tsx`'s row-scaling block) so a regression in
+    // the *seam* between engineering-unit bounds and the always-[0,1]
+    // uPlot scale is caught. In every case the manual range is set wider
+    // than the signal's own auto (follow-live) extent — matching auto
+    // would mask a broken override, since it would render identically
+    // whether or not the manual bound is actually applied.
+
+    it("float, unified mode: a manual range covering the 0.0-1.0 data band is honoured in engineering units", async () => {
+      mockSignalExtents.LimitEffective = { lo: 0.2, hi: 0.8 };
+      mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [0.2, 0.5, 0.8] };
+      const restore = stubSize();
+      try {
+        renderSeeded({ signals: ["LimitEffective"], axisScales: { a1: { min: 0, max: 1 } } });
+        await waitForData((data) => {
+          expect(data[1]?.[0]).toBeCloseTo(0.2, 6);
+          expect(data[1]?.[1]).toBeCloseTo(0.5, 6);
+          expect(data[1]?.[2]).toBeCloseTo(0.8, 6);
+        });
+        await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1 A"]));
+      } finally {
+        restore();
+      }
+    });
+
+    it("float, per-unit mode: a manual range covering the 0.0-1.0 data band is honoured in engineering units", async () => {
+      mockSignalExtents.LimitEffective = { lo: 0.2, hi: 0.8 };
+      mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [0.2, 0.5, 0.8] };
+      const restore = stubSize();
+      try {
+        renderSeeded({
+          signals: ["LimitEffective"],
+          mode: "per-unit",
+          axisScales: { "a1/u:unit:A": { min: 0, max: 1 } },
+        });
+        await waitForData((data) => {
+          expect(data[1]?.[0]).toBeCloseTo(0.2, 6);
+          expect(data[1]?.[1]).toBeCloseTo(0.5, 6);
+          expect(data[1]?.[2]).toBeCloseTo(0.8, 6);
+        });
+        await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1 A"]));
+      } finally {
+        restore();
+      }
+    });
+
+    it("float, individual mode: a manual range covering the 0.0-1.0 data band is honoured in engineering units", async () => {
+      mockSignalExtents.LimitEffective = { lo: 0.2, hi: 0.8 };
+      mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [0.2, 0.5, 0.8] };
+      const restore = stubSize();
+      try {
+        renderSeeded({
+          signals: ["LimitEffective"],
+          mode: "individual",
+          axisScales: { "a1/i:*|s:256:LimitEffective": { min: 0, max: 1 } },
+        });
+        await waitForData((data) => {
+          expect(data[1]?.[0]).toBeCloseTo(0.2, 6);
+          expect(data[1]?.[1]).toBeCloseTo(0.5, 6);
+          expect(data[1]?.[2]).toBeCloseTo(0.8, 6);
+        });
+        await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "1 A"]));
+      } finally {
+        restore();
+      }
+    });
+
+    it("int (per-unit mode): a manual range covering the signed -128..127 band is honoured in engineering units", async () => {
+      mockSignalExtents.EngineTemp = { lo: -100, hi: 100 };
+      mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [-100, 0, 100] };
+      const restore = stubSize();
+      try {
+        renderSeeded({
+          signals: ["EngineTemp"],
+          mode: "per-unit",
+          axisScales: { "a1/u:unit:degC": { min: -128, max: 127 } },
+        });
+        await waitForData((data) => {
+          expect(data[1]?.[0]).toBeCloseTo(28 / 255, 6);
+          expect(data[1]?.[1]).toBeCloseTo(128 / 255, 6);
+          expect(data[1]?.[2]).toBeCloseTo(228 / 255, 6);
+        });
+        await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["-128 degC", "127 degC"]));
+      } finally {
+        restore();
+      }
+    });
+
+    it("uint (individual mode): a manual range covering the 0-255 band is honoured in engineering units", async () => {
+      mockSignalExtents.LimitNominal = { lo: 50, hi: 200 };
+      mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [50, 128, 200] };
+      const restore = stubSize();
+      try {
+        renderSeeded({
+          signals: ["LimitNominal"],
+          mode: "individual",
+          axisScales: { "a1/i:*|s:256:LimitNominal": { min: 0, max: 255 } },
+        });
+        await waitForData((data) => {
+          expect(data[1]?.[0]).toBeCloseTo(50 / 255, 6);
+          expect(data[1]?.[1]).toBeCloseTo(128 / 255, 6);
+          expect(data[1]?.[2]).toBeCloseTo(200 / 255, 6);
+        });
+        await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["0 A", "255 A"]));
+      } finally {
+        restore();
+      }
+    });
   });
 });
 
