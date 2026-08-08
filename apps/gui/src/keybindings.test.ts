@@ -233,6 +233,9 @@ describe("gridview key suppression", () => {
     }
     expect(isGridviewKey(mod("a"))).toBe(true);
     expect(isGridviewKey({ ...plain("a"), meta: true })).toBe(true);
+    // Shift+Tab is Tab's mirror into the cursor row's last control, so
+    // it is the one shifted stroke the grid takes.
+    expect(isGridviewKey({ ...plain("Tab"), shift: true })).toBe(true);
   });
 
   it("leaves every other chord alone", () => {
@@ -287,6 +290,7 @@ describe("chordSuppressedInGridview", () => {
     { chord: "Home", stroke: plain("Home"), suppressed: true },
     { chord: "PageUp", stroke: plain("PageUp"), suppressed: true },
     { chord: "Tab", stroke: plain("Tab"), suppressed: true },
+    { chord: "Shift+Tab", stroke: { ...plain("Tab"), shift: true }, suppressed: true },
     { chord: "Mod+A", stroke: { ...plain("a"), ctrl: true }, suppressed: true },
     { chord: "f", stroke: plain("f"), suppressed: false },
     { chord: "Escape", stroke: plain("Escape"), suppressed: false },

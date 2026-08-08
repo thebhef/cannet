@@ -115,8 +115,8 @@ The dispatcher's capture-phase listener fires before any panel
 handler, so the layer marks its container and the dispatcher treats
 focus-inside-a-gridview like its existing focus-inside-an-editable
 suppression for the keys the grid consumes (unmodified navigation
-keys, Space, Tab, Ctrl/Cmd+A). The grid makes that same
-editable-target exemption of its own: a text field inside a row (a
+keys, Space, Tab, plus Ctrl/Cmd+A and Shift+Tab). The grid makes that
+same editable-target exemption of its own: a text field inside a row (a
 section's name, an event row's label) keeps its keys, or the caret
 cannot be moved inside it, and a **focused button keeps Space** — that
 is how a button is activated, so a grid claiming the press would fire

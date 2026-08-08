@@ -241,10 +241,13 @@ const GRIDVIEW_NAV_KEYS = new Set([
 
 /// Is this stroke one a gridview consumes (ADR 0044)? The unmodified
 /// navigation keys — arrows, Home/End, PageUp/PageDown, Space, Tab —
-/// plus Ctrl/Cmd+A. Everything else, a modified arrow included, is a
-/// global chord and passes through.
+/// plus Ctrl/Cmd+A and Shift+Tab. Everything else, a modified arrow
+/// included, is a global chord and passes through.
 export function isGridviewKey(stroke: KeyStroke): boolean {
-  if (stroke.shift || stroke.alt) return false;
+  // Shift+Tab is the one shifted stroke the grid takes: Tab's mirror,
+  // into the cursor row's last control rather than its first.
+  if (stroke.shift) return !stroke.alt && !stroke.ctrl && !stroke.meta && stroke.key === "Tab";
+  if (stroke.alt) return false;
   if (stroke.ctrl || stroke.meta) {
     return stroke.key.toLowerCase() === "a";
   }
@@ -263,7 +266,8 @@ const GRIDVIEW_NAV_KEY_IDS = new Set([...GRIDVIEW_NAV_KEYS].map((k) => k.toLower
 /// the chord can never complete there (ADR 0044).
 export function chordSuppressedInGridview(chord: KeyChord): boolean {
   return chord.some((step) => {
-    if (step.shift || step.alt) return false;
+    if (step.shift) return !step.alt && !step.mod && !step.ctrl && step.key === "tab";
+    if (step.alt) return false;
     if (step.mod || step.ctrl) return step.key === "a";
     return GRIDVIEW_NAV_KEY_IDS.has(step.key);
   });
