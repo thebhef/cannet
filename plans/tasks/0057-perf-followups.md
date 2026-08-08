@@ -319,3 +319,58 @@ outer `catch` in isolation from the retry/assert paths. Confirmed red
 - Test counts: JS 137 files / 1652 tests (was 1651) all green
   (`pnpm --dir apps/gui test`); `tsc --noEmit` clean. No Rust files
   touched by this follow-up.
+
+**2026-08-08 — Phase 57.B, item 1 (per-area scoping of the plot panel's
+derived configs), branch `task57b-render-path-scoping`.**
+
+- `7f4ff46` — `perf(gui): scope the plot panel's derived area configs per
+  logical area`.
+- Sequencing: item 1 first, item 3 second (they touch adjacent seams but
+  not the same lines — item 1 is `PlotPanel`'s derivation chain, item 3
+  is `PlotArea`'s cache/rebuild keys). One render-count test written for
+  item 1 turned out to need item 3's work to pass, and moved to that
+  slice (below).
+- New `keyedMemo.ts`: `createKeyedMemo` / `useKeyedMemo` (a per-key memo
+  whose entry survives while that key's own dependency list does,
+  `Object.is` per entry, keys not asked for in a pass retire) and
+  `useStableMembers` (holds a freshly-filtered list's identity while its
+  members are the same objects in the same order). 4 unit tests.
+- Scoped per logical area: `effectiveAreas` (via a new single-area
+  `applyAreaSelection` in `signalSelection.ts`, with the plural now
+  mapping over it), `derivedAreaConfigs` (its body lifted to a
+  module-level pure `deriveAreaConfigs`), `manualKeysByArea`,
+  `patternResolutionsByArea` (pattern-free areas are now simply absent,
+  falling back to the shared `EMPTY_RESOLUTIONS` instead of a fresh
+  empty array), and `areaHandlers`. `selectSignal` now reads the
+  selection order through a ref — it was the one handler that closed
+  over a value rebuilt on every areas edit, which alone re-minted every
+  axis's bundle. `placeSignal`'s internal-move path leaves untouched
+  areas at their existing identity.
+- **Discovered prerequisite, recorded because it was not in the grooming
+  map:** the scoping is undone one render later without it. The element
+  registry replaces its whole `entries` array whenever *any* element is
+  patched — including this panel persisting its own `areas` — and
+  `scopedCatalog` / `resolveColor` were keyed on that array, so the
+  persist round-trip re-minted the `catalog`, `ecuLookup`, `valueFormats`
+  and `resolveColor` props of every area. Both now key on the filter /
+  colormap *elements* (`useStableMembers`), which `applyElementPatch`
+  leaves alone when the edit was elsewhere. This is very likely the bulk
+  of 55.C's "4 renders on a 2-area panel": 1 for the edit + one per area
+  for the persist.
+- Measured, `render.PlotArea` deltas on a stopped 3-area panel (2 rows
+  each, no canvas so the areas' own resample machinery is inert and the
+  count is pure prop fan-out) — **before → after**: collapse `6 → 1`,
+  hide a row `3 → 1`, promote a row to primary `3 → 1`, panel re-render
+  after the edit's persist `3 → 0`.
+- Tests: new `describe("PlotPanel per-area render scoping")` in
+  `PlotPanel.dom.test.tsx` (4 render-count regression tests, the 55.C
+  probe methodology made permanent) plus `keyedMemo.test.ts` (4). Both
+  standing memo guards re-run and green; the ctrl-click selection-slice
+  guard's comment updated where it claimed a plain click "legitimately
+  re-renders the stack" — it no longer does.
+- The new tests' settle loop waits past `FIRST_SAMPLE_INDICATOR_MS`
+  before measuring: with no canvas nothing ever settles the first-sample
+  gate, so each area's "building…" timer fires ~300 ms after mount and
+  otherwise lands inside the measurement window.
+- Test counts: JS 138 files / 1660 tests (was 1652) all green
+  (`pnpm --dir apps/gui test`); `tsc --noEmit` clean. No Rust touched.
