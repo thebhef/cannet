@@ -608,3 +608,20 @@ better).
   (55.E).
 
 Task complete; all criteria verified.
+
+## Perf regression follow-up (2026-08-08)
+
+The ADR-0031 gate work in this slice surfaced a sidecar tx throughput
+regression at the ev-zonal design load (1608 f/s): bisect plus direct
+log evidence root-caused it to `--log-file` dropping the root logger
+to DEBUG, which let python-can's PCAN backend (`can.interfaces.pcan.pcan`,
+logger `can.pcan`) emit two `logger.debug` records per transmitted
+frame (~3,200 records/s through the `RotatingFileHandler`) — dropping
+throughput to ~1250 f/s, starving the 17 slowest CAN ids, and
+regressing `rx_gap` (173 ids / short_frac ~0.005 → 156 ids / ~0.04).
+Fixed by capping `can.pcan` at INFO when the debug file sink is
+configured (`NOISY_PER_FRAME_LOGGERS` in `__main__.py`), while leaving
+every other logger — including the other two vendor interfaces this
+sidecar drives, vector and kvaser, whose send/recv paths carry no
+per-frame debug logging — at DEBUG. See branch
+`fix-sidecar-pcan-debug-throughput`.
