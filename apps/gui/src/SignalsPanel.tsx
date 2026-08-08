@@ -1084,10 +1084,10 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                     onRowClick={
                       signalRow == null ? undefined : (e) => handleRowClick(signalRow, e)
                     }
-                    onGripDragStart={
+                    onDragStart={
                       signalRow == null ? undefined : (e) => startRowDrag(signalRow, e)
                     }
-                    onGripDragEnd={endRowDrag}
+                    onDragEnd={endRowDrag}
                     onDragOver={sectionDragOver}
                     onDrop={(e) => dropOnSection(signal?.section ?? "", e)}
                     columns={visible}
@@ -1364,10 +1364,13 @@ interface SignalRowProps {
   domId?: string;
   selected?: boolean;
   onRowClick?: (e: React.MouseEvent) => void;
-  /// The name cell is the row's drag grip — the section cell is a
-  /// control, so the row does not drag whole (ADR 0045).
-  onGripDragStart?: (e: React.DragEvent) => void;
-  onGripDragEnd?: () => void;
+  /// The whole row is the drag source (ADR 0045): dragging works from
+  /// any cell, including the section-picker button's own hit area — a
+  /// plain click there still just clicks (HTML5 drag only starts once
+  /// the pointer moves past a threshold while held), so the button
+  /// keeps working unmodified.
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragEnd?: () => void;
   onDragOver?: (e: React.DragEvent) => void;
   onDrop?: (e: React.DragEvent) => void;
   columns: readonly SignalColumnState[];
@@ -1392,8 +1395,8 @@ function SignalRow({
   domId,
   selected = false,
   onRowClick,
-  onGripDragStart,
-  onGripDragEnd,
+  onDragStart,
+  onDragEnd,
   onDragOver,
   onDrop,
   columns,
@@ -1425,9 +1428,6 @@ function SignalRow({
             className="signals-name"
             style={{ color: nameColor }}
             title={`${row.signal_name} — drag to a plot; right-click to recolor`}
-            draggable
-            onDragStart={onGripDragStart}
-            onDragEnd={onGripDragEnd}
             onContextMenu={(e) => {
               // Right-click the name opens the native color picker —
               // the same affordance as a plot series swatch (ADR 0026).
@@ -1499,6 +1499,9 @@ function SignalRow({
       className={`trace-row ${row ? "" : "loading"}${selected ? " selected" : ""}`}
       aria-selected={selected}
       onClick={onRowClick}
+      draggable={onDragStart != null}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onDragOver={onDragOver}
       onDrop={onDrop}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}

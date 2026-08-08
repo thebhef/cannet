@@ -281,19 +281,25 @@ describe("SignalsPanel sections", () => {
     expect(elementSections(registry)?.names).toEqual(["Pack"]);
   });
 
-  it("keeps the move control out of the draggable, clipped name cell", async () => {
+  it("keeps the move control out of the clipped name cell, and the row still drags whole", async () => {
     // THE REOPENED DEFECT. The control shipped inside `.signals-name`,
-    // which is `draggable` and sits in a fixed-width grid cell that
-    // `.trace-row span { overflow: hidden }` clips. jsdom does no
-    // layout and runs no drag heuristics, so the original tests found
-    // the button either way; these two structural facts are what the
-    // real WebView acted on. Both are checkable without layout.
+    // a fixed-width grid cell that `.trace-row span { overflow: hidden }`
+    // clips. jsdom does no layout, so the original tests found the
+    // button either way; the structural fact is what the real WebView
+    // acted on — the real intent is that the button is reachable, not
+    // that the row can't be a drag source. Task 54 widened the drag
+    // source to the whole row (ADR 0045), so `.trace-row` is legitimately
+    // `[draggable="true"]` now; what must still hold is that the button
+    // sits outside the clipped name cell, in its own column, and that
+    // dragging is still wired to the row rather than the button.
     renderPanel();
     const btn = await screen.findByRole("button", { name: "move EngineSpeed to section" });
-    expect(btn.closest('[draggable="true"]')).toBeNull();
+    expect(btn.closest(".signals-name")).toBeNull();
     expect(btn.closest(".col-signal")).toBeNull();
     // It lives in its own column, so nothing variable-width precedes it.
     expect(btn.closest(".col-section")).not.toBeNull();
+    const row = btn.closest(".trace-row") as HTMLElement;
+    expect(row).toHaveAttribute("draggable", "true");
   });
 
   it("shows each signal's current section in the section column", async () => {

@@ -1,6 +1,8 @@
 # ADR 0045 — Cross-panel drag payloads: signals and patterns travel together, patterns stay live
 
-Status: accepted (2026-08-05)
+Status: accepted (2026-08-05); amended (2026-08-07) — flipped the grip
+rule to whole-row drag as the norm, grip/`stopPropagation` only where
+proven necessary.
 
 ## Context
 
@@ -73,10 +75,18 @@ descriptor-key dedup.
 creates all its series in one gesture; remove is cheap and the
 gesture says what it says.
 
-**Drag sources with interactive content use a grip.** Rows that hold
-inputs or buttons are not themselves draggable — a dedicated grip is
-(the transmit rows' and plot areas' existing rule). Rows without
-interactive content drag whole.
+**Whole-row drag is the norm.** A row drags from anywhere on it,
+including over a button or input it holds — HTML5 drag only starts
+once the pointer moves past a threshold while held, so a plain click
+on an inner control still just clicks. An inner element that needs to
+be a drag source of its own (a pattern chip, a section header's label)
+suppresses the row drag with `stopPropagation` on its own
+`dragstart` (`DecodedSignalCell` is the precedent). No special
+affordance — a grip, a `stopPropagation` guard — is added for an
+inner control until dragging the row whole is shown to break it; the
+transmit rows' and the plot area's reorder grip predate this rule and
+stay as they are, because their rows are dense enough with editable
+fields that a grip was already the proven answer.
 
 ## Why
 
