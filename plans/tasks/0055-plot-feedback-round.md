@@ -625,3 +625,8 @@ every other logger — including the other two vendor interfaces this
 sidecar drives, vector and kvaser, whose send/recv paths carry no
 per-frame debug logging — at DEBUG. See branch
 `fix-sidecar-pcan-debug-throughput`.
+
+Verified post-fix (commit 87032ed): two ADR-0031 frontend runs both
+pass all 31 gated metrics, with `rx_gap` back to baseline health
+(rx_fps 1614/1610, 173 ids measured, `short_frac` 0.004/0.002 against
+the 0.006 baseline worst case), confirming the root cause end to end.
