@@ -19,6 +19,8 @@ const openProjectCalls: string[] = [];
 // Every invoke, in call order — the ordering test asserts the project
 // has fully applied before automation connects.
 const invokeOrder: string[] = [];
+// System-log lines the frontend pushed, in order.
+const systemLog: string[] = [];
 // Per-test knobs (the mock is hoisted, so config rides in mutable state).
 const knobs = {
   connectOnStart: false,
@@ -68,6 +70,9 @@ vi.mock("@tauri-apps/api/core", () => ({
         return null;
       case "restore_scratch_capture":
         return { count: 0, first_index: 0, first_index_ts_ns: null, session_start_seconds: 0 };
+      case "gui_emit_system_log":
+        systemLog.push(String(args?.message));
+        return null;
       case "fetch_system_log":
       case "fetch_notes":
       case "fetch_trace_range":
@@ -164,6 +169,7 @@ beforeEach(async () => {
   listeners.clear();
   openProjectCalls.length = 0;
   invokeOrder.length = 0;
+  systemLog.length = 0;
   knobs.connectOnStart = false;
   knobs.dbcDelayMs = 0;
   await hydrateState();
@@ -192,6 +198,20 @@ describe("boot project open", () => {
     // The layout still mounts (the latched open applied the project).
     await waitFor(() => {
       if (!document.querySelector(".dv-tab")) throw new Error("no dockview tabs yet");
+    });
+  });
+
+  it("logs the moment the boot stops holding the app back", async () => {
+    // Launch cost is only diagnosable if the log says when the app
+    // became usable; the restore's own line then says when its history
+    // arrived. Both land in the system log a user can read back.
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await waitFor(() => {
+      expect(systemLog.some((m) => m.includes("startup: interactive"))).toBe(true);
     });
   });
 

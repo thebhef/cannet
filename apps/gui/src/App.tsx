@@ -2290,6 +2290,16 @@ export function App() {
         // The boot has reached a conclusion either way — drop the
         // splash's hold on the app (the 5 s floor may still hold it).
         setBootSettled(true);
+        // Say so in the log a launch already writes: this line and the
+        // restore's own "restored N frames … in X ms" bracket what a
+        // launch cost, so a slow one can be attributed without a
+        // stopwatch. Elapsed is measured from the frontend's load, which
+        // the log's own timestamps place against process start.
+        void invoke("gui_emit_system_log", {
+          level: "info",
+          source: "startup",
+          message: `startup: interactive ${Math.round(performance.now())} ms after the frontend loaded`,
+        }).catch(() => {});
         // Hand off to the orchestration effect, which connects /
         // captures / exits per the flags once the project has applied.
         if (cfg) setAutomation(cfg);
