@@ -302,6 +302,19 @@ better).
     and two implementation-status notes (the collapse derivation +
     handle, and the splitter's hit/visual split).
 
+- **2026-08-08 (item 5, bold selected series):** Landed on
+  `task49a-area-selection` together with task 49's selection model,
+  which is its prerequisite — see that task's Status log for the full
+  entry (commits `d37e28a`, `71ccdcc`, `555eb41`). Item 5 itself is
+  `555eb41`: a selected series draws at 2px against 1px, applied by
+  writing `series[i].width` on the live uPlot instance plus a redraw, so
+  no instance is rebuilt on a selection click. The grooming note's
+  "live width function, same pattern as the live stroke-color function"
+  is not literally implementable — uPlot calls `stroke` but reads
+  `width` as a number — so the same seam is driven by a write; recorded
+  under task 49's Blockers. Task 49 keeps the bulk actions on the
+  selection.
+
 ## Blockers / side effects
 
 - None from item 1. No matrix cell failed; nothing to fix in that phase.
