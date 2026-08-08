@@ -265,7 +265,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
   /// are built once per row instead of once per row per refresh.
   const gridRef = useRef(grid);
   gridRef.current = grid;
-  const rowProps = useMemo(() => makeRowGridPropsCache(gridRef), []);
+  const rowProps = useMemo(() => makeRowGridPropsCache(gridRef, treeRef), []);
 
   // ---- modal / menu state ----
   const [editor, setEditor] = useState<EditorState | null>(null);

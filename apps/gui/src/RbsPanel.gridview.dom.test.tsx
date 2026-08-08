@@ -263,6 +263,20 @@ describe("RbsPanel on the gridview", () => {
     expect(rowOf("Inverter")).toHaveAttribute("data-active");
   });
 
+  it("takes the keyboard when a row is clicked, and leaves it to a control", async () => {
+    // Without this the tree never holds focus in a mouse-then-keyboard
+    // session: focus stays on `<body>`, where the arrows and Tab are
+    // dead until the user happens to click the container's border.
+    renderPanel();
+    await screen.findByText("PackStatus");
+    fireEvent.click(rowOf("PackStatus"));
+    expect(document.activeElement).toBe(screen.getByRole("tree"));
+    const period = screen.getByLabelText("0x100 period") as HTMLElement;
+    period.focus();
+    fireEvent.click(period);
+    expect(document.activeElement).toBe(period);
+  });
+
   it("filters through the shared slot: matches keep their bus and ECU, the rest go", async () => {
     vi.useFakeTimers();
     renderPanel();

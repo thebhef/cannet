@@ -89,8 +89,13 @@ export interface RowGridProps {
 
 /// `gridRef` rather than a `Gridview`: the hook hands back a fresh object
 /// every render, and a cached handler must reach the live one.
+/// `containerRef` is the gridview container, which the click hands the
+/// keyboard to — the container is the only thing in a gridview that holds
+/// focus (ADR 0044), so without this a mouse-then-keyboard session leaves
+/// focus on `<body>` and the grid's keys do nothing.
 export function makeRowGridPropsCache(
   gridRef: MutableRefObject<Gridview>,
+  containerRef: { readonly current: HTMLElement | null },
 ): (id: string) => RowGridProps {
   const cache = new Map<string, RowGridProps>();
   return (id) => {
@@ -98,8 +103,13 @@ export function makeRowGridPropsCache(
     if (props === undefined) {
       props = {
         id: gridRef.current.rowDomId(id),
-        onClick: (e) =>
-          gridRef.current.onRowClick(id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey }),
+        onClick: (e) => {
+          gridRef.current.onRowClick(id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey });
+          // …unless the click was aimed at a control that wants focus
+          // itself, which would then lose it on the way in.
+          const target = e.target as HTMLElement | null;
+          if (target?.closest?.("button, input") == null) containerRef.current?.focus();
+        },
       };
       cache.set(id, props);
     }

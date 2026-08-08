@@ -438,9 +438,15 @@ export function TransmitPanel(props: IDockviewPanelProps) {
             domId={grid.rowDomId(f.id)}
             active={grid.cursor === f.id}
             selected={grid.selection.has(f.id)}
-            onRowClick={(e) =>
-              grid.onRowClick(f.id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey })
-            }
+            onRowClick={(e) => {
+              grid.onRowClick(f.id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey });
+              // Clicking a tile hands the grid the keyboard — the
+              // container is the only thing in a gridview that holds
+              // focus (ADR 0044) — unless the click was aimed at a
+              // control that wants it itself.
+              const target = e.target as HTMLElement | null;
+              if (target?.closest("button, input") == null) listRef.current?.focus();
+            }}
             expanded={expandedIds.has(f.id)}
             onSetExpanded={(want) => setRowExpanded(f.id, want)}
             messageName={

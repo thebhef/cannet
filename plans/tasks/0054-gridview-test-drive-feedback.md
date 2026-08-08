@@ -109,6 +109,19 @@ focus-on-click get it.
   must not consume Tab". `apps/gui` suite 1485/1485 → 1492/1492 (130
   files), `pnpm --dir apps/gui build` green.
 
+- **2026-08-07 (item 2, focus-on-click for the last three panels):**
+  `RbsPanel`, `DbcPanel` and `TransmitPanel` now hand the grid container
+  the keyboard when a row is clicked, matching `SignalsPanel` /
+  `ByIdTable` / `TraceView`'s existing `closest("button, input") == null`
+  guard. RBS's row click is the cached one in
+  `rbsRowIdentity.ts`, so `makeRowGridPropsCache` takes the container ref
+  as a second argument; DBC's `handleRowClick` gained the click target as
+  a third argument (the row component already built the modifiers, not
+  the event). ADR 0044's cursor/selection paragraph states the rule.
+  Tests: one DOM test per panel written failing first, plus a unit test
+  over the cache's focus branch. Suite 1492/1492 → 1496/1496 (130
+  files), build green.
+
 ## Blockers / side effects
 
 - Verified the other gridview-migrated surfaces already drag whole-row

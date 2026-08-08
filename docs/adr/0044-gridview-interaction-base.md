@@ -44,8 +44,11 @@ container holds DOM focus and names the active row via
 `aria-activedescendant` (row DOM nodes are recycled or absent in
 paged viewports, so focus cannot live on them). The selection is a
 separate id set with a click anchor. Both are ephemeral — never
-persisted. There is no active cell: interactive content inside a row
-is reached by Tab, not by the grid cursor.
+persisted. Clicking a row hands the container that focus, unless the
+click was aimed at a control that takes focus itself; without it a
+mouse-then-keyboard session leaves focus on the document body and the
+grid's keys point at nothing. There is no active cell: interactive
+content inside a row is reached by Tab, not by the grid cursor.
 
 **One key table for every gridview:**
 
