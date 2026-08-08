@@ -386,6 +386,35 @@ export function reorderAreas(
   return next;
 }
 
+/** The one-shot "sort area" action (task 56.C): reorders `signals` by
+ * (generator wheel index, then display name) once — the result is
+ * written back into the persisted manual list like any other reorder,
+ * and drag order stays the primary model afterward. A generator-claimed
+ * signal (a key present in `generatorIndexes`) sorts by `(index, name)`
+ * ahead of every unclaimed one, which sorts by name alone. Name
+ * collation is case-insensitive (`localeCompare` at `"base"`
+ * sensitivity, the same rule `DbcPanel`'s ECU grouping uses) — how
+ * names are browsed everywhere else in the panel.
+ *
+ * `Array.prototype.sort` is a stable sort (guaranteed since ES2019), so
+ * two signals that tie on the full key — same index, same
+ * case-insensitive name — keep their current relative order, and
+ * re-running the action on an already-sorted list is a no-op. Pattern-
+ * derived rows are never in `signals`, so they aren't touched — they
+ * keep following their pattern's own evaluation order. */
+export function sortAreaSignals(
+  signals: readonly SignalRef[],
+  generatorIndexes: ReadonlyMap<string, number>,
+): SignalRef[] {
+  return [...signals].sort((a, b) => {
+    const ia = generatorIndexes.get(signalRefKey(a));
+    const ib = generatorIndexes.get(signalRefKey(b));
+    if (ia != null && ib != null && ia !== ib) return ia - ib;
+    if ((ia != null) !== (ib != null)) return ia != null ? -1 : 1;
+    return a.signalName.localeCompare(b.signalName, undefined, { sensitivity: "base" });
+  });
+}
+
 export function cursorModeFromRaw(raw: unknown): CursorMode {
   return raw === "x" || raw === "y" || raw === "note" ? raw : "off";
 }
