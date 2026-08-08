@@ -181,6 +181,61 @@ better).
   mode-invariant by construction; "DOM" = the full normalisation
   pipeline in `PlotPanel.dom.test.tsx`.)
 
+- **2026-08-08 (cleanup, describe-title task references):** Landed on
+  `task55b-all-data-button`, `4b70b8c`. Two test `describe` titles
+  named "task 55 item 1" — source (including tests) never names a task
+  number per the working agreement. Renamed to just "manual-range
+  regression matrix" in both `plotAxisScale.test.ts` and
+  `PlotPanel.dom.test.tsx`; no behavior change. `apps/gui` test suite:
+  1504 passing (130 files, unchanged count), build green.
+
+- **2026-08-08 (item 3, "All data" button):** Landed on
+  `task55b-all-data-button`, `3e6135e`. New button beside Clear in the
+  plot's trace controls, widening the window to the whole session
+  buffer and fitting the x-axis to it — the DBC-reload recovery path
+  (Clear collapses the window for a cheap signal re-pick, All data
+  widens back out for one full-history resample).
+  - `trace.ts` gains `allDataTrace(s, n)`, `clearKeepingState`'s
+    mirror: widens to `[0, n)` instead of collapsing to empty,
+    preserving run state — running stays running (`freshTrace(0)`,
+    so it keeps growing and is "still following live" per the
+    grooming note), stopped/paused become the full buffer to date via
+    `restoredTrace`'s shape (the same primitive project restore
+    uses, as the grooming note pointed at). `useTrace` exposes it as
+    `TraceHandle.allData`.
+  - `TraceControls` gains an optional `onAllData` prop — the button
+    renders only when supplied, so only the plot shows it (the trace
+    panel and signals panel share the same component and stay
+    unchanged).
+  - `PlotPanel`'s existing `fitData` body is split into a parameterized
+    `fitToRange(start, ws, we)`; `fitData` calls it with the window's
+    own (possibly still-parked) `sharedStart()`/`winStart`/`winEnd` as
+    before (no behavior change — confirmed by the untouched "Fit Data
+    over a parked window" suite staying green), and the new
+    `handleAllData` calls it with the explicit whole-buffer bounds
+    `(0, 0, capture.count)` — sidestepping the render-timing problem of
+    reading `winStart`/`winEnd` before the just-issued window-widening
+    state update has propagated.
+  - Tests: `trace.test.ts` pins `allDataTrace`'s three run-state cases;
+    `PlotPanel.dom.test.tsx` adds a "PlotPanel All data button" suite —
+    the button renders beside Clear, clicking it widens a parked
+    stopped window to `{start: 0, end: bufferCount}` and fits the
+    x-axis starting at 0 (not the old parked start, which is what
+    distinguishes it from plain Fit Data), and a running window stays
+    running afterward. `apps/gui` test suite: 1504 → 1508 passing (130
+    files); `pnpm --dir apps/gui build` green throughout.
+  - README's plot section documents the button and the Clear-then-All-data
+    recovery workflow, in the same commit.
+
 ## Blockers / side effects
 
-- None. No matrix cell failed; nothing to fix in this phase.
+- None from item 1. No matrix cell failed; nothing to fix in that phase.
+- Item 3: the grooming note's literal `{start: 0, end: live}` reads as
+  a frozen window (a concrete `end`), but "still following live" only
+  holds if the trace keeps its running `end: null`. Implemented the
+  closest faithful reading — `allDataTrace` mirrors `clearKeepingState`
+  and preserves run state (running trace gets `end: null`, so it truly
+  keeps following live; a stopped/paused trace gets the frozen
+  `{start: 0, end: n}` shape the note describes literally). No
+  redesign beyond that; flagging the literal-vs-intent gap in the note
+  for the record.
