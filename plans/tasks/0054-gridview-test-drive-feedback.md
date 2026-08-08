@@ -69,3 +69,37 @@ focus-on-click get it.
   layer (all panels), RbsPanel/DbcPanel/TransmitPanel gain
   focus-on-click, and commit/Escape returns focus to the container
   — matching what ADR 0044 already documents.
+
+## Status log
+
+- **2026-08-07 (item 1, whole-row drag):** Landed on
+  `task54a-whole-row-drag`. `60ec4a8` grooms the roadmap/task docs
+  (this slice's prerequisite commit). `766e9d7` moves the signal row's
+  drag source from `.signals-name` to the row itself in
+  `SignalsPanel.tsx` (`SignalRowProps.onGripDragStart`/`onGripDragEnd`
+  renamed to `onDragStart`/`onDragEnd`, passed straight to
+  `GridviewRow`), adds a DOM test in `SignalsPanel.dnd.dom.test.tsx`
+  pinning a drag from the value cell, restates the assertion in
+  `SignalsPanel.sections.dom.test.tsx` that pinned the section-picker
+  button outside `[draggable="true"]` to its real intent (outside the
+  clipped `.signals-name`, with the row now legitimately draggable),
+  and amends `docs/adr/0045-cross-panel-drag-payloads.md`'s grip rule
+  to whole-row-by-default. `apps/gui` test suite: 1484/1485 → 1485/1485
+  passing (130 files), `pnpm --dir apps/gui build` green both before
+  and after. `SectionHeaderRow` (the section header's own drag grip)
+  is untouched — out of scope for item 1, which is signal rows only.
+
+## Blockers / side effects
+
+- Verified the other gridview-migrated surfaces already drag whole-row
+  per the amended ADR 0045 norm: `ByIdTable.tsx` (~line 494),
+  `TraceView.tsx` (~line 723), `DbcPanel.tsx` (~line 1165), and
+  `PlotArea.tsx`'s `.plot-signal-row` (~line 2828) all set
+  `draggable`/`onDragStart` on the row element itself. No fix needed.
+- Two pre-existing exceptions remain grip-only, not whole-row:
+  `TransmitFrameRow.tsx`'s `.tx-drag-handle` (~line 191) and
+  `PlotArea.tsx`'s `.plot-area-grip` reorder handle on the area head
+  (~line 2678). Both rows are dense with editable controls (byte
+  cells, cyclic-send controls, a bus combobox, buttons) — the "proven
+  necessary" grip case the amended ADR 0045 still allows — so left
+  alone as out of scope for item 1, which only ruled on signal rows.
