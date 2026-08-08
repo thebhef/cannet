@@ -2420,7 +2420,7 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
-  describe("manual-range regression matrix (task 55 item 1)", () => {
+  describe("manual-range regression matrix", () => {
     // Owner's 0.7.0 repro: a manual range set within a 0.0-1.0-valued
     // float signal's own band rendered offscreen. Grooming confirmed it
     // does not reproduce (`plans/tasks/0055-plot-feedback-round.md` item
