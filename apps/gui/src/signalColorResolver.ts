@@ -17,7 +17,6 @@
 // with a separate resolver.
 
 import { stableSignalColor, wheelColor } from "./palette";
-import type { ProjectElement } from "./types";
 
 /// A generator's answer for one signal: the color-wheel index its rule
 /// derives from the signal's identity, or `null` when no rule claims
@@ -41,19 +40,21 @@ export function resolveSignalColor(
   return stableSignalColor(key);
 }
 
-/// Compile the project's generator rules into the generator slot. No
-/// project element declares one yet, so every signal falls through to
-/// the hash; the slot is the seam that gives them somewhere to land.
-function buildSignalColorGenerator(_elements: readonly ProjectElement[]): SignalColorGenerator {
-  return () => null;
+/// Read the project's generator rules — already resolved against the
+/// signal catalog by the host (`signalGeneratorContext.tsx`) — as the
+/// generator slot. An absent key is a signal no rule claims.
+function buildSignalColorGenerator(
+  indexes: ReadonlyMap<string, number>,
+): SignalColorGenerator {
+  return (key) => indexes.get(key) ?? null;
 }
 
-/// Bind the project's generators once per render into the resolver the
-/// views call — the same compile-ambient-rules-once shape
+/// Bind the project's generator answers once per render into the
+/// resolver the views call — the same compile-ambient-rules-once shape
 /// `buildColorResolver` uses for value color maps.
 export function buildSignalColorResolver(
-  elements: readonly ProjectElement[],
+  indexes: ReadonlyMap<string, number>,
 ): SignalColorResolver {
-  const generator = buildSignalColorGenerator(elements);
+  const generator = buildSignalColorGenerator(indexes);
   return (key, pick) => resolveSignalColor(key, pick, generator);
 }

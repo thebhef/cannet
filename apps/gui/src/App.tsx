@@ -83,6 +83,7 @@ import type { SystemMessage } from "./types";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import { SignalGeneratorProvider } from "./signalGeneratorContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
 import { useThemeName } from "./theme";
@@ -2529,6 +2530,7 @@ export function App() {
       <ProjectContext.Provider value={projectContextValue}>
         <SignalCatalogProvider>
           <ElementRegistryContext.Provider value={elementRegistryValue}>
+            <SignalGeneratorProvider>
             <SystemLogContext.Provider value={systemLogValue}>
               <NotesContext.Provider value={notesValue}>
                 <TraceDataProvider value={traceData}>
@@ -2556,6 +2558,7 @@ export function App() {
                 </TraceDataProvider>
               </NotesContext.Provider>
             </SystemLogContext.Provider>
+            </SignalGeneratorProvider>
           </ElementRegistryContext.Provider>
         </SignalCatalogProvider>
       </ProjectContext.Provider>

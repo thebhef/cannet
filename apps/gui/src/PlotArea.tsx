@@ -977,6 +977,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * at construction, and a recolor must not need a rebuild. */
   const seriesColorRef = useRef(seriesColor);
   seriesColorRef.current = seriesColor;
+  // Same reason as the colormap resolver below: a series stroke is a
+  // function uPlot calls per draw, so a generator rule changing the
+  // answer only reaches the canvas on the next one. A running plot
+  // redraws on every sample; a paused/stopped one needs the nudge.
+  useEffect(() => {
+    uplotRef.current?.redraw();
+  }, [seriesColor]);
   // Live value→color resolver for the draw hook (ADR 0029): updated each
   // render so a colormap edit re-tints the enum lane on the next draw
   // without rebuilding the uPlot instance.

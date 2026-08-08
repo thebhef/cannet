@@ -51,9 +51,23 @@ describe("resolveSignalColor", () => {
 });
 
 describe("buildSignalColorResolver", () => {
-  it("resolves through the empty slot: no project element declares a generator yet", () => {
-    const resolve = buildSignalColorResolver([]);
+  it("resolves a signal no generator claims through the identity hash", () => {
+    const resolve = buildSignalColorResolver(new Map());
     expect(resolve(KEY)).toBe(stableSignalColor(KEY));
     expect(resolve(KEY, "#123456")).toBe("#123456");
+  });
+
+  it("takes the host-evaluated wheel index for a signal the rules claim", () => {
+    const resolve = buildSignalColorResolver(new Map([[KEY, 5]]));
+    expect(resolve(KEY)).toBe(wheelColor(5));
+    // An explicit pick still outranks the generator.
+    expect(resolve(KEY, "#123456")).toBe("#123456");
+    // A signal outside the map is left to the hash.
+    const other = signalKey("bus-a", 256, false, "Rpm");
+    expect(resolve(other)).toBe(stableSignalColor(other));
+  });
+
+  it("honours a claimed slot of 0 rather than reading it as no answer", () => {
+    expect(buildSignalColorResolver(new Map([[KEY, 0]]))(KEY)).toBe(wheelColor(0));
   });
 });
