@@ -249,7 +249,12 @@ import {
   toggleSoloIndex,
   type SoloState,
 } from "./plotSolo";
-import { setSignalDragData } from "./dragSignals";
+import { setSignalDragData, setSignalDragPayload } from "./dragSignals";
+import {
+  areaAxisScales,
+  setPlotAreaDragData,
+  type PlotAreaDragPayload,
+} from "./plotAreaTransfer";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
 import { PlotArea } from "./PlotArea";
@@ -1399,6 +1404,66 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [selectedRefsFor, elementId],
   );
 
+  /// Read through refs for the same reason `selectedRefsFor` does:
+  /// `dragArea` goes into `areaHandlers`, and closing over either value
+  /// would remint every area's callback bundle on any area edit or
+  /// manual-range change.
+  const areasRef = useRef(areas);
+  areasRef.current = areas;
+  const axisScalesRef = useRef(axisScales);
+  axisScalesRef.current = axisScales;
+
+  /// An area's grip (or its collapsed run's handle) started a drag.
+  /// Two payloads, one gesture (ADR 0045):
+  ///
+  /// - the **area**, as this panel persists it, plus this panel's manual
+  ///   y ranges for the axes it derives — what another plot panel reads
+  ///   to move or copy the whole area;
+  /// - the ordinary **signal** payload (the area's manual picks and its
+  ///   live patterns), so a receptive panel that only understands
+  ///   signals reads the same gesture as an add of them.
+  const dragArea = useCallback(
+    (areaId: string, dataTransfer: DataTransfer) => {
+      const area = areasRef.current.find((a) => a.id === areaId);
+      if (!area) return;
+      setPlotAreaDragData(
+        { dataTransfer },
+        {
+          area,
+          axisScales: areaAxisScales(axisScalesRef.current, areaId),
+          sourcePanelId: elementId,
+        },
+      );
+      const patterns = area.patterns ?? [];
+      if (area.signals.length === 0 && patterns.length === 0) return;
+      setSignalDragPayload(
+        { dataTransfer },
+        {
+          signals: area.signals.map((r) => ({
+            busId: r.busId,
+            messageId: r.messageId,
+            extended: r.extended,
+            signalName: r.signalName,
+            messageName: r.messageName,
+            unit: r.unit,
+          })),
+          patterns,
+          sourcePanelId: elementId,
+        },
+      );
+    },
+    [elementId],
+  );
+
+  /// A plot-area drag was released on `targetAreaId`. A drag that
+  /// started in this panel is the stack reorder it has always been.
+  const dropArea = useCallback(
+    (payload: PlotAreaDragPayload, targetAreaId: string) => {
+      if (payload.sourcePanelId === elementId) reorderArea(payload.area.id, targetAreaId);
+    },
+    [elementId, reorderArea],
+  );
+
   /// Per-area pattern resolutions for the filter UI (match counts,
   /// invalid flags) — evaluated against the same catalog the effective
   /// series come from.
@@ -1625,7 +1690,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onToggleCollapsed: () => toggleAreaCollapsed(parent.id),
         onFocus: () => setFocusedAreaId(parent.id),
         onRemoveArea: () => removeArea(parent.id),
-        onReorderArea: (draggedId) => reorderArea(draggedId, parent.id),
+        onDragArea: (dataTransfer) => dragArea(parent.id, dataTransfer),
+        onDropArea: (payload) => dropArea(payload, parent.id),
         onRemoveSignal: (key) => removeSignal(parent.id, key),
         onDropSignal: (ref, beforeKey, isInternalMove) =>
           placeSignal(ref, parent.id, beforeKey, isInternalMove),
@@ -1647,7 +1713,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setAreaYAxisMode,
     toggleAreaCollapsed,
     removeArea,
-    reorderArea,
+    dragArea,
+    dropArea,
     removeSignal,
     placeSignal,
     toggleSignalHidden,
@@ -2058,7 +2125,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
               // Reorder is parent-area level too: one grip per logical
               // area, and only once there is another area to trade
               // places with.
-              parentAreaId={parent.id}
               reorderable={effectiveAreas.length > 1}
               // Per-axis chrome (y-axis-mode selector, filter editor,
               // primary-signal click) lives on the first derived axis

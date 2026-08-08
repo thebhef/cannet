@@ -2,7 +2,8 @@
 
 Status: accepted (2026-08-05); amended (2026-08-07) — flipped the grip
 rule to whole-row drag as the norm, grip/`stopPropagation` only where
-proven necessary.
+proven necessary; amended (2026-08-08) — a plot area is a payload of its
+own, carried alongside the signal payload.
 
 ## Context
 
@@ -41,6 +42,20 @@ only one half acts on that half.
   signals *and* its patterns.
 - If the grabbed row is in the selection, the whole selection drags
   (the file-manager convention); multi-item drag is v1 behaviour.
+- A **plot area's grip** (or the shared handle of a collapsed run)
+  drags the whole area.
+
+**A plot-area drag sets two payloads, one gesture.** Its own mime
+(`application/x-cannet-plot-area`) carries the serialized area — series,
+patterns, y-axis mode, primary signal, collapsed flag — plus the source
+panel's manual y ranges (`axisScales`) for the axes that area derives,
+re-keyed if the area lands under a new id. Layout weights are not in it:
+a weight describes the stack the area came out of, not the area. The
+same transfer *also* carries the ordinary signal payload above (the
+area's manual picks and its live patterns), so a target that
+understands only signals reads the gesture as an add of them. Inside a
+plot panel the area half wins and the signal half is ignored — a panel
+that understands both must not act on the same gesture twice.
 
 **Patterns stay live across a drop.** Dropping patterns on a plot
 area appends them to the area's ADR 0020 `patterns` list (onto empty

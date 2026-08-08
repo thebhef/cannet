@@ -227,6 +227,9 @@ const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[]
 import { invoke } from "@tauri-apps/api/core";
 
 import { PlotPanel } from "./PlotPanel";
+import { PLOT_AREA_DND_MIME } from "./plotPanelConfig";
+import { parsePlotAreaDragData } from "./plotAreaTransfer";
+import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -4015,5 +4018,114 @@ describe("PlotPanel diagnostic readouts", () => {
       expect(screen.getByRole("menu")).toBeInTheDocument();
       expect(counter("render.PlotArea") - before).toBe(0);
     });
+  });
+});
+
+describe("PlotPanel area drag payload", () => {
+  const sig = (signalName: string, unit = "V") => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "Pack",
+    unit,
+    color: "#112233",
+  });
+
+  it("drags the whole area: its config, its manual ranges, and a signal payload", () => {
+    // One gesture, two payloads (ADR 0045). Another plot panel reads the
+    // area; a panel that only knows signals reads the degraded half and
+    // adds them.
+    const registry = makeRegistry({
+      id: "el-area-drag",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [sig("Cell1"), sig("Cell2")],
+            patterns: ["Cell\d+"],
+            yAxisMode: "per-unit",
+            collapsed: true,
+          },
+          { id: "a2", signals: [sig("Other", "A")] },
+        ],
+        axisScales: { a1: { max: 10 }, "a1/u:unit:V": { min: 1 }, a2: { max: 99 } },
+      },
+    });
+    renderPanel({ params: { elementId: "el-area-drag" }, registry });
+
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(screen.getAllByLabelText("reorder plot area")[0], { dataTransfer: dt });
+
+    const area = parsePlotAreaDragData(dt.getData(PLOT_AREA_DND_MIME));
+    expect(area).not.toBeNull();
+    expect(area!.sourcePanelId).toBe("el-area-drag");
+    expect(area!.area.id).toBe("a1");
+    expect(area!.area.signals.map((s) => s.signalName)).toEqual(["Cell1", "Cell2"]);
+    expect(area!.area.patterns).toEqual(["Cell\d+"]);
+    expect(area!.area.yAxisMode).toBe("per-unit");
+    expect(area!.area.collapsed).toBe(true);
+    // Only this area's ranges travel — not the neighbour's, and not the
+    // layout weights.
+    expect(area!.axisScales).toEqual({ a1: { max: 10 }, "a1/u:unit:V": { min: 1 } });
+
+    const signals = parseSignalDragData(dt.getData(SIGNAL_DND_MIME));
+    expect(signals.signals.map((s) => s.signalName)).toEqual(["Cell1", "Cell2"]);
+    expect(signals.patterns).toEqual(["Cell\d+"]);
+    expect(signals.sourcePanelId).toBe("el-area-drag");
+  });
+
+  it("drags a collapsed run's shared handle with the same payload", () => {
+    const registry = makeRegistry({
+      id: "el-area-drag-run",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1")] },
+          { id: "a2", collapsed: true, signals: [sig("Cell2")] },
+        ],
+        axisScales: { a2: { max: 4 } },
+      },
+    });
+    renderPanel({ params: { elementId: "el-area-drag-run" }, registry });
+
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(document.querySelector(".plot-area-collapsed-handle")!, {
+      dataTransfer: dt,
+    });
+    const area = parsePlotAreaDragData(dt.getData(PLOT_AREA_DND_MIME));
+    expect(area!.area.id).toBe("a2");
+    expect(area!.area.collapsed).toBe(true);
+    expect(area!.axisScales).toEqual({ a2: { max: 4 } });
+  });
+
+  it("never lands an area drag as a signal drop inside a plot panel", async () => {
+    // The area drag carries signals too (the degradation payload), and a
+    // signal row is a drop target of its own. Inside a plot panel the
+    // gesture is an area gesture: dropping on a row must reorder areas,
+    // not move that area's series into the row's area.
+    const registry = makeRegistry({
+      id: "el-area-drag-row",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1")] },
+          { id: "a2", signals: [sig("Cell2")] },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-area-drag-row" }, registry });
+    const stacked = () =>
+      Array.from(document.querySelectorAll(".plot-area")).map((el) =>
+        Array.from(el.querySelectorAll(".plot-signal-name")).map((n) => n.textContent),
+      );
+    expect(stacked()).toEqual([["Cell1"], ["Cell2"]]);
+
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(screen.getAllByLabelText("reorder plot area")[1], { dataTransfer: dt });
+    const row = document.querySelectorAll(".plot-area")[0].querySelector(".plot-signal-row")!;
+    fireEvent.dragOver(row, { dataTransfer: dt });
+    fireEvent.drop(row, { dataTransfer: dt });
+
+    // Reordered, and no series changed hands.
+    expect(stacked()).toEqual([["Cell2"], ["Cell1"]]);
   });
 });
