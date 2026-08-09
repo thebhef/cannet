@@ -1197,9 +1197,17 @@ they reach the trace store; mapped channels stream in tagged with their
 bus. The scan is header-only — it reads each object's channel field
 without decoding the frame — so it covers the **whole** file however
 large: a channel that first appears near the end still gets a mapping
-row. The import itself is then a single pass through the shared ingest
-pump ([ADR 0046](docs/adr/0046-one-ingest-pathway.md)), with the
-capture's `GLOBAL_MARKER` notes collected on that same pass.
+row. The same scan also carries the capture's frame count, duration,
+wall-clock start, and every `GLOBAL_MARKER` event, so the modal shows
+that metadata and a collapsible list of the file's events alongside the
+channel rows, and offers a start/end time range to narrow the import.
+The import itself is then a single pass through the shared ingest pump
+([ADR 0046](docs/adr/0046-one-ingest-pathway.md)): the capture's
+`GLOBAL_MARKER` notes are collected on that same pass, and a selected
+time range is a filter at that pass's frame source rather than a
+second pipeline — frames outside the range never reach the trace
+store, and the pass itself stops early once it walks past the range's
+end.
 
 **Per-bus DBC scoping**. Each DBC entry in the project panel grows a
 row of checkboxes — one per defined logical bus — that control which
