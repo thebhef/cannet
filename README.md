@@ -1618,14 +1618,23 @@ The bare `cannet-gui` binary is **not** statically self-contained:
 - **macOS:** uses the system WebKit framework; no extra runtime.
 
 Tauri can't cross-compile — each target is built on the matching OS.
-The release workflow does this automatically: pushing a `vX.Y.Z` tag
-first runs the full CI suite, then (only if it passes) builds the macOS
-arm64 and Windows x64 bundles on native GitHub Actions runners and
-publishes them to a draft pre-release (see § Downloads and
+The release workflow does this automatically: run it from the Actions
+tab with the version you want, and it first runs the full CI suite, then
+(only if it passes) builds the macOS arm64 and Windows x64 bundles on
+native GitHub Actions runners and publishes them to a draft pre-release
+(see § Downloads and
 [`.github/workflows/release.yml`](.github/workflows/release.yml)). The
 committed version stays `0.0.0`; the binary stamps its own
-`git describe` version (shown in the settings panel's About section)
-and the installer takes its version from the tag.
+`git describe --tags --dirty` version (shown in the settings panel's
+About section) and the installer takes its version from the tag.
+
+The runner writes that version into `tauri.conf.json` — a tracked file —
+so it commits the edit to its throwaway checkout *before* tagging, and
+asserts the stamp is exactly `vX.Y.Z` before building. Otherwise the
+edit would still be uncommitted when vergen reads the tree and every
+released binary would report `vX.Y.Z-dirty`. The `-dirty` suffix is
+meaningful and stays: a binary you build yourself from a tree with
+uncommitted changes to tracked files says so.
 
 ## Tests and lint
 
