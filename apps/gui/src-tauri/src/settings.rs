@@ -76,7 +76,6 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("notice_dwell_ms", Scope::User),
     ("reopen_last_project", Scope::User),
     ("theme", Scope::User),
-    ("normal_mode", Scope::User),
     ("plot_fetch_interval_ms", Scope::UserOverridable),
     ("view_refresh_interval_ms", Scope::UserOverridable),
     ("follow_window_ms", Scope::UserOverridable),
@@ -184,14 +183,6 @@ pub struct Settings {
     /// "follow the OS" value, because the per-platform webview media
     /// query is a separate question from having a second theme at all.
     pub theme: String,
-    /// Normal mode. Default `false`. On, the `light` theme renders the
-    /// light token set and wheels; off, it renders the normal-mode ones.
-    /// `dark` is unaffected. Applied live, like [`Settings::theme`],
-    /// with which it pairs to decide the applied theme.
-    ///
-    /// User-scoped for the same reason: it is about the person at the
-    /// keyboard, not about the work.
-    pub normal_mode: bool,
     /// How long a transient status notice stays frozen in the header
     /// before the bar reverts to the resting residency line. Default
     /// 3000 ms. Nothing is lost by shortening or lengthening it —
@@ -511,7 +502,7 @@ pub const CAN_ID_FORMATS: &[&str] = &["hex", "decimal"];
 /// The themes [`Settings::theme`] accepts. The names are the frontend's
 /// `ThemeName` spellings and the value of its `data-theme` attribute,
 /// since the value crosses the IPC verbatim.
-pub const THEMES: &[&str] = &["dark", "light"];
+pub const THEMES: &[&str] = &["dark", "light", "lighthk"];
 
 impl Default for Settings {
     fn default() -> Self {
@@ -523,7 +514,6 @@ impl Default for Settings {
             system_log_min_level: "info".to_string(),
             reopen_last_project: true,
             theme: "dark".to_string(),
-            normal_mode: false,
             notice_dwell_ms: 3_000,
             plot_fetch_interval_ms: 67,
             view_refresh_interval_ms: 250,
@@ -1035,7 +1025,6 @@ mod tests {
             system_log_min_level: "warn".to_string(),
             reopen_last_project: false,
             theme: "light".to_string(),
-            normal_mode: true,
             notice_dwell_ms: 1_500,
             plot_fetch_interval_ms: 33,
             view_refresh_interval_ms: 500,
