@@ -8,7 +8,6 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import type { AddPanelOptions, DockviewApi } from "dockview";
@@ -389,10 +388,10 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   // the chord moves on to the next one, rather than looking like a dead
   // key.
   //
-  // Within a gesture the element half goes first, and synchronously
-  // (`flushSync`): a re-created element has to be in the registry before
-  // the layout half remounts the panel that reads it, or the panel would
-  // mount configless and persist its defaults over the restored state.
+  // Within a gesture the element half goes first: both halves are
+  // dispatched from the same event, so React commits them together, and
+  // a panel the layout half remounts then reads an element the element
+  // half has already put back.
   const applyViewHistory = useCallback(
     (dir: "undo" | "redo") => {
       const canStep = (stack: UndoStack): boolean => {
@@ -410,15 +409,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
         if (!r) return;
         undoOrderRef.current = r.order;
         let applied = false;
-        if (r.stacks.includes("element")) {
-          if (r.stacks.length > 1) {
-            flushSync(() => {
-              applied = applyElementHistory(dir);
-            });
-          } else {
-            applied = applyElementHistory(dir);
-          }
-        }
+        if (r.stacks.includes("element")) applied = applyElementHistory(dir);
         if (r.stacks.includes("layout")) applied = applyLayoutHistory(dir) || applied;
         if (applied) return;
       }

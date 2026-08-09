@@ -135,6 +135,31 @@ const key = (init: KeyboardEventInit) => {
   fireEvent.keyDown(document.activeElement ?? document.body, init);
 };
 
+/// One row of the project panel's Elements inventory, by display name.
+function elementRow(name: string): HTMLElement {
+  const row = Array.from(document.querySelectorAll<HTMLElement>(".project-element")).find(
+    (r) => r.querySelector<HTMLInputElement>("input")?.value === name,
+  );
+  if (!row) throw new Error(`no element row named "${name}"`);
+  return row;
+}
+
+/// The open panels, by tab title. A panel renders only while it is the
+/// visible one in its group, so this — not the panel's own DOM — is what
+/// says whether a panel is open.
+function tabTitles(): string[] {
+  return Array.from(document.querySelectorAll(".dv-tab")).map((t) => t.textContent ?? "");
+}
+
+/// A button inside `root`, by label.
+function buttonIn(root: ParentNode, label: string): HTMLButtonElement {
+  const btn = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
+    (b) => b.textContent === label,
+  );
+  if (!btn) throw new Error(`button "${label}" not found`);
+  return btn;
+}
+
 /// The host calls App's RBS reconciler has made so far — the ones that
 /// load, unload, or arm a simulation. Nothing about undo may add to
 /// this list (ADR 0050).
@@ -260,6 +285,68 @@ describe("element undo", () => {
     await waitFor(() => {
       if (traceMode() !== "trace") throw new Error(`redo left mode "${traceMode()}"`);
     });
+  }, 30_000);
+
+  it("brings back a removed element and its panel in one chord", async () => {
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Add plot panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
+    });
+    // A view change, so the element carries state the restore has to
+    // bring back with it.
+    await act(async () => {
+      fireEvent.click(findButton("add plot area"));
+    });
+    await waitFor(() => {
+      if (document.querySelectorAll(".plot-panel .plot-area").length !== 2)
+        throw new Error("second area not added");
+    });
+
+    // Remove the element: the registry loses it and its panel closes —
+    // one gesture across both stacks.
+    await act(async () => {
+      fireEvent.click(findButton("Project panel"));
+    });
+    await act(async () => {
+      fireEvent.click(buttonIn(elementRow("Plot 1"), "Remove"));
+    });
+    expect(tabTitles()).not.toContain("Plot 1");
+    expect(() => elementRow("Plot 1")).toThrow();
+
+
+    // One chord returns both halves, and the panel repaints from the
+    // re-created element rather than from a fresh default.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (!tabTitles().includes("Plot 1")) throw new Error("panel did not come back");
+    });
+    // Both halves: the element is back in the inventory, and its panel
+    // repaints from the re-created element rather than from a fresh
+    // default — two areas, not one.
+    await act(async () => {
+      fireEvent.click(buttonIn(elementRow("Plot 1"), "Focus"));
+    });
+    await waitFor(() => {
+      const areas = document.querySelectorAll(".plot-panel .plot-area").length;
+      if (areas !== 2) throw new Error(`undo left ${areas} areas`);
+    });
+
+    // And redo takes both halves away again.
+    await act(async () => {
+      key({ key: "y", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (tabTitles().includes("Plot 1")) throw new Error("redo left the panel open");
+    });
+    await act(async () => {
+      fireEvent.click(findButton("Project panel"));
+    });
+    expect(() => elementRow("Plot 1")).toThrow();
   }, 30_000);
 
   it("never replays a behavior field, and never wakes the host reconciler", async () => {

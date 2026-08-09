@@ -86,27 +86,79 @@ export function initElementHistory(elements: readonly ProjectElement[]): Element
 /// confined to excluded fields, or one that only seeds a panel's first
 /// config, just replaces present — so it rides along with the current
 /// step instead of becoming one.
+///
+/// `created` names the elements this gesture brought into existence
+/// (inserting a filter upstream creates one); they are part of the step,
+/// and undoing it takes them away again. Any *other* element that
+/// appeared is churn riding along in the same batch — a freshly added
+/// panel's element landing with its own config seed — and is grafted
+/// into the stored snapshots exactly as [`syncElements`] would.
 export function recordElements(
   h: ElementHistory,
   elements: readonly ProjectElement[],
+  created?: ReadonlySet<string>,
 ): ElementHistory {
   const next = maskElements(elements);
-  if (snapshotsEqual(next, h.present) || isConfigSeed(h.present, next)) {
-    return { ...h, present: next };
+  const base = graftUnclaimed(h, next, created);
+  if (snapshotsEqual(next, base.present) || isConfigSeed(base.present, next)) {
+    return { ...base, present: next };
   }
-  return { past: [...h.past, h.present].slice(-HISTORY_CAP), present: next, future: [] };
+  return {
+    past: [...base.past, base.present].slice(-HISTORY_CAP),
+    present: next,
+    future: [],
+  };
+}
+
+/// Fold a change into the step that is already open, rather than making
+/// another one. What a gesture spanning many renders — a splitter drag
+/// persisting on every mouse move — does with every write after its
+/// first: the step's base stays where the gesture started, and its
+/// result keeps up.
+export function amendElements(
+  h: ElementHistory,
+  elements: readonly ProjectElement[],
+): ElementHistory {
+  return { ...h, present: maskElements(elements) };
 }
 
 /// Follow a registry change that was *not* a user edit — an element
 /// created, a project opened, session state re-anchored. Present keeps
 /// up (so the next edit steps back to what is really there) without
 /// making a step or disturbing the redo future.
+///
+/// An element that appears this way is *grafted* onto the stored
+/// snapshots as well: no step created it, so no step may delete it, and
+/// a restore reconciles the element set by diffing against a snapshot
+/// (see [`restoreElements`]). It exists in every timeline.
 export function syncElements(
   h: ElementHistory,
   elements: readonly ProjectElement[],
 ): ElementHistory {
   const next = maskElements(elements);
-  return snapshotsEqual(next, h.present) ? h : { ...h, present: next };
+  if (snapshotsEqual(next, h.present)) return h;
+  return { ...graftUnclaimed(h, next, undefined), present: next };
+}
+
+/// Fold every element of `next` that no step claims — and that the
+/// history hasn't seen — into all of its snapshots. That is what makes
+/// the element set diffable: after this, a snapshot missing an element
+/// means a step removed it (or has yet to create it), never merely that
+/// it predates the element.
+function graftUnclaimed(
+  h: ElementHistory,
+  next: ElementSnapshot,
+  claimed: ReadonlySet<string> | undefined,
+): ElementHistory {
+  const known = new Set(h.present.map((e) => e.id));
+  const added = next.filter((e) => !known.has(e.id) && !claimed?.has(e.id));
+  if (added.length === 0) return h;
+  const graft = (snapshot: ElementSnapshot): ElementSnapshot => {
+    const have = new Set(snapshot.map((e) => e.id));
+    const missing = added.filter((e) => !have.has(e.id));
+    return missing.length === 0 ? snapshot : [...snapshot, ...missing];
+  };
+  return { past: h.past.map(graft), present: graft(h.present), future: h.future.map(graft) };
 }
 
 export function undoElements(
@@ -139,30 +191,56 @@ export interface ElementRestore {
   patch: Partial<ProjectElement>;
 }
 
-/// The patches that move `current` back to `target`. Elements the
-/// snapshot doesn't know about are left alone, and so are ones it knows
-/// about that no longer exist — re-creating a removed element is not
-/// this stack's job (it needs the element's panel and runtime state
-/// back too).
-export function restorePatches(
+/// An element the snapshot has and the registry doesn't: what a restore
+/// has to bring back, and where in the registry it belongs.
+export interface ElementCreate {
+  element: MaskedElement;
+  index: number;
+}
+
+/// What moves `current` back to `target`: the field patches, the
+/// elements to re-create, and the ones to drop again. The set half is
+/// the mirror of the field half — a gesture that created an element
+/// (inserting a filter upstream) undoes by removing it, and one that
+/// removed an element (whose panel the layout stack brings back
+/// alongside) undoes by re-creating it. Elements created outside any
+/// step are in every snapshot ([`syncElements`] grafts them), so they
+/// are never on either list.
+///
+/// A create carries the *masked* element only: a restore rebuilds the
+/// rest from the element kind's fresh defaults, so an RBS that comes
+/// back is stopped and pathless and a transmit's messages stay gone
+/// (ADR 0050 — undo restores the view, never the bus).
+export function restoreElements(
   target: ElementSnapshot,
   current: readonly ProjectElement[],
-): ElementRestore[] {
-  const out: ElementRestore[] = [];
-  for (const want of target) {
+): { patches: ElementRestore[]; creates: ElementCreate[]; removes: string[] } {
+  const patches: ElementRestore[] = [];
+  const creates: ElementCreate[] = [];
+  target.forEach((want, index) => {
     const live = current.find((e) => e.id === want.id);
-    if (!live || live.kind !== want.kind) continue;
+    if (!live) {
+      creates.push({ element: want, index });
+      return;
+    }
+    if (live.kind !== want.kind) return;
     const have = maskElement(live);
     const patch: Record<string, unknown> = {};
     for (const field of Object.keys(want)) {
       if (field === "id" || field === "kind") continue;
+      // A field the snapshot has no value for says nothing about the
+      // element — it predates the field (an element grafted in before it
+      // had a `config`), and must not wipe what is there now.
+      if (want[field] === undefined) continue;
       if (!valuesEqual(have[field], want[field])) patch[field] = want[field];
     }
     if (Object.keys(patch).length > 0) {
-      out.push({ id: want.id, patch: patch as Partial<ProjectElement> });
+      patches.push({ id: want.id, patch: patch as Partial<ProjectElement> });
     }
-  }
-  return out;
+  });
+  const wanted = new Set(target.map((e) => e.id));
+  const removes = current.filter((e) => !wanted.has(e.id)).map((e) => e.id);
+  return { patches, creates, removes };
 }
 
 function snapshotsEqual(a: ElementSnapshot, b: ElementSnapshot): boolean {
