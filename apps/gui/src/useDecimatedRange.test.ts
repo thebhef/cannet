@@ -144,6 +144,58 @@ describe("useDecimatedRange", () => {
     expect(mockInvoke).toHaveBeenCalledTimes(1); // no second fetch
   });
 
+  it("refetches an identical request while the host says the series is partial", async () => {
+    // THE REGRESSION the completeness token exists for: a serve is
+    // bounded in time, so a cold one answers with the prefix it decoded.
+    // The memo asks "could this request return different bytes?" — for a
+    // partial answer it demonstrably could, because the host is still
+    // decoding, so the memo must not swallow the next identical tick.
+    mockInvoke.mockResolvedValue(encode(100, 105, [{ t: [100, 101], v: [1, 2] }], 0, 0, false));
+    const { result } = renderHook(() => useDecimatedRange());
+
+    const first = await run(() => result.current, req());
+    expect(first.kind).toBe("sampled");
+    expect(first.snapshot.complete).toBe(false);
+
+    // Same request, and it goes to the host again — carrying the points
+    // decoded since.
+    mockInvoke.mockResolvedValue(
+      encode(100, 105, [{ t: [100, 101, 102], v: [1, 2, 3] }], 0, 0, false),
+    );
+    const second = await run(() => result.current, req());
+    expect(second.kind).toBe("sampled");
+    expect(second.snapshot.byKey.get("k0")).toEqual({ t: [0, 1, 2], v: [1, 2, 3] });
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+
+    // …until the host says it is caught up, at which point the memo does
+    // its job again: identical request, no round-trip.
+    mockInvoke.mockResolvedValue(
+      encode(100, 105, [{ t: [100, 101, 102, 103], v: [1, 2, 3, 4] }], 0, 0, true),
+    );
+    const third = await run(() => result.current, req());
+    expect(third.kind).toBe("sampled");
+    expect(third.snapshot.complete).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledTimes(3);
+
+    const fourth = await run(() => result.current, req());
+    expect(fourth.kind).toBe("unchanged");
+    expect(mockInvoke).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a completed window memoised even with nothing in it", async () => {
+    // The other half of the same rule: "complete" is about the host's
+    // catch-up, not about the points. A signal no DBC decodes answers
+    // complete-and-empty, and a caller that re-asked until the window was
+    // non-empty would round-trip forever on it.
+    mockInvoke.mockResolvedValue(encode(100, 105, [{ t: [], v: [] }]));
+    const { result } = renderHook(() => useDecimatedRange());
+
+    await run(() => result.current, req());
+    await run(() => result.current, req());
+
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+
   it("skips the round-trip for a parked slice while the live edge advances", async () => {
     // A zoomed-into-history panel pins its visible bounds while `winEnd`
     // keeps growing. Frames appended past the last one we have already
