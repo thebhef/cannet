@@ -385,7 +385,8 @@ chord take back the drag *and* the edit that followed it.
 ## Exit criteria walk (2026-08-09)
 
 Every criterion from § Exit criteria, in order. The ADR-0031 perf gate
-is deliberately unclaimed here — the orchestrator runs it.
+is the orchestrator's to run, not the implementing phases' — its
+verdict is the closing entry below the five criteria.
 
 **1. "Every allowlist mutation is undoable/redoable via the existing
 chords, one step per user gesture (transaction-grouped cases tested:
@@ -467,8 +468,25 @@ since the branch point and its 11 cases are green;
 / graft / amend / restore / the order log — the same shape of coverage,
 and more of it, than the layout stack has.
 
-**ADR-0031 perf gate — NOT RUN.** Out of this branch's scope by
-instruction; no verdict claimed either way.
+**ADR-0031 perf gate — MET.** Run by the orchestrator, not by the
+implementing phases (every phase brief said so, and each phase's status
+entry records the deferral). Final gate at `33ef361`, **two runs, both
+`check passed (31 metrics gated)`** — 31/31 each — with the reports
+committed unmodified as
+`docs/performance-measurements/frontend/2026-08-09-33ef361-task60-final-run1.json`
+and `...-run2.json`. Sanity clean on both: `ids_measured` 173, and in
+the committed reports `rx_fps` / `tx_fps` 1610.4 / 1610.3 (run 1) and
+1605.2 / 1602.4 (run 2) with retention 0.9995–1.0013 — flat across
+halves, so nothing degrades over the minute. Attribution: the
+31-metrics-gated result and the `ids_measured` figure are the
+orchestrator's reported harness output; the rates and retentions above
+are read from the two committed reports.
+
+That the gate is flat is the expected result rather than a lucky one:
+task 60 added no work to any render or ingest path. The element history
+is a masked snapshot taken in an effect that only runs when the registry
+changes — a user edit, not a frame — and the two stacks are capped at 50
+snapshots each.
 
 ## Blockers / side effects
 
