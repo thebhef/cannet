@@ -63,25 +63,33 @@ content inside a row is reached by Tab, not by the grid cursor.
 | PageUp/Down | move cursor one viewport | ″ | ″ |
 | Ctrl/Cmd+A | select all selectable rows | ″ | ″ |
 | Tab / Shift+Tab | into the cursor row's controls, first / last | ″ | ″ |
+| Escape (in a row's content) | back to the container, cursor intact | ″ | ″ |
 
 Space, not Enter, is the action key, and the action is the panel's
 to define (transmit: send the focused message once); expansion is
 already covered by Left/Right, so no default action is bound.
 
-**The layer owns the way into a row's content, and only that.** Tab
-pressed on the container moves focus to the cursor row's first control
-in tab order, Shift+Tab to its last — the mirror, so the row is
-reachable from either direction without first leaving the grid.
+**The layer owns the way into a row's content, and the way back
+out.** Tab pressed on the container moves focus to the cursor row's
+first control in tab order, Shift+Tab to its last — the mirror, so the
+row is reachable from either direction without first leaving the grid.
 Controls that opt out of the tab order (`tabindex="-1"` carets, clear-
 override buttons) are skipped, and a cursor naming a row that is not
 on screen — routine in a paged viewport — leaves the press to the
 browser. Once focus is inside a row, Tab is the browser's again: it
-walks that row's own controls and then out of the row. Coming back is
-the layer's job too, because a row's editors end an edit by blurring
-themselves (commit on Enter, revert on Escape) and a blur with nowhere
-to go leaves focus on the document body, where the grid's keys are
-dead and the next Tab restarts from the top of the page — so the
-container takes focus back whenever such a press drops it.
+walks that row's own controls and then out of the row. **Escape is the
+way back**: focus returns to the container with the cursor untouched,
+so the arrows navigate again — without it, Tab into a row is one-way
+and the keyboard is only recovered with the mouse. Content keeps first
+claim on the press: a control that consumed Escape (a combobox closing
+its dropdown, an editor reverting a draft) either stops it reaching the
+container or marks it handled, and the grid takes only what is left —
+including when a context-gated global Escape binding claimed it from
+the capture phase. The container also takes focus back whenever a
+row's editor ends an edit by blurring itself (commit on Enter, revert
+on Escape) with nowhere to go, since a blur to the document body leaves
+the grid's keys dead and the next Tab restarting from the top of the
+page.
 
 **Multiselect is mouse-built.** Plain click replaces the selection;
 Ctrl/Cmd+click toggles a row; Shift+click *replaces* the selection with

@@ -459,6 +459,43 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
   });
 });
 
+describe("RbsPanel gridview keys", () => {
+  it("Escape in a row's content hands the keyboard back to the tree", async () => {
+    // The reference case for the shared layer's way out of a row: Tab
+    // reaches a row's controls, and Escape returns to the tree with the
+    // arrows live again.
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    const tree = await screen.findByRole("tree");
+    const check = await screen.findByLabelText("0x123 enabled");
+    check.focus();
+    expect(document.activeElement).toBe(check);
+    fireEvent.keyDown(check, { key: "Escape" });
+    expect(document.activeElement).toBe(tree);
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    expect(tree.getAttribute("aria-activedescendant")).not.toBeNull();
+  });
+
+  it("leaves Escape to a signal cell's picker while its dropdown is open", async () => {
+    // Content keeps first claim: the combobox closes its own dropdown
+    // and keeps focus on the cell, so the press never becomes the
+    // tree's.
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    const tree = await screen.findByRole("tree");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const picker = await screen.findByLabelText("TargetMode value");
+    openCombobox(picker);
+    const filter = await screen.findByLabelText("TargetMode value filter");
+    fireEvent.keyDown(filter, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByLabelText("TargetMode value filter")).not.toBeInTheDocument(),
+    );
+    expect(document.activeElement).toBe(picker);
+    expect(document.activeElement).not.toBe(tree);
+  });
+});
+
 describe("RbsPanel command registration (panel.find)", () => {
   function renderWithCommands() {
     const { registry } = makeRegistry("el", "/tmp/sim.cannet_rbs", false);

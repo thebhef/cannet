@@ -133,6 +133,16 @@ function Harness({
           >
             {row.id}
             <button type="button">edit</button>
+            {/* Stands in for the shared combobox: it consumes Escape
+                to close its own dropdown, so the grid must not take
+                the press from it. */}
+            <div
+              data-testid={`combo-${row.id}`}
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") e.preventDefault();
+              }}
+            />
             <input aria-label={`rename ${row.id}`} />
           </div>
         ))}
@@ -354,6 +364,55 @@ describe("Tab into the row's content", () => {
   });
 });
 
+describe("Escape out of the row's content", () => {
+  it("hands the keyboard back to the grid from a row's control", () => {
+    // The way out, mirroring Tab's way in: without it a Tab into a row
+    // is one-way and the arrows stay dead until the user finds their
+    // way back with the mouse.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "Tab" });
+    const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
+    expect(document.activeElement).toBe(button);
+    fireEvent.keyDown(button, { key: "Escape" });
+    expect(document.activeElement).toBe(view.grid);
+    // The cursor is where it was, so navigation resumes straight away.
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    expect(cursor(view.grid)).toBe("plain");
+  });
+
+  it("hands it back from a row's text field too", () => {
+    // The editable exemption gives a field its own keys; Escape is the
+    // one it does not need, since ending an edit is what it means there.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    const field = view.getByLabelText("rename bus") as HTMLElement;
+    field.focus();
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(document.activeElement).toBe(view.grid);
+  });
+
+  it("leaves Escape to content that consumed it", () => {
+    // A combobox closes its dropdown on Escape; the first press belongs
+    // to the content, and only a press it did not claim reaches the grid.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    const combo = view.getByTestId("combo-bus");
+    combo.focus();
+    fireEvent.keyDown(combo, { key: "Escape" });
+    expect(document.activeElement).toBe(combo);
+  });
+
+  it("leaves Escape alone when the container itself has focus", () => {
+    // Nothing to come back from, and Escape is a global chord
+    // (`view.exitFullscreen`) the grid must not swallow.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    expect(fireEvent.keyDown(view.grid, { key: "Escape" })).toBe(true);
+    expect(document.activeElement).toBe(view.grid);
+  });
+});
+
 describe("selection", () => {
   it("replaces on a plain click and follows the cursor", () => {
     const view = setup();
@@ -495,6 +554,8 @@ describe("global dispatcher suppression", () => {
         inEditable: isEditableTarget(e.target),
         inGridview: isGridviewTarget(e.target),
       });
+      // Exactly what `useCommands` does with a consumed stroke.
+      if (r.handled) e.preventDefault();
       if (r.commandId) fired.push(r.commandId);
     };
     document.addEventListener("keydown", onKeyDown, true);
@@ -519,6 +580,26 @@ describe("global dispatcher suppression", () => {
       // An unrelated chord still reaches the dispatcher from inside.
       fireEvent.keyDown(view.grid, { key: "f" });
       expect(dispatcher.fired).toEqual(["test.down", "test.fit"]);
+    } finally {
+      dispatcher.dispose();
+    }
+  });
+
+  it("leaves an Escape a global command took to that command", () => {
+    // Escape is not one of the keys the grid is invisible for: a
+    // context-gated global binding (`view.exitFullscreen`) fires first
+    // from the capture phase and marks the press handled, and the grid's
+    // way out of a row's content stands down on the same rule content
+    // does.
+    const view = setup();
+    const dispatcher = installDispatcher([{ chord: "Escape", commandId: "test.escape" }]);
+    try {
+      fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+      const button = view.getByTestId("row-bus").querySelector("button") as HTMLElement;
+      button.focus();
+      fireEvent.keyDown(button, { key: "Escape" });
+      expect(dispatcher.fired).toEqual(["test.escape"]);
+      expect(document.activeElement).toBe(button);
     } finally {
       dispatcher.dispose();
     }
