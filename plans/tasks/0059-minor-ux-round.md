@@ -514,7 +514,7 @@ between phases. 59.A's first commit carries this plan section.
   | --- | --- | --- |
   | pristine clone | *(empty)* | `v0.8.1-142-g2e903fc` |
   | `git tag v9.9.9` (workflow's "Tag the commit") | *(empty)* | `v9.9.9` |
-  | the workflow's "Set bundle version" `node -e`, verbatim | ` M apps/gui/src-tauri/tauri.conf.json` | **`v9.9.9-dirty`** |
+  | the workflow's "Set bundle version" `node -e`, verbatim | `M apps/gui/src-tauri/tauri.conf.json` (unstaged) | **`v9.9.9-dirty`** |
   | `pnpm --dir apps/gui install --frozen-lockfile` | *(unchanged)* | *(unchanged)* |
 
   **Cause, confirmed by the third row.** `.github/workflows/release.yml`
@@ -816,8 +816,9 @@ from re-runs on this branch, not from the phase logs:
 `cargo test -p cannet-gui` 529 passed / 0 failed / 4 ignored;
 `cargo clippy -p cannet-gui --all-targets` clean;
 `pnpm --dir apps/gui test` 139 files / 1721 tests passed;
-`pnpm --dir apps/gui build` clean. **The ADR-0031 perf gate is
-deliberately not walked here — the orchestrator runs the final gate.**
+`pnpm --dir apps/gui build` clean. The ADR-0031 perf gate is the
+orchestrator's to run, not the implementing phases' — its verdict is
+the closing entry below the nine criteria.
 
 1. **Theme combobox dark/light/lighthk; `normal_mode` gone; theme +
    palette tests green — MET.** 59.A, commits `10579b2` (host) and
@@ -912,3 +913,16 @@ deliberately not walked here — the orchestrator runs the final gate.**
    the three panels that now answer it, and it still said the plot's
    PgUp/PgDn stepping needs focus "right after typing a pattern", which
    59.D's fix made untrue.
+
+**ADR-0031 perf gate — MET.** Run by the orchestrator, not by the
+implementing phases (every phase brief said so, and each phase's status
+entry records the deferral). Final gate at `95b3ee2`, **two runs, both
+`check passed (31 metrics gated)`** — 31/31 each — with the reports
+committed unmodified as
+`docs/performance-measurements/frontend/2026-08-09-95b3ee2-task59-final-run1.json`
+and `...-run2.json`. Sanity clean on both: `ids_measured` 173, and in
+the committed reports `fps.rx` / `fps.tx` 1611.5 / 1612.3 (run 1) and
+1609.1 / 1608.8 (run 2) with retention 0.9998–1.0003 — flat across
+halves, so nothing degrades over the minute. 59.D was also gated
+mid-chain (two runs, 31/31), which is the run that matters most in this
+task: it is the only phase that touched the plot repaint path.
