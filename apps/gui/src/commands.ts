@@ -85,6 +85,20 @@ const RENAMEABLE_PANEL_KINDS: readonly (FocusedPanelKind | null)[] = [
 const renameablePanelFocused = (ctx: CommandContext) =>
   RENAMEABLE_PANEL_KINDS.includes(ctx.focusedPanelKind);
 
+/// The panel kinds that carry a find/filter box `panel.find` can focus:
+/// the plot panel's solo box, the RBS panel's tree filter, and the DBC
+/// panel's search box (a singleton, routed by its fixed panel id — see
+/// `runFocusedPanelCommand` in `useCommands.tsx`). Settings has no
+/// find/filter affordance at all, so it stays out rather than binding a
+/// key to nothing.
+export const FINDABLE_PANEL_KINDS: readonly (FocusedPanelKind | null)[] = [
+  "plot",
+  "rbs",
+  "dbc",
+];
+const findablePanelFocused = (ctx: CommandContext) =>
+  FINDABLE_PANEL_KINDS.includes(ctx.focusedPanelKind);
+
 /// Every command the palette lists. Toolbar actions are lifted here
 /// as a second access path — same handler, same behaviour.
 export const COMMANDS: readonly CommandSpec[] = [
@@ -135,6 +149,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     category: "Panels",
     context: renameablePanelFocused,
   },
+  {
+    id: "panel.find",
+    label: "Find in panel",
+    category: "Panels",
+    context: findablePanelFocused,
+  },
   { id: "app.exit", label: "Exit", category: "App" },
   { id: "palette.show", label: "Show command palette", category: "Palette" },
   { id: "goto.view", label: "Go to view…", category: "Palette" },
@@ -169,6 +189,10 @@ export const COMMANDS: readonly CommandSpec[] = [
 export const DEFAULT_BINDINGS: readonly BindingSpec[] = [
   { chord: "Mod+Shift+P", commandId: "palette.show" },
   { chord: "Mod+P", commandId: "goto.view" },
+  // No `skipEditable`: unlike the plain-key plot hotkeys below, this
+  // must reach the focused panel's find/filter box even while some
+  // other text field in the panel already has focus.
+  { chord: "Mod+F", commandId: "panel.find" },
   { chord: "f", commandId: "plot.fitXAxis" },
   { chord: "l", commandId: "plot.followLive.enable" },
   // View navigation and layout undo/redo. The browser back/forward
