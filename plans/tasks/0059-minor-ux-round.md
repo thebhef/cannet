@@ -120,6 +120,31 @@ issue was when done. Do NOT simply drop the dirty marker: a genuinely
 dirty tree should still say so; the defect is that a clean checkout's
 build reports dirty.
 
+## Phases (orchestrator plan 2026-08-09)
+
+Launched under the owner's standing "implement tasks 58-60" directive.
+
+Chained off `task58f-incremental-paint`, strictly sequential, one new
+branch per phase, main working tree, orchestrator reviews diffs
+between phases. 59.A's first commit carries this plan section.
+
+- **59.A** `task59a-theme-menu` (Sonnet) — item 1: dark/light/lighthk,
+  `normal_mode` deleted, CSS token block renamed, mirrors updated.
+- **59.B** `task59b-scratch-layout` (Opus) — item 2: no-project launch
+  restores window geometry only; the async-ordering wrinkle is the
+  design point, choice recorded.
+- **59.C** `task59c-ctrl-f` (Sonnet) — item 3: `panel.find` on `Mod+F`,
+  plot solo + RBS; DBC/Settings by cost, deferral recorded if skipped.
+- **59.D** `task59d-solo-bugs` (Opus) — item 4: three failing-test-first
+  solo-filter fixes. ADR-0031 gate after (plot repaint paths).
+- **59.E** `task59e-autosave-exit` (Sonnet) — item 5: autosave-on-exit
+  setting, explicit-dir projects only.
+- **59.F** `task59f-gridview-keys` (Opus) — items 6+7: Escape back to
+  nav + Shift+Up/Down range select, in the shared gridview machinery.
+- **59.G** `task59g-dirty-version` (Opus) — item 8: `-dirty`
+  investigation-then-fix, CI included, written cause report. Final
+  ADR-0031 gate + exit-criteria walk.
+
 ## Exit criteria
 
 - Theme combobox offers exactly dark/light/lighthk with the ruled
