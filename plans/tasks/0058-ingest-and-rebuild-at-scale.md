@@ -109,9 +109,14 @@ await (`App.tsx:1792`) so `destroy()` is never reached. The flusher's
 per-message locking, or rebuild outside the map lock) while keeping
 `reroot`'s invariant (root and caches move together) and evict
 atomicity (`folded` never below `first_slot`). Exit contract after
-this: the window closes promptly during a rebuild. The shutdown flush
-and `clear_scratch_on_exit` behaviors stay as they are (owner,
-2026-08-08): the periodic flusher keeps exit-time residue small.
+this: the window closes promptly during a rebuild. The **trace store's**
+shutdown flush and `clear_scratch_on_exit` behaviors stay as they are
+(owner, 2026-08-08). Amended (owner, 2026-08-09): the *pyramid* flush
+58.C added beside them is in scope and must stop blocking exit — dirty
+mapped pages are written back by the OS on a normal process death, and
+the cost of asking for them synchronously is seconds on the one path
+that must never make the user wait. The periodic flusher keeps
+exit-time residue small either way.
 
 ### 6. Incremental paint — points stream in, `building…` only briefly
 
@@ -621,6 +626,142 @@ margin; over wide messages it widens it instead, because a wider
 message makes the rebuild more expensive per frame while the restore
 is `O(pyramid segment files)` regardless.
 
+### 2026-08-09 — phase 58.E, item 5 (rebuild off the global signal-cache mutex)
+
+Branch `task58e-cache-lock-split`, off `task58d-decode-sharing`
+(026fc01).
+
+| commit | subject |
+| --- | --- |
+| c6173bc | `test(gui)`: drive the catch-up's fetch seam through the cache store |
+| a91f2ed | `perf(gui)`: fetch and decode a catch-up chunk off the cache lock |
+| cd9e65f | `perf(gui)`: run the sampling commands off the async runtime's workers |
+| 384bd17 | `perf(gui)`: stop blocking exit on a synchronous pyramid flush |
+| 4ad1a11 | `test(gui)`: report what a quit now costs the pyramid scratch |
+
+Tests after the slice: `cannet-gui` 525 + 4 ignored benchmarks (was
+522 + 4). `cargo clippy --workspace --all-targets` clean. No other crate
+and no frontend code touched — `sample_signals` and `signal_min_max`
+keep their wire shapes, and `slice` / `slice_many` / `min_max` /
+`min_max_many` keep their signatures; only `persist` lost a parameter.
+
+**What landed**
+
+- **The catch-up became plan / scan / apply, per chunk.** The scan
+  (`scan_chunk`) fetches a chunk's frames and decodes them for the whole
+  message group **holding no cache lock**; the lock is taken to read the
+  cursors before it and to append, advance and fold after it. So the
+  longest uninterrupted hold went from a whole rebuild — minutes — to
+  one chunk's appends, and two cold areas decode in parallel because the
+  decode holds nothing. The trace-store fetch also moves off the cache
+  lock, so the two locks are no longer nested.
+- Two invariants had to be re-established, because a plan can now go
+  stale under its own pass:
+  - each decoded sample carries the **store frame index** it came from,
+    so the append re-applies the per-target cursor gate against the
+    cursor as it stands *then* — a frame another pass already covered is
+    dropped, never appended twice;
+  - a **`generation` counter** on the cache set, bumped by `clear`,
+    `invalidate_dbcs`, `reroot` and `restore`. A pass whose generation no
+    longer matches discards its chunk instead of appending it, so
+    `reroot`'s "root and caches move together" holds unchanged and a
+    cleared set can never be re-populated by a rebuild that outlived it.
+  - Evict atomicity survives for free: an `evict_below` that slots in
+    between two chunks runs entirely under the lock, and
+    `SignalCache::evict_below` already clamps `folded` up to the new
+    floor, which is the case it was written for. So is the manifest: an
+    apply is atomic, so `persist` can only ever observe a chunk boundary.
+- **The sampling commands run on the blocking pool.** They were `async
+  fn`s that never awaited, so a cold rebuild held the async worker that
+  polled it. This is the exit-hang mechanism the item names: with one
+  such command per plotted area the runtime ran out of workers and the
+  close handler's `rbs_dirty` was never dispatched, so `destroy()` was
+  never reached. `off_async_workers` hands both bodies to
+  `spawn_blocking`.
+- **The shutdown pyramid flush is gone** (the flag 58.C left for this
+  phase). The manifest is still written at exit — it is a small JSON file
+  through the normal file API — but the level files' dirty pages are left
+  to the OS writeback, the same DS-2 relaxation the raw store's periodic
+  flush takes. `persist`'s `sync` parameter and
+  `SignalCache::flush_levels` went with it. The trace store's own
+  synchronous shutdown `flush()` and `clear_scratch_on_exit` are
+  untouched (owner non-goal).
+- ADR 0048 records the rule — *no model lock is held across work whose
+  duration scales with the capture* — with the per-entry-lock alternative
+  and why bounding the hold was chosen over it. ADR 0047 gains the
+  exit-flush decision and names its residual exposure.
+
+**The exit contract, and how it was falsified**
+
+Three would-block probes, each written so a regression *fails* rather
+than hangs: a channel `recv_timeout` decides the assertion, and the
+blocked rebuild is released either way so every thread joins.
+
+- `a_cold_rebuild_in_one_area_does_not_block_another` — with a rebuild
+  of message 256 parked inside its first chunk fetch, another area's
+  `slice`, its `min_max` and the flusher's `evict_below` must all
+  complete on their own; the rebuild must then still finish whole.
+- `the_exit_path_does_not_wait_for_a_cold_rebuild` — same setup; the
+  manifest write (`needs_persist` + `persist`) and the whole-cache
+  `clear` must complete. Afterwards the cleared set is empty and the
+  abandoned rebuild left no file behind it.
+- `a_command_body_that_never_yields_does_not_park_an_async_worker` —
+  a one-worker tokio runtime with a never-returning command body in
+  flight must still dispatch a second command.
+
+Hypothesis → experiment → data → conclusion:
+
+- *Hypothesis.* The probes pin the defect they claim to, rather than
+  passing for incidental reasons.
+- *Experiment.* Move `scan_chunk` back under the cache lock (the 58.D
+  hold, reconstructed in one line); separately, run the command body
+  inline instead of on the blocking pool. Run the three probes.
+- *Data.* All three fail, each on its own timeout: "another area's
+  sampling, min/max and eviction waited for the rebuild", "the exit path
+  waited for the rebuild", "a command running a capture-scaled body held
+  the only async worker". 30 s each, i.e. they never finished — the
+  rebuild is only released after the timeout.
+- *Conclusion.* The probes are live. Both experiments reverted; suite
+  green.
+
+**The measurement**
+
+Two numbers were checked: what a quit now costs, and whether the extra
+buffering the split introduces costs throughput.
+
+*Exit.* The same `bench_first_use_rebuild` call 58.C timed — the
+shutdown persist at 96 signals — now takes **3-4 ms**, twice in a row,
+against the **7.8-14.3 s** (pyramid built moments before) / **0.7-1.8 s**
+(warm) that call measured with the synchronous level flush in it. Three
+orders of magnitude, far outside any run-to-run effect.
+
+*Throughput.* Release, 2 M synthetic frames, 96 signals at 16 per
+message, two consecutive runs:
+
+| arm | run 1 | run 2 | 58.D, same parameters |
+| --- | --- | --- | --- |
+| shared pass | 16.32 s | 14.59 s | 10.85 s |
+| per signal | 106.15 s | 102.64 s | 73.93 s |
+| restore + serve | 6.67 s | 4.93 s | 5.61 s |
+| shared vs per-signal | 6.5× | 7.0× | 6.8× |
+| working set | 348 B/frame | 348 B/frame | 347 B/frame |
+
+**58.D's absolute figures are not reproducible in this session and the
+cross-session comparison is not usable as a before/after.** Every arm is
+slower, including the restore arm, which runs *none* of the changed code
+(a restored cache's cursor is already at the tip, so its serve is pure
+`window()` over mapped pages) — and its own run-to-run spread here is
+26 %. What is stable is the ratio the 58.D log said carries: 6.5× and
+7.0× against 6.8×, so the decode-sharing win is intact.
+
+The overhead the split could add is bounded and small by construction:
+one 24-byte buffer write and read per *appended sample*, on buffers
+reused across chunks. At 96 signals over 2 M frames that is ~32 M
+samples, so ~0.3 s of a ~15 s rebuild — well under this harness's
+measured spread, and consistent with the working-set delta being
+unchanged (348 vs 347 B/frame), which is the direct evidence that a
+chunk's buffers add nothing to residency.
+
 ## Blockers / side effects
 
 - **The disk-spill segment write is ~43 % of the per-frame ingest
@@ -646,7 +787,7 @@ is `O(pyramid segment files)` regardless.
   Left alone — unrelated to this change, and fixing it inline would be a
   drive-by.
 - **The ADR-0031 perf gate was not run** in this phase, per the phase
-  brief; the orchestrator runs it after.
+  brief; the orchestrator runs it after. *(58.A)*
 - **A narrowed import's notes stop where the pump's walk stops, not
   where the range does.** `WindowedSource` only filters which frames
   reach the sink; it still calls the inner source for every object up
@@ -684,6 +825,11 @@ is `O(pyramid segment files)` regardless.
   in the same exit hook. The periodic tick alone would persist the
   pyramids; the shutdown call is only there for the guarantee, so
   dropping it is a one-line change if the non-goal is read strictly.
+  **Resolved in 58.E**: dropped. The manifest is still written at exit;
+  the level flush is not. ADR 0047 records the decision and names the
+  residual exposure (a power loss between quit and OS writeback costs a
+  rebuild of derived samples, whose raw frames were flushed
+  synchronously on the same exit).
 - **The restore's floor is now segment-open latency, not decode.** ~1
   ms/file at `open_segments`' documented 16-way width, ~33 files per
   plotted signal on a 4 M-frame capture — so ~3 s for 96 signals. Two
@@ -737,7 +883,8 @@ is `O(pyramid segment files)` regardless.
   longer can. This is squarely item 5's territory (per-key / per-message
   locking, or rebuilding outside the map lock) and it is flagged here so
   58.E sizes the hold it has to break up correctly: it is one batch of a
-  plot fetch, not one signal.
+  plot fetch, not one signal. **Resolved in 58.E**: the hold is now one
+  chunk's appends, below either shape.
 - **`decode_raw` still decodes every signal of the message**, so the
   shared pass removes the *repeat* but not the width: a 16-signal
   message costs 16 signal-decodes per frame even for a view plotting
@@ -766,5 +913,44 @@ is `O(pyramid segment files)` regardless.
   is not this change's business (working agreement, § Surgical changes).
   `sample_one`, which *this* change orphaned, was removed with its test
   replaced by two on `sample_shared`.
+- **A concurrent caller can now observe a series mid-rebuild.** A serve
+  that slots in between two chunks sees the points decoded so far, where
+  it previously waited and saw the finished series. That is the direct
+  consequence of bounding the hold, and it is the direction item 6 wants
+  — but it means *no caller may infer completeness from a non-empty
+  result*. Nothing does today (the plot re-fetches on every tick and the
+  cache is authoritative on the next call), and 58.F is where the
+  completeness token that makes it explicit belongs.
+- **A rebuild interrupted by a clear / re-root / restore loses its
+  in-flight chunk's work.** Up to one chunk of fetching and decoding is
+  discarded rather than committed. It is not corruption — the cursors
+  never moved, so the next serve re-reads the same range — but it is
+  wasted work that the previous design could not produce, because the
+  clear could not happen until the rebuild had finished.
+- **The chunk's decoded samples are buffered before they are appended.**
+  Bounded by `CATCH_UP_CHUNK_FRAMES` × the group's target count × 24 B —
+  ~6 MB on a 16-signal message, on buffers reused across chunks — and it
+  did not move the benchmark's working-set delta (348 B/frame against
+  58.D's 347). Named because it is a new allocation that scales with
+  message width, not because it is known to hurt.
+- **58.D's absolute benchmark figures did not reproduce in this
+  session.** Every arm of `bench_first_use_rebuild` at identical
+  parameters is 1.2-1.5× slower than 58.D recorded, *including* the
+  restore arm, which runs none of the changed code. Its own run-to-run
+  spread across two consecutive runs was 26 %. So this harness's absolute
+  numbers are not comparable across sessions on this machine and only
+  within-session ratios should be quoted from it; a future phase wanting
+  an absolute before/after has to run both arms back to back in one
+  session. The ratio 58.D said carries (shared vs per-signal) is stable
+  at 6.5-7.0× against its 6.8×.
+- **The exit-during-rebuild contract is verified at the seam, not in the
+  running app.** The three probes drive the cache store and a tokio
+  runtime directly; nothing here launches the GUI and closes its window
+  during a rebuild. The gap is the same one 58.B recorded — there is no
+  `tauri::test` mock-`AppHandle` harness in `cannet-gui`, so the command
+  bodies and the `RunEvent::ExitRequested` hook are exercised by
+  compilation and review rather than by a test that calls them. What is
+  pinned is every mechanism the item named: the lock hold, the manifest
+  write, the clear, and the async-worker starvation.
 - **The ADR-0031 perf gate was not run** in this phase, per the phase
-  brief; the orchestrator runs it after.
+  brief; the orchestrator runs it after. *(58.D, 58.E)*
