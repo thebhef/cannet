@@ -376,6 +376,64 @@ condition): 6/6 connected, 6/6 wrote a report, 6/6 exited 0.
 
 ## Blockers / side effects
 
+Phase 57.E:
+
+- **The splash's 5 s floor caps what a background restore can show.**
+  `useSplashVisible` holds the splash for `max(SPLASH_MIN_MS = 5000,
+  boot settled)`. Boot-minus-restore measures ~3.2–3.9 s on this
+  machine, so a restore has to exceed ~1–1.8 s before the earlier
+  `bootSettled` moves the splash at all. The 4M-frame case measured here
+  (1.2–1.5 s) sits right at that line: the splash lift went 7.13 s →
+  5.00 s in the measured pair, but part of that is the floor, not the
+  change. Anything bigger (the 90.5M-frame capture in this machine's
+  real cache) is pure saving. The floor is a deliberate product decision
+  (disclaimer dwell) and was not touched.
+- **The restore still holds the trace-store lock across the reopen.**
+  `try_reload` takes `lock_inner()` first and calls
+  `DiskRawStore::reopen_timed` under it, so store-reading commands queue
+  behind the reopen even now that the command itself is off the main
+  thread. Left as is deliberately: during that window the store those
+  commands would read is the *new session's empty one*, so the queueing
+  costs the user nothing they could otherwise see. Reopening off-lock
+  and swapping under it is the obvious next step if that changes; it
+  needs a re-validation of `scratch_dir`/identity after re-taking the
+  lock, which is why it wasn't done as a drive-by.
+- **`restore_scratch_capture` lost its `State<'_, AppState>`
+  parameter.** An async Tauri command can't borrow managed state across
+  a `'static` future, so it takes `AppHandle` and calls `app.state()` —
+  the shape `fetch_trace_range` and the other async commands already
+  use. No caller changes (the frontend passes no arguments).
+- **The `async` change has no automated test.** The crate still has no
+  `tauri::test` harness (57.A recorded why), and "runs off the main
+  thread" is a property of Tauri's dispatch, not of code this crate can
+  call. Its sibling `scan_blf_channels` is in the same position. The
+  evidence is the measurement in the status log — the one-variable
+  before/after where `async` moved the interactive marker from 8 ms
+  after the restore to 1493 ms before it.
+- **The synthetic capture reproduces the filter-stack toll only
+  sometimes.** Same tool, same 4M frames, same directory: one launch
+  reopened 1620 by-id files in 58 ms (0.036 ms/file, the already-scanned
+  floor) and the next three in 1106–1399 ms (0.68–0.86 ms/file, close to
+  57.C's 1.1 ms/file). Every number quoted for this phase is from a
+  toll-paying run; the fast one is noted so a future reader doesn't
+  average them.
+- **Scratch left behind, not cleanable from here** (same as 57.C). The
+  measurement used a scratchpad copy of `examples/ev-zonal` and the
+  cache directory the app auto-located for it
+  (`…/dev.cannet.app/cache/dccb012f226c5b06896e319dd8c5c3f0`, ~184 MB of
+  synthetic capture) plus an auto-located project dir under
+  `…/dev.cannet.app/projects/a2d9e64e…`. Both were created by the app
+  for that copy; the user's real project caches were never written to.
+  `rm -rf` is not permitted from this session.
+- **A measurement run was discarded for concurrent-process
+  interference, one was kept after review.** The 23:54 run was flagged
+  mid-phase as possibly user-touched; its intervals had all closed ~4 s
+  in and the app then sat idle, so it was sound — but the before figure
+  was re-taken from an untouched launch anyway (23:56) and only that one
+  is quoted. The 00:05 run *was* discarded on its own evidence: a
+  concurrently running instance (the owner's own build) had rewritten
+  the cache directory, so it restored 4592 frames instead of 4M.
+
 Phase 57.D:
 
 - **The stuck status had an interactive face too.** The same lost event
@@ -792,3 +850,132 @@ deferred.
   follows, and unbounded in capture length rather than in file count.
   That is where 57.D's chunked/streaming decode has to bite; a background
   restore would hide the ~1–3 s reopen, but it would not touch this.
+
+**2026-08-08 — Phase 57.E, item 4 second half (the first-use rebuild and
+the background restore), branch `task57e-restore-experience`.**
+
+Commits: `125c052` (chunked catch-up), `10695fc` (rebuild benchmark),
+`db2c2dc` (interactive marker), `2c736ec` (background restore),
+`e504233` (restore off the main thread).
+
+Test counts: Rust 500 passed / 0 failed / 3 ignored (`cargo test -p
+cannet-gui`, was 498/2 — two new tests, one new `#[ignore]`d benchmark)
+and 57 passed / 1 ignored (`cannet-spill`, untouched); JS 139 files /
+1669 tests (was 1667), all green. `cargo clippy -p cannet-gui -p
+cannet-spill --all-targets`, `cargo fmt --check` and `tsc --noEmit`
+clean.
+
+### A. First-use chunked decode (`125c052`, `10695fc`)
+
+`SignalCache::catch_up` asked `matching_frames_indexed` for **every**
+matching frame in the unread range as one owned `Vec` before decoding a
+sample. On the first use of a signal over restored history the unread
+range is the whole capture, so that allocation is `O(capture)` — 57.C
+measured 116 B and 0.30 µs per materialized frame, i.e. ≈2.0 GB for the
+17.5M-posting id in this machine's real cache.
+
+It now walks the range in `CATCH_UP_CHUNK_FRAMES` = 16384-frame chunks,
+fetching one chunk's matches and decoding them before asking for the
+next — the same shape `FilterIndex::extend` already uses for its build
+(`BUILD_CHUNK`). The materialized set and the trace-store lock hold are
+both bounded by the chunk; decoding still runs off that lock, between
+fetches. Chunking costs one extra by-id range lookup per chunk
+(`O(log occurrences)`), 244 of them over a 4M-frame span.
+
+**Measured** (release, new `#[ignore]`d `bench_first_use_rebuild`: a
+4M-frame single-id capture in a temp scratch, first `slice` timed while
+a sampler thread tracks the process working set). The chunk size is the
+only variable — a chunk larger than the capture *is* the old whole-range
+fetch:
+
+| | whole-range fetch | 16384-frame chunks |
+| --- | --- | --- |
+| rebuild wall clock | 1.98 s | 1.93 s |
+| working-set delta | **+389 MB** (97 B/frame) | **+85 MB** (21 B/frame) |
+
+Reproduced twice each. The decode time is unchanged and inherent
+(`O(matches)`); what goes away is the allocation. The residual 85 MB is
+the store's mapped meta/payload/pyramid pages the scan touches — kernel
+page cache, pageable, and there in both columns.
+
+TDD: an equivalence pin first (a capture spanning several chunks decodes
+to exactly the same samples, and a later catch-up resumes at the tip),
+written and confirmed **green against the pre-change code** so it pins
+behaviour rather than describing the rewrite; then a bounded-chunk test
+through a fetch seam (`catch_up_chunked`) asserting no chunk exceeds the
+cap, that the chunks tile the range with no gap or overlap, and that
+every match still decodes once — red (didn't compile) before the change.
+
+### B. Background restore (`2c736ec`, `e504233`, marker `db2c2dc`)
+
+Two changes, because the first alone was inert:
+
+1. **The frontend no longer awaits the restore.** `applyProject` starts
+   it and keeps its promise in `restorePendingRef`; the boot settles and
+   the splash's hold drops without it. **Connect** waits instead —
+   `handleConnect` awaits the pending restore immediately before its
+   first store-touching statement, because `try_reload` swaps the raw
+   store wholesale and a clear or an append racing it acts on a store
+   about to be discarded. The automation connect goes through the same
+   function, so a perf capture still never starts over a half-restored
+   buffer, with no automation-specific code.
+2. **`restore_scratch_capture` is `async`.** A sync `#[tauri::command]`
+   runs on the main thread, which is why the frontend change on its own
+   changed nothing: **observation** — with the restore no longer awaited,
+   the "startup: interactive" marker still landed 8 ms *after* the
+   restore. **Hypothesis** — the sync command blocks the main thread and
+   everything behind it. **Experiment** — flip that one word and re-run
+   the same launch. **Data** — the marker moved to 1493 ms *before* the
+   restore, restore duration unchanged (1445 → 1493 ms). Confirmed. The
+   crate's own `scan_blf_channels` / `fetch_trace_range` rustdoc had
+   already written this rule down.
+
+**Measured** (release build, an isolated scratchpad copy of
+`examples/ev-zonal`, a synthesized 4M-frame / 180-id / 1620-by-id-file
+prior capture rewritten before every launch so the reopen pays the
+filter-stack toll 57.C attributed):
+
+| | before | after |
+| --- | --- | --- |
+| restore itself | 1195 ms | 1493 / 1294 ms |
+| RBS-loaded → interactive | **1268 ms** | **7 / 27 ms** |
+| history lands | at interactive | interactive + ~1.4 s |
+| launch → interactive | 7.13 s | 3.23 s |
+| splash lifts (5 s floor) | 7.13 s | 5.00 s |
+
+The RBS-loaded → interactive row is the attributable one: the last log
+line before the restore to the interactive marker, unaffected by the
+±1.5 s run-to-run spread in webview/sidecar startup that makes the raw
+launch→interactive numbers flatter than they look. Read it as: the
+restore no longer sits between the app and the user, and the same work
+finishes ~1.4 s later, in the background.
+
+**Launch → first plot**, the owner's bar, is the sum of the two halves
+and only one of them was ever on the critical path: interactive (3.2 s)
++ history landing (~1.4 s) + the first-use rebuild for the plotted
+signals. The rebuild is what A measured — 1.93 s for a *fully dense* 4M
+id, far less for a real 180-id capture where a signal owns ~22k of the
+4M frames — and it is the half that no longer risks a multi-GB spike.
+
+**Instrumentation, a deliverable** (`db2c2dc`): the boot writes one INFO
+line as it drops the splash's hold (`startup: interactive N ms after the
+frontend loaded`). With the restore's existing line it brackets a launch
+in `cannet.log`, which is what made the ordering above measurable at
+all; before it there was nothing marking when the app became usable.
+
+**Boot-order pins.** `App.bootOpenOnce.dom.test.tsx`'s
+"automation connects only after the project has fully applied" is
+unchanged in intent but now drives the delay through the DBC load
+(`dbcDelayMs`) rather than the restore, and a **new, stricter** pin
+states the deliberate order this phase introduces: connect lands after
+the restore *resolves*, not merely after it was invoked (the mock pushes
+a marker when it resolves). A third new test pins the other half — the
+app logs itself interactive while the restore is still pending. The
+first was red before the change.
+
+**Docs in the same commits:** ADR 0002 DS-7 gained a paragraph on the
+reload not gating the app (and on connect being what waits), the
+README's splash paragraph no longer promises "up with its data",
+`useSplashVisible`'s contract says what actually holds the splash, and
+`signal_cache`'s module docs state the chunked scan's residency and
+lock-hold bounds.
