@@ -341,30 +341,34 @@ impl SignalCache {
         }
     }
 
-    /// Rebuild a cache from a manifest row by remapping its level files.
-    /// `None` if any level's files don't answer to the persisted `(len,
-    /// first_slot)` — the caller then rebuilds from the raw frames.
-    fn reopen(dir: &Path, base: &str, p: &PersistedSignal) -> Option<Self> {
-        let mut levels = Vec::with_capacity(p.levels.len());
-        for (n, level) in p.levels.iter().enumerate() {
-            levels.push(
-                SampleSeq::reopen(
-                    dir,
+    /// The `(prefix, len, first_slot)` runs a manifest row's levels reopen
+    /// from — see [`SampleSeq::reopen_many`], which the whole restore goes
+    /// through in **one** batch so its thousands of segment files are
+    /// mapped with the parallel open at full width.
+    fn reopen_runs(base: &str, p: &PersistedSignal) -> Option<Vec<(String, usize, usize)>> {
+        if p.levels.is_empty() {
+            return None;
+        }
+        p.levels
+            .iter()
+            .enumerate()
+            .map(|(n, level)| {
+                Some((
                     format!("{base}.l{n}"),
                     usize::try_from(level.len).ok()?,
                     usize::try_from(level.first_slot).ok()?,
-                )
-                .ok()
-                .flatten()?,
-            );
-        }
-        if levels.is_empty() {
-            return None;
-        }
+                ))
+            })
+            .collect()
+    }
+
+    /// Rebuild a cache around levels already mapped by
+    /// [`Self::reopen_runs`]'s batch.
+    fn from_levels(dir: &Path, base: &str, p: &PersistedSignal, levels: Vec<SampleSeq>) -> Self {
         let (lo, hi) = p
             .extent
             .map_or((f64::INFINITY, f64::NEG_INFINITY), |[lo, hi]| (lo, hi));
-        Some(Self {
+        Self {
             dir: dir.to_path_buf(),
             base: base.to_string(),
             levels,
@@ -373,10 +377,10 @@ impl SignalCache {
                 .iter()
                 .map(|l| usize::try_from(l.folded).unwrap_or(0))
                 .collect(),
-            next_index: usize::try_from(p.next_index).ok()?,
+            next_index: usize::try_from(p.next_index).unwrap_or(usize::MAX),
             lo,
             hi,
-        })
+        }
     }
 
     /// Queue the level files' dirty pages for writeback, so a persisted
@@ -627,6 +631,47 @@ impl PersistedSignal {
     }
 }
 
+/// Map every level of every signal in `manifest` back, in **one** batched
+/// parallel open ([`SampleSeq::reopen_many`]). Mapping a segment file is
+/// latency-bound, and a restore is thousands of them across dozens of
+/// pyramids — opening them a level at a time runs the parallel open at a
+/// width of about four and turns the restore into the slow half of a
+/// launch. `None` if any run doesn't answer to its manifest row.
+fn reopen_set(root: &Path, manifest: &PyramidManifest) -> Option<Vec<(SignalKey, SignalCache)>> {
+    let keys: Vec<(SignalKey, String)> = manifest
+        .signals
+        .iter()
+        .map(|s| {
+            let key = s.key();
+            let base = key_prefix(&key);
+            (key, base)
+        })
+        .collect();
+    let mut runs = Vec::new();
+    let mut per_signal = Vec::with_capacity(manifest.signals.len());
+    for (s, (_, base)) in manifest.signals.iter().zip(&keys) {
+        let levels = SignalCache::reopen_runs(base, s)?;
+        per_signal.push(levels.len());
+        runs.extend(levels);
+    }
+    let mut mapped = SampleSeq::reopen_many(root, &runs)
+        .ok()
+        .flatten()?
+        .into_iter();
+    Some(
+        manifest
+            .signals
+            .iter()
+            .zip(keys)
+            .zip(per_signal)
+            .map(|((s, (key, base)), n)| {
+                let levels = mapped.by_ref().take(n).collect();
+                (key, SignalCache::from_levels(root, &base, s, levels))
+            })
+            .collect(),
+    )
+}
+
 /// [`MANIFEST_FILE`]'s contents: the validity key the whole set is reusable
 /// against, and one row per cached signal. Small (bounded by the number of
 /// plotted signals × pyramid depth), rewritten whole whenever the pyramids
@@ -822,17 +867,7 @@ impl SignalCacheStore {
                 .iter()
                 .all(|s| s.next_index <= store_len as u64);
         let restored = usable
-            .then(|| {
-                manifest
-                    .signals
-                    .iter()
-                    .map(|s| {
-                        let key = s.key();
-                        let base = key_prefix(&key);
-                        SignalCache::reopen(&caches.root, &base, s).map(|c| (key, c))
-                    })
-                    .collect::<Option<Vec<_>>>()
-            })
+            .then(|| reopen_set(&caches.root, &manifest))
             .flatten();
         if let Some(caught_up) = restored {
             let n = caught_up.len();
@@ -1905,6 +1940,14 @@ mod tests {
         let persist_at = std::time::Instant::now();
         assert!(cache.persist(&validity, true), "the manifest is written");
         let persist_secs = persist_at.elapsed().as_secs_f64();
+        // The shutdown flush again, over the pages the one above just wrote
+        // back. This is the number a real exit pays: the pyramid was built
+        // long before the user quit, so its pages are already clean. The
+        // first figure is the worst case (build, then immediately quit).
+        cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
+        let again_at = std::time::Instant::now();
+        assert!(cache.persist(&validity, true));
+        let again_secs = again_at.elapsed().as_secs_f64();
         drop(cache);
 
         let reopened = SignalCacheStore::new(pyramids.path());
@@ -1925,12 +1968,14 @@ mod tests {
         assert_eq!(back, pts, "the same windows, point for point");
         println!(
             "[bench] first use after restore: restore {:.3} s + serve {:.3} s = {:.3} s \
-             ({:.0}x the rebuild's speed); manifest write {:.3} s; {back} points served",
+             ({:.1}x the rebuild's speed); sync persist {:.3} s then {:.3} s; \
+             {back} points served",
             restore_secs,
             served_secs,
             restore_secs + served_secs,
             secs / (restore_secs + served_secs).max(1e-9),
             persist_secs,
+            again_secs,
         );
     }
 }
