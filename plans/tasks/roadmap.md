@@ -24,7 +24,8 @@ the order below is the order of work, top first.
    channel scan), import-dialog metadata/markers/time-range, persist
    signal pyramids across restore, one decode pass per message,
    rebuild off the global signal-cache mutex (also the exit-hang
-   root), and incremental paint replacing the indefinite `building…`.
+   root), and incremental paint — a bounded serve, so `building…`
+   shows only until the first points arrive.
 2. [Task 59 — Minor UX Round](0059-minor-ux-round.md)
    — theme menu light/lighthk/dark with `normal_mode` deleted,
    no-project launches restore window geometry only, Ctrl+F focuses

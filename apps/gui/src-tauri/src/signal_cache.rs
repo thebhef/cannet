@@ -2171,6 +2171,34 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_serve_stays_bounded_while_the_capture_is_still_growing() {
+        // The freeze-during-import shape: a plot samples while the pump
+        // is still appending, so the tip the catch-up is chasing moves
+        // under it. Each serve does its budget's worth against the tip it
+        // read and says it is behind — it never runs to a moving target.
+        let store = rising_capture(2 * CATCH_UP_CHUNK_FRAMES);
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
+        let queries = [query_on(256, "X")];
+
+        let first = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(!first.complete);
+        assert_eq!(first.series[0].len(), CATCH_UP_CHUNK_FRAMES);
+
+        // The import runs on: two more chunks of capture land before the
+        // next tick.
+        for i in 2 * CATCH_UP_CHUNK_FRAMES..4 * CATCH_UP_CHUNK_FRAMES {
+            store.append(val_frame(i as u64 * S, i as u16));
+        }
+        let second = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(!second.complete);
+        assert_eq!(second.series[0].len(), 2 * CATCH_UP_CHUNK_FRAMES);
+    }
+
+    #[test]
     fn an_extent_serve_is_bounded_too_and_widens_as_the_rebuild_advances() {
         // The y-extent sidecar rides the same round-trip and catches up
         // the same caches, so it has to stop at the same budget — an
