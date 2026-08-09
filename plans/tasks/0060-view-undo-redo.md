@@ -177,6 +177,81 @@ Verification: `pnpm --dir apps/gui test` 1740 passed / 139 files (from
 1724 at branch point — 16 new), `pnpm --dir apps/gui build` clean. Host
 untouched, so no cargo run.
 
+### 2026-08-09 — phase 60.B, the boundary + the element stack (branch `task60b-registry-history`)
+
+The ADR and mechanism step 1 landed: element edits are undoable beside
+the layout stack, through the same chords, with the allowlist enforced
+at both ends.
+
+- **[ADR 0050](../../docs/adr/0050-undo-covers-view-state-only.md) —
+  "Undo/redo covers view state only, never the bus."** Carries the
+  allowlist table, the owner's rationale (redo makes an undone display
+  change free to reverse while frames already sent have no redo; the
+  wiring family scopes fetches, never traffic; RBS is explicitly not
+  safety-rated), zoom/pan/scroll as out-of-scope transients, and "undo
+  never re-runs a host side effect".
+- **`apps/gui/src/elementHistory.ts`** — the pure stack, mirroring
+  `viewHistory.ts` (cap 50, no React/DOM, undo/redo returning the
+  snapshot to apply). `UNDOABLE_FIELDS` is the ADR's allowlist in code:
+  `transmit` and `rbs` list nothing, so their fields are neither
+  snapshotted nor patched back. `valuesEqual` is now exported from
+  `projectElements.ts` and reused, so "did anything change?" means the
+  same thing at the history as at the registry.
+- **Capture is armed at the chokepoint and taken after the change
+  lands.** `updateElement` / `removeElement` set a pending-edit flag
+  (`updateElement` on the same identity test that marks dirty); a
+  `useEffect([registry])` then snapshots. Everything else — `create`,
+  `ensure`, `updateTrace`, project open, session churn — reaches
+  `syncElements`, which moves `present` without making a step or
+  clearing redo. Taking the snapshot after the fact also means the
+  step's base is state that really existed, which a call-site capture
+  can't promise (the call site sees a one-render-stale registry).
+- **Restore** writes back through `updateElement` with **no writer
+  token**, so every mounted panel on a changed element rehydrates
+  (60.A's seam), under an applying guard so the restore's own writes
+  aren't recaptured.
+- **Interleaving** is a shared order log (`UndoOrder`) recording which
+  stack each step landed on; `popUndo`/`popRedo` pick the most recent
+  (resp. oldest-undone) entry whose stack still has a step, so one
+  chord reverses the most recent change either way. `applyViewHistory`
+  in `useCommands` replaces the layout-only handler.
+
+Two rules keep a gesture from costing two undos, both pinned by tests:
+
+- A write confined to excluded fields is not a step (so arming an RBS
+  can't even be reached by the chord).
+- A panel seeding its element's **first** `config` at mount is not a
+  step — otherwise "add a plot panel" would be a layout step plus the
+  panel's own config write.
+
+Commits (oldest first): `5df8e8f` ADR 0050 · `47d8469` the masked
+element stack (pure + tests) · `3831dd9` chokepoint capture, restore,
+and the interleaved chords · `ea9718e` the no-replay test.
+
+Verification: `pnpm --dir apps/gui test` 1770 passed / 141 files (from
+1740 at branch point — 30 new: 26 pure, 4 dom), `pnpm --dir apps/gui
+build` clean. Host untouched. The no-replay test was falsified before
+being trusted: unmasking `rbs.path`/`run` makes the first `Ctrl+Z`
+disarm the simulation and the test fail.
+
+Deferred to 60.C (recorded here rather than re-scoped):
+
+- **Transaction pairing.** Writes batched into one React commit already
+  coalesce into one step (an unplanned down-payment on step 2 — a
+  filter insert's three writes are one step), but a gesture spanning
+  both stacks is still two entries in the order log. Panel add is one
+  step only because the config seed is suppressed; element remove,
+  cross-panel area drag and the panel-close half of a removal still
+  need the transaction wrapper.
+- **Re-creating a removed element.** A removal is captured, but a
+  restore only patches elements that still exist: bringing one back
+  needs its panel and runtime state back with it (and, per the ADR, not
+  its host state). Until then the chord consumes that step and falls
+  through to the layout step, which reopens the panel — and the panel's
+  `ensure` heals a fresh element.
+- **Coalescing** of drag-continuous knobs across renders (step 4), and
+  ADR 0018's binding docs (60.D).
+
 ## Blockers / side effects
 
 - **60.A** — no blockers. Side effects worth knowing:
@@ -192,3 +267,16 @@ untouched, so no cargo run.
     `applyElementPatch`, so a test can land an external write on a
     mounted panel. The per-file `makeRegistry` fakes are static and
     can't.
+- **60.B** — no blockers. Side effects worth knowing:
+  - `valuesEqual` is now exported from `projectElements.ts` (it was
+    module-private). Nothing else about the registry changed.
+  - `applyLayoutHistory` returns a boolean now: the interleaved driver
+    has to know whether a step actually applied before deciding to move
+    on to the next one.
+  - The undo-order log is reset wherever a view baseline is
+    (`seedDefaultLayout`, project open, the boot layout restore), so a
+    chord can never step from one project into another's snapshots.
+  - Element *creation* is not captured — only `update` / `remove` are
+    user-edit callers, per this task's mechanism note. Adding a filter
+    is therefore undoable only via the layout stack (its panel) until
+    60.C's transactions.
