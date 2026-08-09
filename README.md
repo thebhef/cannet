@@ -496,8 +496,10 @@ project comes up on the default layout: view state is a project's, so
 a session that opens nothing neither keeps nor restores one. The
 window's own size and position always resume, project or not. Unsaved
 changes show a `●` in
-the project panel, and closing the window with unsaved changes always
-prompts you (Save & close / Discard & close / Cancel). Not carried in
+the project panel, and closing the window with unsaved changes prompts
+you (Save & close / Discard & close / Cancel) — unless **Autosave on
+exit** is on and the project has its own directory, in which case the
+close saves silently instead; see below. Not carried in
 the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),
 and the BLF replay path.
@@ -535,6 +537,13 @@ writes, so the panel teaches the file.
   picked bus and signal colors so they fall back to the current
   theme's defaults — it asks first, and it leaves color-map rules
   alone.
+- **Autosave on exit.** **General → Autosave on exit**, off by default.
+  On, a dirty close saves silently instead of prompting — but only for
+  a project with its own directory (one you made a `.cannet/` folder
+  beside, or reached via **Save project as…**). A project cannet
+  auto-located, or one never saved at all, still prompts either way:
+  nothing here mints a project file for you. Project-overridable, like
+  the cache size cap.
 - **Finding one.** Type in the search box. It matches a setting's name,
   its `settings.json` key, its help text, and its tags, so you can find
   a setting you can describe but can't name — searching *what it does*

@@ -1804,6 +1804,24 @@ export function App() {
         }
         if (!dirtyRef.current && !rbsDirty) return; // nothing unsaved — let it close
         event.preventDefault();
+
+        // Autosave-on-exit: a dirty close saves silently instead of
+        // showing the prompt below, but only for a project directory
+        // the user pointed cannet at explicitly. An auto-located or
+        // never-saved session is inert here — never auto-mint a
+        // project file — so it falls through unchanged, and so does a
+        // failed save: losing the close request silently would be
+        // worse than one more prompt.
+        if (hostSettings().autosave_on_exit) {
+          const autoLocated = await invoke<boolean>(
+            "active_project_is_auto_located",
+          ).catch(() => true); // host unreachable — fall back to the prompt below
+          if (!autoLocated && (await handleSaveAllRef.current())) {
+            void win.destroy();
+            return;
+          }
+        }
+
         const choice = await new Promise<CloseChoice>((resolve) =>
           setPendingClose({ resolve }),
         );
