@@ -959,6 +959,33 @@ we might be doing a pretty detailed scan."
   `scan_blf_channels` runs one `scan_blf` and projects only the marker
   records (rare) into `Note`s; nothing else walks.
 
+**The command's own defect, found in the same read and fixed after an
+overruling.** `scan_blf_channels` was `#[tauri::command] async fn` with
+`#[allow(clippy::unused_async)]` — i.e. it never awaited, so the walk
+ran on the worker thread polling it. The body now goes through
+`off_async_workers` (`sampling.rs`, `pub(crate)` and its rustdoc
+generalised: the rule is "every command whose body scales with the
+capture", not "the sampling commands"). The helper stays in
+`sampling.rs` because the probe that pins it does —
+`a_command_body_that_never_yields_does_not_park_an_async_worker`, a
+one-worker runtime with a never-returning body — and there is no
+module in the crate that owns "command dispatch rules" to move it to.
+
+*No new test.* Two seams were considered and rejected on evidence:
+- A scan-specific runtime probe would have to drive a
+  `#[tauri::command]`, and **nothing in the crate does** — `tests.rs`
+  says so twice in as many words, building its fixtures to avoid
+  needing an `AppHandle`. Standing up a Tauri app for this would test
+  Tauri's dispatch, not ours, and the helper's own behaviour is already
+  pinned beside it.
+- Dropping the `#[allow(clippy::unused_async)]` looked like it might
+  turn the lint into the guard (the workspace runs pedantic at `-D
+  warnings`). *Experiment:* put the body back inline, drop the now-dead
+  import, force a rebuild, run clippy. *Data:* clean — the lint does not
+  fire through the `#[tauri::command]` expansion. *Conclusion:*
+  refuted; it is not a guard and is not claimed as one. The `allow` is
+  gone regardless, because the function now genuinely awaits.
+
 **So the fix is feedback, not the scan.** `StatusInputs` gains
 `scanningBlfPath`, and `splitStatus` reports `Scanning <file> …` as
 *resting* activity (the existing `loading` idiom — ongoing work rests,
@@ -976,15 +1003,18 @@ removed ("no scan notice, status was: Open a BLF log…").
 
 ## Blockers / side effects
 
-- **`scan_blf_channels` is an `async fn` that never awaits, so its walk
-  runs on an async-runtime worker.** That is the shape ADR 0048 and
-  58.E's `off_async_workers` exist for — capture-scaled work holding the
-  worker that polls it — and at ~20 s per dev-build scan it parks one
-  for the duration. Left alone deliberately: nothing measured shows harm
-  (Tauri's runtime has a worker per core, the scan takes no lock, and
-  close is unaffected), so there is no failing test to hold a fix, and
-  the item's brief was to fix what the data shows. One `spawn_blocking`
-  if it ever does bite.
+- **`scan_blf_channels` ran its walk on an async-runtime worker —
+  RESOLVED in this branch.** It was an `async fn` that never awaited, so
+  the census held the worker polling it for the whole walk: ~20 s in a
+  dev build at the reference scale. This round first left it alone on
+  the grounds that nothing measured showed harm; the orchestrator
+  overruled that (2026-08-09), and rightly — it is the same defect class
+  58.E fixed for `sample_signals` / `signal_min_max`, the decision
+  context is ADR 0048's, and "the pool is big enough" is not a property
+  of the code, it is a property of the machine. One parked worker is one
+  too few for the close path's dispatch on a small pool. The body now
+  goes through the existing `off_async_workers`, which became
+  `pub(crate)`.
 - **Flushing the pyramid on a cadence costs a cold rebuild 3.5× its
   wall time** (5.06 s → 17.63 s at 96 signals over 4 M frames,
   measured). The synchronous flush is the owner's ruling and the

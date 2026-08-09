@@ -87,15 +87,22 @@ pub(crate) async fn sample_signals(
 /// Run a command's synchronous, capture-scaled body on the blocking pool
 /// instead of on an async-runtime worker (ADR 0048).
 ///
-/// The sampling commands are `async fn`s that never await: the first
-/// serve of a signal rebuilds its pyramid, which is minutes of decoding
-/// over a long capture, and it happened on the worker thread that polled
-/// the future. With one plotted area per worker the runtime ran out of
-/// them, and the close path's own command — the `rbs_dirty` the window's
-/// close handler awaits before it may destroy the window — was never
-/// dispatched. Handing the body to the blocking pool frees the worker
-/// for the duration.
-async fn off_async_workers<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+/// **Every command whose body's duration scales with the capture goes
+/// through here**, not only this module's. A `#[tauri::command] async
+/// fn` that never awaits runs entirely on the worker thread polling it,
+/// so a body that takes seconds holds a worker for seconds. The pool is
+/// finite and shared with the close path — the `rbs_dirty` the window's
+/// close handler awaits before it may destroy the window — which is how
+/// the sampling commands (a cold pyramid rebuild each, one per plotted
+/// area) once made the window unclosable. Handing the body to the
+/// blocking pool frees the worker for the duration.
+///
+/// Lives here because the probe that pins the behaviour does
+/// (`a_command_body_that_never_yields_does_not_park_an_async_worker`);
+/// the rule it enforces belongs to no one module.
+pub(crate) async fn off_async_workers<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> T {
     match tokio::task::spawn_blocking(work).await {
         Ok(value) => value,
         // The body panicked on the blocking thread and the panic was
