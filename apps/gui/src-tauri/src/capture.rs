@@ -8,7 +8,7 @@
 //! scratch identity (ADR 0002 DS-7).
 
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -37,16 +37,31 @@ pub struct ChannelBusMapping {
     /// JSON `null` for skipped entries.
     pub bus_id: Option<String>,
 }
+/// Start importing `blf_path`, routing each channel per
+/// `channel_bus_mapping`.
+///
+/// The whole import is **one pass over the file**: the pump walks it
+/// once, and the capture's `GLOBAL_MARKER` annotations are collected on
+/// that same walk through the source's marker sink rather than by a
+/// second whole-file decode before it. There is no import-specific
+/// ingest path — the frames go through the same `run_pump` a live
+/// session uses (ADR 0046).
+///
+/// `async` so Tauri runs it off the main thread, like its siblings:
+/// opening a several-hundred-megabyte BLF parses a header and allocates
+/// the reader's buffers, and the command must not hold up the window
+/// while it does.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn open_log(
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+pub(crate) async fn open_log(
     app: AppHandle,
     blf_path: String,
     #[allow(non_snake_case)] channel_bus_mapping: Option<Vec<ChannelBusMapping>>,
 ) -> Result<OpenLogResult, String> {
-    // Open the BLF synchronously so the user gets immediate feedback if
-    // the path is wrong.
-    let source = match BlfCanFrameSource::open(&blf_path) {
+    // Open the BLF before returning so the user gets immediate feedback
+    // if the path is wrong.
+    let mut source = match BlfCanFrameSource::open(&blf_path) {
         Ok(s) => s,
         Err(e) => {
             let msg = e.to_string();
@@ -69,32 +84,24 @@ pub(crate) fn open_log(
     );
 
     // Notes live inside the BLF as `GLOBAL_MARKER` records (ADR 0010 —
-    // no sidecar files). Pull them out of the file in a quick pre-pass
-    // before kicking off the frame pump. The session-buffer notes are
-    // session-scoped, so any notes already in the store are replaced:
-    // Open BLF is a fresh-capture action that wipes the trace store via
-    // the surrounding GUI flow.
-    let notes = match read_notes_from_blf(&blf_path) {
-        Ok(v) => v,
-        Err(e) => {
-            sys_warn!(
-                &app,
-                "blf-import",
-                "couldn't read markers from {blf_path}: {e}"
-            );
-            Vec::new()
+    // no sidecar files). They ride the pump's own walk: the source hands
+    // each marker to this sink as it passes it, so finding the
+    // annotations costs no extra read of the file. The session-buffer
+    // notes are session-scoped, so whatever the file carries replaces
+    // what's in the store — Open BLF is a fresh-capture action that
+    // wipes the trace store via the surrounding GUI flow.
+    let collected: Arc<Mutex<Vec<Note>>> = Arc::default();
+    source.on_marker({
+        let collected = Arc::clone(&collected);
+        let mut synthetic_idx = 0u64;
+        move |m| {
+            let note = note_from_marker(&m, &mut synthetic_idx);
+            collected
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(note);
         }
-    };
-    let marker_count = notes.len();
-    if marker_count > 0 {
-        let _ = app.state::<AppState>().notes.replace(notes.clone());
-        let _ = app.emit("notes-changed", notes);
-        sys_info!(
-            &app,
-            "blf-import",
-            "loaded {marker_count} note(s) from BLF markers",
-        );
-    }
+    });
 
     let result = OpenLogResult {
         blf_path: blf_path.clone(),
@@ -131,6 +138,25 @@ pub(crate) fn open_log(
                 let msg = format!("load failed: {}", panic_message(payload.as_ref()));
                 sys_error!(&app_for_thread, "blf-import", "{msg}");
                 let _ = app_for_thread.emit("log-finished", LogFinished::Error { message: msg });
+                return;
+            }
+            // The markers the pump walked past. Applied once the pass is
+            // over — the file's annotations are only fully known when
+            // its last object has been read.
+            let notes =
+                std::mem::take(&mut *collected.lock().unwrap_or_else(PoisonError::into_inner));
+            if !notes.is_empty() {
+                let marker_count = notes.len();
+                let _ = app_for_thread
+                    .state::<AppState>()
+                    .notes
+                    .replace(notes.clone());
+                let _ = app_for_thread.emit("notes-changed", notes);
+                sys_info!(
+                    &app_for_thread,
+                    "blf-import",
+                    "loaded {marker_count} note(s) from BLF markers",
+                );
             }
         })
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
@@ -209,13 +235,6 @@ pub struct SaveCaptureResult {
     pub max_timestamp_drift_ns: u64,
 }
 
-/// Read every `GLOBAL_MARKER` out of `blf_path` and project it to a
-/// [`Note`]. Marker layout matches what [`BlfCaptureWriter::append_marker`]
-/// emits: `group_name = "cannet"`, `marker_name = label`,
-/// `description = id`. Third-party markers (any other group, or
-/// `description` empty) get a synthetic id `blf-marker-<index>` so
-/// their `rename` / `remove` paths still work; this mints a stable
-/// id deterministic in the marker's position within the file.
 /// An event color (ADR 0035) as the BLF marker's `0x00RRGGBB`
 /// foreground color: `#RRGGBB` parses to the packed RGB; `None` (or an
 /// unparseable string) is `0`, the marker build default. Inverse of
@@ -234,35 +253,33 @@ fn rgb_to_color(rgb: u32) -> Option<String> {
     (rgb != 0).then(|| format!("#{rgb:06X}"))
 }
 
-pub(crate) fn read_notes_from_blf(blf_path: &str) -> Result<Vec<Note>, String> {
-    use cannet_blf::format::reader::{BlfObject, BlfReader};
-    let mut reader = BlfReader::open(blf_path).map_err(|e| e.to_string())?;
-    let start_unix_nanos = reader.start_unix_nanos();
-    let mut notes = Vec::new();
-    let mut synthetic_idx: u64 = 0;
-    while let Some(obj) = reader.next_object().map_err(|e| e.to_string())? {
-        if let BlfObject::GlobalMarker(m) = obj {
-            let label = String::from_utf8_lossy(&m.marker_name).into_owned();
-            let id = if m.description.is_empty() {
-                let id = format!("blf-marker-{synthetic_idx}");
-                synthetic_idx += 1;
-                id
-            } else {
-                String::from_utf8_lossy(&m.description).into_owned()
-            };
-            // Per-event timestamp is relative to the file's start;
-            // recover the absolute ns the rest of cannet uses.
-            let timestamp_ns = start_unix_nanos.saturating_add(m.event.timestamp_ns());
-            notes.push(Note {
-                id,
-                timestamp_ns,
-                label,
-                kind: notes::EventKind::Note,
-                color: rgb_to_color(m.foreground_color),
-            });
-        }
+/// Project one BLF `GLOBAL_MARKER` onto a [`Note`]. Marker layout
+/// matches what [`BlfCaptureWriter::append_marker`] emits:
+/// `group_name = "cannet"`, `marker_name = label`, `description = id`.
+/// Third-party markers (any other group, or `description` empty) get a
+/// synthetic id `blf-marker-<index>` so their `rename` / `remove` paths
+/// still work; `synthetic_idx` is the caller's running counter of those,
+/// which makes the minted id deterministic in the marker's position
+/// within the file.
+pub(crate) fn note_from_marker(
+    scanned: &cannet_blf::ScannedMarker,
+    synthetic_idx: &mut u64,
+) -> Note {
+    let m = &scanned.marker;
+    let id = if m.description.is_empty() {
+        let id = format!("blf-marker-{synthetic_idx}");
+        *synthetic_idx += 1;
+        id
+    } else {
+        String::from_utf8_lossy(&m.description).into_owned()
+    };
+    Note {
+        id,
+        timestamp_ns: scanned.timestamp_ns,
+        label: String::from_utf8_lossy(&m.marker_name).into_owned(),
+        kind: notes::EventKind::Note,
+        color: rgb_to_color(m.foreground_color),
     }
-    Ok(notes)
 }
 
 /// Perform the actual BLF write. Frames go in as CAN events, notes

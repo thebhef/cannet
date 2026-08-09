@@ -1624,10 +1624,34 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
     let _ = pump.join();
 }
 
+/// Read a BLF's notes exactly the way an import does: drain the frame
+/// source with a marker sink attached and project what it hands back.
+/// One pass, no second walk — the same shape `open_log` uses, so these
+/// round-trip assertions pin the production path rather than a
+/// test-only reader.
+fn notes_via_import_walk(blf_path: &str) -> Vec<crate::notes::Note> {
+    use crate::notes::Note;
+    use cannet_core::CanFrameSource as _;
+    let collected: Arc<Mutex<Vec<Note>>> = Arc::default();
+    let mut source = cannet_blf::BlfCanFrameSource::open(blf_path).unwrap();
+    source.on_marker({
+        let collected = Arc::clone(&collected);
+        let mut synthetic_idx = 0u64;
+        move |m| {
+            let note = capture::note_from_marker(&m, &mut synthetic_idx);
+            collected.lock().unwrap().push(note);
+        }
+    });
+    while source.next_frame().unwrap().is_some() {}
+    let notes = collected.lock().unwrap().clone();
+    notes
+}
+
 /// Round-trip: write the trace-store contents + notes via
-/// `write_capture`, then read back via `BlfCanFrameSource` for
-/// the frames and `read_notes_from_blf` for the markers. The
-/// frame ids and the marker count must match the input.
+/// `write_capture`, then read it back through the import's own
+/// one-pass walk — frames from `BlfCanFrameSource`, markers from the
+/// sink riding the same pass. The frame ids and the marker count must
+/// match the input.
 #[test]
 fn write_capture_round_trips_frames_and_notes() {
     use cannet_blf::BlfCanFrameSource;
@@ -1720,7 +1744,7 @@ fn write_capture_round_trips_frames_and_notes() {
     // Notes recovered from in-BLF GLOBAL_MARKERs in
     // chronological order, ids + labels + timestamps intact.
     // No sidecar file is written.
-    let recovered = read_notes_from_blf(dest.to_str().unwrap()).unwrap();
+    let recovered = notes_via_import_walk(dest.to_str().unwrap());
     assert_eq!(recovered.len(), 2);
     assert_eq!(recovered[0].id, "a");
     assert_eq!(recovered[0].label, "first");
@@ -1828,7 +1852,7 @@ fn write_capture_keeps_wire_channel_when_bus_is_unmapped() {
 /// rename / remove on them still works through the existing
 /// id-keyed APIs.
 #[test]
-fn read_notes_from_blf_mints_synthetic_ids_for_third_party_markers() {
+fn the_import_walk_mints_synthetic_ids_for_third_party_markers() {
     use cannet_blf::format::marker;
     use cannet_blf::format::writer::BlfFileWriter;
     let dir = tempfile::tempdir().unwrap();
@@ -1854,7 +1878,7 @@ fn read_notes_from_blf_mints_synthetic_ids_for_third_party_markers() {
         .unwrap();
     w.finish().unwrap();
 
-    let read = read_notes_from_blf(dest.to_str().unwrap()).unwrap();
+    let read = notes_via_import_walk(dest.to_str().unwrap());
     assert_eq!(read.len(), 2);
     assert_eq!(read[0].id, "blf-marker-0");
     assert_eq!(read[0].label, "first");
@@ -2366,11 +2390,21 @@ fn bench_blf_import() {
     report("census", t.elapsed().as_secs_f64());
     assert_eq!(census.channels.len(), usize::from(CHANNELS));
 
-    // -- markers: the whole-file second decode the notes pre-pass ran.
+    // -- markers: the whole-file second decode the notes pre-pass used
+    //    to run before the pump started, kept here (and only here) as
+    //    the cost the one-pass import removed. The import itself now
+    //    collects markers on the pump's own walk, which is what the
+    //    `decode` phase below already covers.
     let t = std::time::Instant::now();
-    let notes = read_notes_from_blf(&blf).unwrap();
-    report("markers", t.elapsed().as_secs_f64());
-    assert!(!notes.is_empty(), "marker pre-pass must see the markers");
+    let mut reader = cannet_blf::format::reader::BlfReader::open(&blf).unwrap();
+    let mut markers = 0usize;
+    while let Some(obj) = reader.next_object().unwrap() {
+        if matches!(obj, cannet_blf::format::reader::BlfObject::GlobalMarker(_)) {
+            markers += 1;
+        }
+    }
+    report("markers*", t.elapsed().as_secs_f64());
+    assert!(markers > 0, "the removed pre-pass saw the markers");
 
     // -- decode: `next_frame()` alone (inflate + per-object decode).
     let mut source = BlfCanFrameSource::open(&blf).unwrap();
@@ -2403,6 +2437,33 @@ fn bench_blf_import() {
     }
     report("convert", t.elapsed().as_secs_f64());
     assert_eq!(kept, frames);
+
+    // -- full/mem: the same body against the in-RAM raw store. The
+    //    difference from `full` is what the disk-spill segment write
+    //    costs; what's left is the store's derived state (the per-key
+    //    maps, the retention clone, the rate trackers).
+    let store = TraceStore::new();
+    let mut source = BlfCanFrameSource::open(&blf).unwrap();
+    let t = std::time::Instant::now();
+    let mut first = true;
+    while let Some(frame) = source.next_frame().unwrap() {
+        let mut raw = RawTraceFrame::from(frame);
+        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            continue;
+        };
+        raw.bus_id = bid;
+        if first {
+            store.start_session(raw.timestamp_ns);
+            first = false;
+        }
+        let checked = verifier.wants(&raw).then(|| raw.clone());
+        if store.append(raw).is_some() {
+            std::hint::black_box(&checked);
+        }
+    }
+    report("full/mem", t.elapsed().as_secs_f64());
+    assert_eq!(store.len(), frames);
+    drop(store);
 
     // -- full: the whole shared pump body against the production
     //    disk-spill store, with and without the observers the running
