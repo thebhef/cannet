@@ -15,8 +15,13 @@
 //   removing an element (its panel closes with it), inserting a filter
 //   upstream (three writes and a new element).
 // - {@link UndoGesture.begin} / {@link UndoGesture.end} for one that
-//   spans events — a drag, which persists on every mouse move and must
-//   still cost a single undo.
+//   spans events — a drag, which persists on every mouse move, or a
+//   text edit that writes on every keystroke (an inline rename, opened
+//   on focus and closed on blur). Both must still cost a single undo.
+//
+// An open gesture is also closed by the next press anywhere, because
+// the event that would have ended it can go missing — a pointer
+// released outside the window delivers no mouseup at all.
 //
 // The boundary is ADR 0050's: grouping changes what one chord reverses,
 // never what a chord is allowed to touch.

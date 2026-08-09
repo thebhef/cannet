@@ -1,6 +1,6 @@
 # ADR 0018 — Command / keybinding framework: frontend registry, user-editable bindings, context predicates
 
-Status: accepted (2026-05-26), amended (2026-07-12)
+Status: accepted (2026-05-26), amended (2026-07-12, 2026-08-09)
 
 A generalised command and keybinding primitive that panels and later
 features register on. This ADR records the shape of that primitive
@@ -57,6 +57,24 @@ declarative subset.
 palette (every available command). `Cmd/Ctrl+P` opens a go-to-view
 palette (every open dockview panel by display name). Both use the
 fuzzy matcher adopted in `plans/technology-inventory.md` (`fzf`).
+
+**Undo/redo are commands like any other, over one timeline.**
+`Mod+Z` → `view.undo` and `Mod+Y` / `Mod+Shift+Z` → `view.redo` reverse
+the most recent *view* change, whether it lives on the dockview layout
+(panels added, closed, moved, resized) or on the project's elements
+(plot areas, signals, solo, colors, columns, sections, renames, filter
+wiring). The two are interleaved into a single order, so one chord
+always steps the most recent change and never asks the user which kind
+it was. **One user gesture is one step** — however many writes it takes
+and whichever stacks they land on: a drag that persists on every mouse
+move, a rename that writes on every keystroke, and a removal that
+closes a panel with it each cost exactly one chord. *What* the chords
+may touch is [ADR 0050](0050-undo-covers-view-state-only.md)'s
+allowlist, not this ADR's; this one decides only that they are
+commands, and therefore bindable and rebindable like the rest.
+
+Both carry `skipEditable`: while a text field has focus the chord is
+the browser's own text undo, not the view's.
 
 ## Why
 
@@ -131,6 +149,10 @@ Inventing a predicate DSL would buy generality nobody needs.
 - Panel-local commands (`plot.fitXAxis`, `plot.followLive.enable`)
   are bindable like any other, since they appear in the command
   registry.
+- `view.undo` / `view.redo` are rebindable like any other command, and
+  a user who unbinds them loses view undo — the histories are still
+  kept, but nothing dispatches them. That is the same trade every
+  command makes here.
 - Multi-step sequence chords remain expressible in `DEFAULT_BINDINGS`
   and parse correctly; the shortcuts panel's chord *capture* handles
   single-step chords in its first cut (sequence capture is a later
