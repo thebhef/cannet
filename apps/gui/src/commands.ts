@@ -65,6 +65,13 @@ export interface BindingSpec {
   /// Suppressed while a text-entry surface has focus (see
   /// `ParsedBinding.skipEditable`).
   skipEditable?: boolean;
+  /// A tombstone: the user removed this binding and it must not come
+  /// back. Only ever appears in a *stored* customisation, never in the
+  /// effective set, and never dispatches. It exists because the
+  /// customisation is a whole-list snapshot, so absence has to mean
+  /// "added after this snapshot was taken" — see
+  /// [`resolveBindings`].
+  disabled?: boolean;
 }
 
 const plotFocused = (ctx: CommandContext) => ctx.focusedPanelKind === "plot";
@@ -294,11 +301,28 @@ export function sanitizeBindings(
 /// (sanitised), else the shipped defaults. `null` — the default — means
 /// "use `DEFAULT_BINDINGS`" (ADR 0018's whole-list storage: reset writes
 /// `null`).
+///
+/// A customisation is a snapshot of the whole list, so it can only ever
+/// speak to the commands that had a binding when it was taken. Every
+/// default it says nothing about is folded back in, or a binding shipped
+/// after a user's first edit would be dead for that user forever — and
+/// invisibly so, because the palette lists commands, not bindings. What
+/// the snapshot *does* speak to wins: a command it rebinds keeps the
+/// user's chord, a chord it reuses beats the default that wanted it
+/// (`sanitizeBindings`' conflict guard, which is why the defaults are
+/// appended last), and a binding it marks `disabled` stays gone.
 export function resolveBindings(
   user: readonly BindingSpec[] | null,
 ): readonly BindingSpec[] {
   if (user == null) return DEFAULT_BINDINGS;
-  return sanitizeBindings(user, COMMANDS);
+  const spokenFor = new Set(user.map((b) => b.commandId));
+  return sanitizeBindings(
+    [
+      ...user.filter((b) => !b.disabled),
+      ...DEFAULT_BINDINGS.filter((d) => !spokenFor.has(d.commandId)),
+    ],
+    COMMANDS,
+  );
 }
 
 /// The outcome of an editor attempt to add a binding (ADR 0018).

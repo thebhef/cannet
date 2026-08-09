@@ -32,7 +32,7 @@ import { useKeybindings } from "./keybindingsContext";
  * per-panel Space action — neither is rebindable, so neither is an editor.
  */
 export function ShortcutsPanel(_props: IDockviewPanelProps) {
-  const { effective, setUser } = useKeybindings();
+  const { user, effective, setUser } = useKeybindings();
   const isMac = useMemo(() => isMacPlatform(), []);
 
   // Which command is currently capturing a chord (null = none), and the
@@ -99,7 +99,18 @@ export function ShortcutsPanel(_props: IDockviewPanelProps) {
 
   const removeBinding = (target: BindingSpec) => {
     setError(null);
-    setUser(effective.filter((b) => b !== target));
+    // The stored list is a snapshot, so a removal has to be *recorded*
+    // rather than merely absent — absence now means "this default was
+    // shipped after the snapshot" (`resolveBindings`). Earlier
+    // tombstones ride along, since `effective` never contains them.
+    const tombstones = (user ?? []).filter(
+      (b) => b.disabled && !(b.chord === target.chord && b.commandId === target.commandId),
+    );
+    setUser([
+      ...effective.filter((b) => b !== target),
+      ...tombstones,
+      { chord: target.chord, commandId: target.commandId, disabled: true },
+    ]);
   };
 
   const display = (chord: string) => {

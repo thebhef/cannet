@@ -73,7 +73,11 @@ describe("ShortcutsPanel", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/Can't bind Mod\+Shift\+P/);
   });
 
-  it("removes a single binding", () => {
+  it("removes a single binding, recording the removal so it stays removed", () => {
+    // The stored customisation is a whole-list snapshot, and absence in
+    // one now means "shipped after this snapshot was taken"
+    // (`resolveBindings`). So a removal is written down rather than
+    // merely left out, or it would come back on the next resolve.
     const { setUser } = renderPanel();
     fireEvent.click(
       within(row("Show command palette")).getByLabelText(
@@ -82,8 +86,13 @@ describe("ShortcutsPanel", () => {
     );
     expect(setUser).toHaveBeenCalledTimes(1);
     const next = setUser.mock.calls[0][0] as BindingSpec[];
-    expect(next.some((b) => b.commandId === "palette.show")).toBe(false);
-    expect(next.length).toBe(DEFAULT_BINDINGS.length - 1);
+    expect(next.some((b) => b.commandId === "palette.show" && !b.disabled)).toBe(false);
+    expect(next).toContainEqual({
+      chord: "Mod+Shift+P",
+      commandId: "palette.show",
+      disabled: true,
+    });
+    expect(next.length).toBe(DEFAULT_BINDINGS.length);
   });
 
   it("resets to defaults with null", () => {

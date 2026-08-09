@@ -618,6 +618,12 @@ pub struct Binding {
     pub command_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skip_editable: Option<bool>,
+    /// A binding the user removed. Carried so the frontend can tell
+    /// "removed" from "shipped after this list was written" — the
+    /// customisation is a whole-list snapshot, so absence alone cannot
+    /// mean both. Omitted when unset, like `skip_editable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
 }
 
 /// The smallest legal [`Settings::scratch_cap_bytes`] (ADR 0002 DS-8).
@@ -1030,11 +1036,19 @@ mod tests {
                     chord: "Mod+k".into(),
                     command_id: "palette.show".into(),
                     skip_editable: None,
+                    disabled: None,
                 },
                 Binding {
                     chord: "Mod+z".into(),
                     command_id: "view.undo".into(),
                     skip_editable: Some(true),
+                    disabled: None,
+                },
+                Binding {
+                    chord: "f".into(),
+                    command_id: "plot.fitXAxis".into(),
+                    skip_editable: None,
+                    disabled: Some(true),
                 },
             ]),
             show_developer_settings: true,
@@ -1235,6 +1249,9 @@ mod tests {
         let text = serde_json::to_string(&sample()).unwrap();
         assert!(text.contains("\"commandId\":\"palette.show\""), "{text}");
         assert!(text.contains("\"skipEditable\":true"), "{text}");
+        // A removal the editor recorded survives the round trip — the
+        // frontend needs it to tell "removed" from "shipped later".
+        assert!(text.contains("\"disabled\":true"), "{text}");
         // The first binding has no skip_editable, so it must not serialize one.
         assert!(
             !text.contains("\"chord\":\"Mod+k\",\"commandId\":\"palette.show\",\"skipEditable\""),

@@ -193,8 +193,27 @@ export function dispatchStroke(
     return { pending: strokes, commandId: null, handled: true };
   }
   // No match. If we were buffering, the sequence broke; either way
-  // the stroke wasn't ours.
+  // the stroke wasn't ours — unless it is one the browser underneath
+  // would act on itself, which the app claims regardless.
+  if (isBrowserChordWeClaim(stroke)) {
+    return { pending: [], commandId: null, handled: true };
+  }
   return { pending: [], commandId: null, handled: false };
+}
+
+/// Chords the WebView would otherwise hand to its own browser UI, which
+/// a desktop window has no business showing. Claimed whether or not
+/// anything is bound to them: the browser does not ask first, so the
+/// only way to keep its find bar off the app is for the page to cancel
+/// the key every time. A claimed chord that matched no binding runs no
+/// command — it is swallowed, not repurposed.
+///
+/// Deliberately short. Chords the app merely *has* a binding for are not
+/// in it, because a binding can be context-gated and must still fall
+/// through where it doesn't apply (plain `Escape` is the standing
+/// example — modals and in-panel handlers need it).
+function isBrowserChordWeClaim(stroke: KeyStroke): boolean {
+  return (stroke.ctrl || stroke.meta) && !stroke.alt && !stroke.shift && stroke.key.toLowerCase() === "f";
 }
 
 /// Is the keydown target a text-entry surface? Plain-key bindings
