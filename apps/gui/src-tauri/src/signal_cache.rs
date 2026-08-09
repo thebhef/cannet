@@ -2565,12 +2565,23 @@ mod tests {
     // rebuild is paid per signal while the restore is one directory of
     // `mmap` calls — so the two dimensions do not scale together and both
     // are worth running.
+    //
+    // `CANNET_BENCH_SIGNALS_PER_MSG` (default 1, max 32 — 64 FD bytes at
+    // 16 bits a signal) spreads those signals over fewer, wider messages,
+    // which is the shape a cell-style message has. It is the dimension the
+    // shared catch-up acts on, so the rebuild is measured **twice** over
+    // the same capture: once catching each signal up on its own (a batch
+    // of one, which is what the catch-up did before the sharing) and once
+    // catching each message's signals up together, as a plot fetch does.
+    // The shared arm runs first, off cold pages, so the ratio between them
+    // is a lower bound.
 
     #[test]
     #[ignore = "first-use rebuild benchmark; run with --ignored --nocapture"]
     #[allow(clippy::too_many_lines)]
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     fn bench_first_use_rebuild() {
+        use std::fmt::Write as _;
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
         use std::sync::Arc;
 
@@ -2593,20 +2604,44 @@ mod tests {
                 .unwrap_or(default)
         }
 
-        /// One message per signal, ids from 256 up, each carrying the same
-        /// 16-bit signal `val_frame` fills. The capture round-robins them,
-        /// so every signal is equally dense and the whole capture decodes.
-        const MSG: &str =
-            "\nBO_ {id} Msg{id}: 8 Vector__XXX\n SG_ X : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n";
-
         let frames = env_usize("CANNET_BENCH_FRAMES", 4_000_000);
         let signals = env_usize("CANNET_BENCH_SIGNALS", 1);
+        let per_message = env_usize("CANNET_BENCH_SIGNALS_PER_MSG", 1).clamp(1, 32);
+        let messages = signals.div_ceil(per_message);
+        // How many signals each message carries: `per_message` except in
+        // the last one, which holds the remainder.
+        let width = |m: usize| (signals - m * per_message).min(per_message);
+        // Ids from 256 up, one per message, each carrying `width(m)`
+        // 16-bit signals side by side in an FD payload. The capture
+        // round-robins the messages, so every signal is equally dense and
+        // the whole capture decodes.
         let dbc: String = std::iter::once("VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_:\n".to_string())
-            .chain((0..signals).map(|n| MSG.replace("{id}", &(256 + n).to_string())))
+            .chain((0..messages).map(|m| {
+                let id = 256 + m;
+                let mut msg = format!("\nBO_ {id} Msg{id}: {} Vector__XXX\n", 2 * width(m));
+                for s in 0..width(m) {
+                    let start = s * 16;
+                    writeln!(
+                        msg,
+                        " SG_ X{s} : {start}|16@1+ (1,0) [0|0] \"\" Vector__XXX"
+                    )
+                    .unwrap();
+                }
+                msg
+            }))
             .collect();
         let db = Database::parse(&dbc).unwrap();
         let dbs: &[&Database] = &[&db];
-        let ids: Vec<u32> = (0..signals).map(|n| 256 + n as u32).collect();
+        // The view's signals, in the order a plot fetch would name them.
+        let names: Vec<String> = (0..per_message).map(|s| format!("X{s}")).collect();
+        let queries: Vec<CacheQuery<'_>> = (0..signals)
+            .map(|n| CacheQuery {
+                bus_id: None,
+                message_id: 256 + (n / per_message) as u32,
+                extended: false,
+                signal_name: &names[n % per_message],
+            })
+            .collect();
 
         let scratch = TempDir::new().unwrap();
         let raw_dir = scratch.path().join("raw");
@@ -2614,12 +2649,23 @@ mod tests {
         let store = TraceStore::new_disk(&raw_dir).unwrap();
         let wrote = std::time::Instant::now();
         for i in 0..frames {
-            let mut f = val_frame(i as u64 * 1_000_000, (i % 4096) as u16);
-            f.id = ids[i % signals];
+            let m = i % messages;
+            let v = (i % 4096) as u16;
+            let mut data = Vec::with_capacity(2 * width(m));
+            for s in 0..width(m) {
+                data.extend_from_slice(&v.wrapping_add(s as u16).to_le_bytes());
+            }
+            let mut f = val_frame(i as u64 * 1_000_000, v);
+            f.id = 256 + m as u32;
+            f.payload = cannet_core::CanFramePayload::Fd {
+                data,
+                flags: cannet_core::CanFdFlags::default(),
+            };
             store.append(f);
         }
         println!(
-            "[bench] wrote {frames} frames over {signals} signal(s) in {:.1} s",
+            "[bench] wrote {frames} frames over {signals} signal(s) in {messages} message(s) \
+             ({per_message} signal(s) each) in {:.1} s",
             wrote.elapsed().as_secs_f64(),
         );
 
@@ -2643,23 +2689,17 @@ mod tests {
         };
 
         let started = std::time::Instant::now();
-        let pts: usize = ids
-            .iter()
-            .map(|&id| {
-                cache
-                    .slice(None, id, false, "X", f64::MIN, f64::MAX, 2000, &store, dbs)
-                    .len()
-            })
-            .sum();
+        let shared = cache.slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs);
         let secs = started.elapsed().as_secs_f64();
+        let pts: usize = shared.iter().map(Vec::len).sum();
         stop.store(true, Ordering::Relaxed);
         sampler.join().unwrap();
 
         let peak = peak.load(Ordering::Relaxed).max(rss());
         let delta = peak.saturating_sub(base);
         println!(
-            "[bench] first-use rebuild: {signals} signal(s) over {frames} frames in {:.2} s \
-             ({:.3} us/frame/signal), working set {:.0} -> {:.0} MB \
+            "[bench] first-use rebuild, shared pass: {signals} signal(s) over {frames} frames \
+             in {:.2} s ({:.3} us/frame/signal), working set {:.0} -> {:.0} MB \
              (+{:.0} MB = {:.0} B/frame), {pts} points served",
             secs,
             secs * 1e6 / (frames * signals) as f64,
@@ -2667,6 +2707,43 @@ mod tests {
             peak as f64 / 1e6,
             delta as f64 / 1e6,
             delta as f64 / frames as f64,
+        );
+
+        // --- the same rebuild, one signal at a time ---
+        //
+        // A batch of one per signal: the catch-up before the sharing,
+        // re-fetching and re-decoding each message's frames once per
+        // signal riding it. Its own cold pyramid root, the same capture
+        // (whose pages the shared arm has already warmed, so this arm is
+        // if anything favoured).
+        let alone_root = TempDir::new().unwrap();
+        let alone = SignalCacheStore::new(alone_root.path());
+        let alone_at = std::time::Instant::now();
+        let separate: Vec<Vec<SamplePoint>> = queries
+            .iter()
+            .map(|q| {
+                alone.slice(
+                    q.bus_id,
+                    q.message_id,
+                    q.extended,
+                    q.signal_name,
+                    f64::MIN,
+                    f64::MAX,
+                    2000,
+                    &store,
+                    dbs,
+                )
+            })
+            .collect();
+        let alone_secs = alone_at.elapsed().as_secs_f64();
+        assert_eq!(separate, shared, "the same series, both ways");
+        drop(alone);
+        println!(
+            "[bench] first-use rebuild, per signal: {:.2} s ({:.3} us/frame/signal) — \
+             the shared pass is {:.1}x it at {per_message} signal(s) per message",
+            alone_secs,
+            alone_secs * 1e6 / (frames * signals) as f64,
+            alone_secs / secs.max(1e-9),
         );
 
         // --- the same first use, over a persisted pyramid (ADR 0047) ---
@@ -2700,13 +2777,10 @@ mod tests {
         let restore_secs = restore_at.elapsed().as_secs_f64();
         assert_eq!(restored, signals, "every pyramid came back");
         let served_at = std::time::Instant::now();
-        let back: usize = ids
+        let back: usize = reopened
+            .slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs)
             .iter()
-            .map(|&id| {
-                reopened
-                    .slice(None, id, false, "X", f64::MIN, f64::MAX, 2000, &store, dbs)
-                    .len()
-            })
+            .map(Vec::len)
             .sum();
         let served_secs = served_at.elapsed().as_secs_f64();
         assert_eq!(back, pts, "the same windows, point for point");
