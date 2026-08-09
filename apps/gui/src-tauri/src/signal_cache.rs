@@ -48,14 +48,19 @@
 //! cursor stay per series through it ([`catch_up_group_chunked`]).
 //!
 //! Concurrency and residency: one global mutex around the (small)
-//! `HashMap`. The catch-up scans the unread frame range in
-//! [`CATCH_UP_CHUNK_FRAMES`] chunks, asking the trace store for one
-//! chunk's matching frames at a time and decoding them between fetches —
-//! so it holds the trace-store lock only for a chunk's clone (the pump
-//! isn't starved by a long catch-up) and the frames it has materialized
-//! at any moment are bounded by the chunk, not by the capture length.
-//! That matters most on the first use of a signal over a *restored*
-//! capture (ADR 0002 DS-7), where the unread range is the whole history.
+//! `HashMap`, but **never held across a rebuild** (ADR 0048). The
+//! catch-up scans the unread frame range in [`CATCH_UP_CHUNK_FRAMES`]
+//! chunks, and each chunk is planned under the lock, fetched and decoded
+//! off it, then appended under it again — so the longest uninterrupted
+//! hold is one chunk's appends, not the minutes a cold rebuild takes.
+//! Another area's serve, the flusher's eviction, the manifest write and
+//! the exit path slot in between chunks, and two cold areas decode in
+//! parallel. It holds the trace-store lock only for a chunk's clone (the
+//! pump isn't starved by a long catch-up) and the frames it has
+//! materialized at any moment are bounded by the chunk, not by the
+//! capture length. That matters most on the first use of a signal over a
+//! *restored* capture (ADR 0002 DS-7), where the unread range is the
+//! whole history.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -343,21 +348,33 @@ impl SignalCache {
 
 /// One member of a shared catch-up: the facts that stay **per series**
 /// when several series of one message are caught up in a single pass —
-/// the bus its query is scoped to, the signal it decodes, and the cache
-/// carrying its own decode cursor and pyramid.
+/// the bus its query is scoped to, the signal it decodes, and its decode
+/// cursor.
+///
+/// The cursor is a *snapshot*, read under the cache lock when a chunk is
+/// planned. The scan runs off that lock (ADR 0048), so the authoritative
+/// cursor is re-read — and the same gate re-applied — when the chunk's
+/// samples are appended.
 struct GroupTarget<'a> {
     bus_id: Option<&'a str>,
     signal_name: &'a str,
-    cache: &'a mut SignalCache,
+    next_index: usize,
 }
 
-/// Catch every series of one `(message_id, extended)` group up to
-/// `store_len` in **one** pass over the message's frames: one fetch of
-/// each chunk and one decode of each frame, answering all of `targets`.
-/// Returns whether any cursor moved. `O(new matches since the furthest
-/// behind target's last call)` in fetch and decode, rather than that
-/// many times over — the reason a message carrying sixteen plotted
-/// signals no longer costs sixteen scans of the capture.
+/// One decoded sample waiting for the cache lock: the store frame index
+/// it came from, so the append can re-apply the per-target cursor gate
+/// against the cursor as it stands *then*, and the point itself.
+struct ChunkSample {
+    index: usize,
+    t_seconds: f64,
+    value: f64,
+}
+
+/// Fetch and decode one chunk `[from, to)` of a `(message_id, extended)`
+/// group's frames for every target at once — **holding no cache lock**
+/// (ADR 0048). One `fetch` of the chunk and one decode of each frame
+/// answers all of `targets`, so a message carrying sixteen plotted
+/// signals costs one scan rather than sixteen.
 ///
 /// What stays per target, and how:
 ///
@@ -369,36 +386,23 @@ struct GroupTarget<'a> {
 /// - **Bus scoping.** The filter is the target's, not the group's: two
 ///   series on one message id can be scoped to different buses (or to
 ///   the legacy "any bus"), so the eligibility test runs per target.
-/// - **Cursors.** The group's scan starts at the *minimum* cursor, so a
-///   series joining a message that is already plotted still reads the
-///   whole history; the frame index each fetch returns gates the rest,
-///   so a target already past a frame never appends it twice.
+/// - **Cursors.** A target already past a frame is skipped, so a series
+///   joining a message that is already plotted can read the whole
+///   history in the same pass that appends nothing to the incumbents.
 ///
-/// `fetch` materializes one chunk of the scan — the matching frames of
-/// `(message_id, extended)` in `[from, to)` paired with their store
-/// index. It is the seam the trace store is read through, so a test can
-/// drive the scan over a span no fixture could hold. The scan walks in
-/// [`CATCH_UP_CHUNK_FRAMES`] steps rather than asking for the whole
-/// span at once, because the whole span is `O(capture)`: on the first
-/// use of a signal over a restored capture (ADR 0002 DS-7) the
-/// unscanned range is the entire history, and materializing its matches
-/// up front is an unbounded allocation spike (and an unbounded hold on
-/// the trace-store lock, which `fetch` takes and releases per chunk)
-/// before a single sample decodes. Decoding runs between fetches, off
-/// that lock.
-fn catch_up_group_chunked(
+/// `out` is index-parallel with `targets` and cleared here, so the
+/// caller reuses one set of buffers across the whole scan.
+fn scan_chunk(
     message_id: u32,
     extended: bool,
-    targets: &mut [GroupTarget<'_>],
-    store_len: usize,
+    targets: &[GroupTarget<'_>],
+    chunk: std::ops::Range<usize>,
     dbs: &[&Database],
     fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
-) -> bool {
-    let Some(start) = targets.iter().map(|t| t.cache.next_index).min() else {
-        return false;
-    };
-    if start >= store_len {
-        return false;
+    out: &mut [Vec<ChunkSample>],
+) {
+    for samples in out.iter_mut() {
+        samples.clear();
     }
     // Scratch reused across frames so the per-frame loop allocates
     // nothing: which targets want a value from the frame in hand, the
@@ -406,50 +410,41 @@ fn catch_up_group_chunked(
     let mut pending: Vec<usize> = Vec::with_capacity(targets.len());
     let mut wanted: Vec<&str> = Vec::with_capacity(targets.len());
     let mut values: Vec<Option<f64>> = Vec::with_capacity(targets.len());
-    let mut cursor = start;
-    while cursor < store_len {
-        let to = cursor.saturating_add(CATCH_UP_CHUNK_FRAMES).min(store_len);
-        for (idx, frame) in fetch(message_id, extended, cursor, to) {
-            pending.clear();
-            wanted.clear();
-            for (i, t) in targets.iter().enumerate() {
-                // A target already past this frame must not re-append it.
-                if idx < t.cache.next_index {
-                    continue;
-                }
-                // Bus filter: when the query is scoped to a bus, drop
-                // frames whose `bus_id` doesn't match. `None` on the query
-                // is the legacy "any bus" path that takes every frame.
-                if let Some(want) = t.bus_id {
-                    if frame.bus_id.as_deref() != Some(want) {
-                        continue;
-                    }
-                }
-                pending.push(i);
-                wanted.push(t.signal_name);
-            }
-            if pending.is_empty() {
+    for (index, frame) in fetch(message_id, extended, chunk.start, chunk.end) {
+        pending.clear();
+        wanted.clear();
+        for (i, t) in targets.iter().enumerate() {
+            // A target already past this frame must not re-append it.
+            if index < t.next_index {
                 continue;
             }
-            signal_sampler::sample_shared(&frame, dbs, message_id, extended, &wanted, &mut values);
-            #[allow(clippy::cast_precision_loss)]
-            let t_seconds = (frame.timestamp_ns as f64) / 1e9;
-            for (&i, value) in pending.iter().zip(&values) {
-                if let Some(value) = *value {
-                    targets[i].cache.push_sample(t_seconds, value);
+            // Bus filter: when the query is scoped to a bus, drop
+            // frames whose `bus_id` doesn't match. `None` on the query
+            // is the legacy "any bus" path that takes every frame.
+            if let Some(want) = t.bus_id {
+                if frame.bus_id.as_deref() != Some(want) {
+                    continue;
                 }
             }
+            pending.push(i);
+            wanted.push(t.signal_name);
         }
-        // Never *lower* a cursor that started ahead of the group's.
-        for t in targets.iter_mut() {
-            t.cache.next_index = t.cache.next_index.max(to);
+        if pending.is_empty() {
+            continue;
         }
-        cursor = to;
+        signal_sampler::sample_shared(&frame, dbs, message_id, extended, &wanted, &mut values);
+        #[allow(clippy::cast_precision_loss)]
+        let t_seconds = (frame.timestamp_ns as f64) / 1e9;
+        for (&i, value) in pending.iter().zip(&values) {
+            if let Some(value) = *value {
+                out[i].push(ChunkSample {
+                    index,
+                    t_seconds,
+                    value,
+                });
+            }
+        }
     }
-    for t in targets.iter_mut() {
-        t.cache.fold();
-    }
-    true
 }
 
 /// Smallest live slot `k` in `[first_slot, level.len())` whose `t_seconds`
@@ -764,41 +759,22 @@ fn ensure_caches(caches: &mut Caches, queries: &[CacheQuery<'_>]) -> Vec<SignalK
         .collect()
 }
 
-/// Catch every cache named by `keys` up to `store_len`, one decode pass
-/// per `(message_id, extended)` group ([`catch_up_group_chunked`]). The
-/// tip is read once for the whole batch, so every series in it observes
-/// the same capture length; `fetch` is the seam each group's chunks are
-/// materialized through.
-fn catch_up_batch(
-    caches: &mut Caches,
-    keys: &[SignalKey],
-    store_len: usize,
-    dbs: &[&Database],
-    fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
-) {
-    let wanted: std::collections::HashSet<&SignalKey> = keys.iter().collect();
-    let Caches { by_key, dirty, .. } = caches;
-    let mut groups: HashMap<(u32, bool), Vec<GroupTarget<'_>>> = HashMap::new();
-    for (key, cache) in by_key.iter_mut() {
-        if !wanted.contains(key) {
-            continue;
+/// The batch's keys grouped by `(message_id, extended)` — the unit one
+/// decode pass covers — with repeats collapsed, since a query asked twice
+/// is one series and must be caught up once.
+fn group_keys(keys: &[SignalKey]) -> HashMap<(u32, bool), Vec<&SignalKey>> {
+    let mut seen: std::collections::HashSet<&SignalKey> = std::collections::HashSet::new();
+    let mut groups: HashMap<(u32, bool), Vec<&SignalKey>> = HashMap::new();
+    for key in keys {
+        if seen.insert(key) {
+            groups.entry((key.1, key.2)).or_default().push(key);
         }
-        groups.entry((key.1, key.2)).or_default().push(GroupTarget {
-            bus_id: key.0.as_deref(),
-            signal_name: key.3.as_str(),
-            cache,
-        });
     }
-    let mut moved = false;
-    for ((message_id, extended), mut targets) in groups {
-        moved |= catch_up_group_chunked(message_id, extended, &mut targets, store_len, dbs, fetch);
-    }
-    *dirty |= moved;
+    groups
 }
 
 /// Read one chunk of a `(message_id, extended)` group's frames out of the
-/// trace store — the production form of [`catch_up_group_chunked`]'s
-/// `fetch` seam.
+/// trace store — the production form of [`scan_chunk`]'s `fetch` seam.
 fn store_fetch(
     store: &TraceStore,
 ) -> impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)> + '_ {
@@ -819,6 +795,14 @@ pub struct SignalCacheStore {
 struct Caches {
     root: PathBuf,
     by_key: HashMap<SignalKey, SignalCache>,
+    /// Bumped whenever the whole set is replaced — [`SignalCacheStore::clear`],
+    /// [`SignalCacheStore::invalidate_dbcs`], [`SignalCacheStore::reroot`],
+    /// [`SignalCacheStore::restore`]. A catch-up decodes off this lock
+    /// (ADR 0048), so it reads the generation when it plans a chunk and
+    /// drops the chunk's samples if it no longer matches: they describe
+    /// caches that no longer exist, and appending them to whatever took
+    /// their key would mix two captures' samples into one pyramid.
+    generation: u64,
     /// The pyramid set found under `root` at open, neither adopted nor
     /// rejected yet — the boot sequence loads the project's DBCs before it
     /// restores the capture, and the set can only be judged once both are
@@ -843,6 +827,7 @@ fn open_root(root: PathBuf) -> Caches {
     Caches {
         root,
         by_key: HashMap::new(),
+        generation: 0,
         staged,
         dirty: false,
     }
@@ -866,6 +851,7 @@ impl SignalCacheStore {
     pub fn clear(&self) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         caches.by_key = HashMap::new();
+        caches.generation += 1;
         caches.staged = None;
         caches.dirty = false;
         wipe_dir(&caches.root);
@@ -884,6 +870,7 @@ impl SignalCacheStore {
     pub fn invalidate_dbcs(&self) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         caches.by_key = HashMap::new();
+        caches.generation += 1;
         caches.dirty = false;
         let Caches { root, staged, .. } = &*caches;
         match staged {
@@ -908,7 +895,12 @@ impl SignalCacheStore {
         // otherwise ask the OS to remove files this process still maps.
         caches.by_key = HashMap::new();
         caches.staged = None;
+        // The generation is the store's, not the root's: it only has to
+        // keep rising, so a catch-up planned before the move can tell that
+        // its samples belong to a set that is gone.
+        let generation = caches.generation + 1;
         *caches = open_root(root.as_ref().to_path_buf());
+        caches.generation = generation;
     }
 
     /// Write the manifest describing the live pyramids and the
@@ -992,6 +984,7 @@ impl SignalCacheStore {
         let restored = usable
             .then(|| reopen_set(&caches.root, &manifest))
             .flatten();
+        caches.generation += 1;
         if let Some(caught_up) = restored {
             let n = caught_up.len();
             caches.by_key = caught_up.into_iter().collect();
@@ -1015,6 +1008,124 @@ impl SignalCacheStore {
             cache.evict_below(ts_seconds);
         }
         caches.dirty |= !caches.by_key.is_empty();
+    }
+
+    /// Create a cache for every query that doesn't have one yet, and
+    /// return the queries' keys in request order (duplicates included —
+    /// the result of a batch is index-parallel with it). One short hold
+    /// of the lock, taken and released before any decoding starts.
+    fn ensure_caches(&self, queries: &[CacheQuery<'_>]) -> Vec<SignalKey> {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        ensure_caches(&mut caches, queries)
+    }
+
+    /// Catch every cache named by `keys` up to `store_len`, one decode
+    /// pass per `(message_id, extended)` group. `store_len` is the tip
+    /// read once for the whole batch, so every series in it observes the
+    /// same capture length; `fetch` is the seam each group's chunks are
+    /// materialized through.
+    fn catch_up_keys(
+        &self,
+        keys: &[SignalKey],
+        store_len: usize,
+        dbs: &[&Database],
+        fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
+    ) {
+        for ((message_id, extended), group) in group_keys(keys) {
+            self.catch_up_group(message_id, extended, &group, store_len, dbs, fetch);
+        }
+    }
+
+    /// Catch one `(message_id, extended)` group up to `store_len`,
+    /// **taking the cache lock only to plan a chunk and to apply it**
+    /// (ADR 0048). Each turn of the loop:
+    ///
+    /// 1. *plan* — under the lock, read every target's decode cursor and
+    ///    the generation they belong to;
+    /// 2. *scan* — off the lock, fetch the chunk's frames and decode them
+    ///    once for the whole group ([`scan_chunk`]);
+    /// 3. *apply* — under the lock, append what decoded, advance the
+    ///    cursors and fold the pyramids.
+    ///
+    /// So the longest uninterrupted hold is one chunk's appends rather
+    /// than a whole rebuild: another area's serve, the flusher's
+    /// [`Self::evict_below`], the manifest write and the exit path all
+    /// slot in between chunks instead of waiting for the rebuild to end.
+    /// Two cold areas now decode in parallel, because the decode — the
+    /// expensive part — holds nothing.
+    ///
+    /// The cursor read in step 1 is only a hint by step 3, so the append
+    /// re-applies the gate against the live cursor: a sample whose frame
+    /// index another pass has already covered is dropped rather than
+    /// appended twice. A generation change between the two means the
+    /// caches were replaced (cleared, re-rooted, restored) and the whole
+    /// pass is abandoned — its samples describe a set that is gone.
+    fn catch_up_group(
+        &self,
+        message_id: u32,
+        extended: bool,
+        keys: &[&SignalKey],
+        store_len: usize,
+        dbs: &[&Database],
+        fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
+    ) {
+        let (generation, mut targets) = {
+            let caches = self.caches.lock().expect("signal cache mutex poisoned");
+            let mut targets = Vec::with_capacity(keys.len());
+            for key in keys {
+                let Some(cache) = caches.by_key.get(*key) else {
+                    return;
+                };
+                targets.push(GroupTarget {
+                    bus_id: key.0.as_deref(),
+                    signal_name: key.3.as_str(),
+                    next_index: cache.next_index,
+                });
+            }
+            (caches.generation, targets)
+        };
+        // The scan starts at the group's *minimum* cursor, so a series
+        // joining a message that is already plotted reads the whole
+        // history in the same pass.
+        let Some(start) = targets.iter().map(|t| t.next_index).min() else {
+            return;
+        };
+        let mut cursor = start;
+        let mut samples: Vec<Vec<ChunkSample>> = (0..keys.len()).map(|_| Vec::new()).collect();
+        while cursor < store_len {
+            let to = cursor.saturating_add(CATCH_UP_CHUNK_FRAMES).min(store_len);
+            scan_chunk(
+                message_id,
+                extended,
+                &targets,
+                cursor..to,
+                dbs,
+                fetch,
+                &mut samples,
+            );
+            let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+            if caches.generation != generation {
+                return;
+            }
+            for (i, key) in keys.iter().enumerate() {
+                let Some(cache) = caches.by_key.get_mut(*key) else {
+                    continue;
+                };
+                for s in &samples[i] {
+                    if s.index < cache.next_index {
+                        continue;
+                    }
+                    cache.push_sample(s.t_seconds, s.value);
+                }
+                // Never *lower* a cursor that started ahead of the group's.
+                cache.next_index = cache.next_index.max(to);
+                cache.fold();
+                targets[i].next_index = cache.next_index;
+            }
+            caches.dirty = true;
+            drop(caches);
+            cursor = to;
+        }
     }
 
     /// Catch the signal's cache up to the trace store's current tip,
@@ -1093,9 +1204,9 @@ impl SignalCacheStore {
         store: &TraceStore,
         dbs: &[&Database],
     ) -> Vec<Vec<SamplePoint>> {
-        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        let keys = ensure_caches(&mut caches, queries);
-        catch_up_batch(&mut caches, &keys, store.len(), dbs, &store_fetch(store));
+        let keys = self.ensure_caches(queries);
+        self.catch_up_keys(&keys, store.len(), dbs, &store_fetch(store));
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
         keys.iter()
             .map(|key| {
                 caches.by_key.get(key).map_or_else(Vec::new, |cache| {
@@ -1141,9 +1252,9 @@ impl SignalCacheStore {
         store: &TraceStore,
         dbs: &[&Database],
     ) -> Vec<Option<(f64, f64)>> {
-        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        let keys = ensure_caches(&mut caches, queries);
-        catch_up_batch(&mut caches, &keys, store.len(), dbs, &store_fetch(store));
+        let keys = self.ensure_caches(queries);
+        self.catch_up_keys(&keys, store.len(), dbs, &store_fetch(store));
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
         keys.iter()
             .map(|key| caches.by_key.get(key).and_then(SignalCache::extent))
             .collect()
@@ -1932,9 +2043,8 @@ mod tests {
         dbs: &[&Database],
         fetch: impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     ) -> Vec<SignalKey> {
-        let mut caches = store.caches.lock().unwrap();
-        let keys = ensure_caches(&mut caches, queries);
-        catch_up_batch(&mut caches, &keys, store_len, dbs, &fetch);
+        let keys = store.ensure_caches(queries);
+        store.catch_up_keys(&keys, store_len, dbs, &fetch);
         keys
     }
 
@@ -2317,6 +2427,165 @@ mod tests {
             .slice_many(&[], f64::MIN, f64::MAX, 0, &store, &dbs)
             .is_empty());
         assert!(cache.min_max_many(&[], &store, &dbs).is_empty());
+    }
+
+    // ---- Lock granularity (ADR 0048) ---------------------------------
+    //
+    // A cold rebuild is minutes of fetching and decoding. These pin that
+    // it holds nothing while it does that: the probes below run *while* a
+    // rebuild sits blocked inside its chunk fetch, and each one has to
+    // finish on its own rather than behind the rebuild. Written as
+    // would-block probes — the main thread waits on a channel with a
+    // timeout and releases the rebuild either way, so a regression fails
+    // the assertion instead of hanging the suite.
+
+    /// How long a probe may take before it counts as blocked. Generous:
+    /// every operation it covers is microseconds of real work, so the
+    /// only way to spend this long is waiting on the rebuild.
+    const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+    /// Message 256 signal `X` and message 512 signal `Y` — one plotted
+    /// signal in each of two plot areas.
+    fn dbc_two_areas() -> Database {
+        Database::parse(&format!(
+            "{DBC_HEADER}\nBO_ 256 MsgA: 8 Vector__XXX\n \
+             SG_ X : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n\
+             \nBO_ 512 MsgB: 8 Vector__XXX\n \
+             SG_ Y : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n"
+        ))
+        .unwrap()
+    }
+
+    fn query_x<'a>() -> CacheQuery<'a> {
+        CacheQuery {
+            bus_id: None,
+            message_id: 256,
+            extended: false,
+            signal_name: "X",
+        }
+    }
+
+    fn key_x() -> SignalKey {
+        (None, 256, false, "X".to_string())
+    }
+
+    /// Run `probe` while a cold catch-up of message 256 sits blocked
+    /// inside its first chunk fetch, and report whether it finished
+    /// within [`PROBE_TIMEOUT`]. The rebuild is released either way, so
+    /// both threads always join.
+    fn while_a_cold_rebuild_runs(
+        cache: &SignalCacheStore,
+        dbs: &[&Database],
+        store_len: usize,
+        probe: impl FnOnce() + Send,
+    ) -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let first = AtomicBool::new(true);
+                catch_up_through(cache, &[query_x()], store_len, dbs, |_, _, from, to| {
+                    if first.swap(false, Ordering::SeqCst) {
+                        // Inside the chunk fetch: cursors planned, nothing
+                        // decoded, and — the property under test — no lock
+                        // held.
+                        reached_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                    }
+                    #[allow(clippy::cast_possible_truncation)]
+                    (from..to)
+                        .map(|i| (i, val_frame(i as u64 * 1_000_000, (i % 251) as u16)))
+                        .collect()
+                });
+            });
+            reached_rx.recv().unwrap();
+            scope.spawn(move || {
+                probe();
+                done_tx.send(()).unwrap();
+            });
+            let finished = done_rx.recv_timeout(PROBE_TIMEOUT).is_ok();
+            release_tx.send(()).unwrap();
+            finished
+        })
+    }
+
+    #[test]
+    fn a_cold_rebuild_in_one_area_does_not_block_another() {
+        // The motivating defect: one area's first-use rebuild held the
+        // whole signal-cache mutex, so every other plot's serve, every
+        // min/max sidecar and the flusher's eviction queued behind it.
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(dummy(
+                i * S,
+                512,
+                vec![(i % 251) as u8, 0, 0, 0, 0, 0, 0, 0],
+            ));
+        }
+        let db = dbc_two_areas();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let store_len = 3 * CATCH_UP_CHUNK_FRAMES;
+
+        let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
+            // The other area's serve, its y-extent, and the flusher's
+            // front-trim — the three the item names.
+            let points = cache.slice(None, 512, false, "Y", f64::MIN, f64::MAX, 0, &store, dbs);
+            assert_eq!(points.len(), 200);
+            assert!(cache.min_max(None, 512, false, "Y", &store, dbs).is_some());
+            cache.evict_below(50.0);
+        });
+        assert!(
+            finished,
+            "another area's sampling, min/max and eviction waited for the rebuild",
+        );
+
+        // And the rebuild itself still completed, whole.
+        with_cache(&cache, &key_x(), |c| {
+            assert_eq!(c.next_index, store_len);
+            assert_eq!(c.levels[0].len(), store_len);
+        });
+    }
+
+    #[test]
+    fn the_exit_path_does_not_wait_for_a_cold_rebuild() {
+        // The exit contract. Closing the window runs the pyramid manifest
+        // write, and — with clear-scratch-on-exit — the whole-cache clear.
+        // Both used to park behind a rebuild, which is why the window
+        // could not be closed while the plots were building.
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(dummy(
+                i * S,
+                512,
+                vec![(i % 251) as u8, 0, 0, 0, 0, 0, 0, 0],
+            ));
+        }
+        let db = dbc_two_areas();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        // Something already built, so the manifest write has work to do.
+        let _ = cache.slice(None, 512, false, "Y", f64::MIN, f64::MAX, 0, &store, dbs);
+        let v = validity("cap", "dbcs", 0);
+        let store_len = 3 * CATCH_UP_CHUNK_FRAMES;
+
+        let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
+            assert!(cache.needs_persist());
+            assert!(cache.persist(&v, false));
+            cache.clear();
+        });
+        assert!(finished, "the exit path waited for the rebuild");
+
+        // The clear won: the abandoned rebuild appended nothing to a set
+        // that no longer exists, and left no file behind it.
+        let caches = cache.caches.lock().unwrap();
+        assert!(caches.by_key.is_empty());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
     }
 
     // ---- Persistence across restore ---------------------------------
