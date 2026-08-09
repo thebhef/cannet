@@ -7,6 +7,7 @@ import { DockviewDefaultTab, DockviewReact, themeAbyss, themeLight } from "dockv
 import type { DockviewApi, DockviewReadyEvent } from "dockview";
 
 import type {
+  BlfScanResult,
   Bus,
   DbcInfo,
   DbcRef,
@@ -88,7 +89,7 @@ import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
 import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
-import { BlfChannelMapModal } from "./BlfChannelMapModal";
+import { BlfChannelMapModal, type ImportRange } from "./BlfChannelMapModal";
 import {
   ElementRegistryContext,
   type ElementRegistry,
@@ -805,12 +806,12 @@ export function App() {
   }, [count]);
 
   // BLF import has a channel → bus mapping step. The
-  // outer pending state holds the picked BLF path + its distinct
-  // channel list while the modal is open; clicking "Open" in the
-  // modal commits and the host pump starts.
+  // outer pending state holds the picked BLF path + its scan (channel
+  // census, metadata, markers) while the modal is open; clicking
+  // "Open" in the modal commits and the host pump starts.
   const [pendingBlf, setPendingBlf] = useState<{
     blfPath: string;
-    channels: number[];
+    scan: BlfScanResult;
   } | null>(null);
 
   const handleOpenLog = useCallback(
@@ -825,10 +826,10 @@ export function App() {
       if (typeof selected !== "string") return;
 
       try {
-        const channels = await invoke<number[]>("scan_blf_channels", {
+        const scan = await invoke<BlfScanResult>("scan_blf_channels", {
           blfPath: selected,
         });
-        setPendingBlf({ blfPath: selected, channels });
+        setPendingBlf({ blfPath: selected, scan });
       } catch (err) {
         setState({ kind: "error", message: String(err) });
         // If we tried to open a recent file and it failed (path
@@ -841,11 +842,13 @@ export function App() {
   );
 
   // Confirm the BLF channel mapping and actually start the pump.
-  // `choices[ch] === ""` means "skip this channel".
+  // `choices[ch] === ""` means "skip this channel"; `range` is the
+  // selected import window, resolved to absolute ns (or `null` on
+  // either side for unbounded) by the modal.
   const handleBlfMapConfirm = useCallback(
-    async (choices: Record<number, string>) => {
+    async (choices: Record<number, string>, range: ImportRange) => {
       if (!pendingBlf) return;
-      const { blfPath, channels } = pendingBlf;
+      const { blfPath, scan } = pendingBlf;
       setPendingBlf(null);
       // Remember the accepted mapping (exact path + channel-count
       // fallback) so the next open of this BLF — or a same-shaped one —
@@ -866,13 +869,15 @@ export function App() {
         return;
       }
       try {
-        const channelBusMapping = channels.map((ch) => ({
+        const channelBusMapping = scan.channels.map((ch) => ({
           channel: ch,
           busId: choices[ch] ? choices[ch] : null,
         }));
         const result = await invoke<OpenLogResult>("open_log", {
           blfPath,
           channelBusMapping,
+          startNs: range.startNs,
+          endNs: range.endNs,
         });
         setState({ kind: "loading", result });
         // Record on a successful open. Failures don't
@@ -2725,12 +2730,12 @@ export function App() {
       {pendingBlf && (
         <BlfChannelMapModal
           blfPath={pendingBlf.blfPath}
-          channels={pendingBlf.channels}
+          scan={pendingBlf.scan}
           buses={buses}
           initial={savedBlfChannelMap(
             hostState().blf_channel_maps,
             pendingBlf.blfPath,
-            pendingBlf.channels.length,
+            pendingBlf.scan.channels.length,
             new Set(buses.map((b) => b.id)),
           )}
           onConfirm={handleBlfMapConfirm}
