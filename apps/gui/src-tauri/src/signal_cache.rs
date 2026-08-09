@@ -1211,6 +1211,209 @@ mod tests {
         dummy(ts_ns, 256, vec![b0, b1, 0, 0, 0, 0, 0, 0])
     }
 
+    // ---- Semantics one decode pass per message must preserve ---------
+    //
+    // A cached series is defined by *which* database decodes its signal,
+    // which frames its bus scoping admits, and where its decode cursor
+    // sits — all three are per-signal facts even when several signals
+    // ride the same message. These pin them from the outside (through
+    // `slice`), so they hold whoever does the decoding underneath.
+
+    const DBC_HEADER: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_:\n";
+
+    /// Defines message 256 with **only** `A`, at unit scale.
+    fn dbc_a_only() -> Database {
+        Database::parse(&format!(
+            "{DBC_HEADER}\nBO_ 256 Msg: 8 Vector__XXX\n \
+             SG_ A : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n"
+        ))
+        .unwrap()
+    }
+
+    /// Defines the same message 256 with `A` at ten times the scale, and
+    /// with a second signal `B` the other database doesn't have.
+    fn dbc_a_and_b() -> Database {
+        Database::parse(&format!(
+            "{DBC_HEADER}\nBO_ 256 Msg: 8 Vector__XXX\n \
+             SG_ A : 0|16@1+ (10,0) [0|0] \"\" Vector__XXX\n \
+             SG_ B : 16|16@1+ (1,0) [0|0] \"\" Vector__XXX\n"
+        ))
+        .unwrap()
+    }
+
+    /// A frame of message 256 carrying `A` in bytes 0-1 and `B` in 2-3.
+    fn ab_frame(ts_ns: u64, a: u16, b: u16) -> RawTraceFrame {
+        let ([a0, a1], [b0, b1]) = (a.to_le_bytes(), b.to_le_bytes());
+        dummy(ts_ns, 256, vec![a0, a1, b0, b1, 0, 0, 0, 0])
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn first_dbc_wins_per_signal_not_per_message() {
+        // Decode provenance is resolved **per signal** (ADR 0033): each
+        // signal takes the first loaded database that yields *it*, not
+        // the first that happens to define the message. Here the first
+        // database defines the message but only signal `A`, so `A` comes
+        // from it (unit scale, not the second database's ×10) while `B`
+        // — which it cannot produce — falls through to the second.
+        // Deciding provenance once per message would silently rescale
+        // `A` or lose `B` entirely.
+        let store = TraceStore::new();
+        store.append(ab_frame(0, 3, 100));
+        store.append(ab_frame(S, 4, 200));
+        let (first, second) = (dbc_a_only(), dbc_a_and_b());
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let dbs: &[&Database] = &[&first, &second];
+        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        let b = cache.slice(None, 256, false, "B", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(
+            a.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![3.0, 4.0]
+        );
+        assert_eq!(
+            b.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![100.0, 200.0]
+        );
+
+        // Load priority is the whole rule: reverse it and `A` takes the
+        // ×10 scaling from what is now the first database.
+        let tmp2 = TempDir::new().unwrap();
+        let cache2 = SignalCacheStore::new(tmp2.path());
+        let dbs: &[&Database] = &[&second, &first];
+        let a = cache2.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(
+            a.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![30.0, 40.0]
+        );
+    }
+
+    /// One multiplexed message: a selector plus two signals that decode
+    /// only in their own selector group.
+    fn dbc_muxed() -> Database {
+        Database::parse(&format!(
+            "{DBC_HEADER}\nBO_ 512 MuxMsg: 8 Vector__XXX\n \
+             SG_ Sel M : 0|8@1+ (1,0) [0|0] \"\" Vector__XXX\n \
+             SG_ M0 m0 : 8|16@1+ (1,0) [0|0] \"\" Vector__XXX\n \
+             SG_ M1 m1 : 8|16@1+ (1,0) [0|0] \"\" Vector__XXX\n"
+        ))
+        .unwrap()
+    }
+
+    fn mux_frame(ts_ns: u64, selector: u8, v: u16) -> RawTraceFrame {
+        let [b0, b1] = v.to_le_bytes();
+        RawTraceFrame {
+            id: 512,
+            ..dummy(ts_ns, 512, vec![selector, b0, b1, 0, 0, 0, 0, 0])
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_muxed_signal_only_takes_the_frames_of_its_selector_group() {
+        // Two signals of one message whose frame sets are disjoint: the
+        // multiplexor gates each to its own selector group, so neither
+        // series may pick up the other's frames.
+        let store = TraceStore::new();
+        store.append(mux_frame(0, 0, 10));
+        store.append(mux_frame(S, 1, 11));
+        store.append(mux_frame(2 * S, 0, 12));
+        store.append(mux_frame(3 * S, 1, 13));
+        let db = dbc_muxed();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let m0 = cache.slice(None, 512, false, "M0", f64::MIN, f64::MAX, 0, &store, dbs);
+        let m1 = cache.slice(None, 512, false, "M1", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(
+            m0.iter()
+                .map(|p| (p.t_seconds, p.value))
+                .collect::<Vec<_>>(),
+            vec![(0.0, 10.0), (2.0, 12.0)]
+        );
+        assert_eq!(
+            m1.iter()
+                .map(|p| (p.t_seconds, p.value))
+                .collect::<Vec<_>>(),
+            vec![(1.0, 11.0), (3.0, 13.0)]
+        );
+        // The selector itself is a plain signal of the same message and
+        // takes every frame.
+        let sel = cache.slice(None, 512, false, "Sel", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(sel.len(), 4);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_standard_and_an_extended_id_are_separate_series() {
+        // The same raw arbitration id on a standard and an extended
+        // frame are different messages, decoded by different `BO_`
+        // entries. They must never share a series.
+        let db = Database::parse(&format!(
+            "{DBC_HEADER}\nBO_ 256 StdMsg: 8 Vector__XXX\n \
+             SG_ X : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n\
+             \nBO_ 2147483904 ExtMsg: 8 Vector__XXX\n \
+             SG_ X : 0|16@1+ (100,0) [0|0] \"\" Vector__XXX\n"
+        ))
+        .unwrap();
+        let dbs: &[&Database] = &[&db];
+        let store = TraceStore::new();
+        store.append(val_frame(0, 1));
+        store.append(RawTraceFrame {
+            extended: true,
+            ..val_frame(S, 2)
+        });
+        store.append(val_frame(2 * S, 3));
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let std_series = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let ext_series = cache.slice(None, 256, true, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(
+            std_series.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![1.0, 3.0]
+        );
+        assert_eq!(
+            ext_series.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![200.0]
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp, clippy::cast_possible_truncation)]
+    fn a_signal_first_asked_for_mid_capture_still_reads_from_frame_zero() {
+        // Two signals of one message whose decode cursors are far apart:
+        // the first was plotted from the start, the second is added once
+        // the capture is already running. The newcomer must read the
+        // whole history, and the incumbent must not re-read the frames
+        // it has already folded into its pyramid.
+        let store = TraceStore::new();
+        for i in 0..100u64 {
+            store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
+        }
+        let (first, second) = (dbc_a_only(), dbc_a_and_b());
+        let dbs: &[&Database] = &[&first, &second];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(a.len(), 100);
+
+        for i in 100..150u64 {
+            store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
+        }
+        // `B` joins here, 100 frames behind `A`.
+        let b = cache.slice(None, 256, false, "B", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(
+            b.iter().map(|p| p.value).collect::<Vec<_>>(),
+            (0..150).map(|i| f64::from(1000 + i)).collect::<Vec<_>>(),
+        );
+        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(
+            a.iter().map(|p| p.value).collect::<Vec<_>>(),
+            (0..150).map(f64::from).collect::<Vec<_>>(),
+            "no frame decoded twice and none skipped",
+        );
+    }
+
     #[test]
     #[allow(clippy::cast_possible_truncation)]
     fn fit_data_over_large_capture_returns_bounded_points() {
