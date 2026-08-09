@@ -76,13 +76,13 @@ pub fn sample_signal(
 /// buffer so a per-frame loop allocates nothing.
 ///
 /// The message is decoded once *per database*, in load order, and each
-/// name takes the first database that yields **that name**. Decode
-/// provenance is a per-signal fact (ADR 0033), not a per-message one:
-/// where two loaded databases both define a message, one may carry a
-/// signal the other lacks, so two signals of one message legitimately
-/// resolve to two different databases. Choosing a database once for the
-/// whole message would rescale a signal against the wrong definition,
-/// or drop it.
+/// name takes the first database that yields **that name** — the host's
+/// "first DBC that decodes wins" rule (`LoadedDbc`), applied per signal
+/// rather than per message. Where two loaded databases both define a
+/// message, one may carry a signal the other lacks, so two signals of
+/// one message legitimately resolve to two different databases.
+/// Choosing a database once for the whole message would rescale a
+/// signal against the wrong definition, or drop it.
 pub fn sample_shared(
     frame: &RawTraceFrame,
     dbs: &[&Database],
@@ -354,7 +354,7 @@ BO_ 256 EngineData: 2 ECU
 
     /// The critical rule of the shared pass: a name takes the first
     /// database that yields **it**, which is not necessarily the first
-    /// database that defines the message (ADR 0033).
+    /// database that defines the message.
     #[test]
     fn sample_shared_resolves_each_name_against_its_own_first_database() {
         // `first` defines the message with only `A`; `second` defines

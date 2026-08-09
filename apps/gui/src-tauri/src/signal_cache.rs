@@ -386,9 +386,9 @@ struct GroupTarget<'a> {
 ///
 /// - **Decode provenance.** [`signal_sampler::sample_shared`] resolves
 ///   each signal name against the first loaded database that yields
-///   *that name* (ADR 0033), so two signals of one message may come
-///   from two different databases exactly as they did when each was
-///   decoded on its own.
+///   *that name*, so two signals of one message may come from two
+///   different databases exactly as they did when each was decoded on
+///   its own.
 /// - **Bus scoping.** The filter is the target's, not the group's: two
 ///   series on one message id can be scoped to different buses (or to
 ///   the legacy "any bus"), so the eligibility test runs per target.
@@ -1417,8 +1417,8 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn first_dbc_wins_per_signal_not_per_message() {
-        // Decode provenance is resolved **per signal** (ADR 0033): each
-        // signal takes the first loaded database that yields *it*, not
+        // Decode provenance is resolved **per signal**: each signal
+        // takes the first loaded database that yields *it*, not
         // the first that happens to define the message. Here the first
         // database defines the message but only signal `A`, so `A` comes
         // from it (unit scale, not the second database's ×10) while `B`
