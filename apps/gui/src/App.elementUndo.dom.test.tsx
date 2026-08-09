@@ -21,6 +21,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "fetch_trace_range":
       case "list_transmit_frames":
       case "list_signals":
+      case "list_dbc_content":
       case "rbs_dirty":
         return [];
       case "fetch_filtered_trace":
@@ -691,6 +692,41 @@ describe("element undo", () => {
         throw new Error("undo left the filter");
     });
     expect(document.querySelector(".graph-panel")).not.toBeNull();
+  }, 30_000);
+
+  it("typing in a find box is not a step", async () => {
+    // Params-only view state (a find box, the DBC panel's expanded set)
+    // stays out of undo: it never reaches the element, and the layout
+    // history scrubs `params`.
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("DBC panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".dbc-panel")) throw new Error("no DBC panel yet");
+    });
+    await act(async () => {
+      clickMode("trace");
+    });
+    expect(traceMode()).toBe("trace");
+
+    const search = document.querySelector<HTMLInputElement>("input.dbc-panel-search")!;
+    await act(async () => {
+      fireEvent.change(search, { target: { value: "engine" } });
+    });
+    expect(search.value).toBe("engine");
+
+    // The first chord reaches straight past the typing to the view
+    // change, and the box keeps what was typed into it.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (traceMode() !== "by ID") throw new Error(`undo left mode "${traceMode()}"`);
+    });
+    expect(document.querySelector<HTMLInputElement>("input.dbc-panel-search")!.value).toBe(
+      "engine",
+    );
   }, 30_000);
 
   it("never replays a behavior field, and never wakes the host reconciler", async () => {
