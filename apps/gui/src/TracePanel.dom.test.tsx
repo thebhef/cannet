@@ -43,6 +43,7 @@ import {
   type RegistryEntry,
 } from "./projectElements";
 import { freshTrace } from "./trace";
+import { makeLiveRegistry } from "./registryTestKit";
 import { LIVE_TAIL_ROWS, resetLiveTailDemand } from "./liveTailDemand";
 import { PAGE_ROWS } from "./useWindowedQuery";
 import { hydrateSettings } from "./hostSettings";
@@ -369,6 +370,75 @@ describe("TracePanel config persistence", () => {
       "by-id",
     );
     const cfg = (registry.get("t1")!.element as { config?: { mode?: string } }).config;
+    expect(cfg?.mode).toBe("by-id");
+  });
+});
+
+describe("TracePanel rehydration", () => {
+  /// Which mode button the panel is showing as selected.
+  const activeMode = (container: HTMLElement) =>
+    [...container.querySelectorAll(".mode-toggle button.active")]
+      .map((b) => b.textContent?.replace(/\s+/g, " ").trim())
+      .join();
+  const toolbarBox = (container: HTMLElement, label: string) =>
+    [...container.querySelectorAll<HTMLLabelElement>(".trace-panel-toolbar label.checkbox")]
+      .find((l) => l.textContent?.trim() === label)
+      ?.querySelector("input") ?? null;
+
+  /// The panel over a registry that really applies patches, so a write
+  /// from outside the panel reaches it the way the app's would.
+  function renderLive(config: Record<string, unknown>) {
+    const { Provider, control } = makeLiveRegistry([
+      { kind: "trace", id: "t1", sources: ["*"], config } as unknown as ProjectElement,
+    ]);
+    const api = { updateParameters: vi.fn() };
+    const props = { params: { elementId: "t1" }, api } as unknown as Parameters<
+      typeof TracePanel
+    >[0];
+    const { container } = render(
+      <TraceDataProvider value={traceData}>
+        <ProjectContext.Provider value={projectCtx}>
+          <Provider>
+            <TracePanel {...props} />
+          </Provider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+    return { container, control, api };
+  }
+
+  it("repaints from an externally rewritten config", () => {
+    // The toolbar's checkboxes belong to the chronological view, so the
+    // write that flips them is also the write that switches modes.
+    const { container, control } = renderLive({
+      mode: "by-id",
+      autoScroll: true,
+      showEvents: true,
+    });
+    expect(activeMode(container)).toBe("by ID");
+    act(() => {
+      control.update("t1", {
+        config: { mode: "chronological", autoScroll: false, showEvents: false },
+      });
+    });
+    expect(activeMode(container)).toBe("trace");
+    expect(toolbarBox(container, "auto-scroll")?.checked).toBe(false);
+    expect(toolbarBox(container, "events")?.checked).toBe(false);
+  });
+
+  it("keeps the panel's own edit — a persist is not a resync trigger", () => {
+    const { container, control } = renderLive({ mode: "chronological" });
+    const byId = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.replace(/\s+/g, " ").trim() === "by ID",
+    )!;
+    act(() => {
+      fireEvent.click(byId);
+    });
+    expect(activeMode(container)).toBe("by ID");
+    // The element followed the panel, not the other way round: the
+    // panel's own persist must not have bounced back as a resync to
+    // the pre-click config.
+    const cfg = (control.entries()[0].element as { config?: { mode?: string } }).config;
     expect(cfg?.mode).toBe("by-id");
   });
 });
