@@ -309,10 +309,17 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   // --- command handlers + key dispatch (ADR 0018) ---
   const activePanelRef = useRef(activePanel);
   activePanelRef.current = activePanel;
+  // Element-backed panels register under their element id; a singleton
+  // panel (DBC, …) has none, so it falls back to its fixed dockview
+  // panel id — the same id `usePanelCommands` is called with for that
+  // singleton. Safe for element-backed panels too: `elementId` is
+  // always set whenever a command's context targets one of their
+  // kinds, so the fallback is only ever exercised for singletons.
   const runFocusedPanelCommand = useCallback(
     (commandId: string) => {
-      const elementId = activePanelRef.current?.elementId;
-      if (elementId) panelCommands.invoke(elementId, commandId);
+      const active = activePanelRef.current;
+      if (!active) return;
+      panelCommands.invoke(active.elementId ?? active.id, commandId);
     },
     [panelCommands],
   );
@@ -420,6 +427,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "goto.event": () => setOpenPalette("gotoEvent"),
     "plot.fitXAxis": () => runFocusedPanelCommand("plot.fitXAxis"),
     "plot.followLive.enable": () => runFocusedPanelCommand("plot.followLive.enable"),
+    "panel.find": () => runFocusedPanelCommand("panel.find"),
     "view.back": () => navigateViewHistory(-1),
     "view.forward": () => navigateViewHistory(1),
     // Close the focused panel only — the chord (`Mod+W`) must never

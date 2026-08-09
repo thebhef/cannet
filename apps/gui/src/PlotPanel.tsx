@@ -457,6 +457,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * restores exactly the visibility the user had. Persisted with the
    * panel config like the other view params, sparsely (absent = off). */
   const [solo, setSolo] = useState<SoloState>(() => soloFromRaw(savedConfig?.solo));
+  /** The solo pattern box, so `panel.find` (Mod+F) can focus and select
+   * it — the panel's find/filter box (ADR 0018). */
+  const soloInputRef = useRef<HTMLInputElement | null>(null);
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   /** The signal rows the user has selected, in one logical area
    * (`plotAreaSelection.ts`). Transient view state — deliberately not in
@@ -787,12 +790,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
 
   // Hotkey / palette implementations for this panel instance
-  // (ADR 0018): with the panel focused, `f` re-runs fit-data and `l`
+  // (ADR 0018): with the panel focused, `f` re-runs fit-data, `l`
   // re-enters follow-live (enable-only — panning the x axis is how
-  // the user drops out).
+  // the user drops out), and Mod+F focuses the solo box the way a
+  // browser's find focuses its search field — selecting its current
+  // text so typing replaces rather than appends.
   usePanelCommands(elementId, {
     "plot.fitXAxis": fitData,
     "plot.followLive.enable": () => setFollowLive(true),
+    "panel.find": () => {
+      soloInputRef.current?.focus();
+      soloInputRef.current?.select();
+    },
   });
 
   /** Wrap the trace's Clear so it also wipes the panel-level overlays
@@ -2090,6 +2099,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         >
           solo
           <input
+            ref={soloInputRef}
             className="plot-solo-input"
             aria-label="solo pattern"
             aria-invalid={soloInvalid || undefined}
