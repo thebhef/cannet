@@ -16,6 +16,7 @@ import {
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry, type RegistryEntry } from "./projectElements";
 import { useSidecarStatus } from "./sidecarStatus";
+import { useUndoGesture } from "./undoGesture";
 import type { Bus, ProjectElement, ProjectElementKind } from "./types";
 import { elementKindLabel, elementLabel } from "./elementLabel";
 import { localVbusBinding, localVbusId, resolveServer } from "./types";
@@ -621,6 +622,13 @@ export function ElementRow({
   onRename: (name: string) => void;
   onRemove: () => void;
 }) {
+  // A rename writes the element on every keystroke, so the edit is an
+  // undo *gesture* the way a drag is: focus opens it and blur closes
+  // it, and the keystrokes in between fold into one step. Focus/blur
+  // rather than an idle timer because the edit has a real beginning and
+  // end in the DOM — no window to guess at, and the step closes exactly
+  // when the user leaves the field.
+  const undoGesture = useUndoGesture();
   return (
     <div className="project-element">
       <input
@@ -628,6 +636,8 @@ export function ElementRow({
         className="project-bus-name-input"
         value={element.name ?? ""}
         onChange={(e) => onRename(e.target.value)}
+        onFocus={() => undoGesture.begin()}
+        onBlur={() => undoGesture.end()}
         aria-label={`element ${element.id} name`}
       />
       {panel ? (

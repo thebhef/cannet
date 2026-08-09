@@ -700,6 +700,45 @@ describe("element undo", () => {
     expect(document.querySelector(".graph-panel")).not.toBeNull();
   }, 30_000);
 
+  it("a typed rename is one step, not one per keystroke", async () => {
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Project panel"));
+    });
+    const input = elementRow("Trace 1").querySelector<HTMLInputElement>("input")!;
+
+    // Type a new name a character at a time, exactly as the inline
+    // rename writes it: one registry write per keystroke.
+    await act(async () => {
+      fireEvent.focus(input);
+    });
+    for (const value of ["F", "Fu", "Fue", "Fuel"]) {
+      await act(async () => {
+        fireEvent.change(input, { target: { value } });
+      });
+    }
+    expect(elementRow("Fuel")).toBeTruthy();
+    await act(async () => {
+      fireEvent.blur(input);
+    });
+
+    // One chord takes the whole edit back — not its last keystroke.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      elementRow("Trace 1"); // throws while the row is named anything else
+    });
+
+    // And redo puts the whole name back, also in one chord.
+    await act(async () => {
+      key({ key: "y", ctrlKey: true });
+    });
+    await waitFor(() => {
+      elementRow("Fuel");
+    });
+  }, 30_000);
+
   it("typing in a find box is not a step", async () => {
     // Params-only view state (a find box, the DBC panel's expanded set)
     // stays out of undo: it never reaches the element, and the layout
