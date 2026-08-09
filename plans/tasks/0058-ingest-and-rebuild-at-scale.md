@@ -905,6 +905,9 @@ measure the harness's call cadence rather than the rebuild.
   drive-by.
 - **The ADR-0031 perf gate was not run** in this phase, per the phase
   brief; the orchestrator runs it after. *(58.A)*
+  **Resolved 2026-08-09**: the orchestrator ran the gates — mid-chain
+  after 58.A, 58.C, 58.D and 58.E, and the final pair at `43ad33c`, all
+  green. See the exit-criteria walk's row 7c.
 - **A narrowed import's notes stop where the pump's walk stops, not
   where the range does.** `WindowedSource` only filters which frames
   reach the sink; it still calls the inner source for every object up
@@ -1071,6 +1074,9 @@ measure the harness's call cadence rather than the rebuild.
   write, the clear, and the async-worker starvation.
 - **The ADR-0031 perf gate was not run** in this phase, per the phase
   brief; the orchestrator runs it after. *(58.D, 58.E)*
+  **Resolved 2026-08-09**: the orchestrator ran the gates — mid-chain
+  after 58.A, 58.C, 58.D and 58.E, and the final pair at `43ad33c`, all
+  green. See the exit-criteria walk's row 7c.
 - **The first-paint moment is measured in tests, not in the app.** The
   dom tests drive a fake host whose serves are shaped by hand, so what is
   pinned is the *rule* (points end the wait, a pointless partial does
@@ -1113,6 +1119,9 @@ measure the harness's call cadence rather than the rebuild.
   a whole rebuild.
 - **The ADR-0031 perf gate was not run** in this phase, per the phase
   brief; the orchestrator runs it after. *(58.F)*
+  **Resolved 2026-08-09**: the orchestrator ran the gates — mid-chain
+  after 58.A, 58.C, 58.D and 58.E, and the final pair at `43ad33c`, all
+  green. See the exit-criteria walk's row 7c.
 
 ## Exit criteria walk
 
@@ -1129,7 +1138,7 @@ measure the harness's call cadence rather than the rebuild.
 | 6 | plots paint incrementally during rebuild and during import; `building...` appears only until first points (dom-tested) | **MET** | 58.F - commits `4da3f45`, `7b9ecd0`, `15bd73c`; ADR 0049. Dom-tested by `stops saying it is building on the first points, not on the finished series`, `keeps saying it is building while a partial answer has no points yet`, `stops saying it is building when the host is caught up with nothing to show`, and `paints each partial answer as the rebuild advances`. The import case is the same mechanism and is pinned host-side by `a_serve_stays_bounded_while_the_capture_is_still_growing`. What is *not* measured is a wall-clock time-to-first-paint in the running app (see Blockers). |
 | 7a | ADR for the one-ingest-pathway rule reinforced or written | **MET** | 58.A - ADR 0046, commit `d263a97`: the rule, the rejected import-specific batched append, and the one sanctioned extra walk (the pre-census). |
 | 7b | docs updated with behavior changes | **MET** | Every phase landed its docs with its code. New ADRs 0046, 0047, 0048, 0049; ADR 0002's on-disk table points at 0047; ADR 0025's `DecimatedRange` shape carries `complete`; the roadmap's task-58 blurb matches what shipped. |
-| 7c | ADR-0031 gate green (multi-run) after ingest-path changes and at completion | **not marked - orchestrator** | Not run in any phase, per each phase brief; recorded under Blockers for 58.A, 58.D, 58.E and 58.F. |
+| 7c | ADR-0031 gate green (multi-run) after ingest-path changes and at completion | **MET** | Run by the orchestrator, not by the implementing phases (each phase brief said so). Final gate at `43ad33c`, **two runs, both `check passed (31 metrics gated)`** — 31/31 each — with the reports committed unmodified as `docs/performance-measurements/frontend/2026-08-09-43ad33c-task58-final-run1.json` and `...-run2.json`. Sanity clean on both: `ids_measured` 173, rx/tx ~1605-1611 fps, retention ~1.0. Standout margins against baseline: `lag_ms_max` 27.1 to 1.6 / 1.3, `tx_late_ms_max` 75.9 to 14.0 / 19.0, `flush_ms_mean` 25 to ~3.95. The "after ingest-path changes" half was also covered mid-chain: gates ran after 58.A, 58.C, 58.D and 58.E, all passed. |
 
 Two of criterion 1's clauses are worth their qualifications rather than a
 bare "met":
