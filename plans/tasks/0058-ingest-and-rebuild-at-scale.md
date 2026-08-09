@@ -200,7 +200,8 @@ Branch `task58a-one-pass-import`, off `task57e-restore-experience`
 | d263a97 | `docs(adr)`: record the one-ingest-pathway rule |
 
 Tests after the slice: `cannet-blf` 106 + 1 integration (was 104),
-`cannet-spill` 58, `cannet-gui` 500 + 5 ignored benchmarks. Clippy clean
+`cannet-spill` 57, `cannet-gui` 500 + 4 ignored benchmarks
+(`bench_blf_import` is the new one). Clippy clean
 across the workspace with `--all-targets`. No frontend code touched —
 `open_log` and `scan_blf_channels` keep their wire shapes, and the
 frontend already `await`ed both.
