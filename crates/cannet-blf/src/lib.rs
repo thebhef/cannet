@@ -14,6 +14,10 @@
 //! into place on [`BlfCaptureWriter::finish`] — a mid-write crash
 //! therefore leaves no half-file behind at `<dest>`.
 //!
+//! A third entry point, [`scan_blf`], walks a file header-only for a
+//! channel census, time span, and markers — everything the import
+//! dialog needs before a single frame is decoded.
+//!
 //! ## Native implementation
 //!
 //! Per [ADR 0009](../../../docs/adr/0009-dbc-blf-readers.md), the
@@ -33,6 +37,9 @@
 //! [`CanFramePayload`]: cannet_core::CanFramePayload
 
 pub mod format;
+mod scan;
+
+pub use scan::{scan_blf, BlfScan, ScannedMarker};
 
 use std::fs;
 use std::io;

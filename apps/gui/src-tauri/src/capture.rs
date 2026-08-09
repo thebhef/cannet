@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_blf::{BlfCanFrameSource, BlfCaptureWriter};
-use cannet_core::{CanFrame as CoreCanFrame, CanFrameSource, CanId};
+use cannet_core::{CanFrame as CoreCanFrame, CanId};
 
 use crate::app_state::AppState;
 use crate::ipc::{LogFinished, OpenLogResult};
@@ -413,45 +413,40 @@ fn channel_for_save(frame: &trace_store::RawTraceFrame, buses: &[String]) -> u8 
 /// ascending order. Used by the GUI's BLF import flow to
 /// build the channel → bus mapping step before frames start flowing.
 ///
-/// `async` so Tauri runs it off the main thread — scanning a multi-
-/// gigabyte BLF can take a few seconds and we don't want to freeze the
-/// UI. The implementation pulls every frame's `channel` from the BLF
-/// (we don't have a "list channels" shortcut in `cannet-blf` today)
-/// but stops early once the set stops changing for a comfortable
-/// window of frames.
+/// The census is **exact**: [`cannet_blf::scan_blf`] walks the whole
+/// file header-only — reading each object's channel field without
+/// decoding its body — so a channel that first appears late in a long
+/// capture is still offered a mapping. The walk pays the file's inflate
+/// and nothing else; a couple of seconds on a several-hundred-megabyte
+/// log, which is the price of never silently dropping a channel.
+///
+/// `async` so Tauri runs it off the main thread — the walk covers the
+/// whole file and we don't want to freeze the UI while it runs.
 #[tauri::command]
-#[allow(clippy::unused_async)]
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
 pub(crate) async fn scan_blf_channels(app: AppHandle, blf_path: String) -> Result<Vec<u8>, String> {
-    use std::collections::BTreeSet;
-    // Cap the scan: most BLFs have <16 channels, all visible in their
-    // first few thousand frames. The cap keeps a huge BLF from blocking
-    // import for a minute; if a project legitimately has a 17th channel
-    // that doesn't appear until frame 100k, the channel just streams
-    // through unassigned and the user can edit the mapping afterwards.
-    const MAX_SCAN_FRAMES: usize = 200_000;
-    let mut source = match BlfCanFrameSource::open(&blf_path) {
+    let started = std::time::Instant::now();
+    let scan = match cannet_blf::scan_blf(&blf_path) {
         Ok(s) => s,
         Err(e) => {
             let msg = e.to_string();
-            sys_error!(&app, "blf-import", "failed to open BLF {blf_path}: {msg}");
+            sys_error!(&app, "blf-import", "BLF scan failed: {msg}");
             return Err(msg);
         }
     };
-    let mut seen: BTreeSet<u8> = BTreeSet::new();
-    for _ in 0..MAX_SCAN_FRAMES {
-        match source.next_frame() {
-            Ok(Some(frame)) => {
-                seen.insert(frame.channel);
-            }
-            Ok(None) => break,
-            Err(e) => {
-                let msg = e.to_string();
-                sys_error!(&app, "blf-import", "BLF scan failed: {msg}");
-                return Err(msg);
-            }
-        }
-    }
-    Ok(seen.into_iter().collect())
+    // What the census cost, and what it found — a slow import starts
+    // here, so the log says how much of it was the scan.
+    sys_debug!(
+        &app,
+        "blf-import",
+        "scanned {blf_path} in {ms:.0} ms: {frames} frame(s) on {channels} channel(s), \
+         {markers} marker(s)",
+        ms = started.elapsed().as_secs_f64() * 1000.0,
+        frames = scan.frame_count,
+        channels = scan.channels.len(),
+        markers = scan.markers.len(),
+    );
+    Ok(scan.channels)
 }
 
 /// Drop every stored frame and start a fresh session timeline rooted

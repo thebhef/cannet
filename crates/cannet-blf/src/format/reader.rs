@@ -61,6 +61,18 @@ pub enum BlfObject {
     Other(ObjectHeaderBase),
 }
 
+/// One on-disk object as raw bytes, yielded by
+/// [`BlfReader::next_raw_object`]. `bytes` spans the whole object —
+/// base header, per-type extension header, and body — without the
+/// inter-object padding, so per-type field offsets apply directly.
+#[derive(Debug, Clone, Copy)]
+pub struct RawObject<'a> {
+    /// The object's parsed 16-byte base header (type and size).
+    pub base: ObjectHeaderBase,
+    /// `base.object_size` bytes starting at the object's first byte.
+    pub bytes: &'a [u8],
+}
+
 /// Anything that can go wrong reading a BLF.
 #[derive(Debug)]
 pub enum BlfReadError {
@@ -225,15 +237,20 @@ impl BlfReader {
         self.file_statistics.measurement_start_time.to_unix_nanos()
     }
 
-    /// Yield the next decoded object, or `Ok(None)` at end of file.
-    /// Non-CAN, non-`LOG_CONTAINER` inner objects are surfaced as
-    /// [`BlfObject::Other`] so the caller can decide whether to
-    /// log or skip.
+    /// Position the cursor on the next whole object without decoding
+    /// it: refills `tail` until the object and its padding are resident,
+    /// then returns its base header, its start offset in `tail`, and the
+    /// bytes to advance past it. `Ok(None)` at end of file.
+    ///
+    /// Shared by [`Self::next_object`] (which decodes the body) and
+    /// [`Self::next_raw_object`] (which does not).
     // The `expect()` on `advance_bytes` is unreachable on 32-bit and
     // wider platforms (advance is bounded by `object_size + 3` and
     // `object_size: u32`).
     #[allow(clippy::missing_panics_doc)]
-    pub fn next_object(&mut self) -> Result<Option<BlfObject>, BlfReadError> {
+    fn position_on_next_object(
+        &mut self,
+    ) -> Result<Option<(ObjectHeaderBase, usize, usize)>, BlfReadError> {
         loop {
             // Make sure we have at least the 16-byte base header.
             if self.tail.len() - self.tail_pos < OBJECT_HEADER_BASE_BYTES {
@@ -244,7 +261,6 @@ impl BlfReader {
             }
             let base = ObjectHeaderBase::parse(&self.tail[self.tail_pos..])
                 .map_err(BlfReadError::InnerHeader)?;
-            let object_size = base.object_size as usize;
             // `advance_bytes` is bounded by `object_size + 3`, well
             // under usize::MAX on any platform we target.
             let advance = usize::try_from(base.advance_bytes())
@@ -255,47 +271,71 @@ impl BlfReader {
                     return Err(BlfReadError::UnexpectedEof);
                 }
             }
-            let object_bytes = &self.tail[self.tail_pos..self.tail_pos + object_size];
-            let decoded = match base.object_type {
-                object_type::CAN_MESSAGE => {
-                    BlfObject::CanMessage(decode_can_message(object_bytes)?)
-                }
-                object_type::CAN_MESSAGE2 => {
-                    BlfObject::CanMessage2(decode_can_message2(object_bytes)?)
-                }
-                object_type::CAN_FD_MESSAGE => {
-                    BlfObject::CanFdMessage(decode_can_fd_message(object_bytes)?)
-                }
-                object_type::CAN_FD_MESSAGE_64 => {
-                    BlfObject::CanFdMessage64(decode_can_fd_message_64(object_bytes)?)
-                }
-                object_type::CAN_ERROR_EXT => {
-                    BlfObject::CanErrorExt(decode_can_error_ext(object_bytes)?)
-                }
-                object_type::GLOBAL_MARKER => {
-                    BlfObject::GlobalMarker(marker::decode(object_bytes)?)
-                }
-                object_type::EVENT_COMMENT => {
-                    BlfObject::EventComment(text::decode_event_comment(object_bytes)?)
-                }
-                object_type::APP_TEXT => BlfObject::AppText(text::decode_app_text(object_bytes)?),
-                object_type::CAN_STATISTIC => {
-                    BlfObject::CanStatistic(diagnostics::decode_can_statistic(object_bytes)?)
-                }
-                object_type::DATA_LOST_BEGIN => {
-                    BlfObject::DataLostBegin(diagnostics::decode_data_lost_begin(object_bytes)?)
-                }
-                object_type::DATA_LOST_END => {
-                    BlfObject::DataLostEnd(diagnostics::decode_data_lost_end(object_bytes)?)
-                }
-                _ => BlfObject::Other(base),
-            };
-            // Advance past this object and its 4-byte padding. The
-            // consumed prefix is reclaimed in `pull_one_container`, so
-            // this is O(1) rather than a per-object front-drain.
-            self.tail_pos += advance;
-            return Ok(Some(decoded));
+            return Ok(Some((base, self.tail_pos, advance)));
         }
+    }
+
+    /// Yield the next object's base header and raw bytes, **without**
+    /// decoding its body. `Ok(None)` at end of file.
+    ///
+    /// This is what a census walk costs — inflate plus header parsing,
+    /// no per-type decode and no payload allocation. A caller that needs
+    /// only a field or two (a frame's channel, an object's timestamp)
+    /// reads them straight out of [`RawObject::bytes`] at the offsets its
+    /// object type defines.
+    pub fn next_raw_object(&mut self) -> Result<Option<RawObject<'_>>, BlfReadError> {
+        let Some((base, start, advance)) = self.position_on_next_object()? else {
+            return Ok(None);
+        };
+        self.tail_pos = start + advance;
+        Ok(Some(RawObject {
+            base,
+            bytes: &self.tail[start..start + base.object_size as usize],
+        }))
+    }
+
+    /// Yield the next decoded object, or `Ok(None)` at end of file.
+    /// Non-CAN, non-`LOG_CONTAINER` inner objects are surfaced as
+    /// [`BlfObject::Other`] so the caller can decide whether to
+    /// log or skip.
+    pub fn next_object(&mut self) -> Result<Option<BlfObject>, BlfReadError> {
+        let Some((base, start, advance)) = self.position_on_next_object()? else {
+            return Ok(None);
+        };
+        let object_bytes = &self.tail[start..start + base.object_size as usize];
+        let decoded = match base.object_type {
+            object_type::CAN_MESSAGE => BlfObject::CanMessage(decode_can_message(object_bytes)?),
+            object_type::CAN_MESSAGE2 => BlfObject::CanMessage2(decode_can_message2(object_bytes)?),
+            object_type::CAN_FD_MESSAGE => {
+                BlfObject::CanFdMessage(decode_can_fd_message(object_bytes)?)
+            }
+            object_type::CAN_FD_MESSAGE_64 => {
+                BlfObject::CanFdMessage64(decode_can_fd_message_64(object_bytes)?)
+            }
+            object_type::CAN_ERROR_EXT => {
+                BlfObject::CanErrorExt(decode_can_error_ext(object_bytes)?)
+            }
+            object_type::GLOBAL_MARKER => BlfObject::GlobalMarker(marker::decode(object_bytes)?),
+            object_type::EVENT_COMMENT => {
+                BlfObject::EventComment(text::decode_event_comment(object_bytes)?)
+            }
+            object_type::APP_TEXT => BlfObject::AppText(text::decode_app_text(object_bytes)?),
+            object_type::CAN_STATISTIC => {
+                BlfObject::CanStatistic(diagnostics::decode_can_statistic(object_bytes)?)
+            }
+            object_type::DATA_LOST_BEGIN => {
+                BlfObject::DataLostBegin(diagnostics::decode_data_lost_begin(object_bytes)?)
+            }
+            object_type::DATA_LOST_END => {
+                BlfObject::DataLostEnd(diagnostics::decode_data_lost_end(object_bytes)?)
+            }
+            _ => BlfObject::Other(base),
+        };
+        // Advance past this object and its 4-byte padding. The
+        // consumed prefix is reclaimed in `pull_one_container`, so
+        // this is O(1) rather than a per-object front-drain.
+        self.tail_pos = start + advance;
+        Ok(Some(decoded))
     }
 
     /// Pull one top-level `LOG_CONTAINER` from disk, inflate it, and
