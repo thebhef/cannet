@@ -157,29 +157,6 @@ impl SignalCache {
         self.levels[0].push(t_seconds, value);
     }
 
-    /// Single-target form of [`catch_up_group_chunked`] — the production
-    /// path always catches a whole message group up at once, so this
-    /// exists to drive the same scan with one member.
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    fn catch_up_chunked(
-        &mut self,
-        bus_id: Option<&str>,
-        message_id: u32,
-        extended: bool,
-        signal_name: &str,
-        store_len: usize,
-        dbs: &[&Database],
-        fetch: impl Fn(usize, usize) -> Vec<(usize, RawTraceFrame)>,
-    ) {
-        let mut targets = [GroupTarget {
-            bus_id,
-            signal_name,
-            cache: self,
-        }];
-        catch_up_group_chunked(message_id, extended, &mut targets, store_len, dbs, fetch);
-    }
-
     /// Propagate newly-appended `levels[0]` points up the pyramid: for
     /// each level, fold every bucket of [`PYRAMID_BRANCH`] points that
     /// became complete since the last call into the level above, emitting
@@ -398,7 +375,9 @@ struct GroupTarget<'a> {
 ///   so a target already past a frame never appends it twice.
 ///
 /// `fetch` materializes one chunk of the scan — the matching frames of
-/// `[from, to)` paired with their store index. The scan walks in
+/// `(message_id, extended)` in `[from, to)` paired with their store
+/// index. It is the seam the trace store is read through, so a test can
+/// drive the scan over a span no fixture could hold. The scan walks in
 /// [`CATCH_UP_CHUNK_FRAMES`] steps rather than asking for the whole
 /// span at once, because the whole span is `O(capture)`: on the first
 /// use of a signal over a restored capture (ADR 0002 DS-7) the
@@ -413,7 +392,7 @@ fn catch_up_group_chunked(
     targets: &mut [GroupTarget<'_>],
     store_len: usize,
     dbs: &[&Database],
-    fetch: impl Fn(usize, usize) -> Vec<(usize, RawTraceFrame)>,
+    fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
 ) -> bool {
     let Some(start) = targets.iter().map(|t| t.cache.next_index).min() else {
         return false;
@@ -430,7 +409,7 @@ fn catch_up_group_chunked(
     let mut cursor = start;
     while cursor < store_len {
         let to = cursor.saturating_add(CATCH_UP_CHUNK_FRAMES).min(store_len);
-        for (idx, frame) in fetch(cursor, to) {
+        for (idx, frame) in fetch(message_id, extended, cursor, to) {
             pending.clear();
             wanted.clear();
             for (i, t) in targets.iter().enumerate() {
@@ -785,12 +764,18 @@ fn ensure_caches(caches: &mut Caches, queries: &[CacheQuery<'_>]) -> Vec<SignalK
         .collect()
 }
 
-/// Catch every cache named by `keys` up to the store's tip, one decode
-/// pass per `(message_id, extended)` group ([`catch_up_group_chunked`]).
-/// The tip is read once for the whole batch, so every series in it
-/// observes the same capture length.
-fn catch_up_batch(caches: &mut Caches, keys: &[SignalKey], store: &TraceStore, dbs: &[&Database]) {
-    let store_len = store.len();
+/// Catch every cache named by `keys` up to `store_len`, one decode pass
+/// per `(message_id, extended)` group ([`catch_up_group_chunked`]). The
+/// tip is read once for the whole batch, so every series in it observes
+/// the same capture length; `fetch` is the seam each group's chunks are
+/// materialized through.
+fn catch_up_batch(
+    caches: &mut Caches,
+    keys: &[SignalKey],
+    store_len: usize,
+    dbs: &[&Database],
+    fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
+) {
     let wanted: std::collections::HashSet<&SignalKey> = keys.iter().collect();
     let Caches { by_key, dirty, .. } = caches;
     let mut groups: HashMap<(u32, bool), Vec<GroupTarget<'_>>> = HashMap::new();
@@ -806,16 +791,18 @@ fn catch_up_batch(caches: &mut Caches, keys: &[SignalKey], store: &TraceStore, d
     }
     let mut moved = false;
     for ((message_id, extended), mut targets) in groups {
-        moved |= catch_up_group_chunked(
-            message_id,
-            extended,
-            &mut targets,
-            store_len,
-            dbs,
-            |from, to| store.matching_frames_indexed(message_id, extended, from, to),
-        );
+        moved |= catch_up_group_chunked(message_id, extended, &mut targets, store_len, dbs, fetch);
     }
     *dirty |= moved;
+}
+
+/// Read one chunk of a `(message_id, extended)` group's frames out of the
+/// trace store — the production form of [`catch_up_group_chunked`]'s
+/// `fetch` seam.
+fn store_fetch(
+    store: &TraceStore,
+) -> impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)> + '_ {
+    |message_id, extended, from, to| store.matching_frames_indexed(message_id, extended, from, to)
 }
 
 /// Process-wide collection of per-signal caches. The pyramid levels spill
@@ -1108,7 +1095,7 @@ impl SignalCacheStore {
     ) -> Vec<Vec<SamplePoint>> {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let keys = ensure_caches(&mut caches, queries);
-        catch_up_batch(&mut caches, &keys, store, dbs);
+        catch_up_batch(&mut caches, &keys, store.len(), dbs, &store_fetch(store));
         keys.iter()
             .map(|key| {
                 caches.by_key.get(key).map_or_else(Vec::new, |cache| {
@@ -1156,7 +1143,7 @@ impl SignalCacheStore {
     ) -> Vec<Option<(f64, f64)>> {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let keys = ensure_caches(&mut caches, queries);
-        catch_up_batch(&mut caches, &keys, store, dbs);
+        catch_up_batch(&mut caches, &keys, store.len(), dbs, &store_fetch(store));
         keys.iter()
             .map(|key| caches.by_key.get(key).and_then(SignalCache::extent))
             .collect()
@@ -1707,17 +1694,29 @@ mod tests {
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
         let tmp = TempDir::new().unwrap();
-        let mut cache = SignalCache::new(tmp.path(), "sig");
+        let cache = SignalCacheStore::new(tmp.path());
         let store_len = 5 * CATCH_UP_CHUNK_FRAMES + 7;
         let asked = std::cell::RefCell::new(Vec::new());
-        cache.catch_up_chunked(None, 256, false, "X", store_len, dbs, |from, to| {
-            asked.borrow_mut().push((from, to));
-            // Every fourth frame in the chunk carries the decodable id.
-            (from..to)
-                .step_by(4)
-                .map(|i| (i, val_frame(i as u64 * S, (i % 251) as u16)))
-                .collect()
-        });
+        let key = catch_up_through(
+            &cache,
+            &[CacheQuery {
+                bus_id: None,
+                message_id: 256,
+                extended: false,
+                signal_name: "X",
+            }],
+            store_len,
+            dbs,
+            |_, _, from, to| {
+                asked.borrow_mut().push((from, to));
+                // Every fourth frame in the chunk carries the decodable id.
+                (from..to)
+                    .step_by(4)
+                    .map(|i| (i, val_frame(i as u64 * S, (i % 251) as u16)))
+                    .collect()
+            },
+        )
+        .remove(0);
 
         let asked = asked.into_inner();
         assert!(asked.len() >= 5, "expected several chunks, got {asked:?}");
@@ -1732,8 +1731,10 @@ mod tests {
         assert_eq!(asked.last().map(|c| c.1), Some(store_len));
         assert!(asked.windows(2).all(|w| w[0].1 == w[1].0), "{asked:?}");
         // And every matching frame in the span decoded exactly once.
-        assert_eq!(cache.levels[0].len(), store_len.div_ceil(4));
-        assert_eq!(cache.next_index, store_len);
+        with_cache(&cache, &key, |c| {
+            assert_eq!(c.levels[0].len(), store_len.div_ceil(4));
+            assert_eq!(c.next_index, store_len);
+        });
     }
 
     #[test]
@@ -1919,6 +1920,34 @@ mod tests {
     }
 
     // ---- One decode pass per message ---------------------------------
+
+    /// Catch `queries` up through the same seam the production path uses,
+    /// with `fetch` standing in for the trace store — so a scan over a span
+    /// no fixture could hold, or one that blocks mid-chunk, is drivable.
+    /// Returns the batch's keys in request order.
+    fn catch_up_through(
+        store: &SignalCacheStore,
+        queries: &[CacheQuery<'_>],
+        store_len: usize,
+        dbs: &[&Database],
+        fetch: impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
+    ) -> Vec<SignalKey> {
+        let mut caches = store.caches.lock().unwrap();
+        let keys = ensure_caches(&mut caches, queries);
+        catch_up_batch(&mut caches, &keys, store_len, dbs, &fetch);
+        keys
+    }
+
+    /// Read one cached series' interior — the pyramid levels, cursors and
+    /// extent the tests assert on.
+    fn with_cache<T>(
+        store: &SignalCacheStore,
+        key: &SignalKey,
+        f: impl FnOnce(&SignalCache) -> T,
+    ) -> T {
+        let caches = store.caches.lock().unwrap();
+        f(caches.by_key.get(key).expect("cache missing for key"))
+    }
 
     /// Everything a built pyramid *is*: the decode cursor, the all-time
     /// extent, the fold cursors, and every live slot of every level.
@@ -2155,55 +2184,53 @@ mod tests {
         let owned = [dbc_a_only(), dbc_a_and_b()];
         let dbs: Vec<&Database> = owned.iter().collect();
         let tmp = TempDir::new().unwrap();
-        let (mut a, mut a_on_p, mut b) = (
-            SignalCache::new(tmp.path(), "any.a"),
-            SignalCache::new(tmp.path(), "p.a"),
-            SignalCache::new(tmp.path(), "any.b"),
-        );
-        let mut targets = [
-            GroupTarget {
+        let cache = SignalCacheStore::new(tmp.path());
+        let queries = [
+            CacheQuery {
                 bus_id: None,
+                message_id: 256,
+                extended: false,
                 signal_name: "A",
-                cache: &mut a,
             },
-            GroupTarget {
+            CacheQuery {
                 bus_id: Some("p"),
+                message_id: 256,
+                extended: false,
                 signal_name: "A",
-                cache: &mut a_on_p,
             },
-            GroupTarget {
+            CacheQuery {
                 bus_id: None,
+                message_id: 256,
+                extended: false,
                 signal_name: "B",
-                cache: &mut b,
             },
         ];
         let store_len = 2 * CATCH_UP_CHUNK_FRAMES + 7;
         let fetches = std::cell::Cell::new(0usize);
-        let moved =
-            catch_up_group_chunked(256, false, &mut targets, store_len, &dbs, |from, to| {
-                fetches.set(fetches.get() + 1);
-                (from..to)
-                    .map(|i| {
-                        let mut f =
-                            ab_frame(i as u64 * 1_000_000, (i % 97) as u16, (i % 89) as u16);
-                        f.bus_id = Some(if i % 3 == 0 { "p" } else { "c" }.into());
-                        (i, f)
-                    })
-                    .collect()
-            });
+        let keys = catch_up_through(&cache, &queries, store_len, &dbs, |_, _, from, to| {
+            fetches.set(fetches.get() + 1);
+            (from..to)
+                .map(|i| {
+                    let mut f = ab_frame(i as u64 * 1_000_000, (i % 97) as u16, (i % 89) as u16);
+                    f.bus_id = Some(if i % 3 == 0 { "p" } else { "c" }.into());
+                    (i, f)
+                })
+                .collect()
+        });
 
-        assert!(moved);
         assert_eq!(
             fetches.get(),
             store_len.div_ceil(CATCH_UP_CHUNK_FRAMES),
             "one walk of the message, not one per signal",
         );
         // Each series still got exactly its own frames.
-        assert_eq!(a.levels[0].len(), store_len);
-        assert_eq!(b.levels[0].len(), store_len);
-        assert_eq!(a_on_p.levels[0].len(), store_len.div_ceil(3));
-        for cache in [&a, &a_on_p, &b] {
-            assert_eq!(cache.next_index, store_len);
+        let lens: Vec<usize> = keys
+            .iter()
+            .map(|k| with_cache(&cache, k, |c| c.levels[0].len()))
+            .collect();
+        assert_eq!(lens, vec![store_len, store_len.div_ceil(3), store_len]);
+        for key in &keys {
+            assert_eq!(with_cache(&cache, key, |c| c.next_index), store_len);
         }
     }
 
