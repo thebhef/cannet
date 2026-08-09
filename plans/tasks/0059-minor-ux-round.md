@@ -303,9 +303,124 @@ between phases. 59.A's first commit carries this plan section.
     `tsc` rejected (`LegacyRef` wants `RefObject<HTMLInputElement>`,
     whose `.current` is already nullable) — fixed before the RBS
     commit, caught by `pnpm --dir apps/gui build` before it landed.
+- 2026-08-09 — Phase 59.D landed (`task59d-solo-bugs`, off
+  `task59c-ctrl-f`). Three commits. **One of the three reported solo
+  bugs reproduced and is fixed; the other two do not reproduce at any
+  seam this phase could reach, and the diagnosis each was groomed with
+  is falsified by an experiment.** Each experiment stayed as a test.
+  - `a2b03e1` `test(gui): pin solo against pattern-derived series and a
+    cleared pattern` — the two characterisation experiments, both green
+    against the *unmodified* panel.
+    - **Item 4.1 — pattern-derived series never match the solo filter.**
+      Groomed diagnosis: "matching runs over stored picks, not the
+      effective materialized list — verify at the `soloMatchList`
+      derivation". *Refuted at the derivation itself*:
+      `soloMatchList` is `soloMatches(effectiveAreas, solo.pattern)`
+      (`PlotPanel.tsx`), and `git log -S` says it has read the effective
+      list since the commit that introduced solo — there has never been
+      a stored-picks version. Experiment: a two-area panel whose second
+      area carries `patterns: ["/EngineData/Limit"]` and no manual
+      picks, so both of its rows are materialized by
+      `applyAreaSelection`. Data: soloing one of them masks the other
+      two rows; the position read-out counts both pattern rows; the
+      match menu lists both (`Area 2 · LimitNominal`,
+      `Area 2 · LimitEffective`); the step control walks them. A
+      pattern-derived row is indistinguishable from a manual pick to
+      every part of solo.
+    - **Item 4.2 — clearing the pattern leaves the series stale until a
+      zoom.** Experiment drives the observable a mask actually moves —
+      a unit group's normalisation, which changes only on a resample: a
+      3000 A constant and a 0–500 A signal on one per-unit axis union to
+      0..3000, and soloing the second rescales it to 0..500. Data: with
+      the box emptied the axis is back on the union scale without any
+      further gesture. The deactivation path already resamples (the
+      shared `hiddenKey` effect in `PlotArea` — solo reaches the
+      renderer *as* `hidden`, so activation and deactivation are the
+      same code).
+  - `5e7bb8e` `fix(gui): step solo matches from anywhere in the plot
+    panel` — **item 4.3, the one that reproduced.** Observation
+    (owner): PgDn / PgUp step matches only with focus in part of the
+    plot view. Cause, confirmed: `onPanelKeyDown` is a React `onKeyDown`
+    on `.plot-panel`, so it fires only for strokes whose target is
+    inside that subtree — and almost nothing in the plot view takes
+    focus of its own (no `tabIndex` anywhere in `PlotPanel.tsx` or
+    `PlotArea.tsx`; the canvas, the signal rows and the area chrome are
+    plain divs). Experiment: mousedown on `.plot-area-canvas`, then
+    dispatch PageDown at `document.activeElement`. Data pre-fix:
+    `activeElement` is `document.body`, outside React's container, so
+    the handler never runs and the visible set doesn't move — "expected
+    body to be div.plot-panel". Only the toolbar's own controls (the
+    solo box, the step buttons) kept focus inside, which is exactly the
+    reported "part of the plot view". Fix: the panel root is
+    `tabIndex={-1}` and claims focus on a mousedown that isn't already
+    headed for an `input`/`button`/`select`/`textarea`/`a[href]`, so the
+    handler's scope is the whole panel; `.plot-panel:focus` draws no
+    outline (the focus is programmatic, never a tab stop). Kept as a
+    panel-scoped DOM handler rather than a global binding, for the
+    ADR 0018 reason already recorded above it.
+  - `d48015e` `test(gui): pin the solo repaint against an in-flight
+    fetch` — the third and last hypothesis for item 4.2, since a plain
+    clear demonstrably repaints. Hypothesis: `resample` turns away a
+    call made while a sample is already out (`resampleBusyRef`), and a
+    stopped trace has no self-paced tick to retry with, so a repaint
+    dropped there is dropped for good — the shape of "until a zoom
+    forces a repaint". Experiment: park the fetch an "All data" click
+    asks for (`mockSampleStall`), clear the pattern while it is out,
+    then let it land. Data: the axis returns to its two-signal scale.
+    Refuted; the test stays as the guard for that race.
+  - Verification: `pnpm --dir apps/gui test` 139 files, 1692 tests
+    passed (1688 before; four new). `pnpm --dir apps/gui build` clean.
+    No Rust touched, so `cargo test` / clippy were not re-run.
+    ADR-0031 perf gate deliberately not run here — the orchestrator
+    runs it after this phase.
 
 ## Blockers / side effects
 
+- **59.D — two of the three reported solo bugs do not reproduce, so two
+  of the three regression tests pass pre-fix.** The exit criterion asks
+  for three tests that fail before the fix and pass after; only item 4.3
+  could deliver that. Items 4.1 (pattern-derived series never match) and
+  4.2 (a cleared pattern doesn't repaint) were each attacked with the
+  groomed diagnosis first, then with every alternative this phase could
+  construct, and the panel does the right thing in all of them — see the
+  status entry for the experiments and their data. The criterion is
+  amended to say so rather than left describing an outcome the evidence
+  won't support; the tests are kept because a passing characterisation
+  test is still the guard that keeps the behaviour where it is.
+- **59.D — what could still be true for items 4.1 and 4.2.** Both
+  reports came from a built binary against the owner's own project, and
+  three things about that setup this phase cannot stand up are the
+  remaining candidates, in order of how well they fit the words:
+  1. **The solo subject is the signal's bare name, and the pattern
+     editor's subject two controls away is the whole ADR 0038 path**
+     (`bus/ecu/message/signal`). A path-shaped pattern — the obvious
+     thing to reach for, and to paste, on an area whose series *are*
+     defined by one — matches nothing in the solo box. That reads
+     exactly as "pattern-derived signals never match the solo filter"
+     without a single line of the mask being wrong. If the owner
+     confirms it, the fix is a design call (widen solo's subject, or
+     say so in the control's title), not a defect fix.
+  2. **A real canvas.** The repaint report ends "until a zoom forces a
+     repaint", and everything in the pixel path — uPlot's own redraw on
+     `setSeries`/`setSize`, the ResizeObserver rebuild probe, the
+     zero-size collapse an all-masked area goes through — is stubbed in
+     jsdom. A collapsed-by-solo area's canvas is 0-height in the browser
+     and 600×400 under the test's size stub, so that path in particular
+     is unreachable here.
+  3. **Scale.** The fixtures are two to four series; the workflow the
+     feature exists for is dozens, where the self-paced resample loop
+     and the pacing back-off are actually loaded.
+  A reproduction from the owner (project + the exact keystrokes) would
+  settle all three cheaply; without one, guessing a fix would mean
+  editing the hot repaint path with no failing test to hold it.
+- **59.D — the plot panel root now takes focus.** `.plot-panel` is
+  `tabIndex={-1}` and a mousedown on a non-focusable part of the panel
+  moves focus onto it. That is the same blur an ordinary click on
+  non-focusable content already caused (focus would have gone to
+  `document.body`), so nothing that had focus keeps it any less — but it
+  does mean the panel, not the body, is what `document.activeElement`
+  reports after a click on the canvas, and dockview sees a `focusin`
+  inside the panel where it previously saw none.
 - **59.B — "a project being open" is `projectPath !== null`.** An
   unsaved project (File → New, never saved) is therefore treated as a
   scratch session and its layout is not persisted. That is the faithful
@@ -338,8 +453,10 @@ between phases. 59.A's first commit carries this plan section.
 - Ctrl+F focuses the find/filter box in the focused plot (solo) and
   RBS panels, command-palette listed, no binding conflicts (registry
   self-check green); DBC/Settings covered or the deferral recorded.
-- The three solo bugs have regression tests that fail pre-fix and
-  pass post-fix.
+- The three solo bugs have regression tests. The one that reproduced
+  (PgDn / PgUp stepping) fails pre-fix and passes post-fix; the other
+  two pass against the unmodified panel, which is the phase's finding
+  about them — see the 59.D status entry and blocker.
 - Autosave-on-exit saves an explicit-dir project silently on dirty
   close, prompts otherwise, overridable per project (tested at the
   close-flow seam).
