@@ -413,8 +413,120 @@ between phases. 59.A's first commit carries this plan section.
     `cargo clippy -p cannet-gui --all-targets` clean; `pnpm --dir
     apps/gui test` 1695 passed; `pnpm --dir apps/gui build` clean.
 
+- 2026-08-09 — Phase 59.F landed (`task59f-gridview-keys`, off
+  `task59e-autosave-exit`). Three commits, one per shippable behaviour:
+  - `82bba5f` `feat(gui): Escape returns from a gridview row's content
+    to the grid` — **item 6.** One block at the top of `useGridview`'s
+    `onKeyDown`: a bare Escape whose target is not the container itself
+    and which nothing has claimed refocuses the container, cursor
+    untouched. **Content keeps first claim through two mechanisms, not
+    one:** a control that stops propagation never reaches the handler
+    (the shared `Combobox` does exactly that on Escape, closing its
+    dropdown), and a control that calls `preventDefault` is read off
+    `e.defaultPrevented` — which also covers a global Escape command,
+    since the dispatcher's capture-phase listener preventDefaults a
+    stroke it consumed *before* the synthetic event exists. Escape is
+    deliberately **not** added to `isGridviewKey`: the grid taking it
+    only when unclaimed is what lets `view.exitFullscreen` keep first
+    claim, and adding it to the suppression set would have inverted
+    that. Dom-tested both directions in the shared hook (four cases:
+    from a button, from a text field, a consumer that preventDefaults,
+    and Escape on the container itself passing through) plus one for
+    the global-command direction, and in RBS (focus a message row's
+    control → Escape → the tree has focus and the arrows move; the
+    signal cell's open picker keeps the press). ADR 0044's key table and
+    its "way into a row's content" paragraph updated in the same
+    commit. `pnpm --dir apps/gui test`: 1703 passed (1695 before).
+  - `1517946` `feat(gui): Shift+Up/Down extends a gridview's selection`
+    — **item 7, the shared half.** `extendToCursor(current, from, to,
+    order)` in `gridviewSelection.ts` is the whole rule: the anchor is
+    the fixed end (falling back to the row the press started from, then
+    to the destination), the range replaces the selection, reversing
+    shrinks back through the anchor. `useGridview` moves the cursor with
+    the *same* `cursorAction` the plain arrow uses and feeds the result
+    in. `keybindings.ts` gains Shift+Up/Down beside Shift+Tab in both
+    the per-stroke (`isGridviewKey`) and per-chord
+    (`chordSuppressedInGridview`) suppression, so a user-bound Shift+↓
+    can't preempt the range from the capture phase; Shift+Left/Right
+    stay global. Seven pure cases in `gridviewSelection.test.ts`, two
+    dom cases in the hook. `pnpm --dir apps/gui test`: 1712 passed.
+  - `7c53a6b` `feat(gui): Shift+Up/Down extends the plot's signal-row
+    selection` — **item 7, the plot consumer.**
+    `extendPlotSignalSelection` steps through the area's ordered signal
+    keys using the gridview's own `cursorAction` over a flat
+    `arrayRowSpace`, then calls the shared `extendToCursor` — one
+    movement rule and one selection rule for both consumers, no second
+    copy. `PlotSignalSelection` grows a `cursor` beside its `anchor`
+    (a range gesture moves only one of the two); every click sets it.
+    The press is handled on the panel root next to the solo stepping,
+    because the signal rows take no focus of their own. Six pure cases
+    plus three dom cases (extend/reverse, inert with nothing selected,
+    and the solo box keeping Shift+arrow for text selection).
+    `pnpm --dir apps/gui test`: 139 files, 1721 passed (1695 at the
+    start of the phase; 26 new). `pnpm --dir apps/gui build` clean. No
+    Rust touched, so `cargo test` / clippy were not re-run. ADR-0031
+    perf gate deliberately not run — the orchestrator runs it.
+  - TDD order, per commit: the hook/RBS Escape tests were watched fail
+    against the unmodified hook (the two positive ones failed, "expected
+    `input type=checkbox` to be `div class=rbs-tree`"; the
+    content-keeps-it ones passed pre-change, which is what makes them
+    the guard). The selection-model cases failed on
+    `extendToCursor`/`extendPlotSignalSelection` not existing, the two
+    hook dom cases on the cursor not moving ("expected 'msg' to be
+    'frame'"), the keybindings cases on the suppression tables, and the
+    plot dom case on the range not growing. The two consumer edits that
+    came out of a real failure (below) were each proved by removing the
+    fix again and watching the guard go red.
+  - Docs in the same commits: ADR 0044 (key table, both interaction
+    paragraphs, the suppression list, and the rejected-alternative entry
+    that had ruled keyboard multiselect out wholesale),
+    `docs/CONTEXT.md`'s **Selection** entry, and the README's DBC-tree
+    and plot-signal-row paragraphs.
+
 ## Blockers / side effects
 
+- **59.F — the shared Escape needed two row editors to declare that
+  they consume it.** Both revert on Escape *and* commit on blur, so the
+  grid taking focus back blurred them into committing the very draft
+  they were abandoning: `SignalsPanel`'s section-name field (caught by
+  its existing "abandons a rename on Escape" test, which went red the
+  moment the hook changed) and `TraceView`'s event-label field (no test
+  existed; one was added to `EventsPanel.dom.test.tsx` and proved by
+  removing the fix again). Each is a one-line `e.preventDefault()`,
+  which is exactly the declaration the shared rule reads. **This is the
+  standing rule for the layer now**: a control inside a gridview row
+  that does anything of its own on Escape has to consume the press, or
+  the grid will also take focus off it. `ValidatedInput` needs nothing —
+  it blurs itself on Escape, so the container taking focus is the
+  completion of what it already did, not a fight with it.
+- **59.F — Shift+Up/Down onto an unselectable row moves the cursor
+  without growing the range.** The alternative reading of "the
+  destination item joins the selection" is to *skip* unselectable rows
+  and land on the next selectable one, which is what a flat list would
+  do. It was rejected on cost: the skip has to be a walk of the row
+  space, and in a host-paged view (`count` is the whole capture) an
+  unbounded walk is exactly the thing the paged-model rule forbids. The
+  chosen rule is bounded and keeps Shift+arrow landing where the plain
+  arrow lands; the range simply grows one press later, because the next
+  press ranges from the same anchor straight across the structure row.
+  Only trees with unselectable structure rows (DBC buses/ECUs, RBS
+  buses/ECUs) can see the difference.
+- **59.F — ADR 0044 had ruled keyboard multiselect out entirely, and
+  was amended rather than contradicted.** Its rejected-alternatives
+  entry ("Keyboard multiselect (Shift/Ctrl+arrows, Ctrl+Space) … out by
+  user ruling") is now narrowed to Ctrl+arrows / Ctrl+Space, with the
+  2026-08-08 reversal and its reason recorded in place. Flagging it
+  because it is a reversal of a written user ruling, not a gap being
+  filled.
+- **59.F — the plot's Shift+Up/Down acts on the area that holds the
+  selection, wherever the pointer is.** The press is handled on the
+  plot panel root (the signal rows take no focus of their own, the same
+  fact 59.D's PgDn/PgUp fix turned on), so the gesture is panel-scoped:
+  with a selection in area 2 and the mouse over area 1, Shift+↓ still
+  extends area 2's. That follows the existing rule that a selection
+  never spans areas and belongs to whichever area was last clicked in;
+  there is no second cursor to be somewhere else. Text fields in the
+  panel are exempt — Shift+arrow selects text there.
 - **59.E — a bare `#[tauri::command]` fn added directly to `lib.rs` hit
   a reproducible rustc/tauri macro collision.** `cargo check -p
   cannet-gui` refused with `E0255: the name
