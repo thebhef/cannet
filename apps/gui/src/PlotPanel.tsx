@@ -1441,10 +1441,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// first (forward) or last (backward) match. A no-op with nothing to
   /// step through, so the keyboard binding below can stay unconditional.
   const soloMatchCount = soloMatchList.length;
+  /// `page` is how many matches one move covers: the next / previous
+  /// buttons are always one, PgDn / PgUp take the configured page size.
   const stepSoloBy = useCallback(
-    (delta: 1 | -1) => {
+    (delta: 1 | -1, page = 1) => {
       if (soloMatchCount === 0) return;
-      setSolo((s) => ({ ...s, indices: stepSolo(s.indices, soloMatchCount, delta) }));
+      setSolo((s) => ({ ...s, indices: stepSolo(s.indices, soloMatchCount, delta, page) }));
     },
     [soloMatchCount],
   );
@@ -1497,7 +1499,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
       if (e.key !== "PageDown" && e.key !== "PageUp") return;
       if (soloMatchCount === 0) return;
       e.preventDefault();
-      stepSoloBy(e.key === "PageDown" ? 1 : -1);
+      // Read at press time, so a changed setting takes effect without
+      // re-rendering the panel.
+      stepSoloBy(e.key === "PageDown" ? 1 : -1, hostSettings().solo_page_size);
     },
     [soloMatchCount, stepSoloBy],
   );

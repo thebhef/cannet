@@ -86,6 +86,9 @@ export interface Settings {
   recent_blfs_limit: number;
   /// How many recently-run commands the palette floats to the top.
   recent_commands_limit: number;
+  /// How many solo matches one PageDown / PageUp press moves through in
+  /// a plot panel. `1` walks the list one at a time.
+  solo_page_size: number;
   /// How often the host tells the views a running capture has grown.
   live_update_interval_ms: number;
   /// How often the capture is flushed to disk (ADR 0002 DS-2/DS-7).
@@ -192,6 +195,7 @@ export function defaultSettings(): Settings {
     follow_window_ms: 10_000,
     recent_blfs_limit: 8,
     recent_commands_limit: 10,
+    solo_page_size: 1,
     live_update_interval_ms: 100,
     trace_flush_interval_ms: 2000,
     log_rotation_bytes: 5 * 1024 * 1024,

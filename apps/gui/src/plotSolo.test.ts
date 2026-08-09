@@ -231,3 +231,25 @@ describe("solo persistence", () => {
     });
   });
 });
+
+describe("stepSolo page size", () => {
+  it("moves a page at a time once step mode is entered", () => {
+    // Entering always lands on the first match — a page size must not
+    // skip the start of the list — and the moves after it page.
+    expect(stepSolo(null, 10, 1, 4)).toEqual([0]);
+    expect(stepSolo([0], 10, 1, 4)).toEqual([4]);
+    expect(stepSolo([4], 10, 1, 4)).toEqual([8]);
+    // …wrapping like a single step does.
+    expect(stepSolo([8], 10, 1, 4)).toEqual([2]);
+    expect(stepSolo([2], 10, -1, 4)).toEqual([8]);
+  });
+
+  it("enters backwards on the last match whatever the page size", () => {
+    expect(stepSolo(null, 10, -1, 4)).toEqual([9]);
+  });
+
+  it("treats a page below one as one, so the key is never a no-op", () => {
+    expect(stepSolo([3], 10, 1, 0)).toEqual([4]);
+    expect(stepSolo([3], 10, 1, -5)).toEqual([4]);
+  });
+});

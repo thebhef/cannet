@@ -82,6 +82,7 @@ pub(crate) const SCOPES: ScopeTable = &[
     ("follow_window_ms", Scope::UserOverridable),
     ("recent_blfs_limit", Scope::UserOverridable),
     ("recent_commands_limit", Scope::UserOverridable),
+    ("solo_page_size", Scope::UserOverridable),
     ("live_update_interval_ms", Scope::UserOverridable),
     ("trace_flush_interval_ms", Scope::UserOverridable),
     ("log_rotation_bytes", Scope::UserOverridable),
@@ -225,6 +226,13 @@ pub struct Settings {
     /// How many recently-run commands the palette floats to the top.
     /// Default 10. `0` remembers none.
     pub recent_commands_limit: u64,
+    /// How many solo matches one `PageDown` / `PageUp` press moves through
+    /// in a plot panel. Default 1 — the press walks the match list one
+    /// at a time, which is what the next / previous buttons beside the
+    /// solo box do. Larger values page. The first press after the
+    /// matches-only view always lands on the first (or last) match
+    /// whatever this is, so paging never skips the start of the list.
+    pub solo_page_size: u64,
     /// How often the host pushes a `trace-grew` event with the latest
     /// count, rate, and live tail. Default 100 ms. It is *one* setting
     /// covering the whole live-update loop: the smoothing constant and
@@ -535,6 +543,7 @@ impl Default for Settings {
             follow_window_ms: 10_000,
             recent_blfs_limit: 8,
             recent_commands_limit: 10,
+            solo_page_size: 1,
             live_update_interval_ms: 100,
             trace_flush_interval_ms: 2_000,
             log_rotation_bytes: 5 * 1024 * 1024,
@@ -815,6 +824,14 @@ fn refuse_below_minimums(settings: &mut Settings, complaints: &mut Vec<String>) 
             MIN_LOG_ROTATION_BYTES,
             d.log_rotation_bytes,
         ),
+        // A page of zero would make the key a no-op rather than a
+        // preference, so one is the floor.
+        (
+            "solo_page_size",
+            &mut settings.solo_page_size,
+            1,
+            d.solo_page_size,
+        ),
     ] {
         refuse_below(complaints, key, value, min, default);
     }
@@ -1061,6 +1078,7 @@ mod tests {
             follow_window_ms: 30_000,
             recent_blfs_limit: 20,
             recent_commands_limit: 3,
+            solo_page_size: 4,
             live_update_interval_ms: 250,
             trace_flush_interval_ms: 5_000,
             log_rotation_bytes: 32 * 1024 * 1024,

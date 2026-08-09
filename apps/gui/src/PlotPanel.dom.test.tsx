@@ -3445,6 +3445,34 @@ describe("PlotPanel solo", () => {
     expect(visibleNames()).toEqual(["Cell1"]);
   });
 
+  it("pages by the configured number of matches", async () => {
+    // The setting is a page *size*: the keys move that far, while the
+    // next / previous buttons beside the box stay one-at-a-time.
+    mockSettings.solo_page_size = 2;
+    await hydrateSettings();
+    try {
+      const registry = stepRegistry("el-solo-page");
+      renderPanel({ params: { elementId: "el-solo-page" }, registry });
+      typeSolo("Cell");
+      const panel = document.querySelector(".plot-panel")!;
+
+      // The first press still lands on the first match — a page must not
+      // skip past the start of the list.
+      fireEvent.keyDown(panel, { key: "PageDown" });
+      expect(visibleNames()).toEqual(["Cell1"]);
+      fireEvent.keyDown(panel, { key: "PageDown" });
+      expect(visibleNames()).toEqual(["Cell3"]);
+      fireEvent.keyDown(panel, { key: "PageUp" });
+      expect(visibleNames()).toEqual(["Cell1"]);
+      // The buttons are unaffected: they say "next match", not "next page".
+      fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+      expect(visibleNames()).toEqual(["Cell2"]);
+    } finally {
+      delete mockSettings.solo_page_size;
+      await hydrateSettings();
+    }
+  });
+
   it("steps after a click on a part of the plot that takes no focus of its own", () => {
     // The canvas column, a signal row, the area chrome — none of them
     // are focusable, so clicking one used to drop focus out of the

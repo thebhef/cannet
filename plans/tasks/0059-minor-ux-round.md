@@ -589,7 +589,137 @@ between phases. 59.A's first commit carries this plan section.
   `pnpm --dir apps/gui build` clean. ADR-0031 perf gate deliberately not
   run — the orchestrator runs the final gate.
 
+- 2026-08-09 — Fix round (`task59h-live-fixes`, off `task60d-undo-close`
+  0911050) took items 3 and 4 back after the owner tested live, plus two
+  new reports. Reproduced against the **owner's own running session**
+  (read-only, nothing from it in the repo): the built GUI launched under
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port`, driven
+  over CDP for DOM facts and real `SendKeys` strokes for anything the
+  browser layer decides.
+
+  **Item 3 - `Mod+F` reached the WebView's find bar.** Three candidates
+  were on the table: the capture-phase dispatcher never sees the chord,
+  the command context doesn't match so nothing `preventDefault`s, or
+  WebView2 handles it before the page.
+  - *Observation.* With a plot panel focused (`document.activeElement`
+    is `div.plot-panel`), a `Ctrl+F` keydown came back
+    `defaultPrevented: false` and focus did not move.
+  - *Experiment 1.* `Mod+Shift+P` through the same path, in the same
+    state. *Data.* `defaultPrevented: true`, the palette opened, and it
+    **listed "Find in panel"** - so the dispatcher is live and the
+    command's context *does* match. Both of the first two candidates
+    refuted at once. The palette rendered that command with its category
+    where a bound command shows its chord, i.e. the command had **no
+    binding**.
+  - *Experiment 2.* Read the persisted customisation. *Data.* 15
+    entries, one of them a chord that is not a default - and no `Mod+F`.
+  - *Conclusion.* `resolveBindings` **replaced** the shipped defaults
+    with the user's list whenever one existed. The customisation is a
+    whole-list snapshot, so a map saved before `Mod+F` shipped cannot
+    mention it, and every binding added after a user's first edit was
+    dead for that user - invisibly, because the palette lists commands,
+    not bindings. Fix: defaults the snapshot says nothing about are
+    folded back in, appended last so `sanitizeBindings`' own conflict
+    guard lets a reused chord win. Absence can no longer mean "removed",
+    so a removal is now recorded as a `disabled` tombstone (frontend
+    `BindingSpec`, host `Binding`, the editor writes it, the resolver
+    honors it).
+  - *The third candidate, settled by experiment.* With the fix in, a
+    real OS `Ctrl+F` on a **non-findable** panel showed no find bar;
+    with the app-wide claim disabled and nothing else changed, the same
+    keystroke put the Edge find bar over the toolbar. So the page's
+    `preventDefault` **does** suppress it - WebView2 is not handling the
+    key ahead of the content - and an unbound chord falling through was
+    the whole mechanism. `dispatchStroke` now claims `Mod+F` even when it
+    matches nothing (running no command), because a desktop window has no
+    business showing a browser find bar. Deliberately not generalised to
+    "any bound chord": plain `Escape` must still fall through to modals
+    and in-panel handlers.
+  - *Live verification.* Plot panel focused -> `defaultPrevented: true`
+    and focus lands on `input.plot-solo-input`. Non-findable panel ->
+    `defaultPrevented: true`, focus unchanged, no find bar.
+
+  **Item 4 - solo vs pattern-derived signals: does not reproduce.**
+  59.D's blockers named the missing evidence (the owner's project plus
+  the exact regex); this round had both.
+  - *Experiment.* On the panel carrying 95 pattern-derived rows out of
+    98, type the owner's regex into the solo box and compare the
+    control's match count against the rows whose name the same regex
+    matches.
+  - *Data.* Match count **80**; rows whose name matches **80**; rows
+    reading `hidden` after the solo **18**, i.e. 98 - 80. Every other
+    plot panel in the session has no pattern rows and no matching names,
+    and reports 0.
+  - *Conclusion.* Refuted at the reported seam: pattern-derived rows are
+    matched, counted, and masked exactly like manual picks, on the very
+    session the report came from. No change made; 59.D's characterisation
+    tests stay as the guard. What is *not* excluded is a different
+    subject than the one the report named - see the blocker.
+
+  **Item 5 - a hidden row jumped to the top: reproduced and fixed.**
+  - *Observation (live).* Hiding the row at index 40 of a
+    pattern-defined area left the hidden row at index **34**, and the row
+    was no longer pattern-derived.
+  - *Cause.* Hiding a pattern row has to write an entry to carry the
+    flag, and that entry read as a *manual pick* - `applyAreaSelection`
+    puts picks ahead of the matches, so the row moved to the top of its
+    area.
+  - *Fix.* `SignalRef.viaPattern` marks an entry that carries only
+    overrides for a row the pattern put there: it keeps the pattern's
+    order, keeps its badge, and stays un-removable. A drop *is* a claim
+    on position, so `placeSignal` clears the marker, and converting the
+    patterns to picks clears it too.
+  - *Live verification.* Same gesture on the same panel: the hidden row
+    stays at index 40 and keeps its pattern badge.
+
+  **Item 6 - the PgDn / PgUp page size** is a host setting,
+  `solo_page_size`, `Scope::UserOverridable` with a settings-descriptor
+  `Spec` (`Surface::Plot`, `Kind::Behaviour`, the shared `count()`
+  control) - the shape `recent_commands_limit` and its neighbours already
+  use, since this is a preference rather than panel state. Default 1,
+  which is exactly today's behaviour; the floor is 1, because a page of
+  zero would make the key a no-op rather than a preference. The first
+  press after the matches-only view still lands on the first (or last)
+  match whatever the page size, or paging would skip the start of the
+  list. The next / previous buttons stay one-at-a-time - they say "next
+  match", not "next page".
+
+  Verification: `pnpm --dir apps/gui test` 142 files, 1804 tests passed
+  (1792 before); `pnpm --dir apps/gui build` clean; `cargo test -p
+  cannet-gui` 530 passed, 0 failed, 4 ignored; `cargo clippy -p
+  cannet-gui --all-targets` clean. Each new test was watched fail against
+  the unfixed code first. ADR-0031 perf gate deliberately not run - the
+  orchestrator runs it after this round.
+
 ## Blockers / side effects
+
+- **59.H - removing a keybinding now writes a tombstone, and an older
+  `settings.json` has none.** The merge treats "the snapshot does not
+  mention this command" as "this default is newer than the snapshot", so
+  a binding a user removed through the editor *before* this change comes
+  back once, at the next launch. Removing it again records it properly
+  and it stays gone. The alternative - keep replacing the defaults
+  wholesale - leaves every future binding dead for every user who has
+  ever opened the shortcuts editor, which is the bug this round was
+  called in for.
+- **59.H - a pattern-derived row that has been hidden or recoloured is
+  no longer offered a per-row x.** It keeps its pattern badge, because
+  the entry behind it is an override and not a pick: removing it would
+  only have the pattern resolve the row again on the next evaluation.
+  The previous behaviour (hide it, and it becomes a removable manual
+  pick) was the same mechanism that moved the row, so the two could not
+  be separated. Dragging the row still materializes it as a real pick,
+  x and all.
+- **59.H - item 4 does not reproduce, and the subject is the remaining
+  candidate.** Solo matches the **bare signal name**; the pattern editor
+  two controls away matches the whole ADR 0038 path
+  (`bus/ecu/message/signal`). A path-shaped regex - the obvious thing to
+  paste on an area whose series are defined by one - matches nothing in
+  the solo box and would read exactly as "solo doesn't match my pattern
+  signals", with no line of the mask wrong. That is a design call (widen
+  solo's subject, or say so in the control's title), not a defect fix,
+  and it belongs with the solo-UX work being groomed separately rather
+  than to a fix round.
 
 - **59.G — the CI half of item 8 is verified against the recipe, not
   against a real run.** The phase is under a no-push instruction, so
