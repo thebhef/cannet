@@ -4,6 +4,7 @@ import type { IDockviewPanelProps } from "dockview";
 
 import { FilterPredicateEditor } from "./FilterPredicateEditor";
 import { insertFilterUpstream } from "./insertFilterUpstream";
+import { useUndoGesture } from "./undoGesture";
 import {
   Background,
   Controls,
@@ -65,6 +66,11 @@ export function ProjectGraphPanel(props: IDockviewPanelProps) {
 function ProjectGraphPanelInner(props: IDockviewPanelProps) {
   const project = useProjectContext();
   const registry = useElementRegistry();
+  // "+ filter" creates an element and nothing else — no panel, so no
+  // layout step to ride on. Making it a gesture is what puts it on the
+  // element stack, so adding a filter is undoable (ADR 0050 lists
+  // filter add/remove as view state).
+  const gesture = useUndoGesture();
   // Wire colors are theme-derived for a bus the user hasn't colored, and
   // the neutral wire always is.
   const themeName = useThemeName();
@@ -247,7 +253,7 @@ function ProjectGraphPanelInner(props: IDockviewPanelProps) {
       <div className="graph-panel-toolbar">
         <button
           type="button"
-          onClick={() => registry.create("filter")}
+          onClick={() => gesture.transact(() => registry.create("filter"))}
           title="Create a new filter element; it'll fan in from every bus by default and dangle (no downstream) until a trace or plot is wired to it"
         >
           + filter
@@ -669,6 +675,10 @@ function SignalsNode({ data }: NodeProps) {
 /// consumer through the new filter — same orchestration as the
 /// `insertFilterUpstream` helper.
 function InsertFilterButton(props: { onClick: () => void }) {
+  // The insert is three registry writes and a new element; one gesture
+  // groups them, so it costs one undo and undoing it takes the filter
+  // away again rather than leaving it dangling.
+  const gesture = useUndoGesture();
   return (
     <button
       type="button"
@@ -676,7 +686,7 @@ function InsertFilterButton(props: { onClick: () => void }) {
       title="Create a new filter upstream of this view (inherits the view's current sources)"
       onClick={(e) => {
         e.stopPropagation();
-        props.onClick();
+        gesture.transact(props.onClick);
       }}
     >
       + filter

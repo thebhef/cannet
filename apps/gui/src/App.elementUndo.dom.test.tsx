@@ -95,6 +95,58 @@ vi.mock("uplot", () => {
 });
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
+// The graph panel is where a filter is inserted upstream of a view.
+// `@xyflow/react` imports CSS vitest can't parse, so stub it — but
+// render each node through its `nodeTypes` component and each edge as a
+// marker, because the node buttons and the wiring are exactly what this
+// file drives and asserts on.
+vi.mock("@xyflow/react", () => {
+  const Position = { Left: "left", Right: "right", Top: "top", Bottom: "bottom" } as const;
+  const MarkerType = { ArrowClosed: "arrowclosed" } as const;
+  const Handle = () => null;
+  const Background = () => null;
+  const Controls = () => null;
+  type FakeNode = { id: string; type: string; data: unknown };
+  type FakeEdge = { id: string; source: string; target: string };
+  const ReactFlow = ({
+    nodes,
+    edges,
+    nodeTypes,
+    children,
+  }: {
+    nodes?: FakeNode[];
+    edges?: FakeEdge[];
+    nodeTypes?: Record<string, (p: { id: string; data: unknown }) => React.ReactNode>;
+    children?: React.ReactNode;
+  }) => (
+    <div data-testid="reactflow">
+      {(nodes ?? []).map((n) => {
+        const Node = nodeTypes?.[n.type];
+        return Node ? <Node key={n.id} id={n.id} data={n.data} /> : null;
+      })}
+      {(edges ?? []).map((e) => (
+        <div key={e.id} className="rf-edge" data-source={e.source} data-target={e.target} />
+      ))}
+      {children}
+    </div>
+  );
+  const ReactFlowProvider = ({ children }: { children?: React.ReactNode }) => <>{children}</>;
+  const applyNodeChanges = (_changes: unknown, nodes: unknown) => nodes;
+  const applyEdgeChanges = (_changes: unknown, edges: unknown) => edges;
+  return {
+    Position,
+    MarkerType,
+    Handle,
+    Background,
+    Controls,
+    ReactFlow,
+    ReactFlowProvider,
+    applyNodeChanges,
+    applyEdgeChanges,
+  };
+});
+vi.mock("@xyflow/react/dist/style.css", () => ({}));
+
 import { StrictMode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -347,6 +399,79 @@ describe("element undo", () => {
       fireEvent.click(findButton("Project panel"));
     });
     expect(() => elementRow("Plot 1")).toThrow();
+  }, 30_000);
+
+  it("inserting a filter upstream is one step — the filter goes with it", async () => {
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Graph panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".graph-node-trace")) throw new Error("no trace node yet");
+    });
+    expect(document.querySelectorAll(".graph-node-filter")).toHaveLength(0);
+
+    // Three registry writes and a new element, from one click.
+    await act(async () => {
+      fireEvent.click(
+        document.querySelector<HTMLButtonElement>(".graph-node-trace .graph-node-insert-filter")!,
+      );
+    });
+    await waitFor(() => {
+      if (document.querySelectorAll(".graph-node-filter").length !== 1)
+        throw new Error("filter node not created");
+    });
+    // The trace now reads through the filter.
+    expect(document.querySelectorAll(".rf-edge")).toHaveLength(1);
+
+    // One chord takes the filter away *and* puts the trace's sources
+    // back — creation joins the gesture's step.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      const filters = document.querySelectorAll(".graph-node-filter").length;
+      if (filters !== 0) throw new Error(`undo left ${filters} filter nodes`);
+    });
+    expect(document.querySelectorAll(".rf-edge")).toHaveLength(0);
+
+    // And redo puts the whole insert back.
+    await act(async () => {
+      key({ key: "y", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (document.querySelectorAll(".graph-node-filter").length !== 1)
+        throw new Error("redo did not restore the filter");
+    });
+    expect(document.querySelectorAll(".rf-edge")).toHaveLength(1);
+  }, 30_000);
+
+  it("adding a filter from the graph toolbar is undoable on its own", async () => {
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Graph panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".graph-panel")) throw new Error("no graph panel yet");
+    });
+    await act(async () => {
+      fireEvent.click(findButton("+ filter"));
+    });
+    await waitFor(() => {
+      if (document.querySelectorAll(".graph-node-filter").length !== 1)
+        throw new Error("filter not created");
+    });
+    // A bare filter has no panel, so nothing on the layout stack would
+    // reverse it; the element stack has to — and the chord must not
+    // fall through to the layout step that opened this panel.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (document.querySelectorAll(".graph-node-filter").length !== 0)
+        throw new Error("undo left the filter");
+    });
+    expect(document.querySelector(".graph-panel")).not.toBeNull();
   }, 30_000);
 
   it("never replays a behavior field, and never wakes the host reconciler", async () => {
