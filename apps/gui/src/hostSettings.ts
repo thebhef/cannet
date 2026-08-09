@@ -41,6 +41,12 @@ export interface Settings {
   scratch_cap_bytes: number | null;
   /// Wipe the scratch on a clean exit.
   clear_scratch_on_exit: boolean;
+  /// Whether a dirty close saves silently instead of showing the
+  /// unsaved-changes prompt. Default `false`. Scoped to a project
+  /// directory the user pointed cannet at explicitly — an auto-located
+  /// or never-saved session still prompts, since there is no project
+  /// file to save silently *to* without minting one.
+  autosave_on_exit: boolean;
   /// User keybinding customisation (ADR 0018). `null` = use the app's
   /// built-in defaults; a list is the whole effective binding set that
   /// replaces the defaults. Resolve to the effective bindings with
@@ -174,6 +180,7 @@ export function defaultSettings(): Settings {
   return {
     scratch_cap_bytes: null,
     clear_scratch_on_exit: false,
+    autosave_on_exit: false,
     keybindings: null,
     show_developer_settings: false,
     system_log_min_level: "info",

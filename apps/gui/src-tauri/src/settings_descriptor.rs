@@ -292,6 +292,17 @@ const DESCRIPTORS: &[Spec] = &[
         control: Control::Bool,
     },
     Spec {
+        key: "autosave_on_exit",
+        backing: Backing::Field,
+        label: "Autosave on exit",
+        help: "A dirty close saves silently instead of prompting — only for a project \
+               with its own directory. An auto-located or never-saved session still \
+               prompts either way; nothing here mints a project file for it.",
+        surfaces: &[Surface::General],
+        kind: Kind::Behaviour,
+        control: Control::Bool,
+    },
+    Spec {
         key: "project_caches",
         // Not a field of `settings.json`: the cache list is a management
         // surface, and it sits in the settings view because that is where
