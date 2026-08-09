@@ -62,7 +62,11 @@ import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
 import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
 import { laneBandsForVisible, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
-import { useDecimatedRange, type DecimatedOutcome } from "./useDecimatedRange";
+import {
+  useDecimatedRange,
+  type DecimatedOutcome,
+  type DecimatedSnapshot,
+} from "./useDecimatedRange";
 import { useFirstSampleWait } from "./useFirstSampleWait";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { theme, useThemeName } from "./theme";
@@ -179,6 +183,16 @@ function xAxisLabelText(hoverX: number | null, xMax: number | null, fracDigits: 
 
 const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
 const Y_AXIS_MODE_OPTIONS: ComboboxOption[] = Y_AXIS_MODES.map((m) => ({ value: m, label: m }));
+
+/** Whether a sampled window has anything to draw at all. The first-sample
+ * gate ends on the first *points*, not on the first answer: the host's
+ * serve is bounded in time, so a cold one comes back with the prefix it
+ * has decoded and keeps decoding — an answer with points is a plot the
+ * user can read, an answer with none is still a blank canvas. */
+function hasAnyPoints(snapshot: DecimatedSnapshot): boolean {
+  for (const s of snapshot.byKey.values()) if (s.t.length > 0) return true;
+  return false;
+}
 
 /** Shared drag-over affordance for a signal drop target — the plot-area
  * surface and each signal row use the same one, rather than two
@@ -1352,9 +1366,20 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // belongs to the old instance; the rebuild kicks a fresh one.
       if (uplotRef.current !== u) return;
       if (outcome.kind === "pending") return; // nothing real yet — retry next tick
-      // Past `pending` the area knows what it holds — a window to draw,
-      // or a definitive "there is none". Either way the wait is over.
-      firstSampleSettled();
+      // The wait ends at the first *paint* or at the host's "that is all
+      // there is", whichever comes first. A serve is bounded in time, so
+      // a cold one answers with the prefix it has decoded: points to
+      // draw means the area is no longer waiting even though the rebuild
+      // runs on, while a partial answer that decoded nothing yet is still
+      // "nothing *yet*" and keeps the placeholder up. Everything else —
+      // an empty window, a memoised one, a completed answer however
+      // empty — is definitive.
+      if (
+        outcome.kind !== "sampled" ||
+        outcome.snapshot.complete ||
+        hasAnyPoints(outcome.snapshot)
+      )
+        firstSampleSettled();
 
       if (outcome.kind === "empty") {
         // Window collapsed (trace just started, no frames yet, or the
@@ -2887,7 +2912,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           className="plot-area-building"
           role="status"
           style={{ right: `${signalsWidth}px` }}
-          title="building this signal set's decimation cache — the first sample after a signal change decodes the whole window"
+          title="building this signal set's decimation cache — the host is decoding this signal's history and the plot paints as points arrive"
         >
           <span className="plot-area-building-bar" aria-hidden="true" />
           <span>building…</span>

@@ -178,6 +178,13 @@ const mockSettings: Record<string, unknown> = {};
 /// (rather than stay stalled forever) can hand it a sample. Prefixed
 /// `mock` for the hoisted factory.
 const mockSampleStall = { on: false, pending: [] as ((buf: ArrayBuffer) => void)[] };
+/// While `on`, `sample_signals` answers the way a host mid-rebuild does:
+/// a serve is bounded in time, so each call returns one more point than
+/// the last and reports the series as **not** caught up, until `of`
+/// points have been served. Set `of: 0` for the other partial shape — a
+/// serve that has decoded nothing yet. Prefixed `mock` for the hoisted
+/// factory.
+const mockSampleRebuild = { on: false, served: 0, of: 0 };
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
@@ -185,6 +192,15 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "sample_signals") {
       if (mockSampleStall.on)
         return new Promise<ArrayBuffer>((resolve) => mockSampleStall.pending.push(resolve));
+      if (mockSampleRebuild.on) {
+        const n = Math.min(mockSampleRebuild.served + 1, mockSampleRebuild.of);
+        mockSampleRebuild.served = n;
+        const t = Array.from({ length: n }, (_, i) => i);
+        return encodeSample(
+          (args?.signals ?? []).map(() => ({ t, v: t.map((x) => 10 + x) })),
+          mockSampleRebuild.of > 0 && n >= mockSampleRebuild.of,
+        );
+      }
       return encodeSample(
         (args?.signals ?? []).map(
           (s) =>
@@ -545,6 +561,9 @@ afterEach(() => {
   mockSampleBounds.last = 2;
   mockSampleStall.on = false;
   mockSampleStall.pending.length = 0;
+  mockSampleRebuild.on = false;
+  mockSampleRebuild.served = 0;
+  mockSampleRebuild.of = 0;
   mockRenderCost.perTickMs = 0;
   mockRenderCost.accMs = 0;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
@@ -1630,11 +1649,11 @@ describe("PlotPanel", () => {
   });
 
   it("an area whose first sample is slow says it is building, and stops when it lands", async () => {
-    // A cold decimation cache decodes the whole window on the first
-    // sample for a signal set, so the canvas is blank for seconds and
-    // reads as "no data" or "hung". Stalling every fetch stands in for
-    // that wait; the gate is real time, so only the positive direction
-    // is asserted here (the sub-threshold case is in
+    // A cold decimation cache has a whole capture of history to decode
+    // for a new signal set, so the canvas is blank until points start
+    // coming back and reads as "no data" or "hung". Stalling every fetch
+    // stands in for that wait; the gate is real time, so only the
+    // positive direction is asserted here (the sub-threshold case is in
     // `useFirstSampleWait.test.tsx`, under fake timers).
     const building = () => document.querySelector(".plot-area-building");
     await withSizedCanvas(async () => {
@@ -1654,6 +1673,103 @@ describe("PlotPanel", () => {
         await Promise.resolve();
       });
       await waitFor(() => expect(building()).toBeNull());
+    });
+  });
+
+  it("stops saying it is building on the first points, not on the finished series", async () => {
+    // The first-paint half of the split. A host serve is bounded in
+    // time, so a cold one answers with the prefix it has decoded and
+    // says the series is still building. That prefix is a plot the user
+    // can read — the placeholder has done its job and must go, even
+    // though the rebuild has not finished.
+    const building = () => document.querySelector(".plot-area-building");
+    await withSizedCanvas(async () => {
+      mockSampleStall.on = true;
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(building()).not.toBeNull(), { timeout: 2000 });
+
+      mockSampleStall.on = false;
+      await act(async () => {
+        for (const resolve of mockSampleStall.pending.splice(0))
+          // `false`: points, and the host still catching up.
+          resolve(encodeSample([{ t: [0, 1, 2], v: [10, 20, 15] }], false));
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(building()).toBeNull());
+      expect(drawnPoints(liveInstanceIn("Area 1"))).toBeGreaterThan(0);
+    });
+  });
+
+  it("keeps saying it is building while a partial answer has no points yet", async () => {
+    // The other half. "Nothing *yet*" is exactly a serve that ran out of
+    // budget before it decoded anything — settling on it would replace
+    // the placeholder with a blank canvas, which is the "no data or
+    // hung?" state the gate exists to prevent.
+    const building = () => document.querySelector(".plot-area-building");
+    await withSizedCanvas(async () => {
+      mockSampleStall.on = true;
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(building()).not.toBeNull(), { timeout: 2000 });
+
+      mockSampleStall.on = false;
+      mockSampleRebuild.on = true; // every further serve: empty, incomplete
+      await act(async () => {
+        for (const resolve of mockSampleStall.pending.splice(0))
+          resolve(encodeSample([{ t: [], v: [] }], false));
+        await new Promise((r) => setTimeout(r, 300));
+      });
+      expect(building()).not.toBeNull();
+
+      // …and it goes the moment the rebuild produces something.
+      mockSampleRebuild.of = 3;
+      await waitFor(() => expect(building()).toBeNull(), { timeout: 2000 });
+    });
+  });
+
+  it("stops saying it is building when the host is caught up with nothing to show", async () => {
+    // A signal no loaded DBC decodes answers complete-and-empty. That is
+    // "nothing to draw", not "nothing to draw yet" — the placeholder must
+    // not sit there forever on it.
+    const building = () => document.querySelector(".plot-area-building");
+    await withSizedCanvas(async () => {
+      mockSampleStall.on = true;
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(building()).not.toBeNull(), { timeout: 2000 });
+
+      mockSampleStall.on = false;
+      await act(async () => {
+        for (const resolve of mockSampleStall.pending.splice(0))
+          resolve(encodeSample([{ t: [], v: [] }], true));
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(building()).toBeNull());
+    });
+  });
+
+  it("paints each partial answer as the rebuild advances", async () => {
+    // The point of the whole exercise: the plot fills in while the host
+    // decodes, rather than showing one finished picture minutes later.
+    // The fake host serves one more point per call and only reports it
+    // is caught up on the last one — so the growing canvas is driven by
+    // the same re-request the real partial serves drive.
+    await withSizedCanvas(async () => {
+      mockSampleRebuild.on = true;
+      mockSampleRebuild.of = 5;
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBeGreaterThan(0));
+      const early = drawnPoints(liveInstanceIn("Area 1"));
+      expect(early).toBeLessThan(5);
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(5), {
+        timeout: 3000,
+      });
+      // (That the memo takes over again once the host reports it is
+      // caught up is pinned at the hook, in `useDecimatedRange.test.ts`.
+      // It is not observable here: this panel's trace is running, so its
+      // window grows every tick and a refetch is correct regardless.)
     });
   });
 
