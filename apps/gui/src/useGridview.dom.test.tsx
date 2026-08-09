@@ -480,6 +480,41 @@ describe("selection", () => {
     window.getSelection()?.removeAllRanges();
   });
 
+  it("extends the selection with Shift+Up/Down, from the anchor", () => {
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" }); // open the container
+    fireEvent.click(view.getByTestId("row-msg")); // cursor + anchor
+    fireEvent.keyDown(view.grid, { key: "ArrowDown", shiftKey: true });
+    expect(cursor(view.grid)).toBe("frame");
+    expect(selectedRows(view).sort()).toEqual(["frame", "msg"]);
+    fireEvent.keyDown(view.grid, { key: "ArrowDown", shiftKey: true });
+    expect(selectedRows(view).sort()).toEqual(["frame", "msg", "plain"]);
+    // Reversing shrinks the range back through the anchor, then extends
+    // the other way past it.
+    fireEvent.keyDown(view.grid, { key: "ArrowUp", shiftKey: true });
+    expect(selectedRows(view).sort()).toEqual(["frame", "msg"]);
+    fireEvent.keyDown(view.grid, { key: "ArrowUp", shiftKey: true });
+    expect(selectedRows(view)).toEqual(["msg"]);
+    // …and the panel is asked to scroll to each row the cursor reaches.
+    expect(scrolled.length).toBeGreaterThan(0);
+  });
+
+  it("moves the cursor onto an unselectable row without growing the range", () => {
+    // The container row cannot be selected, so it cannot join a range —
+    // the press still moves the cursor, and the next one ranges from the
+    // anchor across it.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowRight" }); // open the container
+    fireEvent.click(view.getByTestId("row-frame"));
+    fireEvent.keyDown(view.grid, { key: "ArrowUp", shiftKey: true });
+    expect(cursor(view.grid)).toBe("msg");
+    fireEvent.keyDown(view.grid, { key: "ArrowUp", shiftKey: true });
+    expect(cursor(view.grid)).toBe("bus");
+    expect(selectedRows(view).sort()).toEqual(["frame", "msg"]);
+  });
+
   it("takes every selectable row on Ctrl+A, and no others", () => {
     const view = setup();
     fireEvent.keyDown(view.grid, { key: "ArrowDown" });

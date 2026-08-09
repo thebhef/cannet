@@ -239,14 +239,28 @@ const GRIDVIEW_NAV_KEYS = new Set([
   "Tab",
 ]);
 
+/// The keys a gridview consumes with Shift held.
+const SHIFTED_GRIDVIEW_KEYS = new Set(["Tab", "ArrowUp", "ArrowDown"]);
+
 /// Is this stroke one a gridview consumes (ADR 0044)? The unmodified
 /// navigation keys — arrows, Home/End, PageUp/PageDown, Space, Tab —
-/// plus Ctrl/Cmd+A and Shift+Tab. Everything else, a modified arrow
-/// included, is a global chord and passes through.
+/// plus Ctrl/Cmd+A, Shift+Tab and Shift+Up/Down. Everything else, an
+/// Alt- or Ctrl-modified arrow included, is a global chord and passes
+/// through.
 export function isGridviewKey(stroke: KeyStroke): boolean {
-  // Shift+Tab is the one shifted stroke the grid takes: Tab's mirror,
-  // into the cursor row's last control rather than its first.
-  if (stroke.shift) return !stroke.alt && !stroke.ctrl && !stroke.meta && stroke.key === "Tab";
+  // The shifted strokes the grid takes: Shift+Tab (Tab's mirror, into
+  // the cursor row's last control rather than its first) and
+  // Shift+Up/Down (extend the selection to the row the cursor moves
+  // onto). Sideways is not a range direction, so Shift+Left/Right are
+  // not among them.
+  if (stroke.shift) {
+    return (
+      !stroke.alt &&
+      !stroke.ctrl &&
+      !stroke.meta &&
+      SHIFTED_GRIDVIEW_KEYS.has(stroke.key)
+    );
+  }
   if (stroke.alt) return false;
   if (stroke.ctrl || stroke.meta) {
     return stroke.key.toLowerCase() === "a";
@@ -257,6 +271,7 @@ export function isGridviewKey(stroke: KeyStroke): boolean {
 /// The same key set spelled as `parseChord` normalises it (lowercase),
 /// for the declaration-side check below.
 const GRIDVIEW_NAV_KEY_IDS = new Set([...GRIDVIEW_NAV_KEYS].map((k) => k.toLowerCase()));
+const SHIFTED_GRIDVIEW_KEY_IDS = new Set([...SHIFTED_GRIDVIEW_KEYS].map((k) => k.toLowerCase()));
 
 /// Would this binding go silent while focus is inside a gridview? The
 /// declaration-side counterpart of [`isGridviewKey`]: `dispatchStroke`
@@ -266,7 +281,9 @@ const GRIDVIEW_NAV_KEY_IDS = new Set([...GRIDVIEW_NAV_KEYS].map((k) => k.toLower
 /// the chord can never complete there (ADR 0044).
 export function chordSuppressedInGridview(chord: KeyChord): boolean {
   return chord.some((step) => {
-    if (step.shift) return !step.alt && !step.mod && !step.ctrl && step.key === "tab";
+    if (step.shift) {
+      return !step.alt && !step.mod && !step.ctrl && SHIFTED_GRIDVIEW_KEY_IDS.has(step.key);
+    }
     if (step.alt) return false;
     if (step.mod || step.ctrl) return step.key === "a";
     return GRIDVIEW_NAV_KEY_IDS.has(step.key);

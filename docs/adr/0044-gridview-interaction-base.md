@@ -61,6 +61,7 @@ content inside a row is reached by Tab, not by the grid cursor.
 | Enter | unbound (user-customizable) | ″ | ″ |
 | Home/End | first/last row | ″ | ″ |
 | PageUp/Down | move cursor one viewport | ″ | ″ |
+| Shift+Up/Down | extend the selection to the row moved onto | ″ | ″ |
 | Ctrl/Cmd+A | select all selectable rows | ″ | ″ |
 | Tab / Shift+Tab | into the cursor row's controls, first / last | ″ | ″ |
 | Escape (in a row's content) | back to the container, cursor intact | ″ | ″ |
@@ -91,14 +92,22 @@ on Escape) with nowhere to go, since a blur to the document body leaves
 the grid's keys dead and the next Tab restarting from the top of the
 page.
 
-**Multiselect is mouse-built.** Plain click replaces the selection;
-Ctrl/Cmd+click toggles a row; Shift+click *replaces* the selection with
-the range from the click anchor; Ctrl+Shift+click *adds* that same
-range (noncontiguous selections accumulate); Ctrl/Cmd+A selects all.
-The anchor is the last plain or Ctrl/Cmd+click, shared by both range
-chords and kept across them, so successive range clicks re-range from
-one point rather than walking. No keyboard multiselect and no checkbox
-rows. Which rows are selectable is the adapter's
+**Multiselect is mouse-built, and ranges extend from the keyboard.**
+Plain click replaces the selection; Ctrl/Cmd+click toggles a row;
+Shift+click *replaces* the selection with the range from the click
+anchor; Ctrl+Shift+click *adds* that same range (noncontiguous
+selections accumulate); Ctrl/Cmd+A selects all. The anchor is the last
+plain or Ctrl/Cmd+click, shared by both range chords and kept across
+them, so successive range clicks re-range from one point rather than
+walking. **Shift+Up/Down** is the keyboard's range gesture, VS Code's:
+the cursor moves exactly where the plain arrow moves it and the
+selection becomes the anchor→cursor range, so the destination row joins
+the selection, the anchor stays the range's fixed end, and reversing
+direction shrinks the range back through it. Where the destination is a
+row the adapter won't allow to be selected the cursor still moves and
+the range simply doesn't grow — the next press ranges across it. No
+other keyboard multiselect and no checkbox rows. Which rows are
+selectable is the adapter's
 declaration, and select-all honours it — over the rows the view holds,
 which in a host-paged view is the loaded page and not the whole space
 (the frontend must not hold a capture's worth of rows to answer a
@@ -123,7 +132,10 @@ The dispatcher's capture-phase listener fires before any panel
 handler, so the layer marks its container and the dispatcher treats
 focus-inside-a-gridview like its existing focus-inside-an-editable
 suppression for the keys the grid consumes (unmodified navigation
-keys, Space, Tab, plus Ctrl/Cmd+A and Shift+Tab). The grid makes that
+keys, Space, Tab, plus Ctrl/Cmd+A, Shift+Tab and Shift+Up/Down).
+Escape is *not* among them: the grid takes it only when a row's content
+left it unclaimed, so a context-gated global Escape binding keeps first
+claim on it. The grid makes that
 same editable-target exemption of its own: a text field inside a row (a
 section's name, an event row's label) keeps its keys, or the caret
 cannot be moved inside it, and a **focused button keeps Space** — that
@@ -183,9 +195,13 @@ the affordance corrections above.
   are not tables at all.
 - **ARIA-grid cell navigation.** See Why; also doubles the cursor
   state space for no consumer need.
-- **Keyboard multiselect (Shift/Ctrl+arrows, Ctrl+Space).** No
-  mainstream-intuitive precedent without checkboxes; out by user
-  ruling.
+- **Ctrl+arrows / Ctrl+Space multiselect.** A cursor that moves
+  without the selection following it doubles the state the user has to
+  track, for gestures with no mainstream-intuitive precedent without
+  checkboxes; out by user ruling. Shift+Up/Down was ruled out with
+  them and later ruled back in (2026-08-08) on the strength of the VS
+  Code precedent — it needs no second cursor, since the selection
+  follows the one that is already there.
 - **Panel-owned columns.** Divergence and misalignment risk; the
   layer owning the row template is what makes alignment structural.
 - **A universal search box.** The filter slot is opt-in; paged views

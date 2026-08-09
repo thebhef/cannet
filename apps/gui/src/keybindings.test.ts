@@ -233,9 +233,12 @@ describe("gridview key suppression", () => {
     }
     expect(isGridviewKey(mod("a"))).toBe(true);
     expect(isGridviewKey({ ...plain("a"), meta: true })).toBe(true);
-    // Shift+Tab is Tab's mirror into the cursor row's last control, so
-    // it is the one shifted stroke the grid takes.
+    // The shifted strokes the grid takes: Shift+Tab (Tab's mirror, into
+    // the cursor row's last control) and Shift+Up/Down (extend the
+    // selection to the row the cursor moves onto).
     expect(isGridviewKey({ ...plain("Tab"), shift: true })).toBe(true);
+    expect(isGridviewKey({ ...plain("ArrowUp"), shift: true })).toBe(true);
+    expect(isGridviewKey({ ...plain("ArrowDown"), shift: true })).toBe(true);
   });
 
   it("leaves every other chord alone", () => {
@@ -245,7 +248,8 @@ describe("gridview key suppression", () => {
     // the layer binds no Alt+← / Ctrl+↑ of its own.
     expect(isGridviewKey({ ...plain("ArrowLeft"), alt: true })).toBe(false);
     expect(isGridviewKey(mod("ArrowDown"))).toBe(false);
-    expect(isGridviewKey({ ...plain("ArrowDown"), shift: true })).toBe(false);
+    // Sideways is not a range direction — Shift+Left/Right stay global.
+    expect(isGridviewKey({ ...plain("ArrowLeft"), shift: true })).toBe(false);
     expect(isGridviewKey({ ...mod("a"), shift: true })).toBe(false);
   });
 
@@ -295,7 +299,8 @@ describe("chordSuppressedInGridview", () => {
     { chord: "f", stroke: plain("f"), suppressed: false },
     { chord: "Escape", stroke: plain("Escape"), suppressed: false },
     { chord: "Alt+ArrowLeft", stroke: { ...plain("ArrowLeft"), alt: true }, suppressed: false },
-    { chord: "Shift+ArrowDown", stroke: { ...plain("ArrowDown"), shift: true }, suppressed: false },
+    { chord: "Shift+ArrowDown", stroke: { ...plain("ArrowDown"), shift: true }, suppressed: true },
+    { chord: "Shift+ArrowLeft", stroke: { ...plain("ArrowLeft"), shift: true }, suppressed: false },
     { chord: "Ctrl+Tab", stroke: { ...plain("Tab"), ctrl: true }, suppressed: false },
     {
       chord: "Mod+Shift+P",

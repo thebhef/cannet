@@ -401,8 +401,8 @@ range, mux indicator, float kind, attributes, value table) and
 per-message detail (length, FD/BRS, mux flag, attributes). Drag a
 signal or message row onto a plot panel to add it as a series, or onto
 the transmit panel to create a new TX frame for that message;
-multi-select (click / Shift-click / Cmd-Ctrl-click) drags the whole
-selection at once. The host watches every loaded DBC file and
+multi-select (click / Shift-click / Cmd-Ctrl-click, or Shift+↑/↓ from
+the keyboard) drags the whole selection at once. The host watches every loaded DBC file and
 auto-reloads the in-memory copy when the file changes on disk — no
 need to click Reload after editing a DBC in another tool. Turn
 **`dbc_auto_reload`** off if you would rather choose the moment the

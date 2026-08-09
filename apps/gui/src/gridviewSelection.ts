@@ -1,11 +1,12 @@
 /// The gridview's selection model (ADR 0044). Pure: no DOM, no React.
 ///
-/// Selection is separate from the cursor and is built with the mouse —
-/// plain click replaces, Ctrl/Cmd+click toggles, Shift+click replaces
-/// the selection with the range from the click anchor, Ctrl+Shift+click
-/// *adds* that same range, Ctrl/Cmd+A takes everything selectable.
-/// There is no keyboard multiselect. Both the set and the anchor are
-/// ephemeral — never persisted.
+/// Selection is separate from the cursor and is mostly built with the
+/// mouse — plain click replaces, Ctrl/Cmd+click toggles, Shift+click
+/// replaces the selection with the range from the click anchor,
+/// Ctrl+Shift+click *adds* that same range, Ctrl/Cmd+A takes everything
+/// selectable. From the keyboard, Shift+Up/Down extends the range to the
+/// row the cursor moved onto ([`extendToCursor`]). Both the set and the
+/// anchor are ephemeral — never persisted.
 ///
 /// [`selectOnClick`] is written against an ordered list of ids rather
 /// than the row space, so it is the click reducer for any mouse-built
@@ -103,6 +104,36 @@ function anchorRange(
   const targetAt = order.indexOf(id);
   const [lo, hi] = anchorAt <= targetAt ? [anchorAt, targetAt] : [targetAt, anchorAt];
   return order.slice(lo, hi + 1);
+}
+
+/// Shift+Up / Shift+Down: the cursor has moved from `from` to `to`, and
+/// the selection becomes the range between the anchor and it — VS
+/// Code's directional extend. The anchor is the range's fixed end and
+/// stays put, so reversing direction shrinks the range back through it
+/// and then grows the other way; like Shift+click, the range *replaces*
+/// the selection.
+///
+/// With no anchor — nothing clicked yet, or a cursor move that landed on
+/// an unselectable row and cleared it — the row the press started from
+/// is the fixed end. A destination the adapter doesn't allow to be
+/// selected cannot join a range, so the selection is returned unchanged
+/// (the cursor still moves; that is the caller's business).
+export function extendToCursor(
+  current: GridviewSelection,
+  from: string | null,
+  to: string,
+  order: readonly string[],
+): GridviewSelection {
+  if (!order.includes(to)) return current;
+  const anchor =
+    current.anchor != null && order.includes(current.anchor)
+      ? current.anchor
+      : from != null && order.includes(from)
+        ? from
+        : null;
+  const range = anchorRange(anchor, to, order);
+  if (range == null) return { ids: new Set([to]), anchor: to };
+  return { ids: new Set(range), anchor };
 }
 
 /// Ctrl/Cmd+A: every selectable row. The anchor is left alone — the
