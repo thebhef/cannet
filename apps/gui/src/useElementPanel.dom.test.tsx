@@ -1,24 +1,25 @@
 // @vitest-environment jsdom
 //
 // The shared element-panel lifecycle hooks: id resolution + `ensure` +
-// `config` hydration + dual-write persist (`useElementPanel`), and the
-// sources-picker kind-narrowing (`useElementSources`). Four panels
-// (trace, plot, transmit, rbs) build on these; this is the canonical
-// coverage for the shared logic itself — each panel's own DOM test
-// still covers its integration (which config keys it round-trips,
-// how it wires the picker's presentation).
+// `config` hydration + dual-write persist (`useElementPanel`), the
+// resync-from-element path (`useElementRehydrate`), and the
+// sources-picker kind-narrowing (`useElementSources`). Every
+// element-backed panel builds on these; this is the canonical coverage
+// for the shared logic itself — each panel's own DOM test still covers
+// its integration (which config keys it round-trips and re-applies, how
+// it wires the picker's presentation).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import {
-  applyElementPatch,
   ElementRegistryContext,
   type ElementRegistry,
   type RegistryEntry,
 } from "./projectElements";
-import { useElementPanel, useElementSources } from "./useElementPanel";
+import { makeLiveRegistry } from "./registryTestKit";
+import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
 import { freshTrace } from "./trace";
 import type { ProjectElement } from "./types";
 
@@ -54,42 +55,11 @@ function wrapperFor(registry: ElementRegistry) {
   };
 }
 
-/// A registry wrapper backed by real React state and the real
-/// `applyElementPatch` — so a write re-renders the panel under test and
-/// carries the epoch/origin bookkeeping the rehydrate path keys on.
-/// `control.update` is the external writer (no writer token), standing
-/// in for whatever rewrites an element's config from outside the panel.
+/// The live (real-state, real-`applyElementPatch`) registry, wrapped to
+/// this file's `{ Wrapper, control }` shape.
 function liveWrapperFor(elements: ProjectElement[]) {
-  const control: { update: (id: string, patch: Partial<ProjectElement>) => void } = {
-    update: () => {},
-  };
-  const initial: RegistryEntry[] = elements.map((element) => ({
-    element,
-    trace: freshTrace(0),
-  }));
-  function Wrapper({ children }: { children: ReactNode }) {
-    const [entries, setEntries] = useState<readonly RegistryEntry[]>(initial);
-    const update = useCallback(
-      (id: string, patch: Partial<ProjectElement>, writer?: string) =>
-        setEntries((prev) => applyElementPatch(prev, id, patch, writer)),
-      [],
-    );
-    control.update = update;
-    const value = useMemo<ElementRegistry>(
-      () => ({
-        entries,
-        get: (id: string) => entries.find((e) => e.element.id === id),
-        create: () => "",
-        ensure: () => {},
-        updateTrace: () => {},
-        update,
-        remove: () => {},
-      }),
-      [entries, update],
-    );
-    return <ElementRegistryContext.Provider value={value}>{children}</ElementRegistryContext.Provider>;
-  }
-  return { Wrapper, control };
+  const { Provider, control } = makeLiveRegistry(elements);
+  return { Wrapper: Provider, control };
 }
 
 afterEach(() => vi.clearAllMocks());
@@ -198,7 +168,11 @@ describe("useElementPanel rehydration", () => {
     const api = { updateParameters: vi.fn() };
     const rehydrate = vi.fn();
     renderHook(
-      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
       { wrapper: Wrapper },
     );
     expect(rehydrate).not.toHaveBeenCalled();
@@ -209,7 +183,11 @@ describe("useElementPanel rehydration", () => {
     const api = { updateParameters: vi.fn() };
     const rehydrate = vi.fn();
     renderHook(
-      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
       { wrapper: Wrapper },
     );
     act(() => control.update("t1", { config: { mode: "chronological" } }));
@@ -222,7 +200,11 @@ describe("useElementPanel rehydration", () => {
     const api = { updateParameters: vi.fn() };
     const rehydrate = vi.fn();
     const { result } = renderHook(
-      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
       { wrapper: Wrapper },
     );
     act(() => result.current.persist({ mode: "chronological" }));
@@ -234,7 +216,11 @@ describe("useElementPanel rehydration", () => {
     const api = { updateParameters: vi.fn() };
     const rehydrate = vi.fn();
     const { result } = renderHook(
-      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
       { wrapper: Wrapper },
     );
     act(() => result.current.persist({ mode: "chronological" }));
@@ -248,7 +234,11 @@ describe("useElementPanel rehydration", () => {
     const api = { updateParameters: vi.fn() };
     const rehydrate = vi.fn();
     renderHook(
-      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
       { wrapper: Wrapper },
     );
     act(() => control.update("t1", { sources: ["b1"] }));

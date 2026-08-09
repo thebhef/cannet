@@ -22,8 +22,8 @@ export interface ElementPanelState<TConfig> {
   /// element's `config` if present, else the dockview `params` — for
   /// an older project, or the project directory's layout snapshot,
   /// which still carries it there. Later changes to the element's
-  /// config arrive through the hook's `rehydrate` callback instead, not
-  /// by this value changing.
+  /// config arrive through {@link useElementRehydrate} instead, not by
+  /// this value changing.
   savedConfig: TConfig | undefined;
   /// Dual-write this panel's persistable state: onto the element
   /// (model state — survives closing and reopening the panel within a
@@ -40,32 +40,23 @@ export interface ElementPanelState<TConfig> {
   /// (transmit, rbs) calls `persist()` with no argument: only the
   /// elementId is written to params, nothing onto the registry.
   persist: (config?: TConfig) => void;
+  /// This panel instance's opaque writer token: what `persist` stamps
+  /// its registry writes with, so {@link useElementRehydrate} can tell
+  /// this panel's own echo from an edit made anywhere else. Per
+  /// *panel*, not per element — two panels onto one element would each
+  /// follow the other's edits.
+  writer: string;
 }
 
 /// Element id resolution + registry `ensure` + `config` hydration +
-/// dual-write persist + rehydration — the lifecycle boilerplate shared
-/// by every element-backed panel (trace, plot, signals, transmit, rbs,
-/// …). See {@link useElementSources} for the sources-picker wiring
-/// layered on top, for the panels whose element carries a `sources`
-/// field.
-///
-/// `rehydrate` closes the loop the mount-time `savedConfig` read leaves
-/// open: a panel is otherwise a write-only mirror of its element, so a
-/// config rewritten from outside it (and, in time, a restored one) would
-/// simply be overwritten by the panel's next persist. Pass the apply
-/// function that pushes a stored config into this panel's view state —
-/// the same fields it seeds from `savedConfig` at mount — and it is
-/// called whenever the element's config changes for any reason other
-/// than this panel's own persist. Panels whose element carries no
-/// `config` (transmit, rbs) and panels that read the element live every
-/// render (colormap, generator) need none.
+/// dual-write persist — the lifecycle boilerplate shared by every
+/// element-backed panel (trace, plot, signals, transmit, rbs, …). See
+/// {@link useElementRehydrate} for the resync half, and
+/// {@link useElementSources} for the sources-picker wiring layered on
+/// top, for the panels whose element carries a `sources` field.
 export function useElementPanel<
   TConfig extends Record<string, unknown> = Record<string, unknown>,
->(
-  props: IDockviewPanelProps,
-  kind: ProjectElementKind,
-  rehydrate?: (config: TConfig) => void,
-): ElementPanelState<TConfig> {
+>(props: IDockviewPanelProps, kind: ProjectElementKind): ElementPanelState<TConfig> {
   const registry = useElementRegistry();
   const { ensure, update } = registry;
   const { api, params } = props;
@@ -99,33 +90,54 @@ export function useElementPanel<
     [api, update, elementId, writer],
   );
 
-  // Resync on an external config write. The epoch says *that* the
-  // element's config changed; the origin says who changed it — a bump
-  // this panel stamped is the echo of its own persist, and re-applying
-  // it would at best be redundant and at worst fight a newer edit.
+  return {
+    elementId,
+    registry,
+    element: registry.get(elementId)?.element,
+    savedConfig,
+    persist,
+    writer,
+  };
+}
+
+/// Resync a panel's view state when its element's config is rewritten
+/// from outside it. This closes the loop the mount-time `savedConfig`
+/// read leaves open: a panel is otherwise a write-only mirror of its
+/// element, so a config changed by anyone else (a rewire, and in time a
+/// restored one) would simply be overwritten by the panel's next
+/// persist.
+///
+/// `apply` pushes a stored config into the panel's view state — the same
+/// fields it seeds from `savedConfig` at mount — so call this *after*
+/// declaring that state. It runs on every change to the element's config
+/// except the ones this panel itself persisted: the entry's epoch says
+/// *that* the config changed, its origin says who changed it, and
+/// re-applying a panel's own echo would at best be redundant and at
+/// worst fight a newer edit. Panels whose element carries no `config`
+/// (transmit, rbs) and panels that read the element live every render
+/// (colormap, generator) need none of this.
+export function useElementRehydrate<TConfig>(
+  panel: ElementPanelState<TConfig>,
+  apply: (config: TConfig) => void,
+): void {
+  const { registry, elementId, writer } = panel;
   const entry = registry.get(elementId);
   const configEpoch = entry?.configEpoch ?? 0;
   const configOrigin = entry?.configOrigin;
+  // Read through refs: the effect must fire on the epoch alone, not on
+  // the identity of a config blob or of a callback rebuilt each render.
   const configRef = useRef<TConfig | undefined>(undefined);
   configRef.current = (entry?.element as { config?: TConfig } | undefined)?.config;
-  const rehydrateRef = useRef(rehydrate);
-  rehydrateRef.current = rehydrate;
+  const applyRef = useRef(apply);
+  applyRef.current = apply;
   const seenEpochRef = useRef(configEpoch);
   useEffect(() => {
     if (configEpoch === seenEpochRef.current) return;
     seenEpochRef.current = configEpoch;
     if (configOrigin === writer) return;
     const config = configRef.current;
-    if (config !== undefined) rehydrateRef.current?.(config);
+    if (config !== undefined) applyRef.current(config);
   }, [configEpoch, configOrigin, writer]);
-
-  return {
-    elementId,
-    registry,
-    element: entry?.element,
-    savedConfig,
-    persist,
-  };
 }
 
 export interface ElementSources {
