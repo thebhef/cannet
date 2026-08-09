@@ -26,11 +26,12 @@ function encode(
   series: { t: number[]; v: number[] }[],
   sliceMs = 0,
   decodeMs = 0,
+  complete = true,
 ): ArrayBuffer {
   const totalPts = series.reduce((s, p) => s + p.t.length, 0);
-  const buf = new ArrayBuffer(8 + 32 + 4 + series.length * 4 + totalPts * 16);
+  const buf = new ArrayBuffer(8 + 32 + 8 + series.length * 4 + totalPts * 16);
   const view = new DataView(buf);
-  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
+  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
   for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
   let off = 8;
   view.setFloat64(off, fromS == null ? NaN : fromS, true);
@@ -41,6 +42,8 @@ function encode(
   off += 8;
   view.setFloat64(off, decodeMs, true);
   off += 8;
+  view.setUint32(off, complete ? 1 : 0, true);
+  off += 4;
   view.setUint32(off, series.length, true);
   off += 4;
   for (const p of series) {
