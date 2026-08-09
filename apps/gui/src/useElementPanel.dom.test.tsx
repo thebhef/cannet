@@ -9,10 +9,11 @@
 // how it wires the picker's presentation).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderHook } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { act, renderHook } from "@testing-library/react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import {
+  applyElementPatch,
   ElementRegistryContext,
   type ElementRegistry,
   type RegistryEntry,
@@ -51,6 +52,44 @@ function wrapperFor(registry: ElementRegistry) {
       <ElementRegistryContext.Provider value={registry}>{children}</ElementRegistryContext.Provider>
     );
   };
+}
+
+/// A registry wrapper backed by real React state and the real
+/// `applyElementPatch` — so a write re-renders the panel under test and
+/// carries the epoch/origin bookkeeping the rehydrate path keys on.
+/// `control.update` is the external writer (no writer token), standing
+/// in for whatever rewrites an element's config from outside the panel.
+function liveWrapperFor(elements: ProjectElement[]) {
+  const control: { update: (id: string, patch: Partial<ProjectElement>) => void } = {
+    update: () => {},
+  };
+  const initial: RegistryEntry[] = elements.map((element) => ({
+    element,
+    trace: freshTrace(0),
+  }));
+  function Wrapper({ children }: { children: ReactNode }) {
+    const [entries, setEntries] = useState<readonly RegistryEntry[]>(initial);
+    const update = useCallback(
+      (id: string, patch: Partial<ProjectElement>, writer?: string) =>
+        setEntries((prev) => applyElementPatch(prev, id, patch, writer)),
+      [],
+    );
+    control.update = update;
+    const value = useMemo<ElementRegistry>(
+      () => ({
+        entries,
+        get: (id: string) => entries.find((e) => e.element.id === id),
+        create: () => "",
+        ensure: () => {},
+        updateTrace: () => {},
+        update,
+        remove: () => {},
+      }),
+      [entries, update],
+    );
+    return <ElementRegistryContext.Provider value={value}>{children}</ElementRegistryContext.Provider>;
+  }
+  return { Wrapper, control };
 }
 
 afterEach(() => vi.clearAllMocks());
@@ -125,7 +164,13 @@ describe("useElementPanel", () => {
       { wrapper: wrapperFor(registry) },
     );
     result.current.persist({ mode: "chronological" });
-    expect(update).toHaveBeenCalledWith("t1", { config: { mode: "chronological" } });
+    // The third argument is this panel's writer token — what makes the
+    // write recognisable as its own echo rather than an external edit.
+    expect(update).toHaveBeenCalledWith(
+      "t1",
+      { config: { mode: "chronological" } },
+      expect.any(String),
+    );
     expect(api.updateParameters).toHaveBeenCalledWith({ elementId: "t1", mode: "chronological" });
   });
 
@@ -141,6 +186,84 @@ describe("useElementPanel", () => {
     result.current.persist();
     expect(update).not.toHaveBeenCalled();
     expect(api.updateParameters).toHaveBeenCalledWith({ elementId: "x1" });
+  });
+});
+
+describe("useElementPanel rehydration", () => {
+  const traceElement = { kind: "trace", id: "t1", sources: ["*"], config: { mode: "by-id" } } as
+    unknown as ProjectElement;
+
+  it("does not rehydrate on mount — `savedConfig` is the mount read", () => {
+    const { Wrapper } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    renderHook(
+      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      { wrapper: Wrapper },
+    );
+    expect(rehydrate).not.toHaveBeenCalled();
+  });
+
+  it("rehydrates from the element when its config is rewritten externally", () => {
+    const { Wrapper, control } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    renderHook(
+      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      { wrapper: Wrapper },
+    );
+    act(() => control.update("t1", { config: { mode: "chronological" } }));
+    expect(rehydrate).toHaveBeenCalledTimes(1);
+    expect(rehydrate).toHaveBeenCalledWith({ mode: "chronological" });
+  });
+
+  it("does not rehydrate from the panel's own persist (no self-clobber, no loop)", () => {
+    const { Wrapper } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    const { result } = renderHook(
+      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      { wrapper: Wrapper },
+    );
+    act(() => result.current.persist({ mode: "chronological" }));
+    expect(rehydrate).not.toHaveBeenCalled();
+  });
+
+  it("still rehydrates after the panel has persisted its own config", () => {
+    const { Wrapper, control } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    const { result } = renderHook(
+      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      { wrapper: Wrapper },
+    );
+    act(() => result.current.persist({ mode: "chronological" }));
+    act(() => control.update("t1", { config: { mode: "by-id" } }));
+    expect(rehydrate).toHaveBeenCalledTimes(1);
+    expect(rehydrate).toHaveBeenCalledWith({ mode: "by-id" });
+  });
+
+  it("ignores a write that leaves the config untouched (a sources rewire)", () => {
+    const { Wrapper, control } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    renderHook(
+      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace", rehydrate),
+      { wrapper: Wrapper },
+    );
+    act(() => control.update("t1", { sources: ["b1"] }));
+    expect(rehydrate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the element view live through an external write", () => {
+    const { Wrapper, control } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const { result } = renderHook(
+      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace"),
+      { wrapper: Wrapper },
+    );
+    act(() => control.update("t1", { sources: ["b1"] }));
+    expect(result.current.element).toMatchObject({ sources: ["b1"] });
   });
 });
 

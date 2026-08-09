@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { useElementRegistry, type ElementRegistry } from "./projectElements";
@@ -21,7 +21,9 @@ export interface ElementPanelState<TConfig> {
   /// The panel's persisted view config, read once at mount: the
   /// element's `config` if present, else the dockview `params` — for
   /// an older project, or the project directory's layout snapshot,
-  /// which still carries it there.
+  /// which still carries it there. Later changes to the element's
+  /// config arrive through the hook's `rehydrate` callback instead, not
+  /// by this value changing.
   savedConfig: TConfig | undefined;
   /// Dual-write this panel's persistable state: onto the element
   /// (model state — survives closing and reopening the panel within a
@@ -41,13 +43,29 @@ export interface ElementPanelState<TConfig> {
 }
 
 /// Element id resolution + registry `ensure` + `config` hydration +
-/// dual-write persist — the lifecycle boilerplate shared by every
-/// element-backed panel (trace, plot, transmit, rbs, …). See
-/// {@link useElementSources} for the sources-picker wiring layered on
-/// top, for the panels whose element carries a `sources` field.
+/// dual-write persist + rehydration — the lifecycle boilerplate shared
+/// by every element-backed panel (trace, plot, signals, transmit, rbs,
+/// …). See {@link useElementSources} for the sources-picker wiring
+/// layered on top, for the panels whose element carries a `sources`
+/// field.
+///
+/// `rehydrate` closes the loop the mount-time `savedConfig` read leaves
+/// open: a panel is otherwise a write-only mirror of its element, so a
+/// config rewritten from outside it (and, in time, a restored one) would
+/// simply be overwritten by the panel's next persist. Pass the apply
+/// function that pushes a stored config into this panel's view state —
+/// the same fields it seeds from `savedConfig` at mount — and it is
+/// called whenever the element's config changes for any reason other
+/// than this panel's own persist. Panels whose element carries no
+/// `config` (transmit, rbs) and panels that read the element live every
+/// render (colormap, generator) need none.
 export function useElementPanel<
   TConfig extends Record<string, unknown> = Record<string, unknown>,
->(props: IDockviewPanelProps, kind: ProjectElementKind): ElementPanelState<TConfig> {
+>(
+  props: IDockviewPanelProps,
+  kind: ProjectElementKind,
+  rehydrate?: (config: TConfig) => void,
+): ElementPanelState<TConfig> {
   const registry = useElementRegistry();
   const { ensure, update } = registry;
   const { api, params } = props;
@@ -55,6 +73,11 @@ export function useElementPanel<
   useEffect(() => {
     ensure(elementId, kind);
   }, [ensure, elementId, kind]);
+  /// This panel instance's writer token: what its own registry writes
+  /// are stamped with, so the resync below can tell them from everyone
+  /// else's. Per *panel*, not per element — two panels onto one element
+  /// each follow the other's edits.
+  const [writer] = useState(() => crypto.randomUUID());
 
   // Read once at mount — `registry.get` resolves synchronously because
   // the element is restored before its panel mounts (project open) or
@@ -67,19 +90,39 @@ export function useElementPanel<
   const persist = useCallback(
     (config?: TConfig) => {
       if (config !== undefined) {
-        update(elementId, { config });
+        update(elementId, { config }, writer);
         api.updateParameters({ elementId, ...config });
       } else {
         api.updateParameters({ elementId });
       }
     },
-    [api, update, elementId],
+    [api, update, elementId, writer],
   );
+
+  // Resync on an external config write. The epoch says *that* the
+  // element's config changed; the origin says who changed it — a bump
+  // this panel stamped is the echo of its own persist, and re-applying
+  // it would at best be redundant and at worst fight a newer edit.
+  const entry = registry.get(elementId);
+  const configEpoch = entry?.configEpoch ?? 0;
+  const configOrigin = entry?.configOrigin;
+  const configRef = useRef<TConfig | undefined>(undefined);
+  configRef.current = (entry?.element as { config?: TConfig } | undefined)?.config;
+  const rehydrateRef = useRef(rehydrate);
+  rehydrateRef.current = rehydrate;
+  const seenEpochRef = useRef(configEpoch);
+  useEffect(() => {
+    if (configEpoch === seenEpochRef.current) return;
+    seenEpochRef.current = configEpoch;
+    if (configOrigin === writer) return;
+    const config = configRef.current;
+    if (config !== undefined) rehydrateRef.current?.(config);
+  }, [configEpoch, configOrigin, writer]);
 
   return {
     elementId,
     registry,
-    element: registry.get(elementId)?.element,
+    element: entry?.element,
     savedConfig,
     persist,
   };
