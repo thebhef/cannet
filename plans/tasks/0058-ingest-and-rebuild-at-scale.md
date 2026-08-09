@@ -1086,6 +1086,32 @@ now does is drain that backlog on its own time (8.08 s of flushing
 spread over 80 s of wall clock takes the same quit from 10.9 s to
 2.46 s), instead of stalling a live capture to pre-pay it.
 
+**The gate, closed.** Three 60 s runs on the release build of `a37a62c`
+(ev-zonal, live capture, scrub interaction) all report `check passed
+(31 metrics gated)`:
+
+| run | `worst_short_frac` (limit 0.041) | `worst_p95_ratio` | `tx_late_ms.max` |
+| --- | --- | --- | --- |
+| 1 | 0.0040 | 1.163 | 15.0 ms |
+| 2 | 0.0033 | 1.182 | 8.9 ms |
+| 3 | 0.0020 | 1.138 | 9.3 ms |
+
+Committed as
+`docs/performance-measurements/frontend/2026-08-09-a37a62c-task59h-run{1,2,3}.json`.
+`ids_measured` 173 in all three, rx/tx ≈ 1606–1609 fps. That is the
+0.001–0.003 band the day's pre-change builds sat in, against the failing
+run's **0.113**. The corroborating detail is `tx_late_ms.max`: 15.0 /
+8.9 / 9.3 ms here, 14.5 / 15.4 ms on the two passing pre-fix runs, and
+**88.1 ms** on the failing one — the gauge that named the mechanism is
+back in band, which is what makes the excursion explained rather than
+merely absent.
+
+The three pre-fix reports are **not committed**. They gated a build that
+was rejected and never shipped, and the numbers that matter from them
+are quoted above and in the experiment section; keeping the artifacts of
+a build nothing was based on would only invite them to be read as a
+baseline.
+
 ## Blockers / side effects
 
 - **`scan_blf_channels` ran its walk on an async-runtime worker —
