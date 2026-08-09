@@ -184,6 +184,87 @@ between phases. 59.A's first commit carries this plan section.
     bullet entirely.
   - Re-verified after the doc commit: `cargo test -p cannet-gui` 529
     passed; `cargo clippy -p cannet-gui --all-targets` clean.
+- 2026-08-09 — Phase 59.B landed (`task59b-scratch-layout`, off
+  `task59a-theme-menu`). One commit:
+  - `ad9442c` `fix(gui): a scratch session neither keeps nor restores
+    its layout` — both halves of item 2 plus the docs they invalidate.
+    Write side: `App.tsx`'s `onDidLayoutChange` calls `persistLayout`
+    only when `projectPathRef.current !== null` (a new ref beside the
+    `projectPath` state, because the dockview callbacks are registered
+    once in `handleDockReady` and can't close over it). Restore side:
+    the boot's `validateLayout(hostState().layout)` is gated on
+    `reopenComing`, so a launch with nothing to reopen falls through to
+    `seedDefaultLayout()`. `tauri_plugin_window_state` untouched — size
+    and position resume as before. `carry_workspace_scope` untouched.
+    Docs in the same commit: README's project paragraph (the sentence
+    "With no project, the layout is restored from that directory's own
+    view state" was exactly the removed behavior), `state.rs`'s module
+    doc + `UiState::layout` rustdoc, and `hostState.ts`'s header — all
+    three called it the *no-project* layout snapshot, which it now is
+    the opposite of.
+    `pnpm --dir apps/gui test`: 139 files, 1683 tests passed (1679
+    before; four new). `pnpm --dir apps/gui build` clean.
+    `cargo test -p cannet-gui`: 529 passed, 0 failed, 4 ignored.
+    `cargo clippy -p cannet-gui --all-targets`: clean.
+  - **The ordering choice: accept a briefly-seeded default, don't
+    hoist.** The reopen decision has two parts. The pointer half —
+    `hostSettings().reopen_last_project && hostState().last_project` —
+    is already hydrated before first render (`main.tsx`), so it is
+    readable synchronously at the restore point. The automation half,
+    `diag_autostart`'s `--project`, is an IPC round trip. The gate reads
+    only the synchronous half, so an automation run with no
+    `last_project` pointer seeds the default layout and `applyProject`
+    replaces it a moment later. Hoisting the whole decision would mean
+    awaiting `diag_autostart` before the first `fromJSON`, which pays a
+    flash of empty dock on **every** launch — including every ordinary
+    one — to spare one extra layout swap in a self-driving run nobody is
+    watching. The trade is asymmetric enough that it isn't close: the
+    cost lands on the common path, the benefit on the rare unobserved
+    one. Recorded in the code comment above the gate as well.
+  - TDD order: the four dom tests went into `App.bootReopen.dom.test.tsx`
+    (it already owns the boot-decision harness) and were watched fail
+    first — the two scratch-direction ones failed ("expected
+    [ 'Scratch Layout' ] to not include 'Scratch Layout'"; "expected
+    { Object (grid, panels, …) } to be null"), the two
+    project-direction ones passed pre-fix, which is what makes them the
+    "still works" guard. Two fixture facts cost a debugging round each
+    and are now comments in the file: `fromJSON` silently declines a
+    grid whose sizes don't add up (the fixture is shaped like what
+    dockview itself serializes under jsdom's 100×100 container), and an
+    element-backed panel's tab title is re-synced from the model name
+    (ADR 0019), so the marker panel has to be a singleton kind.
+  - Named pins re-read and re-run, none weakened: `App.bootReopen`
+    (extended in place — the `get_state` layout and `open_project`
+    layout are knobs now, and its header says the reopen decision
+    governs the layout too), `App.bootOpenOnce` (unaffected: it boots
+    with `last_project` null and a null project layout, so it seeded the
+    default before this change and still does), `App.sessionReset`
+    (unaffected: seeds by the same path), `dockLayout.test.ts` /
+    `dockLayout.dom.test.ts` (`validateLayout` / `stripMaximizedNode` /
+    `isTabMiddlePress` semantics all untouched). 28 tests across the
+    five files, green.
+
+## Blockers / side effects
+
+- **59.B — "a project being open" is `projectPath !== null`.** An
+  unsaved project (File → New, never saved) is therefore treated as a
+  scratch session and its layout is not persisted. That is the faithful
+  reading: an unsaved project has no project file to carry a layout, and
+  the only state file it could write to is the auto-located directory's
+  — which is precisely the scratch storage this phase stops writing. Not
+  a regression to hide, but if the owner meant "any project, saved or
+  not", it is a one-line change at the gate.
+- **59.B — a project's layout snapshot now updates on the first layout
+  change after boot, not at boot.** The boot path calls `applyProject`
+  (which `fromJSON`s, firing `onDidLayoutChange`) *before*
+  `rememberProject` sets `projectPath`, so that first echo no longer
+  writes. Nothing is lost — the value it would have written is the one
+  just read — and the snapshot is current again as soon as anything
+  moves.
+- **59.B — stale scratch layouts on disk are left where they are.** An
+  auto-located `.cannet/state.json` written by an older build still
+  carries a `layout` key; it is simply never read now. No migration and
+  no cleanup pass, per the repo's no-legacy-read-paths habit.
 
 ## Exit criteria
 
