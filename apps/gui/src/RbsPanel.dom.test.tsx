@@ -55,6 +55,7 @@ import {
   pickCombobox,
 } from "./comboboxTestKit";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { makeLiveRegistry } from "./registryTestKit";
 import {
   ElementRegistryContext,
   type ElementRegistry,
@@ -528,5 +529,29 @@ describe("RbsPanel command registration (panel.find)", () => {
     expect(document.activeElement).toBe(filterBox);
     expect(filterBox.selectionStart).toBe(0);
     expect(filterBox.selectionEnd).toBe(filterBox.value.length);
+  });
+});
+
+describe("RbsPanel rehydration", () => {
+  it("repaints from an externally rewritten element — it reads the registry live", async () => {
+    // The RBS element carries no view `config` to resync: what the
+    // panel shows of it (the file it references) is read every render.
+    const { Provider, control } = makeLiveRegistry([
+      { kind: "rbs", id: "el", path: null, run: false } as ProjectElement,
+    ]);
+    const api = { updateParameters: vi.fn() };
+    const props = { params: { elementId: "el" }, api } as unknown as Parameters<typeof RbsPanel>[0];
+    render(
+      <ProjectContext.Provider value={projectCtx}>
+        <Provider>
+          <RbsPanel {...props} />
+        </Provider>
+      </ProjectContext.Provider>,
+    );
+    await waitFor(() => expect(document.querySelector(".rbs-path")).toHaveTextContent("(unsaved)"));
+    await act(async () => {
+      control.update("el", { kind: "rbs", path: "/tmp/sim.cannet_rbs" } as never);
+    });
+    expect(document.querySelector(".rbs-path")).toHaveTextContent("sim.cannet_rbs");
   });
 });

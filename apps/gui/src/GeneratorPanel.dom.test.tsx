@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const invoke = vi.hoisted(() =>
   vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -30,6 +30,7 @@ import {
   type RegistryEntry,
 } from "./projectElements";
 import { freshTrace } from "./trace";
+import { makeLiveRegistry } from "./registryTestKit";
 import type { GeneratorRule, ProjectElement } from "./types";
 
 function renderPanel(rules: GeneratorRule[]) {
@@ -152,5 +153,31 @@ describe("GeneratorPanel", () => {
   it("offers an empty state that names what a rule is for", () => {
     renderPanel([]);
     expect(document.body.textContent).toContain("Cell(\\d+)");
+  });
+});
+
+describe("GeneratorPanel rehydration", () => {
+  it("repaints from an externally rewritten element — it reads the registry live", async () => {
+    // Like the colormap panel, this one mirrors nothing: its rows are
+    // the element's rules, read every render, so an external rewrite
+    // needs no resync path.
+    const { Provider, control } = makeLiveRegistry([
+      { kind: "generator", id: "g1", rules: [{ pattern: "Cell(1)", enabled: true }] } as ProjectElement,
+    ]);
+    const props = { params: { elementId: "g1" } } as unknown as Parameters<
+      typeof GeneratorPanel
+    >[0];
+    render(
+      <Provider>
+        <GeneratorPanel {...props} />
+      </Provider>,
+    );
+    const pattern = () =>
+      (document.querySelectorAll<HTMLInputElement>('input[type="text"]')[0])?.value;
+    await waitFor(() => expect(pattern()).toBe("Cell(1)"));
+    act(() => {
+      control.update("g1", { rules: [{ pattern: "Pack(2)", enabled: true }] } as never);
+    });
+    expect(pattern()).toBe("Pack(2)");
   });
 });
