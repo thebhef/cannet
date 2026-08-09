@@ -34,6 +34,8 @@ import { GridviewFilterBox, useGridviewFilter, type GridviewFilterEntry } from "
 import { useGridview } from "./useGridview";
 import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
 import { arrayRowSpace } from "./gridviewRows";
+import { usePanelCommands } from "./panelCommands";
+import { DBC_PANEL_ID } from "./dockLayout";
 
 /**
  * DBC discovery panel. Tree-with-fuzzy-search over every
@@ -692,6 +694,17 @@ export function DbcPanel(props: IDockviewPanelProps) {
   // visible without the user unfolding to it.
   const buildFilterEntries = useCallback(() => buildSearchIndex(busGroups), [busGroups]);
   const filter = useGridviewFilter(buildFilterEntries, filterFromParams(params?.filter));
+  /// The search box, so `panel.find` (Mod+F, ADR 0018) can focus and
+  /// select it. Registered under the panel's fixed dockview id — the
+  /// DBC panel is a singleton with no element id of its own
+  /// (`runFocusedPanelCommand` in `useCommands.tsx` falls back to it).
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  usePanelCommands(DBC_PANEL_ID, {
+    "panel.find": () => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    },
+  });
   const mergeExpanded = filter.effectiveExpanded;
   const effectiveExpanded = useMemo(
     () => mergeExpanded(expanded),
@@ -990,6 +1003,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
           placeholder="search messages, signals, comments, attributes…"
           ariaLabel="search DBC content"
           matchCountClassName="dbc-panel-match-count"
+          inputRef={searchInputRef}
         />
         <label className="dbc-panel-details-toggle" title="show bit layout, scale, range, attributes, value table for every signal">
           <input
