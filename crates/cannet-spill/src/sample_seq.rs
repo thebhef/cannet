@@ -56,6 +56,11 @@ pub struct SampleSeq {
     /// Count of dropped leading segments — the absolute number of `segs[0]`.
     /// An absolute segment number `s` addresses `segs[s - seg_base]`.
     seg_base: usize,
+    /// Slot up to which [`Self::flush`] has already waited for the device.
+    /// The `[flushed, len)` residue is what the next flush has to write, so
+    /// a caller that flushes on a cadence leaves a shutdown flush a small,
+    /// bounded amount of work instead of the whole run.
+    flushed: usize,
 }
 
 impl SampleSeq {
@@ -70,6 +75,7 @@ impl SampleSeq {
             len: 0,
             first_slot: 0,
             seg_base: 0,
+            flushed: 0,
         }
     }
 
@@ -152,6 +158,9 @@ impl SampleSeq {
                 len: runs[n].1,
                 first_slot: runs[n].2,
                 seg_base,
+                // A run that came off disk is on disk: nothing is owed
+                // until something is appended to it.
+                flushed: runs[n].1,
             });
         }
         Ok(Some(out.into_iter().flatten().collect()))
@@ -242,11 +251,34 @@ impl SampleSeq {
         self.len += 1;
     }
 
-    /// Flush every mapped segment so the run is durable.
-    pub fn flush(&self) -> std::io::Result<()> {
-        for seg in &self.segs {
-            seg.map.flush()?;
+    /// Entries appended since the last successful [`Self::flush`] — the
+    /// residue a flush still owes the device.
+    pub fn unflushed(&self) -> usize {
+        self.len - self.flushed.min(self.len)
+    }
+
+    /// Wait for the device to take every entry appended since the last
+    /// flush, so the run is durable up to its current length.
+    ///
+    /// Only the segments spanning the `[flushed, len)` residue are flushed
+    /// — from the segment holding its first slot, which may already have
+    /// been flushed once while partly filled, and never below the leading
+    /// segments eviction has since dropped. That is what makes a cadence
+    /// worthwhile: each call pays for the entries since the last one, so a
+    /// shutdown flush behind a periodic one is bounded by a tick's appends
+    /// rather than by the length of the run.
+    ///
+    /// # Errors
+    /// Propagates the `msync` / `FlushFileBuffers` failure, leaving the
+    /// residue where it was so the next flush retries it.
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        if self.flushed < self.len {
+            let first_seg = self.locate(self.flushed).0.max(self.seg_base);
+            for seg in &self.segs[first_seg - self.seg_base..] {
+                seg.map.flush()?;
+            }
         }
+        self.flushed = self.len;
         Ok(())
     }
 }
@@ -510,5 +542,54 @@ mod tests {
         }
         seq.flush().unwrap();
         assert_eq!(seq.get(199), (199.0, -199.0));
+    }
+
+    #[test]
+    fn a_flush_clears_the_residue_and_the_next_appends_rebuild_it() {
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        assert_eq!(seq.unflushed(), 0, "an empty run owes nothing");
+        for i in 0..10u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        assert_eq!(seq.unflushed(), 10);
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+        // Straight back into the *same* (partly filled) segment: the next
+        // flush has to cover the segment it already flushed once, not start
+        // after it.
+        for i in 10..20u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        assert_eq!(seq.unflushed(), 10);
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+        let back = SampleSeq::reopen(dir.path(), "sig.l0", 20, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.get(19), (19.0, -19.0));
+        assert_eq!(back.unflushed(), 0, "a reopened run is already on disk");
+    }
+
+    #[test]
+    fn a_flush_after_a_trim_stays_inside_the_surviving_segments() {
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..100u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        seq.flush().unwrap();
+        for i in 100..600u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        // The residue now starts below the floor eviction is about to raise,
+        // and the segment holding its first slot is dropped outright — so a
+        // flush that indexes from the residue would address a segment that
+        // is no longer mapped.
+        seq.evict_below(500);
+        assert!(seq.first_slot() > 600 - seq.unflushed());
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+        assert_eq!(seq.get(599), (599.0, -599.0));
     }
 }

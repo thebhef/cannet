@@ -234,7 +234,9 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
             // over a *stopped* restored capture extends them while the
             // buffer never grows — so their manifest is written before the
             // buffer-grew gate below, not behind it (ADR 0047). The write
-            // is itself gated on the pyramids having changed.
+            // is itself gated on the pyramids having changed, and it
+            // hardens the level pages this tick added, so what the exit
+            // flush is left owing is one tick's residue.
             persist_pyramids(&state);
             let len = state.trace_store.len();
             if len == last_flushed_len {
@@ -287,8 +289,10 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
 /// Record the signal pyramids' manifest against the key the current model
 /// would reuse them under (ADR 0047). A no-op when the scratch holds no
 /// identified capture, or when the pyramids haven't moved since the last
-/// write. Cheap enough to run on the exit path: the level files' dirty
-/// pages are left to the OS writeback, so this is one small JSON write.
+/// write. Flushes the level pages appended since the last call before it
+/// writes, so the manifest never describes bytes the disk has not been
+/// given — which is also what keeps the same call on the exit path short,
+/// since the cadence has already taken all but a tick's worth.
 pub(crate) fn persist_pyramids(state: &AppState) {
     if !state.signal_caches.needs_persist() {
         return;

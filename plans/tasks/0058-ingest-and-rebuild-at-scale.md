@@ -880,8 +880,73 @@ overhead is one lock round-trip and one window read per signal per serve,
 which is why the benchmark keeps its unbounded store: bounding it would
 measure the harness's call cadence rather than the rebuild.
 
+### 2026-08-09 — fix round, item 5's exit flush restored (owner ruling)
+
+Branch `task59h-live-fixes`, off `task60d-undo-close` (0911050). The
+owner overruled 58.E's async exit flush: the "keep the shutdown flush"
+ruling covers the whole cache, pyramids included.
+
+| commit | subject |
+| --- | --- |
+| 7acc891 | `docs(plans)`: record the flush overruling and open task 61 |
+| (this) | `fix(gui)`: flush the pyramid level pages before the manifest, on every cadence |
+
+**What landed.** `SampleSeq::flush` is now `&mut self` and
+**incremental**: the run records the slot it last flushed to, and a
+flush waits on the device only for the segments spanning the
+`[flushed, len)` residue — from the segment holding its first slot
+(which may already have been flushed once while partly filled) and never
+below the leading segments eviction has dropped. `SampleSeq::unflushed`
+reports that residue. `SignalCache::flush_levels` is back, and
+`SignalCacheStore::persist` runs it over every cached signal **before**
+writing the manifest, so a manifest never describes bytes the disk was
+not given. There is no `sync` flag: the periodic caller and the exit
+caller run the identical code, which is what makes the exit call cheap.
+ADR 0047's amendment section is rewritten to state the ruling and the
+incremental-flush logic behind it.
+
+**The measurement.** `bench_first_use_rebuild`, release, 4 M synthetic
+frames over 96 signals, extended with a third rebuild arm that runs a
+2 s persist cadence (the `trace_flush_interval_ms` default) against a
+fresh pyramid root while the rebuild appends into it:
+
+| arm | rebuild | what the quit after it costs |
+| --- | --- | --- |
+| no cadence ever ran | 5.06 s | **13.294 s** |
+| 2 s flush cadence | 17.63 s (+248 %) | **0.003 s** |
+
+So the ruling's own logic holds exactly: the cadence turns a 13.3 s quit
+into a 3 ms one — three and a half orders of magnitude, far outside any
+run-to-run effect (the pair reproduced at 12.168 s / 0.002 s on the
+previous run). What it does **not** do is make the work cheaper. The
+three ticks spent 13.93 s flushing, against 13.294 s for the single cold
+flush: the total is the same, because the cost is per *file*
+(`FlushFileBuffers` per segment, ~2 400 segment files at 96 signals) and
+splitting the residue three ways touches nearly all of the tail segments
+each time. The cadence moves the wait off the exit path and into the
+rebuild, where it serializes against the appends under the cache lock —
+5.06 s + 13.93 s ≈ the 17.63 s observed, i.e. serialization, not
+contention overhead. Recorded as a blocker below; the regime is the
+first-ever plotting of a large capture, which is the one persisted
+pyramids exist to stop repeating.
+
 ## Blockers / side effects
 
+- **Flushing the pyramid on a cadence costs a cold rebuild 3.5× its
+  wall time** (5.06 s → 17.63 s at 96 signals over 4 M frames,
+  measured). The synchronous flush is the owner's ruling and the
+  cadence is what keeps the quit at 3 ms instead of 13 s, but the work
+  itself does not get cheaper by being spread — it is per-segment-file
+  `FlushFileBuffers`, so three ticks pay 13.93 s where one cold flush
+  pays 13.29 s, and it lands under the cache lock where it serializes
+  against the rebuild's appends. There is no cheaper flush available in
+  the crate: `Segment::queue_writeback` (the raw store's async flavour)
+  is a deliberate **no-op on Windows**, because `FlushViewOfFile` was
+  itself measured at 0.3-0.5 ms/call. The regime is confined to the
+  first-ever plotting of a large capture — a restored one serves from
+  the persisted pyramid and appends nothing — but if the owner wants
+  the rebuild back at its old speed, the lever is the ruling itself
+  (which pages get waited on, and when), not an implementation detail.
 - **The disk-spill segment write is ~43 % of the per-frame ingest
   budget** (0.64 µs/frame of 1.48 at 6.5 M frames, release) — the single
   largest item, and larger than the whole BLF decode. It is owned by

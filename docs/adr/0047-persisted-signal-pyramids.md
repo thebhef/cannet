@@ -71,25 +71,30 @@ serve rebuilds exactly as before. **Rejection is the safe direction and
 is always available**, which is what makes an aggressive reuse rule
 tolerable: the raw frames remain the source of truth.
 
-**The manifest is written on a periodic cadence and once more at exit;
-the level files' own writeback is left to the OS.** The manifest is a
-small JSON file written through the normal file API, so it lands
-immediately. The levels are mapped pages, and asking the OS to write
-every dirty one of them synchronously costs seconds at exit on a pyramid
-that has just been built — which is a cost paid on the one path that
-must never make the user wait ([ADR 0048](0048-no-model-lock-across-a-rebuild.md)).
-A normal process exit leaves those pages to the OS's modified-page
-writer, the same DS-2 relaxation the raw store's periodic flush takes.
+**The level pages are flushed synchronously, and the manifest is written
+after them — on a periodic cadence and once more at exit.** The pyramid
+is part of the cache, and the cache's shutdown flush covers all of it
+(ADR 0002 DS-2); a manifest that outran its own pages would describe
+bytes the disk was never given, and the validity key cannot detect that
+— it proves the pyramid describes the right capture, not that its bytes
+are on the platter. So the flush comes first, and the manifest second.
 
-The residual exposure is narrow and named: a **power loss or hard kill**
-in the window between quitting and the OS completing writeback can leave
-a manifest describing pages that never reached the disk. The validity
-key does not detect that — it proves the pyramid describes the right
-capture, not that its bytes are on the platter. What it costs is a
-rebuild's worth of samples in a *derived* structure, and the raw frames
-that would rebuild them are flushed synchronously on the same exit path.
-Trading that against seconds of unresponsive exit on every quit is the
-deliberate choice.
+What makes that affordable is that **a flush is incremental**. A level
+run records the slot it last flushed to, and a flush waits on the device
+only for the segments spanning the `[flushed, len)` residue. Flushing
+the whole of a freshly-built pyramid in one go costs seconds — which is
+a cost the exit path must not pay ([ADR
+0048](0048-no-model-lock-across-a-rebuild.md)) — but that is the cost of
+never having flushed, not the cost of flushing. The periodic caller runs
+the identical code, so it takes each tick's pages as they are appended
+and the exit call is left owing one tick's worth.
+
+The residual exposure is what the OS's own device queue leaves: a flush
+returns when the device has been told, and a **power loss** in the tick
+between the last flush and an append can still lose the appends since.
+What that costs is a rebuild's worth of samples in a *derived*
+structure, whose raw frames are flushed synchronously on the same exit
+path.
 
 Two lifecycle rules complete it:
 
@@ -168,9 +173,9 @@ Two lifecycle rules complete it:
   eviction trims them with the raw store.
 - Every rejection path costs exactly what today costs: a wipe and a
   rebuild on the next serve. There is no half-adopted state.
-- Exit does not wait on the pyramid scratch. The trace store's own
-  synchronous shutdown flush (DS-2) is unchanged; the pyramid's
-  contribution to exit is one manifest write.
+- Exit hardens the pyramid scratch alongside the trace store's own
+  synchronous shutdown flush (DS-2), and what it costs is bounded by the
+  flush cadence rather than by the size of the pyramid.
 - `cannet-spill`'s sample sequence gained a reopen path. It still carries
   no manifest of its own — `(len, first_slot)` from the caller's manifest
   is enough to map it back — because the caller is what decides validity.

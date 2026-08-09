@@ -313,6 +313,25 @@ impl SignalCache {
         }
     }
 
+    /// Wait for the device to take the level pages appended since the last
+    /// flush, so a persisted manifest never describes bytes the disk has
+    /// not been given (ADR 0047). Each call pays only for the residue since
+    /// the last one, which is what keeps the shutdown flush behind the
+    /// periodic one short. Best-effort per level, like every other scratch
+    /// durability point (ADR 0002 DS-2).
+    fn flush_levels(&mut self) {
+        for level in &mut self.levels {
+            let _ = level.flush();
+        }
+    }
+
+    /// Entries across every level still owed to the device — the work a
+    /// flush from here would do.
+    #[cfg(test)]
+    fn unflushed(&self) -> usize {
+        self.levels.iter().map(SampleSeq::unflushed).sum()
+    }
+
     /// The `(prefix, len, first_slot)` runs a manifest row's levels reopen
     /// from — see [`SampleSeq::reopen_many`], which the whole restore goes
     /// through in **one** batch so its thousands of segment files are
@@ -963,10 +982,11 @@ impl SignalCacheStore {
     /// over the same capture serves them instead of re-decoding the whole
     /// history. A no-op when nothing has moved since the last write.
     ///
-    /// Writeback of the level files themselves is left to the OS — the
-    /// DS-2 relaxation the raw store's async flush takes, and the whole
-    /// cost of this call at exit (ADR 0047). The manifest is small and is
-    /// written with the normal file API, so it lands regardless.
+    /// The level pages appended since the last call are flushed **first**,
+    /// so the manifest never describes bytes the disk has not been given
+    /// (ADR 0047). Every caller does it, which is what makes the exit call
+    /// cheap: the periodic cadence has already taken all but one tick's
+    /// worth of pages, and a flush pays only for its residue.
     ///
     /// Also a no-op while a set is still **staged**: an unjudged candidate
     /// is never overwritten, because the manifest is the only thing that
@@ -982,11 +1002,21 @@ impl SignalCacheStore {
         caches.dirty && caches.staged.is_none()
     }
 
+    /// Level entries across every cached signal still owed to the device.
+    #[cfg(test)]
+    fn unflushed(&self) -> usize {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        caches.by_key.values().map(SignalCache::unflushed).sum()
+    }
+
     /// Returns whether a manifest was written.
     pub fn persist(&self, validity: &PyramidValidity) -> bool {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         if !caches.dirty || caches.staged.is_some() {
             return false;
+        }
+        for cache in caches.by_key.values_mut() {
+            cache.flush_levels();
         }
         let manifest = PyramidManifest {
             validity: validity.clone(),
@@ -2969,6 +2999,39 @@ mod tests {
     }
 
     #[test]
+    fn a_persist_leaves_the_levels_owing_the_device_nothing() {
+        // ADR 0047's shutdown rule, and the reason the periodic caller runs
+        // the same code: a manifest is only ever written over pages the
+        // disk has already been given, so what a quit owes is one tick's
+        // residue and not the whole pyramid.
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let root = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(root.path());
+        let v = validity("capture-a", "dbc-a", 0);
+
+        let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(cache.unflushed() > 0, "a fresh pyramid owes its pages");
+        assert!(cache.persist(&v));
+        assert_eq!(
+            cache.unflushed(),
+            0,
+            "the manifest went out over flushed pages"
+        );
+
+        // The cadence's contribution: with the residue already taken, the
+        // next persist has nothing left to write back.
+        cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
+        assert_eq!(cache.unflushed(), 0);
+        assert!(cache.persist(&v));
+        assert_eq!(cache.unflushed(), 0);
+    }
+
+    #[test]
     #[allow(clippy::float_cmp)]
     fn a_matching_pyramid_comes_back_instead_of_rebuilding() {
         // The whole point of the feature: a relaunch over a restored capture
@@ -3352,6 +3415,58 @@ mod tests {
             delta as f64 / frames as f64,
         );
 
+        // --- the same rebuild, with the flush cadence running ---
+        //
+        // What a session actually looks like: the periodic flusher takes
+        // the level pages every `trace_flush_interval_ms` while the
+        // rebuild appends them (ADR 0047), so the quit that follows is
+        // left owing one tick's residue. Measures both halves — what the
+        // cadence costs the rebuild, and what the exit flush costs after
+        // it — against the arm above, which is the same rebuild with no
+        // cadence at all.
+        let paced_root = TempDir::new().unwrap();
+        let paced = Arc::new(SignalCacheStore::new_unbounded(paced_root.path()));
+        let paced_v = PyramidValidity {
+            capture_id: "bench-capture".into(),
+            dbcs: "bench-dbcs".into(),
+            low_water: 0,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let flusher = {
+            let (cache, v, stop) = (Arc::clone(&paced), paced_v.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let (mut ticks, mut spent) = (0u32, 0f64);
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let at = std::time::Instant::now();
+                    if cache.needs_persist() && cache.persist(&v) {
+                        spent += at.elapsed().as_secs_f64();
+                        ticks += 1;
+                    }
+                }
+                (ticks, spent)
+            })
+        };
+        let paced_at = std::time::Instant::now();
+        let paced_series = paced
+            .slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs)
+            .series;
+        let paced_secs = paced_at.elapsed().as_secs_f64();
+        stop.store(true, Ordering::Relaxed);
+        let (ticks, tick_secs) = flusher.join().unwrap();
+        assert_eq!(paced_series, shared, "the same series, cadence or not");
+        paced.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
+        let paced_exit_at = std::time::Instant::now();
+        assert!(paced.persist(&paced_v));
+        let paced_exit_secs = paced_exit_at.elapsed().as_secs_f64();
+        drop(paced);
+        println!(
+            "[bench] the same rebuild under a 2 s flush cadence: {paced_secs:.2} s \
+             ({:+.0} % against the uncadenced arm); {ticks} tick(s) spent {tick_secs:.2} s \
+             flushing; the quit after it costs {paced_exit_secs:.3} s",
+            (paced_secs / secs.max(1e-9) - 1.0) * 100.0,
+        );
+
         // --- the same rebuild, one signal at a time ---
         //
         // A batch of one per signal: the catch-up before the sharing,
@@ -3404,13 +3519,12 @@ mod tests {
         let persist_at = std::time::Instant::now();
         assert!(cache.persist(&validity), "the manifest is written");
         let persist_secs = persist_at.elapsed().as_secs_f64();
-        // The exit-path manifest write again, straight after the one
-        // above. Both figures are what a quit costs now that the level
-        // files' writeback is the OS's job (ADR 0047): the manifest, and
-        // nothing else. Timed twice because it used to be the two very
-        // different numbers a synchronous flush of the level pages gave —
-        // "built moments ago, every page dirty" against "built long
-        // before the quit".
+        // The exit-path write again, straight after the one above. The two
+        // figures are the two ends of what a quit costs (ADR 0047): the
+        // first is a whole freshly-built pyramid flushed in one go — the
+        // cost with no cadence ever having run — and the second is the
+        // same call with the residue already taken, which is what a quit
+        // behind the periodic flusher actually pays.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         let again_at = std::time::Instant::now();
         assert!(cache.persist(&validity));
@@ -3433,8 +3547,8 @@ mod tests {
         assert_eq!(back, pts, "the same windows, point for point");
         println!(
             "[bench] first use after restore: restore {:.3} s + serve {:.3} s = {:.3} s \
-             ({:.1}x the rebuild's speed); exit persist {:.3} s then {:.3} s; \
-             {back} points served",
+             ({:.1}x the rebuild's speed); persist {:.3} s cold then {:.3} s \
+             with the residue already flushed; {back} points served",
             restore_secs,
             served_secs,
             restore_secs + served_secs,
