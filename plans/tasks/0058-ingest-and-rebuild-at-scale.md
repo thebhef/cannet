@@ -111,13 +111,14 @@ per-message locking, or rebuild outside the map lock) while keeping
 atomicity (`folded` never below `first_slot`). Exit contract after
 this: the window closes promptly during a rebuild. The **trace store's**
 shutdown flush and `clear_scratch_on_exit` behaviors stay as they are
-(owner, 2026-08-08). Amended (orchestrator routing, 2026-08-09,
-pending owner review): the *pyramid* flush
-58.C added beside them is in scope and must stop blocking exit — dirty
-mapped pages are written back by the OS on a normal process death, and
-the cost of asking for them synchronously is seconds on the one path
-that must never make the user wait. The periodic flusher keeps
-exit-time residue small either way.
+(owner, 2026-08-08). An orchestrator amendment (2026-08-09) routed
+the *pyramid* exit flush out of that ruling as an exit-latency fix;
+the owner overruled it the same day: **the "keep the shutdown flush"
+ruling applies to the entire cache, pyramids included.** Corrective
+action (fix round, 2026-08-09): the synchronous pyramid exit flush is
+restored, and the periodic flusher flushes level pages on its cadence
+so the exit-time residue stays small — which is the ruling's own
+logic.
 
 ### 6. Incremental paint — points stream in, `building…` only briefly
 
