@@ -4090,7 +4090,34 @@ describe("PlotPanel signal-row selection", () => {
     expect(persistCalls(api) - before).toBe(1);
   });
 
-  it("bulk-hides pattern-derived rows, materializing each into a manual pick, patterns left live", async () => {
+  it("hiding a pattern-derived row leaves every row where it was", async () => {
+    // The row moves when the user moves it, and at no other time.
+    // Hiding has to write an entry to carry the flag, and that entry
+    // used to read as a manual pick — which sorts ahead of the pattern
+    // matches, so the row jumped to the top of its area.
+    const registry = makeRegistry({
+      id: "el-hide-order",
+      config: { areas: [{ id: "a1", signals: [], patterns: ["/EngineData/"] }] },
+    });
+    renderPanel({ params: { elementId: "el-hide-order" }, registry });
+    const order = () =>
+      Array.from(document.querySelectorAll(".plot-signal-name")).map((n) => n.textContent);
+    await waitFor(() => expect(order()).toHaveLength(4));
+    const before = order();
+    expect(before[1]).toBe("EngineTemp");
+
+    fireEvent.click(row("EngineTemp").querySelector("button.plot-signal-swatch")!);
+
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
+    expect(order()).toEqual(before);
+    // And it is still the pattern's row, not a pick: the badge stays and
+    // there is no per-row × to remove something the pattern would put
+    // straight back.
+    expect(row("EngineTemp").querySelector(".plot-signal-remove")).toBeNull();
+    expect(row("EngineTemp").querySelector(".plot-signal-pattern-badge")).not.toBeNull();
+  });
+
+  it("bulk-hides pattern-derived rows without moving them or turning them into picks", async () => {
     // "Engine" matches both fixture signals under the EngineEcu/
     // EngineData ancestry (EngineSpeed, EngineTemp) and neither Limit
     // signal.
@@ -4114,9 +4141,11 @@ describe("PlotPanel signal-row selection", () => {
 
     expect(row("EngineSpeed").classList.contains("hidden")).toBe(true);
     expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
-    // Materialized: each is now a manual pick (remove button, no badge).
-    expect(row("EngineSpeed").querySelector(".plot-signal-remove")).not.toBeNull();
-    expect(row("EngineTemp").querySelector(".plot-signal-remove")).not.toBeNull();
+    // The entry each hide wrote carries the flag and nothing else: the
+    // rows are still the pattern's, so they keep their badge, their
+    // place, and no per-row ×.
+    expect(row("EngineSpeed").querySelector(".plot-signal-remove")).toBeNull();
+    expect(row("EngineTemp").querySelector(".plot-signal-remove")).toBeNull();
     // The pattern itself is untouched — still live, still the one entry.
     expect(screen.getByRole("button", { name: /patterns \(1\)/ })).toBeInTheDocument();
     expect(persistCalls(api) - before).toBe(1);

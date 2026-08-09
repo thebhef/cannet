@@ -20,8 +20,24 @@ descriptor key — **manual wins**, so a manual pick's color, order,
 and hidden state are authoritative over a pattern match of the same
 signal. Adds, drops, removes, and recolors keep working alongside
 patterns; mutating a pattern-derived entry (recolor, hide, drag)
-*materializes* it as a manual pick so the choice persists across
-re-evaluations.
+writes an entry for it so the choice persists across re-evaluations.
+
+**Carrying an override is not the same as claiming a position.** A
+recolor or a hide has to write something into the persisted `signals`
+list, because that is the only place an override can live. But the row
+it describes is still the pattern's: it did not become a pick because
+the user dimmed it, and it must not move. So such an entry is marked,
+and it stays in the pattern's order, keeps its pattern badge, and
+offers no per-row remove — removing it would only have the pattern
+resolve the row again on the next evaluation.
+
+A **drop is different**: placing a row somewhere *is* a claim on where
+it sits, so a drag materializes a real pick, unmarked, in the manual
+block. Converting an area's patterns to picks clears every marker with
+them, since there is then nothing left to defer to.
+
+The rule this enforces: **a row moves when the user moves it, and at
+no other time.**
 
 **Convert is one-way: regex → manual.** Materializing a selection
 replaces the patterns with their current matches as explicit picks.

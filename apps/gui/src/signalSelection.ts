@@ -167,11 +167,24 @@ export function applyAreaSelection<A extends SelectableArea>(
   busNames: ReadonlyMap<string, string>,
 ): A {
   if (!area.patterns?.length) return area;
+  // Entries marked `viaPattern` carry overrides for a row the patterns
+  // put there — they are not a claim on where the row sits, so they
+  // stay in the pattern's order rather than jumping into the manual
+  // block. Everything else is a pick (a drop *is* a claim on position)
+  // and keeps its slot ahead of the matches, which is also what keeps a
+  // manual pick authoritative over a pattern that happens to match it.
+  const pinned = area.signals.filter((s) => !s.viaPattern);
+  const matches = signalsFromPatterns(area.patterns, catalog, busNames, pinned);
+  const matched = new Set(matches.map(refKey));
+  const stored = new Map(area.signals.map((s) => [refKey(s), s]));
   return {
     ...area,
     signals: [
-      ...area.signals,
-      ...signalsFromPatterns(area.patterns, catalog, busNames, area.signals),
+      // The picks — plus any marked entry the patterns no longer match,
+      // which has nothing left to sit behind and so keeps the slot it
+      // already had rather than disappearing with its overrides.
+      ...area.signals.filter((s) => !s.viaPattern || !matched.has(refKey(s))),
+      ...matches.map((m) => stored.get(refKey(m)) ?? m),
     ],
   };
 }

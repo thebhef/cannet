@@ -1020,7 +1020,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
     (id: string, effective: SignalRef[]) => {
       setAreas((prev) =>
         prev.map((a) =>
-          a.id === id ? { ...a, signals: effective, patterns: undefined } : a,
+          a.id === id
+            ? {
+                ...a,
+                // The marker means "this entry only carries overrides
+                // for a pattern row"; with the patterns gone there is
+                // nothing to defer to, so every entry is a pick now.
+                signals: effective.map(({ viaPattern: _, ...s }) => s),
+                patterns: undefined,
+              }
+            : a,
         ),
       );
     },
@@ -1069,7 +1078,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // strip — the insert below materializes it as a manual pick,
           // and it keeps resolving its color like any unpicked series.)
           const existing = prev.flatMap((a) => a.signals).find((s) => signalRefKey(s) === key);
-          const moved = existing ?? ref;
+          // A drop *is* a claim on position, so whatever it moves lands
+          // in the manual block — including an entry that until now only
+          // carried a pattern row's overrides.
+          const { viaPattern: _dropped, ...moved } = existing ?? ref;
           // Areas that never held the ref come through untouched, by
           // identity — a move out of one area must not read downstream
           // as an edit to every other one.
@@ -1122,7 +1134,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
             signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, colorPick: color } : s)),
           };
         }
-        return { ...a, signals: [...a.signals, { ...ref, colorPick: color }] };
+        return { ...a, signals: [...a.signals, { ...ref, colorPick: color, viaPattern: true }] };
       }),
     );
   }, []);
@@ -1141,7 +1153,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
             signals: a.signals.map((s) => (signalRefKey(s) === key ? { ...s, hidden: !s.hidden } : s)),
           };
         }
-        return { ...a, signals: [...a.signals, { ...ref, hidden: true }] };
+        return { ...a, signals: [...a.signals, { ...ref, hidden: true, viaPattern: true }] };
       }),
     );
   }, []);
@@ -1507,6 +1519,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// Per-area manual-pick keys (from *stored* state, not the effective
   /// list) — how the row renderer tells a manual pick from a
   /// pattern-derived row (which gets no per-row × and a pattern badge).
+  /// A `viaPattern` entry is not a pick: it only carries the overrides
+  /// of a row the pattern put there, so the row keeps its badge and
+  /// stays un-removable — removing it would only have the pattern
+  /// resolve it again on the next evaluation.
   /// Per area, so that an edit to one area's signals doesn't hand every
   /// other area a fresh (identical) set.
   const manualKeysMemo = useKeyedMemo<string, ReadonlySet<string>>();
@@ -1515,7 +1531,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     for (const a of areas) {
       m.set(
         a.id,
-        manualKeysMemo.get(a.id, [a.signals], () => new Set(a.signals.map((s) => signalRefKey(s)))),
+        manualKeysMemo.get(a.id, [a.signals], () =>
+          new Set(a.signals.filter((s) => !s.viaPattern).map((s) => signalRefKey(s))),
+        ),
       );
     }
     manualKeysMemo.commit();
@@ -1591,7 +1609,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           );
           const toAppend = refs
             .filter((r) => !existingKeys.has(signalRefKey(r)))
-            .map((r) => ({ ...r, hidden }));
+            .map((r) => ({ ...r, hidden, viaPattern: true }));
           return { ...a, signals: [...updated, ...toAppend] };
         }),
       );

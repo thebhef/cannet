@@ -45,6 +45,15 @@ export interface SignalRef {
   /** Hidden = line not drawn on the plot (swatch dimmed); the
    * side-panel value still updates. Absent ⇒ visible. */
   hidden?: boolean;
+  /** This entry exists only to carry overrides for a row the area's
+   * *patterns* put there — it is not a claim on the row's membership or
+   * its position. Hiding or recoloring a pattern-derived row has to
+   * write an entry somewhere, and without this marker that entry would
+   * read as a manual pick and drag the row into the manual block; the
+   * row would move because it was hidden, which is not something the
+   * user asked for. A row placed by a *drop* carries no marker, because
+   * a drop is a claim on position. Absent ⇒ a manual pick. */
+  viaPattern?: boolean;
 }
 
 export interface PlotAreaConfig {
@@ -267,6 +276,7 @@ export function signalRefFromRaw(
     unit: s.unit,
   };
   if (s.hidden) ref.hidden = true;
+  if (s.viaPattern) ref.viaPattern = true;
   if (typeof s.colorPick === "string") ref.colorPick = s.colorPick;
   return ref;
 }
