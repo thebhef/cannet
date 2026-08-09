@@ -2284,6 +2284,10 @@ fn an_unrequested_exit_keeps_the_event_loops_code() {
 //   markers  — the whole-file second decode the notes pre-pass ran
 //   decode   — `next_frame()` alone: inflate + per-object decode
 //   convert  — decode + `RawTraceFrame::from` + routing + verifier probe
+//   full/mem — convert + `TraceStore::append` against the in-RAM raw
+//              store; the gap to `full` is the disk-spill write
+//   mem/nobus— full/mem with unassigned frames; the gap to `full/mem`
+//              is what a logical bus id costs per frame
 //   full     — convert + `TraceStore::append` against the disk store
 //   full+obs — full, with the flusher and the 10 Hz status/tail readout
 //              the running app puts on the same store lock
@@ -2462,6 +2466,30 @@ fn bench_blf_import() {
         }
     }
     report("full/mem", t.elapsed().as_secs_f64());
+    assert_eq!(store.len(), frames);
+    drop(store);
+
+    // -- mem/nobus: the same loop again with the frames left
+    //    unassigned. The delta against full/mem is what carrying a
+    //    logical bus costs per frame — the routing clone, the
+    //    latest-by-key clone, the retention clone, and the three string
+    //    hashes those keys drive.
+    let store = TraceStore::new();
+    let mut source = BlfCanFrameSource::open(&blf).unwrap();
+    let t = std::time::Instant::now();
+    let mut first = true;
+    while let Some(frame) = source.next_frame().unwrap() {
+        let raw = RawTraceFrame::from(frame);
+        if first {
+            store.start_session(raw.timestamp_ns);
+            first = false;
+        }
+        let checked = verifier.wants(&raw).then(|| raw.clone());
+        if store.append(raw).is_some() {
+            std::hint::black_box(&checked);
+        }
+    }
+    report("mem/nobus", t.elapsed().as_secs_f64());
     assert_eq!(store.len(), frames);
     drop(store);
 
