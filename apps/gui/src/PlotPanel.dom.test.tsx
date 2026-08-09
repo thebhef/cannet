@@ -3214,6 +3214,55 @@ describe("PlotPanel solo", () => {
     ]);
   });
 
+  it("masks pattern-derived series like manual picks", async () => {
+    // An ADR-0038 area defines its series by pattern; those rows are
+    // materialized from the catalog rather than stored in `signals`.
+    // Solo masks what is *plotted*, so it has to see them too.
+    const registry = makeRegistry({
+      id: "el-solo-pattern",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1")] },
+          { id: "a2", signals: [], patterns: ["/EngineData/Limit"] },
+        ],
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+    renderPanel({ params: { elementId: "el-solo-pattern" }, registry });
+    // The catalog the pattern resolves against arrives over `invoke`.
+    await waitFor(() =>
+      expect(rowVisibility()).toEqual([
+        ["Cell1", true],
+        ["LimitNominal", true],
+        ["LimitEffective", true],
+      ]),
+    );
+
+    typeSolo("LimitEffective");
+    expect(rowVisibility()).toEqual([
+      ["Cell1", false],
+      ["LimitNominal", false],
+      ["LimitEffective", true],
+    ]);
+
+    // …and they are first-class members of the match list: the count,
+    // the steppable positions, and the match menu all include them.
+    typeSolo("Limit");
+    expect(screen.getByLabelText("solo position").textContent).toBe("2");
+    fireEvent.contextMenu(document.querySelector(".plot-solo")!);
+    expect(
+      Array.from(document.querySelectorAll('[role="menuitemcheckbox"]')).map((b) =>
+        b.getAttribute("aria-label"),
+      ),
+    ).toEqual(["Area 2 · LimitNominal", "Area 2 · LimitEffective"]);
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(rowVisibility()).toEqual([
+      ["Cell1", false],
+      ["LimitNominal", true],
+      ["LimitEffective", false],
+    ]);
+  });
+
   it("never touches the other series' persisted hidden flags", () => {
     // Solo is a view-layer mask: the non-matches are *drawn* hidden but
     // their stored state is untouched, so clearing solo restores exactly
@@ -3537,6 +3586,49 @@ describe("PlotPanel solo", () => {
       // blanking out until the next pan/zoom.
       expect(liveInstanceIn("Area 1")).toBe(instance);
       expect(drawnPoints(instance)).toBe(drawn);
+    });
+  });
+
+  it("repaints when the pattern is cleared, not only when it is typed", async () => {
+    // Two amps signals on one per-unit axis: while both draw, the group
+    // unions to 0..3000 and the effective limit sits in the bottom
+    // sixth; soloing it rescales the axis to what is drawn. Clearing
+    // the pattern has to put the axis back *now* — the normalisation
+    // only moves on a resample, so a deactivation that skips one leaves
+    // the solo scale on screen until a pan or zoom forces one.
+    mockSignalExtents.LimitNominal = { lo: 0, hi: 3000 };
+    mockSignalExtents.LimitEffective = { lo: 0, hi: 500 };
+    mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [3000, 3000, 3000] };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [0, 250, 500] };
+    const amps = (signalName: string) => ({
+      busId: null,
+      messageId: 256,
+      extended: false,
+      signalName,
+      messageName: "EngineData",
+      unit: "A",
+      color: "#4ecbff",
+    });
+    const registry = makeRegistry({
+      id: "el-solo-repaint",
+      config: {
+        areas: [
+          { id: "a1", yAxisMode: "per-unit", signals: [amps("LimitNominal"), amps("LimitEffective")] },
+        ],
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+    await withSizedCanvas(async () => {
+      renderPanel({ params: { elementId: "el-solo-repaint" }, registry });
+      const effective = () =>
+        ((uplotInstances[uplotInstances.length - 1]?.data ?? []) as (number | null)[][])[2];
+      await waitFor(() => expect(effective()?.[2]).toBeCloseTo(500 / 3000, 6));
+
+      typeSolo("LimitEffective");
+      await waitFor(() => expect(effective()?.[2]).toBeCloseTo(1, 6));
+
+      typeSolo("");
+      await waitFor(() => expect(effective()?.[2]).toBeCloseTo(500 / 3000, 6));
     });
   });
 });
