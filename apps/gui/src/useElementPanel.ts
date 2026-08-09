@@ -39,7 +39,11 @@ export interface ElementPanelState<TConfig> {
   /// `elementId` changes). An element kind with no `config` field
   /// (transmit, rbs) calls `persist()` with no argument: only the
   /// elementId is written to params, nothing onto the registry.
-  persist: (config?: TConfig) => void;
+  ///
+  /// `extraParams` rides into the dockview `params` only, never onto
+  /// the element: workspace state that belongs to this panel rather
+  /// than to what the view *means* (the signals view's fold set).
+  persist: (config?: TConfig, extraParams?: Record<string, unknown>) => void;
   /// This panel instance's opaque writer token: what `persist` stamps
   /// its registry writes with, so {@link useElementRehydrate} can tell
   /// this panel's own echo from an edit made anywhere else. Per
@@ -79,12 +83,12 @@ export function useElementPanel<
   });
 
   const persist = useCallback(
-    (config?: TConfig) => {
+    (config?: TConfig, extraParams?: Record<string, unknown>) => {
       if (config !== undefined) {
         update(elementId, { config }, writer);
-        api.updateParameters({ elementId, ...config });
+        api.updateParameters({ elementId, ...config, ...extraParams });
       } else {
-        api.updateParameters({ elementId });
+        api.updateParameters({ elementId, ...extraParams });
       }
     },
     [api, update, elementId, writer],
