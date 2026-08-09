@@ -204,59 +204,82 @@ function equalExceptConfig(a: MaskedElement, b: MaskedElement): boolean {
 /// whichever kind it was.
 export type UndoStack = "layout" | "element";
 
+/// One entry in the order log: the stacks a single user gesture stepped,
+/// in the order they stepped. Most gestures touch one stack; the ones
+/// that span both (removing an element closes its panel too) are tagged
+/// with a `gesture` id at record time and land here as one entry, so a
+/// chord reverses the whole gesture.
+export interface UndoEntry {
+  stacks: readonly UndoStack[];
+  gesture?: number;
+}
+
 /// The order steps were taken in, with the undone ones on the `future`
 /// side. Holds no snapshots — each stack keeps its own.
 export interface UndoOrder {
-  past: readonly UndoStack[];
-  future: readonly UndoStack[];
+  past: readonly UndoEntry[];
+  future: readonly UndoEntry[];
 }
 
 export const EMPTY_UNDO_ORDER: UndoOrder = { past: [], future: [] };
 
-/// Note that `stack` just took a step. Like any undo record, a new step
-/// clears the redo side.
-export function recordStep(order: UndoOrder, stack: UndoStack): UndoOrder {
-  return { past: [...order.past, stack].slice(-ORDER_CAP), future: [] };
+/// Note that `stack` just took a step. `gesture` (when given) joins it
+/// to the entry the same gesture already opened, so a gesture spanning
+/// both stacks costs one chord rather than two. Like any undo record, a
+/// new step clears the redo side.
+export function recordStep(
+  order: UndoOrder,
+  stack: UndoStack,
+  gesture?: number,
+): UndoOrder {
+  const last = order.past[order.past.length - 1];
+  if (gesture !== undefined && last?.gesture === gesture) {
+    // Only the newest entry can still be open: an older one has a step
+    // in between, and one already undone is on the redo side.
+    const stacks = last.stacks.includes(stack) ? last.stacks : [...last.stacks, stack];
+    return { past: [...order.past.slice(0, -1), { stacks, gesture }], future: [] };
+  }
+  return { past: [...order.past, { stacks: [stack], gesture }].slice(-ORDER_CAP), future: [] };
 }
 
-/// The stack to undo next: the most recent entry whose stack still has
-/// something to undo. `canUndo` is what skips an entry whose step has
-/// since been dropped at its stack's cap — such an entry is left in
-/// place (it can never become undoable again, and removing it would
+/// The entry to undo next: the most recent one with a stack that still
+/// has something to undo. `canUndo` is what skips an entry whose steps
+/// have since been dropped at their stack's cap — such an entry is left
+/// in place (it can never become undoable again, and removing it would
 /// reorder the log for no gain).
 export function popUndo(
   order: UndoOrder,
   canUndo: (stack: UndoStack) => boolean,
-): { order: UndoOrder; stack: UndoStack } | null {
+): { order: UndoOrder; stacks: readonly UndoStack[] } | null {
   for (let i = order.past.length - 1; i >= 0; i--) {
-    const stack = order.past[i];
-    if (!canUndo(stack)) continue;
+    const entry = order.past[i];
+    if (!entry.stacks.some(canUndo)) continue;
     return {
       order: {
         past: [...order.past.slice(0, i), ...order.past.slice(i + 1)],
-        future: [stack, ...order.future],
+        future: [entry, ...order.future],
       },
-      stack,
+      stacks: entry.stacks,
     };
   }
   return null;
 }
 
-/// The mirror of [`popUndo`]: the oldest-undone entry whose stack can
+/// The mirror of [`popUndo`]: the oldest-undone entry whose stacks can
 /// still redo.
 export function popRedo(
   order: UndoOrder,
   canRedo: (stack: UndoStack) => boolean,
-): { order: UndoOrder; stack: UndoStack } | null {
+): { order: UndoOrder; stacks: readonly UndoStack[] } | null {
   for (let i = 0; i < order.future.length; i++) {
-    const stack = order.future[i];
-    if (!canRedo(stack)) continue;
+    const entry = order.future[i];
+    if (!entry.stacks.some(canRedo)) continue;
     return {
       order: {
-        past: [...order.past, stack],
+        past: [...order.past, entry],
         future: [...order.future.slice(0, i), ...order.future.slice(i + 1)],
       },
-      stack,
+      stacks: entry.stacks,
     };
   }
   return null;

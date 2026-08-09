@@ -239,10 +239,10 @@ describe("undo order", () => {
   it("undoes the most recent step, whichever stack it lives on", () => {
     let order = recordStep(recordStep(EMPTY_UNDO_ORDER, "layout"), "element");
     const first = popUndo(order, always)!;
-    expect(first.stack).toBe("element");
+    expect(first.stacks).toEqual(["element"]);
     order = first.order;
     const second = popUndo(order, always)!;
-    expect(second.stack).toBe("layout");
+    expect(second.stacks).toEqual(["layout"]);
     expect(popUndo(second.order, always)).toBeNull();
   });
 
@@ -251,9 +251,9 @@ describe("undo order", () => {
     order = popUndo(order, always)!.order;
     order = popUndo(order, always)!.order;
     const first = popRedo(order, always)!;
-    expect(first.stack).toBe("layout");
+    expect(first.stacks).toEqual(["layout"]);
     const second = popRedo(first.order, always)!;
-    expect(second.stack).toBe("element");
+    expect(second.stacks).toEqual(["element"]);
     expect(popRedo(second.order, always)).toBeNull();
   });
 
@@ -269,7 +269,7 @@ describe("undo order", () => {
     // entry can outlive the step it names.
     const order = recordStep(recordStep(EMPTY_UNDO_ORDER, "layout"), "element");
     const r = popUndo(order, (stack) => stack === "layout")!;
-    expect(r.stack).toBe("layout");
+    expect(r.stacks).toEqual(["layout"]);
     expect(popUndo(r.order, (stack) => stack === "layout")).toBeNull();
   });
 
@@ -277,5 +277,52 @@ describe("undo order", () => {
     let order = EMPTY_UNDO_ORDER;
     for (let i = 0; i < 500; i++) order = recordStep(order, "layout");
     expect(order.past.length).toBe(100);
+  });
+});
+
+describe("undo order, transactions", () => {
+  const always = () => true;
+
+  it("makes one entry of the two stacks a single gesture touched", () => {
+    // An element removal: the panel closes (layout) and the element
+    // goes (element), one gesture, one entry.
+    let order = recordStep(EMPTY_UNDO_ORDER, "layout", 7);
+    order = recordStep(order, "element", 7);
+    expect(order.past.length).toBe(1);
+    const r = popUndo(order, always)!;
+    expect(r.stacks).toEqual(["layout", "element"]);
+    expect(popUndo(r.order, always)).toBeNull();
+  });
+
+  it("keeps a repeated stack in the same gesture to one mention", () => {
+    let order = recordStep(EMPTY_UNDO_ORDER, "element", 3);
+    order = recordStep(order, "element", 3);
+    expect(popUndo(order, always)!.stacks).toEqual(["element"]);
+  });
+
+  it("separates gestures, and separates an untagged step from a gesture", () => {
+    let order = recordStep(EMPTY_UNDO_ORDER, "element", 1);
+    order = recordStep(order, "element", 2);
+    order = recordStep(order, "element");
+    expect(order.past.length).toBe(3);
+  });
+
+  it("does not merge into an entry that redo has already moved on from", () => {
+    // The gesture's first half was undone, so its entry is on the redo
+    // side; a late write must start a new entry rather than reopening it.
+    let order = recordStep(EMPTY_UNDO_ORDER, "layout", 9);
+    order = popUndo(order, always)!.order;
+    order = recordStep(order, "element", 9);
+    expect(order.past.length).toBe(1);
+    expect(popUndo(order, always)!.stacks).toEqual(["element"]);
+  });
+
+  it("redoes the whole gesture as one entry", () => {
+    let order = recordStep(EMPTY_UNDO_ORDER, "layout", 4);
+    order = recordStep(order, "element", 4);
+    order = popUndo(order, always)!.order;
+    const r = popRedo(order, always)!;
+    expect(r.stacks).toEqual(["layout", "element"]);
+    expect(popRedo(r.order, always)).toBeNull();
   });
 });
