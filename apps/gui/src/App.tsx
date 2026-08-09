@@ -567,14 +567,18 @@ export function App() {
   // one-render-stale base during a rapid edit burst; `dirty` is sticky
   // and the next real edit corrects it, while the state itself keeps
   // exact semantics through the pure updater.
+  // `writer` (optional) tags a config write with the panel that made
+  // it, so that panel skips the resync its own persist triggers; every
+  // other caller leaves it unset and thereby says "this is an external
+  // write" — the split the rehydrate path keys on.
   const updateElement = useCallback(
-    (id: string, patch: Partial<ProjectElement>) => {
+    (id: string, patch: Partial<ProjectElement>, writer?: string) => {
       diagCount("registry.update"); // DIAG
-      if (applyElementPatch(registryRef.current, id, patch) !== registryRef.current) {
+      if (applyElementPatch(registryRef.current, id, patch, writer) !== registryRef.current) {
         diagCount("app.setDirty.callsite"); // DIAG
         setDirty(true);
       }
-      setRegistry((prev) => applyElementPatch(prev, id, patch) as RegistryEntry[]);
+      setRegistry((prev) => applyElementPatch(prev, id, patch, writer) as RegistryEntry[]);
     },
     [],
   );
