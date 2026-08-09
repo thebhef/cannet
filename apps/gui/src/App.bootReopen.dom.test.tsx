@@ -9,10 +9,15 @@
 // The host makes the matching decision for the *project directory*
 // (`settings::project_to_reopen`, covered in `settings.rs`); this is the
 // frontend half — whether the boot path calls `open_project` at all.
+//
+// The same decision governs the *layout*: a launch that resumes a
+// project restores a layout, a launch that opens nothing starts from the
+// default seed and persists nothing (window geometry is a separate,
+// plugin-owned track).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 
 type Handler = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Handler[]>();
@@ -20,7 +25,53 @@ const listeners = new Map<string, Handler[]>();
 const openProjectCalls: string[] = [];
 const stateWrites: unknown[] = [];
 // Per-test knobs (the mock is hoisted, so config rides in mutable state).
-const knobs = { reopen: true, lastProject: "C:/fake/last.cannet_prj" as string | null };
+const knobs = {
+  reopen: true,
+  lastProject: "C:/fake/last.cannet_prj" as string | null,
+  /// What `get_state` reports as the persisted layout snapshot.
+  savedLayout: null as unknown,
+  /// What `open_project` reports as the project's own layout blob.
+  projectLayout: null as unknown,
+};
+
+/// A minimal-but-real dockview layout holding a single shortcuts panel
+/// under `title` — enough for `fromJSON` to mount it and for a test to
+/// spot the title on the resulting tab. Shaped like what dockview itself
+/// serializes under jsdom (a 100×100 container), since `fromJSON`
+/// rejects a grid whose sizes don't add up. The panel is deliberately a
+/// singleton rather than an element-backed one: element-backed tab
+/// titles are re-synced from the model name (ADR 0019), so a marker
+/// title would not survive on one.
+function layoutWithTab(title: string): unknown {
+  return {
+    grid: {
+      root: {
+        type: "branch",
+        data: [
+          { type: "leaf", data: { views: ["p1"], activeView: "p1", id: "1" }, size: 100 },
+        ],
+        size: 100,
+      },
+      width: 100,
+      height: 100,
+      orientation: "HORIZONTAL",
+    },
+    panels: {
+      p1: {
+        id: "p1",
+        contentComponent: "shortcuts",
+        tabComponent: "props.defaultTabComponent",
+        title,
+      },
+    },
+    activeGroup: "1",
+  };
+}
+
+/// The titles dockview is currently showing on its tabs.
+function tabTitles(): string[] {
+  return Array.from(document.querySelectorAll(".dv-tab")).map((t) => t.textContent ?? "");
+}
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -32,7 +83,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "get_state":
         return {
           last_project: knobs.lastProject,
-          layout: null,
+          layout: knobs.savedLayout,
           recent_blfs: [],
           recent_commands: [],
           blf_channel_maps: {},
@@ -51,7 +102,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           dbcs: [],
           local_virtual_buses: [],
           elements: [],
-          layout: null,
+          layout: knobs.projectLayout,
         };
       case "restore_scratch_capture":
         return { count: 0, first_index: 0, first_index_ts_ns: null, session_start_seconds: 0 };
@@ -146,6 +197,19 @@ async function boot(): Promise<void> {
   });
 }
 
+/// Click the toolbar's "Add trace" — a layout change after the boot has
+/// settled, so what it does or doesn't write is the write gate's doing.
+async function addTracePanel(): Promise<void> {
+  const btn = Array.from(document.querySelectorAll("button")).find(
+    (b) => b.textContent === "Add trace",
+  );
+  if (!btn) throw new Error('no "Add trace" button');
+  await act(async () => {
+    fireEvent.click(btn);
+    await new Promise((r) => setTimeout(r, 20));
+  });
+}
+
 beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   listeners.clear();
@@ -153,6 +217,8 @@ beforeEach(async () => {
   stateWrites.length = 0;
   knobs.reopen = true;
   knobs.lastProject = "C:/fake/last.cannet_prj";
+  knobs.savedLayout = null;
+  knobs.projectLayout = null;
   await hydrateState();
   await hydrateSettings();
 });
@@ -189,5 +255,53 @@ describe("boot reopen", () => {
         "C:/fake/last.cannet_prj",
       );
     }
+  });
+});
+
+describe("boot layout restore", () => {
+
+  it("does not restore a scratch session's layout", async () => {
+    // Nothing to reopen: last session had no project open, so the view
+    // state it happened to leave behind is not what this launch resumes
+    // — it comes up on the default seed. (Window size/position do
+    // resume; the window-state plugin owns that track.)
+    knobs.lastProject = null;
+    knobs.savedLayout = layoutWithTab("Scratch Layout");
+    await hydrateState();
+    await boot();
+    expect(tabTitles()).not.toContain("Scratch Layout");
+    expect(tabTitles()).toContain("Trace 1");
+  });
+
+  it("does not persist a scratch session's layout", async () => {
+    // Nothing written means nothing to restore next launch — the write
+    // gate is the other half of the seed above.
+    knobs.lastProject = null;
+    await hydrateState();
+    await boot();
+    stateWrites.length = 0;
+    await addTracePanel();
+    for (const written of stateWrites) {
+      expect((written as { layout?: unknown }).layout ?? null).toBeNull();
+    }
+  });
+
+  it("still restores a reopened project's layout", async () => {
+    // The other direction: a project session's layout arrives with the
+    // project and is applied over whatever the boot seeded.
+    knobs.projectLayout = layoutWithTab("Project Layout");
+    await boot();
+    expect(openProjectCalls).toEqual(["C:/fake/last.cannet_prj"]);
+    expect(tabTitles()).toContain("Project Layout");
+  });
+
+  it("persists the layout once a project is open", async () => {
+    // A project session keeps its working-layout snapshot: the panel
+    // arrangement it is left in is the one it resumes.
+    knobs.projectLayout = layoutWithTab("Project Layout");
+    await boot();
+    stateWrites.length = 0;
+    await addTracePanel();
+    expect(stateWrites.some((w) => (w as { layout?: unknown }).layout != null)).toBe(true);
   });
 });

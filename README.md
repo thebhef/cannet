@@ -491,8 +491,10 @@ buffer cleared). The panel also lists the configured server(s) with
 last opened/saved project is reopened on launch, unless you turn
 **`reopen_last_project`** off — then a launch starts with nothing open,
 in the auto-located project directory, and the pointer to your last
-project is kept so turning it back on resumes there. With no project,
-the layout is restored from that directory's own view state. Unsaved
+project is kept so turning it back on resumes there. A launch with no
+project comes up on the default layout: view state is a project's, so
+a session that opens nothing neither keeps nor restores one. The
+window's own size and position always resume, project or not. Unsaved
 changes show a `●` in
 the project panel, and closing the window with unsaved changes always
 prompts you (Save & close / Discard & close / Cancel). Not carried in

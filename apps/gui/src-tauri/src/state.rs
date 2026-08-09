@@ -1,8 +1,9 @@
 //! Machine-local UI state, persisted host-side (ADR 0032, ADR 0034),
 //! across two scopes (ADR 0042).
 //!
-//! Things the app records as the user works — last project, no-project
-//! layout snapshot, recent BLFs, recent commands — live in `state.json`,
+//! Things the app records as the user works — last project, the open
+//! project's layout snapshot, recent BLFs, recent commands — live in
+//! `state.json`,
 //! read and written through the [`get_state`] / [`set_state`] commands.
 //! The frontend holds no authoritative copy: it hydrates [`UiState`] at
 //! boot and writes the whole struct back on change.
@@ -76,9 +77,12 @@ pub struct UiState {
     /// launch. `None` means "no named project" — fall back to `layout`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_project: Option<String>,
-    /// The no-project dockview layout snapshot (the working layout when
-    /// no project is open). Opaque — the host round-trips it verbatim,
-    /// the same way the project file treats the layout blob (ADR 0011).
+    /// The open project's working dockview layout — what its panels are
+    /// arranged into right now, saved or not. Written only while a
+    /// project is open: a session with nothing open leaves no view state
+    /// behind, so `None` here is what a scratch launch reads. Opaque —
+    /// the host round-trips it verbatim, the same way the project file
+    /// treats the layout blob (ADR 0011).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<serde_json::Value>,
     /// Most-recently-opened BLF paths (frontend-capped MRU list).

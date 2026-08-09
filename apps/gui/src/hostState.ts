@@ -1,7 +1,7 @@
 // Machine-local UI state, persisted host-side (ADR 0032, ADR 0034).
 //
-// These values (last-opened project, no-project layout snapshot, recent
-// BLFs, recent commands) used to live in `localStorage`; they now
+// These values (last-opened project, the open project's layout snapshot,
+// recent BLFs, recent commands) used to live in `localStorage`; they now
 // round-trip through the host's `get_state` / `set_state` commands. The
 // host is authoritative — and it also decides *where* each value lands:
 // `state.json` in the OS config dir for what follows the person, the
