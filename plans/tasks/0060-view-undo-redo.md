@@ -75,6 +75,29 @@ Extend the layout-history pattern rather than per-op registration:
 - No undo of host/behavior state, ever (the ADR).
 - No persistence of the undo stack across sessions.
 
+## Phases (orchestrator plan 2026-08-09)
+
+Launched under the owner's standing "implement tasks 58-60" directive.
+Chained off `task59g-dirty-version`, strictly sequential, one new
+branch per phase, main working tree, orchestrator reviews diffs
+between phases. 60.A's first commit carries this plan section.
+
+- **60.A** `task60a-panel-rehydrate` (Opus) — mechanism step 3, the
+  enabler: a rehydrate-from-element path (config epoch) for every
+  element-backed panel kind, one shared mechanism, dom-tested per
+  kind. No history changes yet.
+- **60.B** `task60b-registry-history` (Opus) — the boundary ADR +
+  the allowlist mask + the second stack over the `setRegistry`
+  chokepoint (mechanism step 1), wired to `Mod+Z`/`Mod+Y` beside the
+  layout stack; includes the no-replay-of-excluded-fields test.
+- **60.C** `task60c-transactions` (Opus) — mechanism steps 2 + 4:
+  unified one-gesture steps across both stacks (panel add, element
+  remove, cross-panel area drag, filter insert), drag-knob
+  coalescing, params-only exclusions confirmed.
+- **60.D** `task60d-undo-close` (Opus) — polish and docs (ADR 0018
+  bindings/docs), any spillover, final ADR-0031 gate +
+  exit-criteria walk.
+
 ## Exit criteria
 
 - Every allowlist mutation is undoable/redoable via the existing
