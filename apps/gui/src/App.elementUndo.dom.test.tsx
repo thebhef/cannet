@@ -5,6 +5,12 @@
 // Ctrl+Z / Ctrl+Y, and interleaved with a layout step so one chord
 // always reverses the most recent change. Tauri IPC mocked, dockview
 // real.
+//
+// Also the transaction cases — one user gesture, one chord, however many
+// writes and whichever stacks it took: adding a panel, removing an
+// element (its panel comes back with it), dragging a plot area between
+// panels, inserting a filter upstream, and the drags of persisted knobs
+// that used to cost one undo per mouse move.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
