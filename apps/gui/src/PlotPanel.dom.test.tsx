@@ -975,10 +975,9 @@ describe("PlotPanel", () => {
         await act(async () => {
           await updateSettings({ theme: "light" });
         });
-        // The stylesheet's half of the switch. The flag is off (its
-        // default), which is what `light` resolves to `normal` for.
-        expect(document.documentElement.dataset.theme).toBe("normal");
-        expect(activeTheme()).toBe("normal");
+        // The stylesheet's half of the switch.
+        expect(document.documentElement.dataset.theme).toBe("light");
+        expect(activeTheme()).toBe("light");
         // The canvas's half: a redraw, and an axis that resolves to the
         // applied theme's color when it happens. uPlot resolves axis
         // strokes per draw, so the second is what makes the first
@@ -986,7 +985,7 @@ describe("PlotPanel", () => {
         expect(inst.redraws).toBeGreaterThan(redrawsBefore);
         const stroke = inst.opts.axes[0].stroke;
         expect(typeof stroke === "function" ? (stroke as () => string)() : stroke).toBe(
-          THEMES.normal.axisText,
+          THEMES.light.axisText,
         );
       } finally {
         stop();
@@ -995,13 +994,9 @@ describe("PlotPanel", () => {
     });
   });
 
-  // Normal mode is the other half of the applied theme, so it is a live
-  // switch on the same terms — same attribute, same redraw.
-  it("follows a normal mode change live, same as a theme change", async () => {
-    mockSettings.theme = "light";
-    await act(async () => {
-      await hydrateSettings();
-    });
+  // `lighthk` is a live switch on the same terms as any other theme —
+  // same attribute, same redraw.
+  it("follows a switch to the lighthk theme live, same as any other theme change", async () => {
     await withSizedCanvas(async () => {
       renderPanel();
       addFocusedSignal("EngineSpeed");
@@ -1014,14 +1009,14 @@ describe("PlotPanel", () => {
         };
         const redrawsBefore = inst.redraws;
         await act(async () => {
-          await updateSettings({ normal_mode: true });
+          await updateSettings({ theme: "lighthk" });
         });
-        expect(document.documentElement.dataset.theme).toBe("light");
-        expect(activeTheme()).toBe("light");
+        expect(document.documentElement.dataset.theme).toBe("lighthk");
+        expect(activeTheme()).toBe("lighthk");
         expect(inst.redraws).toBeGreaterThan(redrawsBefore);
         const stroke = inst.opts.axes[0].stroke;
         expect(typeof stroke === "function" ? (stroke as () => string)() : stroke).toBe(
-          THEMES.light.axisText,
+          THEMES.lighthk.axisText,
         );
       } finally {
         stop();
