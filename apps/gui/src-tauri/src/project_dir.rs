@@ -34,6 +34,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use tauri::Manager;
 use uuid::Uuid;
 
 /// The scoped-data subdirectory inside a project directory.
@@ -112,6 +113,22 @@ impl ProjectDir {
         std::fs::create_dir_all(&self.cache)?;
         populate_workspace_dir(&self.root, &self.cache)
     }
+}
+
+/// Whether the session's active project directory is auto-located
+/// ([`ProjectDir::is_auto_located`]) rather than one the user pointed
+/// cannet at explicitly.
+///
+/// The one caller today is the autosave-on-exit close flow: it must act
+/// only on a project directory the user chose, never invent one for an
+/// auto-located or unsaved session. Queried fresh at close time rather
+/// than mirrored into frontend state, since the active directory can
+/// change mid-session (opening a project, Save As) and the close flow
+/// only ever needs the answer at the moment it decides.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn active_project_is_auto_located(app: tauri::AppHandle) -> bool {
+    app.state::<ActiveProjectDir>().get().is_auto_located()
 }
 
 /// Whether `dir` is a project directory: it holds a `.cannet_prj`
