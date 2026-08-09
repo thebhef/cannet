@@ -38,14 +38,20 @@ pub struct ChannelBusMapping {
     pub bus_id: Option<String>,
 }
 /// Start importing `blf_path`, routing each channel per
-/// `channel_bus_mapping`.
+/// `channel_bus_mapping`, optionally narrowed to `[start_ns, end_ns]`
+/// (either or both `None` for unbounded).
 ///
 /// The whole import is **one pass over the file**: the pump walks it
 /// once, and the capture's `GLOBAL_MARKER` annotations are collected on
 /// that same walk through the source's marker sink rather than by a
 /// second whole-file decode before it. There is no import-specific
 /// ingest path — the frames go through the same `run_pump` a live
-/// session uses (ADR 0046).
+/// session uses (ADR 0046). The time range is the same rule applied to
+/// itself: it is a [`cannet_core::WindowedSource`] wrapped around the
+/// BLF source, not a second pump — frames outside the range never reach
+/// `run_pump`, let alone `TraceStore::append`. Markers still ride the
+/// prefix of the walk the pump actually makes (up to where `end_ns`, if
+/// set, stops it) — see [`cannet_core::WindowedSource`]'s docs.
 ///
 /// `async` so Tauri runs it off the main thread, like its siblings:
 /// opening a several-hundred-megabyte BLF parses a header and allocates
@@ -58,6 +64,8 @@ pub(crate) async fn open_log(
     app: AppHandle,
     blf_path: String,
     #[allow(non_snake_case)] channel_bus_mapping: Option<Vec<ChannelBusMapping>>,
+    start_ns: Option<u64>,
+    end_ns: Option<u64>,
 ) -> Result<OpenLogResult, String> {
     // Open the BLF before returning so the user gets immediate feedback
     // if the path is wrong.
@@ -112,6 +120,12 @@ pub(crate) async fn open_log(
         .into_iter()
         .map(|m| (m.channel, m.bus_id))
         .collect();
+
+    // The selected import range (ADR 0046): a filter at the
+    // `CanFrameSource` seam, applied on top of the marker sink set
+    // above so `run_pump` — and therefore `TraceStore::append` — never
+    // sees a frame outside `[start_ns, end_ns]`.
+    let source = cannet_core::WindowedSource::new(source, start_ns, end_ns);
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
@@ -426,22 +440,50 @@ fn channel_for_save(frame: &trace_store::RawTraceFrame, buses: &[String]) -> u8 
     frame.channel
 }
 
-/// Pre-scan a BLF file and return its distinct channel numbers, in
-/// ascending order. Used by the GUI's BLF import flow to
-/// build the channel → bus mapping step before frames start flowing.
+/// Everything the import dialog needs from one header-only scan of a
+/// BLF file: the channel census the mapping step maps, the capture's
+/// span and frame count (cheap header metadata, per ADR 0046 — the
+/// census is the one sanctioned extra walk, so anything it already
+/// carries is free to surface here), and its markers projected onto
+/// the same [`Note`] shape they land in the session store as, if the
+/// file is imported.
+///
+/// Domain computation stops here: the frontend formats the ns fields
+/// into a duration and a wall-clock string (thin-views-over-a-paged-
+/// model — see `CLAUDE.md` § GUI architecture), and marker ordering is
+/// whatever [`cannet_blf::scan_blf`] found (file order).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BlfScanResult {
+    pub channels: Vec<u8>,
+    pub frame_count: u64,
+    pub first_timestamp_ns: Option<u64>,
+    pub last_timestamp_ns: Option<u64>,
+    pub start_unix_nanos: u64,
+    pub markers: Vec<Note>,
+}
+
+/// Pre-scan a BLF file and return its distinct channel numbers, capture
+/// metadata, and markers — everything the channel → bus mapping dialog
+/// shows before frames start flowing.
 ///
 /// The census is **exact**: [`cannet_blf::scan_blf`] walks the whole
 /// file header-only — reading each object's channel field without
 /// decoding its body — so a channel that first appears late in a long
 /// capture is still offered a mapping. The walk pays the file's inflate
 /// and nothing else; a couple of seconds on a several-hundred-megabyte
-/// log, which is the price of never silently dropping a channel.
+/// log, which is the price of never silently dropping a channel. The
+/// same walk also sees every `GLOBAL_MARKER` and the first/last frame
+/// timestamps for free (ADR 0046), so the dialog's markers gridview and
+/// metadata line cost nothing beyond this one pass.
 ///
 /// `async` so Tauri runs it off the main thread — the walk covers the
 /// whole file and we don't want to freeze the UI while it runs.
 #[tauri::command]
 #[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
-pub(crate) async fn scan_blf_channels(app: AppHandle, blf_path: String) -> Result<Vec<u8>, String> {
+pub(crate) async fn scan_blf_channels(
+    app: AppHandle,
+    blf_path: String,
+) -> Result<BlfScanResult, String> {
     let started = std::time::Instant::now();
     let scan = match cannet_blf::scan_blf(&blf_path) {
         Ok(s) => s,
@@ -463,7 +505,20 @@ pub(crate) async fn scan_blf_channels(app: AppHandle, blf_path: String) -> Resul
         channels = scan.channels.len(),
         markers = scan.markers.len(),
     );
-    Ok(scan.channels)
+    let mut synthetic_idx = 0u64;
+    let markers = scan
+        .markers
+        .iter()
+        .map(|m| note_from_marker(m, &mut synthetic_idx))
+        .collect();
+    Ok(BlfScanResult {
+        channels: scan.channels,
+        frame_count: scan.frame_count,
+        first_timestamp_ns: scan.first_timestamp_ns,
+        last_timestamp_ns: scan.last_timestamp_ns,
+        start_unix_nanos: scan.start_unix_nanos,
+        markers,
+    })
 }
 
 /// Drop every stored frame and start a fresh session timeline rooted
