@@ -1019,9 +1019,9 @@ pub struct DecimatedRange {
     /// catching up to the capture when the host answered. A serve is
     /// bounded in time, so a first use over a long capture returns a
     /// growing prefix with `complete: false` until the rebuild lands —
-    /// the caller paints what it got and asks again. A non-empty series
-    /// is never on its own evidence that the series is finished (ADR
-    /// 0048).
+    /// the caller paints what it got and asks again (ADR 0049). A
+    /// non-empty series is never on its own evidence that the series is
+    /// finished (ADR 0048).
     pub complete: bool,
     /// Wall-clock time the host spent in the lock-held slice
     /// (`slice_matching_many`), milliseconds — how much of the per-call

@@ -95,9 +95,12 @@ Concretely, for any rebuild of derived state:
   fold — milliseconds — instead of a whole rebuild.
 - A concurrent caller can observe a series **mid-rebuild**: a serve that
   slots in between two chunks sees the points decoded so far. That is a
-  visible change from the previous all-or-nothing serve, and it is the
-  direction the incremental-paint work wants; a caller that needs a
-  complete series must not infer completeness from a non-empty result.
+  visible change from the previous all-or-nothing serve, and a caller
+  that needs a complete series must not infer completeness from a
+  non-empty result.
+  [ADR 0049](0049-bounded-serves-and-partial-answers.md) takes that
+  consequence the rest of the way: a serve is bounded in time and says
+  whether its answer is the whole answer.
 - A rebuild interrupted by a clear / re-root / restore discards its
   in-flight step. The work is lost, not corrupted, and the next serve
   starts a fresh rebuild against the new set.

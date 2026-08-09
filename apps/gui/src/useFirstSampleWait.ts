@@ -21,8 +21,8 @@ export interface FirstSampleWait {
   /// the gate until the signal set changes again.
   ///
   /// "Something to draw" and "the host has finished" are two different
-  /// moments, and this is the first of them. A host serve is bounded in
-  /// time, so a cold one answers with the prefix it has decoded: the
+  /// moments, and this is the first of them (ADR 0049). A host serve is
+  /// bounded in time, so a cold one answers with the prefix it has decoded: the
   /// gate ends there, on the first points, and the plot goes on filling
   /// in as later serves continue the rebuild. An answer that carries no
   /// points and is *not* the host's final word is not an outcome — it is

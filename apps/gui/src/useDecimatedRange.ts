@@ -45,9 +45,10 @@ export interface DecimatedSignal {
 /// `winEnd` that shrank below the last seen one re-anchors the window.
 ///
 /// The exception is a host answer that was only *part* of the series
-/// (`SignalsSample.complete === false`): the request is unchanged but the
-/// bytes are not, so the memo is not applied until the host says it has
-/// caught up.
+/// (`SignalsSample.complete === false`, per
+/// [ADR 0049](../../docs/adr/0049-bounded-serves-and-partial-answers.md)):
+/// the request is unchanged but the bytes are not, so the memo is not
+/// applied until the host says it has caught up.
 export interface DecimatedRequest {
   /// Memo key for the signal set — changing it re-anchors the window.
   /// The cached window is a map from signal key to series, so this must
@@ -93,7 +94,7 @@ export interface DecimatedSnapshot {
   lastT: number | null;
   byKey: Map<string, Series>;
   /// Whether the host had finished catching its per-signal caches up when
-  /// it answered. A serve is bounded in time, so the first sample for a
+  /// it answered (ADR 0049). A serve is bounded in time, so the first sample for a
   /// signal set over a long capture is a *prefix* — real points, drawable,
   /// but still growing. `false` means another fetch of the same request
   /// returns more; the view uses it to tell "nothing yet" from "nothing".

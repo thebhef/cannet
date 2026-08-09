@@ -128,9 +128,9 @@ async fn off_async_workers<T: Send + 'static>(work: impl FnOnce() -> T + Send + 
 /// ```
 ///
 /// The `flags` word (and the `\x02` that announces it) is the
-/// completeness token: a serve is bounded in time, so a cold one answers
-/// with the prefix it decoded and bit 0 clear. A caller must not infer
-/// completeness from a non-empty series.
+/// completeness token of ADR 0049: a serve is bounded in time, so a cold
+/// one answers with the prefix it decoded and bit 0 clear. A caller must
+/// not infer completeness from a non-empty series.
 fn encode_signals_sample(s: &DecimatedRange) -> Vec<u8> {
     let total_points: usize = s.series.iter().map(|p| p.t.len()).sum();
     let mut buf = Vec::with_capacity(8 + 32 + 8 + s.series.len() * 4 + total_points * 16);

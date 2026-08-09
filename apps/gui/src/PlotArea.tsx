@@ -185,8 +185,8 @@ const Y_AXIS_MODES: YAxisMode[] = ["unified", "per-unit", "individual"];
 const Y_AXIS_MODE_OPTIONS: ComboboxOption[] = Y_AXIS_MODES.map((m) => ({ value: m, label: m }));
 
 /** Whether a sampled window has anything to draw at all. The first-sample
- * gate ends on the first *points*, not on the first answer: the host's
- * serve is bounded in time, so a cold one comes back with the prefix it
+ * gate ends on the first *points*, not on the first answer (ADR 0049):
+ * the host's serve is bounded in time, so a cold one comes back with the prefix it
  * has decoded and keeps decoding — an answer with points is a plot the
  * user can read, an answer with none is still a blank canvas. */
 function hasAnyPoints(snapshot: DecimatedSnapshot): boolean {

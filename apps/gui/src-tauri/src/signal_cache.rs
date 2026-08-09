@@ -47,7 +47,7 @@
 //! out of the result. Bus scoping, decode provenance and the decode
 //! cursor stay per series through it ([`catch_up_group_chunked`]).
 //!
-//! A serve is also **bounded in time**: it catches up for at most
+//! A serve is also **bounded in time** (ADR 0049): it catches up for at most
 //! [`CATCH_UP_SERVE_BUDGET`] and then answers with what has decoded,
 //! saying so through [`ServedWindows::complete`]. So the first use of a
 //! signal over a long capture returns a growing prefix every time it is
@@ -104,7 +104,8 @@ const PYRAMID_BRANCH: usize = 8;
 const CATCH_UP_CHUNK_FRAMES: usize = 16_384;
 
 /// How long one serve may spend catching its caches up before it answers
-/// with what has decoded so far ([`ServedWindows::complete`] `== false`).
+/// with what has decoded so far, [`ServedWindows::complete`] `== false`
+/// (ADR 0049).
 ///
 /// Chunking the catch-up (ADR 0048) bounded the *lock hold*; it did not
 /// bound the *call*, which still ran chunk after chunk until the cursor
@@ -1371,7 +1372,7 @@ impl SignalCacheStore {
 }
 
 /// One batch serve: the windows, and whether the caches behind them had
-/// finished catching up when it answered.
+/// finished catching up when it answered (ADR 0049).
 pub struct ServedWindows {
     /// One window per query, index-parallel with the batch.
     pub series: Vec<Vec<SamplePoint>>,
@@ -1381,10 +1382,10 @@ pub struct ServedWindows {
     /// hold the prefix decoded so far and a further serve continues from
     /// there.
     ///
-    /// This is the token that makes a partial serve first-class. Since a
-    /// catch-up runs off the lock (ADR 0048) a caller can observe a series
-    /// mid-rebuild, so a non-empty window has never been evidence that the
-    /// series is finished; asking the model is.
+    /// This is the token that makes a partial serve first-class (ADR
+    /// 0049). Since a catch-up runs off the lock (ADR 0048) a caller can
+    /// observe a series mid-rebuild, so a non-empty window has never been
+    /// evidence that the series is finished; asking the model is.
     pub complete: bool,
 }
 

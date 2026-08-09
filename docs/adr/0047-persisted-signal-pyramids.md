@@ -161,7 +161,8 @@ Two lifecycle rules complete it:
 
 - A launch over a restored capture paints its plots from the pyramid on
   disk; `building…` appears only for signals that were never plotted in
-  the prior session.
+  the prior session — and then only until their first points arrive
+  ([ADR 0049](0049-bounded-serves-and-partial-answers.md)).
 - The scratch keeps the pyramid bytes between sessions. They are inside
   DS-8's cap like everything else in `cache/`, and the windowed-ring
   eviction trims them with the raw store.
