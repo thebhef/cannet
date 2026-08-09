@@ -203,6 +203,32 @@ function tabTitles(): string[] {
   return Array.from(document.querySelectorAll(".dv-tab")).map((t) => t.textContent ?? "");
 }
 
+/// How many plot areas each mounted plot panel is showing, in DOM
+/// order.
+function areaCounts(): number[] {
+  return Array.from(document.querySelectorAll(".plot-panel")).map(
+    (p) => p.querySelectorAll(".plot-area").length,
+  );
+}
+
+/// One `DataTransfer` stand-in for a plot-area drag: `dragStart` writes
+/// the area onto it and the drop reads it back, so every event in the
+/// gesture must be handed the same object.
+function areaDragTransfer() {
+  const store = new Map<string, string>();
+  const types: string[] = [];
+  return {
+    types,
+    setData(t: string, v: string) {
+      store.set(t, v);
+      if (!types.includes(t)) types.push(t);
+    },
+    getData: (t: string) => store.get(t) ?? "",
+    dropEffect: "",
+    effectAllowed: "",
+  };
+}
+
 /// A button inside `root`, by label.
 function buttonIn(root: ParentNode, label: string): HTMLButtonElement {
   const btn = Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
@@ -399,6 +425,71 @@ describe("element undo", () => {
       fireEvent.click(findButton("Project panel"));
     });
     expect(() => elementRow("Plot 1")).toThrow();
+  }, 30_000);
+
+  it("returns a plot area dragged between two panels in one chord", async () => {
+    await mountApp();
+    // Two plot panels in two different dockview groups, so both stay
+    // rendered — a panel only renders while it is the visible one in
+    // its group, and a cross-panel drag needs both ends alive.
+    await act(async () => {
+      fireEvent.click(findButton("Add plot panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
+    });
+    await act(async () => {
+      fireEvent.click(findButton("add plot area"));
+    });
+    // Send the next panel to the trace's group instead: bring the
+    // project panel forward, focus the trace from its inventory, then
+    // add — a new panel joins whichever group is active.
+    await act(async () => {
+      fireEvent.click(findButton("Project panel"));
+    });
+    await act(async () => {
+      fireEvent.click(buttonIn(elementRow("Trace 1"), "Focus"));
+    });
+    await act(async () => {
+      fireEvent.click(findButton("Add plot panel"));
+    });
+    await act(async () => {
+      fireEvent.click(buttonIn(elementRow("Plot 1"), "Focus"));
+    });
+    await waitFor(() => {
+      if (document.querySelectorAll(".plot-panel").length !== 2)
+        throw new Error("second plot panel not in its own group");
+    });
+    expect(areaCounts()).toEqual([2, 1]);
+
+    // Move the second panel's only area onto the first panel's stack.
+    const dt = areaDragTransfer();
+    const grips = Array.from(
+      document.querySelectorAll<HTMLElement>(".plot-panel"),
+    )[1].querySelectorAll<HTMLElement>('[aria-label="reorder plot area"]');
+    await act(async () => {
+      fireEvent.dragStart(grips[0], { dataTransfer: dt });
+      const target = document.querySelectorAll<HTMLElement>(".plot-panel")[0].querySelector(
+        ".plot-area",
+      )!;
+      fireEvent.dragOver(target, { dataTransfer: dt });
+      fireEvent.drop(target, { dataTransfer: dt });
+    });
+    // The area landed, and the panel that gave it up kept a fresh empty
+    // one (a plot panel always shows at least one area).
+    await waitFor(() => {
+      const counts = areaCounts();
+      if (counts[0] !== 3) throw new Error(`drop left ${JSON.stringify(counts)}`);
+    });
+
+    // One chord: two panels' configs, one gesture, one step.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      const counts = areaCounts();
+      if (counts[0] !== 2 || counts[1] !== 1) throw new Error(`undo left ${JSON.stringify(counts)}`);
+    });
   }, 30_000);
 
   it("inserting a filter upstream is one step — the filter goes with it", async () => {
