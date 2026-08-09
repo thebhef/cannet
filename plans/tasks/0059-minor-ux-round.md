@@ -243,6 +243,66 @@ between phases. 59.A's first commit carries this plan section.
     `dockLayout.dom.test.ts` (`validateLayout` / `stripMaximizedNode` /
     `isTabMiddlePress` semantics all untouched). 28 tests across the
     five files, green.
+- 2026-08-09 — Phase 59.C landed (`task59c-ctrl-f`, off
+  `task59b-scratch-layout`). Four commits:
+  - `2a5cbfc` `feat(gui): register panel.find on Mod+F in the command
+    registry` — `commands.ts` gains `FINDABLE_PANEL_KINDS` (`plot`,
+    `rbs`, `dbc`) and the `panel.find` command gated on it; `Mod+F`
+    joins `DEFAULT_BINDINGS` with no `skipEditable`, so it reaches a
+    panel's find/filter box even while some other text field in the
+    panel already has focus. The existing boot-time conflict
+    assertion (import-time `findBindingConflicts`) stays green with no
+    changes needed — confirms no prior `Mod+F` binding collided.
+    `pnpm --dir apps/gui test -- src/commands.test.ts`: 28 passed (2
+    new).
+  - `bd443af` `feat(gui): Mod+F focuses the plot panel's solo box` —
+    `usePanelCommands` in `PlotPanel.tsx` implements `panel.find` by
+    focusing and selecting the solo pattern input's text (a `ref`
+    added to that `<input>`). `useCommands.tsx`'s
+    `runFocusedPanelCommand` now falls back to the focused dockview
+    panel's fixed id when it has no `elementId` (was: no-op) — added
+    ahead of the DBC commit below, harmless for element-backed panels
+    since `elementId` is always set whenever a command's context
+    targets one of their kinds. `pnpm --dir apps/gui test -- src/PlotPanel.dom.test.tsx`:
+    153 passed (1 new).
+  - `3522aeb` `feat(gui): Mod+F focuses the RBS panel's filter box` —
+    `GridviewFilterBox` (`gridviewFilter.tsx`) takes an optional
+    `inputRef: RefObject<HTMLInputElement>`, forwarded to the
+    underlying `<input>`; `RbsPanel.tsx` wires it up the same way the
+    plot panel does. `pnpm --dir apps/gui test`: 215 passed across the
+    six touched files (1 new).
+  - `594a96a` `feat(gui): Mod+F focuses the DBC panel's search box` —
+    the cost-vs-defer call from the task file, decided in-phase: the
+    routing fallback the previous commit added (fixed panel id when
+    `elementId` is absent) makes DBC cheap, so it ships rather than
+    being deferred. `DbcPanel.tsx` registers `panel.find` under the
+    already-exported `DBC_PANEL_ID` (no per-instance element id to key
+    on — DBC is a singleton). `pnpm --dir apps/gui test`: 139 files,
+    1688 tests passed (1683 before; 5 new total across all four
+    commits). `pnpm --dir apps/gui build`: clean. No Rust files
+    touched, so `cargo test -p cannet-gui` / clippy were not re-run.
+  - **The DBC/Settings decision, by cost:** DBC shipped, Settings
+    deferred. DBC's cost was low once the routing fallback existed —
+    one `usePanelCommands(DBC_PANEL_ID, …)` call and one `inputRef`
+    prop, no circular import (`dockLayout.ts`, home of `DBC_PANEL_ID`,
+    does not import `DbcPanel.tsx`). Settings is a different case
+    entirely: `SettingsPanel.tsx` has no find/filter box in it at
+    all — no `GridviewFilterBox`, no search input, nothing for
+    `panel.find` to focus — so extending routing there would bind a
+    key to nothing. `FINDABLE_PANEL_KINDS` leaves `settings` out for
+    that reason, and `panel.find` is simply not listed in the palette
+    while a Settings panel is focused (the "inert, not-listed" branch
+    of the exit criteria).
+  - TDD order: each panel's dom test (`PlotPanel.dom.test.tsx`,
+    `RbsPanel.dom.test.tsx`, `DbcPanel.dom.test.tsx`) was written and
+    watched fail against the unmodified panel before its
+    `usePanelCommands`/`inputRef` wiring landed; `commands.test.ts`'s
+    two new cases were watched fail against the unmodified registry
+    first. One type-level detour: `GridviewFilterBox`'s first cut of
+    `inputRef` was typed `RefObject<HTMLInputElement | null>`, which
+    `tsc` rejected (`LegacyRef` wants `RefObject<HTMLInputElement>`,
+    whose `.current` is already nullable) — fixed before the RBS
+    commit, caught by `pnpm --dir apps/gui build` before it landed.
 
 ## Blockers / side effects
 
