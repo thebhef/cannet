@@ -182,3 +182,159 @@ between phases. 58.A's first commit is the plan docs (this file,
 - ADR for the one-ingest-pathway rule reinforced or written; docs
   updated with behavior changes; ADR-0031 gate green (multi-run) after
   ingest-path changes and at completion.
+
+## Status log
+
+### 2026-08-08 — phase 58.A, item 1 (one-pass import)
+
+Branch `task58a-one-pass-import`, off `task57e-restore-experience`
+(048dd8b).
+
+| commit | subject |
+| --- | --- |
+| d0a8806 | `docs(plans)`: groom tasks 58-60 and reorder the roadmap |
+| 0993e5e | `perf(blf)`: take the channel census from a header-only walk |
+| 0a83076 | `test(gui)`: benchmark what a BLF import spends per frame |
+| 5d08f94 | `perf(gui)`: fold the BLF marker pass into the import's one walk |
+| 3dbbd9a | `test(gui)`: attribute the ingest budget to the store and the bus id |
+| d263a97 | `docs(adr)`: record the one-ingest-pathway rule |
+
+Tests after the slice: `cannet-blf` 106 + 1 integration (was 104),
+`cannet-spill` 58, `cannet-gui` 500 + 5 ignored benchmarks. Clippy clean
+across the workspace with `--all-targets`. No frontend code touched —
+`open_log` and `scan_blf_channels` keep their wire shapes, and the
+frontend already `await`ed both.
+
+**What landed**
+
+- `cannet_blf::scan_blf` — a header-only walk (`BlfReader::next_raw_object`)
+  that reads each object's channel field out of its bytes with no
+  per-type decode and no payload allocation. Exact over the whole file:
+  the 200 000-frame cap and its silent truncation are gone.
+  First/last timestamps and every `GLOBAL_MARKER` fall out of the same
+  walk, so 58.B's dialog metadata, markers gridview and time-range
+  selection can consume it without a second pass.
+- The notes pre-pass is deleted. `BlfCanFrameSource::on_marker` hands
+  markers to a sink as the pump walks past them, so the import is one
+  walk of the file. `read_notes_from_blf` and its whole-file second
+  decode are gone; the round-trip tests now read a capture back the way
+  the import does.
+- `open_log` is `async`, so nothing whole-file runs on the main thread.
+- ADR 0046 records the one-ingest-pathway rule, the rejected
+  import-specific batched append, and the single sanctioned extra walk
+  (the pre-census).
+
+**Profiling — the measuring experiment**
+
+Harness: `bench_blf_import` (`cargo test -p cannet-gui --release
+bench_blf_import -- --ignored --nocapture`), a synthesized BLF — 4
+channels, 512 ids, 8-byte xorshift payloads so it deflates like a real
+recording, `CANNET_BENCH_FRAMES` to set the size. Every phase walks the
+same file, so the numbers subtract. Run-to-run spread is about ±10 % on
+the disk-backed phases.
+
+Release build, 6.5 M frames (99 MiB on disk, ~365 MiB uncompressed):
+
+| phase | wall | µs/frame |
+| --- | --- | --- |
+| census (header-only, whole file) | 0.82 s | 0.13 |
+| markers\* (the removed second decode) | 1.24 s | 0.19 |
+| decode (`next_frame` only) | 1.72 s | 0.26 |
+| convert (+ `RawTraceFrame::from`, routing, verifier probe) | 2.26 s | 0.35 |
+| full/mem (+ `TraceStore::append`, in-RAM raw store) | 5.44 s | 0.84 |
+| mem/nobus (full/mem with frames unassigned) | 3.94 s | 0.61 |
+| full (+ disk-spill raw store) | 9.60 s | 1.48 |
+| full+obs (+ flusher + 10 Hz status/tail readout) | 9.03 s | 1.39 |
+
+Attribution of the ~1.4-1.5 µs/frame shared path: BLF decode 0.26 (18 %),
+conversion + routing + verifier probe 0.09 (6 %), the trace store's
+derived state 0.49 (34 %), the disk-spill segment write 0.64 (43 %). The
+observers are inside run-to-run noise. Carrying a logical bus id costs
+0.22-0.23 µs/frame (~15 %) — the routing clone, the `FrameKey` clone and
+hash, the retention clone, and the disk store's bus intern.
+
+Import wall clock at that scale: **before** the capped census (~0.05 s
+of decode for its 200 k-frame slice) + the marker pass 1.24 s + the pump
+9.03 s = **10.3 s, with an inexact channel census**; **after** the exact
+census 0.82 s + the pump 9.03 s = **9.9 s**. 720 k frames/s through the
+pump — 13× the 54 k frames/s the workload reported.
+
+**The finding that reframes the item.** The 18.5 µs/frame budget is not
+reproducible in an optimized build. The same harness on the same file
+in a **debug** build, 400 k frames:
+
+| census | markers\* | decode | convert | full/mem | full | full+obs |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2.69 | 3.17 | 3.70 | 3.85 | 6.72 | 11.18 | 11.36 |
+
+(µs/frame). The old three-pass shape in debug is markers 3.17 + pump
+11.36 ≈ 14.6 µs/frame → 68 k frames/s, against the 18.5 µs/frame /
+54 k frames/s the workload showed — the same regime. In release the same
+three-pass shape is ~2.0 µs/frame → ~490 k frames/s. **The reported
+121 s import is a dev-build number**; the equivalent release import of
+that capture is ~10 s. The per-frame suspects the code read named
+(allocations, string hashes) are real but total ~0.22 µs/frame in
+release — they are not what made the import take two minutes.
+
+Hypothesis → experiment → data → conclusion, written out:
+
+- *Hypothesis.* The 18.5 µs/frame is dominated by the per-frame
+  allocations, string hashes, store mutex and flusher the code read
+  named.
+- *Experiment.* Split the pipeline into phases over one synthetic
+  capture and time each; repeat in debug and release; run the pump with
+  and without the flusher and the 10 Hz readout; run it against the
+  in-RAM and the disk raw store; run it with and without bus ids.
+- *Data.* The tables above.
+- *Conclusion.* Refuted as stated. Build profile accounts for ~7× of the
+  budget. Within release, half the remainder is the disk-spill segment
+  write and a third is the store's derived state; the observers are
+  inside noise, so the flusher is not implicated. The two whole-file
+  extra passes were real duplicate work and are gone.
+
+**Cross-check against a real capture** (read locally, read-only; nothing
+derived from it is in the repo): a 6 533 199-frame BLF. The header-only
+census walks it in 1.00 s against 1.61 s for the decoding walk, and the
+two agree exactly on frame count and channel set. The old scan looked at
+200 000 of those 6 533 199 frames — 3 % of the file — to decide the
+mapping dialog's contents. The ~1 s census floor the owner accepted is
+confirmed at 1.00 s.
+
+**A cut attempted and reverted.** The retention clone in
+`TraceStore::append` was restructured to fill the per-key overlay from a
+borrow (`clone_from`) and hand the frame to the raw store by move. It
+measured inside run-to-run noise, and the reason is that
+`#[derive(Clone)]` does **not** generate a field-wise `clone_from` — the
+default `*self = source.clone()` still allocates, so the reorder removed
+nothing. Reverted rather than kept as churn. Making it a real cut needs
+manual `clone_from` impls on `RawTraceFrame` and `CanFramePayload`, and
+the win it would buy (~2 allocations + 2 frees per frame) is below this
+harness's noise floor — it needs a dedicated append microbenchmark to
+measure, not the whole-file one.
+
+## Blockers / side effects
+
+- **The disk-spill segment write is ~43 % of the per-frame ingest
+  budget** (0.64 µs/frame of 1.48 at 6.5 M frames, release) — the single
+  largest item, and larger than the whole BLF decode. It is owned by
+  ADR 0002's store (`cannet-spill`: payload placement, meta encode,
+  by-id posting, ring push/pop), so cutting it is a raw-store redesign
+  rather than an ingest change, and it was out of this phase's scope.
+  Recorded with numbers so the decision to open it is made on data.
+- **`RawTraceFrame::bus_id: Option<String>` costs 0.22-0.23 µs/frame
+  (~15 %)**, measured directly (full/mem vs mem/nobus). An `Arc<str>`,
+  or interning the bus in the trace store the way `DiskRawStore` already
+  interns it, would remove the per-frame allocations. There are ~297
+  `bus_id` references across `cannet-spill`, `cannet-gui` and the
+  serialized derived state, so it is its own slice, not a drive-by.
+- **Notes now appear at the end of an import rather than before it
+  starts.** Inherent to the one-pass ruling: a file's annotations are
+  only fully known when its last object has been read. Nothing depends
+  on the old ordering (the frontend reconciles on `notes-changed`), but
+  it is a visible behaviour change on a long import.
+- **README's `cannet-blf/` module blurb still says "Wraps `blf-asc`"**,
+  stale since ADR 0009 retired that wrapper and the crate went native.
+  Left alone — unrelated to this change, and fixing it inline would be a
+  drive-by.
+- **The ADR-0031 perf gate was not run** in this phase, per the phase
+  brief; the orchestrator runs it after.
