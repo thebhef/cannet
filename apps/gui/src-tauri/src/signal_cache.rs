@@ -3044,10 +3044,13 @@ mod tests {
         let persist_at = std::time::Instant::now();
         assert!(cache.persist(&validity), "the manifest is written");
         let persist_secs = persist_at.elapsed().as_secs_f64();
-        // The shutdown flush again, over the pages the one above just wrote
-        // back. This is the number a real exit pays: the pyramid was built
-        // long before the user quit, so its pages are already clean. The
-        // first figure is the worst case (build, then immediately quit).
+        // The exit-path manifest write again, straight after the one
+        // above. Both figures are what a quit costs now that the level
+        // files' writeback is the OS's job (ADR 0047): the manifest, and
+        // nothing else. Timed twice because it used to be the two very
+        // different numbers a synchronous flush of the level pages gave —
+        // "built moments ago, every page dirty" against "built long
+        // before the quit".
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         let again_at = std::time::Instant::now();
         assert!(cache.persist(&validity));
@@ -3069,7 +3072,7 @@ mod tests {
         assert_eq!(back, pts, "the same windows, point for point");
         println!(
             "[bench] first use after restore: restore {:.3} s + serve {:.3} s = {:.3} s \
-             ({:.1}x the rebuild's speed); sync persist {:.3} s then {:.3} s; \
+             ({:.1}x the rebuild's speed); exit persist {:.3} s then {:.3} s; \
              {back} points served",
             restore_secs,
             served_secs,
