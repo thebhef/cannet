@@ -979,3 +979,45 @@ README's splash paragraph no longer promises "up with its data",
 `useSplashVisible`'s contract says what actually holds the splash, and
 `signal_cache`'s module docs state the chunked scan's residency and
 lock-hold bounds.
+
+## Exit criteria walk (2026-08-08)
+
+1. **`areas` edit re-renders only the affected logical area, pinned by
+   render-count tests; both memo guards green** — **MET** (57.B).
+   Measured on a stopped 3-area panel: collapse 6→1 renders, hide 3→1,
+   primary promotion 3→1, post-persist 3→0. Render-count regression
+   tests replace the probe methodology; both standing guards
+   re-verified, extended not weakened.
+2. **Order-only `signals` changes do not refetch; membership changes
+   still do (tested)** — **MET** (57.B). Membership key drives the
+   decimation-cache descriptor and the built-instance compare; a
+   reorder repaints from cache through the deliberate uPlot rebuild
+   (pinned as such), a membership change re-anchors and fetches; both
+   directions tested. Two positional order-dependencies found and fixed
+   en route (`hostExtentsRef`, `useValueTables`).
+3. **Restore work: status-log conclusion with profile data, measured
+   improvement at the 4M-frame scale** — **MET** (57.C + 57.E).
+   Attribution: 99% of the restore was Windows filter-stack first-touch
+   open latency (14.3 ms/file once, ~0.1 ms after); 16-way parallel
+   reopen: 10.29 s → 0.88 s measured (201k/761-file),
+   ~20.7 s → ~1.7 s projected at 4M. 4M-scale before/after:
+   launch→interactive 7.13 s → 3.23 s (restore-attributable gate
+   1268 ms → 7–27 ms); first-use rebuild +389 MB → +85 MB working set
+   at unchanged time. Mux-blank-over-restored-history bug found and
+   fixed with a regression test.
+4. **An unconnected perf capture cannot produce a passing-shaped
+   report** — **MET** (57.A + 57.D). Loud `!ready` logging, bounded
+   3-attempt connect retry (capture runs only), connectedness asserted
+   before the window, no report on failure, and exit code verified
+   non-zero in a real failed run after 57.D fixed the dropped
+   `AppHandle::exit` code (`run_return`). The readiness flake itself is
+   root-caused (status event lost in the snapshot→listen gap, not AV)
+   and fixed; 6/6 clean runs including first-after-fresh-build, plus
+   both final gate runs.
+5. **ADR-0031 gate green (multi-run) after the render-path work and at
+   completion; docs updated where behavior changed** — **MET**.
+   Post-57.B: 2 runs all-31 green (`2026-08-08-20442ec-post-57b-run{1,2}`).
+   Final at `247995d`: 2 runs all-31 green
+   (`2026-08-08-247995d-task57-final-run{1,2}`), 173 ids, rx≈tx≈1606.
+   README / ADR 0031 / ADR 0002 DS-7 updated in the same commits as the
+   behavior they describe. Baseline untouched.
