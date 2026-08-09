@@ -261,6 +261,8 @@ import { SignalGeneratorContext } from "./signalGeneratorContext";
 import { stableSignalColor, wheelColor } from "./palette";
 import { signalKey } from "./plotData";
 import { freshTrace } from "./trace";
+import { makeLiveRegistry } from "./registryTestKit";
+import type { ProjectElement } from "./types";
 import { diagCounts } from "./diag";
 import { FIRST_SAMPLE_INDICATOR_MS } from "./useFirstSampleWait";
 import { hydrateSettings, updateSettings } from "./hostSettings";
@@ -5147,5 +5149,61 @@ describe("PlotPanel signal set: membership vs order", () => {
     // The dragged area renders for the reorder and for dropping its own
     // drag-over state; the point is that the other area renders at all.
     expect(counter("render.PlotArea") - before).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("PlotPanel rehydration", () => {
+  /// The panel over a registry that really applies patches, so a write
+  /// from outside the panel reaches it the way the app's would.
+  function renderLive(config: Record<string, unknown>) {
+    const { Provider, control } = makeLiveRegistry([
+      { kind: "plot", id: "p1", sources: ["*"], config } as unknown as ProjectElement,
+    ]);
+    const api = { updateParameters: vi.fn() };
+    const props = { params: { elementId: "p1" }, api } as unknown as Parameters<
+      typeof PlotPanel
+    >[0];
+    render(
+      <TraceDataProvider value={traceData}>
+        <ProjectContext.Provider value={projectCtx}>
+          <SignalCatalogProvider>
+            <Provider>
+              <PlotPanel {...props} />
+            </Provider>
+          </SignalCatalogProvider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+    return { control, api };
+  }
+
+  const oneArea = [{ id: "a1", signals: [] }];
+  const twoAreas = [
+    { id: "a1", signals: [] },
+    { id: "a2", signals: [] },
+  ];
+
+  it("repaints from an externally rewritten config", () => {
+    const { control } = renderLive({ areas: oneArea, followLive: true, measEnabled: false });
+    expect(document.querySelectorAll(".plot-area").length).toBe(1);
+    expect(screen.getByRole("checkbox", { name: /follow live/i })).toBeChecked();
+    act(() => {
+      control.update("p1", {
+        config: { areas: twoAreas, followLive: false, measEnabled: true },
+      } as never);
+    });
+    expect(document.querySelectorAll(".plot-area").length).toBe(2);
+    expect(screen.getByRole("checkbox", { name: /follow live/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /measurements/i })).toBeChecked();
+  });
+
+  it("keeps the panel's own edit — a persist is not a resync trigger", () => {
+    const { control } = renderLive({ areas: oneArea });
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    });
+    expect(document.querySelectorAll(".plot-area").length).toBe(2);
+    const cfg = (control.entries()[0].element as { config?: { areas?: unknown[] } }).config;
+    expect(cfg?.areas?.length).toBe(2);
   });
 });

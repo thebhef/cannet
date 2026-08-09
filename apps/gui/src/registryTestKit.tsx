@@ -50,7 +50,10 @@ export function makeLiveRegistry(elements: ProjectElement[]) {
         get: (id: string) => entries.find((e) => e.element.id === id),
         create: () => "",
         ensure: () => {},
-        updateTrace: () => {},
+        updateTrace: (id: string, updater) =>
+          setEntries((prev) =>
+            prev.map((e) => (e.element.id === id ? { ...e, trace: updater(e.trace) } : e)),
+          ),
         update,
         remove: () => {},
       }),
