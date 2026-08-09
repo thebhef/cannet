@@ -28,6 +28,7 @@ import {
   visibleColumns,
 } from "./traceColumns";
 import { useDismissableMenu } from "./useDismissableMenu";
+import { useUndoGesture } from "./undoGesture";
 
 /// DnD payload type for dragging a column header to reorder it. Carries
 /// the dragged column's key as plain text.
@@ -141,12 +142,16 @@ export function GridviewHeader<K extends string>({
   const [resize, setResize] = useState<{ key: K; startX: number; startWidth: number } | null>(
     null,
   );
+  // The drag persists a width on every pointer move; the gesture makes
+  // the whole of it one undo step.
+  const undoGesture = useUndoGesture();
   const onResizeDown = (key: K, e: ReactPointerEvent<HTMLSpanElement>) => {
     e.preventDefault();
     e.stopPropagation();
     const startWidth = columns.find((c) => c.key === key)?.width ?? columnDefFor(defs, key).defaultWidth;
     setResize({ key, startX: e.clientX, startWidth });
     e.currentTarget.setPointerCapture(e.pointerId);
+    undoGesture.begin();
   };
   const onResizeMove = (e: ReactPointerEvent<HTMLSpanElement>) => {
     if (resize) onColumnResize(resize.key, resize.startWidth + (e.clientX - resize.startX));
@@ -155,6 +160,7 @@ export function GridviewHeader<K extends string>({
     if (resize) {
       e.currentTarget.releasePointerCapture(e.pointerId);
       setResize(null);
+      undoGesture.end();
     }
   };
 

@@ -68,6 +68,7 @@ import { formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
+import { useUndoGesture } from "./undoGesture";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { busLookup } from "./traceColumns";
 import { isEditableTarget } from "./keybindings";
@@ -439,6 +440,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const { buses } = useProjectContext();
   const panel = useElementPanel<PlotPanelParams>(props, "plot");
   const { elementId, registry, element, savedConfig, persist } = panel;
+  const undoGesture = useUndoGesture();
   const { currentSources, availableFilters, handleSourcesChange } = useElementSources(
     registry,
     elementId,
@@ -2351,6 +2353,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
                       [idAbove]: resolvedAxisWeights[idAbove],
                       [idBelow]: resolvedAxisWeights[idBelow],
                     };
+                    // One gesture: the drag persists on every mouse
+                    // move and still costs a single undo.
+                    undoGesture.begin();
                     const onMove = (ev: MouseEvent) => {
                       setAxisWeights(
                         applySplitterDelta(
@@ -2366,6 +2371,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                     const onUp = () => {
                       window.removeEventListener("mousemove", onMove);
                       window.removeEventListener("mouseup", onUp);
+                      undoGesture.end();
                     };
                     window.addEventListener("mousemove", onMove);
                     window.addEventListener("mouseup", onUp);

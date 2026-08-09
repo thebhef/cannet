@@ -492,6 +492,134 @@ describe("element undo", () => {
     });
   }, 30_000);
 
+  it("a drag of the side-panel splitter is one step, not one per mouse move", async () => {
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Add plot panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
+    });
+    const sidePanelWidth = () =>
+      parseFloat(
+        document.querySelector<HTMLElement>(".plot-panel .plot-area-signals")!.style.flexBasis,
+      );
+    const before = sidePanelWidth();
+
+    // Three moves left of the resizer: the side panel is right of the
+    // canvas, so each one widens it.
+    await act(async () => {
+      fireEvent.mouseDown(document.querySelector(".plot-panel .plot-area-resizer")!, {
+        clientX: 500,
+      });
+    });
+    for (const clientX of [480, 460, 440]) {
+      await act(async () => {
+        window.dispatchEvent(new MouseEvent("mousemove", { clientX }));
+      });
+    }
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("mouseup"));
+    });
+    expect(sidePanelWidth()).toBe(before + 60);
+
+    // One chord takes the whole drag back — not its last mouse move.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      const width = sidePanelWidth();
+      if (width !== before) throw new Error(`undo left the side panel at ${width}`);
+    });
+  }, 30_000);
+
+  it("a drag of an axis splitter is one step", async () => {
+    // jsdom measures everything as zero, and the splitter shifts weight
+    // by measured pixels — give the two areas a height, leave the rest
+    // of the document as jsdom already reports it.
+    const zero = { height: 0, width: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON() {} } as DOMRect;
+    const rect = vi
+      .spyOn(Element.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: Element) {
+        return this.classList?.contains("plot-area") ? { ...zero, height: 200 } : zero;
+      });
+    try {
+      await mountApp();
+      await act(async () => {
+        fireEvent.click(findButton("Add plot panel"));
+      });
+      await waitFor(() => {
+        if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
+      });
+      await act(async () => {
+        fireEvent.click(findButton("add plot area"));
+      });
+      await waitFor(() => {
+        if (!document.querySelector(".plot-area-splitter")) throw new Error("no splitter yet");
+      });
+      const weights = () =>
+        Array.from(document.querySelectorAll<HTMLElement>(".plot-panel .plot-area")).map((a) =>
+          parseFloat(a.style.flexGrow),
+        );
+      expect(weights()).toEqual([1, 1]);
+
+      await act(async () => {
+        fireEvent.mouseDown(document.querySelector(".plot-area-splitter")!, { clientY: 0 });
+      });
+      for (const clientY of [25, 50]) {
+        await act(async () => {
+          window.dispatchEvent(new MouseEvent("mousemove", { clientY }));
+        });
+      }
+      await act(async () => {
+        window.dispatchEvent(new MouseEvent("mouseup"));
+      });
+      expect(weights()[0]).toBeCloseTo(1.25);
+
+      // One chord, and the pair is even again — the intermediate mouse
+      // moves are not steps of their own.
+      await act(async () => {
+        key({ key: "z", ctrlKey: true });
+      });
+      await waitFor(() => {
+        const w = weights();
+        if (w[0] !== 1 || w[1] !== 1) throw new Error(`undo left weights ${JSON.stringify(w)}`);
+      });
+    } finally {
+      rect.mockRestore();
+    }
+  }, 30_000);
+
+  it("a drag of a trace column edge is one step", async () => {
+    await mountApp();
+    const template = () =>
+      document.querySelector<HTMLElement>(".trace-panel .trace-header")!.style.gridTemplateColumns;
+    const before = template();
+    const handle = document.querySelector<HTMLElement>(".trace-panel .col-resize-handle")!;
+    handle.setPointerCapture = () => {};
+    handle.releasePointerCapture = () => {};
+
+    await act(async () => {
+      fireEvent.pointerDown(handle, { clientX: 100, pointerId: 1 });
+    });
+    for (const clientX of [110, 120, 130]) {
+      await act(async () => {
+        fireEvent.pointerMove(handle, { clientX, pointerId: 1 });
+      });
+    }
+    await act(async () => {
+      fireEvent.pointerUp(handle, { clientX: 130, pointerId: 1 });
+    });
+    expect(template()).not.toBe(before);
+
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (template() !== before) throw new Error(`undo left columns at ${template()}`);
+    });
+  }, 30_000);
+
   it("inserting a filter upstream is one step — the filter goes with it", async () => {
     await mountApp();
     await act(async () => {
