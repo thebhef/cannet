@@ -3443,6 +3443,28 @@ describe("PlotPanel solo", () => {
     expect(visibleNames()).toEqual(["Cell1"]);
   });
 
+  it("steps after a click on a part of the plot that takes no focus of its own", () => {
+    // The canvas column, a signal row, the area chrome — none of them
+    // are focusable, so clicking one used to drop focus out of the
+    // panel's subtree entirely and the keystroke never reached the
+    // panel's handler. Stepping has to work from anywhere in the panel,
+    // not only while one of the toolbar's own controls holds focus.
+    const registry = stepRegistry("el-solo-keys-anywhere");
+    renderPanel({ params: { elementId: "el-solo-keys-anywhere" }, registry });
+    typeSolo("Cell");
+
+    fireEvent.mouseDown(document.querySelector(".plot-area-canvas")!);
+    expect(document.activeElement).toBe(document.querySelector(".plot-panel"));
+    fireEvent.keyDown(document.activeElement!, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1"]);
+
+    // A press headed for something that takes focus of its own is left
+    // alone — the panel only claims what would otherwise fall out of it.
+    soloBox().focus();
+    fireEvent.mouseDown(soloBox());
+    expect(document.activeElement).toBe(soloBox());
+  });
+
   it("ignores PgDn / PgUp while no solo pattern is matching", () => {
     const registry = stepRegistry("el-solo-keys-off");
     renderPanel({ params: { elementId: "el-solo-keys-off" }, registry });
