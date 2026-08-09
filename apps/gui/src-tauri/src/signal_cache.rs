@@ -39,6 +39,14 @@
 //! the next serve then rebuilds the pyramid on disk by re-decoding the raw
 //! frames, which remain the source of truth.
 //!
+//! A batch of queries ([`SignalCacheStore::slice_many`],
+//! [`SignalCacheStore::min_max_many`] — what a plot fetch sends) is
+//! caught up **one decode pass per message**: the queries sharing a
+//! `(message_id, extended)` fetch that message's frames once between
+//! them and decode each frame once, then take their own signal's value
+//! out of the result. Bus scoping, decode provenance and the decode
+//! cursor stay per series through it ([`catch_up_group_chunked`]).
+//!
 //! Concurrency and residency: one global mutex around the (small)
 //! `HashMap`. The catch-up scans the unread frame range in
 //! [`CATCH_UP_CHUNK_FRAMES`] chunks, asking the trace store for one
@@ -137,44 +145,22 @@ impl SignalCache {
         (self.lo <= self.hi).then_some((self.lo, self.hi))
     }
 
-    /// Decode any matching frames in `[next_index, store_len)` into the
-    /// cache, advancing `next_index` to the tip and widening the
-    /// `[lo, hi]` extent. `O(new matches since last call)` — the whole
-    /// point of the cache. Shared by [`SignalCacheStore::slice`] and
-    /// [`SignalCacheStore::min_max`] so both observe the same samples.
-    fn catch_up(
-        &mut self,
-        bus_id: Option<&str>,
-        message_id: u32,
-        extended: bool,
-        signal_name: &str,
-        store: &TraceStore,
-        dbs: &[&Database],
-    ) {
-        let store_len = store.len();
-        self.catch_up_chunked(
-            bus_id,
-            message_id,
-            extended,
-            signal_name,
-            store_len,
-            dbs,
-            |from, to| store.matching_frames_indexed(message_id, extended, from, to),
-        );
+    /// Append one decoded sample, widening the all-time `[lo, hi]`
+    /// extent with it.
+    fn push_sample(&mut self, t_seconds: f64, value: f64) {
+        if value < self.lo {
+            self.lo = value;
+        }
+        if value > self.hi {
+            self.hi = value;
+        }
+        self.levels[0].push(t_seconds, value);
     }
 
-    /// [`Self::catch_up`]'s body against a `fetch` that materializes one
-    /// chunk of the scan — the matching frames of `[from, to)`, paired with
-    /// their store index.
-    ///
-    /// The scan walks `[next_index, store_len)` in [`CATCH_UP_CHUNK_FRAMES`]
-    /// steps rather than asking for the whole span at once, because the
-    /// whole span is `O(capture)`: on the first use of a signal over a
-    /// restored capture (ADR 0002 DS-7) the unscanned range is the entire
-    /// history, and materializing its matches up front is an unbounded
-    /// allocation spike (and an unbounded hold on the trace-store lock,
-    /// which `fetch` takes and releases per chunk) before a single sample
-    /// decodes. Decoding runs between fetches, off that lock.
+    /// Single-target form of [`catch_up_group_chunked`] — the production
+    /// path always catches a whole message group up at once, so this
+    /// exists to drive the same scan with one member.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn catch_up_chunked(
         &mut self,
@@ -186,43 +172,12 @@ impl SignalCache {
         dbs: &[&Database],
         fetch: impl Fn(usize, usize) -> Vec<(usize, RawTraceFrame)>,
     ) {
-        if self.next_index >= store_len {
-            return;
-        }
-        while self.next_index < store_len {
-            let to = self
-                .next_index
-                .saturating_add(CATCH_UP_CHUNK_FRAMES)
-                .min(store_len);
-            for (_idx, frame) in fetch(self.next_index, to) {
-                // Bus filter: when the query is scoped to a bus, drop
-                // frames whose `bus_id` doesn't match. `None` on the query
-                // is the legacy "any bus" path that takes every frame.
-                if let Some(want) = bus_id {
-                    if frame.bus_id.as_deref() != Some(want) {
-                        continue;
-                    }
-                }
-                // Try each loaded DBC in priority order, first decode wins
-                // (matches `sample_signals`' existing semantics).
-                for db in dbs {
-                    if let Some(point) =
-                        signal_sampler::sample_one(&frame, db, message_id, extended, signal_name)
-                    {
-                        if point.value < self.lo {
-                            self.lo = point.value;
-                        }
-                        if point.value > self.hi {
-                            self.hi = point.value;
-                        }
-                        self.levels[0].push(point.t_seconds, point.value);
-                        break;
-                    }
-                }
-            }
-            self.next_index = to;
-        }
-        self.fold();
+        let mut targets = [GroupTarget {
+            bus_id,
+            signal_name,
+            cache: self,
+        }];
+        catch_up_group_chunked(message_id, extended, &mut targets, store_len, dbs, fetch);
     }
 
     /// Propagate newly-appended `levels[0]` points up the pyramid: for
@@ -407,6 +362,115 @@ impl SignalCache {
             self.folded[n] = self.folded[n].max(floor);
         }
     }
+}
+
+/// One member of a shared catch-up: the facts that stay **per series**
+/// when several series of one message are caught up in a single pass —
+/// the bus its query is scoped to, the signal it decodes, and the cache
+/// carrying its own decode cursor and pyramid.
+struct GroupTarget<'a> {
+    bus_id: Option<&'a str>,
+    signal_name: &'a str,
+    cache: &'a mut SignalCache,
+}
+
+/// Catch every series of one `(message_id, extended)` group up to
+/// `store_len` in **one** pass over the message's frames: one fetch of
+/// each chunk and one decode of each frame, answering all of `targets`.
+/// Returns whether any cursor moved. `O(new matches since the furthest
+/// behind target's last call)` in fetch and decode, rather than that
+/// many times over — the reason a message carrying sixteen plotted
+/// signals no longer costs sixteen scans of the capture.
+///
+/// What stays per target, and how:
+///
+/// - **Decode provenance.** [`signal_sampler::sample_shared`] resolves
+///   each signal name against the first loaded database that yields
+///   *that name* (ADR 0033), so two signals of one message may come
+///   from two different databases exactly as they did when each was
+///   decoded on its own.
+/// - **Bus scoping.** The filter is the target's, not the group's: two
+///   series on one message id can be scoped to different buses (or to
+///   the legacy "any bus"), so the eligibility test runs per target.
+/// - **Cursors.** The group's scan starts at the *minimum* cursor, so a
+///   series joining a message that is already plotted still reads the
+///   whole history; the frame index each fetch returns gates the rest,
+///   so a target already past a frame never appends it twice.
+///
+/// `fetch` materializes one chunk of the scan — the matching frames of
+/// `[from, to)` paired with their store index. The scan walks in
+/// [`CATCH_UP_CHUNK_FRAMES`] steps rather than asking for the whole
+/// span at once, because the whole span is `O(capture)`: on the first
+/// use of a signal over a restored capture (ADR 0002 DS-7) the
+/// unscanned range is the entire history, and materializing its matches
+/// up front is an unbounded allocation spike (and an unbounded hold on
+/// the trace-store lock, which `fetch` takes and releases per chunk)
+/// before a single sample decodes. Decoding runs between fetches, off
+/// that lock.
+fn catch_up_group_chunked(
+    message_id: u32,
+    extended: bool,
+    targets: &mut [GroupTarget<'_>],
+    store_len: usize,
+    dbs: &[&Database],
+    fetch: impl Fn(usize, usize) -> Vec<(usize, RawTraceFrame)>,
+) -> bool {
+    let Some(start) = targets.iter().map(|t| t.cache.next_index).min() else {
+        return false;
+    };
+    if start >= store_len {
+        return false;
+    }
+    // Scratch reused across frames so the per-frame loop allocates
+    // nothing: which targets want a value from the frame in hand, the
+    // names to decode for them, and the values that came back.
+    let mut pending: Vec<usize> = Vec::with_capacity(targets.len());
+    let mut wanted: Vec<&str> = Vec::with_capacity(targets.len());
+    let mut values: Vec<Option<f64>> = Vec::with_capacity(targets.len());
+    let mut cursor = start;
+    while cursor < store_len {
+        let to = cursor.saturating_add(CATCH_UP_CHUNK_FRAMES).min(store_len);
+        for (idx, frame) in fetch(cursor, to) {
+            pending.clear();
+            wanted.clear();
+            for (i, t) in targets.iter().enumerate() {
+                // A target already past this frame must not re-append it.
+                if idx < t.cache.next_index {
+                    continue;
+                }
+                // Bus filter: when the query is scoped to a bus, drop
+                // frames whose `bus_id` doesn't match. `None` on the query
+                // is the legacy "any bus" path that takes every frame.
+                if let Some(want) = t.bus_id {
+                    if frame.bus_id.as_deref() != Some(want) {
+                        continue;
+                    }
+                }
+                pending.push(i);
+                wanted.push(t.signal_name);
+            }
+            if pending.is_empty() {
+                continue;
+            }
+            signal_sampler::sample_shared(&frame, dbs, message_id, extended, &wanted, &mut values);
+            #[allow(clippy::cast_precision_loss)]
+            let t_seconds = (frame.timestamp_ns as f64) / 1e9;
+            for (&i, value) in pending.iter().zip(&values) {
+                if let Some(value) = *value {
+                    targets[i].cache.push_sample(t_seconds, value);
+                }
+            }
+        }
+        // Never *lower* a cursor that started ahead of the group's.
+        for t in targets.iter_mut() {
+            t.cache.next_index = t.cache.next_index.max(to);
+        }
+        cursor = to;
+    }
+    for t in targets.iter_mut() {
+        t.cache.fold();
+    }
+    true
 }
 
 /// Smallest live slot `k` in `[first_slot, level.len())` whose `t_seconds`
@@ -682,6 +746,78 @@ struct PyramidManifest {
     signals: Vec<PersistedSignal>,
 }
 
+/// One signal a batch of queries names: the cache key's four fields,
+/// borrowed. A plot panel asks about many at once, and the ones sharing
+/// a `(message_id, extended)` are caught up in a single decode pass.
+pub struct CacheQuery<'a> {
+    /// Bus the series is scoped to; `None` is the legacy "any bus" path.
+    pub bus_id: Option<&'a str>,
+    pub message_id: u32,
+    pub extended: bool,
+    pub signal_name: &'a str,
+}
+
+impl CacheQuery<'_> {
+    fn key(&self) -> SignalKey {
+        (
+            self.bus_id.map(str::to_owned),
+            self.message_id,
+            self.extended,
+            self.signal_name.to_string(),
+        )
+    }
+}
+
+/// Create a cache for every query that doesn't have one yet, and return
+/// the queries' keys in request order (duplicates included — the result
+/// of a batch is index-parallel with it).
+fn ensure_caches(caches: &mut Caches, queries: &[CacheQuery<'_>]) -> Vec<SignalKey> {
+    let Caches { root, by_key, .. } = caches;
+    queries
+        .iter()
+        .map(|q| {
+            let key = q.key();
+            by_key
+                .entry(key.clone())
+                .or_insert_with(|| SignalCache::new(root, &key_prefix(&key)));
+            key
+        })
+        .collect()
+}
+
+/// Catch every cache named by `keys` up to the store's tip, one decode
+/// pass per `(message_id, extended)` group ([`catch_up_group_chunked`]).
+/// The tip is read once for the whole batch, so every series in it
+/// observes the same capture length.
+fn catch_up_batch(caches: &mut Caches, keys: &[SignalKey], store: &TraceStore, dbs: &[&Database]) {
+    let store_len = store.len();
+    let wanted: std::collections::HashSet<&SignalKey> = keys.iter().collect();
+    let Caches { by_key, dirty, .. } = caches;
+    let mut groups: HashMap<(u32, bool), Vec<GroupTarget<'_>>> = HashMap::new();
+    for (key, cache) in by_key.iter_mut() {
+        if !wanted.contains(key) {
+            continue;
+        }
+        groups.entry((key.1, key.2)).or_default().push(GroupTarget {
+            bus_id: key.0.as_deref(),
+            signal_name: key.3.as_str(),
+            cache,
+        });
+    }
+    let mut moved = false;
+    for ((message_id, extended), mut targets) in groups {
+        moved |= catch_up_group_chunked(
+            message_id,
+            extended,
+            &mut targets,
+            store_len,
+            dbs,
+            |from, to| store.matching_frames_indexed(message_id, extended, from, to),
+        );
+    }
+    *dirty |= moved;
+}
+
 /// Process-wide collection of per-signal caches. The pyramid levels spill
 /// to mmap'd files under `root` (a `signals/` subdir of the disk-spill
 /// scratch), so the resident set stays bounded (ADR 0002 DS-5/DS-7).
@@ -932,28 +1068,54 @@ impl SignalCacheStore {
         store: &TraceStore,
         dbs: &[&Database],
     ) -> Vec<SamplePoint> {
-        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        let key: SignalKey = (
-            bus_id.map(str::to_owned),
+        let query = CacheQuery {
+            bus_id,
             message_id,
             extended,
-            signal_name.to_string(),
-        );
-        let base = key_prefix(&key);
-        let Caches {
-            root,
-            by_key,
-            dirty,
-            ..
-        } = &mut *caches;
-        let cache = by_key
-            .entry(key)
-            .or_insert_with(|| SignalCache::new(root, &base));
+            signal_name,
+        };
+        self.slice_many(
+            std::slice::from_ref(&query),
+            from_seconds,
+            to_seconds,
+            max_points,
+            store,
+            dbs,
+        )
+        .pop()
+        .unwrap_or_default()
+    }
 
-        let before = cache.next_index;
-        cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
-        *dirty |= cache.next_index != before;
-        cache.window(from_seconds, to_seconds, max_points)
+    /// [`Self::slice`] over a whole batch of signals, one window each,
+    /// returned index-parallel with `queries`.
+    ///
+    /// This is the form a plot fetch uses, and the reason it exists is
+    /// the catch-up rather than the serve: the queries sharing a
+    /// `(message_id, extended)` are caught up in **one** pass over that
+    /// message's frames, decoding each frame once for all of them
+    /// ([`catch_up_group_chunked`]). Sampling sixteen signals of one
+    /// message one at a time re-fetched and re-decoded the same frames
+    /// sixteen times, throwing away fifteen values each pass.
+    #[allow(clippy::too_many_arguments)]
+    pub fn slice_many(
+        &self,
+        queries: &[CacheQuery<'_>],
+        from_seconds: f64,
+        to_seconds: f64,
+        max_points: usize,
+        store: &TraceStore,
+        dbs: &[&Database],
+    ) -> Vec<Vec<SamplePoint>> {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let keys = ensure_caches(&mut caches, queries);
+        catch_up_batch(&mut caches, &keys, store, dbs);
+        keys.iter()
+            .map(|key| {
+                caches.by_key.get(key).map_or_else(Vec::new, |cache| {
+                    cache.window(from_seconds, to_seconds, max_points)
+                })
+            })
+            .collect()
     }
 
     /// The signal's all-time value extent `(lo, hi)` over every decoded
@@ -972,27 +1134,32 @@ impl SignalCacheStore {
         store: &TraceStore,
         dbs: &[&Database],
     ) -> Option<(f64, f64)> {
-        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        let key: SignalKey = (
-            bus_id.map(str::to_owned),
+        let query = CacheQuery {
+            bus_id,
             message_id,
             extended,
-            signal_name.to_string(),
-        );
-        let base = key_prefix(&key);
-        let Caches {
-            root,
-            by_key,
-            dirty,
-            ..
-        } = &mut *caches;
-        let cache = by_key
-            .entry(key)
-            .or_insert_with(|| SignalCache::new(root, &base));
-        let before = cache.next_index;
-        cache.catch_up(bus_id, message_id, extended, signal_name, store, dbs);
-        *dirty |= cache.next_index != before;
-        cache.extent()
+            signal_name,
+        };
+        self.min_max_many(std::slice::from_ref(&query), store, dbs)
+            .pop()
+            .flatten()
+    }
+
+    /// [`Self::min_max`] over a whole batch, index-parallel with
+    /// `queries` — and, like [`Self::slice_many`], one catch-up pass per
+    /// message rather than one per signal.
+    pub fn min_max_many(
+        &self,
+        queries: &[CacheQuery<'_>],
+        store: &TraceStore,
+        dbs: &[&Database],
+    ) -> Vec<Option<(f64, f64)>> {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let keys = ensure_caches(&mut caches, queries);
+        catch_up_batch(&mut caches, &keys, store, dbs);
+        keys.iter()
+            .map(|key| caches.by_key.get(key).and_then(SignalCache::extent))
+            .collect()
     }
 }
 
@@ -1749,6 +1916,380 @@ mod tests {
         );
         let after = std::fs::read_dir(dir.path()).unwrap().count();
         assert!(after < before, "pyramid disk reclaimed: {after} < {before}");
+    }
+
+    // ---- One decode pass per message ---------------------------------
+
+    /// Everything a built pyramid *is*: the decode cursor, the all-time
+    /// extent, the fold cursors, and every live slot of every level.
+    /// Two ways of building the same series must agree on all of it, so
+    /// this is what the equivalence check compares.
+    type PyramidDump = Vec<(SignalKey, usize, f64, f64, Vec<usize>, Vec<Vec<(f64, f64)>>)>;
+
+    fn dump_pyramids(store: &SignalCacheStore) -> PyramidDump {
+        let caches = store.caches.lock().unwrap();
+        let mut rows: PyramidDump = caches
+            .by_key
+            .iter()
+            .map(|(key, cache)| {
+                let levels = cache
+                    .levels
+                    .iter()
+                    .map(|l| (l.first_slot()..l.len()).map(|k| l.get(k)).collect())
+                    .collect();
+                (
+                    key.clone(),
+                    cache.next_index,
+                    cache.lo,
+                    cache.hi,
+                    cache.folded.clone(),
+                    levels,
+                )
+            })
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
+    }
+
+    /// A capture with everything a shared pass has to keep apart on one
+    /// message: two signals of message 256 that resolve to *different*
+    /// databases, a third series scoped to one bus, a multiplexed
+    /// message whose two signals see disjoint frames, an extended frame
+    /// of the same raw id as a standard one, and frames no database
+    /// decodes. Longer than one scan chunk, so the chunk boundary is in
+    /// the comparison too.
+    #[allow(clippy::cast_possible_truncation)]
+    fn mixed_capture() -> TraceStore {
+        let store = TraceStore::new();
+        let n = CATCH_UP_CHUNK_FRAMES + 500;
+        for i in 0..n {
+            let t = i as u64 * 1_000_000;
+            let frame = match i % 5 {
+                0 => {
+                    let mut f = ab_frame(t, (i % 977) as u16, 2000 + (i % 311) as u16);
+                    f.bus_id = Some(if i % 10 == 0 { "p" } else { "c" }.into());
+                    f
+                }
+                1 => mux_frame(t, (i % 2) as u8, (i % 641) as u16),
+                2 => RawTraceFrame {
+                    extended: true,
+                    ..val_frame(t, (i % 101) as u16)
+                },
+                3 => val_frame(t, (i % 53) as u16),
+                _ => dummy(t, 999, vec![0; 8]),
+            };
+            store.append(frame);
+        }
+        store
+    }
+
+    /// The queries `mixed_capture` is built for — several per message,
+    /// several buses, two message ids that differ only in `extended`.
+    fn mixed_queries<'a>() -> Vec<CacheQuery<'a>> {
+        vec![
+            CacheQuery {
+                bus_id: None,
+                message_id: 256,
+                extended: false,
+                signal_name: "A",
+            },
+            CacheQuery {
+                bus_id: None,
+                message_id: 256,
+                extended: false,
+                signal_name: "B",
+            },
+            CacheQuery {
+                bus_id: Some("p"),
+                message_id: 256,
+                extended: false,
+                signal_name: "A",
+            },
+            CacheQuery {
+                bus_id: Some("c"),
+                message_id: 256,
+                extended: false,
+                signal_name: "B",
+            },
+            CacheQuery {
+                bus_id: None,
+                message_id: 512,
+                extended: false,
+                signal_name: "M0",
+            },
+            CacheQuery {
+                bus_id: None,
+                message_id: 512,
+                extended: false,
+                signal_name: "M1",
+            },
+            CacheQuery {
+                bus_id: None,
+                message_id: 512,
+                extended: false,
+                signal_name: "Sel",
+            },
+            CacheQuery {
+                bus_id: None,
+                message_id: 256,
+                extended: true,
+                signal_name: "X",
+            },
+            CacheQuery {
+                bus_id: None,
+                message_id: 777,
+                extended: false,
+                signal_name: "Nothing",
+            },
+        ]
+    }
+
+    /// The four databases `mixed_capture` is decoded against, in load
+    /// order — the first two overlap on message 256 so provenance is
+    /// resolved per signal.
+    fn mixed_dbs() -> Vec<Database> {
+        let ext = Database::parse(&format!(
+            "{DBC_HEADER}\nBO_ 2147483904 ExtMsg: 8 Vector__XXX\n \
+             SG_ X : 0|16@1+ (100,0) [0|0] \"\" Vector__XXX\n"
+        ))
+        .unwrap();
+        vec![dbc_a_only(), dbc_a_and_b(), dbc_muxed(), ext]
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_shared_pass_builds_the_same_pyramids_as_a_per_signal_one() {
+        // The equivalence bar: catching a message's signals up together
+        // must produce exactly what catching each up on its own did —
+        // same samples, same cursors, same extents, same pyramid levels
+        // slot for slot. Everything else in this phase is an
+        // optimisation *of* this.
+        let store = mixed_capture();
+        let owned = mixed_dbs();
+        let dbs: Vec<&Database> = owned.iter().collect();
+        let queries = mixed_queries();
+
+        // Per signal: each `slice` is its own one-member group, which
+        // is what the catch-up did before the sharing.
+        let one_at_a_time = TempDir::new().unwrap();
+        let per_signal = SignalCacheStore::new(one_at_a_time.path());
+        let separate: Vec<Vec<SamplePoint>> = queries
+            .iter()
+            .map(|q| {
+                per_signal.slice(
+                    q.bus_id,
+                    q.message_id,
+                    q.extended,
+                    q.signal_name,
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &store,
+                    &dbs,
+                )
+            })
+            .collect();
+
+        // Shared: one pass per message for the whole batch.
+        let together = TempDir::new().unwrap();
+        let grouped = SignalCacheStore::new(together.path());
+        let shared = grouped.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, &dbs);
+
+        assert_eq!(shared, separate, "the served windows must be identical");
+        assert_eq!(
+            dump_pyramids(&grouped),
+            dump_pyramids(&per_signal),
+            "the pyramids must be identical",
+        );
+        // And the fixture must actually exercise the thing: several
+        // messages, several signals each, all non-empty but the one
+        // deliberately undecodable query.
+        assert!(shared[..8].iter().all(|s| !s.is_empty()));
+        assert!(shared[8].is_empty());
+        // Provenance really is split across databases here: `A` stayed
+        // on the first database's unit scale (the raws run below 977,
+        // so the ×10 database would have put values above it), and `B`
+        // — which only the second database defines — came through.
+        assert!(shared[0].iter().all(|p| p.value < 977.0));
+        assert_eq!(shared[1][0].value, 2000.0);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn the_extents_of_a_shared_pass_match_a_per_signal_one() {
+        // `min_max_many` shares the same catch-up, so the host-owned
+        // y-extent (ADR 0025) has to come out of it unchanged too.
+        let store = mixed_capture();
+        let owned = mixed_dbs();
+        let dbs: Vec<&Database> = owned.iter().collect();
+        let queries = mixed_queries();
+
+        let a = TempDir::new().unwrap();
+        let per_signal = SignalCacheStore::new(a.path());
+        let separate: Vec<Option<(f64, f64)>> = queries
+            .iter()
+            .map(|q| {
+                per_signal.min_max(
+                    q.bus_id,
+                    q.message_id,
+                    q.extended,
+                    q.signal_name,
+                    &store,
+                    &dbs,
+                )
+            })
+            .collect();
+        let b = TempDir::new().unwrap();
+        let grouped = SignalCacheStore::new(b.path());
+        assert_eq!(grouped.min_max_many(&queries, &store, &dbs), separate);
+        assert!(separate[0].is_some() && separate[8].is_none());
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn one_group_fetches_each_chunk_once_for_all_its_signals() {
+        // The work that disappears: N series of one message used to
+        // fetch (and decode) the same frames N times. Driven through
+        // the fetch seam, so the count is observable — three series,
+        // one walk.
+        let owned = [dbc_a_only(), dbc_a_and_b()];
+        let dbs: Vec<&Database> = owned.iter().collect();
+        let tmp = TempDir::new().unwrap();
+        let (mut a, mut a_on_p, mut b) = (
+            SignalCache::new(tmp.path(), "any.a"),
+            SignalCache::new(tmp.path(), "p.a"),
+            SignalCache::new(tmp.path(), "any.b"),
+        );
+        let mut targets = [
+            GroupTarget {
+                bus_id: None,
+                signal_name: "A",
+                cache: &mut a,
+            },
+            GroupTarget {
+                bus_id: Some("p"),
+                signal_name: "A",
+                cache: &mut a_on_p,
+            },
+            GroupTarget {
+                bus_id: None,
+                signal_name: "B",
+                cache: &mut b,
+            },
+        ];
+        let store_len = 2 * CATCH_UP_CHUNK_FRAMES + 7;
+        let fetches = std::cell::Cell::new(0usize);
+        let moved =
+            catch_up_group_chunked(256, false, &mut targets, store_len, &dbs, |from, to| {
+                fetches.set(fetches.get() + 1);
+                (from..to)
+                    .map(|i| {
+                        let mut f =
+                            ab_frame(i as u64 * 1_000_000, (i % 97) as u16, (i % 89) as u16);
+                        f.bus_id = Some(if i % 3 == 0 { "p" } else { "c" }.into());
+                        (i, f)
+                    })
+                    .collect()
+            });
+
+        assert!(moved);
+        assert_eq!(
+            fetches.get(),
+            store_len.div_ceil(CATCH_UP_CHUNK_FRAMES),
+            "one walk of the message, not one per signal",
+        );
+        // Each series still got exactly its own frames.
+        assert_eq!(a.levels[0].len(), store_len);
+        assert_eq!(b.levels[0].len(), store_len);
+        assert_eq!(a_on_p.levels[0].len(), store_len.div_ceil(3));
+        for cache in [&a, &a_on_p, &b] {
+            assert_eq!(cache.next_index, store_len);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp, clippy::cast_possible_truncation)]
+    fn a_group_scans_from_its_furthest_behind_cursor_without_re_reading() {
+        // Heterogeneous cursors: one series has been plotted since the
+        // capture started, another is added now. The shared scan starts
+        // at the minimum cursor — so the newcomer reads the whole
+        // history — while the frame index gates the incumbent, which
+        // must not append a frame it already has.
+        let store = TraceStore::new();
+        for i in 0..100u64 {
+            store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
+        }
+        let owned = [dbc_a_only(), dbc_a_and_b()];
+        let dbs: Vec<&Database> = owned.iter().collect();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let a = CacheQuery {
+            bus_id: None,
+            message_id: 256,
+            extended: false,
+            signal_name: "A",
+        };
+        let b = CacheQuery {
+            bus_id: None,
+            message_id: 256,
+            extended: false,
+            signal_name: "B",
+        };
+        // `A` alone first, then more capture, then both together.
+        assert_eq!(
+            cache.slice_many(
+                std::slice::from_ref(&a),
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &dbs
+            )[0]
+            .len(),
+            100
+        );
+        for i in 100..150u64 {
+            store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
+        }
+        let both = cache.slice_many(&[a, b], f64::MIN, f64::MAX, 0, &store, &dbs);
+        assert_eq!(
+            both[0].iter().map(|p| p.value).collect::<Vec<_>>(),
+            (0..150).map(f64::from).collect::<Vec<_>>(),
+            "the incumbent appended each frame exactly once",
+        );
+        assert_eq!(
+            both[1].iter().map(|p| p.value).collect::<Vec<_>>(),
+            (0..150).map(|i| f64::from(1000 + i)).collect::<Vec<_>>(),
+            "the newcomer read the whole history",
+        );
+    }
+
+    #[test]
+    fn a_batch_answers_in_request_order_including_repeats() {
+        // The index-parallel contract the callers rely on: one result
+        // per query, in the order asked, however the batch was grouped
+        // internally — and a repeated query answers twice, identically.
+        let store = mixed_capture();
+        let owned = mixed_dbs();
+        let dbs: Vec<&Database> = owned.iter().collect();
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let mut queries = mixed_queries();
+        let repeat = CacheQuery {
+            bus_id: None,
+            message_id: 256,
+            extended: false,
+            signal_name: "A",
+        };
+        queries.push(repeat);
+        let out = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, &dbs);
+        assert_eq!(out.len(), queries.len());
+        assert_eq!(out[0], out[queries.len() - 1]);
+        // An empty batch is a no-op, not a panic.
+        assert!(cache
+            .slice_many(&[], f64::MIN, f64::MAX, 0, &store, &dbs)
+            .is_empty());
+        assert!(cache.min_max_many(&[], &store, &dbs).is_empty());
     }
 
     // ---- Persistence across restore ---------------------------------
