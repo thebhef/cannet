@@ -102,7 +102,7 @@ frames are present from the first append:
 | Raw frames (meta + payload) | the **first append** | write-through: each append `memcpy`s straight into the active segment's mapping (DS-1/DS-2). The mapping *is* the store — there is no RAM write-buffer that later flushes; `msync` only pushes already-written dirty pages to the device. |
 | `by-id` index | as frames land | append-only mmap postings, extended per frame (DS-3). |
 | Filter index | when a filter is **active** | built lazily per predicate off `by-id`, dropped when the predicate changes (DS-3). |
-| Signal-cache pyramid | first **plot sample** of a signal | *derived*, lazy: built on demand from the raw frames, mmap'd, carries no manifest, and is rebuilt from the reopened frames on serve (DS-5). |
+| Signal-cache pyramid | first **plot sample** of a signal | *derived*, lazy: built on demand from the raw frames, mmap'd (DS-5). Since [ADR 0047](0047-persisted-signal-pyramids.md) it carries a manifest and is reused across a relaunch when its validity key still matches; a mismatch rebuilds it from the reopened frames on serve, as before. |
 
 What is genuinely only in **RAM** is bounded and never capture-length: the
 recent-tail mirror (the DS-2 ring), the bus-intern table, and the small

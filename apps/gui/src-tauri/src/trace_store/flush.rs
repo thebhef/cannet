@@ -41,6 +41,15 @@ const DERIVED_FILE: &str = "derived.json";
 #[derive(Serialize, Deserialize)]
 struct ScratchIdentity {
     project_id: Uuid,
+    /// Identity of the *capture* in the scratch, minted whenever one
+    /// starts. The project id says which project the scratch belongs to;
+    /// this says which of that project's captures it holds, so state
+    /// derived from frame indices (the signal pyramids, ADR 0047) can prove
+    /// it is looking at the capture it was derived from. Absent in a
+    /// scratch written before captures were identified — read as "no
+    /// identity", which reuses nothing.
+    #[serde(default)]
+    capture_id: Option<Uuid>,
 }
 
 /// `derived.json` mirror of a frame payload. `cannet-core`'s
@@ -365,10 +374,17 @@ impl TraceStore {
     }
 
     /// Record which project the current scratch belongs to (ADR 0002
-    /// DS-7), so a later launch reloads it only against that project. A
-    /// no-op for the in-RAM double. `None` removes any prior identity (the
-    /// scratch then belongs to no project and never reloads). Called by
-    /// the host when a capture starts.
+    /// DS-7), so a later launch reloads it only against that project, and
+    /// mint a fresh identity for the capture that is starting. A no-op for
+    /// the in-RAM double. `None` removes any prior identity (the scratch
+    /// then belongs to no project and never reloads). Called by the host
+    /// when a capture starts.
+    ///
+    /// Each call is one capture beginning, so each call mints a new
+    /// `capture_id`: it is stable across relaunches of the same capture
+    /// (nothing rewrites the identity on reload) and distinct for the next
+    /// one, which is exactly what derived state keyed on frame indices
+    /// needs to prove it is still describing the right frames (ADR 0047).
     pub fn write_scratch_identity(&self, project_id: Option<Uuid>) {
         let inner = self.lock_inner();
         let Some(dir) = inner.scratch_dir.clone() else {
@@ -377,7 +393,11 @@ impl TraceStore {
         let path = dir.join(IDENTITY_FILE);
         match project_id {
             Some(project_id) => {
-                if let Err(e) = write_json(&path, &ScratchIdentity { project_id }) {
+                let identity = ScratchIdentity {
+                    project_id,
+                    capture_id: Some(Uuid::new_v4()),
+                };
+                if let Err(e) = write_json(&path, &identity) {
                     tracing::warn!(error = %e, "writing scratch identity failed");
                 }
             }
@@ -385,6 +405,14 @@ impl TraceStore {
                 let _ = std::fs::remove_file(&path);
             }
         }
+    }
+
+    /// Identity of the capture currently in the scratch, or `None` for the
+    /// in-RAM double, a scratch with no capture, or one written before
+    /// captures were identified. See [`ScratchIdentity::capture_id`].
+    pub fn scratch_capture_id(&self) -> Option<Uuid> {
+        let dir = self.lock_inner().scratch_dir.clone()?;
+        read_json::<ScratchIdentity>(&dir.join(IDENTITY_FILE))?.capture_id
     }
 
     /// Reload a prior on-disk session as a **stopped** trace, but only if
@@ -1094,6 +1122,41 @@ mod tests {
             Some((1, 2_000)),
             "group 1's latest restored frame"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_capture_id_is_stable_across_a_reload_and_fresh_per_capture() {
+        // The identity derived state keyed on frame indices is validated
+        // against (ADR 0047): the same capture keeps its id across as many
+        // relaunches as it likes, and the next capture never inherits it.
+        let dir = std::env::temp_dir().join(format!("cannet-capid-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        let first = {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            store.write_scratch_identity(Some(pid));
+            store.append(dummy(1_000, 1));
+            store.flush().unwrap();
+            store.scratch_capture_id().expect("a capture was started")
+        };
+        // Relaunch over the same scratch: reloading does not re-identify.
+        let second = {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            assert!(store.try_reload(pid).is_some());
+            store.scratch_capture_id()
+        };
+        assert_eq!(second, Some(first), "a reload keeps the capture's id");
+
+        // A new capture in the same project is a different capture.
+        let store = TraceStore::new_disk(&dir).unwrap();
+        store.start_session(0);
+        assert_eq!(store.scratch_capture_id(), None, "the reset drops it");
+        store.write_scratch_identity(Some(pid));
+        assert_ne!(store.scratch_capture_id(), Some(first));
+
+        // An in-RAM double has no scratch and so no capture identity.
+        assert_eq!(TraceStore::new().scratch_capture_id(), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 

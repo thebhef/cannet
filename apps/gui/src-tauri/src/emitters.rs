@@ -230,6 +230,12 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
             interval.tick().await;
             retune(&mut interval, &mut period, trace_flush_tick());
             let state: State<'_, AppState> = app.state();
+            // The pyramids move on their own schedule — a first-use rebuild
+            // over a *stopped* restored capture extends them while the
+            // buffer never grows — so their manifest is written before the
+            // buffer-grew gate below, not behind it (ADR 0047). The write
+            // is itself gated on the pyramids having changed.
+            persist_pyramids(&state, false);
             let len = state.trace_store.len();
             if len == last_flushed_len {
                 continue;
@@ -269,9 +275,24 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
                     active.index.evict_below(mark);
                 }
                 last_trimmed_mark = mark;
+                // The cascade moved the pyramids and the low-water mark
+                // their validity key carries, so re-record both now rather
+                // than leaving the manifest a tick behind the files.
+                persist_pyramids(&state, false);
             }
         }
     });
+}
+
+/// Record the signal pyramids' manifest against the key the current model
+/// would reuse them under (ADR 0047). A no-op when the scratch holds no
+/// identified capture, or when the pyramids haven't moved since the last
+/// write. `sync` asks for a synchronous flush of the level files first —
+/// the shutdown path, mirroring the trace store's own sync flush there.
+pub(crate) fn persist_pyramids(state: &AppState, sync: bool) {
+    if let Some(validity) = crate::app_state::pyramid_validity(state) {
+        state.signal_caches.persist(&validity, sync);
+    }
 }
 /// Snapshot the host-side system log. Returns every message
 /// currently in the ring in chronological order. The frontend keeps

@@ -541,6 +541,12 @@ pub(crate) async fn scan_blf_channels(
 /// the prior identity / derived files; this writes the fresh identity.
 pub(crate) fn restamp_scratch_for_capture(state: &AppState) {
     *state.filter_index() = None;
+    // The pyramids decode frame indices into the capture that has just been
+    // discarded, and so does anything a prior session left staged on disk
+    // (ADR 0047). A new capture is exactly the event that makes them
+    // meaningless — including a BLF import, which reaches here through the
+    // pump's replay session-start rather than through Clear.
+    state.signal_caches.clear();
     let active = *state.active_project_id();
     state.trace_store.write_scratch_identity(active);
     // Drop the scratch copy of notes too (ADR 0002 DS-7): a reset session
@@ -556,12 +562,10 @@ pub(crate) fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX));
     state.trace_store.start_session(now_ns);
+    // Drops the decoded-sample caches along with the rest of the scratch's
+    // capture-scoped state. The verification runtime (violation indices +
+    // counter continuity) holds frame indices too and goes the same way.
     restamp_scratch_for_capture(&state);
-    // The decoded-sample caches hold frame indices into the store —
-    // wipe them too, otherwise the next `sample_signals` would slice
-    // against a buffer that no longer exists. Same for the
-    // verification runtime (violation indices + counter continuity).
-    state.signal_caches.clear();
     state.verifier.clear_runtime();
     if let Some(applied) = state.notes.clear() {
         let _ = app.emit("notes-changed", applied.notes);
@@ -610,6 +614,9 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
     let started = std::time::Instant::now();
     let active = *state.active_project_id();
     let Some(breakdown) = active.and_then(|pid| state.trace_store.try_reload(pid)) else {
+        // Nothing came back, so nothing a prior session left in the pyramid
+        // scratch describes a capture this one holds (ADR 0047).
+        state.signal_caches.clear();
         return RestoredCapture {
             count: 0,
             first_index: 0,
@@ -618,6 +625,16 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         };
     };
     let (count, first_index_usize, first_index_ts_ns) = state.trace_store.len_and_low_water();
+    // Adopt the signal pyramids the prior session persisted, if they
+    // provably describe this capture decoded against this DBC set (ADR
+    // 0047). This is where a relaunch stops re-paying a full rebuild: the
+    // frames come back in about a second, and without this the first plot
+    // over them re-decodes the whole history. A rejected set is wiped here
+    // and rebuilt on demand, exactly as before.
+    let pyramids_at = std::time::Instant::now();
+    let pyramids = crate::app_state::pyramid_validity(&state)
+        .map_or(0, |v| state.signal_caches.restore(&v, count));
+    let pyramids_ms = pyramids_at.elapsed().as_secs_f64() * 1000.0;
     let first_index = first_index_usize as u64;
     let session_start_ns = state.trace_store.session_start_ns();
     // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the
@@ -642,7 +659,8 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
     sys_debug!(
         &app,
         "project",
-        "restore: {breakdown} notes {notes_ms:.0} command {total_ms:.0}"
+        "restore: {breakdown} notes {notes_ms:.0} \
+         pyramids {pyramids_ms:.0} ({pyramids} signals) command {total_ms:.0}"
     );
     #[allow(clippy::cast_precision_loss)]
     RestoredCapture {

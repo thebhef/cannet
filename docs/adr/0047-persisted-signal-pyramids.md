@@ -1,0 +1,152 @@
+# ADR 0047 — Persisted signal pyramids
+
+Status: accepted (2026-08-08)
+
+## Context
+
+A plotted signal's decoded samples live in a per-signal **resolution
+pyramid** on disk ([ADR 0002](0002-disk-spill-store.md) DS-5): mmap'd
+append-only runs of `(t_seconds, value)` pairs, built by decoding the
+signal's frames once and folding min/max buckets upward. Building one is
+`O(that id's occurrences)` — cheap per frame, but the occurrences of a
+plotted signal over a multi-million-frame capture are millions.
+
+ADR 0002 classified the pyramid as *derived* state that "carries no
+manifest" and is "rebuilt from the reopened frames on serve". The
+practical consequence, on a real workload: a 6.53 M-frame capture
+reloads in about a second (DS-7's reopen is `O(segment files)`), and
+then the first plot over it sits on the `building…` placeholder for
+**minutes** while every pyramid rebuilds from frame zero. Every
+relaunch pays it again. The samples were on disk the whole time; what
+was missing was any way to prove they still described the capture.
+
+"Derived" was doing two jobs in that classification. It is true that the
+raw frames are the source of truth and a pyramid can always be rebuilt
+from them — that is a correctness property and it stays. It does not
+follow that a pyramid *should* be rebuilt whenever the process restarts;
+that is a cost decision, and it was made implicitly, by never writing
+down what a pyramid is a pyramid *of*.
+
+## Decision
+
+**Signal pyramids survive the session that built them, and are reused on
+the next launch when — and only when — they provably still describe the
+model.**
+
+A `pyramids.json` manifest in the pyramid scratch records, per cached
+signal, its key, its decode cursor, its all-time value extent, and each
+level's `(len, first_slot)`. That is all a level needs to be mapped back:
+the segment chain's geometry is deterministic in its length, so no level
+carries a manifest of its own.
+
+Reuse is gated on a **validity key**, recorded in the manifest and
+recomputed by the session that wants to adopt it. It has three
+components, one for each way a pyramid can stop describing the model
+without the pyramid itself changing:
+
+- **Capture identity.** A `capture_id` minted whenever a capture starts,
+  stored beside the project identity that already gates the raw reload
+  (DS-7's `identity.json`). It is stable across relaunches of the same
+  capture — nothing rewrites the identity on reload — and distinct for
+  the next one. A pyramid's decode cursor is a frame index, and a frame
+  index is only meaningful within one capture.
+- **DBC set.** A fingerprint over each loaded database's path, its bus
+  scoping, and its load position (which is decode priority), plus the
+  file's size and modification time. A pyramid holds *decoded* samples;
+  a changed set decodes different values, or decodes a signal the old
+  set could not ([ADR 0033](0033-model-layer-build-order.md)).
+- **Eviction low-water.** The raw store's windowed-ring mark (DS-8). The
+  pyramid is front-trimmed to follow it, so a pyramid trimmed to one
+  mark does not describe a capture retained to another.
+
+Plus one bound checked rather than keyed: **no decode cursor may sit
+past the restored store's tip.** The pyramids are persisted on their own
+cadence, so a crash between the raw store's last flush and the pyramid's
+can leave a cursor ahead of the frames the store comes back with — and a
+cursor ahead of the tip never revisits the frames it skipped.
+
+Anything that does not match, and any level file that does not answer to
+its manifest row, discards the whole set — files and all — and the next
+serve rebuilds exactly as before. **Rejection is the safe direction and
+is always available**, which is what makes an aggressive reuse rule
+tolerable: the raw frames remain the source of truth.
+
+Two lifecycle rules complete it:
+
+- **A new capture wipes the pyramids**, including anything a prior
+  session left staged. That is Clear, connect, and a file import alike —
+  they all run through the same "a capture is starting" restamp.
+- **A DBC-set change drops the live pyramids but leaves a *staged* set
+  alone.** A staged set is not decoded state yet; it is a candidate
+  whose own recorded DBC fingerprint is part of the check about to be
+  made. This matters because of boot order: a project's DBCs load
+  *before* that project's capture is restored, so wiping on the boot-time
+  load would mean no persisted pyramid could ever be reused. Once a set
+  has been adopted it is live like any other, and the next DBC change
+  wipes it.
+
+## Why
+
+- **The cost is asymmetric and the data was already there.** The rebuild
+  is minutes; the reuse is a directory of `mmap` calls. The disk retained
+  between sessions is the pyramid size — proportional to how many signals
+  have been plotted, ~230 MB on the reference workload — in a scratch
+  directory the user can already reclaim per project (DS-7), and which
+  already holds a raw capture an order of magnitude larger.
+- **The scratch already survives exit; the pyramid was the exception.**
+  DS-7 keeps `cache/` across a process exit precisely so a launch can
+  present the prior session. Every other family in it — raw frames,
+  by-id, the filter index — is reload-compatible by construction. The
+  pyramid's exclusion was not a property of its format (it is
+  append-only mmap'd runs like the rest); it was the absence of a
+  validity key.
+- **A key beats a heuristic.** "Reuse if the file looks recent" or "if
+  the frame count matches" would be guesses. Naming the three inputs a
+  pyramid depends on makes reuse a proof rather than a bet, and makes
+  each rejection explicable.
+- **The failure mode of getting it wrong is silent and bad.** A stale
+  pyramid does not crash; it draws a plausible wrong plot, or a plot
+  that is quietly missing a range of history. That is why the key is
+  conservative (a cosmetic DBC edit invalidates, a crash-truncated store
+  invalidates) and why rejection is all-or-nothing.
+
+## Alternatives considered
+
+- **Keep rebuilding, but make it incremental / backgrounded.** Doesn't
+  address the cost, only its visibility — the CPU is still spent, every
+  launch, decoding samples that are already on disk. (Painting
+  incrementally during a rebuild is worth doing on its own merits, for
+  the rebuilds that genuinely do have to happen.)
+- **Key on the raw store's frame count alone.** Cheap, and wrong: two
+  different captures of the same length collide, and it says nothing
+  about the DBC set.
+- **Key on the DBC file *contents* rather than path + size + mtime.**
+  More precise — a cosmetic edit would not invalidate — but it needs the
+  parsed model's decode-relevant surface exposed for hashing, and the
+  gain is avoiding a rebuild after an edit that changed nothing. Not
+  worth the API surface today; the fingerprint is a single function to
+  revisit if it proves too eager.
+- **Persist the pyramid inside the raw store's own manifest.** Couples
+  two families with genuinely different write cadences: the pyramids
+  move when a plot is served, the raw store when frames arrive. A
+  stopped restored capture extends its pyramids while the raw store
+  never changes — the exact case this ADR exists for.
+- **Rename the pyramid directory aside at boot so the DBC-load wipe
+  cannot reach it.** Solves the boot-order problem with a filesystem
+  trick instead of by saying what the wipe is *for*. Distinguishing "the
+  live decode state is stale" from "this candidate has not been judged
+  yet" is the honest fix and needs no second directory.
+
+## Consequences
+
+- A launch over a restored capture paints its plots from the pyramid on
+  disk; `building…` appears only for signals that were never plotted in
+  the prior session.
+- The scratch keeps the pyramid bytes between sessions. They are inside
+  DS-8's cap like everything else in `cache/`, and the windowed-ring
+  eviction trims them with the raw store.
+- Every rejection path costs exactly what today costs: a wipe and a
+  rebuild on the next serve. There is no half-adopted state.
+- `cannet-spill`'s sample sequence gained a reopen path. It still carries
+  no manifest of its own — `(len, first_slot)` from the caller's manifest
+  is enough to map it back — because the caller is what decides validity.
