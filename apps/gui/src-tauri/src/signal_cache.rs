@@ -752,10 +752,24 @@ impl SignalCacheStore {
     /// path); the periodic caller leaves writeback to the OS, the same
     /// DS-2 relaxation the raw store's async flush takes.
     ///
+    /// Also a no-op while a set is still **staged**: an unjudged candidate
+    /// is never overwritten, because the manifest is the only thing that
+    /// says what its files are. [`Self::restore`] resolves the staging
+    /// within a moment of launch, and every path that abandons the staging
+    /// ([`Self::clear`], [`Self::reroot`]) drops the files with it.
+    ///
+    /// Whether [`Self::persist`] would write anything — the cheap check the
+    /// periodic caller makes before assembling a [`PyramidValidity`], which
+    /// costs a directory read and one `stat` per loaded DBC.
+    pub fn needs_persist(&self) -> bool {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        caches.dirty && caches.staged.is_none()
+    }
+
     /// Returns whether a manifest was written.
     pub fn persist(&self, validity: &PyramidValidity, sync: bool) -> bool {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        if !caches.dirty {
+        if !caches.dirty || caches.staged.is_some() {
             return false;
         }
         if sync {
@@ -842,7 +856,7 @@ impl SignalCacheStore {
         for cache in caches.by_key.values_mut() {
             cache.evict_below(ts_seconds);
         }
-        caches.dirty = true;
+        caches.dirty |= !caches.by_key.is_empty();
     }
 
     /// Catch the signal's cache up to the trace store's current tip,
@@ -1638,6 +1652,34 @@ mod tests {
     }
 
     #[test]
+    fn a_staged_manifest_is_never_overwritten_before_it_is_judged() {
+        // The manifest is the only thing that says what the files under the
+        // root are, so a session that starts building its own pyramids
+        // before the restore has run must not write over the candidate it
+        // has not looked at yet.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", "dbc-a", 0);
+        let len = build_and_persist(root.path(), &v);
+
+        let reopened = SignalCacheStore::new(root.path());
+        // Build something of its own — a different signal over a different
+        // store, as a plot mounting before the restore lands would.
+        let store = TraceStore::new();
+        for i in 0..50u64 {
+            store.append(val_frame(i * S, 7));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(
+            !reopened.persist(&validity("capture-b", "dbc-a", 0), false),
+            "nothing is written while a candidate is unjudged",
+        );
+        // …so the candidate is still there to be judged.
+        assert_eq!(reopened.restore(&v, len), 1);
+    }
+
+    #[test]
     fn clearing_the_trace_drops_the_staged_pyramids() {
         // Clear / start-a-new-capture discards the prior trace, so the
         // pyramids over it go with it — before any restore can adopt them.
@@ -1731,17 +1773,27 @@ mod tests {
     // resident", not as heap alone. The number that matters is how it
     // scales: the mapped share grows with the capture, the materialized
     // share must not.
+    //
+    // It then measures the same first use again over a *persisted* pyramid
+    // (ADR 0047) — the manifest written, the cache store reopened on the
+    // same root as a relaunch would, the set restored — so the two numbers
+    // printed side by side are the before and after of a relaunch.
+    //
+    // `CANNET_BENCH_FRAMES` sets the capture size and
+    // `CANNET_BENCH_SIGNALS` how many distinct signals a view resolves over
+    // it. One signal is the dense-single-id worst case the ingest profile
+    // named; a plot view over a real project resolves dozens, and the
+    // rebuild is paid per signal while the restore is one directory of
+    // `mmap` calls — so the two dimensions do not scale together and both
+    // are worth running.
 
     #[test]
     #[ignore = "first-use rebuild benchmark; run with --ignored --nocapture"]
+    #[allow(clippy::too_many_lines)]
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     fn bench_first_use_rebuild() {
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
         use std::sync::Arc;
-
-        /// Frames in the synthetic capture, all carrying the decodable id —
-        /// the worst case the profile named (one very dense id).
-        const FRAMES: usize = 4_000_000;
 
         fn rss() -> u64 {
             use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -1755,21 +1807,43 @@ mod tests {
             sys.process(pid).map_or(0, sysinfo::Process::memory)
         }
 
+        fn env_usize(name: &str, default: usize) -> usize {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        }
+
+        /// One message per signal, ids from 256 up, each carrying the same
+        /// 16-bit signal `val_frame` fills. The capture round-robins them,
+        /// so every signal is equally dense and the whole capture decodes.
+        const MSG: &str =
+            "\nBO_ {id} Msg{id}: 8 Vector__XXX\n SG_ X : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n";
+
+        let frames = env_usize("CANNET_BENCH_FRAMES", 4_000_000);
+        let signals = env_usize("CANNET_BENCH_SIGNALS", 1);
+        let dbc: String = std::iter::once("VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_:\n".to_string())
+            .chain((0..signals).map(|n| MSG.replace("{id}", &(256 + n).to_string())))
+            .collect();
+        let db = Database::parse(&dbc).unwrap();
+        let dbs: &[&Database] = &[&db];
+        let ids: Vec<u32> = (0..signals).map(|n| 256 + n as u32).collect();
+
         let scratch = TempDir::new().unwrap();
         let raw_dir = scratch.path().join("raw");
         std::fs::create_dir_all(&raw_dir).unwrap();
         let store = TraceStore::new_disk(&raw_dir).unwrap();
         let wrote = std::time::Instant::now();
-        for i in 0..FRAMES {
-            store.append(val_frame(i as u64 * 1_000_000, (i % 4096) as u16));
+        for i in 0..frames {
+            let mut f = val_frame(i as u64 * 1_000_000, (i % 4096) as u16);
+            f.id = ids[i % signals];
+            store.append(f);
         }
         println!(
-            "[bench] wrote {FRAMES} frames in {:.1} s",
+            "[bench] wrote {frames} frames over {signals} signal(s) in {:.1} s",
             wrote.elapsed().as_secs_f64(),
         );
 
-        let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
         let pyramids = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(pyramids.path());
 
@@ -1790,7 +1864,14 @@ mod tests {
         };
 
         let started = std::time::Instant::now();
-        let pts = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 2000, &store, dbs);
+        let pts: usize = ids
+            .iter()
+            .map(|&id| {
+                cache
+                    .slice(None, id, false, "X", f64::MIN, f64::MAX, 2000, &store, dbs)
+                    .len()
+            })
+            .sum();
         let secs = started.elapsed().as_secs_f64();
         stop.store(true, Ordering::Relaxed);
         sampler.join().unwrap();
@@ -1798,15 +1879,58 @@ mod tests {
         let peak = peak.load(Ordering::Relaxed).max(rss());
         let delta = peak.saturating_sub(base);
         println!(
-            "[bench] first-use rebuild: {FRAMES} frames in {:.2} s ({:.3} us/frame), \
-             working set {:.0} -> {:.0} MB (+{:.0} MB = {:.0} B/frame), {} points served",
+            "[bench] first-use rebuild: {signals} signal(s) over {frames} frames in {:.2} s \
+             ({:.3} us/frame/signal), working set {:.0} -> {:.0} MB \
+             (+{:.0} MB = {:.0} B/frame), {pts} points served",
             secs,
-            secs * 1e6 / FRAMES as f64,
+            secs * 1e6 / (frames * signals) as f64,
             base as f64 / 1e6,
             peak as f64 / 1e6,
             delta as f64 / 1e6,
-            delta as f64 / FRAMES as f64,
-            pts.len(),
+            delta as f64 / frames as f64,
+        );
+
+        // --- the same first use, over a persisted pyramid (ADR 0047) ---
+        //
+        // Persist what the rebuild just built, then reopen the cache store
+        // on the same root exactly as a relaunch does, restore, and serve
+        // the same window. The validity key is supplied here rather than
+        // read from a scratch identity, because this bench drives the cache
+        // store directly and not the host.
+        let validity = PyramidValidity {
+            capture_id: "bench-capture".into(),
+            dbcs: "bench-dbcs".into(),
+            low_water: 0,
+        };
+        let persist_at = std::time::Instant::now();
+        assert!(cache.persist(&validity, true), "the manifest is written");
+        let persist_secs = persist_at.elapsed().as_secs_f64();
+        drop(cache);
+
+        let reopened = SignalCacheStore::new(pyramids.path());
+        let restore_at = std::time::Instant::now();
+        let restored = reopened.restore(&validity, store.len());
+        let restore_secs = restore_at.elapsed().as_secs_f64();
+        assert_eq!(restored, signals, "every pyramid came back");
+        let served_at = std::time::Instant::now();
+        let back: usize = ids
+            .iter()
+            .map(|&id| {
+                reopened
+                    .slice(None, id, false, "X", f64::MIN, f64::MAX, 2000, &store, dbs)
+                    .len()
+            })
+            .sum();
+        let served_secs = served_at.elapsed().as_secs_f64();
+        assert_eq!(back, pts, "the same windows, point for point");
+        println!(
+            "[bench] first use after restore: restore {:.3} s + serve {:.3} s = {:.3} s \
+             ({:.0}x the rebuild's speed); manifest write {:.3} s; {back} points served",
+            restore_secs,
+            served_secs,
+            restore_secs + served_secs,
+            secs / (restore_secs + served_secs).max(1e-9),
+            persist_secs,
         );
     }
 }

@@ -290,6 +290,9 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
 /// write. `sync` asks for a synchronous flush of the level files first —
 /// the shutdown path, mirroring the trace store's own sync flush there.
 pub(crate) fn persist_pyramids(state: &AppState, sync: bool) {
+    if !state.signal_caches.needs_persist() {
+        return;
+    }
     if let Some(validity) = crate::app_state::pyramid_validity(state) {
         state.signal_caches.persist(&validity, sync);
     }
