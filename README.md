@@ -289,9 +289,11 @@ cannet transmits, and the system on the other end of the cable should
 be in a state where disrupted CAN traffic is safe. It is a notice, not
 a prompt: there is nothing to acknowledge and nothing is remembered.
 It doubles as the loading screen, so it stays up for the longer of five
-seconds and however long the reopened project takes to apply (its last
-step restores the previous session's capture, which scales with the
-capture's size) — when the splash lifts, the app is up with its data.
+seconds and however long the reopened project takes to apply. The
+previous session's capture is *not* part of that wait: reopening it
+scales with the capture's size, so it loads in the background and its
+history appears when it is ready. Connect waits for it (the reload
+replaces the buffer wholesale); the rest of the app does not.
 
 ### Self-driving performance runs
 

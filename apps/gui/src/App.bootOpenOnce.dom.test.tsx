@@ -25,7 +25,12 @@ const systemLog: string[] = [];
 const knobs = {
   connectOnStart: false,
   dbcDelayMs: 0,
+  restoreDelayMs: 0,
 };
+// Marker pushed into `invokeOrder` when the (possibly slow) capture
+// restore *resolves*, so ordering tests can tell "asked for the history"
+// from "has the history".
+const RESTORE_DONE = "restore_scratch_capture:done";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -69,6 +74,10 @@ vi.mock("@tauri-apps/api/core", () => ({
           await new Promise((r) => setTimeout(r, knobs.dbcDelayMs));
         return null;
       case "restore_scratch_capture":
+        // Deliberately slow: models a large prior capture reopening.
+        if (knobs.restoreDelayMs > 0)
+          await new Promise((r) => setTimeout(r, knobs.restoreDelayMs));
+        invokeOrder.push(RESTORE_DONE);
         return { count: 0, first_index: 0, first_index_ts_ns: null, session_start_seconds: 0 };
       case "gui_emit_system_log":
         systemLog.push(String(args?.message));
@@ -172,6 +181,7 @@ beforeEach(async () => {
   systemLog.length = 0;
   knobs.connectOnStart = false;
   knobs.dbcDelayMs = 0;
+  knobs.restoreDelayMs = 0;
   await hydrateState();
 });
 
@@ -218,7 +228,7 @@ describe("boot project open", () => {
   it("automation connects only after the project has fully applied", async () => {
     // Views born before the capture-start event come up stopped — the
     // observed symptom when connect raced a still-applying project. The
-    // last applyProject step (restore_scratch_capture) is made slow;
+    // DBC load (the step every view validates against) is made slow;
     // connect must still come after it.
     knobs.connectOnStart = true;
     knobs.dbcDelayMs = 600;
@@ -237,5 +247,44 @@ describe("boot project open", () => {
     const connectAt = invokeOrder.indexOf("connect_remote_server");
     expect(restoreAt).toBeGreaterThanOrEqual(0);
     expect(connectAt).toBeGreaterThan(restoreAt);
+  });
+
+  it("comes up interactive while the prior capture is still loading", async () => {
+    // The restored history is data the paged views take when it lands;
+    // making the whole app wait for it is what a large cache paid for at
+    // every launch (ADR 0002 DS-7).
+    knobs.restoreDelayMs = 800;
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await waitFor(() => {
+      expect(systemLog.some((m) => m.includes("startup: interactive"))).toBe(true);
+    });
+    expect(invokeOrder).toContain("restore_scratch_capture");
+    expect(invokeOrder).not.toContain(RESTORE_DONE);
+  });
+
+  it("holds connect until the restored history has landed", async () => {
+    // A connect appends live frames to the store the restore is about to
+    // swap out from under them, so connect — not the GUI — is what waits.
+    knobs.connectOnStart = true;
+    knobs.restoreDelayMs = 800;
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    await waitFor(
+      () => {
+        expect(invokeOrder).toContain("connect_remote_server");
+      },
+      { timeout: 5000 },
+    );
+    const doneAt = invokeOrder.indexOf(RESTORE_DONE);
+    const connectAt = invokeOrder.indexOf("connect_remote_server");
+    expect(doneAt).toBeGreaterThanOrEqual(0);
+    expect(connectAt).toBeGreaterThan(doneAt);
   });
 });
