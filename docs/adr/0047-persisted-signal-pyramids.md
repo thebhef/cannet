@@ -80,21 +80,43 @@ bytes the disk was never given, and the validity key cannot detect that
 are on the platter. So the flush comes first, and the manifest second.
 
 What makes that affordable is that **a flush is incremental**. A level
-run records the slot it last flushed to, and a flush waits on the device
-only for the segments spanning the `[flushed, len)` residue. Flushing
-the whole of a freshly-built pyramid in one go costs seconds — which is
-a cost the exit path must not pay ([ADR
-0048](0048-no-model-lock-across-a-rebuild.md)) — but that is the cost of
-never having flushed, not the cost of flushing. The periodic caller runs
-the identical code, so it takes each tick's pages as they are appended
-and the exit call is left owing one tick's worth.
+run records the slot it last flushed to and waits on the device only for
+the segments it has not yet covered. Flushing the whole of a
+freshly-built pyramid in one go costs seconds — which is a cost the exit
+path must not pay ([ADR 0048](0048-no-model-lock-across-a-rebuild.md)) —
+but that is the cost of never having flushed, not the cost of flushing.
 
-The residual exposure is what the OS's own device queue leaves: a flush
-returns when the device has been told, and a **power loss** in the tick
-between the last flush and an append can still lose the appends since.
-What that costs is a rebuild's worth of samples in a *derived*
-structure, whose raw frames are flushed synchronously on the same exit
-path.
+**The periodic caller takes only what has come to rest, and only so much
+of it per tick.** The two restrictions are separate and both load-bearing:
+
+- **Sealed segments only.** A level's chain grows by whole segments, so
+  every append lands in the same *hot tail* until it fills. Waiting on
+  that file is worse than useless: the pages are dirty again before the
+  next tick, so the cost recurs forever and the residue never shrinks.
+  Waiting on a segment the chain has grown past costs once, ever.
+- **A budget per tick.** Sealing is bursty — the plotted signals of one
+  bus share a rate, so their chains cross a boundary on the same tick —
+  and each wait is a device barrier that everything else on the volume
+  queues behind. A tick that took them all would land as one stall in
+  the middle of a live capture, which is a receive-cadence defect, not a
+  durability feature. What the budget defers is immutable, so it is
+  still there, and no larger, on the next tick.
+
+The budget is a function of whether frames are arriving. It exists to
+protect a receive cadence; a stopped capture, a finished import or a
+restored session being plotted has none, so an idle tick takes far more
+and drains a rebuild's backlog while the user works rather than leaving
+it for the quit.
+
+Two exposures follow, both narrow and named. A **power loss** can lose
+the appends since the last flush — what that costs is a rebuild's worth
+of samples in a *derived* structure, whose raw frames are flushed
+synchronously on the same exit path. And **quitting within a minute or
+so of a large rebuild** still pays for it: a pyramid built in seconds
+outruns any cadence, and the shutdown flush is what covers the case the
+cadence has not reached yet. That is the trade this ADR makes on
+purpose — the wait belongs on the path the user has already decided to
+leave, not on the one where frames are arriving.
 
 Two lifecycle rules complete it:
 
@@ -174,8 +196,13 @@ Two lifecycle rules complete it:
 - Every rejection path costs exactly what today costs: a wipe and a
   rebuild on the next serve. There is no half-adopted state.
 - Exit hardens the pyramid scratch alongside the trace store's own
-  synchronous shutdown flush (DS-2), and what it costs is bounded by the
-  flush cadence rather than by the size of the pyramid.
+  synchronous shutdown flush (DS-2), and what it costs falls as the
+  cadence works through the sealed segments — to milliseconds for a
+  session that has been running, and to what the cadence has not reached
+  yet for one that quits straight after a rebuild.
+- A live capture's flush tick costs what the raw store's own periodic
+  flush costs, by construction, because that is what the budget is set
+  against.
 - `cannet-spill`'s sample sequence gained a reopen path. It still carries
   no manifest of its own — `(len, first_slot)` from the caller's manifest
   is enough to map it back — because the caller is what decides validity.

@@ -12,6 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
 use crate::ipc::{BusFps, TraceGrew};
+use crate::signal_cache::Harden;
 use crate::system_log::{self, SystemMessage};
 use crate::trace_query::collect_trace_records;
 use crate::{crash, diag};
@@ -235,11 +236,24 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
             // buffer never grows — so their manifest is written before the
             // buffer-grew gate below, not behind it (ADR 0047). The write
             // is itself gated on the pyramids having changed, and it
-            // hardens the level pages this tick added, so what the exit
-            // flush is left owing is one tick's residue.
-            persist_pyramids(&state);
+            // hardens the segments that have come to rest — never the hot
+            // tail every append re-dirties, which is what keeps a live
+            // capture's tick off the device.
+            //
+            // How many it takes depends on whether this tick had frames
+            // in it. The budget exists to protect a receive cadence; with
+            // nothing arriving there is none to protect, and a backlog a
+            // rebuild just created is better drained now than paid for at
+            // the quit.
             let len = state.trace_store.len();
-            if len == last_flushed_len {
+            let arriving = len != last_flushed_len;
+            let harden = if arriving {
+                Harden::live_budget()
+            } else {
+                Harden::idle_budget()
+            };
+            persist_pyramids(&state, harden);
+            if !arriving {
                 continue;
             }
             // Async flush (ADR 0002 DS-2): queue writeback without waiting
@@ -280,7 +294,7 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
                 // The cascade moved the pyramids and the low-water mark
                 // their validity key carries, so re-record both now rather
                 // than leaving the manifest a tick behind the files.
-                persist_pyramids(&state);
+                persist_pyramids(&state, harden);
             }
         }
     });
@@ -289,16 +303,16 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
 /// Record the signal pyramids' manifest against the key the current model
 /// would reuse them under (ADR 0047). A no-op when the scratch holds no
 /// identified capture, or when the pyramids haven't moved since the last
-/// write. Flushes the level pages appended since the last call before it
-/// writes, so the manifest never describes bytes the disk has not been
-/// given — which is also what keeps the same call on the exit path short,
-/// since the cadence has already taken all but a tick's worth.
-pub(crate) fn persist_pyramids(state: &AppState) {
+/// write. Flushes the level pages before it writes, so the manifest never
+/// describes bytes the disk has not been given; `harden` says how much of
+/// them (ADR 0047), and it is the whole difference between the periodic
+/// caller and the exit one.
+pub(crate) fn persist_pyramids(state: &AppState, harden: Harden) {
     if !state.signal_caches.needs_persist() {
         return;
     }
     if let Some(validity) = crate::app_state::pyramid_validity(state) {
-        state.signal_caches.persist(&validity);
+        state.signal_caches.persist(&validity, harden);
     }
 }
 /// Snapshot the host-side system log. Returns every message

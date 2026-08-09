@@ -1001,6 +1001,91 @@ with the scan command stalled — notice up and no dialog while it walks,
 dialog up and notice gone after. Watched fail with the `App` wiring
 removed ("no scan notice, status was: Open a BLF log…").
 
+### 2026-08-09 — fix round, the cadence flush and the ADR-0031 gate
+
+Branch `task59h-live-fixes`. The gate failed intermittently on the first
+build carrying the cadence flush: three 60 s runs gave
+`rx_gap/worst_short_frac` **0.113 (limit 0.041)**, 0.0027, 0.0018, where
+~14 runs earlier in the day on pre-change builds all sat in 0.001–0.003.
+The orchestrator attributed it to the cadence flush, to test rather than
+trust.
+
+**Reading the failing report first.** Run 1 also carried
+`rx_gap/worst_p95_ratio` **2.01** against 1.13/1.12, and
+`tx_late_ms.max` **88.1 ms** against 14.5/15.4 — while `flush_ms` (the
+raw store's own periodic flush) was unchanged at 10.6/10.9/8.9, and
+`longtask_ms_per_s`, `jank_seconds` and `frames_late_per_s_mean` were
+all zero. `rx_fps` was identical across runs with retention 0.9995. So:
+nothing lost, nothing the frontend saw, one stall on the host side big
+enough to stretch a gap to 2× and bunch what followed — and it was not
+the flush that is already gauged.
+
+**The experiment.** The rebuild benchmark measures a cold rebuild and
+says nothing about a live capture, so a second one was written:
+`bench_live_cadence_flush` builds a capture *incrementally* — a tick's
+frames, a serve, then the flusher's `persist` — and times each tick.
+Parameters model the gate: 1631 frames/s over **173 bus ids of which 16
+are plotted**, 2 s ticks. (The id count is the load-bearing parameter: a
+first cut spread all the frames over the 16 plotted signals, ran them
+10× too fast, and would have mismeasured everything downstream.)
+
+*Data*, release, 20 ticks:
+
+| cadence | per-tick mean | median | worst |
+| --- | --- | --- | --- |
+| flush everything (as shipped) | 99.8 ms | 96.1 ms | 167.8 ms |
+| control: no level flush at all | 1.9 ms | 1.9 ms | 2.3 ms |
+
+*Conclusion.* Confirmed, and not marginally: the shipped cadence spent
+**~100 ms of device waiting per 2 s tick** in a live capture, against
+1.9 ms for the same tick with the flush removed. An 88 ms `tx_late_ms`
+excursion is one such tick. The mechanism is the hot tail — every level
+of every plotted signal is appended to each tick, so each tick re-issued
+`FlushFileBuffers` over the *same* files, and left them dirty again.
+
+**The candidate design, and where it was not enough.** Flushing only
+*sealed* segments (a segment the chain has grown past; its pages can
+never re-dirty) cut the median to the control's 2.2 ms — but left
+**79.4 ms** worst-case ticks, because signals sharing a bus rate cross a
+segment boundary on the *same* tick, so sealing arrives in bursts. A
+79 ms stall is the same size as the excursion being chased, so
+sealed-only alone would have shipped the defect with a longer period.
+
+So the cadence also carries a **budget**: at most `n` segment files per
+call, and what it defers cannot change while it waits. With `n = 2`:
+
+| cadence | per-tick mean | median | worst |
+| --- | --- | --- | --- |
+| sealed, unbudgeted | 11.3 ms | 2.2 ms | 79.4 ms |
+| **sealed, budget 2** | **7.5 ms** | **6.9 ms** | **14.4 ms** |
+
+which puts a tick inside the band the raw store's own periodic flush
+already occupies (`flush_ms` ~4 ms mean / ~10 ms max, and passing).
+
+**The budget is capture-aware.** Its whole purpose is to protect a
+receive cadence; with nothing arriving there is none to protect. The
+flusher already knows — it computes whether the buffer grew — so an
+idle tick takes 64 instead of 2, and the backlog a rebuild leaves
+drains while the user works instead of being paid for at the quit.
+
+**Re-measuring the two numbers this round reported.** Release, 4 M
+frames over 96 signals:
+
+| | before this fix | after |
+| --- | --- | --- |
+| cold rebuild under the cadence | 17.63 s (+248 %) | **4.61 s (+8 %)** |
+| what those ticks spent flushing | 13.93 s | **0.88 s** |
+| quit straight after a cold rebuild | 0.003 s | 10.9 s |
+| quit after 40 idle ticks (80 s) | — | **2.46 s** |
+
+The rebuild overhead the last round recorded as a blocker is gone. The
+quit moved the other way, and honestly so: a pyramid built in four
+seconds outruns any cadence, so the shutdown flush pays for it — which
+is exactly the case the owner's ruling exists to cover. What the cadence
+now does is drain that backlog on its own time (8.08 s of flushing
+spread over 80 s of wall clock takes the same quit from 10.9 s to
+2.46 s), instead of stalling a live capture to pre-pay it.
+
 ## Blockers / side effects
 
 - **`scan_blf_channels` ran its walk on an async-runtime worker —
@@ -1015,21 +1100,19 @@ removed ("no scan notice, status was: Open a BLF log…").
   too few for the close path's dispatch on a small pool. The body now
   goes through the existing `off_async_workers`, which became
   `pub(crate)`.
-- **Flushing the pyramid on a cadence costs a cold rebuild 3.5× its
-  wall time** (5.06 s → 17.63 s at 96 signals over 4 M frames,
-  measured). The synchronous flush is the owner's ruling and the
-  cadence is what keeps the quit at 3 ms instead of 13 s, but the work
-  itself does not get cheaper by being spread — it is per-segment-file
-  `FlushFileBuffers`, so three ticks pay 13.93 s where one cold flush
-  pays 13.29 s, and it lands under the cache lock where it serializes
-  against the rebuild's appends. There is no cheaper flush available in
-  the crate: `Segment::queue_writeback` (the raw store's async flavour)
-  is a deliberate **no-op on Windows**, because `FlushViewOfFile` was
-  itself measured at 0.3-0.5 ms/call. The regime is confined to the
-  first-ever plotting of a large capture — a restored one serves from
-  the persisted pyramid and appends nothing — but if the owner wants
-  the rebuild back at its old speed, the lever is the ruling itself
-  (which pages get waited on, and when), not an implementation detail.
+- **Quitting in the first minute after a large cold rebuild still costs
+  seconds** (10.9 s at 96 signals over 4 M frames, measured). A pyramid
+  built in four seconds outruns a 2 s cadence, so the shutdown flush is
+  what pays for it — the case the owner's ruling exists for, and the
+  same figure 58.E measured. The cadence drains the backlog once the
+  rebuild ends (40 idle ticks take that quit to 2.46 s), so it is a
+  window rather than a standing cost, but it is a real window and it is
+  widest exactly after an import. Narrowing it further means either
+  raising the idle budget (which is only free while nothing arrives) or
+  hardening pages as the rebuild writes them, and neither should be
+  guessed at without the owner's read on how much exit latency is worth
+  buying. The rebuild-throughput half of this blocker is resolved: the
+  cadence now costs a cold rebuild +8 %, not +248 %.
 - **The disk-spill segment write is ~43 % of the per-frame ingest
   budget** (0.64 µs/frame of 1.48 at 6.5 M frames, release) — the single
   largest item, and larger than the whole BLF decode. It is owned by

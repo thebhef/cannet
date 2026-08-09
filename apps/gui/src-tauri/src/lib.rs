@@ -676,9 +676,9 @@ pub fn run() -> ! {
                 // reads instead of re-decoding the whole history (ADR
                 // 0047). After the trace flush, so the low-water mark in
                 // the key is the one the raw store just persisted. The
-                // flusher hardens the level pages on its own cadence, so
-                // what is left to write here is a tick's residue.
-                emitters::persist_pyramids(&state);
+                // flusher hardens each segment as it seals, so what is
+                // left to write here is one tail segment per level.
+                emitters::persist_pyramids(&state, signal_cache::Harden::All);
             }
         }
     });
