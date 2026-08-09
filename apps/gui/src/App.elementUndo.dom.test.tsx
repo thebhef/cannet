@@ -96,6 +96,7 @@ vi.mock("uplot", () => {
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { StrictMode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 import { App } from "./App";
 import { hydrateState } from "./hostState";
@@ -133,6 +134,16 @@ function clickMode(label: string): void {
 const key = (init: KeyboardEventInit) => {
   fireEvent.keyDown(document.activeElement ?? document.body, init);
 };
+
+/// The host calls App's RBS reconciler has made so far — the ones that
+/// load, unload, or arm a simulation. Nothing about undo may add to
+/// this list (ADR 0050).
+function rbsHostCalls(): string[] {
+  return vi
+    .mocked(invoke)
+    .mock.calls.map(([cmd]) => cmd)
+    .filter((cmd) => ["rbs_init", "rbs_load", "rbs_unload", "rbs_set_run"].includes(cmd));
+}
 
 beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
@@ -249,5 +260,53 @@ describe("element undo", () => {
     await waitFor(() => {
       if (traceMode() !== "trace") throw new Error(`redo left mode "${traceMode()}"`);
     });
+  }, 30_000);
+
+  it("never replays a behavior field, and never wakes the host reconciler", async () => {
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Add RBS panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".rbs-panel")) throw new Error("no RBS panel yet");
+    });
+    const runBox = () =>
+      document.querySelector<HTMLInputElement>(".rbs-run-toggle input[type=checkbox]")!;
+
+    // A view change (undoable) …
+    await act(async () => {
+      clickMode("trace");
+    });
+    expect(traceMode()).toBe("trace");
+    // … then a bus-facing one (never undoable): arm the simulation.
+    await act(async () => {
+      fireEvent.click(runBox());
+    });
+    await waitFor(() => {
+      if (!runBox().checked) throw new Error("run flag did not take");
+    });
+    const armed = rbsHostCalls();
+    expect(armed).toContain("rbs_set_run");
+
+    // The chord steps straight past the run flag to the view change:
+    // arming the simulation was not a step, so it cannot be undone.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (traceMode() !== "by ID") throw new Error(`undo left mode "${traceMode()}"`);
+    });
+    expect(runBox().checked).toBe(true);
+    expect(rbsHostCalls()).toEqual(armed);
+
+    // Same on the way back out.
+    await act(async () => {
+      key({ key: "y", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (traceMode() !== "trace") throw new Error(`redo left mode "${traceMode()}"`);
+    });
+    expect(runBox().checked).toBe(true);
+    expect(rbsHostCalls()).toEqual(armed);
   }, 30_000);
 });
