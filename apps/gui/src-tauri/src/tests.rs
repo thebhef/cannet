@@ -2238,3 +2238,236 @@ fn an_unrequested_exit_keeps_the_event_loops_code() {
     assert_eq!(final_exit_code(None, 0), 0);
     assert_eq!(final_exit_code(None, 3), 3);
 }
+
+// ---- BLF import benchmarks -----------------------------------------
+//
+// Attribution for the one shared ingest pathway (ADR 0046): where a file
+// import's per-frame budget actually goes. Not part of the default suite
+// (it synthesizes a multi-million-frame BLF and walks it several times).
+// Run with:
+//
+//   cargo test -p cannet-gui --release bench_blf_import \
+//       -- --ignored --nocapture
+//
+// `CANNET_BENCH_FRAMES` overrides the capture size — a debug-build run
+// wants far fewer frames than a release one to finish in the same time,
+// and comparing the two is part of what the harness is for.
+//
+// Every phase walks the *same* synthetic capture, so the numbers
+// subtract:
+//
+//   census   — the pre-pass that builds the channel -> bus mapping
+//   markers  — the whole-file second decode the notes pre-pass ran
+//   decode   — `next_frame()` alone: inflate + per-object decode
+//   convert  — decode + `RawTraceFrame::from` + routing + verifier probe
+//   full     — convert + `TraceStore::append` against the disk store
+//   full+obs — full, with the flusher and the 10 Hz status/tail readout
+//              the running app puts on the same store lock
+//
+// The capture is synthesized here on purpose — no user capture ever
+// enters the repo, and a generated one makes the numbers reproducible on
+// any machine.
+
+/// Frame count for [`bench_blf_import`], overridable through
+/// `CANNET_BENCH_FRAMES`.
+fn bench_frames(default: usize) -> usize {
+    std::env::var("CANNET_BENCH_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Write a synthetic BLF of `frames` classic frames spread over
+/// `channels` wire channels, with `markers` `GLOBAL_MARKER` records
+/// interleaved. Returns the path and the file's size in bytes.
+///
+/// Payload bytes come from a cheap xorshift so the log deflates like a
+/// real bus recording rather than like a run of constants — inflate is
+/// the reader's single biggest per-byte cost, and an over-compressible
+/// fixture would flatter it.
+fn synth_import_blf(
+    dir: &std::path::Path,
+    frames: usize,
+    channels: u8,
+    markers: usize,
+) -> (std::path::PathBuf, u64) {
+    use cannet_blf::BlfCaptureWriter;
+    let path = dir.join("synthetic.blf");
+    let mut writer = BlfCaptureWriter::create(&path).unwrap();
+    let base_ns = 1_700_000_000_u64 * 1_000_000_000;
+    // 800 ns spacing: the aggregate density of a busy multi-bus capture.
+    let step_ns = 800_u64;
+    let marker_every = if markers == 0 {
+        usize::MAX
+    } else {
+        frames / markers.max(1)
+    };
+    let mut rng = 0x2545_F491_4F6C_DD1D_u64;
+    for i in 0..frames {
+        let ts = base_ns + i as u64 * step_ns;
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        let frame = cannet_core::CanFrame::classic(
+            ts,
+            u8::try_from(i % usize::from(channels)).unwrap(),
+            // A few hundred distinct ids, the order a real vehicle bus
+            // carries, so the store's per-key maps see a realistic key
+            // space rather than a handful of hot entries.
+            cannet_core::CanId::standard(0x100 + u32::try_from(i % 512).unwrap()).unwrap(),
+            Direction::Rx,
+            rng.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+        writer.append(&frame).unwrap();
+        if marker_every != usize::MAX && i > 0 && i % marker_every == 0 {
+            writer
+                .append_marker(ts, &format!("mark {i}"), &format!("m-{i}"), 0)
+                .unwrap();
+        }
+    }
+    let outcome = writer.finish().unwrap();
+    (path, outcome.byte_size)
+}
+
+#[test]
+#[ignore = "BLF import benchmark; run with --ignored --nocapture"]
+#[allow(clippy::cast_precision_loss, clippy::too_many_lines)]
+fn bench_blf_import() {
+    use cannet_blf::BlfCanFrameSource;
+    use cannet_core::CanFrameSource as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const CHANNELS: u8 = 4;
+    let frames = bench_frames(2_000_000);
+
+    let scratch = tempfile::TempDir::new().unwrap();
+    let wrote = std::time::Instant::now();
+    let (path, bytes) = synth_import_blf(scratch.path(), frames, CHANNELS, 8);
+    println!(
+        "[bench] synthesized {frames} frames ({:.0} MiB on disk) in {:.1} s",
+        bytes as f64 / (1024.0 * 1024.0),
+        wrote.elapsed().as_secs_f64(),
+    );
+    let blf = path.to_str().unwrap().to_string();
+
+    let report = |phase: &str, secs: f64| {
+        println!(
+            "[bench] {phase:<10} {:>8.2} s  {:>9.0} frames/s  {:>7.2} us/frame",
+            secs,
+            frames as f64 / secs,
+            secs * 1e6 / frames as f64,
+        );
+    };
+
+    // -- census: the channel -> bus mapping pre-pass.
+    let t = std::time::Instant::now();
+    let census = cannet_blf::scan_blf(&blf).unwrap();
+    report("census", t.elapsed().as_secs_f64());
+    assert_eq!(census.channels.len(), usize::from(CHANNELS));
+
+    // -- markers: the whole-file second decode the notes pre-pass ran.
+    let t = std::time::Instant::now();
+    let notes = read_notes_from_blf(&blf).unwrap();
+    report("markers", t.elapsed().as_secs_f64());
+    assert!(!notes.is_empty(), "marker pre-pass must see the markers");
+
+    // -- decode: `next_frame()` alone (inflate + per-object decode).
+    let mut source = BlfCanFrameSource::open(&blf).unwrap();
+    let t = std::time::Instant::now();
+    let mut n = 0usize;
+    while let Some(frame) = source.next_frame().unwrap() {
+        std::hint::black_box(&frame);
+        n += 1;
+    }
+    report("decode", t.elapsed().as_secs_f64());
+    assert_eq!(n, frames);
+
+    // -- convert: + `RawTraceFrame::from`, routing, and the verifier probe.
+    let channel_to_bus: Vec<(u8, Option<String>)> = (0..CHANNELS)
+        .map(|c| (c, Some(format!("bus{c}"))))
+        .collect();
+    let verifier = verification::VerificationState::default();
+    let mut source = BlfCanFrameSource::open(&blf).unwrap();
+    let t = std::time::Instant::now();
+    let mut kept = 0usize;
+    while let Some(frame) = source.next_frame().unwrap() {
+        let mut raw = RawTraceFrame::from(frame);
+        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            continue;
+        };
+        raw.bus_id = bid;
+        let _checked = verifier.wants(&raw).then(|| raw.clone());
+        kept += 1;
+        std::hint::black_box(&raw);
+    }
+    report("convert", t.elapsed().as_secs_f64());
+    assert_eq!(kept, frames);
+
+    // -- full: the whole shared pump body against the production
+    //    disk-spill store, with and without the observers the running
+    //    app puts on the same lock.
+    for observers in [false, true] {
+        let store_dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(TraceStore::new_disk(store_dir.path()).unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let watchers: Vec<std::thread::JoinHandle<()>> = if observers {
+            let flusher = {
+                let (store, stop) = (Arc::clone(&store), Arc::clone(&stop));
+                std::thread::spawn(move || {
+                    let mut last = 0usize;
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        let len = store.len();
+                        if len != last {
+                            let _ = store.flush_async();
+                            last = len;
+                        }
+                    }
+                })
+            };
+            // The `trace-grew` emitter: one `status_snapshot` plus a
+            // live-tail slice every 100 ms, both under the store lock.
+            let grew = {
+                let (store, stop) = (Arc::clone(&store), Arc::clone(&stop));
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        let snap = store.status_snapshot();
+                        let end = snap.len;
+                        let begin = end.saturating_sub(200);
+                        std::hint::black_box(store.slice(begin, end));
+                    }
+                })
+            };
+            vec![flusher, grew]
+        } else {
+            Vec::new()
+        };
+        let mut source = BlfCanFrameSource::open(&blf).unwrap();
+        let t = std::time::Instant::now();
+        let mut first = true;
+        while let Some(frame) = source.next_frame().unwrap() {
+            let mut raw = RawTraceFrame::from(frame);
+            let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+                continue;
+            };
+            raw.bus_id = bid;
+            if first {
+                store.start_session(raw.timestamp_ns);
+                first = false;
+            }
+            let checked = verifier.wants(&raw).then(|| raw.clone());
+            if store.append(raw).is_some() {
+                std::hint::black_box(&checked);
+            }
+        }
+        let secs = t.elapsed().as_secs_f64();
+        stop.store(true, Ordering::Relaxed);
+        for w in watchers {
+            w.join().unwrap();
+        }
+        report(if observers { "full+obs" } else { "full" }, secs);
+        assert_eq!(store.len(), frames);
+    }
+}
