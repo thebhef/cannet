@@ -320,15 +320,6 @@ impl SignalCache {
         }
     }
 
-    /// Queue the level files' dirty pages for writeback, so a persisted
-    /// manifest describes bytes the OS has been told to write. Best-effort,
-    /// like every other scratch durability point (ADR 0002 DS-2).
-    fn flush_levels(&self) {
-        for level in &self.levels {
-            let _ = level.flush();
-        }
-    }
-
     /// Front-trim every level to the truncation time `ts_seconds` (ADR 0002
     /// DS-8 / 6d): drop the points (and their leading segment files) older
     /// than the live window, so the pyramid's footprint follows the raw
@@ -908,9 +899,10 @@ impl SignalCacheStore {
     /// over the same capture serves them instead of re-decoding the whole
     /// history. A no-op when nothing has moved since the last write.
     ///
-    /// `sync` asks each level for a synchronous flush first (the shutdown
-    /// path); the periodic caller leaves writeback to the OS, the same
-    /// DS-2 relaxation the raw store's async flush takes.
+    /// Writeback of the level files themselves is left to the OS — the
+    /// DS-2 relaxation the raw store's async flush takes, and the whole
+    /// cost of this call at exit (ADR 0047). The manifest is small and is
+    /// written with the normal file API, so it lands regardless.
     ///
     /// Also a no-op while a set is still **staged**: an unjudged candidate
     /// is never overwritten, because the manifest is the only thing that
@@ -927,15 +919,10 @@ impl SignalCacheStore {
     }
 
     /// Returns whether a manifest was written.
-    pub fn persist(&self, validity: &PyramidValidity, sync: bool) -> bool {
+    pub fn persist(&self, validity: &PyramidValidity) -> bool {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         if !caches.dirty || caches.staged.is_some() {
             return false;
-        }
-        if sync {
-            for cache in caches.by_key.values() {
-                cache.flush_levels();
-            }
         }
         let manifest = PyramidManifest {
             validity: validity.clone(),
@@ -2576,7 +2563,7 @@ mod tests {
 
         let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
             assert!(cache.needs_persist());
-            assert!(cache.persist(&v, false));
+            assert!(cache.persist(&v));
             cache.clear();
         });
         assert!(finished, "the exit path waited for the rebuild");
@@ -2622,7 +2609,7 @@ mod tests {
         let cache = SignalCacheStore::new(root);
         let built = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(built.len(), 200);
-        cache.persist(v, true);
+        cache.persist(v);
         store.len()
     }
 
@@ -2747,7 +2734,7 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(
-            !reopened.persist(&validity("capture-b", "dbc-a", 0), false),
+            !reopened.persist(&validity("capture-b", "dbc-a", 0)),
             "nothing is written while a candidate is unjudged",
         );
         // …so the candidate is still there to be judged.
@@ -2821,7 +2808,7 @@ mod tests {
         let cache = SignalCacheStore::new(root.path());
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         cache.evict_below(1000.0);
-        cache.persist(&v, true);
+        cache.persist(&v);
 
         let reopened = SignalCacheStore::new(root.path());
         assert_eq!(reopened.restore(&v, store.len()), 1);
@@ -3055,7 +3042,7 @@ mod tests {
             low_water: 0,
         };
         let persist_at = std::time::Instant::now();
-        assert!(cache.persist(&validity, true), "the manifest is written");
+        assert!(cache.persist(&validity), "the manifest is written");
         let persist_secs = persist_at.elapsed().as_secs_f64();
         // The shutdown flush again, over the pages the one above just wrote
         // back. This is the number a real exit pays: the pyramid was built
@@ -3063,7 +3050,7 @@ mod tests {
         // first figure is the worst case (build, then immediately quit).
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         let again_at = std::time::Instant::now();
-        assert!(cache.persist(&validity, true));
+        assert!(cache.persist(&validity));
         let again_secs = again_at.elapsed().as_secs_f64();
         drop(cache);
 

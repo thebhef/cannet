@@ -71,6 +71,26 @@ serve rebuilds exactly as before. **Rejection is the safe direction and
 is always available**, which is what makes an aggressive reuse rule
 tolerable: the raw frames remain the source of truth.
 
+**The manifest is written on a periodic cadence and once more at exit;
+the level files' own writeback is left to the OS.** The manifest is a
+small JSON file written through the normal file API, so it lands
+immediately. The levels are mapped pages, and asking the OS to write
+every dirty one of them synchronously costs seconds at exit on a pyramid
+that has just been built — which is a cost paid on the one path that
+must never make the user wait ([ADR 0048](0048-no-model-lock-across-a-rebuild.md)).
+A normal process exit leaves those pages to the OS's modified-page
+writer, the same DS-2 relaxation the raw store's periodic flush takes.
+
+The residual exposure is narrow and named: a **power loss or hard kill**
+in the window between quitting and the OS completing writeback can leave
+a manifest describing pages that never reached the disk. The validity
+key does not detect that — it proves the pyramid describes the right
+capture, not that its bytes are on the platter. What it costs is a
+rebuild's worth of samples in a *derived* structure, and the raw frames
+that would rebuild them are flushed synchronously on the same exit path.
+Trading that against seconds of unresponsive exit on every quit is the
+deliberate choice.
+
 Two lifecycle rules complete it:
 
 - **A new capture wipes the pyramids**, including anything a prior
@@ -147,6 +167,9 @@ Two lifecycle rules complete it:
   eviction trims them with the raw store.
 - Every rejection path costs exactly what today costs: a wipe and a
   rebuild on the next serve. There is no half-adopted state.
+- Exit does not wait on the pyramid scratch. The trace store's own
+  synchronous shutdown flush (DS-2) is unchanged; the pyramid's
+  contribution to exit is one manifest write.
 - `cannet-spill`'s sample sequence gained a reopen path. It still carries
   no manifest of its own — `(len, first_slot)` from the caller's manifest
   is enough to map it back — because the caller is what decides validity.
