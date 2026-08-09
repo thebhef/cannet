@@ -505,6 +505,122 @@ made the launch *slower*: at 4 M frames over 96 signals the restore took
   one run. The remaining ~1 ms/file is the crate's documented 16-way
   floor, not decode.
 
+### 2026-08-08 — phase 58.D, item 4 (one decode pass per message)
+
+Branch `task58d-decode-sharing`, off `task58c-pyramid-persistence`
+(db8ef07).
+
+| commit | subject |
+| --- | --- |
+| 87cc507 | `test(gui)`: pin the per-signal decode semantics of a catch-up |
+| ad1e362 | `perf(gui)`: catch a message's signals up in one decode pass |
+| 7c052ed | `test(gui)`: measure a first-use rebuild per signals-per-message |
+| 4d5a6ab | `docs(gui)`: cite the first-DBC-wins rule where it is actually stated |
+
+Tests after the slice: `cannet-gui` 522 + 4 ignored benchmarks (was
+512 + 4). `cargo clippy -p cannet-gui --all-targets` clean. No other
+crate and no frontend code touched — `sample_signals` and
+`signal_min_max` keep their wire shapes; the change is entirely behind
+them.
+
+**What landed**
+
+- `signal_sampler::sample_shared` — decode one frame **once** for
+  several signals of the same message, writing one `Option<f64>` per
+  requested name into a caller-owned scratch buffer (so a per-frame
+  loop allocates nothing). It replaces `sample_one`, which decoded the
+  whole message and kept one value.
+- `catch_up_group_chunked` — the catch-up scan, now over a *group* of
+  targets sharing a `(message_id, extended)`. It keeps the chunked
+  walk 58.C's first-use work depends on, and keeps three things per
+  target through the shared pass:
+  - **provenance**: each name takes the first loaded database that
+    yields *that name*, so where two databases overlap on a message,
+    two of its signals still resolve to two different databases;
+  - **bus scoping**: the filter is the target's, so two series on one
+    id scoped to different buses keep their own frame sets;
+  - **cursors**: the scan starts at the group's `min(next_index)` and
+    the frame index each fetch returns — previously discarded — gates
+    each target, so a series joining a message already being plotted
+    reads the whole history while the incumbents append nothing twice.
+- `SignalCacheStore::slice_many` / `min_max_many` take the batch the
+  two commands already had, group it, and catch each group up once.
+  `slice` / `min_max` remain as the one-query form (a group of one),
+  which is exactly what the catch-up did before — so the equivalence
+  arm and the old benchmark shape are both still expressible.
+
+**The red-green anchor, and its falsification**
+
+The equivalence test came first and is the bar: over a capture mixing
+two overlapping databases, bus tags, a multiplexed message, an extended
+id and undecodable frames — longer than one scan chunk — the grouped
+path must produce the same served windows *and* the same pyramids as
+catching each signal up alone: every level slot for slot, plus the fold
+cursors, decode cursors and all-time extents.
+
+- *Hypothesis.* The tests pin the hazard they claim to: a shared pass
+  that resolved one database per **message** would be caught.
+- *Experiment.* Break `sample_shared` to stop at the first database
+  that decodes the message, and run the suite.
+- *Data.* Six tests fail — the equivalence anchor, both provenance pins
+  (cache-level and sampler-level), the heterogeneous-cursor test, the
+  group fetch-count test, and the mid-capture-join test.
+- *Conclusion.* The pins are live, not decorative. Reverted; suite green.
+
+**The measurement**
+
+`bench_first_use_rebuild`, extended (not replaced) with a
+`CANNET_BENCH_SIGNALS_PER_MSG` dimension — the same signal count packed
+into fewer, wider FD messages, which is the cell-style shape this item
+was groomed from — and with **both** arms over one capture: the shared
+pass a plot fetch runs, and the same signals caught up one at a time
+(the catch-up before this change). The arms assert equal series before
+their times are compared, so the ratio is over identical output. The
+shared arm runs first, on cold pages, so the ratio is a lower bound.
+
+```sh
+CANNET_BENCH_FRAMES=2000000 CANNET_BENCH_SIGNALS=96 \
+CANNET_BENCH_SIGNALS_PER_MSG=16 cargo test -p cannet-gui --release \
+    bench_first_use_rebuild -- --ignored --nocapture
+```
+
+Release, 2 M synthetic frames, 96 signals, first use of every signal:
+
+| signals/message | per signal (before) | shared pass (after) | speedup |
+| --- | --- | --- | --- |
+| 1 (control) | 2.90 s | 2.97 s | 1.0× |
+| 4 | 8.59 s | 3.94 s | 2.2× |
+| 16 | 73.93 s | 10.85 s | 6.8× |
+
+The control is the point: at one signal per message a group has one
+member and there is nothing to share, so the two arms measure the same
+work and agree inside noise. The win is the *repeat* — at 16 signals
+per message the old path fetched each frame 16 times and fully decoded
+it 16 times, keeping one of 16 values each pass.
+
+It is not 16× because a decode is not the only cost, and because
+`decode_raw` decodes every signal of the message either way: the shared
+pass still does 16 signal-decodes per frame, it just does them once
+instead of 16 times. The residue is the fetch, the per-frame filtering
+and the 16 pyramid appends, which are paid per signal in both arms.
+
+Debug build (the regime 58.A showed the reported multi-minute symptom
+lives in), 200 k frames, 96 signals at 16 per message: per signal
+**110.03 s**, shared **13.91 s** — **7.9×**. Both arms are linear in
+capture length, so the ratio is the number that carries; the absolute
+figures do not extrapolate to the reference capture, because this
+synthetic puts *every* frame on one of the six plotted messages while a
+real capture's plotted messages are a fraction of its traffic.
+
+The restore arm (ADR 0047) is measured beside it and now looks better
+at the realistic shape than 58.C's log expected: at 16 signals per
+message, restore + serve is 5.61 s against the 10.85 s shared rebuild
+(1.9×), where at 1 signal per message the two are level (2.92 s vs
+2.97 s). 58.C predicted this item would *narrow* the persistence's
+margin; over wide messages it widens it instead, because a wider
+message makes the rebuild more expensive per frame while the restore
+is `O(pyramid segment files)` regardless.
+
 ## Blockers / side effects
 
 - **The disk-spill segment write is ~43 % of the per-frame ingest
@@ -611,3 +727,44 @@ made the launch *slower*: at 4 M frames over 96 signals the restore took
   the thin wiring inside the command. Adding a mock-`AppHandle`
   dependency to close that gap is a call for a future phase to make
   deliberately, not a drive-by here.
+- **The signal-cache mutex is now held for a whole batch, not a whole
+  signal.** The catch-up work per fetch dropped 6.8× at the reference
+  message width, but a fetch used to take and release the lock once per
+  queried signal, and now takes it once for all of them. So the *total*
+  hold is much shorter while the single longest uninterrupted hold is
+  longer: another view's `min_max`, or the flusher's `evict_below`, used
+  to be able to slot in between two signals of a cold rebuild and no
+  longer can. This is squarely item 5's territory (per-key / per-message
+  locking, or rebuilding outside the map lock) and it is flagged here so
+  58.E sizes the hold it has to break up correctly: it is one batch of a
+  plot fetch, not one signal.
+- **`decode_raw` still decodes every signal of the message**, so the
+  shared pass removes the *repeat* but not the width: a 16-signal
+  message costs 16 signal-decodes per frame even for a view plotting
+  one of them. Measured in the same run — 0.015 µs/frame/signal at one
+  signal per message against 0.057 at sixteen, both shared. Cutting
+  that needs a decode entry point that extracts only the requested
+  bits, which is a `cannet-dbc` change and interacts with the
+  multiplexor (the selector has to be decoded either way). Out of this
+  phase's scope; recorded with the numbers so the decision is made on
+  data.
+- **The shared pass keeps a whole message group's pyramid levels hot at
+  once.** The benchmark's working-set delta over the shared arm grows
+  with message width — 27 B/frame at one signal per message, 347 B/frame
+  at sixteen (release, 2 M frames). That is the pyramid bytes the pass
+  writes (sixteen 16-byte points per frame) landing in sixteen mapped
+  level files simultaneously rather than one file at a time across
+  sixteen sequential passes; the chunked scan still bounds the
+  *materialized frames* exactly as before. Only the shared arm is
+  sampled, so the comparison with the per-signal arm's residency is
+  reasoned, not measured. They are mapped pages, so the kernel reclaims
+  them under pressure — named because it is a real change in shape, not
+  because it is known to hurt.
+- **`signal_sampler::sample_signal` is now the only entry point in that
+  module with no production caller** — it was already reached solely by
+  its own tests before this phase, and removing pre-existing dead code
+  is not this change's business (working agreement, § Surgical changes).
+  `sample_one`, which *this* change orphaned, was removed with its test
+  replaced by two on `sample_shared`.
+- **The ADR-0031 perf gate was not run** in this phase, per the phase
+  brief; the orchestrator runs it after.
