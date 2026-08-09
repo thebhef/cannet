@@ -3653,6 +3653,72 @@ describe("PlotPanel solo", () => {
       await waitFor(() => expect(effective()?.[2]).toBeCloseTo(500 / 3000, 6));
     });
   });
+
+  it("repaints a solo change that landed while a fetch was in flight", async () => {
+    // The same repaint, this time asked for while the area is waiting on
+    // a sample it just requested — the shape of "I zoomed, then cleared
+    // the box". A stopped trace has no self-paced tick to retry with, so
+    // a repaint the busy guard turns away is turned away for good and
+    // the axis keeps the scale it had until the next pan or zoom.
+    mockSignalExtents.LimitNominal = { lo: 0, hi: 3000 };
+    mockSignalExtents.LimitEffective = { lo: 0, hi: 500 };
+    mockSampleSeries.LimitNominal = { t: [0, 1, 2], v: [3000, 3000, 3000] };
+    mockSampleSeries.LimitEffective = { t: [0, 1, 2], v: [0, 250, 500] };
+    const amps = (signalName: string) => ({
+      busId: null,
+      messageId: 256,
+      extended: false,
+      signalName,
+      messageName: "EngineData",
+      unit: "A",
+      color: "#4ecbff",
+    });
+    const registry = makeRegistry({
+      id: "el-solo-inflight",
+      config: {
+        areas: [
+          { id: "a1", yAxisMode: "per-unit", signals: [amps("LimitNominal"), amps("LimitEffective")] },
+        ],
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+    await withSizedCanvas(async () => {
+      renderPanel({ params: { elementId: "el-solo-inflight" }, registry });
+      const effective = () =>
+        ((uplotInstances[uplotInstances.length - 1]?.data ?? []) as (number | null)[][])[2];
+      await waitFor(() => expect(effective()?.[2]).toBeCloseTo(500 / 3000, 6));
+      // Past the one-shot post-mount rebuild, so the only fetch in
+      // flight below is the one this test parks.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+
+      typeSolo("LimitEffective");
+      await waitFor(() => expect(effective()?.[2]).toBeCloseTo(1, 6));
+
+      // Park the fetch a window change asks for…
+      mockSampleStall.on = true;
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "All data" }));
+      });
+      await waitFor(() => expect(mockSampleStall.pending.length).toBeGreaterThan(0));
+
+      // …clear solo while it is still out, and let it land.
+      typeSolo("");
+      mockSampleStall.on = false;
+      await act(async () => {
+        for (const resolve of mockSampleStall.pending.splice(0)) {
+          resolve(
+            encodeSample([
+              { t: [0, 1, 2], v: [3000, 3000, 3000] },
+              { t: [0, 1, 2], v: [0, 250, 500] },
+            ]),
+          );
+        }
+      });
+      await waitFor(() => expect(effective()?.[2]).toBeCloseTo(500 / 3000, 6));
+    });
+  });
 });
 
 describe("PlotPanel signal-row selection", () => {
