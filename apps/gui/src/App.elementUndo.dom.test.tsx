@@ -700,6 +700,67 @@ describe("element undo", () => {
     expect(document.querySelector(".graph-panel")).not.toBeNull();
   }, 30_000);
 
+  it("a drag whose mouse-up goes missing does not swallow the next edit", async () => {
+    // The pointer is released outside the window, so no mouseup ever
+    // arrives and the gesture is never closed by its own end. The next
+    // press has to close it — otherwise the edit that press makes would
+    // join the drag's step and stop being undoable on its own.
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Add plot panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
+    });
+    const sidePanelWidth = () =>
+      parseFloat(
+        document.querySelector<HTMLElement>(".plot-panel .plot-area-signals")!.style.flexBasis,
+      );
+    const before = sidePanelWidth();
+
+    await act(async () => {
+      fireEvent.mouseDown(document.querySelector(".plot-panel .plot-area-resizer")!, {
+        clientX: 500,
+      });
+    });
+    for (const clientX of [480, 460]) {
+      await act(async () => {
+        window.dispatchEvent(new MouseEvent("mousemove", { clientX }));
+      });
+    }
+    expect(sidePanelWidth()).toBe(before + 40);
+    // …and no mouseup.
+
+    // The next press is a different interaction: a click on the trace
+    // panel's mode toggle.
+    const modeButton = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".trace-panel .mode-toggle button"),
+    ).find((b) => b.textContent?.replace(/\s+/g, " ").trim() === "trace")!;
+    await act(async () => {
+      fireEvent.pointerDown(modeButton);
+      fireEvent.click(modeButton);
+    });
+    expect(traceMode()).toBe("trace");
+
+    // Two edits, two steps: the first chord takes back only the mode
+    // change, and the drag is still there behind it.
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      if (traceMode() !== "by ID") throw new Error(`undo left mode "${traceMode()}"`);
+    });
+    expect(sidePanelWidth()).toBe(before + 40);
+
+    await act(async () => {
+      key({ key: "z", ctrlKey: true });
+    });
+    await waitFor(() => {
+      const width = sidePanelWidth();
+      if (width !== before) throw new Error(`second undo left the side panel at ${width}`);
+    });
+  }, 30_000);
+
   it("a typed rename is one step, not one per keystroke", async () => {
     await mountApp();
     await act(async () => {
