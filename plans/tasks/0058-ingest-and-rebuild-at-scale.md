@@ -930,8 +930,61 @@ contention overhead. Recorded as a blocker below; the regime is the
 first-ever plotting of a large capture, which is the one persisted
 pyramids exist to stop repeating.
 
+### 2026-08-09 — fix round, item 2's scan: what the wait actually is
+
+Branch `task59h-live-fixes`. Owner report: "it takes a bit long to show
+the BLF dialog and there's no feedback until it shows up… it seems like
+we might be doing a pretty detailed scan."
+
+- *Observation.* 58.A recorded the census at **0.13 µs/frame** in a
+  release build (0.82 s over 6.53 M frames). The reported wait is far
+  longer than that.
+- *Hypothesis.* The scan is header-only as designed, and the wait is the
+  **debug build** the owner runs under `tauri dev`, where 58.A already
+  measured the whole ingest path an order of magnitude slower.
+- *Experiment.* Run `bench_blf_import` unoptimized over a 2 M-frame
+  synthetic and compare its `census` phase against the release figure,
+  and against the same walk *with* per-object decode (`markers*`), which
+  is the only walk that does strictly more work.
+- *Data.* Debug: census **6.14 s / 3.07 µs/frame**, `markers*` 7.18 s /
+  3.59 µs/frame, `decode` 8.38 s / 4.19 µs/frame. Release (58.A, same
+  harness): census 0.13, `markers*` 0.19, `decode` 0.26 µs/frame.
+- *Conclusion.* Confirmed, twice over. The debug census is **24× the
+  release census**, which puts the reference workload's 6.53 M frames at
+  ~20 s in a dev build against ~0.85 s in a shipped one — the reported
+  wait, to the second. And the census is **0.85× a walk that decodes
+  every object** (0.66× in release), so at most a seventh of it can be
+  anything but the inflate and framing every reader pays: there is no
+  hidden per-frame work to cut. The command path end-to-end agrees —
+  `scan_blf_channels` runs one `scan_blf` and projects only the marker
+  records (rare) into `Note`s; nothing else walks.
+
+**So the fix is feedback, not the scan.** `StatusInputs` gains
+`scanningBlfPath`, and `splitStatus` reports `Scanning <file> …` as
+*resting* activity (the existing `loading` idiom — ongoing work rests,
+discrete outcomes flash) which outranks a session already on screen,
+because that session is not what the user is waiting on. `App` sets it
+around the `scan_blf_channels` await and clears it in a `finally`, so a
+failed scan reverts to the error notice rather than leaving the line
+stuck.
+
+Tests: `statusLine.test.ts` +2 (watched fail against the unchanged
+`splitStatus`), and `App.blfScanNotice.dom.test.tsx` drives the real App
+with the scan command stalled — notice up and no dialog while it walks,
+dialog up and notice gone after. Watched fail with the `App` wiring
+removed ("no scan notice, status was: Open a BLF log…").
+
 ## Blockers / side effects
 
+- **`scan_blf_channels` is an `async fn` that never awaits, so its walk
+  runs on an async-runtime worker.** That is the shape ADR 0048 and
+  58.E's `off_async_workers` exist for — capture-scaled work holding the
+  worker that polls it — and at ~20 s per dev-build scan it parks one
+  for the duration. Left alone deliberately: nothing measured shows harm
+  (Tauri's runtime has a worker per core, the scan takes no lock, and
+  close is unaffected), so there is no failing test to hold a fix, and
+  the item's brief was to fix what the data shows. One `spawn_blocking`
+  if it ever does bite.
 - **Flushing the pyramid on a cadence costs a cold rebuild 3.5× its
   wall time** (5.06 s → 17.63 s at 96 signals over 4 M frames,
   measured). The synchronous flush is the owner's ruling and the
