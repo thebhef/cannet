@@ -777,9 +777,14 @@ resample at the end.
   key, in the order they are written, which a `$N` suffix on a *named*
   group overrides (`Cell(?<cell$2>\d+)_Bank(?<bank$1>\d)` keys by bank
   first, and the suffix is not shown). `(?:…)` captures nothing, so it
-  opts a group out of the key. A pattern with no capture groups steps
-  one matching series at a time, in panel order.
-  A **page** is *Solo groups per page* consecutive groups (Settings →
+  opts a group out of the key. **A pattern with no capture groups has
+  no pages at all** — there is no index to page by, so it is a plain
+  flat filter: everything it matches is on show at once, in every area
+  that holds a match (and an area with none is left alone, as ever), the
+  read-out says `all (96)`, and the step controls are disabled because
+  there is nowhere to step.
+  For a capturing pattern, a **page** is *Solo groups per page*
+  consecutive groups (Settings →
   Plot; 1 by default), so `Cell0*(\d+)` at 5 per page gives cells 0–4,
   then 5–9. The **‹ / ›** controls beside the box — and **PgUp / PgDn**
   anywhere in the plot panel, clicking any part of it, the canvas

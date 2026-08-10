@@ -3421,9 +3421,15 @@ button.trace-event-swatch {
   padding: 0 0.3rem;
   border-radius: 3px;
 }
-.plot-solo-step:hover,
+.plot-solo-step:hover:not(:disabled),
 .plot-solo-clear:hover {
   background: var(--surface-control-hover);
+}
+/* Nothing to step through — a flat (captureless) pattern, or one that
+   matched nothing. */
+.plot-solo-step:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .plot-perf {
   margin-left: auto;

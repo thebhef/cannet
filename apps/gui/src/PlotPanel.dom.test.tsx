@@ -3288,23 +3288,20 @@ describe("PlotPanel solo", () => {
     ]);
 
     // …and they are first-class members of the match list: the
-    // read-out, the pages and the group menu all include them.
+    // read-out, the mask and the match menu all include them.
     typeSolo("Limit");
-    expect(screen.getByLabelText("solo position").textContent).toBe(
-      "1/2 · LimitNominal (1 of 2)",
-    );
+    expect(rowVisibility()).toEqual([
+      ["Cell1", true],
+      ["LimitNominal", true],
+      ["LimitEffective", true],
+    ]);
+    expect(screen.getByLabelText("solo position").textContent).toBe("all (2)");
     fireEvent.contextMenu(document.querySelector(".plot-solo")!);
     expect(
       Array.from(document.querySelectorAll('[role="menuitemcheckbox"]')).map((b) =>
         b.getAttribute("aria-label"),
       ),
     ).toEqual(["LimitNominal", "LimitEffective"]);
-    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
-    expect(rowVisibility()).toEqual([
-      ["Cell1", true],
-      ["LimitNominal", false],
-      ["LimitEffective", true],
-    ]);
   });
 
   it("never touches the other series' persisted hidden flags", () => {
@@ -3461,9 +3458,10 @@ describe("PlotPanel solo", () => {
       );
     expect(collapsedFlags()).toEqual([false, false, false]);
 
-    // A fresh pattern lands on page 1, so Area 2's match is off the
-    // page and it collapses; Area 3 never matched and keeps its height.
-    typeSolo("Cell");
+    // A fresh capturing pattern lands on page 1, so Area 2's match is
+    // off the page and it collapses; Area 3 never matched and keeps its
+    // height.
+    typeSolo("(Cell\\d)");
     expect(collapsedFlags()).toEqual([false, true, false]);
     expect(persistedAreas(api)[1]?.collapsed).toBeFalsy();
     fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
@@ -3481,8 +3479,9 @@ describe("PlotPanel solo", () => {
     const { api } = renderPanel({ params: { elementId: "el-solo-save" }, registry });
     // Absent while solo is off — the blob stays sparse, like `collapsed`.
     expect(persistedSolo(api)).toBeUndefined();
+    // Captureless, so there is no page to persist — the pattern alone.
     typeSolo("Cell16");
-    expect(persistedSolo(api)).toEqual({ pattern: "Cell16", page: 0 });
+    expect(persistedSolo(api)).toEqual({ pattern: "Cell16" });
 
     cleanup();
     const restored = cellRegistry("el-solo-restore", { solo: { pattern: "Cell16" } });
@@ -3520,17 +3519,18 @@ describe("PlotPanel solo", () => {
     const registry = stepRegistry("el-solo-step");
     renderPanel({ params: { elementId: "el-solo-step" }, registry });
 
-    // A fresh pattern lands on page 1 of its three one-group pages.
-    typeSolo("Cell");
+    // A fresh capturing pattern lands on page 1 of its three one-group
+    // pages.
+    typeSolo("(Cell\\d)");
     const next = screen.getByRole("button", { name: "next solo match" });
     const prev = screen.getByRole("button", { name: "previous solo match" });
     expect(visibleNames()).toEqual(["Cell1"]);
-    expect(soloPosition()).toBe("1/3 \u00b7 Cell1 (1 of 3)");
+    expect(soloPosition()).toBe('1/3 \u00b7 "Cell1" (1 of 3)');
 
     fireEvent.click(next);
     fireEvent.click(next);
     expect(visibleNames()).toEqual(["Cell3"]);
-    expect(soloPosition()).toBe("3/3 \u00b7 Cell3 (1 of 3)");
+    expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
     // Past the last page is the whole matched set, not page 1 \u2014 and
     // PackVoltage stays masked, since its area did match.
     fireEvent.click(next);
@@ -3538,12 +3538,55 @@ describe("PlotPanel solo", () => {
     expect(soloPosition()).toBe("all (3)");
     // ...and one more press opens page 1 again.
     fireEvent.click(next);
-    expect(soloPosition()).toBe("1/3 \u00b7 Cell1 (1 of 3)");
+    expect(soloPosition()).toBe('1/3 \u00b7 "Cell1" (1 of 3)');
     // Backwards off page 1 is the whole set too, and again round.
     fireEvent.click(prev);
     expect(soloPosition()).toBe("all (3)");
     fireEvent.click(prev);
-    expect(soloPosition()).toBe("3/3 \u00b7 Cell3 (1 of 3)");
+    expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
+  });
+
+  it("shows every captureless match at once, and leaves a zero-match area alone", () => {
+    // A pattern that captures nothing has no index to page by, so it is
+    // a flat filter: whatever matches, in every signal panel, all at
+    // once \u2014 and a panel with no match is left alone, as ever.
+    const registry = makeRegistry({
+      id: "el-solo-flat",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1"), sig("Cell2")] },
+          { id: "a2", signals: [sig("Cell3"), sig("PackVoltage")] },
+          { id: "a3", signals: [sig("Current", "A")] },
+        ],
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+    renderPanel({ params: { elementId: "el-solo-flat" }, registry });
+
+    typeSolo("Cell");
+    expect(rowVisibility()).toEqual([
+      ["Cell1", true],
+      ["Cell2", true],
+      ["Cell3", true],
+      // Area 2 matched, so solo applies to it and masks its non-match\u2026
+      ["PackVoltage", false],
+      // \u2026while Area 3 matched nothing and is untouched.
+      ["Current", true],
+    ]);
+    expect(soloPosition()).toBe("all (3)");
+
+    // Nothing to step: the controls are visibly inert, and the keys
+    // move nothing.
+    expect(screen.getByRole("button", { name: "next solo match" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "previous solo match" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    fireEvent.keyDown(document.querySelector(".plot-panel")!, { key: "PageDown" });
+    expect(soloPosition()).toBe("all (3)");
+
+    // A capturing pattern over the same rows still pages.
+    typeSolo("(Cell\\d)");
+    expect(soloPosition()).toBe('1/3 \u00b7 "Cell1" (1 of 3)');
+    expect(screen.getByRole("button", { name: "next solo match" })).not.toBeDisabled();
   });
 
   it("steps by capture-group key, so one page covers every area sharing it", () => {
@@ -3579,16 +3622,16 @@ describe("PlotPanel solo", () => {
   it("cycles the pages with PgDn / PgUp while the panel has focus", () => {
     const registry = stepRegistry("el-solo-keys");
     renderPanel({ params: { elementId: "el-solo-keys" }, registry });
-    typeSolo("Cell");
+    typeSolo("(Cell\\d)");
     const panel = document.querySelector(".plot-panel")!;
 
     fireEvent.keyDown(panel, { key: "PageDown" });
-    expect(soloPosition()).toBe("2/3 \u00b7 Cell2 (1 of 3)");
+    expect(soloPosition()).toBe('2/3 \u00b7 "Cell2" (1 of 3)');
     fireEvent.keyDown(panel, { key: "PageDown" });
     fireEvent.keyDown(panel, { key: "PageDown" });
     expect(soloPosition()).toBe("all (3)");
     fireEvent.keyDown(panel, { key: "PageUp" });
-    expect(soloPosition()).toBe("3/3 \u00b7 Cell3 (1 of 3)");
+    expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
 
     // ...and from inside the solo box itself, which is where focus sits
     // right after typing a pattern.
@@ -3604,20 +3647,20 @@ describe("PlotPanel solo", () => {
     try {
       const registry = stepRegistry("el-solo-page");
       renderPanel({ params: { elementId: "el-solo-page" }, registry });
-      typeSolo("Cell");
+      typeSolo("(Cell\\d)");
       // Three groups at two per page is two pages, the second short.
       expect(visibleNames()).toEqual(["Cell1", "Cell2"]);
-      expect(soloPosition()).toBe("1/2 \u00b7 Cell1\u2013Cell2 (2 of 3)");
+      expect(soloPosition()).toBe('1/2 \u00b7 "Cell1"\u2013"Cell2" (2 of 3)');
 
       const panel = document.querySelector(".plot-panel")!;
       fireEvent.keyDown(panel, { key: "PageDown" });
       expect(visibleNames()).toEqual(["Cell3"]);
-      expect(soloPosition()).toBe("2/2 \u00b7 Cell3 (1 of 3)");
+      expect(soloPosition()).toBe('2/2 \u00b7 "Cell3" (1 of 3)');
       fireEvent.keyDown(panel, { key: "PageDown" });
       expect(soloPosition()).toBe("all (3)");
       // The buttons walk the same cycle as the keys.
       fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
-      expect(soloPosition()).toBe("1/2 \u00b7 Cell1\u2013Cell2 (2 of 3)");
+      expect(soloPosition()).toBe('1/2 \u00b7 "Cell1"\u2013"Cell2" (2 of 3)');
     } finally {
       delete mockSettings.solo_page_size;
       await hydrateSettings();
@@ -3632,12 +3675,12 @@ describe("PlotPanel solo", () => {
     // not only while one of the toolbar's own controls holds focus.
     const registry = stepRegistry("el-solo-keys-anywhere");
     renderPanel({ params: { elementId: "el-solo-keys-anywhere" }, registry });
-    typeSolo("Cell");
+    typeSolo("(Cell\\d)");
 
     fireEvent.mouseDown(document.querySelector(".plot-area-canvas")!);
     expect(document.activeElement).toBe(document.querySelector(".plot-panel"));
     fireEvent.keyDown(document.activeElement!, { key: "PageDown" });
-    expect(soloPosition()).toBe("2/3 \u00b7 Cell2 (1 of 3)");
+    expect(soloPosition()).toBe('2/3 \u00b7 "Cell2" (1 of 3)');
 
     // A press headed for something that takes focus of its own is left
     // alone - the panel only claims what would otherwise fall out of it.
@@ -3673,9 +3716,9 @@ describe("PlotPanel solo", () => {
   it("restores the full view from a page on Escape", () => {
     const registry = stepRegistry("el-solo-step-escape");
     const { api } = renderPanel({ params: { elementId: "el-solo-step-escape" }, registry });
-    typeSolo("Cell");
+    typeSolo("(Cell\\d)");
     expect(visibleNames()).toEqual(["Cell1"]);
-    expect(persistedSolo(api)).toEqual({ pattern: "Cell", page: 0 });
+    expect(persistedSolo(api)).toEqual({ pattern: "(Cell\\d)", page: 0 });
 
     fireEvent.keyDown(soloBox(), { key: "Escape" });
     expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3", "PackVoltage"]);
@@ -3687,11 +3730,23 @@ describe("PlotPanel solo", () => {
     // nothing; page 1 is what the user typed it looking for.
     const registry = stepRegistry("el-solo-retype");
     renderPanel({ params: { elementId: "el-solo-retype" }, registry });
-    typeSolo("Cell");
+    typeSolo("(Cell\\d)");
     fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
-    expect(soloPosition()).toBe("2/3 \u00b7 Cell2 (1 of 3)");
-    typeSolo("Cell[23]");
-    expect(soloPosition()).toBe("1/2 \u00b7 Cell2 (1 of 2)");
+    expect(soloPosition()).toBe('2/3 \u00b7 "Cell2" (1 of 3)');
+    typeSolo("(Cell[23])");
+    expect(soloPosition()).toBe('1/2 \u00b7 "Cell2" (1 of 2)');
+  });
+
+  it("reads a page stored under a captureless pattern as the flat view", () => {
+    // The pattern lost its capture group (or the blob predates the rule);
+    // either way the stored page names nothing, so the flat filter is
+    // what restores.
+    const registry = stepRegistry("el-solo-restore-flat", {
+      solo: { pattern: "Cell", page: 2 },
+    });
+    renderPanel({ params: { elementId: "el-solo-restore-flat" }, registry });
+    expect(soloPosition()).toBe("all (3)");
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3"]);
   });
 
   it("pulls a restored page past the end onto the last one", () => {
@@ -3739,38 +3794,38 @@ describe("PlotPanel solo", () => {
   it("lists the step sequence's groups, marking the ones on show", () => {
     const registry = stepRegistry("el-solo-menu");
     renderPanel({ params: { elementId: "el-solo-menu" }, registry });
-    typeSolo("Cell");
+    typeSolo("(Cell\\d)");
     openSoloMenu();
     expect(menuItems()).toEqual([
-      ["Cell1", true],
-      ["Cell2", false],
-      ["Cell3", false],
+      ['"Cell1"', true],
+      ['"Cell2"', false],
+      ['"Cell3"', false],
     ]);
     // On the whole set, every group is on show.
     fireEvent.click(screen.getByRole("button", { name: "previous solo match" }));
     expect(menuItems()).toEqual([
-      ["Cell1", true],
-      ["Cell2", true],
-      ["Cell3", true],
+      ['"Cell1"', true],
+      ['"Cell2"', true],
+      ['"Cell3"', true],
     ]);
   });
 
   it("opens the page a group sits on, and stays open", () => {
     const registry = stepRegistry("el-solo-menu-jump");
     const { api } = renderPanel({ params: { elementId: "el-solo-menu-jump" }, registry });
-    typeSolo("Cell");
+    typeSolo("(Cell\\d)");
     openSoloMenu();
 
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Cell3" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell3"' }));
     expect(visibleNames()).toEqual(["Cell3"]);
-    expect(soloPosition()).toBe("3/3 \u00b7 Cell3 (1 of 3)");
+    expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
     // The menu stays up so several groups can be compared in one visit.
     expect(menuItems()).toEqual([
-      ["Cell1", false],
-      ["Cell2", false],
-      ["Cell3", true],
+      ['"Cell1"', false],
+      ['"Cell2"', false],
+      ['"Cell3"', true],
     ]);
-    expect(persistedSolo(api)).toEqual({ pattern: "Cell", page: 2 });
+    expect(persistedSolo(api)).toEqual({ pattern: "(Cell\\d)", page: 2 });
   });
 
   it("offers no match menu while the pattern is empty or unparseable", () => {
@@ -3786,13 +3841,13 @@ describe("PlotPanel solo", () => {
   it("opens the match menu on a left-click of the position read-out too", () => {
     const registry = stepRegistry("el-solo-menu-leftclick");
     renderPanel({ params: { elementId: "el-solo-menu-leftclick" }, registry });
-    typeSolo("Cell");
+    typeSolo("(Cell\\d)");
     expect(menuItems()).toEqual([]);
     fireEvent.click(screen.getByLabelText("solo position"));
     expect(menuItems()).toEqual([
-      ["Cell1", true],
-      ["Cell2", false],
-      ["Cell3", false],
+      ['"Cell1"', true],
+      ['"Cell2"', false],
+      ['"Cell3"', false],
     ]);
   });
 
@@ -3853,13 +3908,10 @@ describe("PlotPanel solo", () => {
     expect(soloPosition()).toBe('1/1 · "Limit" (2 of 2)');
   });
 
-  it("makes every match its own page when the solo pattern captures nothing", async () => {
-    // The same two rows under a pattern with no capture group: each
-    // match is its own positional group, so at the default page size of
-    // one, the page a freshly typed pattern lands on shows exactly one
-    // of them — the manual pick, since picks sort ahead of an area's
-    // pattern-provided rows. The pattern-provided row is on the next
-    // page, and the whole matched set is one step further round.
+  it("shows both row kinds at once when the solo pattern captures nothing", async () => {
+    // The same two rows under a pattern with no capture group. There is
+    // no index to page by, so it filters flat: both matches on show
+    // together, whichever kind of row they are, and nothing to step.
     const registry = mixedRegistry("el-solo-mixed-flat");
     renderPanel({ params: { elementId: "el-solo-mixed-flat" }, registry });
     await waitFor(() => expect(rowVisibility().length).toBe(4));
@@ -3868,28 +3920,14 @@ describe("PlotPanel solo", () => {
     expect(rowVisibility()).toEqual([
       ["LimitNominal", true],
       ["EngineTemp", false],
-      ["LimitEffective", false],
+      ["LimitEffective", true],
       ["EngineSpeed", true],
     ]);
-    expect(soloPosition()).toBe("1/2 · LimitNominal (1 of 2)");
+    expect(soloPosition()).toBe("all (2)");
 
     const next = screen.getByRole("button", { name: "next solo match" });
+    expect(next).toBeDisabled();
     fireEvent.click(next);
-    expect(rowVisibility()).toEqual([
-      ["LimitNominal", false],
-      ["EngineTemp", false],
-      ["LimitEffective", true],
-      ["EngineSpeed", true],
-    ]);
-    expect(soloPosition()).toBe("2/2 · LimitEffective (1 of 2)");
-
-    fireEvent.click(next);
-    expect(rowVisibility()).toEqual([
-      ["LimitNominal", true],
-      ["EngineTemp", false],
-      ["LimitEffective", true],
-      ["EngineSpeed", true],
-    ]);
     expect(soloPosition()).toBe("all (2)");
   });
 

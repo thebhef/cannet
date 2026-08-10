@@ -266,6 +266,7 @@ import {
   soloPageOfGroup,
   soloPathResolver,
   soloPatternInvalid,
+  soloPatternPages,
   soloRegex,
   soloToParams,
   soloVisibleKeys,
@@ -1468,7 +1469,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// Groups per page. Read on every render rather than memoised, so a
   /// changed setting takes effect on the next one.
   const soloPageSize = hostSettings().solo_page_size;
-  const soloPages = soloPageCount(soloGroupList.length, soloPageSize);
+  /// How many pages there are to walk — **none** for a pattern that
+  /// captures nothing, which is a flat filter rather than a step
+  /// sequence. Everything downstream reads off this: no pages means the
+  /// page clamps to `null` (the whole matched set, on show at once), the
+  /// cycle has nowhere to go, and the step controls are inert.
+  const soloPages = soloPatternPages(solo.pattern)
+    ? soloPageCount(soloGroupList.length, soloPageSize)
+    : 0;
   /// The page actually on show. The stored index is only re-interpreted
   /// here — never written back — so a restore against a catalog that
   /// has not populated the pattern's rows yet survives the wait.
@@ -1480,11 +1488,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [soloGroupList, soloPage, soloPageSize],
   );
   const soloInvalid = soloPatternInvalid(solo.pattern);
-  /// Entering or editing the pattern lands on page 1: a new pattern is
-  /// a new group list, and the first page of it is what the user is
-  /// looking for after typing. Emptying the box is solo off.
+  /// Entering or editing the pattern lands a *capturing* one on page 1:
+  /// a new pattern is a new group list, and the first page of it is what
+  /// the user is looking for after typing. A captureless pattern has no
+  /// page to land on — it filters flat — and emptying the box is solo
+  /// off.
   const setSoloPattern = useCallback(
-    (pattern: string) => setSolo({ pattern, page: pattern === "" ? null : 0 }),
+    (pattern: string) => setSolo({ pattern, page: soloPatternPages(pattern) ? 0 : null }),
     [],
   );
   const clearSolo = useCallback(() => setSolo(SOLO_OFF), []);
@@ -2280,6 +2290,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 className="plot-solo-step"
                 aria-label="previous solo match"
                 title="previous page (PgUp) — the cycle runs all → page 1 → … → page N → all"
+                // Nothing to step through: a pattern that captures
+                // nothing filters flat, and one that matches nothing has
+                // no pages either. Disabled rather than silently inert.
+                disabled={soloPages === 0}
                 onClick={() => stepSoloBy(-1)}
               >
                 ‹
@@ -2302,6 +2316,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 className="plot-solo-step"
                 aria-label="next solo match"
                 title="next page (PgDn) — the cycle runs all → page 1 → … → page N → all"
+                disabled={soloPages === 0}
                 onClick={() => stepSoloBy(1)}
               >
                 ›
