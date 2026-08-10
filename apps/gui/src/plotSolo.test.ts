@@ -1,27 +1,30 @@
 // The plot panel's solo model: one regex dialect with the area
 // patterns — the canonical `bus/ecu/message/signal` path, case-
-// sensitive — the match list in panel order, the visible subset (all
-// matches, or a stepped / checked selection of them), and the sparse
+// sensitive — the match list in panel order, the groups its captures
+// bucket the matches into, the page of groups on show, and the sparse
 // persisted shape.
 
 import { describe, expect, it } from "vitest";
 
 import {
   SOLO_OFF,
+  clampSoloPage,
   soloFromRaw,
-  soloMaskKey,
-  soloMaskSignals,
   soloGroups,
   soloKeySlots,
+  soloLabel,
+  soloMaskKey,
+  soloMaskSignals,
   soloMatchedAreaIds,
   soloMatches,
+  soloPageCount,
+  soloPageOfGroup,
   soloPathResolver,
-  soloPositionLabel,
   soloRegex,
   soloToParams,
   soloVisibleKeys,
-  stepSolo,
-  toggleSoloIndex,
+  stepSoloPage,
+  type SoloGroup,
 } from "./plotSolo";
 import { catalogPath, resolvePatterns } from "./signalSelection";
 import { signalRefKey, type PlotAreaConfig, type SignalRef } from "./plotPanelConfig";
@@ -317,90 +320,151 @@ describe("soloMatchedAreaIds", () => {
 });
 
 describe("soloVisibleKeys", () => {
-  const matches = soloMatches(AREAS, "[Cc]ell", fullPathOf);
+  const groupsOf = (pattern: string, areas: PlotAreaConfig[] = AREAS) =>
+    soloGroups(soloMatches(areas, pattern, fullPathOf), soloKeySlots(pattern));
 
-  it("holds every match when no subset is chosen", () => {
-    const vis = soloVisibleKeys(matches, null);
+  it("holds every match while the whole set is shown", () => {
+    const gs = groupsOf("[Cc]ell");
+    const vis = soloVisibleKeys(gs, null, 1);
     expect(vis.size).toBe(3);
-    for (const m of matches) expect(vis.has(soloMaskKey(m.areaId, m.key))).toBe(true);
   });
 
-  it("holds just the chosen indices in step / subset mode", () => {
-    const vis = soloVisibleKeys(matches, [1]);
-    expect(vis.size).toBe(1);
-    expect(vis.has(soloMaskKey(matches[1].areaId, matches[1].key))).toBe(true);
+  it("holds only the page's groups", () => {
+    const gs = groupsOf("[Cc]ell");
+    expect(soloVisibleKeys(gs, 0, 1).size).toBe(1);
+    expect(soloVisibleKeys(gs, 0, 2).size).toBe(2);
+    // The last page is short when the groups don't divide evenly.
+    expect(soloVisibleKeys(gs, 1, 2).size).toBe(1);
+  });
+
+  it("holds every member of a keyed group, across areas", () => {
+    const both = [area("a1", ["Cell16"]), area("a2", ["Cell16"])];
+    const gs = soloGroups(
+      soloMatches(both, "Cell(16)", fullPathOf),
+      soloKeySlots("Cell(16)"),
+    );
+    expect(gs.length).toBe(1);
+    expect(soloVisibleKeys(gs, 0, 1).size).toBe(2);
   });
 
   it("keys by area *and* signal, so the same signal in two areas is two entries", () => {
     const both = [area("a1", ["Cell16"]), area("a2", ["Cell16"])];
     const ms = soloMatches(both, "Cell16", fullPathOf);
-    expect(ms.length).toBe(2);
-    const vis = soloVisibleKeys(ms, [0]);
+    // No captures, so each of the two rows is its own group.
+    const gs = soloGroups(ms, soloKeySlots("Cell16"));
+    expect(gs.length).toBe(2);
+    const vis = soloVisibleKeys(gs, 0, 1);
     expect(vis.has(soloMaskKey("a1", ms[0].key))).toBe(true);
     expect(vis.has(soloMaskKey("a2", ms[1].key))).toBe(false);
   });
 
-  it("ignores an index past the end of a shrunken match list", () => {
-    expect(soloVisibleKeys(matches, [9]).size).toBe(0);
+  it("is empty past the end of a shrunken group list", () => {
+    expect(soloVisibleKeys(groupsOf("[Cc]ell"), 9, 1).size).toBe(0);
   });
 });
 
-describe("stepSolo", () => {
-  it("enters step mode at the first match going forward, the last going back", () => {
-    expect(stepSolo(null, 17, 1)).toEqual([0]);
-    expect(stepSolo(null, 17, -1)).toEqual([16]);
+describe("soloPageCount", () => {
+  it("is the groups divided by the page size, rounded up", () => {
+    expect(soloPageCount(12, 5)).toBe(3);
+    expect(soloPageCount(10, 5)).toBe(2);
+    expect(soloPageCount(3, 1)).toBe(3);
   });
 
-  it("steps one match at a time", () => {
-    expect(stepSolo([2], 17, 1)).toEqual([3]);
-    expect(stepSolo([3], 17, -1)).toEqual([2]);
+  it("is zero with no groups — there is nothing to page through", () => {
+    expect(soloPageCount(0, 5)).toBe(0);
   });
 
-  it("wraps at both ends", () => {
-    expect(stepSolo([16], 17, 1)).toEqual([0]);
-    expect(stepSolo([0], 17, -1)).toEqual([16]);
-  });
-
-  it("steps off the edge of a checked subset — forward from its last, back from its first", () => {
-    expect(stepSolo([1, 4], 17, 1)).toEqual([5]);
-    expect(stepSolo([1, 4], 17, -1)).toEqual([0]);
-  });
-
-  it("has nowhere to step with no matches", () => {
-    expect(stepSolo(null, 0, 1)).toEqual([]);
+  it("treats a page size below one as one, so a page is never empty", () => {
+    expect(soloPageCount(3, 0)).toBe(3);
+    expect(soloPageCount(3, -4)).toBe(3);
   });
 });
 
-describe("toggleSoloIndex", () => {
-  it("unchecks one out of the all-visible view, leaving the rest", () => {
-    expect(toggleSoloIndex(null, 3, 1)).toEqual([0, 2]);
+describe("clampSoloPage", () => {
+  it("leaves the whole-set view alone", () => {
+    expect(clampSoloPage(null, 3)).toBeNull();
   });
 
-  it("adds and removes from a checked subset, keeping it ordered", () => {
-    expect(toggleSoloIndex([2], 3, 0)).toEqual([0, 2]);
-    expect(toggleSoloIndex([0, 2], 3, 2)).toEqual([0]);
+  it("pulls a restored page past the end back onto the last one", () => {
+    expect(clampSoloPage(9, 3)).toBe(2);
   });
 
-  it("allows an empty subset — nothing visible until something is re-checked", () => {
-    expect(toggleSoloIndex([1], 3, 1)).toEqual([]);
+  it("falls back to the whole-set view when there are no pages at all", () => {
+    expect(clampSoloPage(2, 0)).toBeNull();
+  });
+
+  it("keeps a page that is in range, and floors a negative one", () => {
+    expect(clampSoloPage(1, 3)).toBe(1);
+    expect(clampSoloPage(-2, 3)).toBe(0);
   });
 });
 
-describe("soloPositionLabel", () => {
-  it("reads as a position in step mode", () => {
-    expect(soloPositionLabel([2], 17)).toBe("3/17");
+describe("stepSoloPage", () => {
+  it("cycles all -> page 1 -> ... -> page N -> all", () => {
+    expect(stepSoloPage(null, 3, 1)).toBe(0);
+    expect(stepSoloPage(0, 3, 1)).toBe(1);
+    expect(stepSoloPage(1, 3, 1)).toBe(2);
+    // Past the last page is the whole set again, not page 1.
+    expect(stepSoloPage(2, 3, 1)).toBeNull();
   });
 
-  it("is a bare count when every match is visible — there is no position", () => {
-    expect(soloPositionLabel(null, 17)).toBe("17");
+  it("cycles the same ring backwards", () => {
+    expect(stepSoloPage(0, 3, -1)).toBeNull();
+    expect(stepSoloPage(null, 3, -1)).toBe(2);
+    expect(stepSoloPage(2, 3, -1)).toBe(1);
   });
 
-  it("counts the checked subset when several are visible", () => {
-    expect(soloPositionLabel([1, 4, 9], 17)).toBe("3/17");
+  it("has nowhere to step with no pages", () => {
+    expect(stepSoloPage(null, 0, 1)).toBeNull();
+    expect(stepSoloPage(0, 0, -1)).toBeNull();
+  });
+});
+
+describe("soloPageOfGroup", () => {
+  it("is the page a group sits on", () => {
+    expect(soloPageOfGroup(0, 5)).toBe(0);
+    expect(soloPageOfGroup(4, 5)).toBe(0);
+    expect(soloPageOfGroup(5, 5)).toBe(1);
+    expect(soloPageOfGroup(7, 1)).toBe(7);
+  });
+});
+
+describe("soloLabel", () => {
+  /// `count` groups of one member each, labelled by their key.
+  const fakeGroups = (labels: string[]): SoloGroup[] =>
+    labels.map((label, i) => ({ key: [label], label, members: [`a1 m${i}`] }));
+
+  it("says so when nothing matched", () => {
+    expect(soloLabel([], null, 1, 0)).toBe("no matches");
+    expect(soloLabel([], 0, 1, 0)).toBe("no matches");
   });
 
-  it("reads 0 with no matches", () => {
-    expect(soloPositionLabel(null, 0)).toBe("0");
+  it("counts the matches while the whole set is shown", () => {
+    expect(soloLabel(fakeGroups(["1", "2"]), null, 1, 96)).toBe("all (96)");
+  });
+
+  it("names the page's group, its position and its share of the matches", () => {
+    const gs: SoloGroup[] = [
+      { key: ["06"], label: "cell=06", members: ["a1 x"] },
+      { key: ["07"], label: "cell=07", members: ["a1 y", "a2 y"] },
+    ];
+    expect(soloLabel(gs, 1, 1, 96)).toBe("2/2 · cell=07 (2 of 96)");
+  });
+
+  it("reads an unnamed capture as the quoted text", () => {
+    const gs: SoloGroup[] = [{ key: ["07"], label: '"07"', members: ["a1 y"] }];
+    expect(soloLabel(gs, 0, 1, 96)).toBe('1/1 · "07" (1 of 96)');
+  });
+
+  it("reads a multi-group page as the range it spans", () => {
+    const gs = fakeGroups(['"0"', '"1"', '"2"', '"3"', '"4"', '"5"']);
+    expect(soloLabel(gs, 0, 5, 96)).toBe('1/2 · "0"–"4" (5 of 96)');
+    // …and a short last page reads to its own end.
+    expect(soloLabel(gs, 1, 5, 96)).toBe('2/2 · "5" (1 of 96)');
+  });
+
+  it("reads a page past the end as the last page", () => {
+    expect(soloLabel(fakeGroups(["a", "b"]), 9, 1, 2)).toBe("2/2 · b (1 of 2)");
   });
 });
 
@@ -425,26 +489,23 @@ describe("soloMaskSignals", () => {
 describe("solo persistence", () => {
   it("persists nothing while solo is off", () => {
     expect(soloToParams(SOLO_OFF)).toBeUndefined();
-    expect(soloToParams({ pattern: "", indices: [1] })).toBeUndefined();
+    expect(soloToParams({ pattern: "", page: 1 })).toBeUndefined();
   });
 
-  it("persists the pattern alone in the matches-only view", () => {
-    expect(soloToParams({ pattern: "Cell", indices: null })).toEqual({ pattern: "Cell" });
+  it("persists the pattern alone while the whole set is shown", () => {
+    expect(soloToParams({ pattern: "Cell", page: null })).toEqual({ pattern: "Cell" });
   });
 
-  it("persists the chosen indices alongside the pattern", () => {
-    expect(soloToParams({ pattern: "Cell", indices: [2] })).toEqual({
-      pattern: "Cell",
-      indices: [2],
-    });
+  it("persists the page alongside the pattern", () => {
+    expect(soloToParams({ pattern: "Cell", page: 2 })).toEqual({ pattern: "Cell", page: 2 });
   });
 
   it("round-trips through the parser", () => {
-    const state = { pattern: "Cell", indices: [2] };
+    const state = { pattern: "Cell", page: 2 };
     expect(soloFromRaw(soloToParams(state))).toEqual(state);
-    expect(soloFromRaw(soloToParams({ pattern: "Cell", indices: null }))).toEqual({
+    expect(soloFromRaw(soloToParams({ pattern: "Cell", page: null }))).toEqual({
       pattern: "Cell",
-      indices: null,
+      page: null,
     });
   });
 
@@ -452,35 +513,21 @@ describe("solo persistence", () => {
     expect(soloFromRaw(undefined)).toEqual(SOLO_OFF);
     expect(soloFromRaw(null)).toEqual(SOLO_OFF);
     expect(soloFromRaw("Cell")).toEqual(SOLO_OFF);
-    expect(soloFromRaw({ indices: [1] })).toEqual(SOLO_OFF);
+    expect(soloFromRaw({ page: 1 })).toEqual(SOLO_OFF);
   });
 
-  it("drops junk index entries rather than rejecting the blob", () => {
-    expect(soloFromRaw({ pattern: "Cell", indices: [1, "x", -2, 3.5] })).toEqual({
+  it("drops a junk page rather than rejecting the blob", () => {
+    for (const page of ["x", -2, 3.5, null, {}]) {
+      expect(soloFromRaw({ pattern: "Cell", page })).toEqual({ pattern: "Cell", page: null });
+    }
+  });
+
+  it("reads a blob from before paging as the pattern, whole set shown", () => {
+    // The old shape carried raw match indices, which index a list that
+    // no longer exists; the pattern is the part still worth keeping.
+    expect(soloFromRaw({ pattern: "Cell", indices: [2] })).toEqual({
       pattern: "Cell",
-      indices: [1],
+      page: null,
     });
-  });
-});
-
-describe("stepSolo page size", () => {
-  it("moves a page at a time once step mode is entered", () => {
-    // Entering always lands on the first match — a page size must not
-    // skip the start of the list — and the moves after it page.
-    expect(stepSolo(null, 10, 1, 4)).toEqual([0]);
-    expect(stepSolo([0], 10, 1, 4)).toEqual([4]);
-    expect(stepSolo([4], 10, 1, 4)).toEqual([8]);
-    // …wrapping like a single step does.
-    expect(stepSolo([8], 10, 1, 4)).toEqual([2]);
-    expect(stepSolo([2], 10, -1, 4)).toEqual([8]);
-  });
-
-  it("enters backwards on the last match whatever the page size", () => {
-    expect(stepSolo(null, 10, -1, 4)).toEqual([9]);
-  });
-
-  it("treats a page below one as one, so the key is never a no-op", () => {
-    expect(stepSolo([3], 10, 1, 0)).toEqual([4]);
-    expect(stepSolo([3], 10, 1, -5)).toEqual([4]);
   });
 });

@@ -22,12 +22,16 @@
 /// {@link soloRegex} returns `null` rather than throwing, and an inert
 /// pattern filters nothing.
 ///
-/// The visible set is either *every* match (the matches-only view) or a
-/// chosen subset of the match list by index — one index is step mode
-/// (next / prev, PgUp / PgDn), several is the solo control's checked
-/// subset. The indices are positions in the current match list, which is
-/// re-derived from the live areas on every change; an index past its end
-/// simply matches nothing.
+/// Stepping is **by group, not by row**. A pattern's capture groups
+/// make each match's key ({@link soloGroups}); every signal sharing a
+/// key steps as one, so `Cell(\d+)` walks cell indices however many
+/// areas they are spread across, and a pattern with no captures falls
+/// back to one match per step. Groups are dealt into pages of
+/// `solo_page_size` and the control cycles **all → page 1 → … → page N
+/// → all** ({@link stepSoloPage}). The page is the only stepping state
+/// the panel keeps, and it is re-interpreted against a group list
+/// re-derived from the live areas on every change — so a page past the
+/// end clamps ({@link clampSoloPage}) instead of blanking the view.
 
 import { signalKey } from "./plotData";
 import { signalRefKey, type PlotAreaConfig, type SignalRef } from "./plotPanelConfig";
@@ -38,13 +42,15 @@ export interface SoloState {
   /// The regex, verbatim as typed. `""` is solo off; an invalid pattern
   /// is kept (so the user can fix it) and is inert until it parses.
   pattern: string;
-  /// Indices into the current match list that stay visible, or `null`
-  /// for "every match" — the matches-only view.
-  indices: readonly number[] | null;
+  /// Which page of groups is on show (0-based), or `null` for the whole
+  /// matched set. A page past the end of the current group list clamps
+  /// ({@link clampSoloPage}) rather than blanking the view, so a
+  /// restored state survives a catalog that has shrunk.
+  page: number | null;
 }
 
-/// Solo off: no pattern, no subset.
-export const SOLO_OFF: SoloState = { pattern: "", indices: null };
+/// Solo off: no pattern, and the whole set would be on show.
+export const SOLO_OFF: SoloState = { pattern: "", page: null };
 
 /// One entry of the match list — a *series in an area*, since the same
 /// signal may be plotted in several areas and solo is panel-wide.
@@ -321,71 +327,101 @@ export function soloMaskKey(areaId: string, key: string): string {
   return `${areaId} ${key}`;
 }
 
-/// The {@link soloMaskKey}s solo leaves visible: every match when
-/// `indices` is `null`, otherwise the listed positions.
+/// How many pages a group list makes at `pageSize` groups per page.
+/// Zero when nothing matched — there is then nothing to page through.
+export function soloPageCount(groupCount: number, pageSize: number): number {
+  if (groupCount === 0) return 0;
+  return Math.ceil(groupCount / pageSizeOf(pageSize));
+}
+
+/// A page size below one would make an empty page, so one is the floor.
+function pageSizeOf(pageSize: number): number {
+  return Math.max(1, Math.trunc(pageSize) || 1);
+}
+
+/// The page a group sits on.
+export function soloPageOfGroup(groupIndex: number, pageSize: number): number {
+  return Math.floor(groupIndex / pageSizeOf(pageSize));
+}
+
+/// Pull a page index into range. A restored page past the end lands on
+/// the last page rather than showing nothing, and any page at all falls
+/// back to the whole set when the pattern currently matches nothing —
+/// which is what makes a state restored before the catalog arrived
+/// harmless.
+export function clampSoloPage(page: number | null, pageCount: number): number | null {
+  if (page == null || pageCount === 0) return null;
+  return Math.min(Math.max(0, Math.trunc(page)), pageCount - 1);
+}
+
+/// The groups one page shows.
+function pageSlice(
+  groups: readonly SoloGroup[],
+  page: number,
+  pageSize: number,
+): SoloGroup[] {
+  const size = pageSizeOf(pageSize);
+  return groups.slice(page * size, page * size + size);
+}
+
+/// The {@link soloMaskKey}s solo leaves visible: every match while the
+/// whole set is on show (`page` is `null`), otherwise the members of
+/// that page's groups. A page past the end shows nothing — callers pass
+/// a {@link clampSoloPage}d index so that can't happen from a restore.
 export function soloVisibleKeys(
-  matches: readonly SoloMatch[],
-  indices: readonly number[] | null,
+  groups: readonly SoloGroup[],
+  page: number | null,
+  pageSize: number,
 ): ReadonlySet<string> {
+  const shown = page == null ? groups : pageSlice(groups, page, pageSize);
   const out = new Set<string>();
-  matches.forEach((m, i) => {
-    if (indices == null || indices.includes(i)) out.add(soloMaskKey(m.areaId, m.key));
-  });
+  for (const g of shown) for (const m of g.members) out.add(m);
   return out;
 }
 
 const wrap = (i: number, n: number): number => ((i % n) + n) % n;
 
-/// Step the visible position by `page` matches in the `delta` direction
-/// (+1 next, −1 previous), wrapping at both ends. Entering step mode
-/// from the matches-only view lands on the first match going forward and
-/// the last going back — the page size applies to *moves*, not to the
-/// entry, or the first press would skip past the start of the list.
-/// Stepping off a checked subset leaves from its last (forward) or first
-/// (backward) index. Always yields exactly one visible index — step mode
-/// is one-at-a-time — or none when there is nothing to step through.
-export function stepSolo(
-  indices: readonly number[] | null,
-  count: number,
+/// Step around the solo cycle: **all → page 1 → … → page N → all**, in
+/// the `delta` direction (+1 next, −1 previous). So PgDn from the whole
+/// set opens page 1, PgUp from page 1 goes back to the whole set, and
+/// running off either end returns to the whole set rather than wrapping
+/// straight onto the far page. `null` throughout when nothing matched.
+export function stepSoloPage(
+  page: number | null,
+  pageCount: number,
   delta: 1 | -1,
-  page = 1,
-): number[] {
-  if (count === 0) return [];
-  if (indices == null || indices.length === 0) return [delta > 0 ? 0 : count - 1];
-  const from = delta > 0 ? Math.max(...indices) : Math.min(...indices);
-  return [wrap(from + delta * Math.max(1, Math.trunc(page)), count)];
+): number | null {
+  if (pageCount === 0) return null;
+  const at = page == null ? 0 : clampSoloPage(page, pageCount)! + 1;
+  const next = wrap(at + delta, pageCount + 1);
+  return next === 0 ? null : next - 1;
 }
 
-/// Check / uncheck one match in the solo control's list. Unchecking out
-/// of the matches-only view (`null` = all checked) materializes the
-/// remaining indices. An empty result is allowed — nothing is visible
-/// until something is checked again.
-export function toggleSoloIndex(
-  indices: readonly number[] | null,
-  count: number,
-  index: number,
-): number[] {
-  const current = indices == null ? Array.from({ length: count }, (_, i) => i) : [...indices];
-  const at = current.indexOf(index);
-  if (at >= 0) current.splice(at, 1);
-  else current.push(index);
-  return current.sort((a, b) => a - b);
-}
-
-/// The solo control's position read-out. In step mode it is the
-/// 1-based position of the single visible match (`3/17`); with several
-/// checked it is how many of them (`3/17` again — the control's list
-/// says which). With *every* match visible there is no position to
-/// report, so it is the bare match count — `17`, never `17/17`, which
-/// would read as "the last one".
-export function soloPositionLabel(
-  indices: readonly number[] | null,
-  count: number,
+/// The solo control's read-out, always in one of three unambiguous
+/// forms:
+///
+/// - `no matches` — the pattern selected nothing, so nothing is masked.
+/// - `all (96)` — the whole matched set is on show.
+/// - `2/12 · cell=07 (16 of 96)` — page 2 of 12, showing the one group
+///   `cell=07`, which is 16 of the 96 matches. A page spanning several
+///   groups reads as the range it covers (`1/2 · "0"–"4" (40 of 96)`).
+export function soloLabel(
+  groups: readonly SoloGroup[],
+  page: number | null,
+  pageSize: number,
+  matchCount: number,
 ): string {
-  if (count === 0) return "0";
-  if (indices == null) return `${count}`;
-  if (indices.length === 1) return `${indices[0] + 1}/${count}`;
-  return `${indices.length}/${count}`;
+  if (matchCount === 0 || groups.length === 0) return "no matches";
+  if (page == null) return `all (${matchCount})`;
+  const pageCount = soloPageCount(groups.length, pageSize);
+  const at = clampSoloPage(page, pageCount)!;
+  const shown = pageSlice(groups, at, pageSize);
+  const visible = shown.reduce((n, g) => n + g.members.length, 0);
+  const keys =
+    shown.length === 1
+      ? shown[0].label
+      : `${shown[0].label}–${shown[shown.length - 1].label}`;
+  return `${at + 1}/${pageCount} · ${keys} (${visible} of ${matchCount})`;
 }
 
 /// Apply the mask to one area's (or derived axis's) series: a series
@@ -406,27 +442,26 @@ export function soloMaskSignals(
 }
 
 /// Parse the persisted `solo` blob. Anything unrecognised reads as solo
-/// off, and junk index entries are dropped rather than rejecting the
-/// blob (same tolerance as the rest of the panel's parsers).
+/// off, and a junk page is dropped rather than rejecting the blob (same
+/// tolerance as the rest of the panel's parsers). A blob written before
+/// solo paged carried raw match indices; those index a list that no
+/// longer exists, so the pattern is kept and the whole set is shown.
 export function soloFromRaw(raw: unknown): SoloState {
   if (typeof raw !== "object" || raw === null) return SOLO_OFF;
   const o = raw as Record<string, unknown>;
   const pattern = typeof o.pattern === "string" ? o.pattern : "";
   if (pattern === "") return SOLO_OFF;
-  const indices = Array.isArray(o.indices)
-    ? o.indices.filter((n): n is number => typeof n === "number" && Number.isInteger(n) && n >= 0)
-    : null;
-  return { pattern, indices };
+  const page =
+    typeof o.page === "number" && Number.isInteger(o.page) && o.page >= 0 ? o.page : null;
+  return { pattern, page };
 }
 
 /// The sparse persisted shape: `undefined` while solo is off (so the
-/// key is absent from the panel blob), and no `indices` key in the
-/// matches-only view.
+/// key is absent from the panel blob), and no `page` key while the
+/// whole matched set is on show.
 export function soloToParams(
   state: SoloState,
-): { pattern: string; indices?: number[] } | undefined {
+): { pattern: string; page?: number } | undefined {
   if (state.pattern === "") return undefined;
-  return state.indices == null
-    ? { pattern: state.pattern }
-    : { pattern: state.pattern, indices: [...state.indices] };
+  return state.page == null ? { pattern: state.pattern } : { pattern: state.pattern, page: state.page };
 }
