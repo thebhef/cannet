@@ -255,6 +255,7 @@ import {
   SOLO_OFF,
   soloFromRaw,
   soloMaskSignals,
+  soloMatchedAreaIds,
   soloMatches,
   soloPathResolver,
   soloPatternInvalid,
@@ -1429,6 +1430,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [effectiveAreas, solo.pattern, soloPathOf],
   );
   const soloActive = soloRegex(solo.pattern) != null;
+  /// The areas solo applies to — the ones it found a match in. Every
+  /// other area renders as if solo were off.
+  const soloMatchedAreas = useMemo(() => soloMatchedAreaIds(soloMatchList), [soloMatchList]);
   /// The `soloMaskKey`s solo leaves visible — every match, or the
   /// stepped / checked subset of them.
   const soloVisible = useMemo(
@@ -1826,18 +1830,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// already had, which is what keeps the memoised `PlotArea`s of
   /// untouched areas off the render.
   ///
-  /// The solo mask is panel-wide by construction (its pattern spans
-  /// every area, and a non-matching area's rows all read hidden), so
-  /// while solo is *active* an areas edit does re-derive every axis.
-  /// While it is off the dependency is the constant `null`, which is
-  /// what keeps the ordinary edit scoped — `soloVisible` itself is
-  /// rebuilt from the areas on every edit.
+  /// The solo mask spans every area its pattern found something in, so
+  /// while solo is *active* an areas edit re-derives each of those axes.
+  /// An area the pattern missed is handed `null` — the same dependency
+  /// solo-off gives it, which is both what leaves it rendering
+  /// untouched and what keeps the ordinary edit scoped. `soloVisible`
+  /// itself is rebuilt from the areas on every edit.
   const derivedAreaMemo = useKeyedMemo<string, DerivedAreaConfig[]>();
   const derivedAreaConfigs = useMemo(() => {
     const isEnum = (k: string) => enumKeys.has(k);
-    const soloMask = soloActive ? soloVisible : null;
     const out: DerivedAreaConfig[] = [];
     for (const a of effectiveAreas) {
+      const soloMask = soloActive && soloMatchedAreas.has(a.id) ? soloVisible : null;
       out.push(
         ...derivedAreaMemo.get(a.id, [a, enumKeys, soloMask], () =>
           deriveAreaConfigs(a, isEnum, soloMask),
@@ -1846,7 +1850,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     }
     derivedAreaMemo.commit();
     return out;
-  }, [effectiveAreas, enumKeys, soloActive, soloVisible, derivedAreaMemo]);
+  }, [effectiveAreas, enumKeys, soloActive, soloMatchedAreas, soloVisible, derivedAreaMemo]);
 
   /// Per-*derived-axis* slice of the selection — the shape that keeps a
   /// selection click off the memoised areas that hold none of the

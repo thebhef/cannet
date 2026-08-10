@@ -3200,11 +3200,13 @@ describe("PlotPanel solo", () => {
       ["PackVoltage", true],
     ]);
 
+    // Area 1 holds the match, so its other row is masked; Area 2 holds
+    // none and is left exactly as it was.
     typeSolo("Cell16");
     expect(rowVisibility()).toEqual([
       ["Cell1", false],
       ["Cell16", true],
-      ["PackVoltage", false],
+      ["PackVoltage", true],
     ]);
     // The subject is the canonical path, so a message fragment selects
     // as readily as a name — one dialect with the area patterns.
@@ -3212,8 +3214,44 @@ describe("PlotPanel solo", () => {
     expect(rowVisibility()).toEqual([
       ["Cell1", false],
       ["Cell16", true],
-      ["PackVoltage", false],
+      ["PackVoltage", true],
     ]);
+  });
+
+  it("leaves an area with no matches exactly as solo-off leaves it", () => {
+    // Solo scopes to the areas it found something in. An area with no
+    // match is not "everything masked" — it is untouched: its rows keep
+    // their own visibility and it keeps its plot height.
+    const registry = cellRegistry("el-solo-scope");
+    renderPanel({ params: { elementId: "el-solo-scope" }, registry });
+    const collapsedFlags = () =>
+      Array.from(document.querySelectorAll(".plot-area")).map((a) =>
+        a.classList.contains("collapsed"),
+      );
+    const before = rowVisibility();
+    expect(collapsedFlags()).toEqual([false, false]);
+
+    typeSolo("Cell16");
+    // Area 2 reads the same as it did with solo off…
+    expect(rowVisibility()[2]).toEqual(before[2]);
+    expect(collapsedFlags()).toEqual([false, false]);
+    // …while Area 1, which does match, is masked down to the match.
+    expect(rowVisibility().slice(0, 2)).toEqual([
+      ["Cell1", false],
+      ["Cell16", true],
+    ]);
+  });
+
+  it("touches nothing at all when the pattern matches nowhere", () => {
+    const registry = cellRegistry("el-solo-nomatch");
+    renderPanel({ params: { elementId: "el-solo-nomatch" }, registry });
+    const before = rowVisibility();
+    typeSolo("NoSuchSignal");
+    expect(rowVisibility()).toEqual(before);
+    expect(rowVisibility().every(([, visible]) => visible)).toBe(true);
+    // …including a pattern that would have matched but for its case.
+    typeSolo("cell16");
+    expect(rowVisibility()).toEqual(before);
   });
 
   it("masks pattern-derived series like manual picks", async () => {
@@ -3240,9 +3278,11 @@ describe("PlotPanel solo", () => {
       ]),
     );
 
+    // Area 1 holds no match, so it stays as it was; Area 2's
+    // pattern-derived rows mask like manual picks.
     typeSolo("LimitEffective");
     expect(rowVisibility()).toEqual([
-      ["Cell1", false],
+      ["Cell1", true],
       ["LimitNominal", false],
       ["LimitEffective", true],
     ]);
@@ -3259,7 +3299,7 @@ describe("PlotPanel solo", () => {
     ).toEqual(["Area 2 · LimitNominal", "Area 2 · LimitEffective"]);
     fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
     expect(rowVisibility()).toEqual([
-      ["Cell1", false],
+      ["Cell1", true],
       ["LimitNominal", true],
       ["LimitEffective", false],
     ]);
@@ -3315,7 +3355,7 @@ describe("PlotPanel solo", () => {
     expect(rowVisibility()).toEqual([
       ["Cell1", true],
       ["Cell16", true],
-      ["PackVoltage", false],
+      ["PackVoltage", true],
     ]);
   });
 
@@ -3334,24 +3374,40 @@ describe("PlotPanel solo", () => {
     expect(rowVisibility().every(([, visible]) => visible)).toBe(true);
   });
 
-  it("collapses an area with no solo-visible series, without persisting a collapse flag", () => {
+  it("collapses a matching area whose matches are all off the visible subset", () => {
     // Same view-level rule as an all-hidden area: nothing to draw, so it
     // gives up its plot height — but the area's own `collapsed` flag is
-    // not written, so clearing solo brings it back expanded.
-    const registry = cellRegistry("el-solo-collapse");
+    // not written, so clearing solo brings it back expanded. Only an
+    // area solo *applies* to can get here; one with no match keeps its
+    // height whatever the visible subset is.
+    const registry = makeRegistry({
+      id: "el-solo-collapse",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1")] },
+          { id: "a2", signals: [sig("Cell2")] },
+          { id: "a3", signals: [sig("PackVoltage")] },
+        ],
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
     const { api } = renderPanel({ params: { elementId: "el-solo-collapse" }, registry });
     const collapsedFlags = () =>
       Array.from(document.querySelectorAll(".plot-area")).map((a) =>
         a.classList.contains("collapsed"),
       );
-    expect(collapsedFlags()).toEqual([false, false]);
+    expect(collapsedFlags()).toEqual([false, false, false]);
 
-    typeSolo("Cell16");
-    expect(collapsedFlags()).toEqual([false, true]);
+    typeSolo("Cell");
+    expect(collapsedFlags()).toEqual([false, false, false]);
+    // Step onto the first match: Area 2's match is now off the visible
+    // subset, so it collapses; Area 3 never matched and keeps its height.
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(collapsedFlags()).toEqual([false, true, false]);
     expect(persistedAreas(api)[1]?.collapsed).toBeFalsy();
 
     typeSolo("");
-    expect(collapsedFlags()).toEqual([false, false]);
+    expect(collapsedFlags()).toEqual([false, false, false]);
   });
 
   it("persists the pattern with the panel config, and restores it", () => {
@@ -3369,7 +3425,7 @@ describe("PlotPanel solo", () => {
     expect(rowVisibility()).toEqual([
       ["Cell1", false],
       ["Cell16", true],
-      ["PackVoltage", false],
+      ["PackVoltage", true],
     ]);
   });
 
@@ -3501,10 +3557,11 @@ describe("PlotPanel solo", () => {
     const panel = document.querySelector(".plot-panel")!;
     fireEvent.keyDown(panel, { key: "PageDown" });
     expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3", "PackVoltage"]);
-    // A pattern that matches nothing has nothing to step through either.
+    // A pattern that matches nothing has nothing to step through, and
+    // nothing to mask either.
     typeSolo("Nope");
     fireEvent.keyDown(panel, { key: "PageDown" });
-    expect(visibleNames()).toEqual([]);
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3", "PackVoltage"]);
     expect(soloPosition()).toBe("0");
   });
 
@@ -3529,8 +3586,9 @@ describe("PlotPanel solo", () => {
     typeSolo("Cell");
     fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
     expect(soloPosition()).toBe("1/3");
+    // …and only Area 1 matches now, so Area 2 goes back to untouched.
     typeSolo("Cell2");
-    expect(visibleNames()).toEqual(["Cell2"]);
+    expect(visibleNames()).toEqual(["Cell2", "Cell3", "PackVoltage"]);
     expect(soloPosition()).toBe("1");
   });
 

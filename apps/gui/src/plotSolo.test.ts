@@ -11,6 +11,7 @@ import {
   soloFromRaw,
   soloMaskKey,
   soloMaskSignals,
+  soloMatchedAreaIds,
   soloMatches,
   soloPathResolver,
   soloPositionLabel,
@@ -156,6 +157,20 @@ describe("soloMatches", () => {
   it("is empty for an invalid or empty pattern", () => {
     expect(soloMatches(AREAS, "Cell(", fullPathOf)).toEqual([]);
     expect(soloMatches(AREAS, "", fullPathOf)).toEqual([]);
+  });
+});
+
+describe("soloMatchedAreaIds", () => {
+  it("names only the areas holding at least one match", () => {
+    expect([...soloMatchedAreaIds(soloMatches(AREAS, "Cell16$", fullPathOf))]).toEqual(["a1"]);
+    expect([...soloMatchedAreaIds(soloMatches(AREAS, "[Cc]ell16", fullPathOf))]).toEqual([
+      "a1",
+      "a2",
+    ]);
+  });
+
+  it("is empty when nothing matches — solo then scopes to no area at all", () => {
+    expect(soloMatchedAreaIds(soloMatches(AREAS, "Nope", fullPathOf)).size).toBe(0);
   });
 });
 
