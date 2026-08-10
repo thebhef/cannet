@@ -370,6 +370,10 @@ interface DerivedAreaConfig {
   /// plain hidden treatment. Empty (the shared {@link EMPTY_KEY_SET})
   /// while solo isn't applying to this axis.
   soloMaskedKeys: ReadonlySet<string>;
+  /// The parent area's solo match count, `null` unless solo applies to
+  /// it — set only on the first derived axis (like `patterns`) so the
+  /// per-area chip renders once per logical area, not once per axis.
+  soloChip: { matched: number; total: number } | null;
 }
 
 /// Expand one effective area into its derived axes, based on the area's
@@ -381,6 +385,7 @@ function deriveAreaConfigs(
   a: PlotAreaConfig,
   isEnum: (key: string) => boolean,
   soloMask: ReadonlySet<string> | null,
+  soloMatchCount: number,
 ): DerivedAreaConfig[] {
   const axes = deriveAxesForArea(a.id, a.signals, a.yAxisMode ?? "unified", isEnum);
   return axes.map((ax, i) => {
@@ -418,6 +423,7 @@ function deriveAreaConfigs(
       // persisted `collapsed` stays untouched.
       collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
       soloMaskedKeys: soloMask ? soloMaskedKeys(a.id, ax.signals, soloMask) : EMPTY_KEY_SET,
+      soloChip: soloMask && i === 0 ? { matched: soloMatchCount, total: a.signals.length } : null,
     };
   });
 }
@@ -1444,6 +1450,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// The areas solo applies to — the ones it found a match in. Every
   /// other area renders as if solo were off.
   const soloMatchedAreas = useMemo(() => soloMatchedAreaIds(soloMatchList), [soloMatchList]);
+  /// Per-area match count, for the per-area chip (`3 of 12 match`) —
+  /// how many of *this* area's own series the pattern matched, out of
+  /// its total (read off `a.signals.length` at the render site). An
+  /// area absent here has no match, and so no chip (§4.2: untouched).
+  const soloAreaMatchCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const match of soloMatchList) m.set(match.areaId, (m.get(match.areaId) ?? 0) + 1);
+    return m;
+  }, [soloMatchList]);
   /// The step sequence: the matches bucketed by what the pattern
   /// captured, so one step covers every signal sharing a key.
   const soloGroupList = useMemo(
@@ -1861,15 +1876,24 @@ export function PlotPanel(props: IDockviewPanelProps) {
     const out: DerivedAreaConfig[] = [];
     for (const a of effectiveAreas) {
       const soloMask = soloActive && soloMatchedAreas.has(a.id) ? soloVisible : null;
+      const soloMatchCount = soloAreaMatchCounts.get(a.id) ?? 0;
       out.push(
-        ...derivedAreaMemo.get(a.id, [a, enumKeys, soloMask], () =>
-          deriveAreaConfigs(a, isEnum, soloMask),
+        ...derivedAreaMemo.get(a.id, [a, enumKeys, soloMask, soloMatchCount], () =>
+          deriveAreaConfigs(a, isEnum, soloMask, soloMatchCount),
         ),
       );
     }
     derivedAreaMemo.commit();
     return out;
-  }, [effectiveAreas, enumKeys, soloActive, soloMatchedAreas, soloVisible, derivedAreaMemo]);
+  }, [
+    effectiveAreas,
+    enumKeys,
+    soloActive,
+    soloMatchedAreas,
+    soloVisible,
+    soloAreaMatchCounts,
+    derivedAreaMemo,
+  ]);
 
   /// Per-*derived-axis* slice of the selection — the shape that keeps a
   /// selection click off the memoised areas that hold none of the
@@ -2453,6 +2477,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 collapsed={d.collapsed}
                 collapsedBySolo={d.collapsedBySolo}
                 soloMaskedKeys={d.soloMaskedKeys}
+                soloChip={d.soloChip}
                 collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}
                 yScale={axisScales[d.area.id]}

@@ -2545,6 +2545,21 @@ button.trace-event-swatch {
   font-size: 0.66rem;
 }
 
+/* Solo's per-area match count (`3 of 12 match`), next to the area
+ * label — appears only on an area solo applies to (PlotArea.tsx's
+ * `soloChip` prop, sourced from `plotSolo.ts`). Not uppercase like the
+ * rest of the head, so "match" reads as a word, not an acronym. */
+.plot-solo-chip {
+  color: var(--text-muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  font-size: 0.66rem;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+
 /* Drag handle for reordering a panel's plot areas. Only the grip is
    draggable, so the head's own controls keep their pointer gestures. */
 .plot-area-grip {

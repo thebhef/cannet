@@ -3379,6 +3379,29 @@ describe("PlotPanel solo", () => {
     expect(cell16).not.toMatch(/solo-masked/);
   });
 
+  /// The per-area match chip's text in an area's signal-panel heading —
+  /// `null` when the area shows none (solo off, or a zero-match area).
+  const chipText = (areaLabel: string) =>
+    screen
+      .getByText(areaLabel)
+      .closest(".plot-area-signals-head")
+      ?.querySelector(".plot-solo-chip")?.textContent ?? null;
+
+  it("shows a per-area match chip while solo is active, and nothing for a zero-match area", () => {
+    const registry = cellRegistry("el-solo-chip");
+    renderPanel({ params: { elementId: "el-solo-chip" }, registry });
+    expect(chipText("Area 1")).toBeNull();
+    expect(chipText("Area 2")).toBeNull();
+
+    // Area 1 holds 2 series, 1 of which matches; Area 2 holds none.
+    typeSolo("Cell16");
+    expect(chipText("Area 1")).toBe("1 of 2 match");
+    expect(chipText("Area 2")).toBeNull();
+
+    typeSolo("");
+    expect(chipText("Area 1")).toBeNull();
+  });
+
   it("is inert while the pattern is invalid, and says so", () => {
     const registry = cellRegistry("el-solo-invalid");
     renderPanel({ params: { elementId: "el-solo-invalid" }, registry });
