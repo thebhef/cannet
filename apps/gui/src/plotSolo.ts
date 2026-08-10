@@ -324,7 +324,7 @@ export function soloMatchedAreaIds(matches: readonly SoloMatch[]): ReadonlySet<s
 /// The mask's key for one series in one area — solo is panel-wide, so a
 /// signal plotted in two areas is two independently maskable entries.
 export function soloMaskKey(areaId: string, key: string): string {
-  return `${areaId} ${key}`;
+  return `${areaId}\0${key}`;
 }
 
 /// How many pages a group list makes at `pageSize` groups per page.
