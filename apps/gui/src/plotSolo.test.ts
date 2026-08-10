@@ -21,6 +21,7 @@ import {
   soloPageCount,
   soloPageOfGroup,
   soloPathResolver,
+  soloPatternPages,
   soloRegex,
   soloToParams,
   soloVisibleKeys,
@@ -239,6 +240,22 @@ describe("soloKeySlots", () => {
       { index: 2, name: null },
       { index: 1, name: null },
     ]);
+  });
+});
+
+describe("soloPatternPages", () => {
+  it("pages a pattern that captures — the captures are the index", () => {
+    expect(soloPatternPages("Cell(\\d+)")).toBe(true);
+    expect(soloPatternPages("Cell(?<cell>\\d+)")).toBe(true);
+  });
+
+  it("does not page a pattern with nothing to page by", () => {
+    // No captures, no index — the pattern is a flat filter, so there is
+    // no step sequence and no page to be on.
+    expect(soloPatternPages("Cell")).toBe(false);
+    expect(soloPatternPages("(?:Bank|Pack)/Cell")).toBe(false);
+    expect(soloPatternPages("")).toBe(false);
+    expect(soloPatternPages("Cell(")).toBe(false);
   });
 });
 
@@ -539,16 +556,26 @@ describe("solo persistence", () => {
   });
 
   it("persists the page alongside the pattern", () => {
-    expect(soloToParams({ pattern: "Cell", page: 2 })).toEqual({ pattern: "Cell", page: 2 });
+    expect(soloToParams({ pattern: "Cell(\\d)", page: 2 })).toEqual({
+      pattern: "Cell(\\d)",
+      page: 2,
+    });
   });
 
   it("round-trips through the parser", () => {
-    const state = { pattern: "Cell", page: 2 };
+    const state = { pattern: "Cell(\\d)", page: 2 };
     expect(soloFromRaw(soloToParams(state))).toEqual(state);
     expect(soloFromRaw(soloToParams({ pattern: "Cell", page: null }))).toEqual({
       pattern: "Cell",
       page: null,
     });
+  });
+
+  it("reads a stored page under a captureless pattern as the flat view", () => {
+    // A captureless pattern has no pages at all, so a page stored
+    // against one — by an older build, or by an edit that dropped the
+    // capture group — names nothing. The pattern is what survives.
+    expect(soloFromRaw({ pattern: "Cell", page: 2 })).toEqual({ pattern: "Cell", page: null });
   });
 
   it("reads a missing / malformed blob as solo off", () => {

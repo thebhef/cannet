@@ -22,11 +22,15 @@
 /// {@link soloRegex} returns `null` rather than throwing, and an inert
 /// pattern filters nothing.
 ///
-/// Stepping is **by group, not by row**. A pattern's capture groups
-/// make each match's key ({@link soloGroups}); every signal sharing a
-/// key steps as one, so `Cell(\d+)` walks cell indices however many
-/// areas they are spread across, and a pattern with no captures falls
-/// back to one match per step. Groups are dealt into pages of
+/// Stepping is **by group, not by row**, and only a pattern that
+/// **captures** steps at all ({@link soloPatternPages}). A pattern's
+/// capture groups make each match's key ({@link soloGroups}); every
+/// signal sharing a key steps as one, so `Cell(\d+)` walks cell indices
+/// however many areas they are spread across. A pattern with no
+/// captures has no index to page by, so it is a **flat filter**: every
+/// match on show at once, in every area that holds one, with no page
+/// state and nothing for the step controls to do. Groups are dealt into
+/// pages of
 /// `solo_page_size` and the control cycles **all → page 1 → … → page N
 /// → all** ({@link stepSoloPage}). The page is the only stepping state
 /// the panel keeps, and it is re-interpreted against a group list
@@ -43,9 +47,11 @@ export interface SoloState {
   /// is kept (so the user can fix it) and is inert until it parses.
   pattern: string;
   /// Which page of groups is on show (0-based), or `null` for the whole
-  /// matched set. A page past the end of the current group list clamps
-  /// ({@link clampSoloPage}) rather than blanking the view, so a
-  /// restored state survives a catalog that has shrunk.
+  /// matched set — which is the only value a pattern that doesn't page
+  /// ({@link soloPatternPages}) ever has. A page past the end of the
+  /// current group list clamps ({@link clampSoloPage}) rather than
+  /// blanking the view, so a restored state survives a catalog that has
+  /// shrunk.
   page: number | null;
 }
 
@@ -237,6 +243,15 @@ export function soloKeySlots(pattern: string): SoloKeySlot[] {
       return a.declared - b.declared;
     })
     .map(({ index, name }) => ({ index, name }));
+}
+
+/// Does this pattern page? Only a pattern that **captures** does: its
+/// capture groups key the matches into groups, and the groups deal into
+/// pages. A pattern that captures nothing has no index to page by, so
+/// it is a **flat filter** — every match on show at once, in every area
+/// that holds one — and has no page state and no step sequence at all.
+export function soloPatternPages(pattern: string): boolean {
+  return soloKeySlots(pattern).length > 0;
 }
 
 /// One step of the solo cycle: the matches that share a group key, or —
@@ -462,16 +477,21 @@ export function soloMaskedKeys(
 
 /// Parse the persisted `solo` blob. Anything unrecognised reads as solo
 /// off, and a junk page is dropped rather than rejecting the blob (same
-/// tolerance as the rest of the panel's parsers). A blob written before
-/// solo paged carried raw match indices; those index a list that no
-/// longer exists, so the pattern is kept and the whole set is shown.
+/// tolerance as the rest of the panel's parsers). A page stored against
+/// a pattern that doesn't page ({@link soloPatternPages}) names nothing,
+/// so it drops too and the pattern reads as the flat filter it is. A
+/// blob written before solo paged carried raw match indices; those index
+/// a list that no longer exists, so the pattern is kept and the whole
+/// set is shown.
 export function soloFromRaw(raw: unknown): SoloState {
   if (typeof raw !== "object" || raw === null) return SOLO_OFF;
   const o = raw as Record<string, unknown>;
   const pattern = typeof o.pattern === "string" ? o.pattern : "";
   if (pattern === "") return SOLO_OFF;
   const page =
-    typeof o.page === "number" && Number.isInteger(o.page) && o.page >= 0 ? o.page : null;
+    typeof o.page === "number" && Number.isInteger(o.page) && o.page >= 0 && soloPatternPages(pattern)
+      ? o.page
+      : null;
   return { pattern, page };
 }
 

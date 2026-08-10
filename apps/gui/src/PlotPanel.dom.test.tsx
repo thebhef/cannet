@@ -3695,11 +3695,12 @@ describe("PlotPanel solo", () => {
   });
 
   it("pulls a restored page past the end onto the last one", () => {
+    // Only a capturing pattern has pages to restore onto at all.
     const registry = stepRegistry("el-solo-restore-page", {
-      solo: { pattern: "Cell", page: 9 },
+      solo: { pattern: "(Cell\\d)", page: 9 },
     });
     renderPanel({ params: { elementId: "el-solo-restore-page" }, registry });
-    expect(soloPosition()).toBe("3/3 \u00b7 Cell3 (1 of 3)");
+    expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
     expect(visibleNames()).toEqual(["Cell3"]);
   });
 
