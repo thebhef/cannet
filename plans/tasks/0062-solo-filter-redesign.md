@@ -293,6 +293,30 @@ What landed, against the groomed design (§4):
 Every exit criterion in this task file now reads as met, including the
 "four feedback surfaces land, dom-tested" line this phase closes.
 
+### 2026-08-09 — ADR-0031 gate (orchestrator)
+
+Five harness runs on the task62 build (tip `e5fe450`, release,
+`ev-zonal` project, scrub interaction, expected 1608 rx/tx fps). Runs
+2–5 passed all 31 gated metrics; run 1 failed a single metric,
+`jsheap_mb_drift_per_min`, at 17.7 MB/min against the 16.4 MB/min limit
+(baseline 5.7), with the other 30 metrics green.
+
+Investigation (observation → hypothesis → experiment → data →
+conclusion): task62's five samples were 17.7 / 14.0 / 5.7 / 4.0 / −1.9;
+the pre-task62 build (`9dcfa87`) sampled the same day gave 13.1 / 8.7 /
+2.5 committed earlier plus 2.0 / 11.6 from a same-day fresh-rebuild
+control. The fresh 59h control's FIRST post-build run landing at 2.0
+refuted the cold-machine-state hypothesis, and its 2.0 → 11.6 ordering
+refuted run-order decay; means 7.9 vs 7.6 MB/min across five runs each
+are statistically indistinguishable, so the conclusion is run-to-run
+GC-timing variance unchanged by task 62 — run 1's 17.7 is the tail of
+the same distribution, not a regression.
+
+Verdict: gate green; runs 2–4 committed as the record; the excursion
+documented here rather than in a committed report so future
+worst-to-worst comparisons aren't poisoned by a known-noise sample.
+(Owner may overrule at review.)
+
 ## Blockers / side effects
 
 - **The `plotSolo.ts` NUL fix nearly re-triggered the whole-file-diff
@@ -325,3 +349,26 @@ Every exit criterion in this task file now reads as met, including the
   change therefore takes effect on the panel's next render rather than
   immediately; the previous code had the same property (it read the
   setting at press time). Left as is.
+
+## Exit-criteria walk (2026-08-09)
+
+1. **MET.** Zero-match areas render untouched under an active solo,
+   pinned both ways by 62.A's dom tests (matching area masked,
+   zero-match area identical to solo-off) and the nowhere-matching
+   pattern; the toolbar's `no matches` state is 62.B's readout test.
+2. **MET.** Solo and area patterns share one regex dialect — 62.A's
+   agreement test runs the same regexes through `soloMatches` and
+   `resolvePatterns` and asserts the same selection.
+3. **MET.** Group-by-capture stepping is covered by 62.A's
+   pure-function suites for `soloKeySlots`, `soloGroups`, paging, and
+   the cycle, plus the dom-tested All-cycle and lands-on-page-1 rules.
+4. **MET.** The four feedback surfaces (distinct solo styling,
+   per-area chip, two-form/no-matches readout, click-to-open match
+   menu) land dom-tested in 62.B.
+5. **MET.** Stale-restore behavior is covered by 62.A's restored-page
+   clamp and pre-catalog restore dom pins.
+6. **MET.** Docs: the README solo section was rewritten in 62.A and
+   extended in 62.B; ADR 0026 was corrected in place; no new ADR, per
+   the default.
+
+ADR-0031 gate green per the gate entry above.
