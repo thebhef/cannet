@@ -86,8 +86,8 @@ export interface Settings {
   recent_blfs_limit: number;
   /// How many recently-run commands the palette floats to the top.
   recent_commands_limit: number;
-  /// How many solo matches one PageDown / PageUp press moves through in
-  /// a plot panel. `1` walks the list one at a time.
+  /// How many match groups one page of a plot panel's solo view holds.
+  /// `1` steps a group at a time.
   solo_page_size: number;
   /// How often the host tells the views a running capture has grown.
   live_update_interval_ms: number;

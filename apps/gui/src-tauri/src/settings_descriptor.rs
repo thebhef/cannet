@@ -382,8 +382,8 @@ const DESCRIPTORS: &[Spec] = &[
     Spec {
         key: "solo_page_size",
         backing: Backing::Field,
-        label: "Solo matches per PageDown",
-        help: "How far one PageDown / PageUp press walks a plot's solo match list.",
+        label: "Solo groups per page",
+        help: "How many of a solo pattern's match groups one page shows.",
         surfaces: &[Surface::Plot],
         kind: Kind::Behaviour,
         control: count(),
