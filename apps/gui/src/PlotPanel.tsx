@@ -256,6 +256,7 @@ import {
   soloFromRaw,
   soloMaskSignals,
   soloMatches,
+  soloPathResolver,
   soloPatternInvalid,
   soloPositionLabel,
   soloRegex,
@@ -1411,14 +1412,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return out;
   }, [areas, scopedCatalog, busNameLookup, effectiveAreaMemo]);
 
-  /// The solo match list — every plotted series whose display name the
+  /// The subject solo matches against: the same canonical path (ADR
+  /// 0038) an area's `patterns` list is evaluated on, resolved through
+  /// the same catalog and bus-name map.
+  const soloPathOf = useMemo(
+    () => soloPathResolver(scopedCatalog, busNameLookup),
+    [scopedCatalog, busNameLookup],
+  );
+  /// The solo match list — every plotted series whose canonical path the
   /// pattern matches, in panel order (areas in stack order, rows in area
   /// order). Taken from the *effective* areas, so pattern-derived rows
   /// are solo-able like manual picks. Empty while the pattern is empty
   /// or unparseable, which is what makes an invalid pattern inert.
   const soloMatchList = useMemo(
-    () => soloMatches(effectiveAreas, solo.pattern),
-    [effectiveAreas, solo.pattern],
+    () => soloMatches(effectiveAreas, solo.pattern, soloPathOf),
+    [effectiveAreas, solo.pattern, soloPathOf],
   );
   const soloActive = soloRegex(solo.pattern) != null;
   /// The `soloMaskKey`s solo leaves visible — every match, or the
@@ -2185,7 +2193,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         <span className="plot-toolbar-sep" />
         <label
           className="plot-solo"
-          title="solo: show only the series whose name matches this regex (case-insensitive, partial). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back. Right-click for the match list."
+          title="solo: show only the series whose bus/ecu/message/signal path matches this regex — the same dialect an area's pattern filter speaks (case-sensitive, partial, so a bare name matches too). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back. Right-click for the match list."
           onContextMenu={(e) => {
             // The control's own menu, not the toolbar's — stop the
             // event either way, so a right-click aimed at solo never

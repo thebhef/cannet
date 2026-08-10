@@ -1,7 +1,8 @@
-// The plot panel's solo model: a case-insensitive partial-match regex
-// over the series display name, the match list in panel order, the
-// visible subset (all matches, or a stepped / checked selection of
-// them), and the sparse persisted shape.
+// The plot panel's solo model: one regex dialect with the area
+// patterns — the canonical `bus/ecu/message/signal` path, case-
+// sensitive — the match list in panel order, the visible subset (all
+// matches, or a stepped / checked selection of them), and the sparse
+// persisted shape.
 
 import { describe, expect, it } from "vitest";
 
@@ -11,6 +12,7 @@ import {
   soloMaskKey,
   soloMaskSignals,
   soloMatches,
+  soloPathResolver,
   soloPositionLabel,
   soloRegex,
   soloToParams,
@@ -18,11 +20,13 @@ import {
   stepSolo,
   toggleSoloIndex,
 } from "./plotSolo";
+import { catalogPath, resolvePatterns } from "./signalSelection";
 import { signalRefKey, type PlotAreaConfig, type SignalRef } from "./plotPanelConfig";
+import type { SignalDescriptorRecord } from "./types";
 
 function sig(signalName: string, hidden?: boolean): SignalRef {
   return {
-    busId: null,
+    busId: "bus-a",
     messageId: 256,
     extended: false,
     signalName,
@@ -41,12 +45,50 @@ const AREAS: PlotAreaConfig[] = [
   area("a2", ["cell16b", "Current"]),
 ];
 
+/// A catalog entry for one of the {@link AREAS} names, so the resolver
+/// has a transmitter and a bus to build a full path from.
+function desc(signalName: string): SignalDescriptorRecord {
+  return {
+    bus_id: "bus-a",
+    message_id: 256,
+    extended: false,
+    message_name: "Pack",
+    transmitter: "BmsEcu",
+    signal_name: signalName,
+    unit: "V",
+  };
+}
+
+const BUS_NAMES = new Map([["bus-a", "Vehicle"]]);
+/// The panel's resolver, with `Cell16` catalogued and everything else
+/// missing — the two paths a plotted series can take to a subject.
+const pathOf = soloPathResolver([desc("Cell16")], BUS_NAMES);
+/// Everything catalogued, for the grouping / stepping fixtures.
+const fullPathOf = soloPathResolver(
+  ["Cell1", "Cell16", "PackVoltage", "cell16b", "Current"].map(desc),
+  BUS_NAMES,
+);
+
+describe("soloPathResolver", () => {
+  it("resolves a catalogued series to the ADR 0038 canonical path", () => {
+    expect(pathOf(sig("Cell16"))).toBe("Vehicle/BmsEcu/Pack/Cell16");
+    expect(pathOf(sig("Cell16"))).toBe(catalogPath(desc("Cell16"), BUS_NAMES));
+  });
+
+  it("falls back to empty segments for a series the catalog doesn't carry", () => {
+    // Same shape as the shared helper's missing-segment rule: the
+    // positions stay put so a path pattern still lines up — only the
+    // ecu, which nothing but the catalog knows, goes blank.
+    expect(pathOf(sig("Cell1"))).toBe("Vehicle//Pack/Cell1");
+  });
+});
+
 describe("soloRegex", () => {
-  it("is a case-insensitive partial match", () => {
+  it("is case-sensitive — the area patterns' dialect, not a second one", () => {
     const re = soloRegex(".?Cell16.?")!;
-    expect(re.test("Cell16")).toBe(true);
-    expect(re.test("xcell16y")).toBe(true);
-    expect(re.test("Cell1")).toBe(false);
+    expect(re.test("Cell16x")).toBe(true);
+    expect(re.test("xcell16y")).toBe(false);
+    expect(re.flags).toBe("");
   });
 
   it("matches partially — an unanchored fragment is enough", () => {
@@ -67,26 +109,58 @@ describe("soloRegex", () => {
 
 describe("soloMatches", () => {
   it("lists matches in area order, then row order within each area", () => {
-    expect(soloMatches(AREAS, "cell").map((m) => m.name)).toEqual([
+    expect(soloMatches(AREAS, "Cell", fullPathOf).map((m) => m.name)).toEqual([
       "Cell1",
       "Cell16",
-      "cell16b",
     ]);
-    expect(soloMatches(AREAS, "cell").map((m) => m.areaId)).toEqual(["a1", "a1", "a2"]);
+    expect(soloMatches(AREAS, "Cell", fullPathOf).map((m) => m.areaId)).toEqual(["a1", "a1"]);
   });
 
-  it("matches the display name only, not the message or bus", () => {
-    expect(soloMatches(AREAS, "Pack").map((m) => m.name)).toEqual(["PackVoltage"]);
+  it("matches the whole path, so a bus / ecu / message fragment selects too", () => {
+    expect(soloMatches(AREAS, "BmsEcu/Pack/Current", fullPathOf).map((m) => m.name)).toEqual([
+      "Current",
+    ]);
+    expect(soloMatches(AREAS, "^Vehicle/", fullPathOf).map((m) => m.name)).toEqual([
+      "Cell1",
+      "Cell16",
+      "PackVoltage",
+      "cell16b",
+      "Current",
+    ]);
+  });
+
+  it("still matches a bare name as the path's tail", () => {
+    expect(soloMatches(AREAS, "cell16b$", fullPathOf).map((m) => m.name)).toEqual(["cell16b"]);
+  });
+
+  it("carries the matched path so grouping can read the captures off it", () => {
+    expect(soloMatches(AREAS, "Cell16$", fullPathOf).map((m) => m.path)).toEqual([
+      "Vehicle/BmsEcu/Pack/Cell16",
+    ]);
+  });
+
+  it("agrees with the area patterns' own resolution — one dialect, one subject", () => {
+    // The same regex, run through the solo matcher and through
+    // `resolvePatterns` (what an area's `patterns` list uses), picks the
+    // same signals.
+    const catalog = ["Cell1", "Cell16", "PackVoltage", "cell16b", "Current"].map(desc);
+    for (const pattern of ["Cell1", "^Vehicle/BmsEcu/", "cell16b$", "Pack/[Cc]ell"]) {
+      const viaSolo = soloMatches(AREAS, pattern, fullPathOf).map((m) => m.name);
+      const viaPatterns = resolvePatterns([pattern], catalog, BUS_NAMES)[0].matches.map(
+        (s) => s.signal_name,
+      );
+      expect(viaSolo).toEqual(viaPatterns);
+    }
   });
 
   it("is empty for an invalid or empty pattern", () => {
-    expect(soloMatches(AREAS, "Cell(")).toEqual([]);
-    expect(soloMatches(AREAS, "")).toEqual([]);
+    expect(soloMatches(AREAS, "Cell(", fullPathOf)).toEqual([]);
+    expect(soloMatches(AREAS, "", fullPathOf)).toEqual([]);
   });
 });
 
 describe("soloVisibleKeys", () => {
-  const matches = soloMatches(AREAS, "cell");
+  const matches = soloMatches(AREAS, "[Cc]ell", fullPathOf);
 
   it("holds every match when no subset is chosen", () => {
     const vis = soloVisibleKeys(matches, null);
@@ -102,7 +176,7 @@ describe("soloVisibleKeys", () => {
 
   it("keys by area *and* signal, so the same signal in two areas is two entries", () => {
     const both = [area("a1", ["Cell16"]), area("a2", ["Cell16"])];
-    const ms = soloMatches(both, "Cell16");
+    const ms = soloMatches(both, "Cell16", fullPathOf);
     expect(ms.length).toBe(2);
     const vis = soloVisibleKeys(ms, [0]);
     expect(vis.has(soloMaskKey("a1", ms[0].key))).toBe(true);

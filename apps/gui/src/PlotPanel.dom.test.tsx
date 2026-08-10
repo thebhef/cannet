@@ -3206,9 +3206,9 @@ describe("PlotPanel solo", () => {
       ["Cell16", true],
       ["PackVoltage", false],
     ]);
-    // A partial, case-insensitive match — `.?Cell16.?` is the owner's
-    // spelling and must find the same row.
-    typeSolo(".?cell16.?");
+    // The subject is the canonical path, so a message fragment selects
+    // as readily as a name — one dialect with the area patterns.
+    typeSolo("/Pack/Cell16$");
     expect(rowVisibility()).toEqual([
       ["Cell1", false],
       ["Cell16", true],
