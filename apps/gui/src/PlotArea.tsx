@@ -512,6 +512,11 @@ interface PlotAreaProps {
    * hide state, is what left this axis with nothing to draw — the
    * head toggle's inert state says so instead of blaming hidden rows. */
   collapsedBySolo?: boolean;
+  /** Keys ({@link signalRefKey}) of this axis's rows solo's mask is
+   * hiding, from {@link soloMaskedKeys} — a row already hidden on its
+   * own isn't included (solo isn't why). The row renderer styles these
+   * with a solo marker instead of the plain hidden treatment. */
+  soloMaskedKeys?: ReadonlySet<string>;
   /** True when this collapsed axis heads a contiguous run of collapsed
    * axes — it draws the run's single shared drag handle (ADR 0026). */
   collapsedRunHead?: boolean;
@@ -795,6 +800,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     flexGrow,
     collapsed,
     collapsedBySolo,
+    soloMaskedKeys,
     collapsedRunHead,
     enumLanes,
     label,
@@ -3134,9 +3140,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             const v = displayValueFor(key);
             const isPrimary = key === primaryKey;
             const isSelected = selectedKeys.has(key);
+            const isSoloMasked = !!soloMaskedKeys?.has(key);
             return (
               <div
-                className={`plot-signal-row${s.hidden ? " hidden" : ""}${isPrimary ? " primary" : ""}${isSelected ? " selected" : ""}`}
+                className={`plot-signal-row${s.hidden ? " hidden" : ""}${isSoloMasked ? " solo-masked" : ""}${isPrimary ? " primary" : ""}${isSelected ? " selected" : ""}`}
                 key={key}
                 title={
                   isPrimary

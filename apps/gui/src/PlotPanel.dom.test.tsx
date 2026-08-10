@@ -3343,6 +3343,42 @@ describe("PlotPanel solo", () => {
     ]);
   });
 
+  /// Every signal row's name paired with its class list — for telling a
+  /// solo-masked row apart from one the user hid on their own.
+  const rowClasses = () =>
+    Array.from(document.querySelectorAll(".plot-signal-row")).map(
+      (r) => [r.querySelector(".plot-signal-name")?.textContent ?? "", r.className] as [string, string],
+    );
+
+  it("styles a solo-masked row distinctly from a row the user hid", () => {
+    const registry = makeRegistry({
+      id: "el-solo-mask-style",
+      config: {
+        areas: [{ id: "a1", signals: [sig("Cell1"), sig("Cell16"), sig("PackVoltage", "V", true)] }],
+      },
+    });
+    renderPanel({ params: { elementId: "el-solo-mask-style" }, registry });
+    // Solo off: PackVoltage carries the plain hidden class, no solo marker.
+    expect(rowClasses().find(([n]) => n === "PackVoltage")?.[1]).toMatch(/\bhidden\b/);
+    expect(rowClasses().find(([n]) => n === "PackVoltage")?.[1]).not.toMatch(/solo-masked/);
+
+    typeSolo("Cell16");
+    // Cell1 draws nothing now, but solo — not the user — is why: it
+    // gets the solo marker on top of the hidden state.
+    const cell1 = rowClasses().find(([n]) => n === "Cell1")?.[1] ?? "";
+    expect(cell1).toMatch(/\bhidden\b/);
+    expect(cell1).toMatch(/\bsolo-masked\b/);
+    // PackVoltage was already hidden on its own — solo changes nothing
+    // about *why*, so it keeps the plain treatment.
+    const packVoltage = rowClasses().find(([n]) => n === "PackVoltage")?.[1] ?? "";
+    expect(packVoltage).toMatch(/\bhidden\b/);
+    expect(packVoltage).not.toMatch(/solo-masked/);
+    // The match itself is neither.
+    const cell16 = rowClasses().find(([n]) => n === "Cell16")?.[1] ?? "";
+    expect(cell16).not.toMatch(/\bhidden\b/);
+    expect(cell16).not.toMatch(/solo-masked/);
+  });
+
   it("is inert while the pattern is invalid, and says so", () => {
     const registry = cellRegistry("el-solo-invalid");
     renderPanel({ params: { elementId: "el-solo-invalid" }, registry });

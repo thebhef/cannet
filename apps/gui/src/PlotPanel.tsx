@@ -259,6 +259,7 @@ import {
   soloKeySlots,
   soloLabel,
   soloMaskSignals,
+  soloMaskedKeys,
   soloMatchedAreaIds,
   soloMatches,
   soloPageCount,
@@ -363,6 +364,12 @@ interface DerivedAreaConfig {
   /// Solo left this axis with nothing visible — the same view-level
   /// collapse as all-hidden, and equally not the area's own flag.
   collapsedBySolo: boolean;
+  /// Keys of this axis's rows solo's mask is why they don't draw — a
+  /// signal already hidden on its own doesn't count (solo isn't why).
+  /// What the row renderer styles with the solo marker instead of the
+  /// plain hidden treatment. Empty (the shared {@link EMPTY_KEY_SET})
+  /// while solo isn't applying to this axis.
+  soloMaskedKeys: ReadonlySet<string>;
 }
 
 /// Expand one effective area into its derived axes, based on the area's
@@ -410,6 +417,7 @@ function deriveAreaConfigs(
       // collapses like any all-hidden axis, but says why, and its area's
       // persisted `collapsed` stays untouched.
       collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
+      soloMaskedKeys: soloMask ? soloMaskedKeys(a.id, ax.signals, soloMask) : EMPTY_KEY_SET,
     };
   });
 }
@@ -2444,6 +2452,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
                 collapsed={d.collapsed}
                 collapsedBySolo={d.collapsedBySolo}
+                soloMaskedKeys={d.soloMaskedKeys}
                 collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}
                 yScale={axisScales[d.area.id]}

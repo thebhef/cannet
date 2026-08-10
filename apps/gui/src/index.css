@@ -3175,6 +3175,18 @@ button.trace-event-swatch {
   opacity: 0.45;
   font-style: italic;
 }
+/* A row solo's mask is hiding, not the user (`soloMaskedKeys` —
+ * PlotPanel.tsx / plotSolo.ts): the row still doesn't draw, but the
+ * marker says why solo, not the plain italic "hidden" dim. Declared
+ * after `.hidden` so it wins the properties both rules set. */
+.plot-signal-row.solo-masked {
+  box-shadow: inset 2px 0 0 var(--border-strong);
+}
+.plot-signal-row.solo-masked .plot-signal-name,
+.plot-signal-row.solo-masked .plot-signal-message {
+  opacity: 0.55;
+  font-style: normal;
+}
 
 /* Right readout column: value on top, optional Δ and diagnostic
  * stacked underneath, all right-aligned. */

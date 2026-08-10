@@ -441,6 +441,25 @@ export function soloMaskSignals(
   return masked ? out : (signals as SignalRef[]);
 }
 
+/// The series solo's mask actually took off the view: not in `visible`,
+/// *and* not already hidden on its own — a signal the user had hidden
+/// before solo was typed isn't solo's doing, so it's left out. This is
+/// the view-feedback question ("which rows does *solo* explain?"), a
+/// narrower one than {@link soloMaskSignals}'s ("what draws?"), so it's
+/// its own pass rather than a byproduct of that one.
+export function soloMaskedKeys(
+  areaId: string,
+  signals: readonly SignalRef[],
+  visible: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const s of signals) {
+    if (s.hidden) continue;
+    if (!visible.has(soloMaskKey(areaId, signalRefKey(s)))) out.add(signalRefKey(s));
+  }
+  return out;
+}
+
 /// Parse the persisted `solo` blob. Anything unrecognised reads as solo
 /// off, and a junk page is dropped rather than rejecting the blob (same
 /// tolerance as the rest of the panel's parsers). A blob written before
