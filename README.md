@@ -438,6 +438,31 @@ The session buffer keeps filling underneath regardless.
 docking is within the one window; the tear-out item is in
 `plans/backlog.md`.)
 
+**Undo / redo.** `Mod+Z` and `Mod+Y` (`Mod+Shift+Z` also works) step
+back and forward through what you've done to your views — not just the
+docking layout (a panel added, closed, or moved), but the elements
+inside it: signals added, removed, or reordered on a plot or signal
+view; a plot area dragged within a panel or onto another one; a filter
+added; a rename; a visibility or collapse toggle; a color pick; a
+column resize. The two chords share one timeline, so either always
+reverses whatever you did most recently, layout or element. **One
+gesture is one step**: however many changes a drag makes as it plays
+out, or however many keystrokes a rename takes, undoing it takes
+exactly one `Mod+Z`, and a plot area dragged from one panel to another
+is a single step too. `Mod+Z` / `Mod+Y` are ordinary commands —
+rebindable or removable from the shortcuts panel like any other — and
+while a text field has focus they fall through to the field's own text
+editing undo instead.
+
+Undo never touches the bus. It reverses what a view looks like and
+nothing else: an RBS element's Run flag, a transmit message's
+schedule, the connection, and the capture itself sit outside it by
+design ([ADR 0050](docs/adr/0050-undo-covers-view-state-only.md)) —
+undoing the removal of an RBS or transmit element brings its view back
+without re-arming it or re-adding its messages to the host, and undo
+never re-runs a host side effect. Zoom, pan, and scroll aren't covered
+either — they were never persisted view state to begin with.
+
 ### Indefinite-length capture
 
 The session buffer is not held in RAM — it is a **memory-mapped store**
