@@ -567,6 +567,30 @@ restoring, and an all-stale subset reading as the whole set.
 phase leaves exactly as it was, and its `plotSolo.ts` inventory already
 says "checked subset" — true again as of this phase.
 
+### 2026-08-10 — ADR-0031 gate for 62.C/62.D (orchestrator)
+
+Five harness runs on the 62.D build (tip `58aeb06`, release, `ev-zonal`
+project, scrub interaction, expected 1608 rx/tx fps). Run 1 failed one
+metric, `rx_gap_short_frac_worst`, at 0.057 against the 0.041 limit
+(baseline 0.006); runs 2–5 passed all 31 gated metrics
+(`rx_gap_short_frac_worst` 0.005 / 0.006 / 0.003 / 0.006).
+
+Because this metric caught a real regression once before (the
+cadence-flush round), a control experiment ran: rebuild at the 62.C
+tip (`b9dec14`, runtime-identical to the already-gated 62.B build
+since 62.C added only tests/docs) under the same machine state — its
+OWN first post-build run failed the same metric at 0.055, runs 2–3
+clean (0.006, 0.004).
+
+Conclusion: the excursion reproduces on a build containing none of
+the 62.D diff, at the same magnitude, in the same first-run-after-build
+position — machine-state interference, not the diff (which is
+frontend-only, with longtask/lag/jank clean even in run 1).
+
+Verdict: gate green; runs 2–4 committed as the record; excursion
+documented here, not committed, so worst-to-worst comparisons stay
+clean. (Owner may overrule at review.)
+
 ## Blockers / side effects
 
 - **A shell heredoc ate a level of backslashes and wrote a NUL into a
@@ -635,3 +659,29 @@ says "checked subset" — true again as of this phase.
    the default.
 
 ADR-0031 gate green per the gate entry above.
+
+### Addendum (2026-08-10) — after phases 62.C/62.D
+
+Re-walking only what the extensions changed, reading the 62.C/62.D
+status-log entries above as evidence.
+
+**Criterion 3, captureless clause — MET, superseded.** §3's
+positional-stepping sentence — "No capture group → each matched signal
+is its own group (positional stepping)" — was superseded by owner
+ruling, recorded in the 62.D grooming addendum: a captureless pattern
+is now a flat filter (no pages, step controls inert, all matches on
+show at once, zero-match areas untouched), dom-pinned in 62.D. The
+capturing-pattern clauses (keyed grouping, ordering, `$N`, `(?:…)`,
+tuples, paging, the All-cycle, lands-on-page-1) remain MET, unchanged.
+
+New capability walked, not in the original six criteria: the checkable
+subset (menu ticking, group-keyed/match-keyed identity, `{pattern,
+checked}` persistence, stepping-out semantics) — dom- and unit-pinned in
+62.D.
+
+62.C landed no semantics change; its verdict was the owner report
+reproduced as by-design, with three pins added as a regression guard.
+
+The ADR-0031 gate for the extension is green per the entry above.
+
+Final test counts: frontend **142 files / 1876 tests**; host untouched.
