@@ -3403,6 +3403,14 @@ button.trace-event-swatch {
   color: var(--danger-text-muted);
   font-style: italic;
 }
+/* Clickable whenever there's a match list behind it — left-click opens
+ * the same `SoloMatchMenu` right-click does. */
+.plot-solo-pos-clickable {
+  cursor: pointer;
+}
+.plot-solo-pos-clickable:hover {
+  color: var(--text-secondary);
+}
 .plot-solo-step,
 .plot-solo-clear {
   background: none;

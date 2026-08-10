@@ -3782,6 +3782,19 @@ describe("PlotPanel solo", () => {
     expect(menuItems()).toEqual([]);
   });
 
+  it("opens the match menu on a left-click of the position read-out too", () => {
+    const registry = stepRegistry("el-solo-menu-leftclick");
+    renderPanel({ params: { elementId: "el-solo-menu-leftclick" }, registry });
+    typeSolo("Cell");
+    expect(menuItems()).toEqual([]);
+    fireEvent.click(screen.getByLabelText("solo position"));
+    expect(menuItems()).toEqual([
+      ["Cell1", true],
+      ["Cell2", false],
+      ["Cell3", false],
+    ]);
+  });
+
   it("flips visibility without a host round-trip or a chart rebuild", async () => {
     // Every plotted signal is already sampled — hidden ones included —
     // so a solo change is a re-normalise + redraw of the window each

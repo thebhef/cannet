@@ -2285,9 +2285,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 ‹
               </button>
               <span
-                className={`plot-solo-pos${soloPosLabel === "no matches" ? " plot-solo-pos-empty" : ""}`}
+                className={`plot-solo-pos${soloPosLabel === "no matches" ? " plot-solo-pos-empty" : ""}${soloMenuItems.length > 0 ? " plot-solo-pos-clickable" : ""}`}
                 aria-label="solo position"
-                title="which page of matching groups is on show, the group it covers, and how many of the matches that is"
+                title="which page of matching groups is on show, the group it covers, and how many of the matches that is — click for the match list"
+                onClick={(e) => {
+                  // Same menu the control's own right-click opens
+                  // (below); left-click is the more discoverable
+                  // gesture for "open the list", so it opens it too.
+                  if (soloMenuItems.length === 0) return;
+                  setSoloMenuAt({ x: e.clientX, y: e.clientY });
+                }}
               >
                 {soloPosLabel}
               </span>
