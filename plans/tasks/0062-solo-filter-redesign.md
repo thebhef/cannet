@@ -95,6 +95,57 @@ tail, so quick name filters keep working. (Rejected: bare-name-only
 - Persisted solo state becomes `{pattern, page}` (a page of group
   keys, not raw match indices).
 
+### Addendum — owner rulings 2026-08-09 (grooming for phase 62.D)
+
+Three owner statements, in the order they were made; the later ones
+supersede the earlier where they conflict.
+
+1. **The match menu becomes checkable.** Verbatim: *"the solo menu that
+   expands showing the selection; you should be able to check/uncheck
+   menu items there"*. The design put to the owner and approved with
+   *"that's fine for now"*:
+
+   - Menu items are checkable; clicking one **toggles** it (replacing
+     62.A's click-jumps-to-the-page), and the menu stays open while
+     ticking.
+   - Selection is **group-keyed** — the identity of an item is its
+     group key tuple (or, for a pattern with no captures, the match's
+     own stable identity), never a position in a list.
+   - While a subset is checked, the visible set is the union of the
+     checked items' members; masking, the per-area chip and the
+     zero-match-untouched rule all follow from the visible set.
+   - **Stepping leaves the subset** and resumes the
+     all → page 1 → … → page N → all cycle: forward goes to the page
+     *after* the page of the **last** checked group, backward to the
+     page *before* the **first** checked group.
+   - Persisted as `{pattern, checked}`.
+   - Entering or modifying the pattern still lands a capturing pattern
+     on page 1 (and clears any selection).
+
+2. **The captureless pattern is applied like the capturing one, per
+   plot area.** Verbatim: *"the captureless one should be applied the
+   same way; it should be applied per plot area"*. This superseded
+   62.C's open question (whether a captureless pattern should land on
+   All rather than page 1).
+
+3. **…and then: a captureless pattern has no pages at all.** Verbatim:
+   *"the captureless version should have no pages, at least
+   conceptually; it's just whatever matches in every signal panel, all
+   at once. There's nothing to page since there's no index captured"* …
+   *"but retains the detail that if there are no matches in a signal
+   panel, that panel is left alone."* This refines — and supersedes —
+   statement 2's per-area reading: a captureless pattern is a **flat
+   filter**, not a paged view applied per area.
+
+**What this supersedes.** §3's sentence *"No capture group → each
+matched signal is its own group (positional stepping)"* is dead: a
+captureless pattern has no step sequence and no pages, so every match
+is on show at once, masked per matching area, with zero-match areas
+untouched exactly as §1 rules. It also closes 62.C's open landing
+question — dead rather than answered, because a captureless pattern has
+no landing state to choose. Capturing patterns are unchanged: cross-area
+key groups, pages, the All-cycle, and enter-lands-on-page-1 all stand.
+
 ## Exit criteria
 
 - Zero-match areas render untouched under an active solo (dom-tested
