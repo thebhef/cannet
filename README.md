@@ -757,11 +757,18 @@ resample at the end.
   filtered — so a half-typed regex never blanks the plot. Solo applies
   **only to the areas it matched something in**: an area with no match
   renders exactly as if solo were off, and a pattern matching nothing
-  anywhere changes nothing at all. Inside an area it does apply to,
-  being left with no visible series gives up the plot height like any
-  all-hidden area, without touching its own collapse toggle. The
-  pattern is saved with the panel in the project file. **Ctrl/⌘+F**
-  focuses the box from anywhere in the plot panel.
+  anywhere changes nothing at all — the toolbar read-out says
+  `no matches`, styled distinctly (muted) from an ordinary position
+  label. Inside an area it does apply to, being left with no visible
+  series gives up the plot height like any all-hidden area, without
+  touching its own collapse toggle; a row solo is why you can't see it
+  carries its own marker instead of the plain dimmed/italic hidden
+  look, so it doesn't read as something you hid yourself. An area solo
+  applies to also shows a small `3 of 12 match` chip beside its label —
+  how many of that area's own series matched — and a zero-match area
+  shows no chip at all. The pattern is saved with the panel in the
+  project file. **Ctrl/⌘+F** focuses the box from anywhere in the plot
+  panel.
 - **Stepping by group.** A solo pattern's **capture groups** decide
   what one step covers: each match's key is what the pattern captured,
   and every signal sharing that key steps as one — so `Cell(\d+)` walks
@@ -784,9 +791,9 @@ resample at the end.
   range, `1/2 · "0"–"4" (40 of 96)`). It says `no matches` when the
   pattern selected nothing. Typing or editing the pattern lands on page
   1; **Escape** (or clearing the box) drops the whole solo view at
-  once. **Right-click the solo control** for the group list, and click
-  one to open the page it sits on; the menu stays open so you can
-  compare a few.
+  once. **Right-click the solo control, or left- or right-click the
+  position read-out,** for the group list, and click one to open the
+  page it sits on; the menu stays open so you can compare a few.
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives
