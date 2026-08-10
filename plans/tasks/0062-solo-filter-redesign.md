@@ -451,8 +451,137 @@ owner ruling; it was deliberately not made here. A second, smaller
 option is to raise the default `solo_page_size`, which is a setting
 rather than a semantics change.
 
+### 2026-08-09 — phase 62.D (branch `task62d-solo-subset`)
+
+The two changes the grooming addendum above records: a captureless
+pattern becomes a **flat filter** (the semantics change, landed first),
+and the match menu becomes a **checkable subset** on top of it. Five
+commits, each green on `pnpm --dir apps/gui test` + `pnpm --dir apps/gui
+build` (frontend-only phase — no Rust touched):
+
+| commit | subject |
+| --- | --- |
+| `5c93c85` | `docs(task62): record the 62.D grooming — flat captureless, checkable subset` |
+| `c0fc33e` | `feat(gui): give a captureless solo pattern no pages to be on` |
+| `4adce13` | `feat(gui): filter flat on a solo pattern that captures nothing` |
+| `0f14525` | `feat(gui): model a checked subset of the solo match list` |
+| `bccbbef` | `feat(gui): tick a subset of the solo match menu to show exactly those` |
+
+Final gates: frontend **142 files / 1876 tests** passing (1845 at the
+phase's start, +31); `pnpm build` clean.
+
+What landed:
+
+1. **Flat captureless (`soloPatternPages`).** One predicate — *only a
+   pattern that captures has a step sequence* — is the whole semantics
+   change. The panel feeds it into `soloPages`, so a captureless
+   pattern has **zero** pages and everything downstream falls out of
+   the machinery that already existed: `clampSoloPage` gives `null`
+   (the whole matched set), `stepSoloPage` has nowhere to go, the
+   read-out is `all (96)`, and the ‹ › buttons are `disabled` (with a
+   dimmed style) rather than silently inert. Masking stays per matching
+   area and a zero-match area stays untouched, exactly as §1 rules —
+   nothing in the mask path needed to change to get the owner's "just
+   whatever matches in every signal panel, all at once".
+2. **No page is ever written under a captureless pattern.**
+   `setSoloPattern` lands a capturing pattern on page 1 and a
+   captureless one on the flat view; `soloFromRaw` drops a page stored
+   against a captureless pattern (a blob from an older build, or from
+   an edit that removed the capture group), so it restores flat.
+3. **Item identity (`SoloGroup.id`).** The captured key's JSON tuple
+   for a capturing pattern; the match's own `soloMaskKey` (area id +
+   signal ref) for a captureless one — never a list index, so a subset
+   survives a re-derive that reorders or shortens the list. Captureless
+   items also take the area label (`Area 2 · Cell1`) so the same signal
+   plotted twice reads apart in the menu; `soloGroups` takes the label
+   map as an optional third argument and the panel's existing
+   `areaLabels` memo (moved up above the solo block) feeds it.
+4. **Selection, as pure functions.** `toggleSoloChecked`,
+   `soloSelectedGroups` (item-list order, stale ids dropped, an
+   all-stale selection reading as no selection), `soloMemberKeys`, a
+   subset form for `soloLabel`, and `stepSoloFromSelection`.
+   `PlotPanel.tsx` only wires: one `soloSelected` memo, one branch in
+   `soloVisible`, one branch in `soloMenuItems`, and `toggleSoloGroup`
+   replacing `showSoloGroup`. Because the mask, the collapse rule and
+   the per-area chip all read the *visible set*, none of them knows a
+   subset exists.
+5. **The exact stepping semantics** (pinned by
+   `stepSoloFromSelection`'s unit cases and the
+   `leaves a ticked subset behind…` dom pin): a step **leaves** the
+   subset (`checked` is emptied) and resumes the ordinary ring —
+   forward from the page *after* the page of the **last** checked item,
+   backward from the page *before* the page of the **first**; running
+   off either end lands on the whole set, like every other step; a
+   selection with nothing live left in it steps to the whole set. With
+   a captureless pattern there is no ring, so a step is a no-op and the
+   subset stays put.
+6. **Persistence: three mutually exclusive forms.** `{pattern}` (flat,
+   or the whole matched set), `{pattern, page}` (a capturing pattern's
+   page), `{pattern, checked: [...]}` (a subset). Ticking an item drops
+   the page and stepping drops the subset, so the state can't hold
+   both; a blob carrying both parses as the subset. Tolerant parse:
+   a `checked` that isn't a list of strings is dropped, non-string
+   entries within one are dropped and duplicates collapsed, an empty or
+   fully stale selection reads as the whole set. As with the page, the
+   stored ids are only ever *re-interpreted* against the live item
+   list, never written back — which is what makes a restore against an
+   unpopulated catalog harmless.
+
+Decisions taken inside the groomed design (none of them a divergence):
+
+- **Subset read-out for one item** reads `1 group · cell=03 (4 of 96)`
+  (singular), the design having specified only the ≤2 and >2 forms.
+- **Captureless item label separator** is ` · `, matching the v1 menu's
+  `Area N · name` the design cites; a subset of them therefore reads
+  `2 signals · Area 1 · Cell1, Area 2 · Cell1 (2 of 96)`.
+- **The step buttons are `disabled`** (the design said "prefer visibly
+  disabled"), which also covers the `no matches` state — there is
+  nothing to step in either case.
+
+Dom pins flipped deliberately:
+
+| pin | was | now |
+| --- | --- | --- |
+| `masks pattern-derived series like manual picks` | `Limit` paged: `1/2 · LimitNominal (1 of 2)`, one row on show, `next` steps | flat: both rows on show, `all (2)`; menu labels carry the area |
+| `makes every match its own page when the solo pattern captures nothing` (renamed `shows both row kinds at once…`) | 62.C's positional paging over a mixed area | both kinds on show together, `next` disabled |
+| `persists the pattern with the panel config` | `{pattern: "Cell16", page: 0}` | `{pattern: "Cell16"}` — captureless has no page |
+| `pulls a restored page past the end onto the last one` | stored page under `Cell` | stored page under `(Cell\d)`, the only kind with a page to clamp |
+| `opens the page a group sits on, and stays open` (replaced by `ticks a subset of the groups…`) | click jumped to the group's page | click toggles the item |
+| the stepping / paging / menu pins (`cycles all -> page 1 -> …`, `cycles the pages with PgDn / PgUp`, `puts the configured number of groups on a page`, `steps after a click…`, `restores the full view from a page on Escape`, `lands a modified pattern back on page 1`, `lists the step sequence's groups…`, `opens the match menu on a left-click…`) | driven by the captureless `Cell` | driven by the capturing `(Cell\d)` — same one-group-per-match sequence, labels now quoted |
+| persistence unit fixtures carrying a page | `{pattern: "Cell", page: 2}` | `{pattern: "Cell(\\d)", page: 2}` |
+
+New pins added: `soloPatternPages` (2 cases), group identity and the
+area-labelled captureless label (3), `toggleSoloChecked` (2),
+`soloSelectedGroups` (3), `soloMemberKeys` (1),
+`stepSoloFromSelection` (5), `soloLabel`'s subset forms (4), the
+`checked` persistence forms (4 cases across the subset, junk-drop,
+exclusivity and round-trip pins); plus dom pins for the flat filter
+across areas with a zero-match area untouched and the step controls
+inert, a page stored under a captureless pattern restoring flat,
+ticking a subset of groups, ticking captureless matches, stepping out
+of a subset, a modified pattern dropping one, a subset persisting and
+restoring, and an all-stale subset reading as the whole set.
+
+**ADR 0026 needed no change.** Its solo paragraph states the model rule
+(a view mask composed on `hidden`, scoped to matching areas), which this
+phase leaves exactly as it was, and its `plotSolo.ts` inventory already
+says "checked subset" — true again as of this phase.
+
 ## Blockers / side effects
 
+- **A shell heredoc ate a level of backslashes and wrote a NUL into a
+  test file** (62.D). Editing `plotSolo.test.ts` through
+  `python - <<'PY'` collapsed `\\\\d` to `\d` (so a capturing fixture
+  pattern silently became `Cell(d)`) and `\\0` to a literal NUL byte —
+  which is exactly the byte that made `plotSolo.ts` binary to git for
+  most of this task. The same write also left the file with mixed
+  CRLF/LF endings, the whole-file-diff hazard 62.A hit. Caught before
+  committing (`git show --stat` on the commit is the check that catches
+  it; `git -c core.autocrlf=false diff` is *not* — under this repo's
+  `core.autocrlf=true` it reports every CRLF line as changed and is
+  pure noise). Fixed by doing the edit from a script *file* rather than
+  a heredoc. Rule for future sessions: don't pipe source edits through
+  a shell heredoc on this repo.
 - **The `plotSolo.ts` NUL fix nearly re-triggered the whole-file-diff
   hazard, from the opposite direction.** Once the byte was replaced,
   `git diff` against the pre-fix blob (still holding the `NUL`, so git
