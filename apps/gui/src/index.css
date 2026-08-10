@@ -3396,6 +3396,13 @@ button.trace-event-swatch {
   min-width: 2.5rem;
   text-align: center;
 }
+/* The pattern parses but selects nothing — distinct from an ordinary
+ * position label (`soloLabel`'s "no matches" form), so it doesn't read
+ * as just another page count. */
+.plot-solo-pos-empty {
+  color: var(--danger-text-muted);
+  font-style: italic;
+}
 .plot-solo-step,
 .plot-solo-clear {
   background: none;

@@ -2182,6 +2182,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /** Where the solo control's match menu is anchored, or `null` when
    * it's closed. */
   const [soloMenuAt, setSoloMenuAt] = useState<{ x: number; y: number } | null>(null);
+  /// The toolbar read-out's text, computed once so the render below can
+  /// both show it and key the no-matches styling off the same value
+  /// `soloLabel` already commits to (its doc comment nails the literal
+  /// string down as one of its three unambiguous forms).
+  const soloPosLabel = soloLabel(soloGroupList, soloPage, soloPageSize, soloMatchCount);
 
   return (
     <div
@@ -2280,11 +2285,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 ‹
               </button>
               <span
-                className="plot-solo-pos"
+                className={`plot-solo-pos${soloPosLabel === "no matches" ? " plot-solo-pos-empty" : ""}`}
                 aria-label="solo position"
                 title="which page of matching groups is on show, the group it covers, and how many of the matches that is"
               >
-                {soloLabel(soloGroupList, soloPage, soloPageSize, soloMatchCount)}
+                {soloPosLabel}
               </span>
               <button
                 className="plot-solo-step"

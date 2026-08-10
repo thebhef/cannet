@@ -3660,6 +3660,16 @@ describe("PlotPanel solo", () => {
     expect(soloPosition()).toBe("no matches");
   });
 
+  it("gives the no-matches read-out a distinct visual treatment", () => {
+    const registry = stepRegistry("el-solo-empty-style");
+    renderPanel({ params: { elementId: "el-solo-empty-style" }, registry });
+    const posEl = () => screen.getByLabelText("solo position");
+    typeSolo("Cell1");
+    expect(posEl().className).not.toMatch(/plot-solo-pos-empty/);
+    typeSolo("NoSuchSignal");
+    expect(posEl().className).toMatch(/plot-solo-pos-empty/);
+  });
+
   it("restores the full view from a page on Escape", () => {
     const registry = stepRegistry("el-solo-step-escape");
     const { api } = renderPanel({ params: { elementId: "el-solo-step-escape" }, registry });
