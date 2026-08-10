@@ -1492,9 +1492,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// a new pattern is a new group list, and the first page of it is what
   /// the user is looking for after typing. A captureless pattern has no
   /// page to land on — it filters flat — and emptying the box is solo
-  /// off.
+  /// off. Either way it is a new item list, so any ticked subset goes
+  /// with the old one.
   const setSoloPattern = useCallback(
-    (pattern: string) => setSolo({ pattern, page: soloPatternPages(pattern) ? 0 : null }),
+    (pattern: string) =>
+      setSolo({ pattern, page: soloPatternPages(pattern) ? 0 : null, checked: [] }),
     [],
   );
   const clearSolo = useCallback(() => setSolo(SOLO_OFF), []);

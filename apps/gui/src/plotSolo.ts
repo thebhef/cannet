@@ -32,10 +32,18 @@
 /// state and nothing for the step controls to do. Groups are dealt into
 /// pages of
 /// `solo_page_size` and the control cycles **all → page 1 → … → page N
-/// → all** ({@link stepSoloPage}). The page is the only stepping state
-/// the panel keeps, and it is re-interpreted against a group list
-/// re-derived from the live areas on every change — so a page past the
-/// end clamps ({@link clampSoloPage}) instead of blanking the view.
+/// → all** ({@link stepSoloPage}).
+///
+/// Either kind of pattern can also be narrowed by **ticking a subset**
+/// of its items in the match menu ({@link toggleSoloChecked}): the
+/// visible set is then the union of what the ticked items cover, and
+/// stepping leaves the subset behind to resume the cycle
+/// ({@link stepSoloFromSelection}). A page and a subset are the same
+/// slot — one displaces the other — and both are only ever
+/// *re-interpreted* against an item list re-derived from the live areas
+/// on every change, never written back: a page past the end clamps
+/// ({@link clampSoloPage}) and a stale tick is dropped
+/// ({@link soloSelectedGroups}), instead of blanking the view.
 
 import { signalKey } from "./plotData";
 import { signalRefKey, type PlotAreaConfig, type SignalRef } from "./plotPanelConfig";
@@ -53,10 +61,18 @@ export interface SoloState {
   /// blanking the view, so a restored state survives a catalog that has
   /// shrunk.
   page: number | null;
+  /// The ticked subset, as {@link SoloGroup.id}s — the third way to pick
+  /// what is on show, and mutually exclusive with `page`: ticking an
+  /// item drops the page, and stepping drops the subset
+  /// ({@link stepSoloFromSelection}). Ids naming groups the pattern no
+  /// longer produces are kept here and dropped on the way out
+  /// ({@link soloSelectedGroups}), so a restore survives a catalog that
+  /// has not arrived; an empty selection is the whole matched set.
+  checked: readonly string[];
 }
 
-/// Solo off: no pattern, and the whole set would be on show.
-export const SOLO_OFF: SoloState = { pattern: "", page: null };
+/// Solo off: no pattern, no subset, and the whole set would be on show.
+export const SOLO_OFF: SoloState = { pattern: "", page: null, checked: [] };
 
 /// One entry of the match list — a *series in an area*, since the same
 /// signal may be plotted in several areas and solo is panel-wide.
@@ -257,6 +273,12 @@ export function soloPatternPages(pattern: string): boolean {
 /// One step of the solo cycle: the matches that share a group key, or —
 /// for a pattern that captures nothing — a single match standing alone.
 export interface SoloGroup {
+  /// Stable identity, independent of where the group sits in the list:
+  /// the captured key for a capturing pattern, and the matched series'
+  /// own area-and-signal key for a captureless one. A checked subset is
+  /// stored as these, never as positions, so it survives a re-derive
+  /// that reorders or shortens the list.
+  id: string;
   /// The captured components in {@link soloKeySlots} order. Empty for a
   /// positional group.
   key: readonly string[];
@@ -290,10 +312,14 @@ function keyLabel(key: readonly string[], slots: readonly SoloKeySlot[]): string
     .join(",");
 }
 
-/// The step sequence: the matches bucketed by group key, keys ascending
-/// (numeric-aware, component by component). A pattern with no capture
-/// groups has no key to bucket on, so every match is its own group and
-/// the sequence stays in panel order.
+/// The checkable — and, for a capturing pattern, steppable — item list:
+/// the matches bucketed by group key, keys ascending (numeric-aware,
+/// component by component). A pattern with no capture groups has no key
+/// to bucket on, so every match is its own item and the list stays in
+/// panel order; those items don't page ({@link soloPatternPages}), they
+/// are just what the flat filter shows and what the menu ticks. Pass
+/// `areaLabels` to have them read as `Area 2 · Cell1`, so the same
+/// signal plotted twice tells apart in a menu.
 ///
 /// A group the match didn't exercise — the arm of an alternation it
 /// took another path through — contributes an **empty component**
@@ -303,13 +329,14 @@ function keyLabel(key: readonly string[], slots: readonly SoloKeySlot[]): string
 export function soloGroups(
   matches: readonly SoloMatch[],
   slots: readonly SoloKeySlot[],
+  areaLabels?: ReadonlyMap<string, string>,
 ): SoloGroup[] {
   if (slots.length === 0) {
-    return matches.map((m) => ({
-      key: [],
-      label: m.name,
-      members: [soloMaskKey(m.areaId, m.key)],
-    }));
+    return matches.map((m) => {
+      const key = soloMaskKey(m.areaId, m.key);
+      const area = areaLabels?.get(m.areaId);
+      return { id: key, key: [], label: area ? `${area} · ${m.name}` : m.name, members: [key] };
+    });
   }
   const buckets = new Map<string, { key: string[]; members: string[] }>();
   for (const m of matches) {
@@ -320,9 +347,9 @@ export function soloGroups(
     bucket.members.push(soloMaskKey(m.areaId, m.key));
     buckets.set(id, bucket);
   }
-  return [...buckets.values()]
-    .sort((a, b) => compareKeys(a.key, b.key))
-    .map(({ key, members }) => ({ key, label: keyLabel(key, slots), members }));
+  return [...buckets.entries()]
+    .sort(([, a], [, b]) => compareKeys(a.key, b.key))
+    .map(([id, { key, members }]) => ({ id, key, label: keyLabel(key, slots), members }));
 }
 
 /// The areas solo *applies* to: the ones holding at least one match. An
@@ -379,19 +406,47 @@ function pageSlice(
   return groups.slice(page * size, page * size + size);
 }
 
+/// The {@link soloMaskKey}s a set of groups covers — what solo leaves
+/// visible once the groups on show have been picked.
+export function soloMemberKeys(groups: readonly SoloGroup[]): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const g of groups) for (const m of g.members) out.add(m);
+  return out;
+}
+
 /// The {@link soloMaskKey}s solo leaves visible: every match while the
 /// whole set is on show (`page` is `null`), otherwise the members of
 /// that page's groups. A page past the end shows nothing — callers pass
 /// a {@link clampSoloPage}d index so that can't happen from a restore.
+/// A *checked subset* is the other way to pick groups: see
+/// {@link soloSelectedGroups}, whose result goes straight through
+/// {@link soloMemberKeys}.
 export function soloVisibleKeys(
   groups: readonly SoloGroup[],
   page: number | null,
   pageSize: number,
 ): ReadonlySet<string> {
-  const shown = page == null ? groups : pageSlice(groups, page, pageSize);
-  const out = new Set<string>();
-  for (const g of shown) for (const m of g.members) out.add(m);
-  return out;
+  return soloMemberKeys(page == null ? groups : pageSlice(groups, page, pageSize));
+}
+
+/// Tick or untick one item of the match menu, by {@link SoloGroup.id}.
+/// Returns a new list; the one passed in is left alone.
+export function toggleSoloChecked(checked: readonly string[], id: string): string[] {
+  return checked.includes(id) ? checked.filter((c) => c !== id) : [...checked, id];
+}
+
+/// The checked items that still exist, in the item list's own order
+/// (which is the step order, not the order they were ticked in). A
+/// stored id naming a group the pattern no longer produces is dropped,
+/// and a selection that drops to nothing reads as no selection at all —
+/// the whole matched set, exactly as an empty one does.
+export function soloSelectedGroups(
+  groups: readonly SoloGroup[],
+  checked: readonly string[],
+): SoloGroup[] {
+  if (checked.length === 0) return [];
+  const want = new Set(checked);
+  return groups.filter((g) => want.has(g.id));
 }
 
 const wrap = (i: number, n: number): number => ((i % n) + n) % n;
@@ -412,21 +467,58 @@ export function stepSoloPage(
   return next === 0 ? null : next - 1;
 }
 
-/// The solo control's read-out, always in one of three unambiguous
-/// forms:
+/// Where a step lands while a subset is checked: stepping **leaves the
+/// subset** and resumes the ordinary cycle from where the selection
+/// sat — forward opens the page after the page of the *last* checked
+/// group, backward the page before the *first*. Running off either end
+/// lands on the whole set, like every other step. A selection with
+/// nothing live left in it steps to the whole set too.
+export function stepSoloFromSelection(
+  groups: readonly SoloGroup[],
+  checked: readonly string[],
+  pageSize: number,
+  delta: 1 | -1,
+): number | null {
+  const pageCount = soloPageCount(groups.length, pageSize);
+  if (pageCount === 0) return null;
+  const want = new Set(checked);
+  const at: number[] = [];
+  groups.forEach((g, i) => {
+    if (want.has(g.id)) at.push(i);
+  });
+  if (at.length === 0) return null;
+  const from = delta === 1 ? at[at.length - 1] : at[0];
+  return stepSoloPage(soloPageOfGroup(from, pageSize), pageCount, delta);
+}
+
+/// The solo control's read-out, always in one unambiguous form:
 ///
 /// - `no matches` — the pattern selected nothing, so nothing is masked.
-/// - `all (96)` — the whole matched set is on show.
+/// - `all (96)` — the whole matched set is on show (which is the only
+///   form a captureless pattern's flat filter ever takes).
 /// - `2/12 · cell=07 (16 of 96)` — page 2 of 12, showing the one group
 ///   `cell=07`, which is 16 of the 96 matches. A page spanning several
 ///   groups reads as the range it covers (`1/2 · "0"–"4" (40 of 96)`).
+/// - `2 groups · cell=03, cell=07 (12 of 96)` — a checked subset
+///   ({@link soloSelectedGroups}), listed while it is short enough to
+///   read and collapsed to `4 groups (12 of 96)` past two. A
+///   captureless pattern's items are counted in `signals`, since it has
+///   no groups.
 export function soloLabel(
   groups: readonly SoloGroup[],
   page: number | null,
   pageSize: number,
   matchCount: number,
+  selected: readonly SoloGroup[] = [],
 ): string {
   if (matchCount === 0 || groups.length === 0) return "no matches";
+  if (selected.length > 0) {
+    const visible = selected.reduce((n, g) => n + g.members.length, 0);
+    const noun = selected[0].key.length === 0 ? "signal" : "group";
+    const count = `${selected.length} ${noun}${selected.length === 1 ? "" : "s"}`;
+    const listed = selected.length <= 2 ? ` · ${selected.map((g) => g.label).join(", ")}` : "";
+    return `${count}${listed} (${visible} of ${matchCount})`;
+  }
   if (page == null) return `all (${matchCount})`;
   const pageCount = soloPageCount(groups.length, pageSize);
   const at = clampSoloPage(page, pageCount)!;
@@ -476,31 +568,43 @@ export function soloMaskedKeys(
 }
 
 /// Parse the persisted `solo` blob. Anything unrecognised reads as solo
-/// off, and a junk page is dropped rather than rejecting the blob (same
-/// tolerance as the rest of the panel's parsers). A page stored against
-/// a pattern that doesn't page ({@link soloPatternPages}) names nothing,
-/// so it drops too and the pattern reads as the flat filter it is. A
-/// blob written before solo paged carried raw match indices; those index
-/// a list that no longer exists, so the pattern is kept and the whole
-/// set is shown.
+/// off, and junk is dropped rather than rejecting the blob (same
+/// tolerance as the rest of the panel's parsers): a non-integer page, a
+/// `checked` that isn't a list of strings, the non-string entries of one
+/// that is. A page stored against a pattern that doesn't page
+/// ({@link soloPatternPages}) names nothing, so it drops too and the
+/// pattern reads as the flat filter it is; a subset wins over a page,
+/// since the two forms are exclusive. A blob written before solo paged
+/// carried raw match indices; those index a list that no longer exists,
+/// so the pattern is kept and the whole set is shown.
 export function soloFromRaw(raw: unknown): SoloState {
   if (typeof raw !== "object" || raw === null) return SOLO_OFF;
   const o = raw as Record<string, unknown>;
   const pattern = typeof o.pattern === "string" ? o.pattern : "";
   if (pattern === "") return SOLO_OFF;
+  const checked = Array.isArray(o.checked)
+    ? [...new Set(o.checked.filter((c): c is string => typeof c === "string"))]
+    : [];
+  if (checked.length > 0) return { pattern, page: null, checked };
   const page =
-    typeof o.page === "number" && Number.isInteger(o.page) && o.page >= 0 && soloPatternPages(pattern)
+    typeof o.page === "number" &&
+    Number.isInteger(o.page) &&
+    o.page >= 0 &&
+    soloPatternPages(pattern)
       ? o.page
       : null;
-  return { pattern, page };
+  return { pattern, page, checked };
 }
 
-/// The sparse persisted shape: `undefined` while solo is off (so the
-/// key is absent from the panel blob), and no `page` key while the
-/// whole matched set is on show.
+/// The sparse persisted shape, in one of three mutually exclusive
+/// forms: `undefined` while solo is off (so the key is absent from the
+/// panel blob), `{pattern, checked}` while a subset is ticked,
+/// `{pattern, page}` while a page of a capturing pattern is on show, and
+/// the pattern alone for the whole matched set.
 export function soloToParams(
   state: SoloState,
-): { pattern: string; page?: number } | undefined {
+): { pattern: string; page?: number; checked?: string[] } | undefined {
   if (state.pattern === "") return undefined;
+  if (state.checked.length > 0) return { pattern: state.pattern, checked: [...state.checked] };
   return state.page == null ? { pattern: state.pattern } : { pattern: state.pattern, page: state.page };
 }

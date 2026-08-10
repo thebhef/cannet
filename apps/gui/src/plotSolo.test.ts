@@ -18,14 +18,18 @@ import {
   soloMaskedKeys,
   soloMatchedAreaIds,
   soloMatches,
+  soloMemberKeys,
   soloPageCount,
   soloPageOfGroup,
   soloPathResolver,
   soloPatternPages,
   soloRegex,
+  soloSelectedGroups,
   soloToParams,
   soloVisibleKeys,
+  stepSoloFromSelection,
   stepSoloPage,
+  toggleSoloChecked,
   type SoloGroup,
 } from "./plotSolo";
 import { applyAreaSelection, catalogPath, resolvePatterns } from "./signalSelection";
@@ -66,6 +70,11 @@ function desc(signalName: string): SignalDescriptorRecord {
     unit: "V",
   };
 }
+
+/// Groups of one member each, id'd and labelled by their key — the
+/// shape the selection and read-out functions consume.
+const fakeGroups = (labels: string[]): SoloGroup[] =>
+  labels.map((label, i) => ({ id: label, key: [label], label, members: [`a1 m${i}`] }));
 
 const BUS_NAMES = new Map([["bus-a", "Vehicle"]]);
 /// The panel's resolver, with `Cell16` catalogued and everything else
@@ -342,6 +351,109 @@ describe("soloGroups", () => {
   it("is empty when nothing matched", () => {
     expect(groupsFor("Nope(\\d+)")).toEqual([]);
   });
+
+  it("identifies a keyed group by its key, not by its position", () => {
+    // A subset survives a re-derive that reorders or shortens the list,
+    // so identity can't be an index into it.
+    const all = groupsFor("Cell(\\d+)$");
+    const fewer = groupsFor("Cell(\\d+)$", [area("a1", ["Cell10", "Cell2"])]);
+    expect(fewer.map((g) => g.id)).toEqual([
+      all.find((g) => g.key[0] === "2")!.id,
+      all.find((g) => g.key[0] === "10")!.id,
+    ]);
+    expect(new Set(all.map((g) => g.id)).size).toBe(all.length);
+  });
+
+  it("identifies a captureless item by its area and series, not by its position", () => {
+    const two = [area("a1", ["Cell1"]), area("a2", ["Cell1"])];
+    const gs = soloGroups(soloMatches(two, "Cell1", cellPathOf), soloKeySlots("Cell1"));
+    // The same signal plotted in two areas is two items, told apart the
+    // same way the mask tells them apart.
+    expect(gs.map((g) => g.id)).toEqual(gs.map((g) => g.members[0]));
+    expect(gs[0].id).not.toBe(gs[1].id);
+  });
+
+  it("labels a captureless item with its area, so two of the same name read apart", () => {
+    const two = [area("a1", ["Cell1"]), area("a2", ["Cell1"])];
+    const labels = new Map([
+      ["a1", "Area 1"],
+      ["a2", "Area 2"],
+    ]);
+    const gs = soloGroups(soloMatches(two, "Cell1", cellPathOf), soloKeySlots("Cell1"), labels);
+    expect(gs.map((g) => g.label)).toEqual(["Area 1 · Cell1", "Area 2 · Cell1"]);
+  });
+});
+
+describe("toggleSoloChecked", () => {
+  it("adds an unchecked id and removes a checked one", () => {
+    expect(toggleSoloChecked([], "a")).toEqual(["a"]);
+    expect(toggleSoloChecked(["a"], "b")).toEqual(["a", "b"]);
+    expect(toggleSoloChecked(["a", "b"], "a")).toEqual(["b"]);
+  });
+
+  it("leaves the selection it was given alone", () => {
+    const checked = ["a"];
+    toggleSoloChecked(checked, "b");
+    expect(checked).toEqual(["a"]);
+  });
+});
+
+describe("soloSelectedGroups", () => {
+  it("names the checked groups, in step order rather than click order", () => {
+    expect(soloSelectedGroups(fakeGroups(["a", "b", "c"]), ["c", "a"]).map((g) => g.id)).toEqual([
+      "a",
+      "c",
+    ]);
+  });
+
+  it("drops a checked id the group list no longer has", () => {
+    expect(soloSelectedGroups(fakeGroups(["a"]), ["a", "gone"]).map((g) => g.id)).toEqual(["a"]);
+  });
+
+  it("is empty with nothing checked, and when every checked id is stale", () => {
+    // Both read as no selection at all — the whole matched set.
+    expect(soloSelectedGroups(fakeGroups(["a"]), [])).toEqual([]);
+    expect(soloSelectedGroups(fakeGroups(["a"]), ["gone"])).toEqual([]);
+  });
+});
+
+describe("soloMemberKeys", () => {
+  it("unions the groups' members", () => {
+    const gs: SoloGroup[] = [
+      { id: "1", key: ["1"], label: "1", members: ["a1 x", "a2 x"] },
+      { id: "2", key: ["2"], label: "2", members: ["a1 y"] },
+    ];
+    expect([...soloMemberKeys(gs)]).toEqual(["a1 x", "a2 x", "a1 y"]);
+    expect(soloMemberKeys([]).size).toBe(0);
+  });
+});
+
+describe("stepSoloFromSelection", () => {
+  const gs = fakeGroups(["a", "b", "c", "d", "e"]);
+
+  it("resumes forward from the page after the last checked group", () => {
+    expect(stepSoloFromSelection(gs, ["a", "c"], 1, 1)).toBe(3);
+  });
+
+  it("resumes backward from the page before the first checked group", () => {
+    expect(stepSoloFromSelection(gs, ["c", "e"], 1, -1)).toBe(1);
+  });
+
+  it("runs off either end onto the whole set, like the rest of the cycle", () => {
+    expect(stepSoloFromSelection(gs, ["e"], 1, 1)).toBeNull();
+    expect(stepSoloFromSelection(gs, ["a"], 1, -1)).toBeNull();
+  });
+
+  it("resumes by page, not by group", () => {
+    // Two per page: b sits on page 1 and c on page 2, so forward off the
+    // last checked group's page is page 3.
+    expect(stepSoloFromSelection(gs, ["b", "c"], 2, 1)).toBe(2);
+  });
+
+  it("ignores a stale checked id, and shows the whole set when all are stale", () => {
+    expect(stepSoloFromSelection(gs, ["gone", "c"], 1, 1)).toBe(3);
+    expect(stepSoloFromSelection(gs, ["gone"], 1, 1)).toBeNull();
+  });
 });
 
 describe("soloMatchedAreaIds", () => {
@@ -469,10 +581,6 @@ describe("soloPageOfGroup", () => {
 });
 
 describe("soloLabel", () => {
-  /// `count` groups of one member each, labelled by their key.
-  const fakeGroups = (labels: string[]): SoloGroup[] =>
-    labels.map((label, i) => ({ key: [label], label, members: [`a1 m${i}`] }));
-
   it("says so when nothing matched", () => {
     expect(soloLabel([], null, 1, 0)).toBe("no matches");
     expect(soloLabel([], 0, 1, 0)).toBe("no matches");
@@ -484,14 +592,14 @@ describe("soloLabel", () => {
 
   it("names the page's group, its position and its share of the matches", () => {
     const gs: SoloGroup[] = [
-      { key: ["06"], label: "cell=06", members: ["a1 x"] },
-      { key: ["07"], label: "cell=07", members: ["a1 y", "a2 y"] },
+      { id: "06", key: ["06"], label: "cell=06", members: ["a1 x"] },
+      { id: "07", key: ["07"], label: "cell=07", members: ["a1 y", "a2 y"] },
     ];
     expect(soloLabel(gs, 1, 1, 96)).toBe("2/2 · cell=07 (2 of 96)");
   });
 
   it("reads an unnamed capture as the quoted text", () => {
-    const gs: SoloGroup[] = [{ key: ["07"], label: '"07"', members: ["a1 y"] }];
+    const gs: SoloGroup[] = [{ id: "07", key: ["07"], label: '"07"', members: ["a1 y"] }];
     expect(soloLabel(gs, 0, 1, 96)).toBe('1/1 · "07" (1 of 96)');
   });
 
@@ -504,6 +612,37 @@ describe("soloLabel", () => {
 
   it("reads a page past the end as the last page", () => {
     expect(soloLabel(fakeGroups(["a", "b"]), 9, 1, 2)).toBe("2/2 · b (1 of 2)");
+  });
+
+  it("names a checked subset, listing it while it is short enough to read", () => {
+    const gs = fakeGroups(["cell=03", "cell=05", "cell=07"]);
+    expect(soloLabel(gs, null, 1, 96, [gs[0]])).toBe("1 group · cell=03 (1 of 96)");
+    expect(soloLabel(gs, null, 1, 96, [gs[0], gs[2]])).toBe(
+      "2 groups · cell=03, cell=07 (2 of 96)",
+    );
+  });
+
+  it("collapses a subset of more than two to its count", () => {
+    const gs = fakeGroups(["a", "b", "c", "d"]);
+    expect(soloLabel(gs, null, 1, 96, gs)).toBe("4 groups (4 of 96)");
+  });
+
+  it("counts a captureless subset in signals — there are no groups to count", () => {
+    const gs: SoloGroup[] = [
+      { id: "a1 x", key: [], label: "Area 1 · Cell1", members: ["a1 x"] },
+      { id: "a2 x", key: [], label: "Area 2 · Cell1", members: ["a2 x"] },
+    ];
+    expect(soloLabel(gs, null, 1, 96, gs)).toBe(
+      "2 signals · Area 1 · Cell1, Area 2 · Cell1 (2 of 96)",
+    );
+  });
+
+  it("counts the whole visible set of a subset, members and all", () => {
+    const gs: SoloGroup[] = [
+      { id: "1", key: ["1"], label: "cell=1", members: ["a1 x", "a2 x"] },
+      { id: "2", key: ["2"], label: "cell=2", members: ["a1 y"] },
+    ];
+    expect(soloLabel(gs, null, 1, 96, gs)).toBe("2 groups · cell=1, cell=2 (3 of 96)");
   });
 });
 
@@ -548,34 +687,50 @@ describe("soloMaskedKeys", () => {
 describe("solo persistence", () => {
   it("persists nothing while solo is off", () => {
     expect(soloToParams(SOLO_OFF)).toBeUndefined();
-    expect(soloToParams({ pattern: "", page: 1 })).toBeUndefined();
+    expect(soloToParams({ pattern: "", page: 1, checked: ["a"] })).toBeUndefined();
   });
 
   it("persists the pattern alone while the whole set is shown", () => {
-    expect(soloToParams({ pattern: "Cell", page: null })).toEqual({ pattern: "Cell" });
+    expect(soloToParams({ pattern: "Cell", page: null, checked: [] })).toEqual({
+      pattern: "Cell",
+    });
   });
 
   it("persists the page alongside the pattern", () => {
-    expect(soloToParams({ pattern: "Cell(\\d)", page: 2 })).toEqual({
+    expect(soloToParams({ pattern: "Cell(\\d)", page: 2, checked: [] })).toEqual({
       pattern: "Cell(\\d)",
       page: 2,
     });
   });
 
+  it("persists a checked subset instead of a page — the two are one slot", () => {
+    expect(soloToParams({ pattern: "Cell(\\d)", page: 2, checked: ["a", "b"] })).toEqual({
+      pattern: "Cell(\\d)",
+      checked: ["a", "b"],
+    });
+  });
+
   it("round-trips through the parser", () => {
-    const state = { pattern: "Cell(\\d)", page: 2 };
+    const state = { pattern: "Cell(\\d)", page: 2, checked: [] };
     expect(soloFromRaw(soloToParams(state))).toEqual(state);
-    expect(soloFromRaw(soloToParams({ pattern: "Cell", page: null }))).toEqual({
+    expect(soloFromRaw(soloToParams({ pattern: "Cell", page: null, checked: [] }))).toEqual({
       pattern: "Cell",
       page: null,
+      checked: [],
     });
+    const subset = { pattern: "Cell", page: null, checked: [soloMaskKey("a1", "sig")] };
+    expect(soloFromRaw(soloToParams(subset))).toEqual(subset);
   });
 
   it("reads a stored page under a captureless pattern as the flat view", () => {
     // A captureless pattern has no pages at all, so a page stored
     // against one — by an older build, or by an edit that dropped the
     // capture group — names nothing. The pattern is what survives.
-    expect(soloFromRaw({ pattern: "Cell", page: 2 })).toEqual({ pattern: "Cell", page: null });
+    expect(soloFromRaw({ pattern: "Cell", page: 2 })).toEqual({
+      pattern: "Cell",
+      page: null,
+      checked: [],
+    });
   });
 
   it("reads a missing / malformed blob as solo off", () => {
@@ -587,8 +742,35 @@ describe("solo persistence", () => {
 
   it("drops a junk page rather than rejecting the blob", () => {
     for (const page of ["x", -2, 3.5, null, {}]) {
-      expect(soloFromRaw({ pattern: "Cell", page })).toEqual({ pattern: "Cell", page: null });
+      expect(soloFromRaw({ pattern: "Cell", page })).toEqual({
+        pattern: "Cell",
+        page: null,
+        checked: [],
+      });
     }
+  });
+
+  it("drops junk from a stored subset, and reads an empty one as the whole set", () => {
+    expect(soloFromRaw({ pattern: "Cell", checked: ["a", 3, null, "a"] })).toEqual({
+      pattern: "Cell",
+      page: null,
+      checked: ["a"],
+    });
+    for (const checked of [[], "a", {}, [1, 2]]) {
+      expect(soloFromRaw({ pattern: "Cell", checked })).toEqual({
+        pattern: "Cell",
+        page: null,
+        checked: [],
+      });
+    }
+  });
+
+  it("prefers a stored subset to a stored page — the forms are exclusive", () => {
+    expect(soloFromRaw({ pattern: "Cell(\\d)", page: 2, checked: ["a"] })).toEqual({
+      pattern: "Cell(\\d)",
+      page: null,
+      checked: ["a"],
+    });
   });
 
   it("reads a blob from before paging as the pattern, whole set shown", () => {
@@ -597,6 +779,7 @@ describe("solo persistence", () => {
     expect(soloFromRaw({ pattern: "Cell", indices: [2] })).toEqual({
       pattern: "Cell",
       page: null,
+      checked: [],
     });
   });
 });
