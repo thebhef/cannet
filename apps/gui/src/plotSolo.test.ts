@@ -11,6 +11,8 @@ import {
   soloFromRaw,
   soloMaskKey,
   soloMaskSignals,
+  soloGroups,
+  soloKeySlots,
   soloMatchedAreaIds,
   soloMatches,
   soloPathResolver,
@@ -157,6 +159,146 @@ describe("soloMatches", () => {
   it("is empty for an invalid or empty pattern", () => {
     expect(soloMatches(AREAS, "Cell(", fullPathOf)).toEqual([]);
     expect(soloMatches(AREAS, "", fullPathOf)).toEqual([]);
+  });
+});
+
+describe("soloKeySlots", () => {
+  const named = (pattern: string) => soloKeySlots(pattern).map((s) => s.name);
+
+  it("has no slots for a pattern that captures nothing", () => {
+    expect(soloKeySlots("Cell\\d+")).toEqual([]);
+    expect(soloKeySlots("")).toEqual([]);
+    expect(soloKeySlots("Cell(")).toEqual([]);
+  });
+
+  it("keeps unnamed groups in declaration order, with no display name", () => {
+    expect(soloKeySlots("Bank(\\d)_Cell(\\d+)")).toEqual([
+      { index: 1, name: null },
+      { index: 2, name: null },
+    ]);
+  });
+
+  it("carries a named group's name for display", () => {
+    expect(named("Cell(?<cell>\\d+)")).toEqual(["cell"]);
+  });
+
+  it("skips a non-capturing group — `(?:…)` opts out of the key", () => {
+    expect(soloKeySlots("(?:Pack|Bank)/Cell(\\d+)")).toEqual([{ index: 1, name: null }]);
+    expect(soloKeySlots("(?:a)(?=b)(?!c)(?<=d)(?<!e)")).toEqual([]);
+  });
+
+  it("ignores a parenthesis that is escaped or inside a character class", () => {
+    expect(soloKeySlots("Cell\\((\\d+)\\)")).toEqual([{ index: 1, name: null }]);
+    expect(soloKeySlots("[(](\\d+)")).toEqual([{ index: 1, name: null }]);
+  });
+
+  it("reorders by a `$N` ordinal suffix and strips it for display", () => {
+    // `bank$1` is declared second but is the primary key component.
+    expect(soloKeySlots("Cell(?<cell$2>\\d+)_Bank(?<bank$1>\\d)")).toEqual([
+      { index: 2, name: "bank" },
+      { index: 1, name: "cell" },
+    ]);
+  });
+
+  it("puts ordinal-less groups after the ordinal-carrying ones, in declaration order", () => {
+    expect(soloKeySlots("(?<a>x)(?<b$2>y)(?<c>z)(?<d$1>w)")).toEqual([
+      { index: 4, name: "d" },
+      { index: 2, name: "b" },
+      { index: 1, name: "a" },
+      { index: 3, name: "c" },
+    ]);
+  });
+
+  it("reads a bare `$N` name as an ordinal with nothing left to display", () => {
+    expect(soloKeySlots("(?<$2>x)(?<$1>y)")).toEqual([
+      { index: 2, name: null },
+      { index: 1, name: null },
+    ]);
+  });
+});
+
+describe("soloGroups", () => {
+  /// One area of cell voltages, catalogued so the paths are complete.
+  const cells = ["Cell1", "Cell2", "Cell10", "Bank1_Cell3", "Bank2_Cell3"];
+  const CELL_AREAS: PlotAreaConfig[] = [area("a1", cells)];
+  const cellPathOf = soloPathResolver(cells.map(desc), BUS_NAMES);
+  const groupsFor = (pattern: string, areas = CELL_AREAS) =>
+    soloGroups(soloMatches(areas, pattern, cellPathOf), soloKeySlots(pattern));
+
+  it("makes every match its own group when the pattern captures nothing", () => {
+    const gs = groupsFor("Cell\\d+$");
+    // Positional: panel order, not a sorted key order, one member each.
+    expect(gs.map((g) => g.label)).toEqual([
+      "Cell1",
+      "Cell2",
+      "Cell10",
+      "Bank1_Cell3",
+      "Bank2_Cell3",
+    ]);
+    expect(gs.map((g) => g.members.length)).toEqual([1, 1, 1, 1, 1]);
+    expect(gs.every((g) => g.key.length === 0)).toBe(true);
+  });
+
+  it("groups every match sharing a captured key, across areas", () => {
+    const two = [area("a1", ["Cell3"]), area("a2", ["Bank1_Cell3", "Cell1"])];
+    const pathOfTwo = soloPathResolver(["Cell3", "Bank1_Cell3", "Cell1"].map(desc), BUS_NAMES);
+    const gs = soloGroups(
+      soloMatches(two, "Cell(\\d+)$", pathOfTwo),
+      soloKeySlots("Cell(\\d+)$"),
+    );
+    expect(gs.map((g) => g.label)).toEqual(['"1"', '"3"']);
+    expect(gs.map((g) => g.members.length)).toEqual([1, 2]);
+  });
+
+  it("orders keys numerically, not lexically", () => {
+    // Cell3 is captured off two differently-named rows, and lands
+    // between 2 and 10 rather than after them.
+    expect(groupsFor("Cell(\\d+)$").map((g) => g.key[0])).toEqual(["1", "2", "3", "10"]);
+    expect(groupsFor("Cell(\\d+)$").map((g) => g.members.length)).toEqual([1, 1, 2, 1]);
+  });
+
+  it("labels a named group as `name=value`", () => {
+    expect(groupsFor("Cell(?<cell>\\d+)$").map((g) => g.label)).toEqual([
+      "cell=1",
+      "cell=2",
+      "cell=3",
+      "cell=10",
+    ]);
+  });
+
+  it("keys on the tuple of groups, in the slots' order", () => {
+    const gs = groupsFor("Bank(?<bank>\\d)_Cell(?<cell>\\d+)$");
+    expect(gs.map((g) => g.key)).toEqual([
+      ["1", "3"],
+      ["2", "3"],
+    ]);
+    expect(gs.map((g) => g.label)).toEqual(["bank=1,cell=3", "bank=2,cell=3"]);
+  });
+
+  it("sorts by the `$N`-declared primary component first", () => {
+    // Declaration order is (cell, bank); the ordinals make bank primary,
+    // so the two Cell3s sort apart by bank rather than together by cell.
+    const gs = groupsFor("Bank(?<bank$2>\\d)_Cell(?<cell$1>\\d+)$");
+    expect(gs.map((g) => g.label)).toEqual(["cell=3,bank=1", "cell=3,bank=2"]);
+  });
+
+  it("keeps a match whose group did not participate, under an empty component", () => {
+    // An alternation the group sits outside of captures nothing. The
+    // match is still a match, so it still belongs to a group — dropping
+    // it would make it unreachable through every page.
+    const gs = groupsFor("(?:Bank(\\d)_)?Cell(\\d+)$");
+    expect(gs.map((g) => g.key)).toEqual([
+      ["", "1"],
+      ["", "2"],
+      ["", "10"],
+      ["1", "3"],
+      ["2", "3"],
+    ]);
+    expect(gs[0].label).toBe('"","1"');
+  });
+
+  it("is empty when nothing matched", () => {
+    expect(groupsFor("Nope(\\d+)")).toEqual([]);
   });
 });
 
