@@ -3301,7 +3301,7 @@ describe("PlotPanel solo", () => {
       Array.from(document.querySelectorAll('[role="menuitemcheckbox"]')).map((b) =>
         b.getAttribute("aria-label"),
       ),
-    ).toEqual(["LimitNominal", "LimitEffective"]);
+    ).toEqual(["Area 2 · LimitNominal", "Area 2 · LimitEffective"]);
   });
 
   it("never touches the other series' persisted hidden flags", () => {
@@ -3810,22 +3810,115 @@ describe("PlotPanel solo", () => {
     ]);
   });
 
-  it("opens the page a group sits on, and stays open", () => {
-    const registry = stepRegistry("el-solo-menu-jump");
-    const { api } = renderPanel({ params: { elementId: "el-solo-menu-jump" }, registry });
+  it("ticks a subset of the groups, and shows exactly that", () => {
+    const registry = stepRegistry("el-solo-menu-subset");
+    renderPanel({ params: { elementId: "el-solo-menu-subset" }, registry });
     typeSolo("(Cell\\d)");
     openSoloMenu();
 
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell3"' }));
     expect(visibleNames()).toEqual(["Cell3"]);
-    expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
-    // The menu stays up so several groups can be compared in one visit.
+    expect(soloPosition()).toBe('1 group \u00b7 "Cell3" (1 of 3)');
+    // The menu stays up, and a second tick adds to the subset rather
+    // than replacing it.
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell1"' }));
+    expect(visibleNames()).toEqual(["Cell1", "Cell3"]);
+    expect(soloPosition()).toBe('2 groups \u00b7 "Cell1", "Cell3" (2 of 3)');
     expect(menuItems()).toEqual([
-      ['"Cell1"', false],
+      ['"Cell1"', true],
       ['"Cell2"', false],
       ['"Cell3"', true],
     ]);
-    expect(persistedSolo(api)).toEqual({ pattern: "(Cell\\d)", page: 2 });
+    // Past two, the read-out counts instead of listing.
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell2"' }));
+    expect(soloPosition()).toBe("3 groups (3 of 3)");
+
+    // Unticking is the same gesture, and emptying the subset is the
+    // whole matched set again.
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell1"' }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell2"' }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell3"' }));
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3"]);
+    expect(soloPosition()).toBe("all (3)");
+  });
+
+  it("ticks individual matches when the pattern captures nothing", () => {
+    // No groups to tick, so the items are the matches themselves \u2014
+    // labelled by area so two rows of the same name read apart.
+    const registry = stepRegistry("el-solo-menu-flat");
+    renderPanel({ params: { elementId: "el-solo-menu-flat" }, registry });
+    typeSolo("Cell");
+    openSoloMenu();
+    expect(menuItems()).toEqual([
+      ["Area 1 \u00b7 Cell1", true],
+      ["Area 1 \u00b7 Cell2", true],
+      ["Area 2 \u00b7 Cell3", true],
+    ]);
+
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Area 2 \u00b7 Cell3" }));
+    expect(visibleNames()).toEqual(["Cell3"]);
+    expect(soloPosition()).toBe("1 signal \u00b7 Area 2 \u00b7 Cell3 (1 of 3)");
+    // \u2026and there is still no cycle to resume, so the subset stays put.
+    expect(screen.getByRole("button", { name: "next solo match" })).toBeDisabled();
+  });
+
+  it("leaves a ticked subset behind when you step, resuming from where it sat", () => {
+    const registry = stepRegistry("el-solo-menu-step-out");
+    renderPanel({ params: { elementId: "el-solo-menu-step-out" }, registry });
+    typeSolo("(Cell\\d)");
+    openSoloMenu();
+
+    // Forward resumes at the page *after* the last checked group's.
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell2"' }));
+    expect(soloPosition()).toBe('1 group \u00b7 "Cell2" (1 of 3)');
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
+
+    // Backward resumes at the page *before* the first checked group's.
+    openSoloMenu();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell2"' }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell3"' }));
+    expect(soloPosition()).toBe('2 groups \u00b7 "Cell2", "Cell3" (2 of 3)');
+    fireEvent.click(screen.getByRole("button", { name: "previous solo match" }));
+    expect(soloPosition()).toBe('1/3 \u00b7 "Cell1" (1 of 3)');
+  });
+
+  it("drops a ticked subset when the pattern is modified", () => {
+    const registry = stepRegistry("el-solo-menu-retype");
+    renderPanel({ params: { elementId: "el-solo-menu-retype" }, registry });
+    typeSolo("(Cell\\d)");
+    openSoloMenu();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell3"' }));
+    expect(soloPosition()).toBe('1 group \u00b7 "Cell3" (1 of 3)');
+    // A new pattern is a new item list, so the ticks mean nothing.
+    typeSolo("(Cell[23])");
+    expect(soloPosition()).toBe('1/2 \u00b7 "Cell2" (1 of 2)');
+  });
+
+  it("persists a ticked subset instead of a page, and restores it", () => {
+    const registry = stepRegistry("el-solo-subset-save");
+    const { api } = renderPanel({ params: { elementId: "el-solo-subset-save" }, registry });
+    typeSolo("(Cell\\d)");
+    openSoloMenu();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: '"Cell3"' }));
+    const blob = persistedSolo(api) as Record<string, unknown>;
+    // The subset displaces the page \u2014 the two forms are exclusive.
+    expect(blob).toEqual({ pattern: "(Cell\\d)", checked: [expect.any(String)] });
+
+    cleanup();
+    const restored = stepRegistry("el-solo-subset-restore", { solo: blob });
+    renderPanel({ params: { elementId: "el-solo-subset-restore" }, registry: restored });
+    expect(visibleNames()).toEqual(["Cell3"]);
+    expect(soloPosition()).toBe('1 group \u00b7 "Cell3" (1 of 3)');
+  });
+
+  it("reads a subset whose ticks no longer name anything as the whole set", () => {
+    const registry = stepRegistry("el-solo-subset-stale", {
+      solo: { pattern: "(Cell\\d)", checked: ["a group this pattern never makes"] },
+    });
+    renderPanel({ params: { elementId: "el-solo-subset-stale" }, registry });
+    expect(soloPosition()).toBe("all (3)");
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3"]);
   });
 
   it("offers no match menu while the pattern is empty or unparseable", () => {
