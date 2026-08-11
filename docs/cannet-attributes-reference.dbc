@@ -1,0 +1,40 @@
+VERSION "cannet-attributes-reference 1.0"
+
+NS_ :
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	BA_DEF_DEF_
+
+BS_:
+
+BU_: NODE
+
+BO_ 256 Status: 8 NODE
+ SG_ StatusFlags : 0|8@1+ (1,0) [0|255] "" NODE
+ SG_ AliveCtr : 8|4@1+ (1,0) [0|15] "" NODE
+ SG_ Crc8 : 16|8@1+ (1,0) [0|255] "" NODE
+
+BO_ 257 CustomCrcStatus: 8 NODE
+ SG_ Payload : 0|24@1+ (1,0) [0|16777215] "" NODE
+ SG_ CustomCrc16 : 24|16@1+ (1,0) [0|65535] "" NODE
+
+CM_ BO_ 256 "Minimal reference message for cannet's Cannet* custom DBC attributes (ADR 0043). Not a trace fixture — nothing generates traffic for this DBC.";
+CM_ SG_ 256 StatusFlags "Opaque bit pattern (not a measurement) — CannetDisplay radix=hex renders it as hex.";
+CM_ SG_ 256 AliveCtr "Rolling counter, 0-15 — CannetCounter designates it for calculated-field fill on send (ADR 0027).";
+CM_ SG_ 256 Crc8 "CRC-8/SAE-J1850 over bytes 0-1 (StatusFlags + AliveCtr's byte), Data ID prefix 0xA3 — CannetCrc designates it for calculated-field fill on send (ADR 0027).";
+CM_ BO_ 257 "A message needs at most one CannetCrc designation, so the raw-params CRC example gets its own message rather than sharing Status.";
+CM_ SG_ 257 CustomCrc16 "CRC-16/CCITT-FALSE-shaped, but declared via raw Rocksoft params rather than a named alg — CannetCrc's raw form for algorithms with no built-in name.";
+
+BA_DEF_ SG_ "CannetCounter" STRING ;
+BA_DEF_ SG_ "CannetCrc" STRING ;
+BA_DEF_ SG_ "CannetDisplay" STRING ;
+BA_DEF_DEF_ "CannetCounter" "";
+BA_DEF_DEF_ "CannetCrc" "";
+BA_DEF_DEF_ "CannetDisplay" "";
+BA_ "CannetDisplay" SG_ 256 StatusFlags "radix=hex";
+BA_ "CannetCounter" SG_ 256 AliveCtr "increment=1;rollover=15";
+BA_ "CannetCrc" SG_ 256 Crc8 "alg=CRC-8/SAE-J1850;range=0:16;prefix=A3";
+BA_ "CannetCrc" SG_ 257 CustomCrc16 "width=16;poly=0x1021;init=0xFFFF;refin=0;refout=0;xorout=0x0000;range=0:24";

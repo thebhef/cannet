@@ -960,7 +960,10 @@ BA_ "CannetCrc" SG_ 1042 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=A3";
 BA_ "CannetDisplay" SG_ 1042 Crc8 "radix=hex";
 ```
 
-(see `examples/cannet-demo.dbc`'s `BmsCommand` message). Both the
+(see `examples/cannet-demo.dbc`'s `BmsCommand` message, or
+[`docs/cannet-attributes-reference.dbc`](docs/cannet-attributes-reference.dbc)
+— a minimal, self-describing reference DBC exercising every
+attribute, kept parseable by test). Both the
 RBS panel and the transmit panel expose the same configuration
 editor; a per-message override replaces the DBC default wholesale
 per field. On the receive side, frames on a configured `(bus, id)`
