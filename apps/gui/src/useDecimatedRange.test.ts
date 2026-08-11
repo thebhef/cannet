@@ -26,11 +26,12 @@ function encode(
   series: { t: number[]; v: number[] }[],
   sliceMs = 0,
   decodeMs = 0,
+  complete = true,
 ): ArrayBuffer {
   const totalPts = series.reduce((s, p) => s + p.t.length, 0);
-  const buf = new ArrayBuffer(8 + 32 + 4 + series.length * 4 + totalPts * 16);
+  const buf = new ArrayBuffer(8 + 32 + 8 + series.length * 4 + totalPts * 16);
   const view = new DataView(buf);
-  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
+  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
   for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
   let off = 8;
   view.setFloat64(off, fromS == null ? NaN : fromS, true);
@@ -41,6 +42,8 @@ function encode(
   off += 8;
   view.setFloat64(off, decodeMs, true);
   off += 8;
+  view.setUint32(off, complete ? 1 : 0, true);
+  off += 4;
   view.setUint32(off, series.length, true);
   off += 4;
   for (const p of series) {
@@ -139,6 +142,58 @@ describe("useDecimatedRange", () => {
     expect(out.firstT).toBe(0);
     expect(out.lastT).toBe(5);
     expect(mockInvoke).toHaveBeenCalledTimes(1); // no second fetch
+  });
+
+  it("refetches an identical request while the host says the series is partial", async () => {
+    // THE REGRESSION the completeness token exists for: a serve is
+    // bounded in time, so a cold one answers with the prefix it decoded.
+    // The memo asks "could this request return different bytes?" — for a
+    // partial answer it demonstrably could, because the host is still
+    // decoding, so the memo must not swallow the next identical tick.
+    mockInvoke.mockResolvedValue(encode(100, 105, [{ t: [100, 101], v: [1, 2] }], 0, 0, false));
+    const { result } = renderHook(() => useDecimatedRange());
+
+    const first = await run(() => result.current, req());
+    expect(first.kind).toBe("sampled");
+    expect(first.snapshot.complete).toBe(false);
+
+    // Same request, and it goes to the host again — carrying the points
+    // decoded since.
+    mockInvoke.mockResolvedValue(
+      encode(100, 105, [{ t: [100, 101, 102], v: [1, 2, 3] }], 0, 0, false),
+    );
+    const second = await run(() => result.current, req());
+    expect(second.kind).toBe("sampled");
+    expect(second.snapshot.byKey.get("k0")).toEqual({ t: [0, 1, 2], v: [1, 2, 3] });
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+
+    // …until the host says it is caught up, at which point the memo does
+    // its job again: identical request, no round-trip.
+    mockInvoke.mockResolvedValue(
+      encode(100, 105, [{ t: [100, 101, 102, 103], v: [1, 2, 3, 4] }], 0, 0, true),
+    );
+    const third = await run(() => result.current, req());
+    expect(third.kind).toBe("sampled");
+    expect(third.snapshot.complete).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledTimes(3);
+
+    const fourth = await run(() => result.current, req());
+    expect(fourth.kind).toBe("unchanged");
+    expect(mockInvoke).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a completed window memoised even with nothing in it", async () => {
+    // The other half of the same rule: "complete" is about the host's
+    // catch-up, not about the points. A signal no DBC decodes answers
+    // complete-and-empty, and a caller that re-asked until the window was
+    // non-empty would round-trip forever on it.
+    mockInvoke.mockResolvedValue(encode(100, 105, [{ t: [], v: [] }]));
+    const { result } = renderHook(() => useDecimatedRange());
+
+    await run(() => result.current, req());
+    await run(() => result.current, req());
+
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
   });
 
   it("skips the round-trip for a parked slice while the live edge advances", async () => {

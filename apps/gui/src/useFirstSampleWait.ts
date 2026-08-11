@@ -16,9 +16,17 @@ export interface FirstSampleWait {
   /// gate for its first sample — the canvas is blank and the view should
   /// say why.
   waiting: boolean;
-  /// Call from the fetch cycle as soon as it knows what the area holds:
-  /// a window to draw, or a definitive "there is none". Ends the wait
-  /// and disarms the gate until the signal set changes again.
+  /// Call from the fetch cycle as soon as the area has something to
+  /// draw, or a definitive "there is none". Ends the wait and disarms
+  /// the gate until the signal set changes again.
+  ///
+  /// "Something to draw" and "the host has finished" are two different
+  /// moments, and this is the first of them (ADR 0049). A host serve is
+  /// bounded in time, so a cold one answers with the prefix it has decoded: the
+  /// gate ends there, on the first points, and the plot goes on filling
+  /// in as later serves continue the rebuild. An answer that carries no
+  /// points and is *not* the host's final word is not an outcome — it is
+  /// the wait, still going.
   settled: () => void;
 }
 
@@ -30,11 +38,12 @@ export interface FirstSampleWait {
 /// re-arms: the cache re-anchors per signal set, so each set pays its
 /// own cold whole-window sample.
 ///
-/// The indication is indeterminate by design. The host discovers the
-/// decode work while doing it rather than knowing it up front, so
-/// answering "how much longer" would mean growing a progress channel;
-/// this is about informing, not about unblocking (the round-trip does
-/// not run on the UI thread).
+/// The indication is indeterminate by design, and deliberately brief:
+/// the host answers with whatever it has decoded so far, so the growing
+/// picture itself is the progress report. Answering "how much longer"
+/// would mean growing a progress channel; this is about informing until
+/// there is something to look at, not about unblocking (the round-trip
+/// does not run on the UI thread).
 export function useFirstSampleWait(
   signalSetKey: string | null,
   delayMs = FIRST_SAMPLE_INDICATOR_MS,

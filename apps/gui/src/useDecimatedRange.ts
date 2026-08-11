@@ -43,6 +43,12 @@ export interface DecimatedSignal {
 /// includes a growing `winEnd` under a visible slice that ends behind
 /// the last frame already seen. A changed `descriptor`, `winStart`, or a
 /// `winEnd` that shrank below the last seen one re-anchors the window.
+///
+/// The exception is a host answer that was only *part* of the series
+/// (`SignalsSample.complete === false`, per
+/// [ADR 0049](../../docs/adr/0049-bounded-serves-and-partial-answers.md)):
+/// the request is unchanged but the bytes are not, so the memo is not
+/// applied until the host says it has caught up.
 export interface DecimatedRequest {
   /// Memo key for the signal set — changing it re-anchors the window.
   /// The cached window is a map from signal key to series, so this must
@@ -87,6 +93,12 @@ export interface DecimatedSnapshot {
   /// `null` before the first non-empty fetch.
   lastT: number | null;
   byKey: Map<string, Series>;
+  /// Whether the host had finished catching its per-signal caches up when
+  /// it answered (ADR 0049). A serve is bounded in time, so the first sample for a
+  /// signal set over a long capture is a *prefix* — real points, drawable,
+  /// but still growing. `false` means another fetch of the same request
+  /// returns more; the view uses it to tell "nothing yet" from "nothing".
+  complete: boolean;
   /// Host diagnostics for the fetch that produced this snapshot.
   sliceMs: number;
   decodeMs: number;
@@ -137,6 +149,12 @@ interface Cache {
   /// ends behind the last frame already seen and a longer window
   /// therefore cannot change the answer.
   fetchKey: string;
+  /// Whether the last answer was the host's *whole* answer. Part of the
+  /// memo, not of the request: a request cannot know in advance that the
+  /// host will run out of catch-up budget, and once it has, the identical
+  /// request demonstrably can return different bytes — so a partial
+  /// window never satisfies `fetchKey`.
+  complete: boolean;
   /// Latest `winEnd` seen, to detect a buffer clear shrinking the window.
   lastWinEnd: number;
   sliceMs: number;
@@ -148,7 +166,15 @@ export function useDecimatedRange(): DecimatedRange {
 
   const snapshotOf = (c: Cache | null): DecimatedSnapshot | null =>
     c && c.base != null
-      ? { base: c.base, firstT: c.firstT, lastT: c.lastT, byKey: c.byKey, sliceMs: c.sliceMs, decodeMs: c.decodeMs }
+      ? {
+          base: c.base,
+          firstT: c.firstT,
+          lastT: c.lastT,
+          byKey: c.byKey,
+          complete: c.complete,
+          sliceMs: c.sliceMs,
+          decodeMs: c.decodeMs,
+        }
       : null;
 
   const current = useCallback((): DecimatedSnapshot | null => snapshotOf(cacheRef.current), []);
@@ -176,6 +202,7 @@ export function useDecimatedRange(): DecimatedRange {
           lastT: null,
           byKey: new Map(),
           fetchKey: "",
+          complete: false,
           lastWinEnd: req.winEnd,
           sliceMs: 0,
           decodeMs: 0,
@@ -206,12 +233,18 @@ export function useDecimatedRange(): DecimatedRange {
       const windowKey = sliceEndsBehindTheLiveEdge ? "parked" : String(req.winEnd);
       const fetchKey = `${req.winStart}:${windowKey}:${fromSeconds}:${toSeconds}:${req.maxPoints}`;
 
-      if (cache.fetchKey === fetchKey && cache.byKey.size > 0) {
+      // `complete` is the host's own token, not a guess made here: a
+      // bounded serve answers with the prefix it decoded, and the next
+      // identical request continues it. Memoising a partial window would
+      // freeze the plot on that prefix for as long as the request stayed
+      // the same — which, on a stopped capture, is forever.
+      if (cache.fetchKey === fetchKey && cache.complete && cache.byKey.size > 0) {
         return { kind: "unchanged", firstT: cache.firstT, lastT: cache.lastT };
       }
       if (req.winEnd <= req.winStart) {
         cache.byKey = new Map();
         cache.fetchKey = fetchKey;
+        cache.complete = true;
         cache.lastWinEnd = req.winEnd;
         return { kind: "empty" };
       }
@@ -268,6 +301,7 @@ export function useDecimatedRange(): DecimatedRange {
       // zoomed-in panel.
       if (res.last_seconds != null) cache.lastT = res.last_seconds - base;
       cache.fetchKey = fetchKey;
+      cache.complete = res.complete;
       cache.lastWinEnd = req.winEnd;
       cache.sliceMs = res.slice_ms;
       cache.decodeMs = res.decode_ms;

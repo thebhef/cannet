@@ -111,7 +111,8 @@ per-message locking, or rebuild outside the map lock) while keeping
 atomicity (`folded` never below `first_slot`). Exit contract after
 this: the window closes promptly during a rebuild. The **trace store's**
 shutdown flush and `clear_scratch_on_exit` behaviors stay as they are
-(owner, 2026-08-08). Amended (owner, 2026-08-09): the *pyramid* flush
+(owner, 2026-08-08). Amended (orchestrator routing, 2026-08-09,
+pending owner review): the *pyramid* flush
 58.C added beside them is in scope and must stop blocking exit — dirty
 mapped pages are written back by the OS on a normal process death, and
 the cost of asking for them synchronously is seconds on the one path
@@ -762,6 +763,122 @@ measured spread, and consistent with the working-set delta being
 unchanged (348 vs 347 B/frame), which is the direct evidence that a
 chunk's buffers add nothing to residency.
 
+### 2026-08-09 — phase 58.F, item 6 (incremental paint)
+
+Branch `task58f-incremental-paint`, off `task58e-cache-lock-split`
+(4ad1a11).
+
+| commit | subject |
+| --- | --- |
+| 544b804 | `docs(task58)`: attribute the exit-flush amendment to orchestrator routing |
+| 4da3f45 | `feat(gui)`: bound a serve's catch-up and say whether it finished |
+| 7b9ecd0 | `feat(gui)`: keep asking while the host says the window is partial |
+| 15bd73c | `feat(gui)`: show building… only until the first points arrive |
+| 2ad0c99 | `docs(adr)`: record the bounded serve and its completeness token |
+| _this one_ | `docs(task58)`: walk the exit criteria and log phase 58.F |
+
+Tests after the slice: `cannet-gui` 530 + 4 ignored benchmarks (was
+525 + 4). Frontend: 139 files / 1682 tests (was 1676) — 2 in
+`useDecimatedRange.test.ts`, 1 in `plotData.test.ts`, 4 in
+`PlotPanel.dom.test.tsx`; the fifth Rust test (the growing-capture one)
+lands with this docs commit. `cargo clippy -p cannet-gui --all-targets`
+clean; `pnpm --dir apps/gui build` clean.
+
+**What landed**
+
+- **The serve is bounded in time.** `slice_many` catches up for at most
+  `CATCH_UP_SERVE_BUDGET` (150 ms) and then answers with what decoded,
+  returning `ServedWindows { series, complete }`. `min_max_many` is
+  bounded by the same budget — it catches up the same caches, so an
+  unbounded one would have held the plot's fetch however promptly the
+  samples came back. 58.E chunked the catch-up and took it off the lock,
+  which fixed everything queued *behind* a rebuild; this bounds the call
+  itself, which is what the calling plot sees.
+  - **Time, not chunks.** A chunk of a *rare* message decodes almost
+    nothing, so a fixed chunk budget would need hundreds of round-trips
+    to walk a capture it could scan in seconds — the rebuild would get
+    *slower* in wall clock. A time budget self-adapts.
+  - The deadline is checked **between** chunks and every message group
+    scans at least one, so a serve overruns by at most one chunk, always
+    advances, and a signal listed behind an expensive one never starves.
+  - `complete` is computed against the same `store.len()` the catch-up
+    used, so it means "caught up to the capture this serve read" and does
+    not flicker as a live capture grows.
+- **The completeness token is on the wire.** `sample_signals` gained a
+  `flags` word (`SIGSAMP`, bit 0), which is the thing 58.E's blocker
+  asked for: no caller may infer completeness from a non-empty result,
+  and now none has to.
+- **`useDecimatedRange`'s fetch memo respects it.** The memo asks "could
+  this request return different bytes?"; for a partial answer it
+  demonstrably can, so a partial window no longer satisfies `fetchKey`
+  and the plot's own self-paced resample loop continues the rebuild. No
+  poll loop, no accumulation across responses, no completeness derived in
+  JS. Complete answers — empty ones included — memoise exactly as before.
+- **`useFirstSampleWait` split first paint from completion.** The gate
+  now ends on the first *points*, or on the host's "that is all there is"
+  (an empty window, a memoised one, a complete-but-empty answer),
+  whichever comes first. A partial answer that decoded nothing yet is not
+  an outcome — it is the wait, still going. The placeholder's tooltip
+  changed with it; it no longer claims the first sample decodes the whole
+  window.
+- ADR 0049 records the rule (bounded serve, completeness token, view
+  re-requests rather than polls, indicator ends at first paint), why the
+  budget is time and not work, and the rejected determinate progress bar.
+  ADR 0048's mid-rebuild consequence, ADR 0025's `DecimatedRange` shape
+  and ADR 0047's `building…` note point at it.
+
+**The pins, and how each was falsified**
+
+Written first, watched fail, then made to pass — and each was
+re-falsified afterwards by reverting the change under it.
+
+- *Host (5 tests).* A serve that stopped a chunk in returns exactly one
+  chunk's points and `complete == false`; repeated serves converge in
+  three round-trips on the identical series an unbounded serve builds in
+  one; an exhausted budget still advances every message group; the extent
+  sidecar is bounded the same way and widens; a serve over a capture that
+  is *still growing* (the import shape) stays bounded and says it is
+  behind. Plus the "never spin" pin: an empty capture and an undecodable
+  signal both answer `complete == true` with no points, so a caller that
+  re-asked until the window was non-empty would not loop forever.
+  - *Experiment.* Disable the deadline check (one `if false &&`).
+  - *Data.* Three of the five fail; the two "complete" pins are
+    unaffected by construction, which is the correct sensitivity.
+- *Hook (2 tests).* An identical request refetches while the host says
+  partial, and stops once it says complete; a complete-and-empty window
+  is still memoised.
+  - *Experiment.* Drop `cache.complete` from the memo condition.
+  - *Data.* The refetch test fails; 17 others pass.
+- *View (4 dom tests).* `building…` goes on the first points even though
+  the rebuild continues; it *stays* while a partial answer has no points
+  yet; it goes when the host is caught up with nothing to show; and the
+  canvas grows across successive partial answers, driven by the same
+  re-request the real serves drive (`mockSampleRebuild` serves one more
+  point per call and only reports caught-up on the last).
+  - *Experiment.* Restore the unconditional `firstSampleSettled()`.
+  - *Data.* "keeps saying it is building while a partial answer has no
+    points yet" fails; the rest pass — again the correct sensitivity, since
+    the other three were already reachable through the old first-outcome
+    rule.
+
+The four pre-existing pins the brief named were read and kept: the
+slow-first-sample test (1632) and the no-signals test (1660) hold
+unchanged under the new rule, and `threeAreas` (4586) and the
+repaint-from-cache assertion (4736) depend on "no canvas never settles"
+and "a cached window with points settles", both of which the split
+preserves. The one edit to a pin's *text* is the stale premise in the
+slow-first-sample comment ("decodes the whole window on the first
+sample"), which is no longer what the host does.
+
+**What was not measured.** No before/after benchmark is quoted for this
+item, because the quantity it changes is *time to first paint*, and the
+harness that exists (`bench_first_use_rebuild`) measures total rebuild
+throughput, which this deliberately does not change — the same chunks are
+scanned, in the same order, split across more calls. The bounded path's
+overhead is one lock round-trip and one window read per signal per serve,
+which is why the benchmark keeps its unbounded store: bounding it would
+measure the harness's call cadence rather than the rebuild.
+
 ## Blockers / side effects
 
 - **The disk-spill segment write is ~43 % of the per-frame ingest
@@ -788,6 +905,9 @@ chunk's buffers add nothing to residency.
   drive-by.
 - **The ADR-0031 perf gate was not run** in this phase, per the phase
   brief; the orchestrator runs it after. *(58.A)*
+  **Resolved 2026-08-09**: the orchestrator ran the gates — mid-chain
+  after 58.A, 58.C, 58.D and 58.E, and the final pair at `43ad33c`, all
+  green. See the exit-criteria walk's row 7c.
 - **A narrowed import's notes stop where the pump's walk stops, not
   where the range does.** `WindowedSource` only filters which frames
   reach the sink; it still calls the inner source for every object up
@@ -954,3 +1074,87 @@ chunk's buffers add nothing to residency.
   write, the clear, and the async-worker starvation.
 - **The ADR-0031 perf gate was not run** in this phase, per the phase
   brief; the orchestrator runs it after. *(58.D, 58.E)*
+  **Resolved 2026-08-09**: the orchestrator ran the gates — mid-chain
+  after 58.A, 58.C, 58.D and 58.E, and the final pair at `43ad33c`, all
+  green. See the exit-criteria walk's row 7c.
+- **The first-paint moment is measured in tests, not in the app.** The
+  dom tests drive a fake host whose serves are shaped by hand, so what is
+  pinned is the *rule* (points end the wait, a pointless partial does
+  not, the canvas grows across partials), not a wall-clock "first points
+  within N ms of opening a plot over a 6.5 M-frame capture". Measuring
+  that needs the ADR-0031 harness over a synthetic capture of that size
+  and a way to read the moment the canvas first has data; it is a
+  measurement slice of its own, not a drive-by here. The host-side
+  guarantee under it is exact and tested: a serve does at most one chunk
+  past a 150 ms deadline per message group.
+- **150 ms is a chosen number, not a measured one.** It is about a plot's
+  resample period, which is the cadence the re-request rides. Too short
+  and the per-serve overhead (a lock round-trip and a window read per
+  signal) starts to matter against the decoding; too long and the first
+  paint is late. Nothing in this phase measured the knee, and the
+  constant is in one place if a later measurement moves it.
+- **A bounded serve makes a rebuild's total wall clock slightly longer,
+  by construction.** The same chunks are scanned in the same order, but
+  split across more calls, so each serve re-pays `ensure_caches`, the
+  plan/apply lock round-trips it would have made anyway, and one window
+  read per signal. Unmeasured, and expected to be far inside
+  `bench_first_use_rebuild`'s 26 % session-to-session spread (58.E), which
+  is why the benchmark keeps an unbounded store rather than quoting a
+  number the harness cannot resolve.
+- **`min_max_many` is bounded but carries no completeness of its own.**
+  The y-extent of a series mid-rebuild is the extent of what has decoded,
+  which widens — the same shape as a live capture growing, which the
+  auto-normalisation already handles. It rides the same round-trip as the
+  window that *does* carry the token, so nothing has to ask twice. A
+  caller that ever needs `signal_min_max` on its own to be conclusive
+  would need its own token.
+- **Test stores now choose their serve budget explicitly.** Multi-chunk
+  fixtures that assert on a *finished* series construct the cache with
+  `new_unbounded`, and the bounded behaviour is pinned by fixtures that
+  construct it with `new_chunk_at_a_time`. Without the split those tests
+  would race a wall clock: a 2-3 chunk catch-up in a debug build is the
+  same order as the 150 ms budget, so they would pass or fail on machine
+  speed. The production constructor is unchanged, and it is what
+  `bench_first_use_rebuild` deliberately does *not* use, since it measures
+  a whole rebuild.
+- **The ADR-0031 perf gate was not run** in this phase, per the phase
+  brief; the orchestrator runs it after. *(58.F)*
+  **Resolved 2026-08-09**: the orchestrator ran the gates — mid-chain
+  after 58.A, 58.C, 58.D and 58.E, and the final pair at `43ad33c`, all
+  green. See the exit-criteria walk's row 7c.
+
+## Exit criteria walk
+
+2026-08-09, at the close of 58.F. One row per criterion as written in
+**Exit criteria** above, with the evidence.
+
+| # | criterion | verdict | evidence |
+| --- | --- | --- | --- |
+| 1 | one-pass import, off the main thread, through the shared pump; per-frame budget profiled before/after with cuts attributed; import time at 6.5 M frames recorded | **MET** (with the qualifications below) | 58.A - commits `0993e5e`, `5d08f94`, `d263a97`. Both whole-file extra passes gone (`read_notes_from_blf` deleted; the census is `cannet_blf::scan_blf`, header-only). `open_log` is `async`. Release, 6.5 M frames: import 10.3 s to 9.9 s wall, pump at **720 k frames/s** = **13x** the 54 k baseline. Budget attributed: BLF decode 0.26 us/frame (18 %), convert + route 0.09 (6 %), trace store 0.49 (34 %), disk-spill write 0.64 (43 %). |
+| 2 | mapping dialog: exact channel census, duration, wall-clock start, collapsible markers gridview, honours a selected time range (tested at the scan and pump seams) | **MET** | 58.B - commits `572108c`, `9036809`, `a943875`, `6e2e8b7`. `BlfScanResult` carries all four facts out of the one header walk; `WindowedSource` is the range filter at the `CanFrameSource` seam (ADR 0046), pinned by 7 `cannet-core` unit tests, a `cannet-blf` integration test through the shared `pump()`, and a `cannet-gui` test running `run_pump`'s per-frame body against a real `TraceStore`. |
+| 3 | a relaunch with a large restored capture paints plots without a rebuild (persisted, validated, measured before/after) | **MET** | 58.C - commits `89c4c8b`, `e962994`, `3c634e5`, `b7ce054`; ADR 0047. Release, 96 signals: at 4 M frames rebuild 3.61 s vs restore + serve 2.87 s; at 16 M frames 9.80 s vs 4.51 s. Debug (the regime the report came from), 1 M frames: 5.63 s vs 1.87 s, 3.0x. The rebuild is `O(capture)`, the restore `O(pyramid segment files)`, so the two diverge. |
+| 4 | N signals of one message catch up in one decode pass (equivalence + provenance pinned; `bench_first_use_rebuild` before/after) | **MET** | 58.D - commits `87cc507`, `ad1e362`, `7c052ed`. The equivalence anchor compares served windows *and* every pyramid slot, fold cursor, decode cursor and extent against the per-signal build; provenance ("first DBC wins **per signal**"), bus scoping and heterogeneous cursors each have their own pin; breaking `sample_shared` fails six tests. Release, 2 M frames, 96 signals at 16 per message: 73.93 s to 10.85 s (**6.8x**); the 1-signal-per-message control is 1.0x. |
+| 5 | a cold rebuild in one area no longer blocks other areas' sampling, min/max, eviction, or app exit (tested at the lock seam; exit works during a rebuild) | **MET at the seam** | 58.E - commits `c6173bc`, `a91f2ed`, `cd9e65f`, `384bd17`; ADR 0048. Three would-block probes, each falsified by reconstructing the old hold: `a_cold_rebuild_in_one_area_does_not_block_another`, `the_exit_path_does_not_wait_for_a_cold_rebuild`, `a_command_body_that_never_yields_does_not_park_an_async_worker`. Exit-time pyramid persist 7.8-14.3 s to **3-4 ms**. The recorded limit stands: verified at the seam, not by closing a running window (there is no `tauri::test` mock-`AppHandle` harness). |
+| 6 | plots paint incrementally during rebuild and during import; `building...` appears only until first points (dom-tested) | **MET** | 58.F - commits `4da3f45`, `7b9ecd0`, `15bd73c`; ADR 0049. Dom-tested by `stops saying it is building on the first points, not on the finished series`, `keeps saying it is building while a partial answer has no points yet`, `stops saying it is building when the host is caught up with nothing to show`, and `paints each partial answer as the rebuild advances`. The import case is the same mechanism and is pinned host-side by `a_serve_stays_bounded_while_the_capture_is_still_growing`. What is *not* measured is a wall-clock time-to-first-paint in the running app (see Blockers). |
+| 7a | ADR for the one-ingest-pathway rule reinforced or written | **MET** | 58.A - ADR 0046, commit `d263a97`: the rule, the rejected import-specific batched append, and the one sanctioned extra walk (the pre-census). |
+| 7b | docs updated with behavior changes | **MET** | Every phase landed its docs with its code. New ADRs 0046, 0047, 0048, 0049; ADR 0002's on-disk table points at 0047; ADR 0025's `DecimatedRange` shape carries `complete`; the roadmap's task-58 blurb matches what shipped. |
+| 7c | ADR-0031 gate green (multi-run) after ingest-path changes and at completion | **MET** | Run by the orchestrator, not by the implementing phases (each phase brief said so). Final gate at `43ad33c`, **two runs, both `check passed (31 metrics gated)`** — 31/31 each — with the reports committed unmodified as `docs/performance-measurements/frontend/2026-08-09-43ad33c-task58-final-run1.json` and `...-run2.json`. Sanity clean on both: `ids_measured` 173, rx/tx ~1605-1611 fps, retention ~1.0. Standout margins against baseline: `lag_ms_max` 27.1 to 1.6 / 1.3, `tx_late_ms_max` 75.9 to 14.0 / 19.0, `flush_ms_mean` 25 to ~3.95. The "after ingest-path changes" half was also covered mid-chain: gates ran after 58.A, 58.C, 58.D and 58.E, all passed. |
+
+Two of criterion 1's clauses are worth their qualifications rather than a
+bare "met":
+
+- **"the cuts the data names".** The two whole-file passes were the cuts
+  the data named, and they are gone. The per-frame cuts the original code
+  read had suggested (allocations, string hashes) measured ~0.22 us/frame
+  of ~1.4 in release - real, but not what made the import slow - and the
+  one attempted (a `clone_from` on the retention clone) measured inside
+  noise and was reverted rather than kept as churn. The two items the
+  profile *did* name as large (the disk-spill segment write at 43 %, the
+  `bus_id: Option<String>` at 15 %) are recorded under Blockers with
+  numbers, as their own slices.
+- **"target: multiples of the 54 k frames/s baseline".** Met at 13x, but
+  the honest finding is that the 121 s / 54 k frames/s figure was a
+  **dev-build** number: the same three-pass shape in release runs at
+  ~490 k frames/s. The speed-up attributable to this task's changes at
+  the 6.5 M scale is 10.3 s to 9.9 s of measured work, plus an exact
+  census where the old one sampled 3 % of the file.

@@ -114,25 +114,32 @@ async fn off_async_workers<T: Send + 'static>(work: impl FnOnce() -> T + Send + 
 ///
 /// Layout (little-endian throughout):
 /// ```text
-/// magic   8 bytes  "SIGSAMP\x01"
+/// magic   8 bytes  "SIGSAMP\x02"
 /// from_s  f64      capture-window first timestamp, NaN ⇒ null
 /// last_s  f64      capture-window last timestamp, NaN ⇒ null
 /// slice   f64      diagnostic: lock-held slice ms
 /// decode  f64      diagnostic: decode + decimate ms
+/// flags   u32      bit 0: the sampled caches are caught up to the tip
 /// nsig    u32      number of signals
 /// for each signal:
 ///   n     u32      sample count
 ///   t[n]  f64×n    timestamps (absolute seconds)
 ///   v[n]  f64×n    values
 /// ```
+///
+/// The `flags` word (and the `\x02` that announces it) is the
+/// completeness token of ADR 0049: a serve is bounded in time, so a cold
+/// one answers with the prefix it decoded and bit 0 clear. A caller must
+/// not infer completeness from a non-empty series.
 fn encode_signals_sample(s: &DecimatedRange) -> Vec<u8> {
     let total_points: usize = s.series.iter().map(|p| p.t.len()).sum();
-    let mut buf = Vec::with_capacity(8 + 32 + 4 + s.series.len() * 4 + total_points * 16);
-    buf.extend_from_slice(b"SIGSAMP\x01");
+    let mut buf = Vec::with_capacity(8 + 32 + 8 + s.series.len() * 4 + total_points * 16);
+    buf.extend_from_slice(b"SIGSAMP\x02");
     buf.extend_from_slice(&s.from_seconds.unwrap_or(f64::NAN).to_le_bytes());
     buf.extend_from_slice(&s.last_seconds.unwrap_or(f64::NAN).to_le_bytes());
     buf.extend_from_slice(&s.slice_ms.to_le_bytes());
     buf.extend_from_slice(&s.decode_ms.to_le_bytes());
+    buf.extend_from_slice(&u32::from(s.complete).to_le_bytes());
     #[allow(clippy::cast_possible_truncation)]
     buf.extend_from_slice(&(s.series.len() as u32).to_le_bytes());
     for p in &s.series {
@@ -211,7 +218,7 @@ fn sample_signals_inner(
     // level above `max_points` (ADR 0002 DS-5), so a "fit data" over a
     // huge capture serves `O(max_points)` points instead of
     // materializing and decimating the whole raw window here every tick.
-    let sliced: Vec<Vec<signal_sampler::SamplePoint>> = state.signal_caches.slice_many(
+    let served = state.signal_caches.slice_many(
         &cache_queries(signals),
         slice_from,
         slice_to,
@@ -220,6 +227,7 @@ fn sample_signals_inner(
         &db_refs,
     );
     drop(dbs_guard);
+    let sliced: Vec<Vec<signal_sampler::SamplePoint>> = served.series;
     let slice_ms = t_slice.elapsed().as_secs_f64() * 1000.0;
 
     let t_decode = std::time::Instant::now();
@@ -241,6 +249,7 @@ fn sample_signals_inner(
         from_seconds: from_ts.map(ns_to_seconds),
         last_seconds: last_ts.map(ns_to_seconds),
         series,
+        complete: served.complete,
         slice_ms,
         decode_ms,
     }

@@ -47,6 +47,14 @@
 //! out of the result. Bus scoping, decode provenance and the decode
 //! cursor stay per series through it ([`catch_up_group_chunked`]).
 //!
+//! A serve is also **bounded in time** (ADR 0049): it catches up for at most
+//! [`CATCH_UP_SERVE_BUDGET`] and then answers with what has decoded,
+//! saying so through [`ServedWindows::complete`]. So the first use of a
+//! signal over a long capture returns a growing prefix every time it is
+//! asked instead of one finished series minutes later, and the caller
+//! that wants the whole series asks again until the model says it is
+//! caught up.
+//!
 //! Concurrency and residency: one global mutex around the (small)
 //! `HashMap`, but **never held across a rebuild** (ADR 0048). The
 //! catch-up scans the unread frame range in [`CATCH_UP_CHUNK_FRAMES`]
@@ -65,6 +73,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use cannet_dbc::Database;
 use cannet_spill::{lower_bound, SampleSeq};
@@ -93,6 +102,32 @@ const PYRAMID_BRANCH: usize = 8;
 /// range lookup per chunk, which is `O(log occurrences)` — negligible
 /// beside the per-frame decode.
 const CATCH_UP_CHUNK_FRAMES: usize = 16_384;
+
+/// How long one serve may spend catching its caches up before it answers
+/// with what has decoded so far, [`ServedWindows::complete`] `== false`
+/// (ADR 0049).
+///
+/// Chunking the catch-up (ADR 0048) bounded the *lock hold*; it did not
+/// bound the *call*, which still ran chunk after chunk until the cursor
+/// reached the tip — minutes on a first use over a long capture, with the
+/// caller holding a blank plot the whole time. A serve now stops at this
+/// deadline and reports that it stopped, so the caller can draw the
+/// prefix and come back for the rest.
+///
+/// A **time** budget rather than a chunk count, because a chunk's cost
+/// varies by more than an order of magnitude with how much of the capture
+/// is the plotted message: a chunk of a rare message decodes almost
+/// nothing, and a fixed chunk budget would make such a rebuild take
+/// hundreds of round-trips to advance through a capture it could scan in
+/// seconds. The deadline is checked *between* chunks, so a serve overruns
+/// it by at most one chunk and always makes progress — a serve that
+/// decoded nothing would never finish the rebuild.
+///
+/// 150 ms is about a plot's resample period: short enough that the first
+/// points appear promptly and the picture visibly grows, long enough that
+/// the per-serve overhead (one lock round-trip and one window read per
+/// signal) stays negligible against the decoding.
+const CATCH_UP_SERVE_BUDGET: Duration = Duration::from_millis(150);
 
 /// One signal's decoded samples as a min/max resolution pyramid, plus
 /// the next trace-store frame index to scan from on the next catch-up.
@@ -777,6 +812,12 @@ fn store_fetch(
 /// scratch), so the resident set stays bounded (ADR 0002 DS-5/DS-7).
 pub struct SignalCacheStore {
     caches: Mutex<Caches>,
+    /// How long one serve may catch up before it answers with a partial
+    /// series ([`CATCH_UP_SERVE_BUDGET`]). A field rather than a constant
+    /// read at the call site so a test can serve deterministically —
+    /// either one chunk at a time or the whole capture in one call —
+    /// instead of racing a wall clock.
+    serve_budget: Duration,
 }
 
 /// The store's interior: where the pyramids spill, the live caches rooted
@@ -828,9 +869,32 @@ impl SignalCacheStore {
     /// Root the per-signal pyramids at `root`, staging any set a prior
     /// session persisted there for [`Self::restore`] to judge.
     pub fn new(root: impl AsRef<Path>) -> Self {
+        Self::rooted(root, CATCH_UP_SERVE_BUDGET)
+    }
+
+    fn rooted(root: impl AsRef<Path>, serve_budget: Duration) -> Self {
         Self {
             caches: Mutex::new(open_root(root.as_ref().to_path_buf())),
+            serve_budget,
         }
+    }
+
+    /// A store whose serves catch up **exactly one chunk per message
+    /// group** before answering, so a test can observe a partial serve
+    /// and its convergence without depending on how fast the machine
+    /// decodes.
+    #[cfg(test)]
+    fn new_chunk_at_a_time(root: impl AsRef<Path>) -> Self {
+        Self::rooted(root, Duration::ZERO)
+    }
+
+    /// A store that catches up to the tip however long it takes, i.e. the
+    /// pre-budget behaviour. For tests that assert on a *finished* series
+    /// over a capture spanning several chunks; the bounded serve is what
+    /// production does and is pinned on its own.
+    #[cfg(test)]
+    fn new_unbounded(root: impl AsRef<Path>) -> Self {
+        Self::rooted(root, Duration::MAX)
     }
 
     /// Drop every cached series and wipe its files — call when the capture
@@ -1011,16 +1075,31 @@ impl SignalCacheStore {
     /// read once for the whole batch, so every series in it observes the
     /// same capture length; `fetch` is the seam each group's chunks are
     /// materialized through.
+    ///
+    /// `deadline` bounds the whole batch ([`CATCH_UP_SERVE_BUDGET`]) —
+    /// but every group still scans at least one chunk, so a signal listed
+    /// after an expensive one is never starved of progress by a budget an
+    /// earlier group has already spent.
     fn catch_up_keys(
         &self,
         keys: &[SignalKey],
         store_len: usize,
         dbs: &[&Database],
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
+        deadline: Option<Instant>,
     ) {
         for ((message_id, extended), group) in group_keys(keys) {
-            self.catch_up_group(message_id, extended, &group, store_len, dbs, fetch);
+            self.catch_up_group(
+                message_id, extended, &group, store_len, dbs, fetch, deadline,
+            );
         }
+    }
+
+    /// The deadline a serve's catch-up stops at, or `None` when the
+    /// configured budget is longer than the clock can express (the
+    /// unbounded catch-up the tests that assert on a finished series use).
+    fn serve_deadline(&self) -> Option<Instant> {
+        Instant::now().checked_add(self.serve_budget)
     }
 
     /// Catch one `(message_id, extended)` group up to `store_len`,
@@ -1047,6 +1126,12 @@ impl SignalCacheStore {
     /// appended twice. A generation change between the two means the
     /// caches were replaced (cleared, re-rooted, restored) and the whole
     /// pass is abandoned — its samples describe a set that is gone.
+    ///
+    /// The loop also stops at `deadline` — after a whole chunk has been
+    /// applied, so the cursors always advance and the caller always gets
+    /// more than it had. What it left undone is visible to the caller as
+    /// a decode cursor short of `store_len`.
+    #[allow(clippy::too_many_arguments)]
     fn catch_up_group(
         &self,
         message_id: u32,
@@ -1055,6 +1140,7 @@ impl SignalCacheStore {
         store_len: usize,
         dbs: &[&Database],
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
+        deadline: Option<Instant>,
     ) {
         let (generation, mut targets) = {
             let caches = self.caches.lock().expect("signal cache mutex poisoned");
@@ -1112,6 +1198,9 @@ impl SignalCacheStore {
             caches.dirty = true;
             drop(caches);
             cursor = to;
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return;
+            }
         }
     }
 
@@ -1167,6 +1256,7 @@ impl SignalCacheStore {
             store,
             dbs,
         )
+        .series
         .pop()
         .unwrap_or_default()
     }
@@ -1181,6 +1271,11 @@ impl SignalCacheStore {
     /// ([`catch_up_group_chunked`]). Sampling sixteen signals of one
     /// message one at a time re-fetched and re-decoded the same frames
     /// sixteen times, throwing away fifteen values each pass.
+    ///
+    /// The catch-up is bounded by [`CATCH_UP_SERVE_BUDGET`], so this
+    /// returns in about that long however cold the caches are, and says
+    /// through [`ServedWindows::complete`] whether the windows are the
+    /// whole answer or a prefix of it.
     #[allow(clippy::too_many_arguments)]
     pub fn slice_many(
         &self,
@@ -1190,17 +1285,31 @@ impl SignalCacheStore {
         max_points: usize,
         store: &TraceStore,
         dbs: &[&Database],
-    ) -> Vec<Vec<SamplePoint>> {
+    ) -> ServedWindows {
         let keys = self.ensure_caches(queries);
-        self.catch_up_keys(&keys, store.len(), dbs, &store_fetch(store));
+        // One tip for the whole batch, and the same one completeness is
+        // judged against — so "complete" means "caught up to the capture
+        // this serve read", not to a tip that moved under it.
+        let store_len = store.len();
+        self.catch_up_keys(
+            &keys,
+            store_len,
+            dbs,
+            &store_fetch(store),
+            self.serve_deadline(),
+        );
         let caches = self.caches.lock().expect("signal cache mutex poisoned");
-        keys.iter()
-            .map(|key| {
-                caches.by_key.get(key).map_or_else(Vec::new, |cache| {
-                    cache.window(from_seconds, to_seconds, max_points)
+        ServedWindows {
+            series: keys
+                .iter()
+                .map(|key| {
+                    caches.by_key.get(key).map_or_else(Vec::new, |cache| {
+                        cache.window(from_seconds, to_seconds, max_points)
+                    })
                 })
-            })
-            .collect()
+                .collect(),
+            complete: caught_up(&caches, &keys, store_len),
+        }
     }
 
     /// The signal's all-time value extent `(lo, hi)` over every decoded
@@ -1232,7 +1341,15 @@ impl SignalCacheStore {
 
     /// [`Self::min_max`] over a whole batch, index-parallel with
     /// `queries` — and, like [`Self::slice_many`], one catch-up pass per
-    /// message rather than one per signal.
+    /// message rather than one per signal, bounded by
+    /// [`CATCH_UP_SERVE_BUDGET`].
+    ///
+    /// The extent of a series still catching up is the extent of what has
+    /// decoded so far — it widens as the rebuild advances, exactly as it
+    /// does while a live capture grows. It carries no completeness of its
+    /// own: this rides the same round-trip as [`Self::slice_many`] over
+    /// the same caches, and that is where the caller reads whether the
+    /// answer is settled.
     pub fn min_max_many(
         &self,
         queries: &[CacheQuery<'_>],
@@ -1240,12 +1357,49 @@ impl SignalCacheStore {
         dbs: &[&Database],
     ) -> Vec<Option<(f64, f64)>> {
         let keys = self.ensure_caches(queries);
-        self.catch_up_keys(&keys, store.len(), dbs, &store_fetch(store));
+        self.catch_up_keys(
+            &keys,
+            store.len(),
+            dbs,
+            &store_fetch(store),
+            self.serve_deadline(),
+        );
         let caches = self.caches.lock().expect("signal cache mutex poisoned");
         keys.iter()
             .map(|key| caches.by_key.get(key).and_then(SignalCache::extent))
             .collect()
     }
+}
+
+/// One batch serve: the windows, and whether the caches behind them had
+/// finished catching up when it answered (ADR 0049).
+pub struct ServedWindows {
+    /// One window per query, index-parallel with the batch.
+    pub series: Vec<Vec<SamplePoint>>,
+    /// `true` when every queried signal's decode cursor reached the store
+    /// tip this serve read — the windows are the whole answer for their
+    /// range. `false` when the serve ran out of budget first: the windows
+    /// hold the prefix decoded so far and a further serve continues from
+    /// there.
+    ///
+    /// This is the token that makes a partial serve first-class (ADR
+    /// 0049). Since a catch-up runs off the lock (ADR 0048) a caller can
+    /// observe a series mid-rebuild, so a non-empty window has never been
+    /// evidence that the series is finished; asking the model is.
+    pub complete: bool,
+}
+
+/// Whether every cache named by `keys` has decoded through `store_len`.
+/// A key with no cache counts as not caught up — the only way it is
+/// missing is a clear between the catch-up and this read, and the caller
+/// asking again is right.
+fn caught_up(caches: &Caches, keys: &[SignalKey], store_len: usize) -> bool {
+    keys.iter().all(|key| {
+        caches
+            .by_key
+            .get(key)
+            .is_some_and(|c| c.next_index >= store_len)
+    })
 }
 
 #[cfg(test)]
@@ -1792,7 +1946,7 @@ mod tests {
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
         let tmp = TempDir::new().unwrap();
-        let cache = SignalCacheStore::new(tmp.path());
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
         let store_len = 5 * CATCH_UP_CHUNK_FRAMES + 7;
         let asked = std::cell::RefCell::new(Vec::new());
         let key = catch_up_through(
@@ -1856,7 +2010,7 @@ mod tests {
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
         let tmp = TempDir::new().unwrap();
-        let cache = SignalCacheStore::new(tmp.path());
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
 
         let expect: Vec<f64> = (0..n)
             .filter(|i| i % 3 == 0)
@@ -1882,6 +2036,198 @@ mod tests {
             .collect();
         let all2 = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(all2.iter().map(|p| p.value).collect::<Vec<_>>(), expect2);
+    }
+
+    // ---- A bounded serve, and the token that admits it ----------------
+    //
+    // Chunking the catch-up bounded the lock hold (ADR 0048); it did not
+    // bound the *call*. These pin the second half: a serve stops at its
+    // budget, answers with the prefix it decoded, says it is not finished,
+    // and converges on exactly the series an unbounded serve returns.
+    // Driven through a store built one chunk at a time, so the assertions
+    // are about the rule and not about how fast the machine decodes.
+
+    /// A capture of `frames` frames, every one of them message 256 with a
+    /// strictly increasing `X` — so a prefix of the series is
+    /// distinguishable from the whole of it by its length *and* by its
+    /// extent.
+    #[allow(clippy::cast_possible_truncation)]
+    fn rising_capture(frames: usize) -> TraceStore {
+        let store = TraceStore::new();
+        for i in 0..frames {
+            store.append(val_frame(i as u64 * S, i as u16));
+        }
+        store
+    }
+
+    fn query_on(message_id: u32, signal_name: &str) -> CacheQuery<'_> {
+        CacheQuery {
+            bus_id: None,
+            message_id,
+            extended: false,
+            signal_name,
+        }
+    }
+
+    #[test]
+    fn a_serve_out_of_budget_answers_with_its_prefix_and_says_it_is_partial() {
+        let store = rising_capture(3 * CATCH_UP_CHUNK_FRAMES);
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
+        let queries = [query_on(256, "X")];
+        let serve = || cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+
+        // One chunk in, the serve returns rather than finishing the
+        // rebuild — with points to draw, and honest about there being
+        // more.
+        let first = serve();
+        assert!(
+            !first.complete,
+            "a serve that stopped a chunk in must not claim the series is finished",
+        );
+        assert_eq!(first.series[0].len(), CATCH_UP_CHUNK_FRAMES);
+
+        // Asking again continues where it left off, and the third serve
+        // reaches the tip — no gap, no duplicate, and the same series an
+        // unbounded serve builds in one call.
+        let mut served = serve();
+        let mut round_trips = 2;
+        while !served.complete {
+            assert!(
+                round_trips < 10,
+                "the rebuild is not converging: {round_trips} serves",
+            );
+            served = serve();
+            round_trips += 1;
+        }
+        assert_eq!(round_trips, 3);
+        let other = TempDir::new().unwrap();
+        let whole = SignalCacheStore::new_unbounded(other.path()).slice_many(
+            &queries,
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
+        assert!(whole.complete);
+        assert_eq!(served.series[0], whole.series[0]);
+        assert_eq!(served.series[0].len(), 3 * CATCH_UP_CHUNK_FRAMES);
+    }
+
+    #[test]
+    fn a_serve_that_reached_the_tip_says_so_even_with_nothing_to_show() {
+        // Completeness is about the catch-up, not about the points: a
+        // capture with no frames, and a capture no database decodes, are
+        // both *finished* answers. A caller that re-asked until the
+        // window was non-empty would spin forever on either.
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
+        let queries = [query_on(256, "X")];
+
+        let empty = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &TraceStore::new(), dbs);
+        assert!(empty.complete);
+        assert!(empty.series[0].is_empty());
+
+        let undecodable = undecodable_store(CATCH_UP_CHUNK_FRAMES);
+        let served = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &undecodable, dbs);
+        assert!(served.complete);
+        assert!(served.series[0].is_empty());
+    }
+
+    #[test]
+    fn an_exhausted_budget_still_advances_every_message_group() {
+        // The budget is spent by whichever group is caught up first, so a
+        // signal listed behind an expensive one would never move if the
+        // deadline could stop a group before its first chunk. Every group
+        // scans one chunk regardless.
+        let store = TraceStore::new();
+        let n = 4 * CATCH_UP_CHUNK_FRAMES;
+        for i in 0..n {
+            #[allow(clippy::cast_possible_truncation)]
+            let mut frame = val_frame(i as u64 * S, i as u16);
+            // Two messages, alternating — so the batch is two groups and
+            // the second one is behind the deadline the first spent.
+            if i % 2 == 1 {
+                frame.id = 512;
+            }
+            store.append(frame);
+        }
+        let db = dbc_two_areas();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
+        let queries = [query_on(256, "X"), query_on(512, "Y")];
+        let served = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(!served.complete);
+        // Half the chunk's frames are each group's, so both groups
+        // scanned one chunk of the same span — neither starved.
+        assert_eq!(served.series[0].len(), CATCH_UP_CHUNK_FRAMES / 2);
+        assert_eq!(served.series[1].len(), CATCH_UP_CHUNK_FRAMES / 2);
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_serve_stays_bounded_while_the_capture_is_still_growing() {
+        // The freeze-during-import shape: a plot samples while the pump
+        // is still appending, so the tip the catch-up is chasing moves
+        // under it. Each serve does its budget's worth against the tip it
+        // read and says it is behind — it never runs to a moving target.
+        let store = rising_capture(2 * CATCH_UP_CHUNK_FRAMES);
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
+        let queries = [query_on(256, "X")];
+
+        let first = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(!first.complete);
+        assert_eq!(first.series[0].len(), CATCH_UP_CHUNK_FRAMES);
+
+        // The import runs on: two more chunks of capture land before the
+        // next tick.
+        for i in 2 * CATCH_UP_CHUNK_FRAMES..4 * CATCH_UP_CHUNK_FRAMES {
+            store.append(val_frame(i as u64 * S, i as u16));
+        }
+        let second = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(!second.complete);
+        assert_eq!(second.series[0].len(), 2 * CATCH_UP_CHUNK_FRAMES);
+    }
+
+    #[test]
+    fn an_extent_serve_is_bounded_too_and_widens_as_the_rebuild_advances() {
+        // The y-extent sidecar rides the same round-trip and catches up
+        // the same caches, so it has to stop at the same budget — an
+        // unbounded one would hold the plot's fetch for the whole rebuild
+        // however promptly the samples came back. Its answer is the
+        // extent of what has decoded, which widens exactly as it does
+        // while a live capture grows.
+        let store = rising_capture(3 * CATCH_UP_CHUNK_FRAMES);
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
+        let queries = [query_on(256, "X")];
+
+        let first = cache.min_max_many(&queries, &store, dbs);
+        #[allow(clippy::cast_precision_loss)]
+        let chunk_hi = (CATCH_UP_CHUNK_FRAMES - 1) as f64;
+        assert_eq!(first[0], Some((0.0, chunk_hi)));
+
+        while !cache
+            .slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs)
+            .complete
+        {}
+        #[allow(clippy::cast_precision_loss)]
+        let all_hi = (3 * CATCH_UP_CHUNK_FRAMES - 1) as f64;
+        assert_eq!(
+            cache.min_max_many(&queries, &store, dbs)[0],
+            Some((0.0, all_hi)),
+        );
     }
 
     #[test]
@@ -2031,7 +2377,7 @@ mod tests {
         fetch: impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     ) -> Vec<SignalKey> {
         let keys = store.ensure_caches(queries);
-        store.catch_up_keys(&keys, store_len, dbs, &fetch);
+        store.catch_up_keys(&keys, store_len, dbs, &fetch, store.serve_deadline());
         keys
     }
 
@@ -2198,7 +2544,7 @@ mod tests {
         // Per signal: each `slice` is its own one-member group, which
         // is what the catch-up did before the sharing.
         let one_at_a_time = TempDir::new().unwrap();
-        let per_signal = SignalCacheStore::new(one_at_a_time.path());
+        let per_signal = SignalCacheStore::new_unbounded(one_at_a_time.path());
         let separate: Vec<Vec<SamplePoint>> = queries
             .iter()
             .map(|q| {
@@ -2218,9 +2564,11 @@ mod tests {
 
         // Shared: one pass per message for the whole batch.
         let together = TempDir::new().unwrap();
-        let grouped = SignalCacheStore::new(together.path());
+        let grouped = SignalCacheStore::new_unbounded(together.path());
         let shared = grouped.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, &dbs);
 
+        assert!(shared.complete);
+        let shared = shared.series;
         assert_eq!(shared, separate, "the served windows must be identical");
         assert_eq!(
             dump_pyramids(&grouped),
@@ -2251,7 +2599,7 @@ mod tests {
         let queries = mixed_queries();
 
         let a = TempDir::new().unwrap();
-        let per_signal = SignalCacheStore::new(a.path());
+        let per_signal = SignalCacheStore::new_unbounded(a.path());
         let separate: Vec<Option<(f64, f64)>> = queries
             .iter()
             .map(|q| {
@@ -2266,7 +2614,7 @@ mod tests {
             })
             .collect();
         let b = TempDir::new().unwrap();
-        let grouped = SignalCacheStore::new(b.path());
+        let grouped = SignalCacheStore::new_unbounded(b.path());
         assert_eq!(grouped.min_max_many(&queries, &store, &dbs), separate);
         assert!(separate[0].is_some() && separate[8].is_none());
     }
@@ -2281,7 +2629,7 @@ mod tests {
         let owned = [dbc_a_only(), dbc_a_and_b()];
         let dbs: Vec<&Database> = owned.iter().collect();
         let tmp = TempDir::new().unwrap();
-        let cache = SignalCacheStore::new(tmp.path());
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
         let queries = [
             CacheQuery {
                 bus_id: None,
@@ -2361,21 +2709,25 @@ mod tests {
         };
         // `A` alone first, then more capture, then both together.
         assert_eq!(
-            cache.slice_many(
-                std::slice::from_ref(&a),
-                f64::MIN,
-                f64::MAX,
-                0,
-                &store,
-                &dbs
-            )[0]
-            .len(),
+            cache
+                .slice_many(
+                    std::slice::from_ref(&a),
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &store,
+                    &dbs,
+                )
+                .series[0]
+                .len(),
             100
         );
         for i in 100..150u64 {
             store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
         }
-        let both = cache.slice_many(&[a, b], f64::MIN, f64::MAX, 0, &store, &dbs);
+        let both = cache
+            .slice_many(&[a, b], f64::MIN, f64::MAX, 0, &store, &dbs)
+            .series;
         assert_eq!(
             both[0].iter().map(|p| p.value).collect::<Vec<_>>(),
             (0..150).map(f64::from).collect::<Vec<_>>(),
@@ -2406,13 +2758,16 @@ mod tests {
             signal_name: "A",
         };
         queries.push(repeat);
-        let out = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, &dbs);
+        let out = cache
+            .slice_many(&queries, f64::MIN, f64::MAX, 0, &store, &dbs)
+            .series;
         assert_eq!(out.len(), queries.len());
         assert_eq!(out[0], out[queries.len() - 1]);
-        // An empty batch is a no-op, not a panic.
-        assert!(cache
-            .slice_many(&[], f64::MIN, f64::MAX, 0, &store, &dbs)
-            .is_empty());
+        // An empty batch is a no-op, not a panic — and trivially
+        // complete, since it named nothing that could still be catching
+        // up.
+        let none = cache.slice_many(&[], f64::MIN, f64::MAX, 0, &store, &dbs);
+        assert!(none.series.is_empty() && none.complete);
         assert!(cache.min_max_many(&[], &store, &dbs).is_empty());
     }
 
@@ -2515,7 +2870,7 @@ mod tests {
         let db = dbc_two_areas();
         let dbs: &[&Database] = &[&db];
         let tmp = TempDir::new().unwrap();
-        let cache = SignalCacheStore::new(tmp.path());
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
         let store_len = 3 * CATCH_UP_CHUNK_FRAMES;
 
         let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
@@ -2555,7 +2910,7 @@ mod tests {
         let db = dbc_two_areas();
         let dbs: &[&Database] = &[&db];
         let tmp = TempDir::new().unwrap();
-        let cache = SignalCacheStore::new(tmp.path());
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
         // Something already built, so the manifest write has work to do.
         let _ = cache.slice(None, 512, false, "Y", f64::MIN, f64::MAX, 0, &store, dbs);
         let v = validity("cap", "dbcs", 0);
@@ -2953,7 +3308,10 @@ mod tests {
         );
 
         let pyramids = TempDir::new().unwrap();
-        let cache = SignalCacheStore::new(pyramids.path());
+        // Unbounded serves throughout: the arms measure how long a whole
+        // rebuild takes, and the serve budget only decides how many calls
+        // that is split across.
+        let cache = SignalCacheStore::new_unbounded(pyramids.path());
 
         // Sample the working set while the rebuild runs — the spike the
         // chunked scan exists to remove is transient, so an after-the-fact
@@ -2972,7 +3330,9 @@ mod tests {
         };
 
         let started = std::time::Instant::now();
-        let shared = cache.slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs);
+        let shared = cache
+            .slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs)
+            .series;
         let secs = started.elapsed().as_secs_f64();
         let pts: usize = shared.iter().map(Vec::len).sum();
         stop.store(true, Ordering::Relaxed);
@@ -3000,7 +3360,7 @@ mod tests {
         // (whose pages the shared arm has already warmed, so this arm is
         // if anything favoured).
         let alone_root = TempDir::new().unwrap();
-        let alone = SignalCacheStore::new(alone_root.path());
+        let alone = SignalCacheStore::new_unbounded(alone_root.path());
         let alone_at = std::time::Instant::now();
         let separate: Vec<Vec<SamplePoint>> = queries
             .iter()
@@ -3057,7 +3417,7 @@ mod tests {
         let again_secs = again_at.elapsed().as_secs_f64();
         drop(cache);
 
-        let reopened = SignalCacheStore::new(pyramids.path());
+        let reopened = SignalCacheStore::new_unbounded(pyramids.path());
         let restore_at = std::time::Instant::now();
         let restored = reopened.restore(&validity, store.len());
         let restore_secs = restore_at.elapsed().as_secs_f64();
@@ -3065,6 +3425,7 @@ mod tests {
         let served_at = std::time::Instant::now();
         let back: usize = reopened
             .slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs)
+            .series
             .iter()
             .map(Vec::len)
             .sum();

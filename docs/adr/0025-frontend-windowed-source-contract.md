@@ -129,9 +129,14 @@ Two rules keep the lifecycle correct under high ingest:
     the by-ID view, host-sorted. With a predicate it is the by-ID
     snapshot *of the filtered trace* (every per-id stat computed over
     matching frames only).
-- **`DecimatedRange`** — `{ t0, t1, maxPoints } → { points, extent }` —
-  the plot. Time-addressed and lossy, with per-bucket min/max so spikes
-  survive.
+- **`DecimatedRange`** — `{ t0, t1, maxPoints } → { points, extent,
+  complete }` — the plot. Time-addressed and lossy, with per-bucket
+  min/max so spikes survive. `complete` is the host's completeness token
+  ([ADR 0049](0049-bounded-serves-and-partial-answers.md)): a serve that
+  has to build the samples first is bounded in time, so it may answer
+  with a prefix, and only this says so. A partial answer is drawn and
+  does not satisfy the source's fetch memo, so the next tick continues
+  it.
 
 The signatures are **async, paged, and random-access**, independent of
 the store behind them: the same surface serves the in-RAM `Vec` and the

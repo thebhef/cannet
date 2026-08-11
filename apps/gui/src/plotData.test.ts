@@ -74,11 +74,12 @@ describe("decodeSignalsSample", () => {
     sliceMs: number,
     decodeMs: number,
     series: { t: number[]; v: number[] }[],
+    complete = true,
   ): ArrayBuffer {
     const totalPts = series.reduce((s, p) => s + p.t.length, 0);
-    const buf = new ArrayBuffer(8 + 32 + 4 + series.length * 4 + totalPts * 16);
+    const buf = new ArrayBuffer(8 + 32 + 8 + series.length * 4 + totalPts * 16);
     const view = new DataView(buf);
-    const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
+    const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
     for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
     let off = 8;
     view.setFloat64(off, fromS ?? NaN, true);
@@ -89,6 +90,8 @@ describe("decodeSignalsSample", () => {
     off += 8;
     view.setFloat64(off, decodeMs, true);
     off += 8;
+    view.setUint32(off, complete ? 1 : 0, true);
+    off += 4;
     view.setUint32(off, series.length, true);
     off += 4;
     for (const p of series) {
@@ -122,6 +125,19 @@ describe("decodeSignalsSample", () => {
     expect(out.series[0].v).toEqual([100, 200, 300]);
     expect(out.series[1].v).toEqual([-1.5, -2.5]);
     expect(out.series[2].t).toEqual([]);
+    expect(out.complete).toBe(true);
+  });
+
+  it("carries the host's completeness token", () => {
+    // A serve is bounded in time, so a cold one answers with the prefix
+    // it decoded and says so. The points look no different — the flag is
+    // the only thing that distinguishes "this is the series" from "this
+    // is the series so far", which is why it is on the wire at all.
+    const partial = decodeSignalsSample(
+      encode(0, 2, 0, 0, [{ t: [0, 1, 2], v: [1, 2, 3] }], false),
+    );
+    expect(partial.complete).toBe(false);
+    expect(partial.series[0].v).toEqual([1, 2, 3]);
   });
 
   it("decodes f64 runs at non-8-aligned offsets (DataView-direct path)", () => {

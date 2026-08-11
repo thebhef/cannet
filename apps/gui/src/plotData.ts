@@ -11,9 +11,10 @@
 import type { SignalsSample } from "./types";
 
 /** Magic bytes at the start of a `sample_signals` binary response —
- * `"SIGSAMP\x01"` little-endian. The trailing version byte lets us
- * tweak the layout without breaking older builds outright. */
-const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
+ * `"SIGSAMP\x02"` little-endian. The trailing version byte lets us
+ * tweak the layout without breaking older builds outright; `\x02` added
+ * the `flags` word that carries the host's completeness token. */
+const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
 
 /**
  * Decode the compact binary `SignalsSample` produced by the Rust host's
@@ -26,11 +27,12 @@ const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x01];
  *
  * Layout — little-endian throughout:
  * ```
- *   magic   "SIGSAMP\x01"   8 bytes
+ *   magic   "SIGSAMP\x02"   8 bytes
  *   from_s  f64             window first ts (NaN ⇒ null)
  *   last_s  f64             window last ts  (NaN ⇒ null)
  *   slice   f64             host diagnostic: lock-held slice ms
  *   decode  f64             host diagnostic: decode + decimate ms
+ *   flags   u32             bit 0: the sampled caches are caught up
  *   nsig    u32             number of signals
  *   per signal:
  *     n     u32             sample count
@@ -55,6 +57,10 @@ export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
   off += 8;
   const decodeMs = view.getFloat64(off, true);
   off += 8;
+  // Bit 0 is the completeness token: a serve is bounded in time, so a
+  // cold one answers with the prefix it decoded and leaves this clear.
+  const flags = view.getUint32(off, true);
+  off += 4;
   const nsig = view.getUint32(off, true);
   off += 4;
   const series: { t: number[]; v: number[] }[] = new Array(nsig);
@@ -83,6 +89,7 @@ export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
     from_seconds: Number.isNaN(fromS) ? null : fromS,
     last_seconds: Number.isNaN(lastS) ? null : lastS,
     series,
+    complete: (flags & 1) !== 0,
     slice_ms: sliceMs,
     decode_ms: decodeMs,
   };

@@ -1100,6 +1100,13 @@ export interface SignalsSample {
   from_seconds: number | null;
   last_seconds: number | null;
   series: SampledPoints[];
+  /** Whether the per-signal caches these series come from had finished
+   * catching up to the capture when the host answered. A serve is
+   * bounded in time, so the first use of a signal over a long capture
+   * returns a growing prefix with `complete: false` until the rebuild
+   * lands. A non-empty series is never on its own evidence that the
+   * series is finished. */
+  complete: boolean;
   /** Host wall-clock spent in the lock-held trace-store slice (ms). */
   slice_ms: number;
   /** Host wall-clock spent decoding + decimating off the lock (ms). */
