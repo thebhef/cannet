@@ -366,7 +366,15 @@ function removeEdgeFromRegistry(
       const upstreamId =
         edge.kind === "bus-consumer" ? stripBus(edge.source) : stripEl(edge.source);
       const el = registry.get(consumerId)?.element;
-      if (!el || el.kind === "transmit" || el.kind === "rbs" || el.kind === "colormap") return;
+      if (
+        !el ||
+        el.kind === "transmit" ||
+        el.kind === "rbs" ||
+        el.kind === "colormap" ||
+        el.kind === "generator"
+      ) {
+        return;
+      }
       const current = el.sources;
       // Three paths depending on the current shape:
       // - sources=["*"]: the deleted bus expands into "every bus
@@ -435,7 +443,8 @@ function addEdgeToRegistry(
       !consumer ||
       consumer.kind === "transmit" ||
       consumer.kind === "rbs" ||
-      consumer.kind === "colormap"
+      consumer.kind === "colormap" ||
+      consumer.kind === "generator"
     ) {
       return;
     }

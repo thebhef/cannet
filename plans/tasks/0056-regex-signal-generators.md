@@ -195,6 +195,98 @@ Two live-recolor seams worth knowing for 56.B:
 - `PlotPanel.seriesColor` / `SignalsPanel.signalColor` are memoised on
   `registry.entries`, so a generator edit invalidates them for free.
 
+### 2026-08-08 — phase 56.B: generator rules, end to end
+
+Landed on `task56b-generator-rules` (from `task56a-color-resolver`):
+
+| commit | subject |
+| --- | --- |
+| `49121e0` | `feat(gui): the host decides what a generator rule claims` |
+| `3fe5807` | `feat(gui): a project can write generator rules` |
+| `7c4c696` | `feat(gui): generator rules colour the signal view and the plot` |
+
+Frontend suite 1625 → 1640 tests (134 → 136 files); Rust
+`cannet-gui` 482 → 495 tests (2 ignored, unchanged). `pnpm --dir
+apps/gui build` and `cargo clippy -p cannet-gui --all-targets` clean.
+
+**Command shapes** (`apps/gui/src-tauri/src/signal_generator.rs`):
+
+| command | args | returns |
+| --- | --- | --- |
+| `validate_signal_generator` | `{ pattern: String }` | `Result<(), String>` — the message the editor shows inline |
+| `evaluate_signal_generators` | `{ patterns: Vec<String>, names: Vec<String> }` | `Vec<Option<u32>>`, one wheel slot per name, positionally |
+
+Evaluation is by **name**, not by signal key: the rules match the
+display name, so one question answers every bus a name appears on and
+the host never has to mint the frontend's `signalKey` string. The
+frontend zips the positional answers back onto the keys.
+
+**Design readings recorded:**
+
+- **Case sensitivity: sensitive.** DBC signal names are, so `Cell(\d+)`
+  must not claim `cell5`; `(?i)Cell(\d+)` opts out. Matching is
+  partial (unanchored).
+- **A rule with no capture group is an entry-time error**, not a silent
+  no-op — a forgotten `(` would otherwise match everything and apply to
+  nothing.
+- **A rule that matches but captures nothing usable does not apply**,
+  and evaluation continues with the next rule. "First match wins" is
+  read as "first *applying* rule wins".
+- **A pattern that doesn't compile is skipped at evaluation** (the
+  editor already reported it), so one bad rule in a project can't blank
+  out its neighbours. Same spirit as `filter.rs`'s "bad pattern matches
+  nothing".
+- **Caps:** pattern length 512 chars, `RegexBuilder::size_limit`
+  64 KiB. The size-limit test asserts the rejected pattern compiles
+  under the crate's 10 MiB default, so it proves *our* cap is what
+  turns it away.
+- **Capture parsed as `u32`.** A negative or overflowing capture makes
+  the rule not apply, which is the same door as "non-numeric".
+- **Several `generator` elements are allowed**; their rules concatenate
+  in element order. `enabled: false` parks a rule (only an explicit
+  `false` disables, so a project saved before the flag still works).
+
+**Evaluation-refresh triggers** (`signalGeneratorContext.tsx`): the
+effect keys on the *joined enabled patterns* and on the catalog's
+distinct-name list. So it re-asks the host when a rule is added,
+edited, reordered, enabled/disabled or deleted, and when the DBC
+catalog changes (bus set, DBC set, `dbc-changed` watcher) — and **not**
+when an unrelated element edit replaces `registry.entries`, which
+happens on every panel config write. One provider mounted in `App`
+serves every panel, so a rule edit costs one round-trip, not one per
+plot.
+
+**What landed:**
+
+- `signal_generator.rs` — `compile` / `evaluate` + the two commands,
+  13 unit tests (validation errors, size-limit rejection, partial
+  match, case sensitivity, missing/non-numeric capture, first-applying
+  rule wins, same index across rules, uncompilable rule skipped,
+  catalog-order evaluation).
+- `generator` project element (`types.ts`, `normalizeElement`,
+  `isProjectElement`, `elementLabel`, `ProjectPanel` group order,
+  `dockLayout`, `commands`, `App`), ambient like a colormap: no
+  `sources`, not a graph node. **No host/schema change** — `elements`
+  is `Vec<serde_json::Value>` and round-trips opaquely.
+- `GeneratorPanel.tsx` + 7 DOM tests — rule list with enable toggle,
+  reorder arrows, delete, add; entry-time errors from the host keyed by
+  pattern text (not row index) so reordering can't mis-attach one; a
+  blank row is unfinished, not wrong, and isn't validated.
+- `signalGeneratorContext.tsx` + 3 DOM tests — the cached
+  `Map<signalKey, slot>` every surface reads.
+- `buildSignalColorResolver(indexes)` replaces
+  `buildSignalColorResolver(elements)`; both call sites
+  (`PlotPanel.seriesColor`, `SignalsPanel.signalColor`) memoise on the
+  map.
+- **56.A Blockers item 3 closed**: `PlotArea` now redraws on a
+  `seriesColor` change, so a stopped plot repaints on a rule edit.
+  Driven by a PlotPanel test (stroke, swatch, no rebuild, redraw
+  count) that was red before the effect.
+- Docs: CONTEXT.md gains "generator"; README gains a Generator rules
+  section (Cell1–16 table, case sensitivity, where the regex runs);
+  ADR 0026 gains the generator bullet and loses "compiled from the
+  project's elements".
+
 ## Blockers / side effects
 
 - **Pre-upgrade explicit plot picks re-resolve.** See the upgrade
@@ -209,7 +301,17 @@ Two live-recolor seams worth knowing for 56.B:
   user pick and the command arguably should discard it too. Out of
   scope here (it reaches into every plot element's config) and left
   unchanged — worth an owner ruling.
-- **A stopped plot won't repaint on a generator change** until the
-  redraw effect noted above is added. Nothing to fix today (the slot
-  answers `null` for every signal, so `seriesColor`'s identity only
-  changes when the element set does, which already re-renders).
+- ~~**A stopped plot won't repaint on a generator change**~~ — closed
+  in 56.B: `PlotArea` redraws on a `seriesColor` change, under test.
+- **A generator can only claim a signal the DBC catalog knows.**
+  Evaluation runs over `list_signals`, so a plot series bound to a
+  message no loaded DBC covers falls through to the hash however well
+  its name matches. Correct for the colour use (the name comes from a
+  DBC in the first place), but it means removing a DBC silently drops
+  the colours it was carrying.
+- **A pattern holding a literal newline would break the effect keys.**
+  Both the editor and the provider join patterns on `
+` to key their
+  effects. The single-line pattern field can't produce one, but a
+  hand-edited project file could; the result is a mis-keyed refresh,
+  not a crash or a wrong match.

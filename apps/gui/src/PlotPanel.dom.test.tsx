@@ -236,6 +236,7 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import { SignalGeneratorContext } from "./signalGeneratorContext";
 import { stableSignalColor, wheelColor } from "./palette";
 import { signalKey } from "./plotData";
 import { freshTrace } from "./trace";
@@ -369,13 +370,16 @@ function renderPanel(opts?: {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof PlotPanel>[0];
   const registry = opts?.registry ?? makeRegistry();
+  let generatorIndexes: ReadonlyMap<string, number> = new Map();
   const build = (data: TraceData) => {
     let tree = (
       <TraceDataProvider value={data}>
         <ProjectContext.Provider value={projectCtx}>
           <SignalCatalogProvider>
             <ElementRegistryContext.Provider value={registry}>
-              <PlotPanel {...props} />
+              <SignalGeneratorContext.Provider value={generatorIndexes}>
+                <PlotPanel {...props} />
+              </SignalGeneratorContext.Provider>
             </ElementRegistryContext.Provider>
           </SignalCatalogProvider>
         </ProjectContext.Provider>
@@ -391,6 +395,12 @@ function renderPanel(opts?: {
     /// Push a new session-buffer frame count through the trace context —
     /// what a `trace-grew` event does, and what moves the plot's `winEnd`.
     growTrace: (count: number) => rerender(build({ ...traceData, count })),
+    /// Publish a new host-evaluated generator answer — what editing a
+    /// generator rule does to every panel.
+    setGeneratorIndexes: (m: ReadonlyMap<string, number>) => {
+      generatorIndexes = m;
+      rerender(build(traceData));
+    },
   };
 }
 
@@ -785,6 +795,42 @@ describe("PlotPanel", () => {
       const s = inst.opts.series[1];
       const stroke = typeof s.stroke === "function" ? (s.stroke as () => string)() : s.stroke;
       expect(stroke).toBe(stableSignalColor(signalKey(null, 256, false, "EngineSpeed")));
+    });
+  });
+
+  it("recolors a stopped plot when a generator rule claims its signal", async () => {
+    // A plot that isn't receiving samples draws only when asked. A
+    // generator edit changes the color a live stroke function answers,
+    // so without a redraw the canvas keeps the old color until
+    // something else nudges it.
+    await withSizedCanvas(async () => {
+      const { setGeneratorIndexes } = renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(uplotInstances.length).toBeGreaterThan(0));
+      const inst = liveInstanceIn("Area 1") as unknown as {
+        opts: { series: { stroke?: unknown }[] };
+        redraws: number;
+      };
+      const strokeOf = () => {
+        const s = inst.opts.series[1];
+        return typeof s.stroke === "function" ? (s.stroke as () => string)() : s.stroke;
+      };
+      const key = signalKey(null, 256, false, "EngineSpeed");
+      expect(strokeOf()).toBe(stableSignalColor(key));
+      const instancesBefore = uplotInstances.length;
+      const redrawsBefore = inst.redraws;
+
+      setGeneratorIndexes(new Map([[key, 5]]));
+
+      expect(strokeOf()).toBe(wheelColor(5));
+      // The side panel's swatch follows the same resolution point.
+      expect(document.querySelector(".plot-signal-swatch") as HTMLElement).toHaveStyle({
+        background: wheelColor(5),
+      });
+      // In place: no teardown + rebuild, and a redraw so the stopped
+      // plot repaints instead of waiting for a tick.
+      expect(uplotInstances.length).toBe(instancesBefore);
+      expect(inst.redraws).toBeGreaterThan(redrawsBefore);
     });
   });
 

@@ -1090,6 +1090,35 @@ first-match — the first map (and within it, the first rule) that covers
 a value wins. This is a first-cut prototype; the rule editor and
 numeric-signal plot rendering will grow.
 
+### Generator rules (signal colors from the name)
+
+**Add generator** opens the generator-rules editor (ADR 0026). A
+generator is an ambient project element — like a color map, not wired
+through the graph — holding an ordered list of regexes matched against
+signal **names**. The rule's first capture group, read as an integer,
+is the signal's slot on the shared 16-color wheel:
+
+| rule | `Cell1` | `Cell5` | `Cell5Temperature` | `EngineRpm` |
+| --- | --- | --- | --- | --- |
+| `Cell(\d+)` | slot 1 | slot 5 | slot 5 | no rule → hash |
+
+So `Cell1…Cell16` come out as sixteen distinct, stable colors in every
+view, and a second rule capturing the same number lands on the same
+slot — `Cell5Voltage` and `Cell5Temperature` share a hue on purpose.
+Rules are tried top to bottom and the first one that both matches and
+captures a number wins; a rule can be parked with its toggle instead of
+deleted, and a signal no rule claims keeps its identity-hash color.
+Signal color resolves **explicit pick → generator → hash**, so editing
+a rule recolors the signal view and every plot series live, with
+nothing stored.
+
+Matching is partial (the pattern doesn't have to cover the whole name)
+and case sensitive; write `(?i)` at the front of a pattern for
+case-insensitive matching. Patterns are compiled and evaluated by the
+Rust host on the `regex` crate — linear time, no backtracking, under a
+pattern-length and compiled-size cap — and never by the frontend; the
+editor shows the host's compile error inline as you type.
+
 ### Phase-6 logical buses, filters & project graph
 
 Phase 6 makes "logical bus" the abstraction frames belong to and

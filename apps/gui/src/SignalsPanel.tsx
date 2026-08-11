@@ -39,6 +39,7 @@ import {
 } from "./signalSelection";
 import { signalKey } from "./plotData";
 import { buildSignalColorResolver } from "./signalColorResolver";
+import { useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { useThemeName } from "./theme";
 import { elementLabel } from "./elementLabel";
 import { SourcesContextMenu } from "./SourcesPicker";
@@ -378,7 +379,11 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   // the rows to the buses this view consumes.
   const element = registry.get(elementId)?.element;
   const currentSources =
-    element && element.kind !== "transmit" && element.kind !== "rbs" && element.kind !== "colormap"
+    element &&
+    element.kind !== "transmit" &&
+    element.kind !== "rbs" &&
+    element.kind !== "colormap" &&
+    element.kind !== "generator"
       ? element.sources ?? ["*"]
       : ["*"];
   const availableFilters = useMemo(
@@ -877,13 +882,15 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   const contentWidthVar = useMemo(() => contentWidthStyle(columns), [columns]);
   const manualKeys = useMemo(() => new Set(selection.keys.map(keyOf)), [selection.keys]);
   const signalColors = project.signalColors;
+  /// The project's generator answers (ADR 0026), host-evaluated.
+  const generatorIndexes = useSignalGeneratorIndexes();
   /// A signal's name color, through the one shared resolution point
   /// (ADR 0026): this view's explicit pick is the project's
   /// `signal_colors` entry, and an unpicked signal resolves live.
   const signalColor = useMemo(() => {
-    const resolve = buildSignalColorResolver(registry.entries.map((e) => e.element));
+    const resolve = buildSignalColorResolver(generatorIndexes);
     return (key: string) => resolve(key, signalColors[key]);
-  }, [registry.entries, signalColors]);
+  }, [generatorIndexes, signalColors]);
 
   const positions = [];
   for (let i = 0; i < rows; i++) {

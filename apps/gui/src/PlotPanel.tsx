@@ -13,6 +13,7 @@ import { defaultBusColor } from "./busColor";
 import { theme, useThemeName } from "./theme";
 import { buildColorResolver } from "./colorMap";
 import { buildSignalColorResolver } from "./signalColorResolver";
+import { useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
@@ -1208,14 +1209,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [registry.entries],
   );
 
+  /// The project's generator answers (ADR 0026), host-evaluated once
+  /// for every panel — a rule edit changes this map's identity, which
+  /// is what recolors the series below.
+  const generatorIndexes = useSignalGeneratorIndexes();
   /// A series' color, through the one shared resolution point
   /// (ADR 0026): the pick the user made on this series, else what the
   /// resolver derives from the signal's identity. Nothing is stored for
   /// an unpicked series, so it recolors live.
   const seriesColor = useMemo(() => {
-    const resolve = buildSignalColorResolver(registry.entries.map((e) => e.element));
+    const resolve = buildSignalColorResolver(generatorIndexes);
     return (s: SignalRef) => resolve(signalRefKey(s), s.colorPick);
-  }, [registry.entries]);
+  }, [generatorIndexes]);
 
   /// The catalog restricted to the plot's effective `sources` wiring
   /// (`signalSelection.ts`): the picker and the patterns only offer /

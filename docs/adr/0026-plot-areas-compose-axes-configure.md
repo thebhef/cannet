@@ -147,11 +147,11 @@ surface that draws a signal in its own color — the signal view's name
 text, a plot series' stroke and swatch — resolves it through a single
 precedence rule: an **explicit user pick** (the signal view's
 project-level `signal_colors` entry; a plot series' picked color) → a
-**generator**, when the project declares a rule deriving a wheel index
-from the signal's identity → the **stable-by-identity hash** of the
-signal's canonical `(bus, message, signal)` key. One key, one theme
-wheel, one rule, so a signal nobody picked a color for reads the same
-in every view with nothing persisted to make it so. (This is signal
+**generator**, when a project rule derives a wheel index from the
+signal's identity → the **stable-by-identity hash** of the signal's
+canonical `(bus, message, signal)` key. One key, one theme wheel, one
+rule, so a signal nobody picked a color for reads the same in every
+view with nothing persisted to make it so. (This is signal
 *identity* color. A value→color map ([ADR 0029](0029-signal-value-color-maps.md))
 tints a signal's *value* and is a separate question with its own
 resolver.)
@@ -309,15 +309,28 @@ below:
   the series' `colorPick` — the *only* color a plot stores.
 - **One resolution point**, `signalColorResolver.ts`: pick →
   generator → `stableSignalColor` hash over the signal's canonical
-  key, compiled once per render from the project's elements and read
-  live by the signal view's rows and by a plot series' stroke, swatch
-  and lane accent alike. Adding a series stores no color: the old
+  key, bound once per render and read live by the signal view's rows
+  and by a plot series' stroke, swatch and lane accent alike. Because
+  nothing is stored for an unpicked signal, a generator edit recolors
+  every surface at once; a plot area redraws on a `seriesColor` change
+  so a stopped plot repaints too. Adding a series stores no color: the old
   seeding — the wheel index equal to the count of series already in
   the target area — is gone, along with the disagreement it produced
   between areas holding the same signals. A `color` stored by that
   seeding is dropped on load rather than read as a pick, since the two
   are indistinguishable, so those series re-resolve; a `colorPick` is
   a pick and stands.
+- **Generators** are ambient project elements holding an ordered list
+  of regexes over signal *names*; the first rule that both matches and
+  yields an integer first capture gives that signal its wheel slot, so
+  `Cell(\d+)` aligns `Cell1…Cell16` and two rules capturing the same
+  number land on the same slot. Matching is partial and case sensitive
+  (`(?i)` opts out). The patterns are user input, so they compile and
+  run **host-side** (`signal_generator.rs`, the Rust `regex` crate
+  under a pattern-length and `size_limit` cap) and the editor shows the
+  host's compile error at entry time; the frontend caches the
+  host-evaluated key→slot map (`signalGeneratorContext.tsx`) and never
+  executes a pattern.
 - **X-axis cursor labels** render the cursor's letter + time on every
   axis (used to only render on the bottom axis). Tick spacing is
   label-width-aware so zoomed-in elapsed-time labels (more fractional
