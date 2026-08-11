@@ -184,6 +184,14 @@ trip over it.
   Task 20 on the existing tree; this item is the presentation rework
   on top.
 
+- `[ui]` **Mux arm membership is invisible outside the Database panel.**
+  Task 63 groups a multiplexed message's signals under their arm in the
+  Database tree, but the plot panel's signal picker (`list_signals`) and
+  the signals view still list them flat — for the BMS service-event
+  message that's 46 entries with no clue which of the 9 events each
+  rides. Consider carrying the arm label into the picker's entry text.
+
+
 ### Cursors and markers
 
 These are the general event surface governed by the timeline-event model

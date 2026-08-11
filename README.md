@@ -329,6 +329,8 @@ From the repo root:
 
 ```sh
 pnpm --dir apps/gui install        # once, to fetch frontend deps
+uv run --project servers/cannet-python-can --frozen \
+    python scripts/gen-licenses.py # once, generate the bundled license manifest
 pnpm --dir apps/gui tauri dev      # development build with hot reload
 pnpm --dir apps/gui tauri build    # release bundle
 ```
@@ -341,6 +343,17 @@ stages the release `cannet-server` the bundle ships
 either are incremental: an unchanged sidecar refreezes, and an
 unchanged server restages, in seconds. `tauri dev` does neither — a
 development build has no bundle to fill.
+
+The `gen-licenses.py` step writes `apps/gui/src-tauri/licenses.json`, the
+third-party attribution manifest that `tauri.conf.json` bundles as a
+resource (ADR 0036). It is **generated, not committed** (it's in
+`.gitignore`), so a fresh clone must produce it before the first
+`tauri dev` / `tauri build` — otherwise the Tauri build script fails with
+`resource path ``licenses.json`` doesn't exist`. It needs
+[`uv`](https://docs.astral.sh/uv/) (see the optional prerequisites above)
+and only has to be re-run when the sidecar's Python dependencies change.
+`scripts/build-sidecar.py` also regenerates it as part of a full sidecar
+build, so Phase-8 hardware users get it for free.
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
 cannet window. Use **Import trace…** to pick a log (a Vector `.blf`
@@ -1007,7 +1020,12 @@ DBCs form a tree-with-fuzzy-search grouped by bus
 (`bus → DBC → ECU → message → signal`, per-transmitter grouping
 like the RBS panel; messages with no `BO_` transmitter fall under
 "(no transmitter)"; unscoped DBCs appear under each bus group
-labelled "applies to all buses"). Type any fragment of a signal
+labelled "applies to all buses"). A **multiplexed** message gains one
+more level: its signals group under the mux arm they belong to,
+labelled `m<N> · <name>` from the multiplexor's own `VAL_` table (bare
+`m<N>` when the DBC names none), with the multiplexor and any
+always-present signals staying directly under the message.
+Type any fragment of a signal
 name, ECU, comment, value-table label, message id (hex or decimal),
 or attribute, and the tree filters to the matches: ancestors of a
 match auto-expand and everything else is hidden, so a filtered
@@ -1022,7 +1040,9 @@ per-message detail (length, FD/BRS, mux flag, attributes). Drag a
 signal or message row onto a plot panel to add it as a series, or onto
 the transmit panel to create a new TX frame for that message;
 multi-select (click / Shift-click / Cmd-Ctrl-click, or Shift+↑/↓ from
-the keyboard) drags the whole selection at once.
+the keyboard) drags the whole selection at once. A mux-arm row drags
+every signal in that arm — one gesture to plot a whole multiplexed
+event.
 
 Beside the DBC branches, a capture that carried its own signal
 definitions gets **one branch per source file**, named for the file and
