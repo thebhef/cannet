@@ -67,6 +67,13 @@ import {
   type FocusHistory,
   type LayoutHistory,
 } from "./viewHistory";
+import {
+  popRedo,
+  popUndo,
+  type ElementHistory,
+  type UndoOrder,
+  type UndoStack,
+} from "./elementHistory";
 import { PaletteModal, PalettePrompt, type PaletteItem } from "./PaletteModal";
 import {
   recordRecentCommand,
@@ -86,6 +93,14 @@ export interface UseCommandsOptions {
   focusHistoryRef: MutableRefObject<FocusHistory>;
   layoutHistoryRef: MutableRefObject<LayoutHistory | null>;
   applyingLayoutRef: MutableRefObject<boolean>;
+  // The element half of undo/redo, and the log that interleaves it with
+  // the layout half. The stack and its restore live in `App` (they
+  // write the registry); read here to decide which stack a chord steps.
+  elementHistoryRef: MutableRefObject<ElementHistory>;
+  undoOrderRef: MutableRefObject<UndoOrder>;
+  /// Step the element stack and write the snapshot back. Returns
+  /// whether it changed anything (see `App`).
+  applyElementHistory: (dir: "undo" | "redo") => boolean;
   // Reactive model reads.
   registry: readonly RegistryEntry[];
   activePanel: ActivePanel;
@@ -173,6 +188,9 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     focusHistoryRef,
     layoutHistoryRef,
     applyingLayoutRef,
+    elementHistoryRef,
+    undoOrderRef,
+    applyElementHistory,
     registry,
     activePanel,
     projectPath,
@@ -339,27 +357,63 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   );
   // Layout undo/redo: swap the whole serialized layout back in. The
   // applying guard keeps the resulting layout-change echo from being
-  // recorded as a fresh step.
+  // recorded as a fresh step. Returns whether it applied one.
   const applyLayoutHistory = useCallback(
-    (dir: "undo" | "redo") => {
+    (dir: "undo" | "redo"): boolean => {
       const api = dockApiRef.current;
       const history = layoutHistoryRef.current;
-      if (!api || !history) return;
+      if (!api || !history) return false;
       const r = dir === "undo" ? undoLayout(history) : redoLayout(history);
-      if (!r) return;
+      if (!r) return false;
       const layout = validateLayout(JSON.parse(r.layout));
-      if (!layout) return;
+      if (!layout) return false;
       applyingLayoutRef.current = true;
       try {
         api.fromJSON(layout);
       } catch {
-        return; // snapshot won't load — leave the history untouched
+        return false; // snapshot won't load — leave the history untouched
       } finally {
         applyingLayoutRef.current = false;
       }
       layoutHistoryRef.current = r.history;
+      return true;
     },
     [dockApiRef, layoutHistoryRef, applyingLayoutRef],
+  );
+  // One timeline over two stacks: the interleaving log names the stack
+  // each step was taken on, so a chord always reverses the most recent
+  // change — a panel move or a change made inside a panel alike. A step
+  // that turns out to restore nothing (an undone element removal, whose
+  // element can only come back with its panel) is consumed and the
+  // chord moves on to the next one, rather than looking like a dead key.
+  const applyViewHistory = useCallback(
+    (dir: "undo" | "redo") => {
+      const canStep = (stack: UndoStack): boolean => {
+        const history = stack === "layout" ? layoutHistoryRef.current : elementHistoryRef.current;
+        if (!history) return false;
+        return (dir === "undo" ? history.past : history.future).length > 0;
+      };
+      // Bounded by the log: every iteration consumes one of its entries.
+      const budget = undoOrderRef.current.past.length + undoOrderRef.current.future.length;
+      for (let steps = budget; steps > 0; steps--) {
+        const r =
+          dir === "undo"
+            ? popUndo(undoOrderRef.current, canStep)
+            : popRedo(undoOrderRef.current, canStep);
+        if (!r) return;
+        undoOrderRef.current = r.order;
+        const applied =
+          r.stack === "layout" ? applyLayoutHistory(dir) : applyElementHistory(dir);
+        if (applied) return;
+      }
+    },
+    [
+      layoutHistoryRef,
+      elementHistoryRef,
+      undoOrderRef,
+      applyLayoutHistory,
+      applyElementHistory,
+    ],
   );
   const cycleTabInGroup = useCallback(
     (dir: -1 | 1) => {
@@ -437,8 +491,8 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "view.close": () => dockApiRef.current?.activePanel?.api.close(),
     "tab.next": () => cycleTabInGroup(1),
     "tab.previous": () => cycleTabInGroup(-1),
-    "view.undo": () => applyLayoutHistory("undo"),
-    "view.redo": () => applyLayoutHistory("redo"),
+    "view.undo": () => applyViewHistory("undo"),
+    "view.redo": () => applyViewHistory("redo"),
     "view.fullscreen": toggleFullscreenView,
     "view.exitFullscreen": () => dockApiRef.current?.exitMaximizedGroup(),
   };

@@ -137,6 +137,18 @@ import {
   type FocusHistory,
   type LayoutHistory,
 } from "./viewHistory";
+import {
+  EMPTY_UNDO_ORDER,
+  initElementHistory,
+  recordElements,
+  recordStep,
+  redoElements,
+  restorePatches,
+  syncElements,
+  undoElements,
+  type ElementHistory,
+  type UndoOrder,
+} from "./elementHistory";
 import { PanelCommandsContext } from "./panelCommands";
 import { useCommands } from "./useCommands";
 import {
@@ -389,6 +401,20 @@ export function App() {
   const focusHistoryRef = useRef<FocusHistory>(EMPTY_FOCUS_HISTORY);
   const layoutHistoryRef = useRef<LayoutHistory | null>(null);
   const applyingLayoutRef = useRef(false);
+  // Element undo/redo (`elementHistory.ts`), the second stack: the
+  // user's edits to the elements themselves, masked to ADR 0050's
+  // allowlist. `undoOrderRef` interleaves it with the layout stack so
+  // one chord reverses the most recent change whichever stack it lives
+  // on. `pendingElementEditRef` is armed by the user-edit registry
+  // callers (`updateElement` / `removeElement`) and read by the effect
+  // that takes the snapshot — it is what separates an edit from the
+  // registry churn (element creation, project open, session
+  // re-anchoring) that must not become a step. `applyingElementsRef`
+  // marks a restore in progress, so undo can't undo itself.
+  const elementHistoryRef = useRef<ElementHistory>(initElementHistory([]));
+  const undoOrderRef = useRef<UndoOrder>(EMPTY_UNDO_ORDER);
+  const pendingElementEditRef = useRef(false);
+  const applyingElementsRef = useRef(false);
   // A view is maximized full-screen (dockview maximized-group).
   // Transient — never persisted (see `stripMaximizedNode`); gates the
   // Escape binding in the command context.
@@ -577,6 +603,13 @@ export function App() {
       if (applyElementPatch(registryRef.current, id, patch, writer) !== registryRef.current) {
         diagCount("app.setDirty.callsite"); // DIAG
         setDirty(true);
+        // Arm the undo capture on the same "did anything change?" test,
+        // for the same reason it can't happen inside the updater. The
+        // snapshot itself is taken by the effect below, once the change
+        // has landed — so several writes in one gesture (a filter
+        // insert) capture once, from a base that is really there.
+        // Excluded while a restore is replaying its own patches.
+        if (!applyingElementsRef.current) pendingElementEditRef.current = true;
       }
       setRegistry((prev) => applyElementPatch(prev, id, patch, writer) as RegistryEntry[]);
     },
@@ -615,6 +648,7 @@ export function App() {
           }
         }
       }
+      if (removed) pendingElementEditRef.current = true;
       setRegistry((prev) => prev.filter((e) => e.element.id !== id));
       const api = dockApiRef.current;
       const panel = api?.panels.find(
@@ -629,6 +663,53 @@ export function App() {
   // without taking `registry` as a dependency.
   const registryRef = useRef<readonly RegistryEntry[]>([]);
   registryRef.current = registry;
+
+  // Feed the element undo stack. Every registry change lands here; the
+  // armed flag says whether it was a user edit (a step) or churn the
+  // present just has to keep up with. Taking the snapshot *after* the
+  // change means the step's base is the state that was really there,
+  // and that a gesture making several writes in one batch is one step.
+  useEffect(() => {
+    const elements = registry.map((e) => e.element);
+    const before = elementHistoryRef.current;
+    if (!pendingElementEditRef.current) {
+      elementHistoryRef.current = syncElements(before, elements);
+      return;
+    }
+    pendingElementEditRef.current = false;
+    const after = recordElements(before, elements);
+    elementHistoryRef.current = after;
+    // `past` is only re-allocated when a step was actually pushed —
+    // a masked-equal or config-seeding write keeps the same array.
+    if (after.past !== before.past) {
+      undoOrderRef.current = recordStep(undoOrderRef.current, "element");
+    }
+  }, [registry]);
+
+  // Undo / redo one element step: step the stack, then write the
+  // snapshot's allowlisted fields back through the registry. The
+  // patches carry no writer token, so every mounted panel on a changed
+  // element resyncs from it. Returns whether anything was actually
+  // patched — a snapshot whose elements are all gone (undoing an
+  // element removal, whose re-creation belongs with the panel that went
+  // with it) restores nothing, and the caller moves on to the next step.
+  const applyElementHistory = useCallback((dir: "undo" | "redo"): boolean => {
+    const history = elementHistoryRef.current;
+    const r = dir === "undo" ? undoElements(history) : redoElements(history);
+    if (!r) return false;
+    elementHistoryRef.current = r.history;
+    const patches = restorePatches(
+      r.snapshot,
+      registryRef.current.map((e) => e.element),
+    );
+    applyingElementsRef.current = true;
+    try {
+      for (const { id, patch } of patches) updateElement(id, patch);
+    } finally {
+      applyingElementsRef.current = false;
+    }
+    return patches.length > 0;
+  }, [updateElement]);
 
   // --- command / hotkey framework (ADR 0018) ---
   // The active dockview panel, tracked via `onDidActivePanelChange`
@@ -1208,6 +1289,8 @@ export function App() {
       applyingLayoutRef.current = false;
     }
     layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
+    elementHistoryRef.current = initElementHistory([]);
+    undoOrderRef.current = EMPTY_UNDO_ORDER;
     focusHistoryRef.current = api.activePanel
       ? recordFocus(EMPTY_FOCUS_HISTORY, api.activePanel.id)
       : EMPTY_FOCUS_HISTORY;
@@ -1322,6 +1405,12 @@ export function App() {
             ),
         ).map((el) => ({ element: el, trace: clearedTrace(countRef.current) })),
       );
+      // An opened project's elements are a fresh starting point too —
+      // the undo history must not step back into the project that was
+      // open before. (The effect above re-reads the present from the
+      // registry once this render lands.)
+      elementHistoryRef.current = initElementHistory([]);
+      undoOrderRef.current = EMPTY_UNDO_ORDER;
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);
       if (api && layout) {
@@ -2219,6 +2308,9 @@ export function App() {
     focusHistoryRef,
     layoutHistoryRef,
     applyingLayoutRef,
+    elementHistoryRef,
+    undoOrderRef,
+    applyElementHistory,
     registry,
     activePanel,
     projectPath,
@@ -2307,16 +2399,21 @@ export function App() {
         // `fromJSON`/seed is echoing (the guard) or before the initial
         // layout has settled (`null` history).
         if (!applyingLayoutRef.current && layoutHistoryRef.current) {
-          layoutHistoryRef.current = recordLayout(
-            layoutHistoryRef.current,
-            JSON.stringify(json),
-          );
+          const before = layoutHistoryRef.current;
+          const after = recordLayout(before, JSON.stringify(json));
+          layoutHistoryRef.current = after;
+          // Only a structural change pushes a step; the interleaving
+          // log follows the same test (`past` re-allocated = pushed).
+          if (after.past !== before.past) {
+            undoOrderRef.current = recordStep(undoOrderRef.current, "layout");
+          }
         }
       });
       // The restore/seed above is the baseline the first undo steps
       // back toward. (`seedDefaultLayout` set this itself; a restored
       // saved layout hasn't yet.)
       layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
+      undoOrderRef.current = EMPTY_UNDO_ORDER;
 
       // Perf self-driving flags (ADR 0031) override the last-opened
       // pointer: `--project` names the project deterministically. Fetch

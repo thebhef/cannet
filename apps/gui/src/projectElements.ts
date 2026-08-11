@@ -299,8 +299,10 @@ function patchIsNoOp(current: ProjectElement, patch: Partial<ProjectElement>): b
 /// such keys, so a config rebuilt in memory (e.g. an area's
 /// `signalFilter: undefined`) must compare equal to the same config
 /// round-tripped through save/load, or opening a project would mark it
-/// dirty.
-function valuesEqual(a: unknown, b: unknown): boolean {
+/// dirty. Exported because the element undo history compares the same
+/// shapes, and "did anything actually change?" must mean the same thing
+/// in both places.
+export function valuesEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (Array.isArray(a) && Array.isArray(b)) {
     return a.length === b.length && a.every((v, i) => valuesEqual(v, b[i]));
