@@ -777,9 +777,14 @@ resample at the end.
   key, in the order they are written, which a `$N` suffix on a *named*
   group overrides (`Cell(?<cell$2>\d+)_Bank(?<bank$1>\d)` keys by bank
   first, and the suffix is not shown). `(?:…)` captures nothing, so it
-  opts a group out of the key. A pattern with no capture groups steps
-  one matching series at a time, in panel order.
-  A **page** is *Solo groups per page* consecutive groups (Settings →
+  opts a group out of the key. **A pattern with no capture groups has
+  no pages at all** — there is no index to page by, so it is a plain
+  flat filter: everything it matches is on show at once, in every area
+  that holds a match (and an area with none is left alone, as ever), the
+  read-out says `all (96)`, and the step controls are disabled because
+  there is nowhere to step.
+  For a capturing pattern, a **page** is *Solo groups per page*
+  consecutive groups (Settings →
   Plot; 1 by default), so `Cell0*(\d+)` at 5 per page gives cells 0–4,
   then 5–9. The **‹ / ›** controls beside the box — and **PgUp / PgDn**
   anywhere in the plot panel, clicking any part of it, the canvas
@@ -791,9 +796,19 @@ resample at the end.
   range, `1/2 · "0"–"4" (40 of 96)`). It says `no matches` when the
   pattern selected nothing. Typing or editing the pattern lands on page
   1; **Escape** (or clearing the box) drops the whole solo view at
-  once. **Right-click the solo control, or left- or right-click the
-  position read-out,** for the group list, and click one to open the
-  page it sits on; the menu stays open so you can compare a few.
+  once.
+- **Picking a subset by hand.** **Right-click the solo control, or left-
+  or right-click the position read-out,** for the match list, and
+  **tick any subset of it** to show exactly those — the groups for a
+  capturing pattern, the individual matched series (labelled
+  `Area 2 · Cell1`, so two of a name read apart) for one that captures
+  nothing. The menu stays open while you tick, so a subset is built in
+  one visit; unticking the last item is the whole matched set again. The
+  read-out names the subset — `2 groups · cell=03, cell=07 (12 of 96)`,
+  counting instead of listing past two — and the subset is saved with
+  the panel in place of a page. Stepping **leaves** a subset: **›**
+  resumes at the page after the last ticked group's, **‹** at the page
+  before the first ticked group's. Editing the pattern drops it.
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives

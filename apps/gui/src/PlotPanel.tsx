@@ -262,14 +262,19 @@ import {
   soloMaskedKeys,
   soloMatchedAreaIds,
   soloMatches,
+  soloMemberKeys,
   soloPageCount,
   soloPageOfGroup,
   soloPathResolver,
   soloPatternInvalid,
+  soloPatternPages,
   soloRegex,
+  soloSelectedGroups,
   soloToParams,
   soloVisibleKeys,
+  stepSoloFromSelection,
   stepSoloPage,
+  toggleSoloChecked,
   type SoloState,
 } from "./plotSolo";
 import { setSignalDragData, setSignalDragPayload } from "./dragSignals";
@@ -290,14 +295,15 @@ import { MeasurementMenu, PlotMeasurementStrip, type PlottedSignal } from "./Plo
 
 
 /**
- * The solo control's context menu: the current step sequence, one entry
- * per group, so a group can be reached by name instead of by stepping
- * to it. Same floating shell as the plot's other context menus
- * (`SignalSelectionMenu` / `YAxisScaleMenu` in `PlotArea.tsx`).
+ * The solo control's context menu: the current match list, one entry
+ * per item — a group for a capturing pattern, a matched series for one
+ * that captures nothing — each of which can be **ticked** to put exactly
+ * that subset on show. Same floating shell as the plot's other context
+ * menus (`SignalSelectionMenu` / `YAxisScaleMenu` in `PlotArea.tsx`).
  *
- * It stays open after a click — comparing a few groups is inherently
- * several visits — and dismisses the way every other menu here does
- * (click away / Escape, via `useDismissableMenu`).
+ * It stays open after a click — building a subset is inherently several
+ * ticks — and dismisses the way every other menu here does (click away
+ * / Escape, via `useDismissableMenu`).
  */
 function SoloMatchMenu({
   position,
@@ -306,10 +312,10 @@ function SoloMatchMenu({
   onClose,
 }: {
   position: { x: number; y: number };
-  /// One entry per group, in step order: its label and whether it is
-  /// currently on show.
+  /// One entry per item, in match-list order: its label and whether it
+  /// is currently on show.
   items: readonly { label: string; checked: boolean }[];
-  /// Show the group at this index — the page it sits on.
+  /// Tick or untick the item at this index.
   onToggle: (index: number) => void;
   onClose: () => void;
 }) {
@@ -1430,6 +1436,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return out;
   }, [areas, scopedCatalog, busNameLookup, effectiveAreaMemo]);
 
+  const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
+
   /// The subject solo matches against: the same canonical path (ADR
   /// 0038) an area's `patterns` list is evaluated on, resolved through
   /// the same catalog and bus-name map.
@@ -1459,32 +1467,62 @@ export function PlotPanel(props: IDockviewPanelProps) {
     for (const match of soloMatchList) m.set(match.areaId, (m.get(match.areaId) ?? 0) + 1);
     return m;
   }, [soloMatchList]);
-  /// The step sequence: the matches bucketed by what the pattern
-  /// captured, so one step covers every signal sharing a key.
+  /// The match list's items: the matches bucketed by what the pattern
+  /// captured, so one step covers every signal sharing a key — or, for a
+  /// pattern that captures nothing, the matches themselves, labelled by
+  /// area so two rows of the same name read apart in the menu.
   const soloGroupList = useMemo(
-    () => soloGroups(soloMatchList, soloKeySlots(solo.pattern)),
-    [soloMatchList, solo.pattern],
+    () => soloGroups(soloMatchList, soloKeySlots(solo.pattern), areaLabels),
+    [soloMatchList, solo.pattern, areaLabels],
+  );
+  /// The ticked subset as it stands against the live item list: ticks
+  /// naming items the pattern no longer produces drop out here, so a
+  /// selection restored against a catalog that hasn't arrived reads as
+  /// no selection rather than an empty view.
+  const soloSelected = useMemo(
+    () => soloSelectedGroups(soloGroupList, solo.checked),
+    [soloGroupList, solo.checked],
+  );
+  const soloSelectedIds = useMemo(
+    () => new Set(soloSelected.map((g) => g.id)),
+    [soloSelected],
   );
   /// Groups per page. Read on every render rather than memoised, so a
   /// changed setting takes effect on the next one.
   const soloPageSize = hostSettings().solo_page_size;
-  const soloPages = soloPageCount(soloGroupList.length, soloPageSize);
+  /// How many pages there are to walk — **none** for a pattern that
+  /// captures nothing, which is a flat filter rather than a step
+  /// sequence. Everything downstream reads off this: no pages means the
+  /// page clamps to `null` (the whole matched set, on show at once), the
+  /// cycle has nowhere to go, and the step controls are inert.
+  const soloPages = soloPatternPages(solo.pattern)
+    ? soloPageCount(soloGroupList.length, soloPageSize)
+    : 0;
   /// The page actually on show. The stored index is only re-interpreted
   /// here — never written back — so a restore against a catalog that
   /// has not populated the pattern's rows yet survives the wait.
   const soloPage = clampSoloPage(solo.page, soloPages);
-  /// The `soloMaskKey`s solo leaves visible — every match, or the
-  /// current page's groups.
+  /// The `soloMaskKey`s solo leaves visible — the ticked subset if there
+  /// is one, otherwise every match or the current page's groups. The
+  /// mask, the collapse rule and the per-area chip all read off this, so
+  /// a subset needs no special handling anywhere below.
   const soloVisible = useMemo(
-    () => soloVisibleKeys(soloGroupList, soloPage, soloPageSize),
-    [soloGroupList, soloPage, soloPageSize],
+    () =>
+      soloSelected.length > 0
+        ? soloMemberKeys(soloSelected)
+        : soloVisibleKeys(soloGroupList, soloPage, soloPageSize),
+    [soloGroupList, soloPage, soloPageSize, soloSelected],
   );
   const soloInvalid = soloPatternInvalid(solo.pattern);
-  /// Entering or editing the pattern lands on page 1: a new pattern is
-  /// a new group list, and the first page of it is what the user is
-  /// looking for after typing. Emptying the box is solo off.
+  /// Entering or editing the pattern lands a *capturing* one on page 1:
+  /// a new pattern is a new group list, and the first page of it is what
+  /// the user is looking for after typing. A captureless pattern has no
+  /// page to land on — it filters flat — and emptying the box is solo
+  /// off. Either way it is a new item list, so any ticked subset goes
+  /// with the old one.
   const setSoloPattern = useCallback(
-    (pattern: string) => setSolo({ pattern, page: pattern === "" ? null : 0 }),
+    (pattern: string) =>
+      setSolo({ pattern, page: soloPatternPages(pattern) ? 0 : null, checked: [] }),
     [],
   );
   const clearSolo = useCallback(() => setSolo(SOLO_OFF), []);
@@ -1493,20 +1531,34 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// next / previous buttons and by PgDn / PgUp alike. A no-op with
   /// nothing to step through, so the keyboard binding below can stay
   /// unconditional.
+  /// A ticked subset is left behind by a step, which resumes the cycle
+  /// from where the subset sat rather than from wherever the page last
+  /// was.
   const stepSoloBy = useCallback(
     (delta: 1 | -1) => {
       if (soloPages === 0) return;
-      setSolo((s) => ({ ...s, page: stepSoloPage(s.page, soloPages, delta) }));
+      setSolo((s) => ({
+        pattern: s.pattern,
+        page:
+          s.checked.length > 0
+            ? stepSoloFromSelection(soloGroupList, s.checked, soloPageSize, delta)
+            : stepSoloPage(s.page, soloPages, delta),
+        checked: [],
+      }));
     },
-    [soloPages],
+    [soloPages, soloGroupList, soloPageSize],
   );
-  /// Jump straight to a group from the solo control's context menu —
-  /// the same pages the cycle walks, reached by name instead.
-  const showSoloGroup = useCallback(
+  /// Tick or untick one item from the solo control's context menu. A
+  /// subset and a page are the same slot, so ticking drops the page —
+  /// and unticking the last item leaves neither, which is the whole
+  /// matched set.
+  const toggleSoloGroup = useCallback(
     (index: number) => {
-      setSolo((s) => ({ ...s, page: soloPageOfGroup(index, soloPageSize) }));
+      const id = soloGroupList[index]?.id;
+      if (id == null) return;
+      setSolo((s) => ({ ...s, page: null, checked: toggleSoloChecked(s.checked, id) }));
     },
-    [soloPageSize],
+    [soloGroupList],
   );
   /// The panel's own keys: PgDn / PgUp cycle the solo matches, and
   /// Shift+Up/Down extends the signal-row selection. Both are scoped to
@@ -1985,19 +2037,20 @@ export function PlotPanel(props: IDockviewPanelProps) {
     lastMatchCountsRef.current = next;
     lastBusesRef.current = buses;
   }, [patternResolutionsByArea, buses]);
-  const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
-
-  /// The solo control's context menu: one entry per group of the step
-  /// sequence, labelled the way the read-out labels it. Checked = on
-  /// show, which is every group while the whole set is, and clicking
-  /// one opens the page it sits on.
+  /// The solo control's context menu: one entry per item of the match
+  /// list, labelled the way the read-out labels it. A ticked item is one
+  /// the user picked; with nothing ticked, the ticks show what is on
+  /// show anyway — every item while the whole set is, or the page's.
   const soloMenuItems = useMemo(
     () =>
       soloGroupList.map((g, i) => ({
         label: g.label,
-        checked: soloPage == null || soloPageOfGroup(i, soloPageSize) === soloPage,
+        checked:
+          soloSelected.length > 0
+            ? soloSelectedIds.has(g.id)
+            : soloPage == null || soloPageOfGroup(i, soloPageSize) === soloPage,
       })),
-    [soloGroupList, soloPage, soloPageSize],
+    [soloGroupList, soloPage, soloPageSize, soloSelected, soloSelectedIds],
   );
 
   /// Per-derived-axis callback bundle, rebuilt only when that axis's own
@@ -2186,7 +2239,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// both show it and key the no-matches styling off the same value
   /// `soloLabel` already commits to (its doc comment nails the literal
   /// string down as one of its three unambiguous forms).
-  const soloPosLabel = soloLabel(soloGroupList, soloPage, soloPageSize, soloMatchCount);
+  const soloPosLabel = soloLabel(
+    soloGroupList,
+    soloPage,
+    soloPageSize,
+    soloMatchCount,
+    soloSelected,
+  );
 
   return (
     <div
@@ -2246,7 +2305,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         <span className="plot-toolbar-sep" />
         <label
           className="plot-solo"
-          title="solo: show only the series whose bus/ecu/message/signal path matches this regex — the same dialect an area's pattern filter speaks (case-sensitive, partial, so a bare name matches too). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back. Right-click for the match list."
+          title="solo: show only the series whose bus/ecu/message/signal path matches this regex — the same dialect an area's pattern filter speaks (case-sensitive, partial, so a bare name matches too). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back. Right-click for the match list, and tick any subset of it to show exactly those."
           onContextMenu={(e) => {
             // The control's own menu, not the toolbar's — stop the
             // event either way, so a right-click aimed at solo never
@@ -2280,6 +2339,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 className="plot-solo-step"
                 aria-label="previous solo match"
                 title="previous page (PgUp) — the cycle runs all → page 1 → … → page N → all"
+                // Nothing to step through: a pattern that captures
+                // nothing filters flat, and one that matches nothing has
+                // no pages either. Disabled rather than silently inert.
+                disabled={soloPages === 0}
                 onClick={() => stepSoloBy(-1)}
               >
                 ‹
@@ -2287,7 +2350,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
               <span
                 className={`plot-solo-pos${soloPosLabel === "no matches" ? " plot-solo-pos-empty" : ""}${soloMenuItems.length > 0 ? " plot-solo-pos-clickable" : ""}`}
                 aria-label="solo position"
-                title="which page of matching groups is on show, the group it covers, and how many of the matches that is — click for the match list"
+                title="what solo has on show — the whole matched set, a page of groups, or the subset you ticked — and how many of the matches that is; click for the match list"
                 onClick={(e) => {
                   // Same menu the control's own right-click opens
                   // (below); left-click is the more discoverable
@@ -2302,6 +2365,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 className="plot-solo-step"
                 aria-label="next solo match"
                 title="next page (PgDn) — the cycle runs all → page 1 → … → page N → all"
+                disabled={soloPages === 0}
                 onClick={() => stepSoloBy(1)}
               >
                 ›
@@ -2352,7 +2416,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         <SoloMatchMenu
           position={soloMenuAt}
           items={soloMenuItems}
-          onToggle={showSoloGroup}
+          onToggle={toggleSoloGroup}
           onClose={() => setSoloMenuAt(null)}
         />
       )}
