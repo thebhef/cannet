@@ -256,6 +256,18 @@ describe("what a grab means", () => {
     expect(payload.sourcePanelId).not.toBeNull();
   });
 
+  it("drags from anywhere on the row, not just the name (owner ruling, task 54)", async () => {
+    renderPanel(SECTIONED);
+    await screen.findByText(/EngineSpeed/);
+    const row = nameCell("EngineSpeed").closest(".trace-row") as HTMLElement;
+    const valueCell = row.querySelector(".signal-value-cell") as HTMLElement;
+    expect(valueCell).not.toBeNull();
+    const dt = fakeTransfer();
+    fireEvent.dragStart(valueCell, { dataTransfer: dt });
+    const payload = parseSignalDragData(dt.getData(SIGNAL_DND_MIME));
+    expect(payload.signals.map((s) => s.signalName)).toEqual(["EngineSpeed"]);
+  });
+
   it("drags the whole selection when the grabbed row is in it", async () => {
     renderPanel(SECTIONED);
     await screen.findByText(/EngineSpeed/);

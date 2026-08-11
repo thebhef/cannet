@@ -18,6 +18,21 @@ Verify against the other migrated surfaces while there — the D9 rule
 (the row drags the message / the signal) implies row-sized drag
 targets everywhere.
 
+**Grooming (2026-08-07):** The small drag surface is not a stray
+special case — it is deliberate, per ADR 0045's grip rule ("rows that
+hold inputs or buttons are not themselves draggable";
+`SignalsPanel.tsx` cites it at the name-cell grip). The
+negative-value hypothesis is refuted: the signal-row render path has
+no value-dependent DOM branch. **Owner ruling: the rule changes.**
+Rows are draggable to the fullest extent possible without interfering
+with interaction on input fields, and no special affordance is made
+for inner controls until one proves necessary. Item 1 therefore
+includes amending ADR 0045's grip rule to match (whole-row drag is
+the norm; an inner drag source like `DecodedSignalCell` suppresses
+the row drag via stopPropagation) and restating the
+`SignalsPanel.sections.dom.test.tsx` assertion that currently pins
+"the section button is not inside a draggable" to its real intent.
+
 ### 2. Keyboard-only entry into RBS row content regressed
 
 With keyboard only, the RBS content area (the per-message signal
@@ -28,11 +43,63 @@ actual failure (dispatcher suppression eating Tab, focus order,
 content not reachable from the container focus) with a DOM test that
 reproduces the keyboard-only path end to end, then fix.
 
+**Grooming (2026-08-07):** Root cause found by code read: the
+ADR-0044 Tab contract ("Tab moves into the row's interactive
+content") was never implemented in any panel — `useGridview.ts` lets
+Tab fall through to native document focus order, so Tab lands on the
+container's first tab stop, not the cursor row. Compounding gaps:
+RbsPanel / DbcPanel / TransmitPanel never focus the grid container on
+row click (focus stays on `<body>`; arrows dead), and
+`ValidatedInput` blurs to `<body>` on Enter/Escape so the next Tab
+restarts from the document top. **Owner ruling: this is a missing
+part of the common control — implement it in the shared gridview
+layer**, not as RBS patchwork: Tab (container focused) → cursor
+row's first focusable element, Shift+Tab symmetric, commit/Escape
+returns focus to the container, and the three panels missing
+focus-on-click get it.
+
 ## Exit criteria
 
 - A signal row drags from anywhere on the row (not just the name),
-  with the special case — if one exists — removed and a test pinning
-  the wider target.
-- A keyboard-only user can Tab from the RBS grid into a row's
-  content, edit a value, and leave; DOM test reproduces the broken
-  path first.
+  with a test pinning the wider target; ADR 0045's grip rule is
+  amended to the whole-row-drag norm in the same change.
+- A keyboard-only user can Tab from the RBS grid into the cursor
+  row's content, edit a value, and leave; DOM test reproduces the
+  broken path first. The Tab contract lands in the shared gridview
+  layer (all panels), RbsPanel/DbcPanel/TransmitPanel gain
+  focus-on-click, and commit/Escape returns focus to the container
+  — matching what ADR 0044 already documents.
+
+## Status log
+
+- **2026-08-07 (item 1, whole-row drag):** Landed on
+  `task54a-whole-row-drag`. `60ec4a8` grooms the roadmap/task docs
+  (this slice's prerequisite commit). `766e9d7` moves the signal row's
+  drag source from `.signals-name` to the row itself in
+  `SignalsPanel.tsx` (`SignalRowProps.onGripDragStart`/`onGripDragEnd`
+  renamed to `onDragStart`/`onDragEnd`, passed straight to
+  `GridviewRow`), adds a DOM test in `SignalsPanel.dnd.dom.test.tsx`
+  pinning a drag from the value cell, restates the assertion in
+  `SignalsPanel.sections.dom.test.tsx` that pinned the section-picker
+  button outside `[draggable="true"]` to its real intent (outside the
+  clipped `.signals-name`, with the row now legitimately draggable),
+  and amends `docs/adr/0045-cross-panel-drag-payloads.md`'s grip rule
+  to whole-row-by-default. `apps/gui` test suite: 1484/1485 → 1485/1485
+  passing (130 files), `pnpm --dir apps/gui build` green both before
+  and after. `SectionHeaderRow` (the section header's own drag grip)
+  is untouched — out of scope for item 1, which is signal rows only.
+
+## Blockers / side effects
+
+- Verified the other gridview-migrated surfaces already drag whole-row
+  per the amended ADR 0045 norm: `ByIdTable.tsx` (~line 494),
+  `TraceView.tsx` (~line 723), `DbcPanel.tsx` (~line 1165), and
+  `PlotArea.tsx`'s `.plot-signal-row` (~line 2828) all set
+  `draggable`/`onDragStart` on the row element itself. No fix needed.
+- Two pre-existing exceptions remain grip-only, not whole-row:
+  `TransmitFrameRow.tsx`'s `.tx-drag-handle` (~line 191) and
+  `PlotArea.tsx`'s `.plot-area-grip` reorder handle on the area head
+  (~line 2678). Both rows are dense with editable controls (byte
+  cells, cyclic-send controls, a bus combobox, buttons) — the "proven
+  necessary" grip case the amended ADR 0045 still allows — so left
+  alone as out of scope for item 1, which only ruled on signal rows.

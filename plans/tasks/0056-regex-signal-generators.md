@@ -18,6 +18,42 @@ Second named use: **sort ordering** — the same capture could supply
 the sort key for signal lists (the backlog's plot-side-panel sorting
 item names this task).
 
+## Grooming (2026-08-07)
+
+- **Carrier (owner ruling): project-level for v1, stored in the
+  project like the color maps.** The DBC-carried form (a database-
+  level `Cannet*` `BA_` attribute — confirmed parseable today via
+  `can-dbc`'s `attribute_values_database`, which `parse.rs` never
+  reads) is **backlogged**, not rejected: it remains the way to ship
+  coloration with a DBC, and the project-level rules land first.
+- **Capture semantics (owner ruling): start simple.** First capture
+  group parsed as an integer → wheel index directly; same index =
+  same slot across rules (`Cell5` and `CellTemperature5` share a
+  hue — index alignment is the point). No per-rule offset ("not
+  better, just confusing"). A rule whose capture is missing or
+  non-numeric doesn't apply to that signal; rules evaluate in list
+  order, first match wins; no match → today's fallback. (Per-family
+  line *style* was floated as the eventual differentiator, but it's
+  project-wide and needs more thought — out of scope.)
+- **Precedence / one-wheel (owner confirmed):** this task creates
+  the shared color resolver ADR 0026 implies but the code lacks:
+  **explicit user pick → generator → hash**, consumed by the signal
+  view and the plot alike. Plot `SignalRef.color` survives only as
+  an explicit per-series pick; the add/drop area-position seeding is
+  removed — unpicked series always render through the resolver, so
+  generator/override changes recolor live everywhere ("persist only
+  on customize"). Accepted side effect: previously position-seeded
+  unpicked plot series re-resolve on upgrade; this is also the fix
+  for the 4-areas×16-signals color inconsistency from the owner's
+  test drive.
+- **Sort key (owner agreed): v1 is a one-shot "sort area" action,
+  accessed via context menu on the plot area's signal panel** —
+  reorders `area.signals` by (generator index, then name) once,
+  persisting through the normal list; drag order stays the primary
+  model. The signal-view sort column on generator keys is
+  **deferred** (needs the derived key in the host's sort path; no
+  driving ask yet).
+
 ## Scope questions to groom before implementation
 
 - **Carrier: is there a non-hacky DBC extension for this?** (Owner,
@@ -54,13 +90,19 @@ item names this task).
 
 ## Exit criteria
 
-(To be firmed at grooming; provisionally:)
-
-- A project can declare a generator mapping a signal-name regex to a
-  color-wheel index derivation; matching signals render with the
-  derived color everywhere signal color appears, subject to the
-  agreed precedence.
-- The sort-key derivation exists or is explicitly deferred with the
-  decision recorded here.
+- A project can declare generator rules (ordered `generator`
+  project elements) mapping a signal-name regex capture to a
+  color-wheel index; matching signals render the derived color
+  everywhere signal color appears, through the new shared resolver
+  (explicit pick → generator → hash), plot included.
+- Plot add/drop area-position color seeding is removed; unpicked
+  series resolve live.
+- Rules validate and evaluate host-side (Rust `regex`,
+  `size_limit`, entry-time compile errors surfaced in the editor);
+  the frontend never executes user-supplied regex.
+- Sort: a one-shot "sort area" context-menu action on the plot
+  area's signal panel orders by (generator index, name). The
+  signal-view sort column is deferred (recorded above).
 - Persistence in the project file, with tests; docs updated
-  (CONTEXT.md gains the term "generator" if it survives grooming).
+  (CONTEXT.md gains the term "generator"; README's plot/project
+  sections updated).
