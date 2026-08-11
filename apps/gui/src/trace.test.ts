@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  allDataTrace,
   clearKeepingState,
   clearedTrace,
   freshTrace,
@@ -68,6 +69,23 @@ describe("freshTrace / clearedTrace / traceStatus / traceFrameCount", () => {
     expect(traceStatus(clearKeepingState(pauseTrace(freshTrace(2), 5), 9))).toBe("paused");
     expect(clearKeepingState(pauseTrace(freshTrace(2), 5), 9)).toEqual({
       start: 9, end: 9, isPaused: true,
+    });
+  });
+
+  it("all-data widens to the whole buffer keeping the run state — the mirror of clear", () => {
+    // Running stays running: still growing with the buffer, just from 0
+    // instead of wherever it was — "still following live".
+    expect(allDataTrace(freshTrace(2), 9)).toEqual(freshTrace(0));
+    expect(traceStatus(allDataTrace(freshTrace(2), 9))).toBe("running");
+    // Stopped becomes the full buffer to date, frozen (restoredTrace's shape).
+    expect(traceStatus(allDataTrace(stopTrace(freshTrace(2), 5), 9))).toBe("stopped");
+    expect(allDataTrace(stopTrace(freshTrace(2), 5), 9)).toEqual({
+      start: 0, end: 9, isPaused: false,
+    });
+    // Paused stays paused, widened to the full buffer.
+    expect(traceStatus(allDataTrace(pauseTrace(freshTrace(2), 5), 9))).toBe("paused");
+    expect(allDataTrace(pauseTrace(freshTrace(2), 5), 9)).toEqual({
+      start: 0, end: 9, isPaused: true,
     });
   });
 });

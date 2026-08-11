@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { comboboxValue, pickCombobox } from "./comboboxTestKit";
 
@@ -2420,7 +2420,7 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
-  describe("manual-range regression matrix (task 55 item 1)", () => {
+  describe("manual-range regression matrix", () => {
     // Owner's 0.7.0 repro: a manual range set within a 0.0-1.0-valued
     // float signal's own band rendered offscreen. Grooming confirmed it
     // does not reproduce (`plans/tasks/0055-plot-feedback-round.md` item
@@ -2694,6 +2694,80 @@ describe("PlotPanel Fit Data over a parked window", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+});
+
+// Task 55 item 3 (post-DBC-reload recovery): Clear collapses the window
+// to now so re-picking signals against a freshly-reloaded DBC resamples
+// cheaply; All data then widens the window back out to the whole buffer
+// for one full-history resample, fitting the x-axis to it.
+describe("PlotPanel All data button", () => {
+  it("renders beside Clear in the trace controls", () => {
+    renderPanel();
+    const controls = screen.getByRole("button", { name: "Clear" }).closest<HTMLElement>(
+      ".trace-controls",
+    )!;
+    expect(within(controls).getByRole("button", { name: "All data" })).toBeInTheDocument();
+  });
+
+  it("widens a parked, stopped window to the whole buffer and fits the x-axis to it", async () => {
+    await withSizedCanvas(async () => {
+      const registry = makeRegistry({
+        id: "el-alldata",
+        // Stopped, parked mid-buffer — as Clear would leave a panel
+        // after a DBC-reload re-pick, well short of a full-history view.
+        trace: { start: 40, end: 60, isPaused: false },
+      });
+      renderPanel({ params: { elementId: "el-alldata" }, registry });
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      // Let the post-mount rebuild land before capturing the instance —
+      // same rationale as the Fit Data tests above.
+      await new Promise((r) => setTimeout(r, 400));
+      const inst = liveInstanceIn("Area 1");
+      inst.xCalls.length = 0;
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "All data" }));
+      });
+      await act(async () => {});
+
+      // The trace window widened to the whole session buffer (100 frames
+      // in the default fixture) — still stopped, since it wasn't running.
+      expect(registry.get("el-alldata")?.trace).toEqual({ start: 0, end: 100, isPaused: false });
+      // The x-axis fit starts at 0 — not the old parked start (40) that
+      // plain Fit Data would have used — which is what "All data" adds.
+      const last = inst.xCalls[inst.xCalls.length - 1];
+      expect(last?.min).toBe(0);
+    });
+  });
+
+  it("keeps a running window running, still following live", async () => {
+    await withSizedCanvas(async () => {
+      const registry = makeRegistry({
+        id: "el-alldata-running",
+        trace: { start: 40, end: null, isPaused: false },
+      });
+      renderPanel({ params: { elementId: "el-alldata-running" }, registry });
+      await pickCombobox(
+        screen.getByLabelText("add signal to focused plot area"),
+        "*|s:256:EngineSpeed",
+      );
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "All data" }));
+      });
+
+      // A running trace stays running (grows with the buffer) — only its
+      // start moved to 0.
+      expect(registry.get("el-alldata-running")?.trace).toEqual({
+        start: 0, end: null, isPaused: false,
+      });
     });
   });
 });

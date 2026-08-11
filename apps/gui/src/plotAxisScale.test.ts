@@ -172,7 +172,7 @@ describe("resolveAxisRange (log)", () => {
   });
 });
 
-describe("resolveAxisRange (manual-range regression matrix, task 55 item 1)", () => {
+describe("resolveAxisRange (manual-range regression matrix)", () => {
   // Owner's 0.7.0 repro: a manual range set within a signal's own
   // 0.0-1.0 value band rendered offscreen — the bug's own account was a
   // raw-vs-normalised mismatch at this exact seam. Confirmed not to

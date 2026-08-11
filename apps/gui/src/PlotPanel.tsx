@@ -574,31 +574,43 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [fitYEpoch, setFitYEpoch] = useState(0);
   const fitYAll = useCallback(() => setFitYEpoch((n) => n + 1), []);
 
-  const fitData = useCallback(async () => {
-    // `sharedExtent()` is only as fresh as the last area re-sample, and a
-    // window zoomed into history stops re-sampling while the capture
-    // grows (its request can't return different bytes). Fitting to it
-    // would end the plot where the capture stood when the user panned
-    // away — so ask the host where the window ends *now*. One round-trip
-    // per press; none per tick, which is what the parked view saves.
-    const base = baseSecondsRef.current;
-    let ext: number | null = null;
-    if (base != null && Number.isFinite(base)) {
-      try {
-        const last = await fetchWindowExtent(winStart, winEnd);
-        if (last != null) ext = last - base;
-      } catch {
-        /* host unreachable — fall back to the rendered extent below */
+  /** Fit the x-axis to `[start, ext)`, where `ext` comes from a host
+   * round-trip over `[ws, we)` when possible (falling back to the
+   * panel's own rendered extent) — the shared body behind "fit data"
+   * (fits to the *window's* current start) and "All data" (fits to the
+   * whole buffer, `start` pinned at 0 rather than derived). */
+  const fitToRange = useCallback(
+    async (start: number, ws: number, we: number) => {
+      // `sharedExtent()` is only as fresh as the last area re-sample, and a
+      // window zoomed into history stops re-sampling while the capture
+      // grows (its request can't return different bytes). Fitting to it
+      // would end the plot where the capture stood when the user panned
+      // away — so ask the host where the window ends *now*. One round-trip
+      // per press; none per tick, which is what the parked view saves.
+      const base = baseSecondsRef.current;
+      let ext: number | null = null;
+      if (base != null && Number.isFinite(base)) {
+        try {
+          const last = await fetchWindowExtent(ws, we);
+          if (last != null) ext = last - base;
+        } catch {
+          /* host unreachable — fall back to the rendered extent below */
+        }
       }
-    }
-    ext ??= sharedExtent();
+      ext ??= sharedExtent();
+      applyXAll(start, ext != null && ext > start ? ext : start + 1, null);
+      setResetYEpoch((n) => n + 1);
+      bumpXEpoch();
+    },
+    [sharedExtent, applyXAll, bumpXEpoch],
+  );
+
+  const fitData = useCallback(
     // Fit the full span from the window's session-relative start (ADR
     // 0024 — a Clear re-anchors but doesn't re-zero), not a literal 0.
-    const start = sharedStart();
-    applyXAll(start, ext != null && ext > start ? ext : start + 1, null);
-    setResetYEpoch((n) => n + 1);
-    bumpXEpoch();
-  }, [sharedExtent, sharedStart, applyXAll, bumpXEpoch, winStart, winEnd]);
+    () => fitToRange(sharedStart(), winStart, winEnd),
+    [fitToRange, sharedStart, winStart, winEnd],
+  );
 
   // Hotkey / palette implementations for this panel instance
   // (ADR 0018): with the panel focused, `f` re-runs fit-data and `l`
@@ -622,6 +634,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
     setCursorYByArea({});
     setResetYEpoch((n) => n + 1);
   }, [trace]);
+
+  /** "All data": widen the trace window to the whole session buffer
+   * (still following live if it was already running — `allDataTrace`)
+   * and fit the x-axis to it. The DBC-reload recovery workflow this
+   * serves: Clear collapses the window to now so re-picking signals
+   * against the fresh DBC resamples cheaply, then All data widens back
+   * out for one full-history resample. Overlay reset mirrors Clear;
+   * `fitToRange` bumps `resetYEpoch` itself, so no separate call here. */
+  const handleAllData = useCallback(() => {
+    const n = capture.count;
+    trace.allData();
+    setCursorX({ a: null, b: null });
+    setCursorYByArea({});
+    void fitToRange(0, 0, n);
+  }, [trace, capture.count, fitToRange]);
 
   // Reset the shared window + extent when the trace window re-anchors
   // (Clear / Start gives the element a new `offset`); cursors, which are
@@ -1471,6 +1498,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           onPause={trace.pause}
           onResume={trace.resume}
           onClear={handlePlotClear}
+          onAllData={handleAllData}
         />
         <span className="plot-toolbar-sep" />
         <Combobox

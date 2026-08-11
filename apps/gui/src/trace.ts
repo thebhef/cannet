@@ -71,6 +71,20 @@ export function clearKeepingState(s: TraceState, n: number): TraceState {
     : { ...clearedTrace(n), isPaused: s.isPaused };
 }
 
+/// Widen the trace to span the whole session buffer `[0, n)` while
+/// keeping whatever run state it was in — the mirror image of
+/// `clearKeepingState` (which *collapses* to empty at `n`): a running
+/// trace keeps running, now from the buffer's start instead of its
+/// tail, so it still grows with the buffer; a frozen (stopped /
+/// paused) one becomes the full buffer to date, reusing `restoredTrace`'s
+/// shape. Used by the plot's "All data" button (post-DBC-reload
+/// recovery, ADR 0024): Clear collapses the window to now for a cheap
+/// re-pick of signals against the fresh DBC, then All data widens back
+/// out to the whole capture for one full-history resample.
+export function allDataTrace(s: TraceState, n: number): TraceState {
+  return s.end === null ? freshTrace(0) : { ...restoredTrace(n), isPaused: s.isPaused };
+}
+
 export function traceStatus(s: TraceState): TraceStatus {
   if (s.end === null) return "running";
   return s.isPaused ? "paused" : "stopped";
@@ -165,6 +179,9 @@ export interface TraceHandle {
   pause: () => void;
   resume: () => void;
   clear: () => void;
+  /// Widen the window to the whole session buffer (`allDataTrace`) —
+  /// the plot's "All data" button.
+  allData: () => void;
 }
 
 /// Bind a panel to the trace `elementId`: a window over the shared
@@ -252,6 +269,10 @@ export function useTrace(elementId: string, rows: boolean): TraceHandle {
     () => updateTrace(elementId, (s) => clearKeepingState(s, live.count)),
     [updateTrace, elementId, live],
   );
+  const allData = useCallback(
+    () => updateTrace(elementId, (s) => allDataTrace(s, live.count)),
+    [updateTrace, elementId, live],
+  );
 
   return {
     status: traceStatus(state),
@@ -266,5 +287,6 @@ export function useTrace(elementId: string, rows: boolean): TraceHandle {
     pause,
     resume,
     clear,
+    allData,
   };
 }

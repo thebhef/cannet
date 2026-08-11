@@ -7,6 +7,13 @@ interface TraceControlsProps {
   onPause: () => void;
   onResume: () => void;
   onClear: () => void;
+  /// Widen the window to the whole session buffer, beside Clear —
+  /// renders an "All data" button only when supplied. Currently only
+  /// the plot passes it (post-DBC-reload recovery: Clear collapses the
+  /// window for a cheap signal re-pick, All data widens back out for
+  /// one full-history resample); the other trace-style views don't
+  /// need it.
+  onAllData?: () => void;
 }
 
 /**
@@ -22,6 +29,7 @@ export function TraceControls({
   onPause,
   onResume,
   onClear,
+  onAllData,
 }: TraceControlsProps) {
   return (
     <span className="trace-controls">
@@ -53,6 +61,15 @@ export function TraceControls({
       <button type="button" onClick={onClear}>
         Clear
       </button>
+      {onAllData && (
+        <button
+          type="button"
+          onClick={onAllData}
+          title="widen the window to the whole session buffer and fit the x-axis to it"
+        >
+          All data
+        </button>
+      )}
       <span className={`trace-status trace-status-${status}`}>{status}</span>
     </span>
   );
