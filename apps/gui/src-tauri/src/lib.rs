@@ -380,8 +380,8 @@ fn filter_index_dir(scratch: &std::path::Path) -> std::path::PathBuf {
 
 /// The directory the per-signal decimation pyramids spill into: a
 /// `signals/` subdir of the disk-spill scratch (ADR 0002 DS-5/DS-7).
-/// `SignalCacheStore::new` wipes it on construction (a pyramid is
-/// derived state).
+/// `SignalCacheStore::new` stages whatever a prior session persisted there
+/// for the restore path to validate (ADR 0047).
 fn signal_cache_dir(scratch: &std::path::Path) -> std::path::PathBuf {
     scratch.join(signal_cache::PYRAMID_SUBDIR)
 }
@@ -665,8 +665,17 @@ pub fn run() -> ! {
             // right after quit could lose the trailing window.
             if settings::get_settings(app_handle.clone()).clear_scratch_on_exit {
                 clear_trace_store(app_handle.clone(), app_handle.state());
-            } else if let Err(e) = app_handle.state::<AppState>().trace_store.flush() {
-                tracing::warn!(error = %e, "shutdown trace flush failed");
+            } else {
+                let state = app_handle.state::<AppState>();
+                if let Err(e) = state.trace_store.flush() {
+                    tracing::warn!(error = %e, "shutdown trace flush failed");
+                }
+                // Harden the signal pyramids the same way, and record what
+                // they are valid against — this is what the *next* launch
+                // reads instead of re-decoding the whole history (ADR
+                // 0047). After the trace flush, so the low-water mark in
+                // the key is the one the raw store just persisted.
+                emitters::persist_pyramids(&state, true);
             }
         }
     });

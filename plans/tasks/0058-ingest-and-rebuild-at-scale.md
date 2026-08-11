@@ -380,6 +380,131 @@ new prop shape and 6 new ones added). `cargo clippy --workspace
   through `WindowedSource` for a range that happens to match the whole
   file.
 
+### 2026-08-08 — phase 58.C, item 3 (persist signal pyramids across restore)
+
+Branch `task58c-pyramid-persistence`, off `task58b-import-dialog`
+(a1caf96).
+
+| commit | subject |
+| --- | --- |
+| 89c4c8b | `feat(spill)`: reopen a persisted sample sequence from its length alone |
+| e962994 | `feat(gui)`: persist the signal pyramids and the key they are valid against |
+| 3c634e5 | `feat(gui)`: reuse a restored capture's pyramids instead of rebuilding them |
+| 91477f9 | `test(gui)`: measure the first use after a restore, per signal count |
+| b7ce054 | `perf(spill)`: map a whole pyramid set back in one parallel open |
+
+Tests after the slice: `cannet-spill` 61 + 1 ignored (was 57),
+`cannet-gui` 512 + 4 ignored benchmarks (was 501 + 4). `cargo clippy
+--workspace --all-targets` clean. No frontend code touched — the
+restore is host-side and `restore_scratch_capture` keeps its wire shape.
+
+**What landed**
+
+- `SampleSeq::reopen` / `reopen_many` (`cannet-spill`): a persisted run
+  maps back from `(len, first_slot)` alone, because the segment chain's
+  geometry is deterministic in its length. The sequence still carries no
+  manifest of its own; the caller records those two numbers, because the
+  caller is what decides validity.
+- `SignalCacheStore::persist` / `restore` and a `pyramids.json` manifest
+  under the pyramid scratch: one row per cached signal (key, decode
+  cursor, all-time extent, each level's `(len, first_slot, folded)`) plus
+  the `PyramidValidity` the whole set may be reused against.
+- The validity key, and where each part comes from:
+  - **capture identity** — a `capture_id` UUID minted on every
+    `write_scratch_identity`, i.e. on every capture start, stored beside
+    the project id in DS-7's `identity.json`. Stable across relaunches of
+    one capture (a reload does not re-identify), distinct for the next.
+    Chosen over "project id + frame count" because a frame index only
+    means anything within one capture and two captures of a project
+    collide on both of those.
+  - **DBC set** — an FNV-1a fingerprint over each loaded database's path,
+    bus scoping and load position (which is decode priority), plus the
+    file's size and mtime, so an edit under an unchanged path invalidates.
+  - **eviction low-water** — the raw store's windowed-ring mark.
+  - plus one bound checked rather than keyed: no decode cursor may sit
+    past the restored store's tip (a crash can persist a pyramid ahead of
+    the raw store's last flush, and a cursor past the tip never revisits
+    the frames it skipped).
+- Lifecycle: `restamp_scratch_for_capture` now wipes the pyramids, so a
+  BLF import — which starts its session inside the pump, not through
+  Clear — wipes them too (it previously did not, which persistence would
+  have turned from a latent hole into a wrong plot). `clear_trace_store`
+  drops its own now-duplicate wipe.
+- `invalidate_derived_caches` calls the new `invalidate_dbcs` instead of
+  `clear`. It drops the live decode state exactly as before but leaves an
+  unjudged *staged* set alone. **This is the one judgement call in the
+  phase**: the boot sequence loads a project's DBCs before it restores
+  that project's capture, so the old unconditional wipe would have made
+  reuse impossible in every real launch. A staged set is not decode state
+  — it is a candidate whose own recorded DBC fingerprint is part of the
+  check — so the `app_state.rs` invariant holds in substance, and the
+  regression at `tests.rs:770+` stays green untouched. Once adopted, a
+  set is live like any other and the next DBC change wipes it.
+- ADR 0047 records the decision, the key, the two lifecycle rules and the
+  rejected alternatives; ADR 0002's on-disk table points at it.
+
+**The measurement**
+
+Harness: the existing `bench_first_use_rebuild`, extended (not replaced)
+with the restore arm — persist, reopen the cache store on the same root
+as a launch does, restore, serve the same windows — and with a
+`CANNET_BENCH_SIGNALS` dimension beside the existing
+`CANNET_BENCH_FRAMES`. Synthetic capture, one message per signal, the
+capture round-robining them. Run with:
+
+```sh
+CANNET_BENCH_SIGNALS=96 cargo test -p cannet-gui --release \
+    bench_first_use_rebuild -- --ignored --nocapture
+```
+
+Release, 4 M synthetic frames, first use of *every* signal:
+
+| signals | rebuild | restore + serve | speedup |
+| --- | --- | --- | --- |
+| 1 | 1.77 s | 0.15 s | 11.5× |
+| 32 | 2.35 s | 1.36 s | 1.7× |
+| 96 | 3.61 s | 2.87 s | 1.3× |
+
+Release, 96 signals, against capture length — the number that matters,
+because it is the *shape* not the ratio at one size:
+
+| frames | rebuild | restore + serve |
+| --- | --- | --- |
+| 1 M | 1.71 s | 1.99 s |
+| 4 M | 3.61 s | 2.87 s |
+| 16 M | 9.80 s | 4.51 s |
+
+The rebuild is `O(capture)`; the restore is `O(pyramid segment files)`,
+which grows with the *points* a signal has (level-0 segments cap at
+65 536 entries), not with the frames scanned to find them. Over 16× the
+capture the rebuild grows 5.7× and the restore 2.3×, so the two diverge
+and keep diverging.
+
+Debug build (the regime 58.A showed the reported multi-minute symptom
+lives in), 1 M frames over 96 signals: rebuild **5.63 s**, restore +
+serve **1.87 s** — 3.0×. Extrapolating the linear rebuild to the
+reference workload's 6.5 M frames puts a dev-build relaunch at ~37 s of
+rebuild against a restore that stays around 3 s.
+
+**A negative result, and the cut it forced.** The first working version
+made the launch *slower*: at 4 M frames over 96 signals the restore took
+**13.76 s** against a 3.38 s rebuild.
+
+- *Hypothesis.* The restore is not doing decode work, so its cost is the
+  segment-file `mmap`s — and they were being issued one pyramid *level*
+  at a time, so `open_segments`' 16-way widening (added for the raw store
+  because mapping a just-written file on Windows is ~14 ms of pure
+  waiting) ran at a width of about four.
+- *Experiment.* Batch every level of every signal into one
+  `open_segments` call and re-run the same three signal counts.
+- *Data.* 96 signals at 4 M frames: 13.76 s → 3.06 s. 32 signals:
+  4.86 s → 1.35 s. 1 signal (already one batch, so the control): 0.21 s →
+  0.15 s, inside noise.
+- *Conclusion.* Confirmed: ~4.5× where the batch is wide, nothing where
+  it isn't. `SampleSeq::reopen_many` is that batch; `reopen` is it with
+  one run. The remaining ~1 ms/file is the crate's documented 16-way
+  floor, not decode.
+
 ## Blockers / side effects
 
 - **The disk-spill segment write is ~43 % of the per-frame ingest
@@ -420,6 +545,61 @@ new prop shape and 6 new ones added). `cargo clippy --workspace
   a requirement either way in the owner rulings, so implemented as the
   simplest composition of the two existing rules rather than adding a
   third pass or a marker-side range filter.
+- **The shutdown's synchronous pyramid flush is the single most
+  expensive thing 58.C added to exit**, and it lands in the same area
+  item 5 is about. Measured at 96 signals: **7.8-14.3 s** when the
+  pyramid was built moments before quitting (every page still dirty), and
+  **0.7-1.8 s** on the second consecutive sync — which is what a real
+  exit pays, because the pyramid is normally built long before the user
+  quits and the OS has written it back by then. It is there for
+  consistency with the raw store's own shutdown `flush()` (ADR 0002
+  DS-2): it is the one moment a clean guarantee is available, and without
+  it a power loss shortly after quit could leave a manifest pointing at
+  pages that were never written — a pyramid that passes its validity key
+  and serves zeros. The cheaper alternative (async, leaving writeback to
+  the OS modified-page writer, which is what `Segment::queue_writeback`
+  already does on Windows for every other scratch family) trades that
+  guarantee for ~1 s of exit. **Flagged rather than decided**: if 58.E's
+  exit contract makes that second matter, the argument for dropping to
+  async is that the pyramid is derived state and a torn one costs a
+  rebuild, not data. It is also the one place 58.C brushes the non-goal
+  "no change to shutdown flush semantics": the trace store's own
+  `flush()` is untouched, but a second, separate flush now runs beside it
+  in the same exit hook. The periodic tick alone would persist the
+  pyramids; the shutdown call is only there for the guarantee, so
+  dropping it is a one-line change if the non-goal is read strictly.
+- **The restore's floor is now segment-open latency, not decode.** ~1
+  ms/file at `open_segments`' documented 16-way width, ~33 files per
+  plotted signal on a 4 M-frame capture — so ~3 s for 96 signals. Two
+  ways further down exist and neither was taken here: widen the parallel
+  open for large batches (it is a *latency*-bound wait, so width scales
+  almost linearly, but the 16-way constant is a measured tuning decision
+  for the raw store and retuning it belongs with its own measurement), or
+  make the restore lazy per signal (validate the manifest at restore,
+  map a signal's levels on its first serve) so a launch pays nothing and
+  each plotted signal pays one batched open. The lazy version is the
+  better design but needs a pending-rows state that interacts with
+  eviction — the eviction cascade can advance while a row is unmapped, so
+  the floor has to be carried and applied at map time. Deliberately left
+  out of this phase's scope.
+- **The 96-signal ratio in the synthetic is only 1.3× in a release
+  build**, which reads as underwhelming next to "minutes → seconds". It
+  is an artefact of the harness, not of the feature: the synthetic
+  decodes one 16-bit signal out of an 8-byte payload, so its rebuild is
+  0.009 µs/frame/signal, an order of magnitude cheaper per frame than the
+  reference workload's cell messages. The honest statements are the two
+  the data does support — the rebuild is `O(capture)` and the restore is
+  not (16× the capture: rebuild ×5.7, restore ×2.3), and in the debug
+  regime where the reported symptom lives the ratio is 3.0× at 1 M frames
+  and grows linearly from there. Item 4 (one decode pass per message)
+  will cut the rebuild side further and narrow this ratio again — that is
+  expected and does not undermine the persistence, which removes the work
+  rather than speeding it up.
+- **`clear_scratch_on_exit` and the pyramids.** With the setting on, exit
+  runs `clear_trace_store`, which now wipes the pyramids through
+  `restamp_scratch_for_capture` — correct (there is no capture to come
+  back to) and no change in kind, but worth naming since that path no
+  longer touches `signal_caches` directly.
 - **No `tauri::test` mock-`AppHandle` harness exists in `cannet-gui`**,
   so `open_log`'s own command body (the `WindowedSource` wrap, the
   thread spawn, the panic/error paths) is exercised by compilation +

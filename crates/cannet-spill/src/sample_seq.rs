@@ -16,16 +16,19 @@
 //! 16 bytes (two little-endian `f64`s), so entry `k` is at `k * 16` by
 //! arithmetic and random access (the serve path's binary search) is O(1).
 //!
-//! Unlike the raw store, a pyramid is *derived* state: it is rebuilt by
-//! re-decoding the reopened raw frames, so this sequence carries no reopen
-//! manifest. The host wipes the pyramid directory when a capture is cleared
-//! or a session reopened (the frames it indexed no longer correspond), and
-//! the next serve rebuilds it on disk.
+//! Unlike the raw store, this sequence carries **no manifest of its own**:
+//! the chain's geometry is deterministic in its length, so a `(len,
+//! first_slot)` pair the caller has recorded is enough to map every
+//! surviving segment file back ([`SampleSeq::reopen`]). Which run those two
+//! numbers describe — and whether it is still valid to reuse — is the
+//! caller's question, so the caller owns the manifest that answers it.
 
 use std::path::{Path, PathBuf};
 
-use crate::seg::Segment;
-use crate::seg_chain::{evict_leading, geometric_locate, geometric_push_grow};
+use crate::seg::{open_segments, Segment};
+use crate::seg_chain::{
+    evict_leading, geometric_locate, geometric_push_grow, geometric_seg_capacity,
+};
 
 /// Bytes per entry: two `f64`s (`t_seconds`, `value`).
 const ENTRY_BYTES: usize = 16;
@@ -68,6 +71,90 @@ impl SampleSeq {
             first_slot: 0,
             seg_base: 0,
         }
+    }
+
+    /// Reopen a run persisted by a prior session: the segment files under
+    /// `dir` named `{prefix}.NNNN`, restored to the `len` and `first_slot`
+    /// the caller recorded when it last wrote the run.
+    ///
+    /// No manifest of its own is read or needed. The chain's geometry is
+    /// deterministic in the run's length ([`geometric_seg_capacity`]), so
+    /// `len` alone names every segment file the run ever created, and
+    /// `first_slot` says how many leading ones eviction has since deleted —
+    /// exactly the two numbers [`Self::evict_below`] and [`Self::push`]
+    /// maintain. The caller owns the manifest that carries them, because the
+    /// caller is what decides whether the run is still *valid* to reuse.
+    ///
+    /// `Ok(None)` — a miss, not an error — when the persisted state and the
+    /// directory disagree: `first_slot > len`, or a segment file the length
+    /// implies is missing. A miss means "rebuild", never a half-mapped run.
+    ///
+    /// # Errors
+    /// Propagates the I/O error if a segment file exists but cannot be
+    /// mapped.
+    pub fn reopen(
+        dir: impl AsRef<Path>,
+        prefix: impl Into<String>,
+        len: usize,
+        first_slot: usize,
+    ) -> std::io::Result<Option<Self>> {
+        let runs = [(prefix.into(), len, first_slot)];
+        Ok(Self::reopen_many(dir, &runs)?.and_then(|mut v| v.pop()))
+    }
+
+    /// [`Self::reopen`] for a whole set of runs at once, mapping **every**
+    /// run's segment files in one parallel open rather than one open per
+    /// run.
+    ///
+    /// That is the difference between a fast reopen and a slow one, and it
+    /// is not a micro-optimization: mapping an existing segment is latency-
+    /// bound (see [`open_segments`]), so the useful width is how many opens
+    /// are in flight. A pyramid's levels hold a handful of segments each, so
+    /// reopening level by level runs the parallel open at a width of about
+    /// four; a restore of dozens of pyramids is thousands of files that
+    /// should all be in flight together.
+    ///
+    /// `runs` is `(prefix, len, first_slot)` per run, all under `dir`. The
+    /// result is in the same order. `Ok(None)` if *any* run's persisted
+    /// state and the directory disagree — a set reopens whole or not at all.
+    ///
+    /// # Errors
+    /// Propagates the I/O error if a segment file exists but cannot be
+    /// mapped.
+    pub fn reopen_many(
+        dir: impl AsRef<Path>,
+        runs: &[(String, usize, usize)],
+    ) -> std::io::Result<Option<Vec<Self>>> {
+        let dir = dir.as_ref();
+        let mut plans = Vec::with_capacity(runs.len());
+        let mut paths = Vec::new();
+        for (prefix, len, first_slot) in runs {
+            let Some((cum_cap, seg_base)) = chain_plan(*len, *first_slot) else {
+                return Ok(None);
+            };
+            let from = paths.len();
+            paths.extend((seg_base..cum_cap.len()).map(|i| seg_path(dir, prefix, i)));
+            plans.push((cum_cap, seg_base, from..paths.len()));
+        }
+        if !paths.iter().all(|p| p.is_file()) {
+            return Ok(None);
+        }
+        let mut segs = open_segments(&paths)?;
+        // Peel the mappings off the back so each run takes its own tail
+        // without shifting the ones still to come.
+        let mut out: Vec<Option<Self>> = (0..runs.len()).map(|_| None).collect();
+        for (n, (cum_cap, seg_base, range)) in plans.into_iter().enumerate().rev() {
+            out[n] = Some(Self {
+                dir: dir.to_path_buf(),
+                prefix: runs[n].0.clone(),
+                segs: segs.split_off(range.start),
+                cum_cap,
+                len: runs[n].1,
+                first_slot: runs[n].2,
+                seg_base,
+            });
+        }
+        Ok(Some(out.into_iter().flatten().collect()))
     }
 
     /// Number of pairs stored — the append count, including any slots
@@ -166,6 +253,26 @@ impl SampleSeq {
 
 fn seg_path(dir: &Path, prefix: &str, seg: usize) -> PathBuf {
     dir.join(format!("{prefix}.{seg:04}"))
+}
+
+/// The `(cum_cap, seg_base)` a run of `len` entries trimmed to `first_slot`
+/// must have had. `push` creates segment `i` when the chain is full, so the
+/// chain covering `len` entries is the shortest prefix of the doubling
+/// progression whose capacity reaches it; `evict_below` deleted the leading
+/// segments lying wholly below the mark, and computes the same base.
+/// `None` when the two numbers cannot describe one run.
+fn chain_plan(len: usize, first_slot: usize) -> Option<(Vec<usize>, usize)> {
+    if first_slot > len {
+        return None;
+    }
+    let mut cum_cap = Vec::new();
+    let mut total = 0usize;
+    while total < len {
+        total += geometric_seg_capacity(cum_cap.len());
+        cum_cap.push(total);
+    }
+    let seg_base = cum_cap.partition_point(|&c| c <= first_slot);
+    Some((cum_cap, seg_base))
 }
 
 #[cfg(test)]
@@ -269,6 +376,128 @@ mod tests {
         seq.evict_below(1000);
         assert_eq!(seq.first_slot(), 100);
         assert_eq!(seq.live_len(), 0);
+    }
+
+    #[test]
+    fn reopen_recovers_a_persisted_run_and_keeps_appending() {
+        // The reopen path a persisted pyramid needs: the segment geometry is
+        // deterministic in the run's length, so `len` alone names every
+        // segment file, and a reopened run appends where it left off.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..2000u32 {
+            seq.push(f64::from(i), f64::from(i) * 2.0);
+        }
+        let len = seq.len();
+        drop(seq); // unmap, as a process exit would
+
+        let mut back = SampleSeq::reopen(dir.path(), "sig.l0", len, 0)
+            .unwrap()
+            .expect("every segment file is present");
+        assert_eq!(back.len(), 2000);
+        assert_eq!(back.first_slot(), 0);
+        assert_eq!(back.get(0), (0.0, 0.0));
+        assert_eq!(back.get(1999), (1999.0, 3998.0));
+        // Appending continues the same chain — the next push lands at 2000
+        // and grows the chain exactly as an unbroken run would.
+        back.push(2000.0, 4000.0);
+        assert_eq!(back.len(), 2001);
+        assert_eq!(back.get(2000), (2000.0, 4000.0));
+        assert_eq!(back.get(1999), (1999.0, 3998.0));
+    }
+
+    #[test]
+    fn reopen_restores_a_front_trimmed_run_without_its_dropped_segments() {
+        // A run that was evicted before persisting has no leading segment
+        // files left; the reopen must map only the surviving ones and put
+        // the low-water mark back where it was, so absolute slot numbering
+        // still addresses live data.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..2000u32 {
+            seq.push(f64::from(i), f64::from(i) * 2.0);
+        }
+        seq.evict_below(500);
+        let (len, first) = (seq.len(), seq.first_slot());
+        drop(seq);
+
+        let back = SampleSeq::reopen(dir.path(), "sig.l0", len, first)
+            .unwrap()
+            .expect("the surviving segment files are present");
+        assert_eq!(back.len(), 2000);
+        assert_eq!(back.first_slot(), 500);
+        assert_eq!(back.live_len(), 1500);
+        assert_eq!(back.get(500), (500.0, 1000.0));
+        assert_eq!(back.get(1999), (1999.0, 3998.0));
+    }
+
+    #[test]
+    fn reopen_reports_a_miss_rather_than_half_a_run() {
+        let dir = TempDir::new().unwrap();
+        // Nothing was ever written: a zero-length run reopens as an empty
+        // one (no files are expected).
+        let empty = SampleSeq::reopen(dir.path(), "sig.l0", 0, 0)
+            .unwrap()
+            .expect("an empty run needs no files");
+        assert!(empty.is_empty());
+
+        // A length that names files which aren't there is a miss, not a
+        // partial mapping — the caller rebuilds.
+        assert!(SampleSeq::reopen(dir.path(), "sig.l0", 5000, 0)
+            .unwrap()
+            .is_none());
+
+        // So is a nonsensical low-water mark.
+        let mut seq = SampleSeq::new(dir.path(), "sig.l1");
+        seq.push(1.0, 2.0);
+        drop(seq);
+        assert!(SampleSeq::reopen(dir.path(), "sig.l1", 1, 2)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn reopen_many_maps_a_whole_set_in_order() {
+        // A pyramid restore reopens dozens of runs at once; they must come
+        // back in the order asked for, each addressing its own files.
+        let dir = TempDir::new().unwrap();
+        let runs: Vec<(String, usize, usize)> = (0..6usize)
+            .map(|r| {
+                let prefix = format!("sig{r}.l0");
+                let mut seq = SampleSeq::new(dir.path(), prefix.clone());
+                // Different lengths, so a mis-split would read the wrong
+                // run's segments rather than merely the wrong offset.
+                let n = 100 + r * 400;
+                for i in 0..n {
+                    seq.push(i as f64, (r * 1000 + i) as f64);
+                }
+                (prefix, seq.len(), 0)
+            })
+            .collect();
+
+        let back = SampleSeq::reopen_many(dir.path(), &runs)
+            .unwrap()
+            .expect("every run is present");
+        assert_eq!(back.len(), 6);
+        for (r, seq) in back.iter().enumerate() {
+            assert_eq!(seq.len(), 100 + r * 400, "run {r} length");
+            assert_eq!(seq.get(0), (0.0, (r * 1000) as f64), "run {r} first");
+            let last = seq.len() - 1;
+            assert_eq!(
+                seq.get(last),
+                (last as f64, (r * 1000 + last) as f64),
+                "run {r} last",
+            );
+        }
+
+        // One bad run fails the whole set — a partial reopen is never
+        // handed back.
+        let mut broken = runs;
+        broken.push(("absent.l0".to_string(), 500, 0));
+        assert!(SampleSeq::reopen_many(dir.path(), &broken)
+            .unwrap()
+            .is_none());
+        assert!(SampleSeq::reopen_many(dir.path(), &[]).unwrap().is_some());
     }
 
     #[test]

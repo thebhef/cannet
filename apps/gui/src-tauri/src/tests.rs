@@ -835,6 +835,69 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
 }
 
 #[test]
+fn the_dbc_fingerprint_moves_with_everything_that_changes_a_decode() {
+    // The DBC half of the pyramid validity key (ADR 0047). It has to move
+    // whenever the set would decode differently — a DBC added, removed,
+    // re-scoped, re-ordered, or edited on disk — and stay put otherwise,
+    // or every relaunch rebuilds for nothing.
+    let dir = std::env::temp_dir().join(format!("cannet-dbcfp-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, id: u32| {
+        let p = dir.join(name);
+        std::fs::write(&p, tiny_dbc(id, "M", "S")).unwrap();
+        p.to_string_lossy().into_owned()
+    };
+    let a = write("a.dbc", 0x100);
+    let b = write("b.dbc", 0x200);
+    let loaded = |path: &str, buses: &[&str]| LoadedDbc {
+        path: path.to_string(),
+        db: Arc::new(Database::parse(&tiny_dbc(0x100, "M", "S")).unwrap()),
+        buses: buses.iter().map(|s| (*s).to_string()).collect(),
+    };
+
+    let base = app_state::dbc_fingerprint(&[loaded(&a, &[])]);
+    assert_eq!(
+        base,
+        app_state::dbc_fingerprint(&[loaded(&a, &[])]),
+        "stable"
+    );
+    assert_ne!(
+        base,
+        app_state::dbc_fingerprint(&[]),
+        "an empty set differs"
+    );
+    assert_ne!(
+        base,
+        app_state::dbc_fingerprint(&[loaded(&a, &[]), loaded(&b, &[])]),
+        "a second DBC differs"
+    );
+    assert_ne!(
+        base,
+        app_state::dbc_fingerprint(&[loaded(&a, &["bus1"])]),
+        "re-scoping differs"
+    );
+    assert_ne!(
+        app_state::dbc_fingerprint(&[loaded(&a, &[]), loaded(&b, &[])]),
+        app_state::dbc_fingerprint(&[loaded(&b, &[]), loaded(&a, &[])]),
+        "load order is decode priority, so it is part of the key"
+    );
+    assert_ne!(
+        base,
+        app_state::dbc_fingerprint(&[loaded("gone.dbc", &[])]),
+        "a path that cannot be stat'd differs from one that can"
+    );
+
+    // An edit under the same path — the case a path-only key would miss.
+    std::fs::write(&a, tiny_dbc(0x100, "M", "RENAMED")).unwrap();
+    assert_ne!(
+        base,
+        app_state::dbc_fingerprint(&[loaded(&a, &[])]),
+        "an edited DBC file differs"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn collect_trace_records_uses_absolute_indices() {
     let state = test_state();
     for i in 0u32..10 {
