@@ -1,0 +1,301 @@
+//! Header-only census walk over a BLF file.
+//!
+//! Building the import dialog's channel → bus mapping needs one fact per
+//! frame — its wire channel — and nothing else. [`scan_blf`] walks every
+//! object in the file through [`BlfReader::next_raw_object`] and reads
+//! that field straight out of the object's bytes: no per-type decode, no
+//! payload allocation, no [`cannet_core::CanFrame`] construction. What it
+//! costs is the file's inflate, which no reader can avoid.
+//!
+//! Because the walk covers the **whole** file, the census is exact —
+//! a channel that first appears in the last frame is reported like any
+//! other. The first and last frame timestamps and the file's
+//! `GLOBAL_MARKER` records fall out of the same walk for free (markers
+//! are rare enough that decoding just those costs nothing), so a caller
+//! that needs the capture's duration or its events does not walk again.
+
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use crate::format::marker::GlobalMarker;
+use crate::format::object::{object_type, EVENT_HEADER_BYTES};
+use crate::format::reader::{BlfReadError, BlfReader};
+use crate::{adjust_channel_to_zero_based, BlfSourceError};
+
+/// What one header-only walk of a BLF file found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlfScan {
+    /// Every distinct wire channel carrying a CAN-class event, 0-based
+    /// (as [`cannet_core::CanFrame::channel`] is) and ascending. Exact:
+    /// the walk covers the whole file.
+    pub channels: Vec<u8>,
+    /// CAN-class events seen (frames, including error frames).
+    pub frame_count: u64,
+    /// Absolute timestamp (ns since the UNIX epoch) of the first
+    /// CAN-class event, or `None` for a file with no frames.
+    pub first_timestamp_ns: Option<u64>,
+    /// Absolute timestamp of the last CAN-class event. Frames are stored
+    /// in arrival order, so `last - first` is the capture's duration.
+    pub last_timestamp_ns: Option<u64>,
+    /// Every `GLOBAL_MARKER` in the file, in file order, decoded.
+    pub markers: Vec<ScannedMarker>,
+    /// The file's measurement start time (ns since the UNIX epoch) —
+    /// the wall clock the per-event timestamps are relative to.
+    pub start_unix_nanos: u64,
+}
+
+/// One `GLOBAL_MARKER` found by [`scan_blf`], with its timestamp already
+/// resolved to the absolute nanoseconds the rest of the system uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedMarker {
+    /// Absolute timestamp (ns since the UNIX epoch).
+    pub timestamp_ns: u64,
+    /// The decoded record, for callers that need its names or color.
+    pub marker: GlobalMarker,
+}
+
+/// The wire channel a CAN-class object carries, read from its body
+/// without decoding the rest of the object. Every CAN-class type puts
+/// the channel first in its body; `CAN_FD_MESSAGE_64` stores it as one
+/// byte, the others as a little-endian `u16`. Returns `None` for object
+/// types that aren't CAN-class, and for a body too short to hold the
+/// field (a malformed object the census simply doesn't count).
+fn channel_of(object_type_id: u32, object_bytes: &[u8]) -> Option<u16> {
+    let body = object_bytes.get(EVENT_HEADER_BYTES..)?;
+    match object_type_id {
+        object_type::CAN_FD_MESSAGE_64 => body.first().map(|b| u16::from(*b)),
+        object_type::CAN_MESSAGE
+        | object_type::CAN_MESSAGE2
+        | object_type::CAN_FD_MESSAGE
+        | object_type::CAN_ERROR_EXT => body.get(0..2).map(|b| u16::from_le_bytes([b[0], b[1]])),
+        _ => None,
+    }
+}
+
+/// The per-event timestamp of an object, in nanoseconds relative to the
+/// file's measurement start. Reads the `ObjectHeader` v1 extension only.
+fn relative_timestamp_ns(object_bytes: &[u8]) -> Option<u64> {
+    use crate::format::object::{ObjectHeaderV1, OBJECT_HEADER_BASE_BYTES};
+    let ext = object_bytes.get(OBJECT_HEADER_BASE_BYTES..EVENT_HEADER_BYTES)?;
+    ObjectHeaderV1::parse(ext)
+        .ok()
+        .map(ObjectHeaderV1::timestamp_ns)
+}
+
+/// Walk `path` header-only and report its channel census, frame count,
+/// time span, and markers. See the module docs for what this does and
+/// does not decode.
+///
+/// # Errors
+///
+/// Propagates the reader's I/O and framing errors, and
+/// [`BlfSourceError::ChannelOutOfRange`] if an on-disk channel number
+/// doesn't fit `cannet_core`'s 0-based `u8` channel space.
+pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
+    let mut reader = BlfReader::open(path)?;
+    let start_unix_nanos = reader.start_unix_nanos();
+    let mut channels: BTreeSet<u8> = BTreeSet::new();
+    let mut frame_count = 0u64;
+    let mut first_timestamp_ns: Option<u64> = None;
+    let mut last_timestamp_ns: Option<u64> = None;
+    let mut markers = Vec::new();
+    while let Some(raw) = reader.next_raw_object()? {
+        if raw.base.object_type == object_type::GLOBAL_MARKER {
+            let marker = crate::format::marker::decode(raw.bytes).map_err(BlfReadError::from)?;
+            markers.push(ScannedMarker {
+                timestamp_ns: start_unix_nanos.saturating_add(marker.event.timestamp_ns()),
+                marker,
+            });
+            continue;
+        }
+        let Some(disk_channel) = channel_of(raw.base.object_type, raw.bytes) else {
+            continue;
+        };
+        channels.insert(adjust_channel_to_zero_based(disk_channel)?);
+        frame_count += 1;
+        if let Some(rel) = relative_timestamp_ns(raw.bytes) {
+            let abs = start_unix_nanos.saturating_add(rel);
+            first_timestamp_ns.get_or_insert(abs);
+            last_timestamp_ns = Some(abs);
+        }
+    }
+    Ok(BlfScan {
+        channels: channels.into_iter().collect(),
+        frame_count,
+        first_timestamp_ns,
+        last_timestamp_ns,
+        markers,
+        start_unix_nanos,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BlfCaptureWriter;
+    use cannet_core::{CanFdFlags, CanFrame, CanId, Direction};
+
+    const BASE_NS: u64 = 1_700_000_000_u64 * 1_000_000_000;
+
+    fn classic(ts: u64, channel: u8, id: u32) -> CanFrame {
+        CanFrame::classic(
+            ts,
+            channel,
+            CanId::standard(id).unwrap(),
+            Direction::Rx,
+            vec![1, 2, 3, 4],
+        )
+        .unwrap()
+    }
+
+    /// The census must cover the **whole** file: a channel that first
+    /// appears well past where the old capped pre-scan stopped is still
+    /// reported. 200 001 frames is one past that cap, so this fails on
+    /// any implementation that stops early.
+    #[test]
+    fn a_channel_appearing_only_past_the_old_scan_cap_is_still_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("late-channel.blf");
+        let mut writer = BlfCaptureWriter::create(&path).unwrap();
+        for i in 0..200_001u64 {
+            writer
+                .append(&classic(BASE_NS + i * 1_000, 0, 0x100))
+                .unwrap();
+        }
+        writer
+            .append(&classic(BASE_NS + 300_000_000, 3, 0x101))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let scan = scan_blf(&path).unwrap();
+        assert_eq!(scan.channels, vec![0, 3]);
+        assert_eq!(scan.frame_count, 200_002);
+    }
+
+    #[test]
+    fn the_census_covers_every_can_class_object_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.blf");
+        let mut writer = BlfCaptureWriter::create(&path).unwrap();
+        writer.append(&classic(BASE_NS, 0, 0x100)).unwrap();
+        writer
+            .append(
+                &CanFrame::fd(
+                    BASE_NS + 1_000,
+                    1,
+                    CanId::extended(0x0001_2345).unwrap(),
+                    Direction::Tx,
+                    vec![0u8; 24],
+                    CanFdFlags {
+                        bitrate_switch: true,
+                        error_state_indicator: false,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        writer
+            .append(&CanFrame::remote(
+                BASE_NS + 2_000,
+                2,
+                CanId::standard(0x200).unwrap(),
+                Direction::Rx,
+                4,
+            ))
+            .unwrap();
+        writer
+            .append(&CanFrame::error(
+                BASE_NS + 3_000,
+                5,
+                CanId::standard(0x0).unwrap(),
+                Direction::Rx,
+            ))
+            .unwrap();
+        writer.finish().unwrap();
+
+        let scan = scan_blf(&path).unwrap();
+        assert_eq!(scan.channels, vec![0, 1, 2, 5]);
+        assert_eq!(scan.frame_count, 4);
+    }
+
+    /// The census agrees, frame for frame and channel for channel, with
+    /// what the decoding `CanFrameSource` path sees — that equivalence
+    /// is the whole justification for skipping the decode.
+    #[test]
+    fn the_header_only_census_matches_a_full_decode_walk() {
+        use cannet_core::CanFrameSource as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agree.blf");
+        let mut writer = BlfCaptureWriter::create(&path).unwrap();
+        for i in 0..5_000u64 {
+            writer
+                .append(&classic(
+                    BASE_NS + i * 1_000,
+                    u8::try_from(i % 7).unwrap(),
+                    0x100 + u32::try_from(i % 13).unwrap(),
+                ))
+                .unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut source = crate::BlfCanFrameSource::open(&path).unwrap();
+        let mut decoded_channels = BTreeSet::new();
+        let mut decoded_count = 0u64;
+        let mut decoded_first = None;
+        let mut decoded_last = None;
+        while let Some(frame) = source.next_frame().unwrap() {
+            decoded_channels.insert(frame.channel);
+            decoded_count += 1;
+            decoded_first.get_or_insert(frame.timestamp_ns);
+            decoded_last = Some(frame.timestamp_ns);
+        }
+
+        let scan = scan_blf(&path).unwrap();
+        assert_eq!(
+            scan.channels,
+            decoded_channels.into_iter().collect::<Vec<_>>()
+        );
+        assert_eq!(scan.frame_count, decoded_count);
+        assert_eq!(scan.first_timestamp_ns, decoded_first);
+        assert_eq!(scan.last_timestamp_ns, decoded_last);
+    }
+
+    /// Markers ride the same walk — the census is what the import dialog
+    /// reads its event list from, so it must see every one of them with
+    /// absolute timestamps.
+    #[test]
+    fn markers_come_back_from_the_same_walk_with_absolute_timestamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("marked.blf");
+        let mut writer = BlfCaptureWriter::create(&path).unwrap();
+        writer.append(&classic(BASE_NS, 0, 0x100)).unwrap();
+        writer
+            .append_marker(BASE_NS + 5_000, "halfway", "note-1", 0x00FF_8800)
+            .unwrap();
+        writer.append(&classic(BASE_NS + 10_000, 0, 0x101)).unwrap();
+        writer.finish().unwrap();
+
+        let scan = scan_blf(&path).unwrap();
+        assert_eq!(scan.frame_count, 2, "markers are not frames");
+        assert_eq!(scan.markers.len(), 1);
+        let m = &scan.markers[0];
+        assert_eq!(m.timestamp_ns, BASE_NS + 5_000);
+        assert_eq!(m.marker.marker_name, b"halfway");
+        assert_eq!(m.marker.description, b"note-1");
+        assert_eq!(m.marker.foreground_color, 0x00FF_8800);
+    }
+
+    #[test]
+    fn an_empty_file_reports_no_channels_and_no_span() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.blf");
+        BlfCaptureWriter::create(&path).unwrap().finish().unwrap();
+
+        let scan = scan_blf(&path).unwrap();
+        assert!(scan.channels.is_empty());
+        assert_eq!(scan.frame_count, 0);
+        assert_eq!(scan.first_timestamp_ns, None);
+        assert_eq!(scan.last_timestamp_ns, None);
+        assert!(scan.markers.is_empty());
+    }
+}

@@ -14,6 +14,10 @@
 //! into place on [`BlfCaptureWriter::finish`] — a mid-write crash
 //! therefore leaves no half-file behind at `<dest>`.
 //!
+//! A third entry point, [`scan_blf`], walks a file header-only for a
+//! channel census, time span, and markers — everything the import
+//! dialog needs before a single frame is decoded.
+//!
 //! ## Native implementation
 //!
 //! Per [ADR 0009](../../../docs/adr/0009-dbc-blf-readers.md), the
@@ -33,6 +37,9 @@
 //! [`CanFramePayload`]: cannet_core::CanFramePayload
 
 pub mod format;
+mod scan;
+
+pub use scan::{scan_blf, BlfScan, ScannedMarker};
 
 use std::fs;
 use std::io;
@@ -47,6 +54,11 @@ use format::can::{
 };
 use format::reader::{BlfObject, BlfReadError, BlfReader};
 
+/// Handler for the `GLOBAL_MARKER` records a
+/// [`BlfCanFrameSource`] walks past. See
+/// [`BlfCanFrameSource::on_marker`].
+pub type MarkerSink = Box<dyn FnMut(ScannedMarker) + Send>;
+
 /// A `CanFrameSource` backed by a Vector BLF log file.
 pub struct BlfCanFrameSource {
     reader: BlfReader,
@@ -55,6 +67,9 @@ pub struct BlfCanFrameSource {
     /// functions add it to recover the absolute timestamp the
     /// `CanFrame` carries.
     start_unix_nanos: u64,
+    /// Optional handler for the markers `next_frame` walks past, set by
+    /// [`Self::on_marker`]. Without one they are skipped as before.
+    marker_sink: Option<MarkerSink>,
 }
 
 impl BlfCanFrameSource {
@@ -66,7 +81,21 @@ impl BlfCanFrameSource {
         Ok(Self {
             reader,
             start_unix_nanos,
+            marker_sink: None,
         })
+    }
+
+    /// Hand every `GLOBAL_MARKER` this source walks past to `sink`, with
+    /// its timestamp already resolved to absolute nanoseconds.
+    ///
+    /// A file's frames and its markers are interleaved in one object
+    /// stream, so a consumer that wants both gets both from the single
+    /// pass it was already making — there is no second walk to find the
+    /// annotations. Markers are rare, so decoding the ones that turn up
+    /// costs nothing measurable per frame. Setting a second sink
+    /// replaces the first.
+    pub fn on_marker(&mut self, sink: impl FnMut(ScannedMarker) + Send + 'static) {
+        self.marker_sink = Some(Box::new(sink));
     }
 
     /// The file's `FileStatistics` header (object count, compressed /
@@ -100,17 +129,29 @@ impl CanFrameSource for BlfCanFrameSource {
                 Some(BlfObject::CanErrorExt(m)) => {
                     return can_error_ext_to_frame(&m, self.start_unix_nanos).map(Some)
                 }
-                // Non-frame events — text annotations
-                // (GLOBAL_MARKER, EVENT_COMMENT, APP_TEXT),
-                // diagnostic events (CAN_STATISTIC,
-                // DATA_LOST_BEGIN, DATA_LOST_END), and `Other`
-                // (anything we don't decode) — skip at the
+                // Markers are the one non-frame object a consumer can
+                // ask to see (`on_marker`) — they carry the capture's
+                // annotations, and finding them on this pass is what
+                // spares a second walk of the whole file.
+                Some(BlfObject::GlobalMarker(m)) => {
+                    if let Some(sink) = self.marker_sink.as_mut() {
+                        sink(ScannedMarker {
+                            timestamp_ns: self
+                                .start_unix_nanos
+                                .saturating_add(m.event.timestamp_ns()),
+                            marker: m,
+                        });
+                    }
+                }
+                // The remaining non-frame events — text annotations
+                // (EVENT_COMMENT, APP_TEXT), diagnostic events
+                // (CAN_STATISTIC, DATA_LOST_BEGIN, DATA_LOST_END), and
+                // `Other` (anything we don't decode) — skip at the
                 // adapter layer and keep walking. Consumers that
                 // want them walk the same file through
                 // `BlfReader` directly.
                 Some(
-                    BlfObject::GlobalMarker(_)
-                    | BlfObject::EventComment(_)
+                    BlfObject::EventComment(_)
                     | BlfObject::AppText(_)
                     | BlfObject::CanStatistic(_)
                     | BlfObject::DataLostBegin(_)
@@ -904,6 +945,84 @@ mod tests {
         }
         assert!(saw_frame);
         assert!(saw_marker);
+    }
+
+    /// A consumer that wants a file's annotations gets them from the
+    /// pass it was already making: the frame stream is unchanged, and
+    /// every marker reaches the sink with an absolute timestamp — so
+    /// nothing has to walk the file a second time to find them.
+    #[test]
+    fn a_marker_sink_sees_every_marker_on_the_frame_walk() {
+        use std::sync::{Arc, Mutex};
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("interleaved.blf");
+        let mut w = BlfCaptureWriter::create(&dest).unwrap();
+        for i in 0u32..6 {
+            let ts = TS_BASE_NS + u64::from(i) * 1_000_000;
+            w.append(
+                &CanFrame::classic(
+                    ts,
+                    0,
+                    CanId::standard(0x100 + i).unwrap(),
+                    Direction::Rx,
+                    vec![u8::try_from(i).unwrap()],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            if i % 2 == 0 {
+                w.append_marker(ts, &format!("m{i}"), &format!("id-{i}"), 0)
+                    .unwrap();
+            }
+        }
+        w.finish().unwrap();
+
+        let seen: Arc<Mutex<Vec<ScannedMarker>>> = Arc::default();
+        let mut src = BlfCanFrameSource::open(&dest).unwrap();
+        src.on_marker({
+            let seen = Arc::clone(&seen);
+            move |m| seen.lock().unwrap().push(m)
+        });
+        let mut frames = 0;
+        while src.next_frame().unwrap().is_some() {
+            frames += 1;
+        }
+        assert_eq!(frames, 6, "the marker sink must not disturb the frames");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.iter().map(|m| m.timestamp_ns).collect::<Vec<_>>(),
+            vec![TS_BASE_NS, TS_BASE_NS + 2_000_000, TS_BASE_NS + 4_000_000],
+        );
+        assert_eq!(seen[1].marker.marker_name, b"m2");
+        assert_eq!(seen[1].marker.description, b"id-2");
+    }
+
+    /// Without a sink, markers stay invisible to the frame adapter —
+    /// the pre-existing contract, and what every non-import consumer
+    /// (the remote pumps, the replay tests) relies on.
+    #[test]
+    fn without_a_sink_markers_are_skipped_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("unwatched.blf");
+        let mut w = BlfCaptureWriter::create(&dest).unwrap();
+        w.append_marker(TS_BASE_NS, "m", "id", 0).unwrap();
+        w.append(
+            &CanFrame::classic(
+                TS_BASE_NS,
+                0,
+                CanId::standard(0x1).unwrap(),
+                Direction::Rx,
+                vec![],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        w.finish().unwrap();
+
+        let mut src = BlfCanFrameSource::open(&dest).unwrap();
+        assert!(src.next_frame().unwrap().is_some());
+        assert!(src.next_frame().unwrap().is_none());
     }
 
     /// Writes succeed across many frames, atomic rename actually

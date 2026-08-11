@@ -1190,11 +1190,16 @@ fire-and-forget), so this is "what was sent", not "what timing
 registers the controller landed on" — which no layer of the stack
 reports.
 
-**BLF channel mapping**. Opening a BLF now pre-scans the file for its
-distinct channels (capped at 200k frames for huge BLFs) and shows a
-modal where each channel is mapped to a logical bus or marked as
-"skip". Skipped channels are dropped before they reach the trace
-store; mapped channels stream in tagged with their bus.
+**BLF channel mapping**. Opening a BLF pre-scans the file for its
+distinct channels and shows a modal where each channel is mapped to a
+logical bus or marked as "skip". Skipped channels are dropped before
+they reach the trace store; mapped channels stream in tagged with their
+bus. The scan is header-only — it reads each object's channel field
+without decoding the frame — so it covers the **whole** file however
+large: a channel that first appears near the end still gets a mapping
+row. The import itself is then a single pass through the shared ingest
+pump ([ADR 0046](docs/adr/0046-one-ingest-pathway.md)), with the
+capture's `GLOBAL_MARKER` notes collected on that same pass.
 
 **Per-bus DBC scoping**. Each DBC entry in the project panel grows a
 row of checkboxes — one per defined logical bus — that control which

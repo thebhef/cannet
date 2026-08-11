@@ -127,11 +127,11 @@ use app_state::{invalidate_derived_caches, LoadedDbc};
 use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
+#[cfg(test)]
+use capture::write_capture;
 use capture::{
     clear_trace_store, open_log, restore_scratch_capture, save_capture, scan_blf_channels,
 };
-#[cfg(test)]
-use capture::{read_notes_from_blf, write_capture};
 #[cfg(test)]
 use dbc_commands::decode_against;
 use dbc_commands::{
