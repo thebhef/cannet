@@ -56,6 +56,11 @@ pub struct SampleSeq {
     /// Count of dropped leading segments — the absolute number of `segs[0]`.
     /// An absolute segment number `s` addresses `segs[s - seg_base]`.
     seg_base: usize,
+    /// Slot up to which [`Self::flush`] has already waited for the device.
+    /// The `[flushed, len)` residue is what the next flush has to write, so
+    /// a caller that flushes on a cadence leaves a shutdown flush a small,
+    /// bounded amount of work instead of the whole run.
+    flushed: usize,
 }
 
 impl SampleSeq {
@@ -70,6 +75,7 @@ impl SampleSeq {
             len: 0,
             first_slot: 0,
             seg_base: 0,
+            flushed: 0,
         }
     }
 
@@ -152,6 +158,9 @@ impl SampleSeq {
                 len: runs[n].1,
                 first_slot: runs[n].2,
                 seg_base,
+                // A run that came off disk is on disk: nothing is owed
+                // until something is appended to it.
+                flushed: runs[n].1,
             });
         }
         Ok(Some(out.into_iter().flatten().collect()))
@@ -242,11 +251,81 @@ impl SampleSeq {
         self.len += 1;
     }
 
-    /// Flush every mapped segment so the run is durable.
-    pub fn flush(&self) -> std::io::Result<()> {
-        for seg in &self.segs {
-            seg.map.flush()?;
+    /// Entries appended since the last successful [`Self::flush`] — the
+    /// residue a flush still owes the device.
+    pub fn unflushed(&self) -> usize {
+        self.len - self.flushed.min(self.len)
+    }
+
+    /// Wait for the device to take every entry appended since the last
+    /// flush, so the run is durable up to its current length — the
+    /// shutdown path.
+    ///
+    /// # Errors
+    /// Propagates the `msync` / `FlushFileBuffers` failure, leaving the
+    /// residue where it was so the next flush retries it.
+    pub fn flush(&mut self) -> std::io::Result<()> {
+        self.flush_upto(self.len)
+    }
+
+    /// Wait for the device to take up to `budget` **sealed** segments,
+    /// leaving the one segment appends still land in — the periodic path.
+    /// Decrements `budget` by the number of segments it waited on.
+    ///
+    /// A segment is sealed once the chain has grown past it: nothing can
+    /// dirty its pages again, so it is waited on exactly once, ever. The
+    /// hot tail is the opposite — every append re-dirties it, so a
+    /// cadence that flushed it would wait on the same file every tick for
+    /// as long as the capture runs, and *still* leave it dirty.
+    ///
+    /// The budget is the other half. Sealing is bursty — a bus's plotted
+    /// signals share a rate, so their chains grow past a segment boundary
+    /// on the same tick — and an unbounded cadence turns that into one
+    /// long device stall. A sealed segment can wait, so the ones over
+    /// budget simply go on the next tick; nothing re-dirties in the
+    /// meantime, so the work never grows.
+    ///
+    /// # Errors
+    /// As [`Self::flush`]. Segments already waited on keep their
+    /// progress.
+    pub fn flush_sealed(&mut self, budget: &mut usize) -> std::io::Result<()> {
+        let n = self.cum_cap.len();
+        // `cum_cap` is cumulative and absolute, so the last entry's
+        // predecessor is the first slot of the segment appends land in.
+        let hot_start = if n >= 2 { self.cum_cap[n - 2] } else { 0 };
+        if self.flushed >= hot_start {
+            return Ok(());
         }
+        let last_sealed = self.locate(hot_start - 1).0;
+        let mut seg = self.locate(self.flushed).0.max(self.seg_base);
+        while seg <= last_sealed && *budget > 0 {
+            self.segs[seg - self.seg_base].map.flush()?;
+            *budget -= 1;
+            // The end of the segment just taken, which is where the next
+            // cadence tick picks up.
+            self.flushed = self.cum_cap[seg];
+            seg += 1;
+        }
+        Ok(())
+    }
+
+    /// Flush the segments spanning `[flushed, upto)` — from the segment
+    /// holding the residue's first slot, which may already have been
+    /// flushed once while partly filled, and never below the leading
+    /// segments eviction has since dropped.
+    fn flush_upto(&mut self, upto: usize) -> std::io::Result<()> {
+        let upto = upto.min(self.len);
+        if self.flushed >= upto {
+            return Ok(());
+        }
+        let first = self.locate(self.flushed).0.max(self.seg_base);
+        let last = self.locate(upto - 1).0;
+        if last >= first {
+            for seg in &self.segs[first - self.seg_base..=last - self.seg_base] {
+                seg.map.flush()?;
+            }
+        }
+        self.flushed = upto;
         Ok(())
     }
 }
@@ -510,5 +589,175 @@ mod tests {
         }
         seq.flush().unwrap();
         assert_eq!(seq.get(199), (199.0, -199.0));
+    }
+
+    #[test]
+    fn a_flush_clears_the_residue_and_the_next_appends_rebuild_it() {
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        assert_eq!(seq.unflushed(), 0, "an empty run owes nothing");
+        for i in 0..10u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        assert_eq!(seq.unflushed(), 10);
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+        // Straight back into the *same* (partly filled) segment: the next
+        // flush has to cover the segment it already flushed once, not start
+        // after it.
+        for i in 10..20u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        assert_eq!(seq.unflushed(), 10);
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+        let back = SampleSeq::reopen(dir.path(), "sig.l0", 20, 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.get(19), (19.0, -19.0));
+        assert_eq!(back.unflushed(), 0, "a reopened run is already on disk");
+    }
+
+    #[test]
+    fn a_sealed_flush_leaves_the_hot_tail_owing_and_a_full_one_takes_it() {
+        // More budget than any of these runs can spend, so what the
+        // assertions pin is the sealed-vs-hot line and not the budget.
+        let mut ample = usize::MAX;
+        // The cadence's flush waits only on segments that can never be
+        // written to again. The tail is where every append lands, so
+        // flushing it on a cadence means waiting on the same file over
+        // and over for as long as the capture runs — and it is still
+        // dirty afterwards. Only the shutdown flush takes it.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        // 100 entries: segment 0 (cap 64) is sealed, segment 1 is hot.
+        for i in 0..100u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        seq.flush_sealed(&mut ample).unwrap();
+        assert_eq!(seq.unflushed(), 100 - 64, "the hot tail is still owed");
+        // Running the cadence again with nothing sealed since costs
+        // nothing and changes nothing — that is the whole point.
+        seq.flush_sealed(&mut ample).unwrap();
+        assert_eq!(seq.unflushed(), 100 - 64);
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+    }
+
+    #[test]
+    fn a_sealed_flush_owes_everything_while_the_run_is_one_segment() {
+        // More budget than any of these runs can spend, so what the
+        // assertions pin is the sealed-vs-hot line and not the budget.
+        let mut ample = usize::MAX;
+        // Nothing is sealed until the chain grows, so a short run's
+        // cadence flush is a no-op and its shutdown flush does all of it.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        seq.flush_sealed(&mut ample).unwrap();
+        assert_eq!(seq.unflushed(), 0, "an empty run owes nothing either way");
+        for i in 0..10u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        seq.flush_sealed(&mut ample).unwrap();
+        assert_eq!(seq.unflushed(), 10);
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+    }
+
+    #[test]
+    fn sealing_advances_what_the_cadence_will_take_next() {
+        // More budget than any of these runs can spend, so what the
+        // assertions pin is the sealed-vs-hot line and not the budget.
+        let mut ample = usize::MAX;
+        // What makes the cadence bounded: each segment is waited on
+        // exactly once, when it seals, and never again.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..64u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        // Still one segment, so nothing has sealed.
+        seq.flush_sealed(&mut ample).unwrap();
+        assert_eq!(seq.unflushed(), 64);
+        // The 65th push opens segment 1 and seals segment 0.
+        seq.push(64.0, -64.0);
+        seq.flush_sealed(&mut ample).unwrap();
+        assert_eq!(seq.unflushed(), 1, "only the new segment's entry is owed");
+    }
+
+    #[test]
+    fn a_budgeted_sealed_flush_stops_at_its_budget_and_resumes_next_time() {
+        // Sealing is bursty, and a device wait is a barrier everything
+        // else queues behind, so the cadence spends a fixed number per
+        // call. What it defers is immutable, so it is still there — and
+        // no more than there was — on the next call.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        // 1000 entries: segments of 64/128/256/512 are sealed, the fifth
+        // is hot.
+        for i in 0..1000u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        let sealed_end = 64 + 128 + 256 + 512;
+        assert_eq!(seq.unflushed(), 1000);
+
+        let mut budget = 2usize;
+        seq.flush_sealed(&mut budget).unwrap();
+        assert_eq!(budget, 0, "the budget was spent");
+        assert_eq!(seq.unflushed(), 1000 - (64 + 128), "two segments taken");
+
+        let mut budget = 2usize;
+        seq.flush_sealed(&mut budget).unwrap();
+        assert_eq!(budget, 0);
+        assert_eq!(
+            seq.unflushed(),
+            1000 - sealed_end,
+            "the rest of the sealed run"
+        );
+
+        // Caught up: further calls cost nothing and leave the hot tail.
+        let mut budget = 4usize;
+        seq.flush_sealed(&mut budget).unwrap();
+        assert_eq!(budget, 4, "nothing sealed was left to take");
+        assert_eq!(seq.unflushed(), 1000 - sealed_end);
+
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+    }
+
+    #[test]
+    fn a_spent_budget_leaves_the_next_run_nothing_to_spend() {
+        // The budget is shared across a whole pyramid, so a run reached
+        // with none left must do nothing at all — not "at least one".
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..1000u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        let mut budget = 0usize;
+        seq.flush_sealed(&mut budget).unwrap();
+        assert_eq!(seq.unflushed(), 1000);
+    }
+
+    #[test]
+    fn a_flush_after_a_trim_stays_inside_the_surviving_segments() {
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        for i in 0..100u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        seq.flush().unwrap();
+        for i in 100..600u32 {
+            seq.push(f64::from(i), -f64::from(i));
+        }
+        // The residue now starts below the floor eviction is about to raise,
+        // and the segment holding its first slot is dropped outright — so a
+        // flush that indexes from the residue would address a segment that
+        // is no longer mapped.
+        seq.evict_below(500);
+        assert!(seq.first_slot() > 600 - seq.unflushed());
+        seq.flush().unwrap();
+        assert_eq!(seq.unflushed(), 0);
+        assert_eq!(seq.get(599), (599.0, -599.0));
     }
 }

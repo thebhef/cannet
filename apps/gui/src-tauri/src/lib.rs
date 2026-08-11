@@ -671,14 +671,14 @@ pub fn run() -> ! {
                 if let Err(e) = state.trace_store.flush() {
                     tracing::warn!(error = %e, "shutdown trace flush failed");
                 }
-                // Record what the signal pyramids are valid against —
-                // this is what the *next* launch reads instead of
-                // re-decoding the whole history (ADR 0047). After the
-                // trace flush, so the low-water mark in the key is the one
-                // the raw store just persisted. The level files' own
-                // writeback is left to the OS, so this is one small JSON
-                // write and exit does not wait on the pyramid scratch.
-                emitters::persist_pyramids(&state);
+                // Harden the signal pyramids the same way, and record what
+                // they are valid against — this is what the *next* launch
+                // reads instead of re-decoding the whole history (ADR
+                // 0047). After the trace flush, so the low-water mark in
+                // the key is the one the raw store just persisted. The
+                // flusher hardens each segment as it seals, so what is
+                // left to write here is one tail segment per level.
+                emitters::persist_pyramids(&state, signal_cache::Harden::All);
             }
         }
     });

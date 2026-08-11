@@ -133,6 +133,25 @@ describe("formatChord", () => {
 });
 
 describe("dispatchStroke", () => {
+  const ctrlF: KeyStroke = { key: "f", ctrl: true, meta: false, shift: false, alt: false };
+
+  it("claims the browser's own find chord even when nothing is bound to it", () => {
+    // A WebView2 window has no business showing a browser find bar, and
+    // it does not ask first: unless the page cancels the key, the bar
+    // appears over the app. Nothing may be bound (no findable panel is
+    // focused, or the user unbound it), so the claim cannot come from a
+    // binding — it is the dispatcher refusing to let the chord out.
+    const out = dispatchStroke([], ctrlF, [], { isMac: false, inEditable: false });
+    expect(out.handled).toBe(true);
+    expect(out.commandId).toBeNull();
+  });
+
+  it("still runs the command when the find chord is bound", () => {
+    const bound = [{ chord: parseChord("Mod+F"), commandId: "panel.find" }];
+    const out = dispatchStroke([], ctrlF, bound, { isMac: false, inEditable: false });
+    expect(out).toEqual({ pending: [], commandId: "panel.find", handled: true });
+  });
+
   const bindings = [
     { chord: parseChord("f"), commandId: "plot.fitXAxis" },
     { chord: parseChord("Mod+Shift+P"), commandId: "palette.show" },

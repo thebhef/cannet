@@ -18,6 +18,7 @@ use cannet_core::{CanFrame as CoreCanFrame, CanId};
 use crate::app_state::AppState;
 use crate::ipc::{LogFinished, OpenLogResult};
 use crate::notes::{self, Note};
+use crate::sampling::off_async_workers;
 use crate::trace_store;
 use crate::{sys_debug, sys_error, sys_info, sys_warn};
 // `run_pump` / `panic_message` live in `session` once it is split out;
@@ -476,49 +477,56 @@ pub struct BlfScanResult {
 /// timestamps for free (ADR 0046), so the dialog's markers gridview and
 /// metadata line cost nothing beyond this one pass.
 ///
-/// `async` so Tauri runs it off the main thread — the walk covers the
-/// whole file and we don't want to freeze the UI while it runs.
+/// `async` so Tauri runs it off the main thread, and the body itself on
+/// the blocking pool ([`off_async_workers`]): the walk covers the whole
+/// file, so its duration scales with the capture — 20 s at the reference
+/// scale in a dev build — and that is exactly the work an async worker
+/// must not be holding (ADR 0048). Freezing the UI is not the only cost
+/// of getting this wrong; a parked worker is one the close path may
+/// need.
 #[tauri::command]
-#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
 pub(crate) async fn scan_blf_channels(
     app: AppHandle,
     blf_path: String,
 ) -> Result<BlfScanResult, String> {
-    let started = std::time::Instant::now();
-    let scan = match cannet_blf::scan_blf(&blf_path) {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = e.to_string();
-            sys_error!(&app, "blf-import", "BLF scan failed: {msg}");
-            return Err(msg);
-        }
-    };
-    // What the census cost, and what it found — a slow import starts
-    // here, so the log says how much of it was the scan.
-    sys_debug!(
-        &app,
-        "blf-import",
-        "scanned {blf_path} in {ms:.0} ms: {frames} frame(s) on {channels} channel(s), \
-         {markers} marker(s)",
-        ms = started.elapsed().as_secs_f64() * 1000.0,
-        frames = scan.frame_count,
-        channels = scan.channels.len(),
-        markers = scan.markers.len(),
-    );
-    let mut synthetic_idx = 0u64;
-    let markers = scan
-        .markers
-        .iter()
-        .map(|m| note_from_marker(m, &mut synthetic_idx))
-        .collect();
-    Ok(BlfScanResult {
-        channels: scan.channels,
-        frame_count: scan.frame_count,
-        first_timestamp_ns: scan.first_timestamp_ns,
-        last_timestamp_ns: scan.last_timestamp_ns,
-        start_unix_nanos: scan.start_unix_nanos,
-        markers,
+    off_async_workers(move || {
+        let started = std::time::Instant::now();
+        let scan = match cannet_blf::scan_blf(&blf_path) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = e.to_string();
+                sys_error!(&app, "blf-import", "BLF scan failed: {msg}");
+                return Err(msg);
+            }
+        };
+        // What the census cost, and what it found — a slow import starts
+        // here, so the log says how much of it was the scan.
+        sys_debug!(
+            &app,
+            "blf-import",
+            "scanned {blf_path} in {ms:.0} ms: {frames} frame(s) on {channels} channel(s), \
+             {markers} marker(s)",
+            ms = started.elapsed().as_secs_f64() * 1000.0,
+            frames = scan.frame_count,
+            channels = scan.channels.len(),
+            markers = scan.markers.len(),
+        );
+        let mut synthetic_idx = 0u64;
+        let markers = scan
+            .markers
+            .iter()
+            .map(|m| note_from_marker(m, &mut synthetic_idx))
+            .collect();
+        Ok(BlfScanResult {
+            channels: scan.channels,
+            frame_count: scan.frame_count,
+            first_timestamp_ns: scan.first_timestamp_ns,
+            last_timestamp_ns: scan.last_timestamp_ns,
+            start_unix_nanos: scan.start_unix_nanos,
+            markers,
+        })
     })
+    .await
 }
 
 /// Drop every stored frame and start a fresh session timeline rooted

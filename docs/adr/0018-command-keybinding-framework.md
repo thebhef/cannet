@@ -26,12 +26,27 @@ command, with a one-click reset back to `DEFAULT_BINDINGS`.
 Storage is the **whole effective list** (`keybindings: BindingSpec[]`
 or `null`). `null` — the default — means "use `DEFAULT_BINDINGS`";
 customising materialises the defaults into the array and saves it
-whole; reset writes `null` again. The one cost of whole-list storage:
-a user who has customised does **not** automatically receive new
-built-in defaults added in a later app version (their saved list is
-authoritative until they reset). This is an accepted trade for a
-model that is trivial to reason about and matches how `settings.json`
-already round-trips whole structs.
+whole; reset writes `null` again. That matches how `settings.json`
+already round-trips whole structs, and it is trivial to reason about.
+
+**A stored list is a snapshot, so what it does not mention is still
+shipped.** Whole-list storage was originally accepted with the cost
+that a user who had customised anything would never receive a default
+added in a later version. That cost turned out to be unpayable: it is
+silent — the palette lists *commands*, so a command with no binding
+looks exactly like one whose chord you have forgotten — and it is
+permanent, so one edit ever made freezes that install's shortcut set
+for good. So the resolve folds every default the stored list says
+nothing about back in. What the list *does* say wins: a command it
+rebinds keeps the user's chord, and a chord it reuses beats the
+default that wanted it (the defaults are appended last, so the
+conflict rule below rejects the loser).
+
+That leaves absence meaning "shipped later", which it cannot also mean
+"removed". So a removal is **recorded**: the editor writes the binding
+back with a `disabled` marker instead of dropping it. A disabled entry
+never dispatches and never renders; its only job is to keep its
+default from returning.
 
 **No keystroke ambiguity — conflicts are rejected, not resolved.**
 Two commands reachable by the same keystrokes (equal chords, or one a
@@ -75,6 +90,19 @@ commands, and therefore bindable and rebindable like the rest.
 
 Both carry `skipEditable`: while a text field has focus the chord is
 the browser's own text undo, not the view's.
+
+**A few chords are claimed from the browser whether or not they are
+bound.** The window is a WebView, and the browser underneath acts on
+some keystrokes itself unless the page cancels them — `Mod+F` raises a
+find-on-page bar over the application. It does not ask first, so the
+only way to keep it off is to cancel the key every time, including
+when no command is available to run. Such a chord is swallowed, never
+repurposed: the dispatcher reports it handled and runs nothing.
+
+The list is deliberately short, and is *not* "every chord we have a
+binding for". A binding may be context-gated and must still fall
+through where it does not apply — plain `Escape` is the standing
+example, since modals and in-panel handlers need it.
 
 ## Why
 

@@ -52,6 +52,11 @@ export interface StatusInputs {
   bufferSeconds: number;
   scratchBytes: number | null;
   memBytes: number | null;
+  /// The BLF whose channel census is being walked right now, or `null`.
+  /// The walk covers the whole file before the mapping dialog has
+  /// anything to show, so on a large log the pick-a-file gesture is
+  /// followed by seconds of nothing — this is what says why.
+  scanningBlfPath: string | null;
 }
 
 /// Classify the current app state into a resting line + optional
@@ -84,6 +89,13 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
       : "";
   const residency = `${frames}${fps}${buf}${mem}${cache}`;
   const idlePrompt = `Open a BLF log or connect to a server to begin. ${dbc}.`;
+
+  // A census in flight outranks everything below: it is the only thing
+  // the user is waiting on, and the session it may be about to replace
+  // is not. Ongoing activity, so it rests rather than flashing.
+  if (inp.scanningBlfPath != null) {
+    return { resting: `Scanning ${shortenPath(inp.scanningBlfPath)} … ${dbc}.`, transient: null };
+  }
 
   // Remote sessions take priority over the BLF idle/done line — the user
   // is actively streaming. Running sessions form the resting residency

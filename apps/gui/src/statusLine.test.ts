@@ -16,6 +16,7 @@ function inputs(over: Partial<StatusInputs>): StatusInputs {
     bufferSeconds: 0,
     scratchBytes: null,
     memBytes: null,
+    scanningBlfPath: null,
     ...over,
   };
 }
@@ -29,6 +30,25 @@ describe("splitStatus", () => {
   it("idle is resting, no transient", () => {
     const { resting, transient } = splitStatus(inputs({}));
     expect(transient).toBeNull();
+    expect(resting).toMatch(/Open a BLF log/);
+  });
+
+  it("a BLF scan is resting activity, and outranks whatever the session was showing", () => {
+    // The census walks the whole file before the mapping dialog can be
+    // built, which is seconds on a large log. It is ongoing activity, so
+    // it reads like the load line rather than flashing as a notice — and
+    // it shows over a session that is already loaded, because that
+    // session's residency line is not what the user is waiting on.
+    const state: LogState = { kind: "running", result: { blf_path: "/logs/drive.blf" } };
+    const { resting, transient } = splitStatus(
+      inputs({ state, count: 1000, scanningBlfPath: "/logs/next.blf" }),
+    );
+    expect(transient).toBeNull();
+    expect(resting).toMatch(/Scanning next\.blf/);
+  });
+
+  it("no scan in flight leaves the line alone", () => {
+    const { resting } = splitStatus(inputs({ scanningBlfPath: null }));
     expect(resting).toMatch(/Open a BLF log/);
   });
 

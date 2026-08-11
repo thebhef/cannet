@@ -202,6 +202,82 @@ describe("applyAreaSelections", () => {
     applyAreaSelections([withPatterns], CATALOG, BUSES);
     expect(withPatterns.signals.length).toBe(before);
   });
+
+  it("keeps a pattern-derived row where it was when hiding materializes it", () => {
+    // Hiding a pattern row writes an entry into `signals` to carry the
+    // flag. That entry must not double as a claim on the row's
+    // position: a row moves when the user moves it, never as a side
+    // effect of being hidden.
+    const patterns = ["^powertrain/"];
+    const before: SelectableArea = { id: "a", signals: [], patterns };
+    const order = applyAreaSelections([before], CATALOG, BUSES)[0].signals.map(
+      (s) => s.signalName,
+    );
+    expect(order).toEqual(["EngineSpeed", "EngineTemp"]);
+
+    // Hide the *second* one, as the panel does.
+    const hiddenSecond: SelectableArea = {
+      id: "a",
+      patterns,
+      signals: [
+        {
+          busId: "bus-a",
+          messageId: 256,
+          extended: false,
+          signalName: "EngineTemp",
+          messageName: "EngineData",
+          unit: "degC",
+          hidden: true,
+          viaPattern: true,
+        },
+      ],
+    };
+    const after = applyAreaSelections([hiddenSecond], CATALOG, BUSES)[0].signals;
+    expect(after.map((s) => s.signalName)).toEqual(order);
+    expect(after[1].hidden).toBe(true);
+  });
+
+  it("still puts a row the user placed where they placed it", () => {
+    // The drag path materializes without the marker, because a drop
+    // *is* a claim on position. Such an entry keeps the manual block.
+    const dragged: SelectableArea = {
+      id: "a",
+      patterns: ["^powertrain/"],
+      signals: [
+        {
+          busId: "bus-a",
+          messageId: 256,
+          extended: false,
+          signalName: "EngineTemp",
+          messageName: "EngineData",
+          unit: "degC",
+        },
+      ],
+    };
+    const out = applyAreaSelections([dragged], CATALOG, BUSES)[0].signals;
+    expect(out.map((s) => s.signalName)).toEqual(["EngineTemp", "EngineSpeed"]);
+  });
+
+  it("keeps a marked row that no longer matches any pattern", () => {
+    const orphan: SelectableArea = {
+      id: "a",
+      patterns: ["^chassis/"],
+      signals: [
+        {
+          busId: "bus-a",
+          messageId: 256,
+          extended: false,
+          signalName: "EngineTemp",
+          messageName: "EngineData",
+          unit: "degC",
+          hidden: true,
+          viaPattern: true,
+        },
+      ],
+    };
+    const out = applyAreaSelections([orphan], CATALOG, BUSES)[0].signals;
+    expect(out.map((s) => s.signalName)).toEqual(["EngineTemp", "Mode"]);
+  });
 });
 
 describe("reorderSectionNames", () => {

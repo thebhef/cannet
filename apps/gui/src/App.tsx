@@ -1053,6 +1053,9 @@ export function App() {
     blfPath: string;
     scan: BlfScanResult;
   } | null>(null);
+  // The BLF whose census is walking right now — the status line's
+  // only sign of life between picking a file and the dialog opening.
+  const [scanningBlfPath, setScanningBlfPath] = useState<string | null>(null);
 
   const handleOpenLog = useCallback(
     async (presetPath?: string) => {
@@ -1065,6 +1068,10 @@ export function App() {
             });
       if (typeof selected !== "string") return;
 
+      // The census walks the whole file, which is seconds on a large
+      // log and all of it before the mapping dialog exists. Say so, or
+      // the pick lands on an app that looks like it did nothing.
+      setScanningBlfPath(selected);
       try {
         const scan = await invoke<BlfScanResult>("scan_blf_channels", {
           blfPath: selected,
@@ -1076,6 +1083,8 @@ export function App() {
         // moved, file deleted), drop it from the recents list so
         // it doesn't keep being offered.
         if (presetPath) dropRecentBlf(presetPath);
+      } finally {
+        setScanningBlfPath(null);
       }
     },
     [dropRecentBlf],
@@ -2650,6 +2659,7 @@ export function App() {
         bufferSeconds,
         scratchBytes,
         memBytes,
+        scanningBlfPath,
       }),
     [
       state,
@@ -2661,6 +2671,7 @@ export function App() {
       bufferSeconds,
       scratchBytes,
       memBytes,
+      scanningBlfPath,
     ],
   );
   // Transient status notices (errors, completions, remote connect/error

@@ -313,6 +313,28 @@ impl SignalCache {
         }
     }
 
+    /// Wait for the device to take this signal's level pages, so a
+    /// persisted manifest never describes bytes the disk has not been
+    /// given (ADR 0047). `harden` decides how much: [`Harden::Sealed`]
+    /// takes only what has come to rest, [`Harden::All`] takes the hot
+    /// tails too. Best-effort per level, like every other scratch
+    /// durability point (ADR 0002 DS-2).
+    fn flush_levels(&mut self, harden: Harden, budget: &mut usize) {
+        for level in &mut self.levels {
+            let _ = match harden {
+                Harden::Sealed { .. } => level.flush_sealed(budget),
+                Harden::All => level.flush(),
+            };
+        }
+    }
+
+    /// Entries across every level still owed to the device — the work a
+    /// flush from here would do.
+    #[cfg(test)]
+    fn unflushed(&self) -> usize {
+        self.levels.iter().map(SampleSeq::unflushed).sum()
+    }
+
     /// The `(prefix, len, first_slot)` runs a manifest row's levels reopen
     /// from — see [`SampleSeq::reopen_many`], which the whole restore goes
     /// through in **one** batch so its thousands of segment files are
@@ -517,6 +539,57 @@ fn window_slice(level: &SampleSeq, from: f64, to: f64) -> Vec<SamplePoint> {
 /// of its bus tag, used by old plot panels that pre-date per-bus
 /// signal binding.
 type SignalKey = (Option<String>, u32, bool, String);
+
+/// Segment files one periodic [`SignalCacheStore::persist`] may wait on
+/// the device for **while frames are arriving**. Sealing is bursty —
+/// signals sharing a bus rate cross a segment boundary on the same tick —
+/// and each wait is a device barrier that everything else on the volume
+/// queues behind, so an unbounded tick lands as one long stall in the
+/// middle of a live capture. Two keeps a tick inside the band the raw
+/// store's own periodic flush already occupies (ADR 0031's `flush_ms`,
+/// ~4 ms mean / ~10 ms max), and the sealed segments it defers cannot
+/// change while they wait.
+const LIVE_FLUSH_BUDGET: usize = 2;
+
+/// The same budget once **nothing is arriving** — a stopped capture, a
+/// finished import, a restored session being plotted. There is no
+/// receive cadence left to disturb, so the only reason to hold back is
+/// gone, and the backlog a rebuild just created is worth draining before
+/// the user quits rather than making them wait for it then.
+const IDLE_FLUSH_BUDGET: usize = 64;
+
+/// How much of a pyramid a [`SignalCacheStore::persist`] waits on the
+/// device for (ADR 0047).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Harden {
+    /// Up to `budget` segments that have come to rest — the periodic
+    /// cadence. A sealed segment's pages can never be dirtied again, so
+    /// each file is waited on exactly once ever, and a live capture's hot
+    /// tail is left alone instead of being re-flushed on every tick. The
+    /// caller sets the budget because the caller is what knows whether
+    /// there is a receive cadence to protect: [`live_budget`] /
+    /// [`idle_budget`].
+    Sealed { budget: usize },
+    /// Every page, hot tails included — the shutdown path. Bounded by
+    /// what the cadence left behind.
+    All,
+}
+
+impl Harden {
+    /// The periodic flavour for a tick during which frames arrived.
+    pub fn live_budget() -> Self {
+        Self::Sealed {
+            budget: LIVE_FLUSH_BUDGET,
+        }
+    }
+
+    /// The periodic flavour for a tick during which none did.
+    pub fn idle_budget() -> Self {
+        Self::Sealed {
+            budget: IDLE_FLUSH_BUDGET,
+        }
+    }
+}
 
 /// A stable, filesystem-safe file-name base for a signal's pyramid levels:
 /// `sig.{s|e}{id:08x}.{hash:016x}`. The id and extended flag are encoded
@@ -963,10 +1036,11 @@ impl SignalCacheStore {
     /// over the same capture serves them instead of re-decoding the whole
     /// history. A no-op when nothing has moved since the last write.
     ///
-    /// Writeback of the level files themselves is left to the OS — the
-    /// DS-2 relaxation the raw store's async flush takes, and the whole
-    /// cost of this call at exit (ADR 0047). The manifest is small and is
-    /// written with the normal file API, so it lands regardless.
+    /// The level pages are flushed **first**, so the manifest never
+    /// describes bytes the disk has not been given (ADR 0047). How much
+    /// is waited on is `harden`'s: the periodic caller takes the sealed
+    /// segments, which is what leaves the shutdown caller a residue of
+    /// one tail segment per level instead of a whole pyramid.
     ///
     /// Also a no-op while a set is still **staged**: an unjudged candidate
     /// is never overwritten, because the manifest is the only thing that
@@ -982,11 +1056,30 @@ impl SignalCacheStore {
         caches.dirty && caches.staged.is_none()
     }
 
+    /// Level entries across every cached signal still owed to the device.
+    #[cfg(test)]
+    fn unflushed(&self) -> usize {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        caches.by_key.values().map(SignalCache::unflushed).sum()
+    }
+
     /// Returns whether a manifest was written.
-    pub fn persist(&self, validity: &PyramidValidity) -> bool {
+    pub fn persist(&self, validity: &PyramidValidity, harden: Harden) -> bool {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         if !caches.dirty || caches.staged.is_some() {
             return false;
+        }
+        // The cadence spends a bounded number of device waits per call,
+        // whoever needs them; a signal whose backlog it clears stops
+        // asking, so the next call reaches the ones behind it and the
+        // whole set drains without any of them being starved. The
+        // shutdown flavour has no budget — it must leave nothing.
+        let mut budget = match harden {
+            Harden::Sealed { budget } => budget,
+            Harden::All => usize::MAX,
+        };
+        for cache in caches.by_key.values_mut() {
+            cache.flush_levels(harden, &mut budget);
         }
         let manifest = PyramidManifest {
             validity: validity.clone(),
@@ -2918,7 +3011,7 @@ mod tests {
 
         let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
             assert!(cache.needs_persist());
-            assert!(cache.persist(&v));
+            assert!(cache.persist(&v, Harden::All));
             cache.clear();
         });
         assert!(finished, "the exit path waited for the rebuild");
@@ -2964,8 +3057,82 @@ mod tests {
         let cache = SignalCacheStore::new(root);
         let built = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(built.len(), 200);
-        cache.persist(v);
+        cache.persist(v, Harden::All);
         store.len()
+    }
+
+    #[test]
+    fn a_shutdown_persist_leaves_the_levels_owing_the_device_nothing() {
+        // ADR 0047's shutdown rule: a manifest is only ever written over
+        // pages the disk has already been given, and the shutdown flavour
+        // leaves nothing behind at all.
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let root = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(root.path());
+        let v = validity("capture-a", "dbc-a", 0);
+
+        let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(cache.unflushed() > 0, "a fresh pyramid owes its pages");
+        assert!(cache.persist(&v, Harden::All));
+        assert_eq!(
+            cache.unflushed(),
+            0,
+            "the manifest went out over flushed pages"
+        );
+
+        // And with nothing appended since, the next one has nothing to do.
+        cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
+        assert_eq!(cache.unflushed(), 0);
+        assert!(cache.persist(&v, Harden::All));
+        assert_eq!(cache.unflushed(), 0);
+    }
+
+    #[test]
+    fn the_cadence_persist_never_waits_on_the_hot_tail() {
+        // The periodic caller's whole job is to shrink what a quit owes
+        // without paying for pages that are about to be dirtied again. A
+        // live capture appends into one segment per level for hours, so a
+        // cadence that flushed it would wait on the same files every tick
+        // and *still* leave them dirty. It writes the manifest either way
+        // — the manifest describes what has been flushed, and the tail's
+        // own entries are re-read from the raw frames if a crash loses
+        // them.
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let root = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(root.path());
+        let v = validity("capture-a", "dbc-a", 0);
+
+        let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let owed = cache.unflushed();
+        assert!(owed > 0);
+        assert!(
+            cache.persist(&v, Harden::live_budget()),
+            "the manifest is written"
+        );
+        let after = cache.unflushed();
+        assert!(after > 0, "the hot tail is deliberately still owed");
+        assert!(after < owed, "…but the sealed segments were taken");
+
+        // Running it again with nothing sealed since is free and changes
+        // nothing — the property the live regime depends on.
+        cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
+        assert!(cache.persist(&v, Harden::live_budget()));
+        assert_eq!(cache.unflushed(), after);
+
+        // The quit behind it still takes everything.
+        cache.evict_below(f64::NEG_INFINITY);
+        assert!(cache.persist(&v, Harden::All));
+        assert_eq!(cache.unflushed(), 0);
     }
 
     #[test]
@@ -3089,7 +3256,7 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(
-            !reopened.persist(&validity("capture-b", "dbc-a", 0)),
+            !reopened.persist(&validity("capture-b", "dbc-a", 0), Harden::All),
             "nothing is written while a candidate is unjudged",
         );
         // …so the candidate is still there to be judged.
@@ -3163,7 +3330,7 @@ mod tests {
         let cache = SignalCacheStore::new(root.path());
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         cache.evict_below(1000.0);
-        cache.persist(&v);
+        cache.persist(&v, Harden::All);
 
         let reopened = SignalCacheStore::new(root.path());
         assert_eq!(reopened.restore(&v, store.len()), 1);
@@ -3213,6 +3380,123 @@ mod tests {
     // catching each message's signals up together, as a plot fetch does.
     // The shared arm runs first, off cold pages, so the ratio between them
     // is a lower bound.
+
+    /// What one flush cadence tick costs a **live** capture — the regime
+    /// the ADR-0031 gate runs in, and the one the rebuild benchmark
+    /// above says nothing about. A live session's pyramids advance by a
+    /// tick's worth of points, so every level's *hot tail* segment is
+    /// re-dirtied and re-flushed while nothing else moves; the question
+    /// is what waiting on the device for those files costs, per tick,
+    /// on the thread the periodic flusher runs on.
+    ///
+    /// ```sh
+    /// CANNET_BENCH_SIGNALS=16 CANNET_BENCH_TICKS=20 \
+    ///   cargo test -p cannet-gui --release bench_live_cadence_flush \
+    ///   -- --ignored --nocapture
+    /// ```
+    ///
+    /// Defaults model the gate: 1631 frames/s spread over 173 bus ids of
+    /// which 16 are plotted, a 2 s tick, and a capture already caught up.
+    /// The id count matters as much as the plotted count — it is what
+    /// decides how fast a plotted signal's own chain grows, and so how
+    /// often a segment seals.
+    #[test]
+    #[ignore = "live flush-cadence benchmark; run with --ignored --nocapture"]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    fn bench_live_cadence_flush() {
+        fn env_usize(name: &str, default: usize) -> usize {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(default)
+        }
+
+        let signals = env_usize("CANNET_BENCH_SIGNALS", 16);
+        let ids = env_usize("CANNET_BENCH_IDS", 173).max(signals);
+        let ticks = env_usize("CANNET_BENCH_TICKS", 20);
+        let per_tick = env_usize("CANNET_BENCH_FRAMES_PER_TICK", 3262);
+
+        let dbc: String = std::iter::once("VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_:\n".to_string())
+            .chain((0..ids).map(|m| {
+                let id = 256 + m;
+                format!(
+                    "\nBO_ {id} Msg{id}: 2 Vector__XXX\n SG_ X0 : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n"
+                )
+            }))
+            .collect();
+        let db = Database::parse(&dbc).unwrap();
+        let dbs: &[&Database] = &[&db];
+        let queries: Vec<CacheQuery<'_>> = (0..signals)
+            .map(|n| CacheQuery {
+                bus_id: None,
+                message_id: 256 + n as u32,
+                extended: false,
+                signal_name: "X0",
+            })
+            .collect();
+
+        let scratch = TempDir::new().unwrap();
+        let raw_dir = scratch.path().join("raw");
+        std::fs::create_dir_all(&raw_dir).unwrap();
+        let store = TraceStore::new_disk(&raw_dir).unwrap();
+        let pyramids = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(pyramids.path());
+        let validity = PyramidValidity {
+            capture_id: "bench-capture".into(),
+            dbcs: "bench-dbcs".into(),
+            low_water: 0,
+        };
+
+        let mut appended = 0usize;
+        let mut per_tick_ms: Vec<f64> = Vec::with_capacity(ticks);
+        for _ in 0..ticks {
+            // A tick's arrivals, round-robined over the plotted messages
+            // exactly as a multi-id bus delivers them.
+            for _ in 0..per_tick {
+                // Every id on the bus arrives; only the plotted ones
+                // below build a pyramid, which is what makes a plotted
+                // signal's chain grow `ids` times slower than the bus.
+                let m = appended % ids;
+                let v = (appended % 4096) as u16;
+                let mut f = val_frame(appended as u64 * 1_000_000, v);
+                f.id = 256 + m as u32;
+                f.payload = cannet_core::CanFramePayload::Fd {
+                    data: v.to_le_bytes().to_vec(),
+                    flags: cannet_core::CanFdFlags::default(),
+                };
+                store.append(f);
+                appended += 1;
+            }
+            // The plots serve, which is what advances the pyramids.
+            let _ = cache.slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs);
+            // …and then the flusher's tick.
+            let at = std::time::Instant::now();
+            assert!(cache.needs_persist(), "a served pyramid is dirty");
+            assert!(cache.persist(&validity, Harden::live_budget()));
+            per_tick_ms.push(at.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        let total: f64 = per_tick_ms.iter().sum();
+        let worst = per_tick_ms.iter().copied().fold(0.0_f64, f64::max);
+        let mut sorted = per_tick_ms.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "[bench] live cadence, {signals} of {ids} id(s) plotted, {ticks} tick(s) of \
+             {per_tick} frames: \
+             per-tick persist mean {:.1} ms, median {:.1} ms, worst {worst:.1} ms, \
+             total {total:.0} ms over {appended} frames",
+            total / ticks as f64,
+            sorted[ticks / 2],
+        );
+        // The exit flush that follows such a session.
+        cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
+        let at = std::time::Instant::now();
+        assert!(cache.persist(&validity, Harden::All));
+        println!(
+            "[bench] the quit after it: {:.1} ms",
+            at.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
 
     #[test]
     #[ignore = "first-use rebuild benchmark; run with --ignored --nocapture"]
@@ -3352,6 +3636,82 @@ mod tests {
             delta as f64 / frames as f64,
         );
 
+        // --- the same rebuild, with the flush cadence running ---
+        //
+        // What a session actually looks like: the periodic flusher takes
+        // the level pages every `trace_flush_interval_ms` while the
+        // rebuild appends them (ADR 0047), so the quit that follows is
+        // left owing one tick's residue. Measures both halves — what the
+        // cadence costs the rebuild, and what the exit flush costs after
+        // it — against the arm above, which is the same rebuild with no
+        // cadence at all.
+        let paced_root = TempDir::new().unwrap();
+        let paced = Arc::new(SignalCacheStore::new_unbounded(paced_root.path()));
+        let paced_v = PyramidValidity {
+            capture_id: "bench-capture".into(),
+            dbcs: "bench-dbcs".into(),
+            low_water: 0,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let flusher = {
+            let (cache, v, stop) = (Arc::clone(&paced), paced_v.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                let (mut ticks, mut spent) = (0u32, 0f64);
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let at = std::time::Instant::now();
+                    // The store is not growing during a rebuild, so this
+                    // is the budget the flusher would actually use here.
+                    if cache.needs_persist() && cache.persist(&v, Harden::idle_budget()) {
+                        spent += at.elapsed().as_secs_f64();
+                        ticks += 1;
+                    }
+                }
+                (ticks, spent)
+            })
+        };
+        let paced_at = std::time::Instant::now();
+        let paced_series = paced
+            .slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs)
+            .series;
+        let paced_secs = paced_at.elapsed().as_secs_f64();
+        stop.store(true, Ordering::Relaxed);
+        let (ticks, tick_secs) = flusher.join().unwrap();
+        assert_eq!(paced_series, shared, "the same series, cadence or not");
+        println!(
+            "[bench] the same rebuild under a 2 s flush cadence: {paced_secs:.2} s \
+             ({:+.0} % against the uncadenced arm); {ticks} tick(s) spent {tick_secs:.2} s \
+             flushing",
+            (paced_secs / secs.max(1e-9) - 1.0) * 100.0,
+        );
+
+        // What the cadence does about the backlog a rebuild leaves, if
+        // the user keeps working. This is the ruling's own mechanism,
+        // measured — the shutdown flush shrinks toward the hot tails as
+        // the cadence takes the sealed segments. The quit is timed *only*
+        // at the end, because a shutdown flush clears the very state the
+        // drain is supposed to be shrinking; what a quit costs with no
+        // drain at all is the cold `persist` the restore arm below
+        // reports.
+        let drain_ticks = env_usize("CANNET_BENCH_DRAIN_TICKS", 40);
+        let drain_at = std::time::Instant::now();
+        for _ in 0..drain_ticks {
+            paced.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
+            paced.persist(&paced_v, Harden::idle_budget());
+        }
+        let drain_secs = drain_at.elapsed().as_secs_f64();
+        paced.evict_below(f64::NEG_INFINITY);
+        let drained_exit_at = std::time::Instant::now();
+        assert!(paced.persist(&paced_v, Harden::All));
+        let drained_exit_secs = drained_exit_at.elapsed().as_secs_f64();
+        drop(paced);
+        println!(
+            "[bench] after {drain_ticks} idle cadence tick(s) — {drain_secs:.2} s of \
+             flushing spread over {:.0} s of wall clock — the quit costs \
+             {drained_exit_secs:.3} s",
+            drain_ticks as f64 * 2.0,
+        );
+
         // --- the same rebuild, one signal at a time ---
         //
         // A batch of one per signal: the catch-up before the sharing,
@@ -3402,18 +3762,20 @@ mod tests {
             low_water: 0,
         };
         let persist_at = std::time::Instant::now();
-        assert!(cache.persist(&validity), "the manifest is written");
+        assert!(
+            cache.persist(&validity, Harden::All),
+            "the manifest is written"
+        );
         let persist_secs = persist_at.elapsed().as_secs_f64();
-        // The exit-path manifest write again, straight after the one
-        // above. Both figures are what a quit costs now that the level
-        // files' writeback is the OS's job (ADR 0047): the manifest, and
-        // nothing else. Timed twice because it used to be the two very
-        // different numbers a synchronous flush of the level pages gave —
-        // "built moments ago, every page dirty" against "built long
-        // before the quit".
+        // The exit-path write again, straight after the one above. The two
+        // figures are the two ends of what a quit costs (ADR 0047): the
+        // first is a whole freshly-built pyramid flushed in one go — the
+        // cost with no cadence ever having run — and the second is the
+        // same call with the residue already taken, which is what a quit
+        // behind the periodic flusher actually pays.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         let again_at = std::time::Instant::now();
-        assert!(cache.persist(&validity));
+        assert!(cache.persist(&validity, Harden::All));
         let again_secs = again_at.elapsed().as_secs_f64();
         drop(cache);
 
@@ -3433,8 +3795,8 @@ mod tests {
         assert_eq!(back, pts, "the same windows, point for point");
         println!(
             "[bench] first use after restore: restore {:.3} s + serve {:.3} s = {:.3} s \
-             ({:.1}x the rebuild's speed); exit persist {:.3} s then {:.3} s; \
-             {back} points served",
+             ({:.1}x the rebuild's speed); persist {:.3} s cold then {:.3} s \
+             with the residue already flushed; {back} points served",
             restore_secs,
             served_secs,
             restore_secs + served_secs,

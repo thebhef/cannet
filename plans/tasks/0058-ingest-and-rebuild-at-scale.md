@@ -111,13 +111,14 @@ per-message locking, or rebuild outside the map lock) while keeping
 atomicity (`folded` never below `first_slot`). Exit contract after
 this: the window closes promptly during a rebuild. The **trace store's**
 shutdown flush and `clear_scratch_on_exit` behaviors stay as they are
-(owner, 2026-08-08). Amended (orchestrator routing, 2026-08-09,
-pending owner review): the *pyramid* flush
-58.C added beside them is in scope and must stop blocking exit — dirty
-mapped pages are written back by the OS on a normal process death, and
-the cost of asking for them synchronously is seconds on the one path
-that must never make the user wait. The periodic flusher keeps
-exit-time residue small either way.
+(owner, 2026-08-08). An orchestrator amendment (2026-08-09) routed
+the *pyramid* exit flush out of that ruling as an exit-latency fix;
+the owner overruled it the same day: **the "keep the shutdown flush"
+ruling applies to the entire cache, pyramids included.** Corrective
+action (fix round, 2026-08-09): the synchronous pyramid exit flush is
+restored, and the periodic flusher flushes level pages on its cadence
+so the exit-time residue stays small — which is the ruling's own
+logic.
 
 ### 6. Incremental paint — points stream in, `building…` only briefly
 
@@ -879,8 +880,265 @@ overhead is one lock round-trip and one window read per signal per serve,
 which is why the benchmark keeps its unbounded store: bounding it would
 measure the harness's call cadence rather than the rebuild.
 
+### 2026-08-09 — fix round, item 5's exit flush restored (owner ruling)
+
+Branch `task59h-live-fixes`, off `task60d-undo-close` (0911050). The
+owner overruled 58.E's async exit flush: the "keep the shutdown flush"
+ruling covers the whole cache, pyramids included.
+
+| commit | subject |
+| --- | --- |
+| 7acc891 | `docs(plans)`: record the flush overruling and open task 61 |
+| (this) | `fix(gui)`: flush the pyramid level pages before the manifest, on every cadence |
+
+**What landed.** `SampleSeq::flush` is now `&mut self` and
+**incremental**: the run records the slot it last flushed to, and a
+flush waits on the device only for the segments spanning the
+`[flushed, len)` residue — from the segment holding its first slot
+(which may already have been flushed once while partly filled) and never
+below the leading segments eviction has dropped. `SampleSeq::unflushed`
+reports that residue. `SignalCache::flush_levels` is back, and
+`SignalCacheStore::persist` runs it over every cached signal **before**
+writing the manifest, so a manifest never describes bytes the disk was
+not given. There is no `sync` flag: the periodic caller and the exit
+caller run the identical code, which is what makes the exit call cheap.
+ADR 0047's amendment section is rewritten to state the ruling and the
+incremental-flush logic behind it.
+
+**The measurement.** `bench_first_use_rebuild`, release, 4 M synthetic
+frames over 96 signals, extended with a third rebuild arm that runs a
+2 s persist cadence (the `trace_flush_interval_ms` default) against a
+fresh pyramid root while the rebuild appends into it:
+
+| arm | rebuild | what the quit after it costs |
+| --- | --- | --- |
+| no cadence ever ran | 5.06 s | **13.294 s** |
+| 2 s flush cadence | 17.63 s (+248 %) | **0.003 s** |
+
+So the ruling's own logic holds exactly: the cadence turns a 13.3 s quit
+into a 3 ms one — three and a half orders of magnitude, far outside any
+run-to-run effect (the pair reproduced at 12.168 s / 0.002 s on the
+previous run). What it does **not** do is make the work cheaper. The
+three ticks spent 13.93 s flushing, against 13.294 s for the single cold
+flush: the total is the same, because the cost is per *file*
+(`FlushFileBuffers` per segment, ~2 400 segment files at 96 signals) and
+splitting the residue three ways touches nearly all of the tail segments
+each time. The cadence moves the wait off the exit path and into the
+rebuild, where it serializes against the appends under the cache lock —
+5.06 s + 13.93 s ≈ the 17.63 s observed, i.e. serialization, not
+contention overhead. Recorded as a blocker below; the regime is the
+first-ever plotting of a large capture, which is the one persisted
+pyramids exist to stop repeating.
+
+### 2026-08-09 — fix round, item 2's scan: what the wait actually is
+
+Branch `task59h-live-fixes`. Owner report: "it takes a bit long to show
+the BLF dialog and there's no feedback until it shows up… it seems like
+we might be doing a pretty detailed scan."
+
+- *Observation.* 58.A recorded the census at **0.13 µs/frame** in a
+  release build (0.82 s over 6.53 M frames). The reported wait is far
+  longer than that.
+- *Hypothesis.* The scan is header-only as designed, and the wait is the
+  **debug build** the owner runs under `tauri dev`, where 58.A already
+  measured the whole ingest path an order of magnitude slower.
+- *Experiment.* Run `bench_blf_import` unoptimized over a 2 M-frame
+  synthetic and compare its `census` phase against the release figure,
+  and against the same walk *with* per-object decode (`markers*`), which
+  is the only walk that does strictly more work.
+- *Data.* Debug: census **6.14 s / 3.07 µs/frame**, `markers*` 7.18 s /
+  3.59 µs/frame, `decode` 8.38 s / 4.19 µs/frame. Release (58.A, same
+  harness): census 0.13, `markers*` 0.19, `decode` 0.26 µs/frame.
+- *Conclusion.* Confirmed, twice over. The debug census is **24× the
+  release census**, which puts the reference workload's 6.53 M frames at
+  ~20 s in a dev build against ~0.85 s in a shipped one — the reported
+  wait, to the second. And the census is **0.85× a walk that decodes
+  every object** (0.66× in release), so at most a seventh of it can be
+  anything but the inflate and framing every reader pays: there is no
+  hidden per-frame work to cut. The command path end-to-end agrees —
+  `scan_blf_channels` runs one `scan_blf` and projects only the marker
+  records (rare) into `Note`s; nothing else walks.
+
+**The command's own defect, found in the same read and fixed after an
+overruling.** `scan_blf_channels` was `#[tauri::command] async fn` with
+`#[allow(clippy::unused_async)]` — i.e. it never awaited, so the walk
+ran on the worker thread polling it. The body now goes through
+`off_async_workers` (`sampling.rs`, `pub(crate)` and its rustdoc
+generalised: the rule is "every command whose body scales with the
+capture", not "the sampling commands"). The helper stays in
+`sampling.rs` because the probe that pins it does —
+`a_command_body_that_never_yields_does_not_park_an_async_worker`, a
+one-worker runtime with a never-returning body — and there is no
+module in the crate that owns "command dispatch rules" to move it to.
+
+*No new test.* Two seams were considered and rejected on evidence:
+- A scan-specific runtime probe would have to drive a
+  `#[tauri::command]`, and **nothing in the crate does** — `tests.rs`
+  says so twice in as many words, building its fixtures to avoid
+  needing an `AppHandle`. Standing up a Tauri app for this would test
+  Tauri's dispatch, not ours, and the helper's own behaviour is already
+  pinned beside it.
+- Dropping the `#[allow(clippy::unused_async)]` looked like it might
+  turn the lint into the guard (the workspace runs pedantic at `-D
+  warnings`). *Experiment:* put the body back inline, drop the now-dead
+  import, force a rebuild, run clippy. *Data:* clean — the lint does not
+  fire through the `#[tauri::command]` expansion. *Conclusion:*
+  refuted; it is not a guard and is not claimed as one. The `allow` is
+  gone regardless, because the function now genuinely awaits.
+
+**So the fix is feedback, not the scan.** `StatusInputs` gains
+`scanningBlfPath`, and `splitStatus` reports `Scanning <file> …` as
+*resting* activity (the existing `loading` idiom — ongoing work rests,
+discrete outcomes flash) which outranks a session already on screen,
+because that session is not what the user is waiting on. `App` sets it
+around the `scan_blf_channels` await and clears it in a `finally`, so a
+failed scan reverts to the error notice rather than leaving the line
+stuck.
+
+Tests: `statusLine.test.ts` +2 (watched fail against the unchanged
+`splitStatus`), and `App.blfScanNotice.dom.test.tsx` drives the real App
+with the scan command stalled — notice up and no dialog while it walks,
+dialog up and notice gone after. Watched fail with the `App` wiring
+removed ("no scan notice, status was: Open a BLF log…").
+
+### 2026-08-09 — fix round, the cadence flush and the ADR-0031 gate
+
+Branch `task59h-live-fixes`. The gate failed intermittently on the first
+build carrying the cadence flush: three 60 s runs gave
+`rx_gap/worst_short_frac` **0.113 (limit 0.041)**, 0.0027, 0.0018, where
+~14 runs earlier in the day on pre-change builds all sat in 0.001–0.003.
+The orchestrator attributed it to the cadence flush, to test rather than
+trust.
+
+**Reading the failing report first.** Run 1 also carried
+`rx_gap/worst_p95_ratio` **2.01** against 1.13/1.12, and
+`tx_late_ms.max` **88.1 ms** against 14.5/15.4 — while `flush_ms` (the
+raw store's own periodic flush) was unchanged at 10.6/10.9/8.9, and
+`longtask_ms_per_s`, `jank_seconds` and `frames_late_per_s_mean` were
+all zero. `rx_fps` was identical across runs with retention 0.9995. So:
+nothing lost, nothing the frontend saw, one stall on the host side big
+enough to stretch a gap to 2× and bunch what followed — and it was not
+the flush that is already gauged.
+
+**The experiment.** The rebuild benchmark measures a cold rebuild and
+says nothing about a live capture, so a second one was written:
+`bench_live_cadence_flush` builds a capture *incrementally* — a tick's
+frames, a serve, then the flusher's `persist` — and times each tick.
+Parameters model the gate: 1631 frames/s over **173 bus ids of which 16
+are plotted**, 2 s ticks. (The id count is the load-bearing parameter: a
+first cut spread all the frames over the 16 plotted signals, ran them
+10× too fast, and would have mismeasured everything downstream.)
+
+*Data*, release, 20 ticks:
+
+| cadence | per-tick mean | median | worst |
+| --- | --- | --- | --- |
+| flush everything (as shipped) | 99.8 ms | 96.1 ms | 167.8 ms |
+| control: no level flush at all | 1.9 ms | 1.9 ms | 2.3 ms |
+
+*Conclusion.* Confirmed, and not marginally: the shipped cadence spent
+**~100 ms of device waiting per 2 s tick** in a live capture, against
+1.9 ms for the same tick with the flush removed. An 88 ms `tx_late_ms`
+excursion is one such tick. The mechanism is the hot tail — every level
+of every plotted signal is appended to each tick, so each tick re-issued
+`FlushFileBuffers` over the *same* files, and left them dirty again.
+
+**The candidate design, and where it was not enough.** Flushing only
+*sealed* segments (a segment the chain has grown past; its pages can
+never re-dirty) cut the median to the control's 2.2 ms — but left
+**79.4 ms** worst-case ticks, because signals sharing a bus rate cross a
+segment boundary on the *same* tick, so sealing arrives in bursts. A
+79 ms stall is the same size as the excursion being chased, so
+sealed-only alone would have shipped the defect with a longer period.
+
+So the cadence also carries a **budget**: at most `n` segment files per
+call, and what it defers cannot change while it waits. With `n = 2`:
+
+| cadence | per-tick mean | median | worst |
+| --- | --- | --- | --- |
+| sealed, unbudgeted | 11.3 ms | 2.2 ms | 79.4 ms |
+| **sealed, budget 2** | **7.5 ms** | **6.9 ms** | **14.4 ms** |
+
+which puts a tick inside the band the raw store's own periodic flush
+already occupies (`flush_ms` ~4 ms mean / ~10 ms max, and passing).
+
+**The budget is capture-aware.** Its whole purpose is to protect a
+receive cadence; with nothing arriving there is none to protect. The
+flusher already knows — it computes whether the buffer grew — so an
+idle tick takes 64 instead of 2, and the backlog a rebuild leaves
+drains while the user works instead of being paid for at the quit.
+
+**Re-measuring the two numbers this round reported.** Release, 4 M
+frames over 96 signals:
+
+| | before this fix | after |
+| --- | --- | --- |
+| cold rebuild under the cadence | 17.63 s (+248 %) | **4.61 s (+8 %)** |
+| what those ticks spent flushing | 13.93 s | **0.88 s** |
+| quit straight after a cold rebuild | 0.003 s | 10.9 s |
+| quit after 40 idle ticks (80 s) | — | **2.46 s** |
+
+The rebuild overhead the last round recorded as a blocker is gone. The
+quit moved the other way, and honestly so: a pyramid built in four
+seconds outruns any cadence, so the shutdown flush pays for it — which
+is exactly the case the owner's ruling exists to cover. What the cadence
+now does is drain that backlog on its own time (8.08 s of flushing
+spread over 80 s of wall clock takes the same quit from 10.9 s to
+2.46 s), instead of stalling a live capture to pre-pay it.
+
+**The gate, closed.** Three 60 s runs on the release build of `a37a62c`
+(ev-zonal, live capture, scrub interaction) all report `check passed
+(31 metrics gated)`:
+
+| run | `worst_short_frac` (limit 0.041) | `worst_p95_ratio` | `tx_late_ms.max` |
+| --- | --- | --- | --- |
+| 1 | 0.0040 | 1.163 | 15.0 ms |
+| 2 | 0.0033 | 1.182 | 8.9 ms |
+| 3 | 0.0020 | 1.138 | 9.3 ms |
+
+Committed as
+`docs/performance-measurements/frontend/2026-08-09-a37a62c-task59h-run{1,2,3}.json`.
+`ids_measured` 173 in all three, rx/tx ≈ 1606–1609 fps. That is the
+0.001–0.003 band the day's pre-change builds sat in, against the failing
+run's **0.113**. The corroborating detail is `tx_late_ms.max`: 15.0 /
+8.9 / 9.3 ms here, 14.5 / 15.4 ms on the two passing pre-fix runs, and
+**88.1 ms** on the failing one — the gauge that named the mechanism is
+back in band, which is what makes the excursion explained rather than
+merely absent.
+
+The three pre-fix reports are **not committed**. They gated a build that
+was rejected and never shipped, and the numbers that matter from them
+are quoted above and in the experiment section; keeping the artifacts of
+a build nothing was based on would only invite them to be read as a
+baseline.
+
 ## Blockers / side effects
 
+- **`scan_blf_channels` ran its walk on an async-runtime worker —
+  RESOLVED in this branch.** It was an `async fn` that never awaited, so
+  the census held the worker polling it for the whole walk: ~20 s in a
+  dev build at the reference scale. This round first left it alone on
+  the grounds that nothing measured showed harm; the orchestrator
+  overruled that (2026-08-09), and rightly — it is the same defect class
+  58.E fixed for `sample_signals` / `signal_min_max`, the decision
+  context is ADR 0048's, and "the pool is big enough" is not a property
+  of the code, it is a property of the machine. One parked worker is one
+  too few for the close path's dispatch on a small pool. The body now
+  goes through the existing `off_async_workers`, which became
+  `pub(crate)`.
+- **Quitting in the first minute after a large cold rebuild still costs
+  seconds** (10.9 s at 96 signals over 4 M frames, measured). A pyramid
+  built in four seconds outruns a 2 s cadence, so the shutdown flush is
+  what pays for it — the case the owner's ruling exists for, and the
+  same figure 58.E measured. The cadence drains the backlog once the
+  rebuild ends (40 idle ticks take that quit to 2.46 s), so it is a
+  window rather than a standing cost, but it is a real window and it is
+  widest exactly after an import. Narrowing it further means either
+  raising the idle budget (which is only free while nothing arrives) or
+  hardening pages as the rebuild writes them, and neither should be
+  guessed at without the owner's read on how much exit latency is worth
+  buying. The rebuild-throughput half of this blocker is resolved: the
+  cadence now costs a cold rebuild +8 %, not +248 %.
 - **The disk-spill segment write is ~43 % of the per-frame ingest
   budget** (0.64 µs/frame of 1.48 at 6.5 M frames, release) — the single
   largest item, and larger than the whole BLF decode. It is owned by

@@ -380,6 +380,15 @@ const DESCRIPTORS: &[Spec] = &[
         control: count(),
     },
     Spec {
+        key: "solo_page_size",
+        backing: Backing::Field,
+        label: "Solo matches per PageDown",
+        help: "How far one PageDown / PageUp press walks a plot's solo match list.",
+        surfaces: &[Surface::Plot],
+        kind: Kind::Behaviour,
+        control: count(),
+    },
+    Spec {
         key: "follow_window_ms",
         backing: Backing::Field,
         label: "Default follow-live window",

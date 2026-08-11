@@ -174,9 +174,33 @@ describe("resolveBindings / sanitizeBindings", () => {
     expect(resolveBindings(null)).toBe(DEFAULT_BINDINGS);
   });
 
-  it("uses the user's list when present", () => {
+  it("uses the user's list when present, and keeps the defaults it never spoke to", () => {
+    // The customisation is stored as a whole-list snapshot, so a map
+    // saved before a default existed cannot mention it. Without folding
+    // those back in, every binding shipped after a user's first edit is
+    // dead for that user — which is how `Mod+F` came to be unbound on a
+    // real installation while the palette still listed the command.
     const user: BindingSpec[] = [{ chord: "Mod+k", commandId: "palette.show" }];
-    expect(resolveBindings(user)).toEqual(user);
+    const out = resolveBindings(user);
+    expect(out).toContainEqual({ chord: "Mod+k", commandId: "palette.show" });
+    expect(out.some((b) => b.chord === "Mod+Shift+P")).toBe(false); // rebound
+    expect(out).toContainEqual({ chord: "Mod+F", commandId: "panel.find" });
+  });
+
+  it("lets a user chord win over the default that would collide with it", () => {
+    const user: BindingSpec[] = [{ chord: "Mod+F", commandId: "goto.view" }];
+    const out = resolveBindings(user);
+    expect(out).toContainEqual({ chord: "Mod+F", commandId: "goto.view" });
+    expect(out.some((b) => b.commandId === "panel.find")).toBe(false);
+  });
+
+  it("honors a removal, which is what a disabled entry records", () => {
+    // Absence cannot mean "removed" once absence also means "added
+    // after this snapshot", so the editor writes a tombstone. It never
+    // dispatches, and it keeps its default from coming back.
+    const user: BindingSpec[] = [{ chord: "Mod+F", commandId: "panel.find", disabled: true }];
+    const out = resolveBindings(user);
+    expect(out.some((b) => b.commandId === "panel.find")).toBe(false);
   });
 
   it("drops bindings for unknown commands", () => {
