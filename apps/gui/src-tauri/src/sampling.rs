@@ -53,9 +53,12 @@ use crate::signal_sampler;
 /// decode can briefly contend with a fast pump thread, so it runs off
 /// the UI thread. The trace-store slice is taken before the DBC lock to
 /// keep the lock order (DBC ⊃ nothing) consistent with the other
-/// commands.
+/// commands. The body itself runs on the blocking pool
+/// ([`off_async_workers`]) — the first serve of a signal rebuilds its
+/// whole pyramid, which is capture-scaled work an async worker must not
+/// be holding.
 #[tauri::command]
-#[allow(clippy::unused_async, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn sample_signals(
     app: AppHandle,
     from_index: u32,
@@ -65,16 +68,41 @@ pub(crate) async fn sample_signals(
     signals: Vec<SignalQuery>,
     max_points: u32,
 ) -> tauri::ipc::Response {
-    let sample = sample_signals_inner(
-        &app,
-        from_index,
-        window_end,
-        from_seconds,
-        to_seconds,
-        &signals,
-        max_points,
-    );
-    tauri::ipc::Response::new(encode_signals_sample(&sample))
+    let encoded = off_async_workers(move || {
+        let sample = sample_signals_inner(
+            &app,
+            from_index,
+            window_end,
+            from_seconds,
+            to_seconds,
+            &signals,
+            max_points,
+        );
+        encode_signals_sample(&sample)
+    })
+    .await;
+    tauri::ipc::Response::new(encoded)
+}
+
+/// Run a command's synchronous, capture-scaled body on the blocking pool
+/// instead of on an async-runtime worker (ADR 0048).
+///
+/// The sampling commands are `async fn`s that never await: the first
+/// serve of a signal rebuilds its pyramid, which is minutes of decoding
+/// over a long capture, and it happened on the worker thread that polled
+/// the future. With one plotted area per worker the runtime ran out of
+/// them, and the close path's own command — the `rbs_dirty` the window's
+/// close handler awaits before it may destroy the window — was never
+/// dispatched. Handing the body to the blocking pool frees the worker
+/// for the duration.
+async fn off_async_workers<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(value) => value,
+        // The body panicked on the blocking thread and the panic was
+        // caught there; re-raise it here so the command fails exactly as
+        // it did when the body ran inline.
+        Err(e) => std::panic::resume_unwind(e.into_panic()),
+    }
 }
 
 /// Pack a [`DecimatedRange`] into the compact binary layout the frontend
@@ -223,19 +251,23 @@ fn sample_signals_inner(
 /// model fact, queried directly rather than latched in a React ref).
 /// One [`SignalExtent`] per query in the same order, `None` for a
 /// signal nothing has decoded yet. Like `sample_signals` it catches the
-/// per-signal caches up to the store tip, so cost is `O(new matches)`.
+/// per-signal caches up to the store tip (so cost is `O(new matches)`)
+/// and runs its body off the async workers ([`off_async_workers`]).
 #[tauri::command]
-#[allow(clippy::unused_async)]
 pub(crate) async fn signal_min_max(
     app: AppHandle,
     signals: Vec<SignalQuery>,
 ) -> Vec<Option<SignalExtent>> {
+    off_async_workers(move || signal_min_max_inner(&app, &signals)).await
+}
+
+fn signal_min_max_inner(app: &AppHandle, signals: &[SignalQuery]) -> Vec<Option<SignalExtent>> {
     let state: State<'_, AppState> = app.state();
     let dbs_guard = state.databases();
     let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
     let out = state
         .signal_caches
-        .min_max_many(&cache_queries(&signals), &state.trace_store, &db_refs)
+        .min_max_many(&cache_queries(signals), &state.trace_store, &db_refs)
         .into_iter()
         .map(|extent| extent.map(|(lo, hi)| SignalExtent { lo, hi }))
         .collect();
@@ -255,4 +287,48 @@ fn cache_queries(signals: &[SignalQuery]) -> Vec<CacheQuery<'_>> {
             signal_name: &q.signal_name,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::off_async_workers;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn a_command_body_that_never_yields_does_not_park_an_async_worker() {
+        // The exit-hang mechanism, at the seam (ADR 0048): a sampling
+        // command whose body is a cold pyramid rebuild used to hold the
+        // async worker that polled it for the whole rebuild, so the
+        // close handler's own command was never dispatched. Modelled
+        // with one worker and one never-returning body — a second
+        // command still has to run. A would-block probe: the body is
+        // released either way, so a regression fails the assertion
+        // rather than hanging the suite.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (dispatched_tx, dispatched_rx) = mpsc::channel();
+        rt.block_on(async move {
+            let long = tokio::spawn(off_async_workers(move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }));
+            // The long body is running before the second command is
+            // queued, so the outcome doesn't depend on scheduling order.
+            started_rx.recv().unwrap();
+            let close_path = tokio::spawn(async move { dispatched_tx.send(()).unwrap() });
+            let dispatched = dispatched_rx.recv_timeout(Duration::from_secs(30)).is_ok();
+            release_tx.send(()).unwrap();
+            long.await.unwrap();
+            close_path.await.unwrap();
+            assert!(
+                dispatched,
+                "a command running a capture-scaled body held the only async worker",
+            );
+        });
+    }
 }
