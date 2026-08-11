@@ -16,6 +16,11 @@
 //! keeps this function lock-free, so the caller controls when the
 //! trace-store and DBC locks are held and in what order.
 //!
+//! [`sample_shared`] is the same decode for several signals of one
+//! message at once — one decode pass answering every cached series that
+//! rides that message id, instead of one full decode per signal that
+//! then throws away every value but one.
+//!
 //! [`decimate_min_max`] reduces a (possibly enormous) series to roughly
 //! a requested number of time buckets, keeping each bucket's min- and
 //! max-value point so spikes survive — what the plot panel applies
@@ -61,24 +66,57 @@ pub fn sample_signal(
     out
 }
 
-/// Single-frame form of [`sample_signal`]: `Some(point)` exactly when
-/// that function would have emitted a point for this frame, `None`
-/// otherwise. Same filtering and decode rules, no `Vec`.
+/// Decode one frame **once** for several signals of the same message —
+/// what the decoded-signal cache's catch-up runs when N cached series
+/// ride one message id. Writes `wanted.len()` entries into `out`,
+/// index-parallel with `wanted`: `Some(value)` where a database
+/// produced that signal, `None` where none did (name unknown to every
+/// database, payload too short, or gated out by the message's
+/// multiplexor). `out` is cleared first, and is the caller's scratch
+/// buffer so a per-frame loop allocates nothing.
 ///
-/// Exists for the decoded-signal cache's catch-up loop, which decodes
-/// one frame at a time against each candidate database and takes the
-/// first that yields a point — calling [`sample_signal`] there heap-
-/// allocated a `Vec` per frame per database to hold at most one value.
-#[must_use]
-pub fn sample_one(
+/// The message is decoded once *per database*, in load order, and each
+/// name takes the first database that yields **that name** — the host's
+/// "first DBC that decodes wins" rule (`LoadedDbc`), applied per signal
+/// rather than per message. Where two loaded databases both define a
+/// message, one may carry a signal the other lacks, so two signals of
+/// one message legitimately resolve to two different databases.
+/// Choosing a database once for the whole message would rescale a
+/// signal against the wrong definition, or drop it.
+pub fn sample_shared(
     frame: &RawTraceFrame,
-    db: &Database,
+    dbs: &[&Database],
     message_id: u32,
     extended: bool,
-    signal_name: &str,
-) -> Option<SamplePoint> {
-    let id = make_id(message_id, extended)?;
-    sample_frame(frame, db, id, message_id, extended, signal_name)
+    wanted: &[&str],
+    out: &mut Vec<Option<f64>>,
+) {
+    out.clear();
+    out.resize(wanted.len(), None);
+    if frame.id != message_id || frame.extended != extended {
+        return;
+    }
+    let Some(id) = make_id(message_id, extended) else {
+        return;
+    };
+    let mut unresolved = out.len();
+    for db in dbs {
+        if unresolved == 0 {
+            break;
+        }
+        let Some(decoded) = db.decode_raw(id, frame.payload.data()) else {
+            continue;
+        };
+        for (slot, name) in out.iter_mut().zip(wanted) {
+            if slot.is_some() {
+                continue;
+            }
+            if let Some(sig) = decoded.signals.iter().find(|s| s.name == *name) {
+                *slot = Some(sig.value);
+                unresolved -= 1;
+            }
+        }
+    }
 }
 
 /// The shared per-frame body: id filter, decode, signal lookup. Takes
@@ -269,45 +307,80 @@ BO_ 256 EngineData: 2 ECU
         );
     }
 
-    /// [`sample_one`] decodes the one frame it is given, and rejects
-    /// every case [`sample_signal`] skips: wrong id, wrong extended
-    /// flag, payload too short, unknown signal, malformed message id.
+    /// [`sample_shared`] decodes the one frame it is given for several
+    /// names at once, and rejects every case [`sample_signal`] skips:
+    /// wrong id, wrong extended flag, payload too short, unknown
+    /// signal, malformed message id.
     #[test]
-    fn sample_one_decodes_a_frame_and_rejects_the_skip_cases() {
+    fn sample_shared_decodes_a_frame_and_rejects_the_skip_cases() {
         let db = Database::parse(DBC).unwrap();
+        let dbs: &[&Database] = &[&db];
+        let mut out = Vec::new();
         let good = frame(1_000_000_000, 256, vec![0x04, 0x00]);
-        assert_eq!(
-            sample_one(&good, &db, 256, false, "EngineSpeed"),
-            Some(SamplePoint {
-                t_seconds: 1.0,
-                value: 1.0
-            }),
-        );
+        // The decodable name and an unknown one, answered in one pass
+        // and index-parallel with the request.
+        sample_shared(&good, dbs, 256, false, &["EngineSpeed", "Nope"], &mut out);
+        assert_eq!(out, vec![Some(1.0), None]);
         // Wrong id / wrong extended flag — the frame filter. The
         // extended case is checked in the direction the decoder can't
         // catch on its own: an *extended* frame carrying the same raw
         // id decodes fine against the standard message, so only the
         // frame filter keeps it out of a standard query's series.
-        assert_eq!(sample_one(&good, &db, 257, false, "EngineSpeed"), None);
-        assert_eq!(sample_one(&good, &db, 256, true, "EngineSpeed"), None);
+        sample_shared(&good, dbs, 257, false, &["EngineSpeed"], &mut out);
+        assert_eq!(out, vec![None]);
+        sample_shared(&good, dbs, 256, true, &["EngineSpeed"], &mut out);
+        assert_eq!(out, vec![None]);
         let ext = RawTraceFrame {
             extended: true,
             ..good.clone()
         };
-        assert_eq!(sample_one(&ext, &db, 256, false, "EngineSpeed"), None);
+        sample_shared(&ext, dbs, 256, false, &["EngineSpeed"], &mut out);
+        assert_eq!(out, vec![None]);
         // A frame *of* another id, asked for under its own id, but the
         // DBC doesn't define it.
         let other = frame(1_000_000_000, 257, vec![0xFF, 0xFF]);
-        assert_eq!(sample_one(&other, &db, 257, false, "EngineSpeed"), None);
+        sample_shared(&other, dbs, 257, false, &["EngineSpeed"], &mut out);
+        assert_eq!(out, vec![None]);
         // Payload too short for the signal.
         let short = frame(2_000_000_000, 256, vec![0x04]);
-        assert_eq!(sample_one(&short, &db, 256, false, "EngineSpeed"), None);
-        // Unknown signal name, and a malformed standard id.
-        assert_eq!(sample_one(&good, &db, 256, false, "Nope"), None);
+        sample_shared(&short, dbs, 256, false, &["EngineSpeed"], &mut out);
+        assert_eq!(out, vec![None]);
+        // A malformed standard id, and the empty request.
+        sample_shared(&good, dbs, 0xFFFF_FFFF, false, &["EngineSpeed"], &mut out);
+        assert_eq!(out, vec![None]);
+        sample_shared(&good, dbs, 256, false, &[], &mut out);
+        assert!(out.is_empty());
+    }
+
+    /// The critical rule of the shared pass: a name takes the first
+    /// database that yields **it**, which is not necessarily the first
+    /// database that defines the message.
+    #[test]
+    fn sample_shared_resolves_each_name_against_its_own_first_database() {
+        // `first` defines the message with only `A`; `second` defines
+        // `A` at ten times the scale plus a `B` the first one lacks.
+        let head = "VERSION \"\"\nNS_ :\nBS_:\nBU_: ECU\n";
+        let first = Database::parse(&format!(
+            "{head}BO_ 256 M: 8 ECU\n SG_ A : 0|16@1+ (1,0) [0|0] \"\" ECU\n"
+        ))
+        .unwrap();
+        let second = Database::parse(&format!(
+            "{head}BO_ 256 M: 8 ECU\n SG_ A : 0|16@1+ (10,0) [0|0] \"\" ECU\n \
+             SG_ B : 16|16@1+ (1,0) [0|0] \"\" ECU\n"
+        ))
+        .unwrap();
+        let f = frame(0, 256, vec![3, 0, 7, 0, 0, 0, 0, 0]);
+        let mut out = Vec::new();
+        sample_shared(&f, &[&first, &second], 256, false, &["A", "B"], &mut out);
         assert_eq!(
-            sample_one(&good, &db, 0xFFFF_FFFF, false, "EngineSpeed"),
-            None
+            out,
+            vec![Some(3.0), Some(7.0)],
+            "A from the first database, B from the second",
         );
+        // Load order is the whole rule: reversed, `A` takes the ×10
+        // scaling of what is now the first database.
+        sample_shared(&f, &[&second, &first], 256, false, &["A", "B"], &mut out);
+        assert_eq!(out, vec![Some(30.0), Some(7.0)]);
     }
 
     fn pt(t: f64, v: f64) -> SamplePoint {

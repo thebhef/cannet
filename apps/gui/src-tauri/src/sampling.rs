@@ -12,6 +12,7 @@ use cannet_dbc::Database;
 
 use crate::app_state::AppState;
 use crate::ipc::{DecimatedRange, SampledPoints, SignalExtent, SignalQuery};
+use crate::signal_cache::CacheQuery;
 use crate::signal_sampler;
 
 /// Sample a batch of DBC signals over a slice `[from_index, window_end)`
@@ -182,22 +183,14 @@ fn sample_signals_inner(
     // level above `max_points` (ADR 0002 DS-5), so a "fit data" over a
     // huge capture serves `O(max_points)` points instead of
     // materializing and decimating the whole raw window here every tick.
-    let sliced: Vec<Vec<signal_sampler::SamplePoint>> = signals
-        .iter()
-        .map(|q| {
-            state.signal_caches.slice(
-                q.bus_id.as_deref(),
-                q.message_id,
-                q.extended,
-                &q.signal_name,
-                slice_from,
-                slice_to,
-                max_points as usize,
-                &state.trace_store,
-                &db_refs,
-            )
-        })
-        .collect();
+    let sliced: Vec<Vec<signal_sampler::SamplePoint>> = state.signal_caches.slice_many(
+        &cache_queries(signals),
+        slice_from,
+        slice_to,
+        max_points as usize,
+        &state.trace_store,
+        &db_refs,
+    );
     drop(dbs_guard);
     let slice_ms = t_slice.elapsed().as_secs_f64() * 1000.0;
 
@@ -240,22 +233,26 @@ pub(crate) async fn signal_min_max(
     let state: State<'_, AppState> = app.state();
     let dbs_guard = state.databases();
     let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
-    let out = signals
-        .iter()
-        .map(|q| {
-            state
-                .signal_caches
-                .min_max(
-                    q.bus_id.as_deref(),
-                    q.message_id,
-                    q.extended,
-                    &q.signal_name,
-                    &state.trace_store,
-                    &db_refs,
-                )
-                .map(|(lo, hi)| SignalExtent { lo, hi })
-        })
+    let out = state
+        .signal_caches
+        .min_max_many(&cache_queries(&signals), &state.trace_store, &db_refs)
+        .into_iter()
+        .map(|extent| extent.map(|(lo, hi)| SignalExtent { lo, hi }))
         .collect();
     drop(dbs_guard);
     out
+}
+
+/// The wire queries as the signal cache's borrowed form, in order — the
+/// batch it groups by message to catch up in one decode pass.
+fn cache_queries(signals: &[SignalQuery]) -> Vec<CacheQuery<'_>> {
+    signals
+        .iter()
+        .map(|q| CacheQuery {
+            bus_id: q.bus_id.as_deref(),
+            message_id: q.message_id,
+            extended: q.extended,
+            signal_name: &q.signal_name,
+        })
+        .collect()
 }
