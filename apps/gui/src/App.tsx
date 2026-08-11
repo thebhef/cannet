@@ -434,6 +434,8 @@ export function App() {
     created: string[];
   } | null>(null);
   const gestureCounterRef = useRef(0);
+  // Detaches the open gesture's safety close (see `beginGesture`).
+  const gestureSafetyCloseRef = useRef<(() => void) | null>(null);
   // A view is maximized full-screen (dockview maximized-group).
   // Transient — never persisted (see `stripMaximizedNode`); gates the
   // Escape binding in the command context.
@@ -507,15 +509,38 @@ export function App() {
   // either stack records joins its entry in the interleaved order log,
   // and every element write after the first amends that step rather than
   // making another.
+  // Close whatever gesture is open, and disarm its safety close. The one
+  // place the open gesture is dropped, so the listener below can never
+  // outlive it.
+  const clearGesture = useCallback(() => {
+    gestureRef.current = null;
+    gestureSafetyCloseRef.current?.();
+    gestureSafetyCloseRef.current = null;
+  }, []);
   const beginGesture = useCallback(() => {
     gestureCounterRef.current += 1;
+    gestureSafetyCloseRef.current?.();
     gestureRef.current = {
       id: gestureCounterRef.current,
       stepTaken: false,
       closing: false,
       created: [],
     };
-  }, []);
+    // A pointer gesture is normally closed by the event that ends it,
+    // but that event can go missing: a pointer released outside the
+    // window delivers no `mouseup` at all. The next press is therefore
+    // also a close — whatever interaction it starts, it is not this one,
+    // and an edit it makes must be a step of its own.
+    //
+    // Capture phase, so it runs before the handler that would open the
+    // *next* gesture; a listener added during this press's own dispatch
+    // has already missed that press's capture phase, so a gesture can
+    // never close itself.
+    const onPress = () => clearGesture();
+    document.addEventListener("pointerdown", onPress, true);
+    gestureSafetyCloseRef.current = () =>
+      document.removeEventListener("pointerdown", onPress, true);
+  }, [clearGesture]);
   // Closing waits on a write that is armed but hasn't landed yet — a
   // drag's last persist arrives a render after the mouse comes up — so
   // the effect that lands it is what finally closes the gesture. With
@@ -525,8 +550,8 @@ export function App() {
     const gesture = gestureRef.current;
     if (!gesture) return;
     if (pendingElementEditRef.current) gesture.closing = true;
-    else gestureRef.current = null;
-  }, []);
+    else clearGesture();
+  }, [clearGesture]);
   const undoGesture = useMemo<UndoGesture>(
     () => ({
       begin: beginGesture,
@@ -775,8 +800,8 @@ export function App() {
       }
     }
     // The write a closing gesture was waiting on has landed.
-    if (gesture?.closing) gestureRef.current = null;
-  }, [registry]);
+    if (gesture?.closing) clearGesture();
+  }, [registry, clearGesture]);
 
   // Put back the elements a restore re-creates, and drop the ones it
   // undoes into existence, in one registry write. A re-created element
@@ -1417,11 +1442,11 @@ export function App() {
     layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
     elementHistoryRef.current = initElementHistory([]);
     undoOrderRef.current = EMPTY_UNDO_ORDER;
-    gestureRef.current = null;
+    clearGesture();
     focusHistoryRef.current = api.activePanel
       ? recordFocus(EMPTY_FOCUS_HISTORY, api.activePanel.id)
       : EMPTY_FOCUS_HISTORY;
-  }, [create]);
+  }, [create, clearGesture]);
 
   /// Snapshot the open project into a `Project` (the elements, not
   /// their runtime state — that re-anchors on reload). Emits
@@ -1538,7 +1563,7 @@ export function App() {
       // registry once this render lands.)
       elementHistoryRef.current = initElementHistory([]);
       undoOrderRef.current = EMPTY_UNDO_ORDER;
-      gestureRef.current = null;
+      clearGesture();
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);
       if (api && layout) {
@@ -1605,7 +1630,7 @@ export function App() {
         }
       })();
     },
-    [loadDbcSet, invalidateCache],
+    [loadDbcSet, invalidateCache, clearGesture],
   );
 
   const handleNewProject = useCallback(() => {
@@ -2546,7 +2571,7 @@ export function App() {
       // saved layout hasn't yet.)
       layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
       undoOrderRef.current = EMPTY_UNDO_ORDER;
-      gestureRef.current = null;
+      clearGesture();
 
       // Perf self-driving flags (ADR 0031) override the last-opened
       // pointer: `--project` names the project deterministically. Fetch
@@ -2610,7 +2635,7 @@ export function App() {
         if (cfg) setAutomation(cfg);
       })();
     },
-    [seedDefaultLayout, applyProject, rememberProject],
+    [seedDefaultLayout, applyProject, rememberProject, clearGesture],
   );
 
   const { resting: restingStatus, transient: transientStatus } = useMemo(

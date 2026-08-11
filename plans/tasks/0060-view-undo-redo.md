@@ -332,6 +332,162 @@ remounts in the same commit as the re-created element); and the two
 filter cases were re-run with the gesture wrapper taken back out, where
 they fail.
 
+### 2026-08-09 — phase 60.D, the last two gestures and the close (branch `task60d-undo-close`)
+
+The two edges 60.C recorded, and the docs. No new mechanism: both fixes
+are the existing gesture wrapper reaching state it hadn't reached yet.
+
+**A rename is a gesture from focus to blur.** The project panel's
+inline rename writes the element on every `change`, so renaming cost one
+undo per character. Text editing isn't a pointer gesture, but it has the
+same shape — a beginning and an end the DOM already reports — so
+`ElementRow`'s input opens the gesture on focus and closes it on blur,
+and the keystrokes in between amend the one step. Chosen over an idle
+window because there is no window to guess at: the step closes exactly
+when the user leaves the field, and a `Mod+Z` while the field still has
+focus is the browser's own text undo (`skipEditable`), not this one.
+
+**The next press closes a gesture whose own end never arrived.** A
+pointer released outside the window delivers no `mouseup`, so a drag's
+gesture stayed open until the next `begin()` and an edit in between
+joined its step. It is now also closed by the next `pointerdown`
+anywhere: whatever interaction that press starts, it is not the one
+before it. Capture phase on the document, so it runs *ahead* of the
+handler that opens the next gesture; and a listener installed during a
+press's own dispatch has already missed that press's capture phase, so a
+gesture can never close itself. `clearGesture` is now the single place
+the open gesture is dropped, because the listener has to be detached
+with it.
+
+**Docs.** [ADR 0018](../../docs/adr/0018-command-keybinding-framework.md)
+(amended 2026-08-09) now says what the chords reverse: two stacks
+interleaved into one timeline, one user gesture per step however many
+writes and stacks it takes, `skipEditable` so a focused field keeps its
+native text undo, ADR 0050 for *what* they may touch, and the
+consequence that unbinding them loses view undo. `undoGesture.ts` gains
+the two rules above. `README.md` and `docs/CONTEXT.md` were checked and
+carry no undo/history text to update — the README already points at the
+shortcuts panel as the living reference for what is bound.
+
+The roadmap still lists task 60: the ADR-0031 gate is the orchestrator's
+to run, so the close isn't this branch's to make.
+
+Commits (oldest first): `8b58d31` rename coalescing · `3004207` the
+stale-gesture close · `974e9d1` ADR 0018 + the module doc.
+
+Verification: `pnpm --dir apps/gui test` 1789 passed / 141 files (from
+1787 at branch point — 2 new dom cases), `pnpm --dir apps/gui build`
+clean. Host untouched, so no cargo run. Both new tests were watched
+failing first: the rename case left the name at `Fue` (the last
+keystroke) after one chord, and the missing-`mouseup` case had the first
+chord take back the drag *and* the edit that followed it.
+
+## Exit criteria walk (2026-08-09)
+
+Every criterion from § Exit criteria, in order. The ADR-0031 perf gate
+is the orchestrator's to run, not the implementing phases' — its
+verdict is the closing entry below the five criteria.
+
+**1. "Every allowlist mutation is undoable/redoable via the existing
+chords, one step per user gesture (transaction-grouped cases tested:
+panel add, element remove, cross-panel area drag, filter insert)."** —
+**MET.**
+
+- Coverage is by construction, and the construction is checkable: every
+  allowlisted field (`name`, `sources`, `config`, `predicate`, `rules`,
+  and the colormap's `busId` / `messageId` / `extended` / `signalName`)
+  reaches an element only through `ElementRegistry.update` / `remove` /
+  `create`, which is where the capture is armed (60.B, `3831dd9`;
+  creation joined in 60.C, `a86c5d2`). App's other `setRegistry` callers
+  — `updateTrace`, `startAllElements`, the shrink re-anchor effect —
+  write the entry's runtime `trace` only, which the mask does not carry.
+  `UNDOABLE_FIELDS` in `elementHistory.ts` is the allowlist in code.
+- Panel add: `App.elementUndo.dom.test.tsx` "adding a panel is one step
+  — the panel's own config seed is not another" (60.B).
+- Element remove: "brings back a removed element and its panel in one
+  chord" (60.C, `a86c5d2`).
+- Cross-panel area drag: "returns a plot area dragged between two panels
+  in one chord" (60.C, `589585d`).
+- Filter insert: "inserting a filter upstream is one step — the filter
+  goes with it" and "adding a filter from the graph toolbar is undoable
+  on its own" (60.C, `b23c041`).
+- Renames were the last mutation still costing a step per keystroke
+  (60.C's recorded edge); closed in 60.D by "a typed rename is one step,
+  not one per keystroke" (`8b58d31`).
+
+**2. "Undo of a view change repaints mounted panels correctly (the
+rehydration path, dom-tested per element-backed panel kind)."** —
+**MET.** 60.A's per-kind tests are the rehydration half: `TracePanel` /
+`PlotPanel` "repaints from an externally rewritten config" and "keeps
+the panel's own edit — a persist is not a resync trigger";
+`SignalsPanel.sections` "re-queries from an externally rewritten config"
+(+ the same self-persist case); `ColorMapPanel` / `GeneratorPanel` /
+`TransmitPanel` / `RbsPanel` "repaints from an externally rewritten
+element — it reads the registry live" (the config-less kinds, pinned as
+live readers); and six cases in `useElementPanel.dom.test.tsx` for the
+hook itself. End to end through a real chord: "reverses a view change
+made inside a panel, and redoes it" (the trace panel's mode toggle), and
+the removal case, where the re-created plot panel repaints two areas
+rather than a fresh default.
+
+**3. "No excluded field is ever replayed by undo — pinned by a test that
+snapshots-with-mask an element carrying behavior fields (rbs/transmit)
+and asserts restore leaves them untouched and fires no host
+reconciliation."** — **MET.** "never replays a behavior field, and never
+wakes the host reconciler" (60.B, `ea9718e`): the RBS Run flag stays on
+across `Mod+Z` / `Mod+Y`, and the list of `rbs_init` / `rbs_load` /
+`rbs_unload` / `rbs_set_run` calls is unchanged by either chord. The
+boundary is enforced twice (mask at capture, allowlisted patch at
+restore), and the test was falsified before being trusted — unmasking
+`rbs.path` / `run` makes the first chord disarm the simulation and the
+test fail (60.B log).
+
+**4. "Drag gestures produce single steps; filter-box typing produces
+none."** — **MET.** Single steps: "a drag of the side-panel splitter is
+one step, not one per mouse move", "a drag of an axis splitter is one
+step", "a drag of a trace column edge is one step" (60.C, `d022d90`),
+and the cross-panel area drag above. 60.D adds the case where the drag's
+own end event never arrives: "a drag whose mouse-up goes missing does not
+swallow the next edit" (`3004207`). No steps from typing: "typing in a
+find box is not a step" (60.C, `dce7f82`) — the chord reaches straight
+past the typing to the view change, and the box keeps what was typed.
+Cursor placement was checked and needed no coalescing: `PlotArea` places
+a cursor on mouse-up only when the pointer didn't move, so it is already
+one gesture (60.C log).
+
+**5. "The boundary ADR exists; ADR 0018's bindings/docs updated; the
+existing `viewHistory` tests stay green and the new stack has equivalent
+pure-function coverage."** — **MET.**
+[ADR 0050](../../docs/adr/0050-undo-covers-view-state-only.md) (60.B,
+`5df8e8f`) carries the allowlist, the owner's rationale, and the two
+further boundaries (zoom/pan/scroll out; undo never re-runs a host side
+effect). [ADR 0018](../../docs/adr/0018-command-keybinding-framework.md)
+amended 2026-08-09 (60.D, `974e9d1`). `viewHistory.test.ts` is untouched
+since the branch point and its 11 cases are green;
+`elementHistory.test.ts` carries 35 pure cases over mask / record / sync
+/ graft / amend / restore / the order log — the same shape of coverage,
+and more of it, than the layout stack has.
+
+**ADR-0031 perf gate — MET.** Run by the orchestrator, not by the
+implementing phases (every phase brief said so, and each phase's status
+entry records the deferral). Final gate at `33ef361`, **two runs, both
+`check passed (31 metrics gated)`** — 31/31 each — with the reports
+committed unmodified as
+`docs/performance-measurements/frontend/2026-08-09-33ef361-task60-final-run1.json`
+and `...-run2.json`. Sanity clean on both: `ids_measured` 173, and in
+the committed reports `rx_fps` / `tx_fps` 1610.4 / 1610.3 (run 1) and
+1605.2 / 1602.4 (run 2) with retention 0.9995–1.0013 — flat across
+halves, so nothing degrades over the minute. Attribution: the
+31-metrics-gated result and the `ids_measured` figure are the
+orchestrator's reported harness output; the rates and retentions above
+are read from the two committed reports.
+
+That the gate is flat is the expected result rather than a lucky one:
+task 60 added no work to any render or ingest path. The element history
+is a masked snapshot taken in an effect that only runs when the registry
+changes — a user edit, not a frame — and the two stacks are capped at 50
+snapshots each.
+
 ## Blockers / side effects
 
 - **60.A** — no blockers. Side effects worth knowing:
@@ -374,13 +530,39 @@ they fail.
     open until the next gesture begins; an edit in between would join
     its step. Bounded and benign — `begin()` always replaces the open
     gesture — but it is why nothing outside a pointer handler holds a
-    gesture open.
+    gesture open. **Closed in 60.D**: the next `pointerdown` anywhere
+    closes it.
   - **Renaming is still one step per keystroke.** The project panel's
     inline rename writes the element on every `change`, and text
     editing is not a pointer gesture, so the drag mechanism doesn't
     reach it. Coalescing it needs a different rule (an idle window, as
-    editors use for typing) and was not in this phase's scope.
+    editors use for typing) and was not in this phase's scope. **Closed
+    in 60.D**: focus opens the gesture, blur closes it.
   - `ProjectGraphPanel`, `PlotPanel`, `PlotArea` and `gridviewColumns`
     now consume `useUndoGesture()`. Its context default is a no-op, so
     every existing panel test renders unchanged and no registry fake
     needed a new method.
+- **60.D** — no blockers. Side effects and one edge left standing:
+  - `ProjectPanel`'s `ElementRow` joins the list of `useUndoGesture()`
+    consumers, for the same reason and with the same no-op default.
+  - `clearGesture` is now the *only* place the open gesture is dropped,
+    because the safety-close listener has to be detached with it. The
+    four sites that used to null `gestureRef` directly — the registry
+    effect's closing branch, the default-layout seed, project open, and
+    the boot layout restore — route through it, which is why those
+    callbacks gained a dependency.
+  - A rename gesture is open for as long as the field has focus. Any
+    other surface the user reaches takes focus, which blurs the field
+    and closes the gesture first, so nothing else can join the rename's
+    step in practice.
+  - **Left standing (recorded, not taken): a keyboard-only edit after a
+    lost `mouseup`.** The stale-gesture close is the next *press*, so
+    the one path still open is a drag whose pointer-up went missing
+    followed by an element edit made without touching the pointer at
+    all — pressing `l` over a plot (`plot.followLive.enable`, which
+    persists) is the reachable example. That edit would amend the drag's
+    step instead of making its own. Closing it needs a second rule
+    keyed on the keyboard, which would have to know not to close the
+    rename gesture the user is typing into; the trade wasn't worth a
+    second mechanism for a path that requires zero pointer presses in
+    between.
