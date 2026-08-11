@@ -10,11 +10,12 @@ export const SPLASH_MIN_MS = 5000;
 /**
  * Whether the startup splash is still showing. It drops at
  * `max(SPLASH_MIN_MS, boot settled)`: the floor gives the disclaimer a
- * readable dwell, and `bootSettled` — the boot project-open, whose last
- * step restores the scratch capture — keeps it up while a large capture
- * is still loading, so the app is interactive with its data by the time
- * the splash lifts. Every settling of the boot counts, failures
- * included; nothing here can outlast a boot that errored.
+ * readable dwell, and `bootSettled` — the boot project-open — keeps it
+ * up until the app is usable. The prior capture's history is *not* part
+ * of that wait: it loads in the background and appears when it is ready
+ * (ADR 0002 DS-7), so a large cache no longer holds the splash up.
+ * Every settling of the boot counts, failures included; nothing here can
+ * outlast a boot that errored.
  */
 export function useSplashVisible(bootSettled: boolean): boolean {
   const [floorElapsed, setFloorElapsed] = useState(false);

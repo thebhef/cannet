@@ -293,6 +293,17 @@ writing a new one only for a brand-new file — so it stays stable across
 saves. The path recorded alongside the identity in `cache/` is
 best-effort diagnostic data, not the basis for the match.
 
+**The reload does not gate the app.** Reopening costs `O(segment
+files)`, which on a large capture is seconds, and the app is otherwise
+ready by then — so the open starts the reload and does not wait for it:
+the GUI comes up usable and the restored history appears when it has
+loaded. Views are windows over a host-side model that already grows
+under them, so history arriving after they mounted needs nothing
+special from them. **Connect** is what waits: the reload replaces the
+raw store wholesale, so frames appended (or a buffer clear) racing it
+act on a store that is about to be discarded — so a connect started
+while a reload is in flight waits for it to land first.
+
 This is deliberate. The on-disk formats are reload-compatible by
 construction (DS-1's arithmetic-addressable fixed-size records,
 DS-3's append-only indexes, DS-5's append-only pyramids, and the

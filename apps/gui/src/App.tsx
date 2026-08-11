@@ -421,12 +421,19 @@ export function App() {
   // one-shots the boot open; `applyProject` reads `dockApiRef.current`,
   // so the surviving dockview instance still gets the layout.
   const bootOpenRanRef = useRef(false);
-  // The boot open has run to a conclusion — project applied (its last
-  // step being the scratch-capture restore), nothing to open, or an
-  // error. It only gates the splash, which must come down on every one
-  // of those outcomes.
+  // The boot open has run to a conclusion — project applied, nothing to
+  // open, or an error. The prior capture's restore is *not* part of that
+  // conclusion: it loads in the background (ADR 0002 DS-7). It only
+  // gates the splash, which must come down on every one of those
+  // outcomes.
   const [bootSettled, setBootSettled] = useState(false);
   const splashVisible = useSplashVisible(bootSettled);
+  // The in-flight restore of the project's prior capture, if any
+  // (ADR 0002 DS-7). `applyProject` starts it without waiting, so the
+  // app is usable while a large capture reopens; `handleConnect` waits
+  // on it, because `try_reload` replaces the raw store wholesale and
+  // frames appended into the store it replaces would go with it.
+  const restorePendingRef = useRef<Promise<void> | null>(null);
   const interfaceBindingsRef = useRef<InterfaceBinding[]>([]);
   const sidecarAddressRef = useRef<string | null>(null);
   const handleConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -1071,6 +1078,14 @@ export function App() {
       setInterfaceBindings(effectiveBindings);
     }
 
+    // First statement that touches the trace store, so this is where a
+    // still-loading prior capture is waited out (ADR 0002 DS-7).
+    // `try_reload` swaps the raw store wholesale, so a clear or an
+    // append racing it works on a store that is about to be discarded.
+    // The wait is the reopen's `O(segment files)`, and only right after
+    // a launch — the GUI itself never waited for it.
+    await restorePendingRef.current;
+
     // Connect aborts on a host-clear failure: don't touch the session or
     // open any server if the buffer couldn't be cleared.
     if (
@@ -1328,25 +1343,37 @@ export function App() {
       // loaded DBC set above. Doing it here — after the open clears the
       // view, not inside `open_project` — keeps the clear from clobbering
       // the restored history.
-      try {
-        const restored = await invoke<{
-          count: number;
-          first_index: number;
-          first_index_ts_ns: number | null;
-          session_start_seconds: number;
-        }>("restore_scratch_capture");
-        if (restored.count <= 0) return;
-        invalidateCache();
-        setCount(restored.count);
-        setFirstIndex(restored.first_index);
-        setFirstIndexTsNs(restored.first_index_ts_ns);
-        setSessionStartSeconds(
-          restored.session_start_seconds > 0 ? restored.session_start_seconds : null,
-        );
-        setRegistry((reg) => reg.map((e) => ({ ...e, trace: restoredTrace(restored.count) })));
-      } catch {
-        /* no scratch capture to restore */
-      }
+      //
+      // Deliberately *not* awaited: reopening a large capture costs
+      // `O(segment files)` and the rest of the open is done, so the app
+      // goes interactive now and the history lands when it lands. The
+      // views are windows over a host-side model that already grows
+      // under them, so history arriving after they mounted is the
+      // ordinary case, not a special one. What does wait is `connect`
+      // (see `restorePendingRef`): the reload swaps the raw store
+      // wholesale, so frames appended while it is in flight would be
+      // dropped with the store they landed in.
+      restorePendingRef.current = (async () => {
+        try {
+          const restored = await invoke<{
+            count: number;
+            first_index: number;
+            first_index_ts_ns: number | null;
+            session_start_seconds: number;
+          }>("restore_scratch_capture");
+          if (restored.count <= 0) return;
+          invalidateCache();
+          setCount(restored.count);
+          setFirstIndex(restored.first_index);
+          setFirstIndexTsNs(restored.first_index_ts_ns);
+          setSessionStartSeconds(
+            restored.session_start_seconds > 0 ? restored.session_start_seconds : null,
+          );
+          setRegistry((reg) => reg.map((e) => ({ ...e, trace: restoredTrace(restored.count) })));
+        } catch {
+          /* no scratch capture to restore */
+        }
+      })();
     },
     [loadDbcSet, invalidateCache],
   );
@@ -2290,6 +2317,16 @@ export function App() {
         // The boot has reached a conclusion either way — drop the
         // splash's hold on the app (the 5 s floor may still hold it).
         setBootSettled(true);
+        // Say so in the log a launch already writes: this line and the
+        // restore's own "restored N frames … in X ms" bracket what a
+        // launch cost, so a slow one can be attributed without a
+        // stopwatch. Elapsed is measured from the frontend's load, which
+        // the log's own timestamps place against process start.
+        void invoke("gui_emit_system_log", {
+          level: "info",
+          source: "startup",
+          message: `startup: interactive ${Math.round(performance.now())} ms after the frontend loaded`,
+        }).catch(() => {});
         // Hand off to the orchestration effect, which connects /
         // captures / exits per the flags once the project has applied.
         if (cfg) setAutomation(cfg);

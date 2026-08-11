@@ -35,10 +35,15 @@
 //! next serve rebuilds the pyramid on disk by re-decoding the reopened raw
 //! frames (the source of truth).
 //!
-//! Concurrency: one global mutex around the (small) `HashMap`. The
-//! catch-up itself doesn't hold the trace-store lock beyond
-//! `matching_frames_indexed`'s clone — decoding runs off-lock, so the
-//! pump isn't starved by long catch-ups.
+//! Concurrency and residency: one global mutex around the (small)
+//! `HashMap`. The catch-up scans the unread frame range in
+//! [`CATCH_UP_CHUNK_FRAMES`] chunks, asking the trace store for one
+//! chunk's matching frames at a time and decoding them between fetches —
+//! so it holds the trace-store lock only for a chunk's clone (the pump
+//! isn't starved by a long catch-up) and the frames it has materialized
+//! at any moment are bounded by the chunk, not by the capture length.
+//! That matters most on the first use of a signal over a *restored*
+//! capture (ADR 0002 DS-7), where the unread range is the whole history.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,7 +53,7 @@ use cannet_dbc::Database;
 use cannet_spill::{lower_bound, SampleSeq};
 
 use crate::signal_sampler::{self, SamplePoint};
-use crate::trace_store::TraceStore;
+use crate::trace_store::{RawTraceFrame, TraceStore};
 
 /// Min/max bucket branching factor: each pyramid level merges this many
 /// consecutive points of the level below into one bucket, emitting that
@@ -56,6 +61,20 @@ use crate::trace_store::TraceStore;
 /// points per 8, a ~4× point reduction per level, so a handful of levels
 /// span 10^7+ samples and a wide-window serve reads a small coarse level.
 const PYRAMID_BRANCH: usize = 8;
+
+/// How many store frames one catch-up scan chunk covers. The catch-up asks
+/// the trace store for the matching frames of one chunk at a time, so the
+/// frames it materializes at once are bounded by this — not by the capture
+/// length. It bounds two things that both matter on a first-use rebuild
+/// over restored history: the allocation spike (a materialized frame costs
+/// ~116 B resident, so a chunk is a couple of MB no matter how long the
+/// capture is) and the trace-store lock hold (the fetch takes the lock, the
+/// decode below runs off it — at the measured ~0.3 µs per materialized
+/// frame a chunk holds the lock for single-digit milliseconds, so a rebuild
+/// never starves the RX append path). Chunking costs one extra `by-id`
+/// range lookup per chunk, which is `O(log occurrences)` — negligible
+/// beside the per-frame decode.
+const CATCH_UP_CHUNK_FRAMES: usize = 16_384;
 
 /// One signal's decoded samples as a min/max resolution pyramid, plus
 /// the next trace-store frame index to scan from on the next catch-up.
@@ -128,38 +147,76 @@ impl SignalCache {
         dbs: &[&Database],
     ) {
         let store_len = store.len();
+        self.catch_up_chunked(
+            bus_id,
+            message_id,
+            extended,
+            signal_name,
+            store_len,
+            dbs,
+            |from, to| store.matching_frames_indexed(message_id, extended, from, to),
+        );
+    }
+
+    /// [`Self::catch_up`]'s body against a `fetch` that materializes one
+    /// chunk of the scan — the matching frames of `[from, to)`, paired with
+    /// their store index.
+    ///
+    /// The scan walks `[next_index, store_len)` in [`CATCH_UP_CHUNK_FRAMES`]
+    /// steps rather than asking for the whole span at once, because the
+    /// whole span is `O(capture)`: on the first use of a signal over a
+    /// restored capture (ADR 0002 DS-7) the unscanned range is the entire
+    /// history, and materializing its matches up front is an unbounded
+    /// allocation spike (and an unbounded hold on the trace-store lock,
+    /// which `fetch` takes and releases per chunk) before a single sample
+    /// decodes. Decoding runs between fetches, off that lock.
+    #[allow(clippy::too_many_arguments)]
+    fn catch_up_chunked(
+        &mut self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+        store_len: usize,
+        dbs: &[&Database],
+        fetch: impl Fn(usize, usize) -> Vec<(usize, RawTraceFrame)>,
+    ) {
         if self.next_index >= store_len {
             return;
         }
-        let new_matches =
-            store.matching_frames_indexed(message_id, extended, self.next_index, store_len);
-        for (_idx, frame) in new_matches {
-            // Bus filter: when the query is scoped to a bus, drop
-            // frames whose `bus_id` doesn't match. `None` on the query
-            // is the legacy "any bus" path that takes every frame.
-            if let Some(want) = bus_id {
-                if frame.bus_id.as_deref() != Some(want) {
-                    continue;
+        while self.next_index < store_len {
+            let to = self
+                .next_index
+                .saturating_add(CATCH_UP_CHUNK_FRAMES)
+                .min(store_len);
+            for (_idx, frame) in fetch(self.next_index, to) {
+                // Bus filter: when the query is scoped to a bus, drop
+                // frames whose `bus_id` doesn't match. `None` on the query
+                // is the legacy "any bus" path that takes every frame.
+                if let Some(want) = bus_id {
+                    if frame.bus_id.as_deref() != Some(want) {
+                        continue;
+                    }
+                }
+                // Try each loaded DBC in priority order, first decode wins
+                // (matches `sample_signals`' existing semantics).
+                for db in dbs {
+                    if let Some(point) =
+                        signal_sampler::sample_one(&frame, db, message_id, extended, signal_name)
+                    {
+                        if point.value < self.lo {
+                            self.lo = point.value;
+                        }
+                        if point.value > self.hi {
+                            self.hi = point.value;
+                        }
+                        self.levels[0].push(point.t_seconds, point.value);
+                        break;
+                    }
                 }
             }
-            // Try each loaded DBC in priority order, first decode wins
-            // (matches `sample_signals`' existing semantics).
-            for db in dbs {
-                if let Some(point) =
-                    signal_sampler::sample_one(&frame, db, message_id, extended, signal_name)
-                {
-                    if point.value < self.lo {
-                        self.lo = point.value;
-                    }
-                    if point.value > self.hi {
-                        self.hi = point.value;
-                    }
-                    self.levels[0].push(point.t_seconds, point.value);
-                    break;
-                }
-            }
+            self.next_index = to;
         }
-        self.next_index = store_len;
         self.fold();
     }
 
@@ -893,6 +950,94 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn catch_up_never_materializes_more_than_one_chunk_at_a_time() {
+        // The property that keeps a first-use rebuild over restored history
+        // from spiking: the scan asks for one bounded chunk at a time and
+        // the chunks tile the unscanned range exactly. Driven through the
+        // fetch seam so a multi-million-frame span costs the test nothing.
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let mut cache = SignalCache::new(tmp.path(), "sig");
+        let store_len = 5 * CATCH_UP_CHUNK_FRAMES + 7;
+        let asked = std::cell::RefCell::new(Vec::new());
+        cache.catch_up_chunked(None, 256, false, "X", store_len, dbs, |from, to| {
+            asked.borrow_mut().push((from, to));
+            // Every fourth frame in the chunk carries the decodable id.
+            (from..to)
+                .step_by(4)
+                .map(|i| (i, val_frame(i as u64 * S, (i % 251) as u16)))
+                .collect()
+        });
+
+        let asked = asked.into_inner();
+        assert!(asked.len() >= 5, "expected several chunks, got {asked:?}");
+        assert!(
+            asked
+                .iter()
+                .all(|&(from, to)| to - from <= CATCH_UP_CHUNK_FRAMES),
+            "a chunk exceeded the cap: {asked:?}",
+        );
+        // Tiling: starts at 0, ends at the tip, no gap and no overlap.
+        assert_eq!(asked.first().map(|c| c.0), Some(0));
+        assert_eq!(asked.last().map(|c| c.1), Some(store_len));
+        assert!(asked.windows(2).all(|w| w[0].1 == w[1].0), "{asked:?}");
+        // And every matching frame in the span decoded exactly once.
+        assert_eq!(cache.levels[0].len(), store_len.div_ceil(4));
+        assert_eq!(cache.next_index, store_len);
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn catch_up_decodes_a_capture_longer_than_one_scan_chunk() {
+        // Equivalence pin for the first-use rebuild: a capture spanning
+        // several scan chunks must decode to exactly the samples a
+        // single-shot scan would produce, in capture order, and a later
+        // catch-up must resume at the tip (no gap, no duplicate) even when
+        // the resume point falls inside a chunk.
+        let store = TraceStore::new();
+        let n = 2 * CATCH_UP_CHUNK_FRAMES + 1234;
+        for i in 0..n {
+            // Every third frame carries the decodable id; the rest don't.
+            if i % 3 == 0 {
+                store.append(val_frame(i as u64 * S, (i % 977) as u16));
+            } else {
+                store.append(dummy(i as u64 * S, 999, vec![0; 8]));
+            }
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+
+        let expect: Vec<f64> = (0..n)
+            .filter(|i| i % 3 == 0)
+            .map(|i| f64::from((i % 977) as u16))
+            .collect();
+        let all = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(all.len(), expect.len());
+        assert_eq!(all.iter().map(|p| p.value).collect::<Vec<_>>(), expect);
+        assert_eq!(all.first().map(|p| p.t_seconds), Some(0.0));
+
+        // Extend past the tip and catch up again: only the new matches
+        // land, appended after the ones already decoded.
+        for i in n..n + 600 {
+            if i % 3 == 0 {
+                store.append(val_frame(i as u64 * S, (i % 977) as u16));
+            } else {
+                store.append(dummy(i as u64 * S, 999, vec![0; 8]));
+            }
+        }
+        let expect2: Vec<f64> = (0..n + 600)
+            .filter(|i| i % 3 == 0)
+            .map(|i| f64::from((i % 977) as u16))
+            .collect();
+        let all2 = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(all2.iter().map(|p| p.value).collect::<Vec<_>>(), expect2);
+    }
+
+    #[test]
     fn pyramid_levels_spill_to_disk_and_clear_wipes_them() {
         // Enough samples to fold at least one higher level (200 / 8 = 25
         // level-1 points), so more than level 0 lands on disk.
@@ -1023,5 +1168,101 @@ mod tests {
         );
         let after = std::fs::read_dir(dir.path()).unwrap().count();
         assert!(after < before, "pyramid disk reclaimed: {after} < {before}");
+    }
+
+    // ---- First-use rebuild benchmark --------------------------------
+    //
+    // Not part of the default suite (`#[ignore]`d; it writes a
+    // multi-million-frame capture into a temp dir and runs for tens of
+    // seconds). It measures what the first plot over a *restored* capture
+    // pays (ADR 0002 DS-7): the catch-up's wall clock, and the process
+    // working-set high-water mark across it, sampled while it runs. Run
+    // with:
+    //
+    //   cargo test -p cannet-gui --release bench_first_use_rebuild \
+    //       -- --ignored --nocapture
+    //
+    // The working set counts the store's mapped pages the scan touches as
+    // well as its heap, so read the delta as "everything the rebuild made
+    // resident", not as heap alone. The number that matters is how it
+    // scales: the mapped share grows with the capture, the materialized
+    // share must not.
+
+    #[test]
+    #[ignore = "first-use rebuild benchmark; run with --ignored --nocapture"]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    fn bench_first_use_rebuild() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::Arc;
+
+        /// Frames in the synthetic capture, all carrying the decodable id —
+        /// the worst case the profile named (one very dense id).
+        const FRAMES: usize = 4_000_000;
+
+        fn rss() -> u64 {
+            use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+            let pid = Pid::from_u32(std::process::id());
+            let mut sys = System::new();
+            sys.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[pid]),
+                true,
+                ProcessRefreshKind::nothing().with_memory(),
+            );
+            sys.process(pid).map_or(0, sysinfo::Process::memory)
+        }
+
+        let scratch = TempDir::new().unwrap();
+        let raw_dir = scratch.path().join("raw");
+        std::fs::create_dir_all(&raw_dir).unwrap();
+        let store = TraceStore::new_disk(&raw_dir).unwrap();
+        let wrote = std::time::Instant::now();
+        for i in 0..FRAMES {
+            store.append(val_frame(i as u64 * 1_000_000, (i % 4096) as u16));
+        }
+        println!(
+            "[bench] wrote {FRAMES} frames in {:.1} s",
+            wrote.elapsed().as_secs_f64(),
+        );
+
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let pyramids = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(pyramids.path());
+
+        // Sample the working set while the rebuild runs — the spike the
+        // chunked scan exists to remove is transient, so an after-the-fact
+        // reading would miss it.
+        let base = rss();
+        let peak = Arc::new(AtomicU64::new(base));
+        let stop = Arc::new(AtomicBool::new(false));
+        let sampler = {
+            let (peak, stop) = (Arc::clone(&peak), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    peak.fetch_max(rss(), Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            })
+        };
+
+        let started = std::time::Instant::now();
+        let pts = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 2000, &store, dbs);
+        let secs = started.elapsed().as_secs_f64();
+        stop.store(true, Ordering::Relaxed);
+        sampler.join().unwrap();
+
+        let peak = peak.load(Ordering::Relaxed).max(rss());
+        let delta = peak.saturating_sub(base);
+        println!(
+            "[bench] first-use rebuild: {FRAMES} frames in {:.2} s ({:.3} us/frame), \
+             working set {:.0} -> {:.0} MB (+{:.0} MB = {:.0} B/frame), {} points served",
+            secs,
+            secs * 1e6 / FRAMES as f64,
+            base as f64 / 1e6,
+            peak as f64 / 1e6,
+            delta as f64 / 1e6,
+            delta as f64 / FRAMES as f64,
+            pts.len(),
+        );
     }
 }

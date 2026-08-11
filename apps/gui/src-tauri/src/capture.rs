@@ -527,12 +527,19 @@ pub struct RestoredCapture {
 /// the open. Returns `count == 0` when there is nothing to restore (no
 /// open project, no scratch, or an identity mismatch) — the gate lives in
 /// [`TraceStore::try_reload`], which only reloads on a matching identity.
+///
+/// `async` so Tauri runs it off the main thread. The frontend does not
+/// wait for this — the app comes up interactive and the history appears
+/// when it lands — and that only holds if the reopen isn't running on the
+/// thread the window and every other command share: reopening a large
+/// capture is `O(segment files)`, seconds' worth on a multi-million-frame
+/// one. (Commands that read the trace store do queue behind it, because
+/// the reload holds the store lock for the swap; during that window the
+/// store they would read is the new session's empty one.)
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn restore_scratch_capture(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> RestoredCapture {
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
+    let state: State<'_, AppState> = app.state();
     let started = std::time::Instant::now();
     let active = *state.active_project_id();
     let Some(breakdown) = active.and_then(|pid| state.trace_store.try_reload(pid)) else {
