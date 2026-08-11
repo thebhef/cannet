@@ -287,8 +287,89 @@ plot.
   ADR 0026 gains the generator bullet and loses "compiled from the
   project's elements".
 
+### 2026-08-08 — phase 56.C: the one-shot "sort area" action
+
+Landed on `task56c-sort-area` (from `task56b-generator-rules`):
+
+| commit | subject |
+| --- | --- |
+| `698ffe9` | `feat(gui): a pure sort key for a plot area's signal list` |
+| `6612566` | `feat(gui): a one-shot "Sort area" action on the plot's row context menu` |
+
+Frontend suite 1640 → 1648 tests (136 → 136 files; `plotPanelConfig.test.ts`
+gained 5, `PlotPanel.dom.test.tsx` gained 3). `pnpm --dir apps/gui build`
+clean, `tsc --noEmit` clean. No Rust changes — evaluation and generator
+indexes were already host-answered as of 56.B; this phase only consumes
+the cached `signalKey → slot` map.
+
+**What landed:**
+
+- **`sortAreaSignals(signals, generatorIndexes)`** (`plotPanelConfig.ts`)
+  — the pure sort key: a generator-claimed signal (present in the map)
+  sorts by `(index, name)`; an unclaimed one tails, by name alone. Name
+  collation is `localeCompare(..., { sensitivity: "base" })` — the same
+  case-insensitive rule `DbcPanel`'s ECU grouping uses. `Array.prototype.sort`
+  is a stable sort (ES2019+), so a real tie (same index *and*
+  case-insensitive name, e.g. `Cell1`/`cell1`) keeps its input order —
+  covered by a dedicated stability test. 5 unit tests (index+name order,
+  no-index tail, case-insensitive collation, stability, non-mutating).
+- **`AxisHandlers.onSortArea: () => void`** — routed to the *parent*
+  area's id, same pattern as `onSetPrimarySignal`, so invoking it from
+  a per-unit/individual derived axis still sorts the whole logical
+  area, not that axis's slice. `PlotPanel.sortArea` is the one new
+  `setAreas` write: `{ ...a, signals: sortAreaSignals(a.signals,
+  generatorIndexes) }` — nothing else on the area or its signals is
+  touched (no `hidden`/`colorPick` rewrite).
+- **Placement reading:** the row context menu (`SignalSelectionMenu`,
+  task 49.B's Hide/Show shell) gained a third button, **Sort area** —
+  the "context menu on the plot area's signal panel" the grooming
+  names, read literally as the existing per-row menu rather than a new
+  header-level one. Unlike Hide/Show it ignores the selection entirely
+  (a title attribute says so) and always acts on the whole area.
+- **Collation reading:** case-insensitive, `localeCompare` at `"base"`
+  sensitivity — matches how names are browsed elsewhere (`DbcPanel`'s
+  ECU grouping is the only other collation precedent in the codebase).
+- **Pattern-derived rows:** untouched by design — they aren't in
+  `signals`, so `sortAreaSignals` never sees them; they keep rendering
+  in pattern-evaluation order, as the grooming's consequence read.
+- 3 DOM tests (`PlotPanel.dom.test.tsx`): the button is present on the
+  row menu; invoking it reorders a scrambled unified-mode area's rows
+  by (index, name) in one persist; and — the per-unit-mode case the
+  brief called out — invoking it from one derived axis (the unit-A
+  axis, showing neither of the two generator-claimed signals) still
+  produces a persisted parent `signals` order that interleaves all
+  four signals across units, which only a whole-list sort can produce
+  (a "sort this axis's slice only" bug would leave the two axes not
+  clicked from untouched, and the assertion is against the *persisted*
+  list rather than DOM row order for exactly that reason — per-unit
+  grouping can make a slice-only sort's visual output coincide with a
+  whole-list sort's for small fixtures).
+- README's plot section gains a paragraph on Sort area beside the
+  Hide/Show one. No new CONTEXT.md term — "Sort area" is a UI action
+  name over the already-defined "generator" concept, not a new domain
+  concept of its own.
+
 ## Blockers / side effects
 
+- **Sort area forces the same cold-refetch treatment as adding or
+  removing a signal.** `PlotArea`'s uPlot-construction effect keys on
+  `signalSetKey = signals.map(signalRefKey).join("|")`
+  (`PlotArea.tsx`), which is **order-sensitive** — reordering with no
+  membership change still changes the string. That effect drops the
+  decimation cache and host extents and re-fetches the whole window
+  (`PlotArea.tsx`'s construction effect, guarded by
+  `builtSignalSetRef.current !== signalSetKey`) whenever it fires, so
+  invoking Sort area costs a full-window uPlot rebuild + refetch, the
+  same as an add/remove — not the cheaper "just resample" path a
+  same-membership reorder could in principle take. This is what the
+  brief asked to check rather than fix: `signalSetKey` is depended on
+  by several other effects too (float rule, value tables, log axis…),
+  so making it order-insensitive is a wider change than this task's
+  scope, and the sort action is one-shot rather than something a user
+  invokes on every tick, so the cost is a single hitch, not a
+  steady-state one. Left as-is; a candidate for `plans/backlog.md` if
+  it turns out to matter in practice — not added there in this pass
+  since it wasn't observed to visibly regress anything under test.
 - **Pre-upgrade explicit plot picks re-resolve.** See the upgrade
   reading above: dropping every stored `SignalRef.color` is the only
   way to re-resolve the position-seeded ones, because nothing
@@ -315,3 +396,25 @@ plot.
   effects. The single-line pattern field can't produce one, but a
   hand-edited project file could; the result is a mis-keyed refresh,
   not a crash or a wrong match.
+
+## Exit criteria walk (2026-08-08)
+
+- **Ordered `generator` elements map a name-regex capture to a wheel
+  index; matching signals render the derived color everywhere through
+  the shared resolver (pick → generator → hash), plot included** —
+  MET (56.A resolver + 56.B rules/editor/wiring).
+- **Plot area-position seeding removed; unpicked series resolve
+  live** — MET (56.A; stored `SignalRef.color` re-resolves on load,
+  new picks persist as `colorPick` — the accepted upgrade reading).
+- **Host-side validation/evaluation (Rust `regex`, `size_limit`,
+  entry-time errors); frontend never executes user regex** — MET
+  (56.B `signal_generator.rs`; caps 512 chars / 64 KiB; editor shows
+  host errors at entry).
+- **One-shot "sort area" context-menu action by (generator index,
+  name); signal-view sort column deferred** — MET (56.C; deferral
+  recorded in Grooming).
+- **Project persistence with tests; docs (CONTEXT.md "generator",
+  README)** — MET (round-trip tests; CONTEXT.md + README landed with
+  56.B/56.C).
+
+Task complete; all criteria verified.

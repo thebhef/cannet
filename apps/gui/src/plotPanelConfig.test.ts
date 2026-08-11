@@ -21,6 +21,7 @@ const {
   reorderAreas,
   signalsWidthFromRaw,
   signalRefFromRaw,
+  sortAreaSignals,
   yAxisModeFromRaw,
 } = await import("./plotPanelConfig");
 type SignalRef = import("./plotPanelConfig").SignalRef;
@@ -319,6 +320,70 @@ describe("reorderAreas", () => {
     expect(moved[0].id).toBe("b");
     expect(moved[0].patterns).toEqual(["rpm$"]);
     expect(moved[1].signals[0].signalName).toBe("Speed");
+  });
+});
+
+describe("sortAreaSignals", () => {
+  // Minimal SignalRef stand-ins — only `signalName` and the id fields
+  // signalRefKey/signalKey need vary across cases.
+  const sig = (signalName: string, messageId = 1): SignalRef => ({
+    ...core,
+    signalName,
+    messageId,
+  });
+
+  it("orders generator-claimed signals by (index, then name)", () => {
+    const signals = [sig("Zeta", 1), sig("Alpha", 2), sig("Beta", 3)];
+    const indexes = new Map([
+      [signalRefKey(signals[0]), 1],
+      [signalRefKey(signals[1]), 0],
+      [signalRefKey(signals[2]), 1],
+    ]);
+    // Zeta and Beta share index 1 → name breaks the tie.
+    expect(sortAreaSignals(signals, indexes).map((s) => s.signalName)).toEqual([
+      "Alpha",
+      "Beta",
+      "Zeta",
+    ]);
+  });
+
+  it("puts unclaimed signals after every claimed one, ordered by name", () => {
+    const claimed = sig("Gamma", 1);
+    const unclaimedA = sig("Alpha", 2);
+    const unclaimedB = sig("Omega", 3);
+    const indexes = new Map([[signalRefKey(claimed), 5]]);
+    const sorted = sortAreaSignals([unclaimedB, claimed, unclaimedA], indexes);
+    expect(sorted.map((s) => s.signalName)).toEqual(["Gamma", "Alpha", "Omega"]);
+  });
+
+  it("collates names case-insensitively", () => {
+    const signals = [sig("bravo", 1), sig("Alpha", 2), sig("Charlie", 3)];
+    expect(sortAreaSignals(signals, new Map()).map((s) => s.signalName)).toEqual([
+      "Alpha",
+      "bravo",
+      "Charlie",
+    ]);
+  });
+
+  it("is stable: signals tied on index and case-insensitive name keep their input order", () => {
+    // "Cell1" and "cell1" collate equal at base sensitivity — a real
+    // tie, not just an equal index — so the one that came first in the
+    // input must stay first.
+    const first = sig("Cell1", 1);
+    const second = sig("cell1", 2);
+    const indexes = new Map([
+      [signalRefKey(first), 3],
+      [signalRefKey(second), 3],
+    ]);
+    expect(sortAreaSignals([first, second], indexes)).toEqual([first, second]);
+    expect(sortAreaSignals([second, first], indexes)).toEqual([second, first]);
+  });
+
+  it("returns a new array, leaving the input untouched", () => {
+    const signals = [sig("B", 1), sig("A", 2)];
+    const sorted = sortAreaSignals(signals, new Map());
+    expect(sorted).not.toBe(signals);
+    expect(signals.map((s) => s.signalName)).toEqual(["B", "A"]);
   });
 });
 

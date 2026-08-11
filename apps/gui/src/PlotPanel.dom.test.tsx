@@ -3886,6 +3886,85 @@ describe("PlotPanel signal-row selection", () => {
       expect(counter("plotarea.resample") - before).toBeLessThanOrEqual(2);
     });
   });
+
+  it("offers a 'Sort area' action on the row context menu", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp"]);
+    fireEvent.contextMenu(row("EngineSpeed"));
+    expect(screen.getByRole("button", { name: "Sort area" })).toBeInTheDocument();
+  });
+
+  it("sorts the area by (generator index, then name) in one persist", async () => {
+    // Scrambled add order; LimitNominal and EngineSpeed carry generator
+    // slots (0 and 1), EngineTemp and LimitEffective don't — they tail,
+    // ordered by name.
+    const { api, setGeneratorIndexes } = renderPanel();
+    await addToFocused(["EngineTemp", "LimitNominal", "EngineSpeed", "LimitEffective"]);
+    setGeneratorIndexes(
+      new Map([
+        [signalKey(null, 256, false, "LimitNominal"), 0],
+        [signalKey(null, 256, false, "EngineSpeed"), 1],
+      ]),
+    );
+    await waitFor(() => expect(row("EngineSpeed")).toBeInTheDocument());
+
+    const before = persistCalls(api);
+    fireEvent.contextMenu(row("EngineSpeed"));
+    fireEvent.click(screen.getByRole("button", { name: "Sort area" }));
+
+    expect(
+      Array.from(document.querySelectorAll(".plot-signal-row")).map(
+        (r) => r.querySelector(".plot-signal-name")?.textContent,
+      ),
+    ).toEqual(["LimitNominal", "EngineSpeed", "EngineTemp", "LimitEffective"]);
+    // One persist for the whole reorder.
+    expect(persistCalls(api) - before).toBe(1);
+  });
+
+  it("sorts a per-unit area's whole signal list, not one derived axis's slice", async () => {
+    // One logical area, four signals, three units → three `PlotArea`
+    // instances (ADR 0026). Invoking Sort from one derived axis's row
+    // menu must still reorder the *parent's* full manual `signals`
+    // list — not just the signals grouped onto that one derived axis.
+    // Two of the four signals share a unit (A), so a "sort this axis's
+    // slice only" implementation would produce the same *visual*
+    // grouping for that pair; the persisted list is what actually
+    // proves the whole area sorted, since it interleaves signals from
+    // every unit rather than keeping each unit's block contiguous.
+    const { api, setGeneratorIndexes } = renderPanel();
+    await addToFocused(["EngineTemp", "LimitNominal", "EngineSpeed", "LimitEffective"]);
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    expect(document.querySelectorAll(".plot-area").length).toBe(3);
+    setGeneratorIndexes(
+      new Map([
+        [signalKey(null, 256, false, "LimitEffective"), 0],
+        [signalKey(null, 256, false, "EngineTemp"), 1],
+      ]),
+    );
+    await waitFor(() => expect(row("EngineSpeed")).toBeInTheDocument());
+
+    const before = persistCalls(api);
+    // Invoked from the unit-A axis (LimitNominal's row), which shows
+    // neither LimitEffective nor EngineTemp — the two the answer must
+    // still place ahead of it.
+    fireEvent.contextMenu(row("LimitNominal"));
+    fireEvent.click(screen.getByRole("button", { name: "Sort area" }));
+
+    const calls = api.updateParameters.mock.calls as unknown as [Record<string, unknown>][];
+    const persisted = (calls[calls.length - 1]?.[0] ?? {}) as {
+      areas?: { signals: { signalName: string }[] }[];
+    };
+    // LimitEffective (idx 0) and EngineTemp (idx 1) lead; EngineSpeed
+    // and LimitNominal tail, alphabetically — interleaved across units,
+    // which only a whole-list sort produces.
+    expect(persisted.areas?.[0].signals.map((s) => s.signalName)).toEqual([
+      "LimitEffective",
+      "EngineTemp",
+      "EngineSpeed",
+      "LimitNominal",
+    ]);
+    expect(persistCalls(api) - before).toBe(1);
+  });
 });
 
 describe("PlotPanel follow-live slide cadence", () => {
