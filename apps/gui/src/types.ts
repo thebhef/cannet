@@ -2,6 +2,8 @@
 // because the two surfaces are small enough that a code generator would
 // be more friction than benefit at this scale.
 
+import type { Note } from "./notes";
+
 export type CanFrameKind =
   | { kind: "classic" }
   | { kind: "fd"; brs: boolean; esi: boolean }
@@ -111,6 +113,21 @@ export type LogFinished =
 
 export interface OpenLogResult {
   blf_path: string;
+}
+
+/// What one header-only scan of a BLF file found (`scan_blf_channels`,
+/// mirrors `capture.rs::BlfScanResult`) — feeds the whole channel-map
+/// import dialog: the channel census, cheap header metadata, and the
+/// file's markers already projected onto the `Note` shape they land in
+/// the session store as, if imported. `first_timestamp_ns` /
+/// `last_timestamp_ns` are `null` for a file with no frames.
+export interface BlfScanResult {
+  channels: number[];
+  frame_count: number;
+  first_timestamp_ns: number | null;
+  last_timestamp_ns: number | null;
+  start_unix_nanos: number;
+  markers: Note[];
 }
 
 export interface DbcInfo {

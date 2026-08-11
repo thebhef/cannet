@@ -43,9 +43,17 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "list_transmit_frames":
       case "list_signals":
       case "rbs_dirty":
-      case "scan_blf_channels":
       case "get_interfaces":
-        return cmd === "scan_blf_channels" ? [0] : [];
+        return [];
+      case "scan_blf_channels":
+        return {
+          channels: [0],
+          frame_count: 1,
+          first_timestamp_ns: 1_000_000_000,
+          last_timestamp_ns: 1_000_000_000,
+          start_unix_nanos: 1_700_000_000_000_000_000,
+          markers: [],
+        };
       case "fetch_filtered_trace":
       case "fetch_by_id_page":
         return { count: 0, start: 0, rows: [] };

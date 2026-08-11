@@ -665,7 +665,8 @@ fn frame_to_object_bytes(frame: &CanFrame, start_ns: Option<u64>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cannet_core::{pump, CanFrameSink};
+    use cannet_core::{pump, CanFrameSink, WindowedSource};
+    use std::sync::{Arc, Mutex};
 
     /// Base timestamp for round-trip tests — a "modern" absolute
     /// value where the native writer should now be ns-exact. (The
@@ -802,6 +803,68 @@ mod tests {
         };
         // Native reader surfaces an I/O error inside BlfReadError::Io.
         assert!(matches!(err, BlfSourceError::Read(_)));
+    }
+
+    /// The import time range (ADR 0046) is `WindowedSource` wrapped
+    /// around the real `CanFrameSource` — no BLF-specific fork. Pumping
+    /// a windowed `BlfCanFrameSource` must keep only frames inside the
+    /// inclusive bound, and the marker sink — which fires from inside
+    /// the wrapped source's own `next_frame`, ahead of the window check —
+    /// must still see every marker the walk actually reaches: the ones
+    /// before `start_ns` (skipped as frames, but the walk passes them),
+    /// and none after the walk stops past `end_ns`.
+    #[test]
+    fn windowed_source_filters_a_blf_import_range_and_still_sees_prefix_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("windowed.blf");
+        let mut writer = BlfCaptureWriter::create(&path).unwrap();
+        let frame_at = |ts: u64| {
+            CanFrame::classic(
+                ts,
+                0,
+                CanId::standard(0x100).unwrap(),
+                Direction::Rx,
+                vec![1],
+            )
+            .unwrap()
+        };
+        writer.append(&frame_at(TS_BASE_NS)).unwrap(); // before start: dropped, walk still passes it
+        writer
+            .append_marker(TS_BASE_NS, "before", "note-before", 0)
+            .unwrap();
+        writer.append(&frame_at(TS_BASE_NS + 1_000)).unwrap(); // == start: kept
+        writer.append(&frame_at(TS_BASE_NS + 2_000)).unwrap(); // inside: kept
+        writer.append(&frame_at(TS_BASE_NS + 3_000)).unwrap(); // == end: kept
+        writer.append(&frame_at(TS_BASE_NS + 4_000)).unwrap(); // past end: stops the walk here
+        writer
+            .append_marker(TS_BASE_NS + 4_000, "after", "note-after", 0)
+            .unwrap();
+        writer.finish().unwrap();
+
+        let mut source = BlfCanFrameSource::open(&path).unwrap();
+        let seen_markers: Arc<Mutex<Vec<ScannedMarker>>> = Arc::default();
+        source.on_marker({
+            let seen_markers = Arc::clone(&seen_markers);
+            move |m| seen_markers.lock().unwrap().push(m)
+        });
+        let mut windowed =
+            WindowedSource::new(source, Some(TS_BASE_NS + 1_000), Some(TS_BASE_NS + 3_000));
+        let mut sink = VecSink::default();
+        pump(&mut windowed, &mut sink).unwrap();
+
+        let kept: Vec<u64> = sink.0.iter().map(|f| f.timestamp_ns).collect();
+        assert_eq!(
+            kept,
+            vec![TS_BASE_NS + 1_000, TS_BASE_NS + 2_000, TS_BASE_NS + 3_000]
+        );
+
+        let markers = seen_markers.lock().unwrap();
+        assert_eq!(
+            markers.len(),
+            1,
+            "only the pre-start marker was walked past"
+        );
+        assert_eq!(markers[0].marker.marker_name, b"before");
     }
 
     // ---- BlfCaptureWriter tests ----

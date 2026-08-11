@@ -1767,6 +1767,77 @@ fn write_capture_round_trips_frames_and_notes() {
     );
 }
 
+/// The import time range (ADR 0046, task 58.B): `open_log` wraps the
+/// BLF source in `cannet_core::WindowedSource` ahead of `run_pump`, so
+/// the range is a filter at the `CanFrameSource` seam and not a second
+/// ingest path. This drives the identical per-frame body `run_pump`
+/// runs (windowed source → `RawTraceFrame::from` → `route_channel` →
+/// `TraceStore::append`) — the pieces `run_pump` itself is built from —
+/// against a real disk-backed `TraceStore`, without needing a Tauri
+/// `AppHandle` to call the command. Frames outside the selected range
+/// must never reach `TraceStore::append`; the boundary frames (at
+/// exactly `start_ns` / `end_ns`) must.
+#[test]
+fn windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store() {
+    use cannet_blf::BlfCanFrameSource;
+    use cannet_core::{CanFrameSource as _, WindowedSource};
+
+    let dir = tempfile::tempdir().unwrap();
+    let blf_path = dir.path().join("windowed-import.blf");
+    let ts_base = 1_700_000_000_000_000_000u64;
+    let frame_at = |ts: u64| {
+        cannet_core::CanFrame::classic(
+            ts,
+            0,
+            cannet_core::CanId::standard(0x100).unwrap(),
+            Direction::Rx,
+            vec![1],
+        )
+        .unwrap()
+    };
+    {
+        let mut writer = cannet_blf::BlfCaptureWriter::create(&blf_path).unwrap();
+        for offset_us in [0u64, 1_000, 2_000, 3_000, 4_000] {
+            writer
+                .append(&frame_at(ts_base + offset_us * 1_000))
+                .unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    let scratch = tempfile::TempDir::new().unwrap();
+    let store_dir = scratch.path().join("current");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let store = open_trace_store(&store_dir);
+
+    let source = BlfCanFrameSource::open(&blf_path).unwrap();
+    // Same bound arithmetic `open_log` hands `WindowedSource`: inclusive
+    // start at the second frame, inclusive end at the fourth.
+    let mut windowed =
+        WindowedSource::new(source, Some(ts_base + 1_000_000), Some(ts_base + 3_000_000));
+    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    while let Some(frame) = windowed.next_frame().unwrap() {
+        let mut raw = trace_store::RawTraceFrame::from(frame);
+        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            continue;
+        };
+        raw.bus_id = bid;
+        store.append(raw);
+    }
+
+    let kept = store.slice(0, store.len());
+    let kept_ts: Vec<u64> = kept.iter().map(|f| f.timestamp_ns).collect();
+    assert_eq!(
+        kept_ts,
+        vec![
+            ts_base + 1_000_000,
+            ts_base + 2_000_000,
+            ts_base + 3_000_000,
+        ],
+        "only the in-range frames (boundaries inclusive) reached the trace store",
+    );
+}
+
 /// `write_capture` re-channels each frame by its `bus_id`'s
 /// position in the project's ordered bus list. This is how the
 /// logical bus assignment round-trips through BLF — the channel

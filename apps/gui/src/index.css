@@ -927,6 +927,100 @@ header {
   color: var(--text-secondary);
 }
 
+.blf-map-meta {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin: 0 0 0.6rem;
+}
+
+.blf-map-range {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}
+
+.blf-map-range-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.blf-map-range-field input {
+  font: inherit;
+  width: 6rem;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+}
+
+.blf-map-markers-section {
+  margin-bottom: 0.8rem;
+}
+
+.blf-map-markers-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.blf-map-markers-toggle:hover {
+  color: var(--text-muted);
+}
+
+.blf-map-markers-caret {
+  flex: 0 0 auto;
+  width: 0.7rem;
+}
+
+.blf-map-markers-list {
+  max-height: 10rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0.3rem 0 0 0.95rem;
+}
+
+.blf-map-marker-row {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  cursor: default;
+}
+
+.blf-map-marker-row.active {
+  background: var(--surface-button-hover);
+}
+
+.blf-map-marker-row.selected {
+  background: var(--accent-selected-bg);
+  color: var(--text-on-accent);
+}
+
+.blf-map-marker-time {
+  flex: 0 0 6rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.blf-map-marker-row.selected .blf-map-marker-time {
+  color: var(--text-on-accent);
+}
+
 .graph-panel {
   display: flex;
   flex-direction: column;

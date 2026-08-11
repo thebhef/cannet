@@ -69,6 +69,68 @@ where
     }
 }
 
+/// A `CanFrameSource` that only yields frames whose timestamp falls in
+/// `[start_ns, end_ns]` (both bounds inclusive, either or both omittable).
+///
+/// This is the time-range filter [ADR 0046](../../../docs/adr/0046-one-ingest-pathway.md)
+/// requires: a selected import range is a filter at the `CanFrameSource`
+/// seam, not a second ingest path. Every source — BLF, live, future
+/// formats — gets range windowing the same way, for free, by wrapping.
+///
+/// Frames before `start_ns` are skipped (the inner source is still
+/// walked, so a wrapped source that surfaces side information as it
+/// walks — e.g. `BlfCanFrameSource`'s marker sink — still sees that
+/// prefix). Once a frame past `end_ns` is reached, this reports
+/// end-of-stream and never calls the inner source again — "stop after"
+/// means the walk really stops, matching a file's arrival-ordered
+/// timestamps; a would-be-later frame doesn't get evaluated.
+pub struct WindowedSource<S> {
+    inner: S,
+    start_ns: Option<u64>,
+    end_ns: Option<u64>,
+    done: bool,
+}
+
+impl<S: CanFrameSource> WindowedSource<S> {
+    /// Wrap `inner` with the given inclusive bounds. `None` on either
+    /// side means that side is unbounded.
+    pub fn new(inner: S, start_ns: Option<u64>, end_ns: Option<u64>) -> Self {
+        Self {
+            inner,
+            start_ns,
+            end_ns,
+            done: false,
+        }
+    }
+}
+
+impl<S: CanFrameSource> CanFrameSource for WindowedSource<S> {
+    type Error = S::Error;
+
+    fn next_frame(&mut self) -> Result<Option<CanFrame>, Self::Error> {
+        if self.done {
+            return Ok(None);
+        }
+        loop {
+            let Some(frame) = self.inner.next_frame()? else {
+                self.done = true;
+                return Ok(None);
+            };
+            if self
+                .start_ns
+                .is_some_and(|start| frame.timestamp_ns < start)
+            {
+                continue;
+            }
+            if self.end_ns.is_some_and(|end| frame.timestamp_ns > end) {
+                self.done = true;
+                return Ok(None);
+            }
+            return Ok(Some(frame));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +237,71 @@ mod tests {
         let mut sink = FailingSink;
         let err = pump(&mut source, &mut sink).unwrap_err();
         assert!(matches!(err, PumpError::Sink(SinkErr)));
+    }
+
+    fn drain(mut source: impl CanFrameSource<Error = std::convert::Infallible>) -> Vec<u64> {
+        let mut out = Vec::new();
+        while let Some(frame) = source.next_frame().unwrap() {
+            out.push(frame.timestamp_ns);
+        }
+        out
+    }
+
+    fn vec_source(timestamps: &[u64]) -> VecSource {
+        VecSource {
+            frames: timestamps
+                .iter()
+                .copied()
+                .map(make_frame)
+                .collect::<Vec<_>>()
+                .into_iter(),
+        }
+    }
+
+    #[test]
+    fn windowed_source_with_no_bounds_passes_every_frame_through() {
+        let source = WindowedSource::new(vec_source(&[1, 2, 3]), None, None);
+        assert_eq!(drain(source), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn windowed_source_skips_frames_strictly_before_start() {
+        let source = WindowedSource::new(vec_source(&[1, 2, 3, 4]), Some(3), None);
+        assert_eq!(drain(source), vec![3, 4]);
+    }
+
+    #[test]
+    fn windowed_source_keeps_the_frame_exactly_at_start() {
+        // Pinned: `start_ns` is an inclusive bound.
+        let source = WindowedSource::new(vec_source(&[2, 3]), Some(3), None);
+        assert_eq!(drain(source), vec![3]);
+    }
+
+    #[test]
+    fn windowed_source_keeps_the_frame_exactly_at_end() {
+        // Pinned: `end_ns` is an inclusive bound.
+        let source = WindowedSource::new(vec_source(&[3, 4]), None, Some(3));
+        assert_eq!(drain(source), vec![3]);
+    }
+
+    #[test]
+    fn windowed_source_stops_at_the_first_frame_past_end_and_never_resumes() {
+        // A frame past `end_ns` ends the stream even if a later frame in
+        // the underlying source would fall back in range — "stop after"
+        // means the walk stops, it doesn't filter the whole file.
+        let source = WindowedSource::new(vec_source(&[1, 2, 5, 2]), None, Some(3));
+        assert_eq!(drain(source), vec![1, 2]);
+    }
+
+    #[test]
+    fn windowed_source_applies_both_bounds_together() {
+        let source = WindowedSource::new(vec_source(&[1, 2, 3, 4, 5]), Some(2), Some(4));
+        assert_eq!(drain(source), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn windowed_source_empty_source_yields_nothing() {
+        let source = WindowedSource::new(vec_source(&[]), Some(2), Some(4));
+        assert_eq!(drain(source), Vec::<u64>::new());
     }
 }

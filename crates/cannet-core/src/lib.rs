@@ -56,7 +56,7 @@ pub use frame::{
     CanFdFlags, CanFrame, CanFrameError, CanFramePayload, CanId, Direction, IdError,
     CLASSIC_DATA_MAX, EXTENDED_ID_MAX, FD_DATA_MAX, STANDARD_ID_MAX,
 };
-pub use io::{pump, CanFrameSink, CanFrameSource, PumpError};
+pub use io::{pump, CanFrameSink, CanFrameSource, PumpError, WindowedSource};
 pub use shared_bus::{
     BridgeHandle, BusClosed, BusConfig, LocalSink, LocalSource, ParticipantEvent, ParticipantId,
     SharedBus,

@@ -313,6 +313,73 @@ the win it would buy (~2 allocations + 2 frees per frame) is below this
 harness's noise floor — it needs a dedicated append microbenchmark to
 measure, not the whole-file one.
 
+### 2026-08-08 — phase 58.B, item 2 (import dialog: metadata, markers, time range)
+
+Branch `task58b-import-dialog`, off `task58a-one-pass-import` (655ebc9).
+
+| commit | subject |
+| --- | --- |
+| 572108c | `feat(core)`: add a windowed CanFrameSource for import time ranges |
+| 9036809 | `test(blf)`: pin the import time-range filter at the pump seam |
+| a943875 | `feat(gui)`: widen the BLF scan and wire an import time range |
+| 6e2e8b7 | `feat(gui)`: show capture metadata, markers, and a time range in the BLF dialog |
+
+Tests after the slice: `cannet-core` 41 (was 34), `cannet-blf` 107 + 1
+integration (was 106 + 1), `cannet-gui` 501 + 4 ignored benchmarks (was
+500 + 4). Frontend: 139 files / 1675 tests (was 138 files — one new
+`.dom.test.tsx` — with the modal's existing 3 tests rewritten to the
+new prop shape and 6 new ones added). `cargo clippy --workspace
+--all-targets` clean; `pnpm --dir apps/gui build` and `tsc -b` clean.
+
+**What landed**
+
+- `cannet_core::WindowedSource<S>` — a `CanFrameSource` wrapper with an
+  inclusive `[start_ns, end_ns]` filter, either bound optional. Frames
+  before `start_ns` are skipped (the inner source is still walked, so a
+  source that surfaces side information mid-walk — the BLF marker sink
+  — still sees that prefix); a frame past `end_ns` ends the stream for
+  good (`next_frame` returns `None` from then on, the inner source is
+  never asked again). This is the ADR-0046 seam the range filter lives
+  at: generic over every `CanFrameSource`, not a BLF-specific fork.
+  Pinned by 7 unit tests (both-bounds, one-bound, no-bounds,
+  exactly-at-start, exactly-at-end, stop-after-never-resumes, empty
+  source) plus a `cannet-blf` integration test that wraps a real
+  `BlfCanFrameSource`, drains it through the shared `pump()`, and checks
+  the marker sink's prefix-only visibility.
+- `scan_blf_channels` now returns `BlfScanResult` (channels, frame
+  count, first/last timestamp, `start_unix_nanos`, and the file's
+  markers projected onto the `Note` shape they'd land in the session
+  store as via the existing `note_from_marker`) instead of a bare
+  `Vec<u8>`. One scan — still the single header-only walk from 58.A —
+  feeds the whole dialog; no second pass was added.
+- `open_log` gains optional `start_ns` / `end_ns` and wraps the BLF
+  source in `WindowedSource` immediately after the marker sink is
+  attached and before the pump thread spawns. Per ADR 0046 the range is
+  a filter at the `CanFrameSource` seam, applied on top of the existing
+  one-pass import — not a second ingest path. Pinned at the seam by a
+  `cannet-gui` test that drives the identical per-frame body `run_pump`
+  runs (windowed source → `RawTraceFrame::from` → `route_channel` →
+  `TraceStore::append`) against a real disk-backed `TraceStore`: only
+  the in-range frames (boundaries inclusive) land in the store. A
+  command-level test of `open_log` itself wasn't added — the crate has
+  no `tauri::test` mock-`AppHandle` harness, and adding one is a
+  dependency-shape decision this phase didn't want to make quietly
+  (see Blockers).
+- `BlfChannelMapModal` takes the widened scan instead of a bare channel
+  list. It shows frame count, duration (`formatElapsed`), and
+  wall-clock start (`start_unix_nanos`, i.e. the file's own measurement
+  origin, not the first frame) — host facts, frontend formatting, per
+  the thin-views rule. A collapsible markers gridview (closed by
+  default; markers are rare and the dialog is already busy) is built on
+  the shared `useGridview`/`gridviewRows` machinery — the same
+  interaction layer the trace, RBS, transmit, and DBC panels use — so
+  no bespoke list was written. Start/end numeric inputs (seconds
+  elapsed from the capture's first frame) resolve to absolute ns for
+  `open_log`; left untouched they resolve to `{ startNs: null, endNs:
+  null }` so an unfiltered import stays unfiltered rather than routing
+  through `WindowedSource` for a range that happens to match the whole
+  file.
+
 ## Blockers / side effects
 
 - **The disk-spill segment write is ~43 % of the per-frame ingest
@@ -339,3 +406,28 @@ measure, not the whole-file one.
   drive-by.
 - **The ADR-0031 perf gate was not run** in this phase, per the phase
   brief; the orchestrator runs it after.
+- **A narrowed import's notes stop where the pump's walk stops, not
+  where the range does.** `WindowedSource` only filters which frames
+  reach the sink; it still calls the inner source for every object up
+  to (and including) the one that ends the walk. So a marker sitting
+  before `start_ns` is still collected as a session note (the walk
+  passes it on the way to the range), while a marker after `end_ns` is
+  not (the walk never reaches it — that's the "stop after" rule doing
+  its job). This is a direct, faithful reading of "the pump's own walk"
+  collecting markers (58.A) composed with "reports end-of-stream past
+  the end" (ADR 0046): the marker set a narrowed import ends up with is
+  exactly what the walk it actually made passed over. Not called out as
+  a requirement either way in the owner rulings, so implemented as the
+  simplest composition of the two existing rules rather than adding a
+  third pass or a marker-side range filter.
+- **No `tauri::test` mock-`AppHandle` harness exists in `cannet-gui`**,
+  so `open_log`'s own command body (the `WindowedSource` wrap, the
+  thread spawn, the panic/error paths) is exercised by compilation +
+  manual code review rather than an automated test that calls the
+  command itself. The range filter's *behavior* is fully pinned at the
+  `CanFrameSource`/pump seam (`cannet-core`, `cannet-blf`, and a
+  `cannet-gui` test that runs the identical per-frame body `run_pump`
+  is built from against a real `TraceStore`) — what's untested is only
+  the thin wiring inside the command. Adding a mock-`AppHandle`
+  dependency to close that gap is a call for a future phase to make
+  deliberately, not a drive-by here.
