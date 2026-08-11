@@ -139,16 +139,19 @@ import {
 } from "./viewHistory";
 import {
   EMPTY_UNDO_ORDER,
+  amendElements,
   initElementHistory,
   recordElements,
   recordStep,
   redoElements,
-  restorePatches,
+  restoreElements,
   syncElements,
   undoElements,
+  type ElementCreate,
   type ElementHistory,
   type UndoOrder,
 } from "./elementHistory";
+import { UndoGestureContext, type UndoGesture } from "./undoGesture";
 import { PanelCommandsContext } from "./panelCommands";
 import { useCommands } from "./useCommands";
 import {
@@ -415,6 +418,22 @@ export function App() {
   const undoOrderRef = useRef<UndoOrder>(EMPTY_UNDO_ORDER);
   const pendingElementEditRef = useRef(false);
   const applyingElementsRef = useRef(false);
+  // The open undo *transaction* (`undoGesture.ts`), if any: the id both
+  // stacks tag their steps with while one user gesture is in flight, and
+  // whether that gesture has already taken its element step (later
+  // writes amend it instead of piling up). `closing` marks a gesture
+  // whose last write hasn't landed yet — the registry effect that lands
+  // it is what finally closes the gesture.
+  const gestureRef = useRef<{
+    id: number;
+    stepTaken: boolean;
+    closing: boolean;
+    /// Elements this gesture created — part of its step, so undoing it
+    /// takes them away again. Every other element that appears is churn
+    /// the history grafts in instead.
+    created: string[];
+  } | null>(null);
+  const gestureCounterRef = useRef(0);
   // A view is maximized full-screen (dockview maximized-group).
   // Transient — never persisted (see `stripMaximizedNode`); gates the
   // Escape binding in the command context.
@@ -482,6 +501,48 @@ export function App() {
   const busesRef = useRef<readonly Bus[]>([]);
   busesRef.current = buses;
 
+  // --- undo transactions (`undoGesture.ts`) ---
+  // One user gesture is one undo step, however many writes it takes and
+  // whichever stacks they land on: while a gesture is open, every step
+  // either stack records joins its entry in the interleaved order log,
+  // and every element write after the first amends that step rather than
+  // making another.
+  const beginGesture = useCallback(() => {
+    gestureCounterRef.current += 1;
+    gestureRef.current = {
+      id: gestureCounterRef.current,
+      stepTaken: false,
+      closing: false,
+      created: [],
+    };
+  }, []);
+  // Closing waits on a write that is armed but hasn't landed yet — a
+  // drag's last persist arrives a render after the mouse comes up — so
+  // the effect that lands it is what finally closes the gesture. With
+  // nothing in flight the gesture ends here, and the next write is a
+  // step of its own.
+  const endGesture = useCallback(() => {
+    const gesture = gestureRef.current;
+    if (!gesture) return;
+    if (pendingElementEditRef.current) gesture.closing = true;
+    else gestureRef.current = null;
+  }, []);
+  const undoGesture = useMemo<UndoGesture>(
+    () => ({
+      begin: beginGesture,
+      end: endGesture,
+      transact: (write) => {
+        beginGesture();
+        try {
+          write();
+        } finally {
+          endGesture();
+        }
+      },
+    }),
+    [beginGesture, endGesture],
+  );
+
   // A freshly created element of a given kind:
   // - `trace` / `plot` / `filter` default `sources` to `["*"]` (the
   //   wildcard meaning "every bus in the project, including ones
@@ -534,6 +595,15 @@ export function App() {
   const create = useCallback((kind: ProjectElementKind): string => {
     diagCount("registry.create"); // DIAG
     const id = crypto.randomUUID();
+    // An element created *inside a gesture* is part of that gesture's
+    // undo step — inserting a filter upstream creates one, and undoing
+    // the insert has to take it away again. A bare `create` (a fresh
+    // panel's element, a healed one) stays churn the present just
+    // follows, so adding a panel remains a single layout step.
+    if (gestureRef.current) {
+      gestureRef.current.created.push(id);
+      pendingElementEditRef.current = true;
+    }
     setRegistry((prev) => {
       const name = defaultElementName(kind, prev.map((e) => e.element));
       return [
@@ -624,39 +694,46 @@ export function App() {
   );
   const removeElement = useCallback(
     (id: string) => {
-      // Removing a *transmit* element (the explicit "Remove element"
-      // action — not closing its panel) deletes its TX messages from
-      // the host pool too, which also stops any running periodic. A
-      // message still grouped by another transmit element survives
-      // (the pool is shared; only this group is going away).
-      const removed = registry.find((e) => e.element.id === id);
-      // Removing an RBS element tears its host rows down (stopping
-      // any running schedule) — the .cannet_rbs file on disk stays.
-      if (removed && removed.element.kind === "rbs") {
-        void invoke("rbs_unload", { elementId: id }).catch(() => {});
-      }
-      if (removed && removed.element.kind === "transmit") {
-        const stillReferenced = new Set<string>();
-        for (const e of registry) {
-          if (e.element.id !== id && e.element.kind === "transmit") {
-            for (const fid of e.element.frameIds) stillReferenced.add(fid);
+      // One gesture across both stacks: the element leaves the registry
+      // and its panel closes, and a single chord brings both back.
+      beginGesture();
+      try {
+        // Removing a *transmit* element (the explicit "Remove element"
+        // action — not closing its panel) deletes its TX messages from
+        // the host pool too, which also stops any running periodic. A
+        // message still grouped by another transmit element survives
+        // (the pool is shared; only this group is going away).
+        const removed = registry.find((e) => e.element.id === id);
+        // Removing an RBS element tears its host rows down (stopping
+        // any running schedule) — the .cannet_rbs file on disk stays.
+        if (removed && removed.element.kind === "rbs") {
+          void invoke("rbs_unload", { elementId: id }).catch(() => {});
+        }
+        if (removed && removed.element.kind === "transmit") {
+          const stillReferenced = new Set<string>();
+          for (const e of registry) {
+            if (e.element.id !== id && e.element.kind === "transmit") {
+              for (const fid of e.element.frameIds) stillReferenced.add(fid);
+            }
+          }
+          for (const fid of removed.element.frameIds) {
+            if (!stillReferenced.has(fid)) {
+              void invoke("remove_transmit_frame", { id: fid }).catch(() => {});
+            }
           }
         }
-        for (const fid of removed.element.frameIds) {
-          if (!stillReferenced.has(fid)) {
-            void invoke("remove_transmit_frame", { id: fid }).catch(() => {});
-          }
-        }
+        if (removed) pendingElementEditRef.current = true;
+        setRegistry((prev) => prev.filter((e) => e.element.id !== id));
+        const api = dockApiRef.current;
+        const panel = api?.panels.find(
+          (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
+        );
+        if (api && panel) api.removePanel(panel);
+      } finally {
+        endGesture();
       }
-      if (removed) pendingElementEditRef.current = true;
-      setRegistry((prev) => prev.filter((e) => e.element.id !== id));
-      const api = dockApiRef.current;
-      const panel = api?.panels.find(
-        (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
-      );
-      if (api && panel) api.removePanel(panel);
     },
-    [registry],
+    [registry, beginGesture, endGesture],
   );
   // Latest registry, mirrored into a ref so the add-panel handlers
   // can compute the new element's default name (= the tab title)
@@ -672,44 +749,93 @@ export function App() {
   useEffect(() => {
     const elements = registry.map((e) => e.element);
     const before = elementHistoryRef.current;
+    const gesture = gestureRef.current;
     if (!pendingElementEditRef.current) {
       elementHistoryRef.current = syncElements(before, elements);
-      return;
+    } else {
+      pendingElementEditRef.current = false;
+      if (gesture?.stepTaken) {
+        // A gesture that has already taken its step folds the rest of
+        // its writes into it — a drag persists on every mouse move and
+        // still costs one undo.
+        elementHistoryRef.current = amendElements(before, elements);
+      } else {
+        const after = recordElements(
+          before,
+          elements,
+          gesture ? new Set(gesture.created) : undefined,
+        );
+        elementHistoryRef.current = after;
+        // `past` is only re-allocated when a step was actually pushed —
+        // a masked-equal or config-seeding write keeps the same array.
+        if (after.past !== before.past) {
+          if (gesture) gesture.stepTaken = true;
+          undoOrderRef.current = recordStep(undoOrderRef.current, "element", gesture?.id);
+        }
+      }
     }
-    pendingElementEditRef.current = false;
-    const after = recordElements(before, elements);
-    elementHistoryRef.current = after;
-    // `past` is only re-allocated when a step was actually pushed —
-    // a masked-equal or config-seeding write keeps the same array.
-    if (after.past !== before.past) {
-      undoOrderRef.current = recordStep(undoOrderRef.current, "element");
-    }
+    // The write a closing gesture was waiting on has landed.
+    if (gesture?.closing) gestureRef.current = null;
   }, [registry]);
 
-  // Undo / redo one element step: step the stack, then write the
-  // snapshot's allowlisted fields back through the registry. The
+  // Put back the elements a restore re-creates, and drop the ones it
+  // undoes into existence, in one registry write. A re-created element
+  // is a *fresh* element of its kind with the snapshot's allowlisted
+  // fields laid over it: nothing ADR 0050 excludes comes back (a
+  // restored RBS is stopped and pathless, a restored transmit carries no
+  // messages) and no host side effect is re-run — the panel's own
+  // ensure / reconcile paths take it from there exactly as they would a
+  // brand-new element. Removals here are registry-only for the same
+  // reason: the panel half of the gesture is the layout stack's.
+  const restoreElementSet = useCallback(
+    (creates: readonly ElementCreate[], removes: readonly string[]) => {
+      setRegistry((prev) => {
+        let next = prev.filter((e) => !removes.includes(e.element.id));
+        for (const { element, index } of creates) {
+          const { id, kind, name, ...fields } = element;
+          const label =
+            typeof name === "string" ? name : defaultElementName(kind, next.map((e) => e.element));
+          const fresh = { ...buildFreshElement(kind, id, label), ...fields } as ProjectElement;
+          next = [
+            ...next.slice(0, index),
+            { element: fresh, trace: newElementTrace() },
+            ...next.slice(index),
+          ];
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  // Undo / redo one element step: step the stack, then move the registry
+  // back to the snapshot — patching the allowlisted fields of the
+  // elements it shares, re-creating the ones it has that the registry
+  // lost, and dropping the ones the step brought into existence. The
   // patches carry no writer token, so every mounted panel on a changed
   // element resyncs from it. Returns whether anything was actually
-  // patched — a snapshot whose elements are all gone (undoing an
-  // element removal, whose re-creation belongs with the panel that went
-  // with it) restores nothing, and the caller moves on to the next step.
+  // restored; a step that turns out to be a no-op is consumed and the
+  // caller moves on to the next one.
   const applyElementHistory = useCallback((dir: "undo" | "redo"): boolean => {
     const history = elementHistoryRef.current;
     const r = dir === "undo" ? undoElements(history) : redoElements(history);
     if (!r) return false;
     elementHistoryRef.current = r.history;
-    const patches = restorePatches(
+    const plan = restoreElements(
       r.snapshot,
       registryRef.current.map((e) => e.element),
     );
     applyingElementsRef.current = true;
     try {
-      for (const { id, patch } of patches) updateElement(id, patch);
+      for (const { id, patch } of plan.patches) updateElement(id, patch);
+      if (plan.creates.length > 0 || plan.removes.length > 0) {
+        restoreElementSet(plan.creates, plan.removes);
+      }
     } finally {
       applyingElementsRef.current = false;
     }
-    return patches.length > 0;
-  }, [updateElement]);
+    return plan.patches.length + plan.creates.length + plan.removes.length > 0;
+  }, [updateElement, restoreElementSet]);
 
   // --- command / hotkey framework (ADR 0018) ---
   // The active dockview panel, tracked via `onDidActivePanelChange`
@@ -1291,6 +1417,7 @@ export function App() {
     layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
     elementHistoryRef.current = initElementHistory([]);
     undoOrderRef.current = EMPTY_UNDO_ORDER;
+    gestureRef.current = null;
     focusHistoryRef.current = api.activePanel
       ? recordFocus(EMPTY_FOCUS_HISTORY, api.activePanel.id)
       : EMPTY_FOCUS_HISTORY;
@@ -1411,6 +1538,7 @@ export function App() {
       // registry once this render lands.)
       elementHistoryRef.current = initElementHistory([]);
       undoOrderRef.current = EMPTY_UNDO_ORDER;
+      gestureRef.current = null;
       const api = dockApiRef.current;
       const layout = validateLayout(project.layout);
       if (api && layout) {
@@ -2405,7 +2533,11 @@ export function App() {
           // Only a structural change pushes a step; the interleaving
           // log follows the same test (`past` re-allocated = pushed).
           if (after.past !== before.past) {
-            undoOrderRef.current = recordStep(undoOrderRef.current, "layout");
+            undoOrderRef.current = recordStep(
+              undoOrderRef.current,
+              "layout",
+              gestureRef.current?.id,
+            );
           }
         }
       });
@@ -2414,6 +2546,7 @@ export function App() {
       // saved layout hasn't yet.)
       layoutHistoryRef.current = initLayoutHistory(JSON.stringify(api.toJSON()));
       undoOrderRef.current = EMPTY_UNDO_ORDER;
+      gestureRef.current = null;
 
       // Perf self-driving flags (ADR 0031) override the last-opened
       // pointer: `--project` names the project deterministically. Fetch
@@ -2825,6 +2958,7 @@ export function App() {
       <ProjectContext.Provider value={projectContextValue}>
         <SignalCatalogProvider>
           <ElementRegistryContext.Provider value={elementRegistryValue}>
+            <UndoGestureContext.Provider value={undoGesture}>
             <SignalGeneratorProvider>
             <SystemLogContext.Provider value={systemLogValue}>
               <NotesContext.Provider value={notesValue}>
@@ -2854,6 +2988,7 @@ export function App() {
               </NotesContext.Provider>
             </SystemLogContext.Provider>
             </SignalGeneratorProvider>
+            </UndoGestureContext.Provider>
           </ElementRegistryContext.Provider>
         </SignalCatalogProvider>
       </ProjectContext.Provider>

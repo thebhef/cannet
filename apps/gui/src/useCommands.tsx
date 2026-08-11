@@ -380,12 +380,18 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     },
     [dockApiRef, layoutHistoryRef, applyingLayoutRef],
   );
-  // One timeline over two stacks: the interleaving log names the stack
-  // each step was taken on, so a chord always reverses the most recent
-  // change — a panel move or a change made inside a panel alike. A step
-  // that turns out to restore nothing (an undone element removal, whose
-  // element can only come back with its panel) is consumed and the
-  // chord moves on to the next one, rather than looking like a dead key.
+  // One timeline over two stacks: the interleaving log names the stacks
+  // each *gesture* stepped, so a chord always reverses the most recent
+  // change — a panel move, a change made inside a panel, or a gesture
+  // that did both (removing an element takes its panel with it) — as one
+  // step. A gesture that turns out to restore nothing is consumed and
+  // the chord moves on to the next one, rather than looking like a dead
+  // key.
+  //
+  // Within a gesture the element half goes first: both halves are
+  // dispatched from the same event, so React commits them together, and
+  // a panel the layout half remounts then reads an element the element
+  // half has already put back.
   const applyViewHistory = useCallback(
     (dir: "undo" | "redo") => {
       const canStep = (stack: UndoStack): boolean => {
@@ -402,8 +408,9 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
             : popRedo(undoOrderRef.current, canStep);
         if (!r) return;
         undoOrderRef.current = r.order;
-        const applied =
-          r.stack === "layout" ? applyLayoutHistory(dir) : applyElementHistory(dir);
+        let applied = false;
+        if (r.stacks.includes("element")) applied = applyElementHistory(dir);
+        if (r.stacks.includes("layout")) applied = applyLayoutHistory(dir) || applied;
         if (applied) return;
       }
     },

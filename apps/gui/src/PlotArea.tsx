@@ -59,6 +59,7 @@ import type { PatternResolution } from "./signalSelection";
 import { SignalPatternEditor } from "./SignalPatternEditor";
 import { type YAxisMode } from "./plotAxisDerivation";
 import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
+import { useUndoGesture } from "./undoGesture";
 import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
 import { laneBandsForVisible, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
@@ -786,6 +787,9 @@ function drawEnumTiles(
  * grouped `PlotAreaReports` — so this memo can actually hit. */
 export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   diagCount("render.PlotArea"); // DIAG
+  // The side-panel resize persists on every mouse move; the gesture is
+  // what makes the whole drag one undo step.
+  const undoGesture = useUndoGesture();
   const {
     area,
     flexGrow,
@@ -2942,6 +2946,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           e.stopPropagation();
           const startX = e.clientX;
           const startWidth = signalsWidth;
+          undoGesture.begin();
           const onMove = (ev: MouseEvent) => {
             // Side panel is right of the canvas, so dragging left
             // *widens* the side panel: width = startWidth - delta.
@@ -2950,6 +2955,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           const onUp = () => {
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
+            undoGesture.end();
           };
           window.addEventListener("mousemove", onMove);
           window.addEventListener("mouseup", onUp);

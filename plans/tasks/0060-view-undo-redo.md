@@ -252,6 +252,86 @@ Deferred to 60.C (recorded here rather than re-scoped):
 - **Coalescing** of drag-continuous knobs across renders (step 4), and
   ADR 0018's binding docs (60.D).
 
+### 2026-08-09 — phase 60.C, transactions + coalescing (branch `task60c-transactions`)
+
+Mechanism steps 2 and 4 landed, and with them 60.B's deferrals: one user
+gesture is one undo step, however many writes it takes and whichever
+stacks they land on.
+
+**The wrapper.** A *gesture* is an id, opened and closed above both
+stacks, that changes two things while it is open:
+
+- **The order log groups.** `UndoEntry` is now `{ stacks, gesture? }` —
+  the stacks one gesture stepped, in the order it stepped them. A step
+  tagged with the gesture that is already at the top of the log joins
+  that entry; `popUndo` / `popRedo` hand the driver the whole entry, and
+  it applies the element half first (both halves are dispatched from one
+  event, so React commits them together and a panel the layout half
+  remounts reads an element the element half has already put back).
+- **The element stack amends.** After a gesture's first step, its later
+  writes call `amendElements` — present keeps up, the step's base stays
+  where the gesture started. That is the whole of coalescing.
+
+Panels reach it through `undoGesture.ts`: a context with `transact(fn)`
+for a gesture that lands in one call and `begin()` / `end()` for one
+that spans events (a drag). Its default is a no-op, so a panel rendered
+outside `App` — every panel test — writes exactly as before, and no
+registry fake needed changing. `App` publishes the real one.
+
+Closing is the one subtle part: `end()` with a write still armed but not
+yet landed marks the gesture *closing*, and the registry effect that
+lands the write closes it. A drag's last persist arrives a render after
+the mouse comes up, and this is what keeps it inside the step.
+
+**Element creation joins a step only inside a gesture** (60.B's
+blocker). `create` arms the capture and records the id only while a
+gesture is open, so inserting a filter is one step that includes the
+filter, while adding a panel stays a single layout step. That made the
+element *set* part of a restore: `restoreElements` returns creates and
+removes beside the patches, a re-created element being a fresh element
+of its kind with the snapshot's allowlisted fields laid over it (ADR
+0050: a restored RBS is stopped and pathless, a restored transmit
+carries no messages, no host call is re-run).
+
+For that diff to be safe, an element created *outside* any step is now
+grafted into every stored snapshot (`syncElements`, and `recordElements`
+for one arriving in the same batch as an edit): no step created it, so
+no step may delete it. The graft also fixed a latent mis-capture — a
+panel seeding its config in the same commit as its element's creation
+was being recorded as an element step.
+
+Per case:
+
+| Case | Verdict |
+|---|---|
+| Panel add | Already one step (the config seed is suppressed); left alone, still pinned by 60.B's test. The graft above removed a way it could have become two. |
+| Element remove | Now one entry over both stacks. Undo restores the element (name, sources, config, predicate, rules — the allowlist) at its old position *and* reopens its panel, which repaints from the re-created element; redo takes both away again. |
+| Cross-panel area drag | Already one step — the drop writes the target and claims from the source in one React commit. No mechanism needed; pinned by a test that would fail if either half were separate. |
+| Filter insert | Was three coalesced writes plus an orphan filter; now one step that takes the filter with it. The graph toolbar's "+ filter" (an element with no panel, so nothing on the layout stack) became undoable at the same time. |
+
+**Coalescing** covers the three drag-continuous persisted knobs: the
+plot's side-panel width, its axis splitter, and a gridview column edge
+(the trace/signals column widths — same family, same fix). Cursors are
+*not* drag-continuous: `PlotArea` places one on mouse-up only when the
+pointer didn't move, so a placement is already one gesture and one step.
+Params-only state stays out, pinned: typing in a find box makes no step
+and survives the chord.
+
+Commits (oldest first): `a76001a` gesture entries in the order log ·
+`a86c5d2` element removal + re-creation as one step · `b23c041` filter
+insert as one step · `589585d` the cross-panel drag pinned · `d022d90`
+drag-knob coalescing · `dce7f82` params-only pinned.
+
+Verification: `pnpm --dir apps/gui test` 1787 passed / 141 files (from
+1780 at branch point — 7 new: 6 dom + 1 pure amend/graft/restore group,
+plus 5 pure order-log cases in the existing files), `pnpm --dir apps/gui
+build` clean. Host untouched. Two claims were falsified before being
+trusted: a `flushSync` around the element half of a paired restore was
+written, then *removed* when the test passed without it (the panel
+remounts in the same commit as the re-created element); and the two
+filter cases were re-run with the gesture wrapper taken back out, where
+they fail.
+
 ## Blockers / side effects
 
 - **60.A** — no blockers. Side effects worth knowing:
@@ -280,3 +360,27 @@ Deferred to 60.C (recorded here rather than re-scoped):
     user-edit callers, per this task's mechanism note. Adding a filter
     is therefore undoable only via the layout stack (its panel) until
     60.C's transactions.
+- **60.C** — no blockers. Side effects and known edges:
+  - `UndoEntry` replaced the bare `UndoStack` in the order log, so
+    `popUndo` / `popRedo` return `stacks` rather than `stack`. The
+    element stack's `restorePatches` likewise became `restoreElements`,
+    returning creates and removes beside the patches. Both are internal
+    to the undo modules and their callers in `App` / `useCommands`.
+  - A restore no longer patches a field the snapshot has no *value* for
+    (`config: undefined` on an element grafted in before it had one).
+    An absence of information is not an instruction to wipe.
+  - A gesture whose closing pointer event never arrives (pointer
+    released off-window, so `mouseup` / `pointerup` is missed) stays
+    open until the next gesture begins; an edit in between would join
+    its step. Bounded and benign — `begin()` always replaces the open
+    gesture — but it is why nothing outside a pointer handler holds a
+    gesture open.
+  - **Renaming is still one step per keystroke.** The project panel's
+    inline rename writes the element on every `change`, and text
+    editing is not a pointer gesture, so the drag mechanism doesn't
+    reach it. Coalescing it needs a different rule (an idle window, as
+    editors use for typing) and was not in this phase's scope.
+  - `ProjectGraphPanel`, `PlotPanel`, `PlotArea` and `gridviewColumns`
+    now consume `useUndoGesture()`. Its context default is a no-op, so
+    every existing panel test renders unchanged and no registry fake
+    needed a new method.

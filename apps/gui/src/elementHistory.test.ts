@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   EMPTY_UNDO_ORDER,
+  amendElements,
   initElementHistory,
   maskElements,
   popRedo,
@@ -9,7 +10,7 @@ import {
   recordElements,
   recordStep,
   redoElements,
-  restorePatches,
+  restoreElements,
   syncElements,
   undoElements,
 } from "./elementHistory";
@@ -194,42 +195,97 @@ describe("syncElements", () => {
     const h = initElementHistory([rbs("r1", null, false)]);
     expect(syncElements(h, [rbs("r1", "/tmp/sim.cannet_rbs", true)])).toBe(h);
   });
+
+  it("grafts an element created outside a step into the stored snapshots", () => {
+    // No step created `p2`, so no step may delete it: it belongs to
+    // every timeline, including the ones taken before it existed.
+    const h = recordElements(initElementHistory([plot("p1", { mode: "a" })]), [
+      plot("p1", { mode: "b" }),
+    ]);
+    const synced = syncElements(h, [plot("p1", { mode: "b" }), plot("p2", {})]);
+    const undone = undoElements(synced)!;
+    expect(undone.snapshot).toEqual(maskElements([plot("p1", { mode: "a" }), plot("p2", {})]));
+    expect(restoreElements(undone.snapshot, [plot("p1", { mode: "b" }), plot("p2", {})]).removes)
+      .toEqual([]);
+  });
 });
 
-describe("restorePatches", () => {
+describe("restoreElements", () => {
+  const patches = (target: ProjectElement[], current: ProjectElement[]) =>
+    restoreElements(maskElements(target), current).patches;
+
   it("patches only the fields that differ", () => {
-    const target = maskElements([plot("p1", { mode: "a" }), plot("p2", { mode: "x" })]);
-    expect(restorePatches(target, [plot("p1", { mode: "b" }), plot("p2", { mode: "x" })])).toEqual([
-      { id: "p1", patch: { config: { mode: "a" } } },
-    ]);
+    expect(
+      patches([plot("p1", { mode: "a" }), plot("p2", { mode: "x" })], [
+        plot("p1", { mode: "b" }),
+        plot("p2", { mode: "x" }),
+      ]),
+    ).toEqual([{ id: "p1", patch: { config: { mode: "a" } } }]);
   });
 
   it("never carries an excluded field (ADR 0050)", () => {
     // The snapshot was taken while the RBS was stopped and the transmit
     // empty; both have since been armed. Restoring it must not disarm
     // them — the mask means those fields aren't even in the snapshot.
-    const target = maskElements([rbs("r1", null, false), transmit("t1", [], [])]);
-    expect(restorePatches(target, [rbs("r1", "/tmp/sim.cannet_rbs", true), transmit("t1", ["f1"], ["b1"])])).toEqual(
-      [],
-    );
+    expect(
+      patches(
+        [rbs("r1", null, false), transmit("t1", [], [])],
+        [rbs("r1", "/tmp/sim.cannet_rbs", true), transmit("t1", ["f1"], ["b1"])],
+      ),
+    ).toEqual([]);
   });
 
   it("restores a rename", () => {
-    const target = maskElements([plot("p1", {})]);
     const current = [{ ...plot("p1", {}), name: "Speeds" } as ProjectElement];
-    expect(restorePatches(target, current)).toEqual([{ id: "p1", patch: { name: "Plot p1" } }]);
+    expect(patches([plot("p1", {})], current)).toEqual([{ id: "p1", patch: { name: "Plot p1" } }]);
   });
 
-  it("skips an element that no longer exists", () => {
-    const target = maskElements([plot("p1", {}), plot("p2", { mode: "a" })]);
-    expect(restorePatches(target, [plot("p1", {})])).toEqual([]);
+  it("says nothing about a field the snapshot has no value for", () => {
+    // A snapshot taken before an element had a config carries `config:
+    // undefined`; that is an absence of information, not an instruction
+    // to wipe the config the element has since acquired.
+    expect(patches([plot("p1")], [plot("p1", { mode: "b" })])).toEqual([]);
   });
 
   it("skips an id whose kind was replaced under it", () => {
-    const target = maskElements([plot("p1", { mode: "a" })]);
-    expect(restorePatches(target, [{ ...plot("p1", { mode: "b" }), kind: "trace" } as ProjectElement])).toEqual(
-      [],
-    );
+    expect(
+      patches([plot("p1", { mode: "a" })], [
+        { ...plot("p1", { mode: "b" }), kind: "trace" } as ProjectElement,
+      ]),
+    ).toEqual([]);
+  });
+
+  it("re-creates an element the snapshot has and the registry no longer does", () => {
+    // Undoing a removal. The masked element is all a restore may bring
+    // back (ADR 0050) — its host state is not the view stack's to
+    // resurrect.
+    const target = maskElements([plot("p1", {}), filter("f1", ["*"]), plot("p2", {})]);
+    const plan = restoreElements(target, [plot("p1", {}), plot("p2", {})]);
+    expect(plan.creates).toEqual([{ index: 1, element: maskElements([filter("f1", ["*"])])[0] }]);
+    expect(plan.removes).toEqual([]);
+  });
+
+  it("removes an element the snapshot never had", () => {
+    // Undoing "insert a filter upstream": the filter the gesture created
+    // goes with it.
+    const target = maskElements([plot("p1", {})]);
+    const plan = restoreElements(target, [plot("p1", {}), filter("f1", ["*"])]);
+    expect(plan.removes).toEqual(["f1"]);
+    expect(plan.creates).toEqual([]);
+  });
+});
+
+describe("amendElements", () => {
+  it("folds a change into the step already open instead of making another", () => {
+    // One drag of a splitter persists on every mouse move; the gesture
+    // takes the first as its step and amends it with the rest.
+    let h = recordElements(initElementHistory([plot("p1", { w: 1 })]), [plot("p1", { w: 2 })]);
+    h = amendElements(h, [plot("p1", { w: 3 })]);
+    h = amendElements(h, [plot("p1", { w: 4 })]);
+    const undone = undoElements(h)!;
+    expect(undone.snapshot).toEqual(maskElements([plot("p1", { w: 1 })]));
+    expect(undoElements(undone.history)).toBeNull();
+    expect(redoElements(undone.history)?.snapshot).toEqual(maskElements([plot("p1", { w: 4 })]));
   });
 });
 
@@ -239,10 +295,10 @@ describe("undo order", () => {
   it("undoes the most recent step, whichever stack it lives on", () => {
     let order = recordStep(recordStep(EMPTY_UNDO_ORDER, "layout"), "element");
     const first = popUndo(order, always)!;
-    expect(first.stack).toBe("element");
+    expect(first.stacks).toEqual(["element"]);
     order = first.order;
     const second = popUndo(order, always)!;
-    expect(second.stack).toBe("layout");
+    expect(second.stacks).toEqual(["layout"]);
     expect(popUndo(second.order, always)).toBeNull();
   });
 
@@ -251,9 +307,9 @@ describe("undo order", () => {
     order = popUndo(order, always)!.order;
     order = popUndo(order, always)!.order;
     const first = popRedo(order, always)!;
-    expect(first.stack).toBe("layout");
+    expect(first.stacks).toEqual(["layout"]);
     const second = popRedo(first.order, always)!;
-    expect(second.stack).toBe("element");
+    expect(second.stacks).toEqual(["element"]);
     expect(popRedo(second.order, always)).toBeNull();
   });
 
@@ -269,7 +325,7 @@ describe("undo order", () => {
     // entry can outlive the step it names.
     const order = recordStep(recordStep(EMPTY_UNDO_ORDER, "layout"), "element");
     const r = popUndo(order, (stack) => stack === "layout")!;
-    expect(r.stack).toBe("layout");
+    expect(r.stacks).toEqual(["layout"]);
     expect(popUndo(r.order, (stack) => stack === "layout")).toBeNull();
   });
 
@@ -277,5 +333,52 @@ describe("undo order", () => {
     let order = EMPTY_UNDO_ORDER;
     for (let i = 0; i < 500; i++) order = recordStep(order, "layout");
     expect(order.past.length).toBe(100);
+  });
+});
+
+describe("undo order, transactions", () => {
+  const always = () => true;
+
+  it("makes one entry of the two stacks a single gesture touched", () => {
+    // An element removal: the panel closes (layout) and the element
+    // goes (element), one gesture, one entry.
+    let order = recordStep(EMPTY_UNDO_ORDER, "layout", 7);
+    order = recordStep(order, "element", 7);
+    expect(order.past.length).toBe(1);
+    const r = popUndo(order, always)!;
+    expect(r.stacks).toEqual(["layout", "element"]);
+    expect(popUndo(r.order, always)).toBeNull();
+  });
+
+  it("keeps a repeated stack in the same gesture to one mention", () => {
+    let order = recordStep(EMPTY_UNDO_ORDER, "element", 3);
+    order = recordStep(order, "element", 3);
+    expect(popUndo(order, always)!.stacks).toEqual(["element"]);
+  });
+
+  it("separates gestures, and separates an untagged step from a gesture", () => {
+    let order = recordStep(EMPTY_UNDO_ORDER, "element", 1);
+    order = recordStep(order, "element", 2);
+    order = recordStep(order, "element");
+    expect(order.past.length).toBe(3);
+  });
+
+  it("does not merge into an entry that redo has already moved on from", () => {
+    // The gesture's first half was undone, so its entry is on the redo
+    // side; a late write must start a new entry rather than reopening it.
+    let order = recordStep(EMPTY_UNDO_ORDER, "layout", 9);
+    order = popUndo(order, always)!.order;
+    order = recordStep(order, "element", 9);
+    expect(order.past.length).toBe(1);
+    expect(popUndo(order, always)!.stacks).toEqual(["element"]);
+  });
+
+  it("redoes the whole gesture as one entry", () => {
+    let order = recordStep(EMPTY_UNDO_ORDER, "layout", 4);
+    order = recordStep(order, "element", 4);
+    order = popUndo(order, always)!.order;
+    const r = popRedo(order, always)!;
+    expect(r.stacks).toEqual(["layout", "element"]);
+    expect(popRedo(r.order, always)).toBeNull();
   });
 });
