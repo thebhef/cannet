@@ -23,14 +23,10 @@
 
 import { useSyncExternalStore } from "react";
 
-/// Theme identities. Also the value of the `data-theme` attribute the
-/// stylesheet's token blocks key off.
-export type ThemeName = "dark" | "light" | "normal";
-
-/// What the host's `theme` setting stores. A subset of {@link ThemeName}:
-/// `normal` is not a value the setting takes, it is one of the two
-/// things the setting pair resolves `light` to. See {@link resolveTheme}.
-export type ThemeSetting = "dark" | "light";
+/// Theme identities. Also the value of the host's `theme` setting and of
+/// the `data-theme` attribute the stylesheet's token blocks key off — the
+/// setting *is* the theme name, verbatim.
+export type ThemeName = "dark" | "light" | "lighthk";
 
 /// The semantic colors JS paints with. Names are roles, not shades —
 /// two entries that share a value today but mean different things stay
@@ -196,15 +192,14 @@ const LIGHT: Theme = {
   ],
 };
 
-/// Normal mode's theme, selected in place of {@link LIGHT} when the
-/// setting is on. Same construction as the stylesheet block it goes with
-/// (see `index.css`): the light values re-hued onto the theme's own
-/// axis, keeping their luminance. The wheels are slot-matched like every
-/// other variant, but rotate a fifth of the way onto that axis as well,
-/// so `palette.test.ts` reads them against a wider hue bound than
-/// light's.
-const NORMAL: Theme = {
-  name: "normal",
+/// The pink theme (`lighthk`). Same construction as the stylesheet block
+/// it goes with (see `index.css`): the light values re-hued onto the
+/// theme's own axis, keeping their luminance. The wheels are slot-matched
+/// like every other variant, but rotate a fifth of the way onto that axis
+/// as well, so `palette.test.ts` reads them against a wider hue bound
+/// than light's.
+const LIGHTHK: Theme = {
+  name: "lighthk",
   background: "#fddde7",
   axisText: "#781c38",
   axisGrid: "#fccad9",
@@ -253,16 +248,8 @@ const NORMAL: Theme = {
 export const THEMES: Readonly<Record<ThemeName, Theme>> = {
   dark: DARK,
   light: LIGHT,
-  normal: NORMAL,
+  lighthk: LIGHTHK,
 };
-
-/// The theme a setting pair applies. `normal` is not a `theme` value —
-/// it is what `light` means with normal mode off, which is the default;
-/// turning normal mode on makes `light` mean the `light` theme. `dark`
-/// is the same under both.
-export function resolveTheme(setting: ThemeSetting, normalMode: boolean): ThemeName {
-  return !normalMode && setting === "light" ? "normal" : setting;
-}
 
 /// The theme name every color decision resolves through. Module state
 /// rather than React state: the canvas draws outside React, and a

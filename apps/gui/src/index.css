@@ -321,9 +321,9 @@
 }
 /* === end light theme tokens === */
 
-/* === Normal-mode tokens ===
-   The same 134 roles again, selected when normal mode is enabled
-   and the theme setting is `light`.
+/* === lighthk theme tokens ===
+   The same 134 roles again, selected when the theme setting is
+   `lighthk` — the pink theme.
 
    Derived from the light values rather than invented: every neutral
    role — surface, text ramp, border, wash — is rotated onto a pink
@@ -338,7 +338,7 @@
    developer and scope chips, and the graph's per-kind node
    identities. A status dot has to keep reading as a status dot.
 */
-:root[data-theme="normal"] {
+:root[data-theme="lighthk"] {
   color-scheme: light;
   /* Surfaces — panel, row and control backgrounds */
   --divider: #fbb7cc;
@@ -486,7 +486,7 @@
   --surface-head-fade: rgba(252, 204, 218, 0.75);
   --danger-tint: rgba(226, 21, 21, 0.28);
 }
-/* === end normal theme tokens === */
+/* === end lighthk theme tokens === */
 
 
 

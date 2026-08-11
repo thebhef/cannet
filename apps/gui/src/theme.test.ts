@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import css from "./index.css?raw";
-import { THEMES, TOKEN_MIRROR, resolveTheme } from "./theme";
+import { THEMES, TOKEN_MIRROR } from "./theme";
 
 /// Where each theme's token block ends in `index.css`. A block runs from
 /// the end of the previous one to its own marker comment, so a `--x`
@@ -10,7 +10,7 @@ import { THEMES, TOKEN_MIRROR, resolveTheme } from "./theme";
 const BLOCK_END: Record<string, string> = {
   dark: "/* === end theme tokens === */",
   light: "/* === end light theme tokens === */",
-  normal: "/* === end normal theme tokens === */",
+  lighthk: "/* === end lighthk theme tokens === */",
 };
 
 /// Custom properties one theme's block declares, by name.
@@ -115,14 +115,5 @@ describe("themes", () => {
 
   it("key every theme object by its own name", () => {
     for (const [name, t] of Object.entries(THEMES)) expect(t.name).toBe(name);
-  });
-});
-
-describe("resolveTheme", () => {
-  it("gives normal mode the light setting and nothing else", () => {
-    expect(resolveTheme("light", true)).toBe("light");
-    expect(resolveTheme("light", false)).toBe("normal");
-    expect(resolveTheme("dark", true)).toBe("dark");
-    expect(resolveTheme("dark", false)).toBe("dark");
   });
 });

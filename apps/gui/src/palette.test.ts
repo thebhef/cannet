@@ -69,10 +69,10 @@ describe.each(Object.values(THEMES))("$name wheels", (t) => {
 //
 // How far a variant may travel is per theme, because it is a property of
 // the theme rather than of the check: `light` only retunes, so its slots
-// stay on their hue; `normal` additionally rotates every slot a fifth of
+// stay on their hue; `lighthk` additionally rotates every slot a fifth of
 // the way onto its own axis, which is what makes its wheels part of that
 // theme rather than the light wheels on a different background.
-const HUE_BOUND: Record<string, number> = { light: 8, normal: 36 };
+const HUE_BOUND: Record<string, number> = { light: 8, lighthk: 36 };
 
 describe("wheels are slot-matched across themes", () => {
   const themes = Object.values(THEMES);

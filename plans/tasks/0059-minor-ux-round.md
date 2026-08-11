@@ -120,6 +120,71 @@ issue was when done. Do NOT simply drop the dirty marker: a genuinely
 dirty tree should still say so; the defect is that a clean checkout's
 build reports dirty.
 
+## Phases (orchestrator plan 2026-08-09)
+
+Launched under the owner's standing "implement tasks 58-60" directive.
+
+Chained off `task58f-incremental-paint`, strictly sequential, one new
+branch per phase, main working tree, orchestrator reviews diffs
+between phases. 59.A's first commit carries this plan section.
+
+- **59.A** `task59a-theme-menu` (Sonnet) — item 1: dark/light/lighthk,
+  `normal_mode` deleted, CSS token block renamed, mirrors updated.
+- **59.B** `task59b-scratch-layout` (Opus) — item 2: no-project launch
+  restores window geometry only; the async-ordering wrinkle is the
+  design point, choice recorded.
+- **59.C** `task59c-ctrl-f` (Sonnet) — item 3: `panel.find` on `Mod+F`,
+  plot solo + RBS; DBC/Settings by cost, deferral recorded if skipped.
+- **59.D** `task59d-solo-bugs` (Opus) — item 4: three failing-test-first
+  solo-filter fixes. ADR-0031 gate after (plot repaint paths).
+- **59.E** `task59e-autosave-exit` (Sonnet) — item 5: autosave-on-exit
+  setting, explicit-dir projects only.
+- **59.F** `task59f-gridview-keys` (Opus) — items 6+7: Escape back to
+  nav + Shift+Up/Down range select, in the shared gridview machinery.
+- **59.G** `task59g-dirty-version` (Opus) — item 8: `-dirty`
+  investigation-then-fix, CI included, written cause report. Final
+  ADR-0031 gate + exit-criteria walk.
+
+## Status log
+
+- 2026-08-09 — Phase 59.A landed (`task59a-theme-menu`, off
+  `task58f-incremental-paint`). Four commits:
+  - `9fb512e` `docs(plans): pin the task-59 phase plan` — carries the
+    Phases section this branch's task file already held uncommitted.
+  - `10579b2` `feat(gui): fold the theme setting into three values,
+    drop normal_mode` — Rust side: `THEMES` is now
+    `["dark", "light", "lighthk"]`; `normal_mode` removed from the
+    `Settings` struct, `SCOPES`, `Default`, and
+    `settings_descriptor.rs`'s `DESCRIPTORS` table (and its
+    now-pointless test). A stale `normal_mode` key in an existing
+    `settings.json` already round-trips as a no-op under the struct's
+    existing `#[serde(default)]` — no new code needed to drop it.
+    `cargo test -p cannet-gui`: 529 passed, 0 failed, 4 ignored.
+    `cargo clippy -p cannet-gui --all-targets`: clean.
+  - `a5121a4` `feat(gui): collapse ThemeSetting into ThemeName, retire
+    resolveTheme` — frontend side: `theme.ts`'s `ThemeName` is now
+    `"dark" | "light" | "lighthk"` with `ThemeSetting` gone;
+    `resolveTheme` retired since the setting *is* the theme name now;
+    the `NORMAL` theme object (colors untouched) renamed to
+    `LIGHTHK`/`"lighthk"`; `index.css`'s
+    `:root[data-theme="normal"]` block renamed to `"lighthk"` (all 134
+    tokens kept, only the marker comment and selector changed), and
+    its header comment rewritten to state the true selection rule
+    (theme setting is `lighthk`) instead of the old inverted claim
+    ("selected when normal mode is enabled" — it was the reverse).
+    `hostSettings.ts`, `themeSync.ts`, `theme.test.ts`,
+    `palette.test.ts`, `themeSync.dom.test.ts`, and
+    `PlotPanel.dom.test.tsx` updated to match — stored `theme: "light"`
+    now renders genuinely light, not the pink default.
+    `pnpm --dir apps/gui test`: 139 files, 1679 tests passed.
+    `pnpm --dir apps/gui build`: clean.
+  - `663f40b` `docs(readme): describe the three-value theme setting,
+    drop normal mode` — README's Settings section now lists
+    dark/light/lighthk under **Theme** and drops the **Normal mode**
+    bullet entirely.
+  - Re-verified after the doc commit: `cargo test -p cannet-gui` 529
+    passed; `cargo clippy -p cannet-gui --all-targets` clean.
+
 ## Exit criteria
 
 - Theme combobox offers exactly dark/light/lighthk with the ruled

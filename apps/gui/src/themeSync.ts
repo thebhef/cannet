@@ -12,12 +12,11 @@
 
 import type { Settings } from "./hostSettings";
 import { hostSettings, subscribeSettings } from "./hostSettings";
-import { resolveTheme, setActiveTheme } from "./theme";
+import { setActiveTheme } from "./theme";
 
-/// The theme a settings snapshot applies. Two fields decide it —
-/// `theme` and `normal_mode` — and `resolveTheme` owns the rule.
+/// The theme a settings snapshot applies — `theme` verbatim.
 function applied(s: Settings): void {
-  setActiveTheme(resolveTheme(s.theme, s.normal_mode));
+  setActiveTheme(s.theme);
 }
 
 /// Apply the currently-cached theme setting, then keep applying it on
