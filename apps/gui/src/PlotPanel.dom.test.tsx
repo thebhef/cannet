@@ -3795,6 +3795,103 @@ describe("PlotPanel solo", () => {
     ]);
   });
 
+  /// A catalogued series, so a manual pick and a row an area's
+  /// `patterns` materialize resolve through the same catalog entry.
+  const catalogSig = (signalName: string, unit = "A") => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+    color: "#4ecbff",
+  });
+
+  /// One area holding both kinds of row — two manual picks plus the row
+  /// its own `patterns` entry adds (ADR 0038) — beside an area holding
+  /// neither match.
+  const mixedRegistry = (id: string) =>
+    makeRegistry({
+      id,
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [catalogSig("LimitNominal"), catalogSig("EngineTemp", "degC")],
+            patterns: ["EngineData/Limit"],
+          },
+          { id: "a2", signals: [catalogSig("EngineSpeed", "rpm")] },
+        ],
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+
+  it("groups a pattern-provided row exactly like a manual pick", async () => {
+    // What decides how much a page shows is whether the *solo* pattern
+    // captures — not how a row got into the area. A capture group both
+    // rows share makes them one group, so one page shows both kinds
+    // together.
+    const registry = mixedRegistry("el-solo-mixed-keyed");
+    renderPanel({ params: { elementId: "el-solo-mixed-keyed" }, registry });
+    await waitFor(() =>
+      expect(rowVisibility()).toEqual([
+        ["LimitNominal", true],
+        ["EngineTemp", true],
+        ["LimitEffective", true],
+        ["EngineSpeed", true],
+      ]),
+    );
+
+    typeSolo("(Limit)\\w+");
+    expect(rowVisibility()).toEqual([
+      ["LimitNominal", true],
+      ["EngineTemp", false],
+      ["LimitEffective", true],
+      ["EngineSpeed", true],
+    ]);
+    expect(soloPosition()).toBe('1/1 · "Limit" (2 of 2)');
+  });
+
+  it("makes every match its own page when the solo pattern captures nothing", async () => {
+    // The same two rows under a pattern with no capture group: each
+    // match is its own positional group, so at the default page size of
+    // one, the page a freshly typed pattern lands on shows exactly one
+    // of them — the manual pick, since picks sort ahead of an area's
+    // pattern-provided rows. The pattern-provided row is on the next
+    // page, and the whole matched set is one step further round.
+    const registry = mixedRegistry("el-solo-mixed-flat");
+    renderPanel({ params: { elementId: "el-solo-mixed-flat" }, registry });
+    await waitFor(() => expect(rowVisibility().length).toBe(4));
+
+    typeSolo("Limit");
+    expect(rowVisibility()).toEqual([
+      ["LimitNominal", true],
+      ["EngineTemp", false],
+      ["LimitEffective", false],
+      ["EngineSpeed", true],
+    ]);
+    expect(soloPosition()).toBe("1/2 · LimitNominal (1 of 2)");
+
+    const next = screen.getByRole("button", { name: "next solo match" });
+    fireEvent.click(next);
+    expect(rowVisibility()).toEqual([
+      ["LimitNominal", false],
+      ["EngineTemp", false],
+      ["LimitEffective", true],
+      ["EngineSpeed", true],
+    ]);
+    expect(soloPosition()).toBe("2/2 · LimitEffective (1 of 2)");
+
+    fireEvent.click(next);
+    expect(rowVisibility()).toEqual([
+      ["LimitNominal", true],
+      ["EngineTemp", false],
+      ["LimitEffective", true],
+      ["EngineSpeed", true],
+    ]);
+    expect(soloPosition()).toBe("all (2)");
+  });
+
   it("flips visibility without a host round-trip or a chart rebuild", async () => {
     // Every plotted signal is already sampled — hidden ones included —
     // so a solo change is a re-normalise + redraw of the window each

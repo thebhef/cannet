@@ -317,6 +317,89 @@ documented here rather than in a committed report so future
 worst-to-worst comparisons aren't poisoned by a known-noise sample.
 (Owner may overrule at review.)
 
+### 2026-08-09 — phase 62.C (branch `task62c-solo-followup`)
+
+Investigation of the owner's live-use report: *"the filters seem to
+work on pattern-provided signals, but only when a capture group
+provides an index."* Reading taken: solo behaves on rows an area's
+`patterns` materialized when the solo regex captures, and not when it
+doesn't.
+
+**Observation (raw).** The report above, plus one existing pin that
+already reads that way: `masks pattern-derived series like manual
+picks` asserts `typeSolo("Limit")` (no capture group) over two
+pattern-provided rows shows `1/2 · LimitNominal (1 of 2)` — one row
+visible out of two matches.
+
+**Hypothesis H1 (defect).** Pattern-provided rows are matched, grouped
+or masked differently from manual picks when the solo pattern has no
+capture group — suspects: `soloPathResolver`'s catalog-miss fallback,
+`signalRefKey` identity for materialized refs, `effectiveAreas` vs
+derived-axis identity.
+
+**Hypothesis H2 (by design).** Nothing distinguishes the two row kinds;
+what the owner is seeing is the groomed design's positional grouping
+(§3, "No capture group → each matched signal is its own group") meeting
+`solo_page_size` = 1 and the "entering or modifying the pattern lands
+on page 1" rule, so a captureless pattern lands showing exactly one
+matched row.
+
+**Experiment.** A panel area holding *both* kinds — manual picks
+`LimitNominal` + `EngineTemp` and an area `patterns` entry
+`EngineData/Limit` materializing `LimitEffective` — beside a
+zero-match area (`EngineSpeed`), driven through the real panel; plus a
+pure-function comparison of `soloMatches` / `soloGroups` over a manual
+pick list and the same signals materialized by `applyAreaSelection`.
+
+**Data.**
+
+| configuration | observed | expected per design | verdict |
+| --- | --- | --- | --- |
+| captureless `Limit`, page 1 (as typed) | pick `LimitNominal` visible; **pattern row `LimitEffective` masked**; `EngineTemp` masked; `EngineSpeed` untouched; read-out `1/2 · LimitNominal (1 of 2)` | 2 positional groups, page size 1 → one match on show; zero-match area untouched | matches design |
+| captureless `Limit`, next page | pick masked; **pattern row visible**; read-out `2/2 · LimitEffective (1 of 2)` | the pattern row is group 2 and reachable | matches design |
+| captureless `Limit`, All | both kinds visible, `EngineTemp` still masked; `all (2)` | whole matched set on show | matches design |
+| capturing `(Limit)\w+`, page 1 | **both kinds visible together**; `EngineTemp` masked; `1/1 · "Limit" (2 of 2)` | one shared key → one group → one page | matches design |
+| capturing `Limit(\w+)`, pages 1–2 | one row per page, pick and pattern row in key order (`"Effective"`, then `"Nominal"`) | distinct keys → distinct groups | matches design |
+| unit: `soloMatches` over picks vs `applyAreaSelection` output, patterns `Cell`, `Cell(\d+)`, `Cell(\d)` | identical name / path / captures lists, and identical `soloGroups` output (`Cell(\d)` → 2 groups, first with 2 members) | one subject, one dialect | matches design |
+
+**Conclusion.** H1 is refuted: a pattern-provided row and a manual pick
+of the same catalog signal are indistinguishable to solo at every level
+measured — same canonical path, same captures, same group membership,
+same mask. H2 is confirmed: the variable is the *solo* pattern, not the
+row's provenance. Without a capture group every match is its own group,
+so at `solo_page_size` = 1 the page a freshly typed pattern lands on
+shows one matched row; with a capture group whose key several matches
+share, that same page shows all of them at once. The report's
+association with pattern-provided signals follows from volume rather
+than kind — an area defined by a pattern typically carries tens of
+rows, so positional grouping there collapses the view to 1-of-N — and
+from row order: picks sort ahead of an area's pattern-provided rows, so
+page 1 of a captureless pattern over a mixed area shows a *pick*, which
+reads as the pattern-provided rows having been left out.
+
+**No semantics changed.** The behaviour is the groomed design as
+written (§3), so this phase lands tests only. One commit, green on
+`pnpm --dir apps/gui test` + `pnpm --dir apps/gui build`:
+
+| commit | subject |
+| --- | --- |
+| `026d13d` | `test(gui): pin how solo reads an area's pattern-provided rows` |
+
+Frontend **142 files / 1845 tests** passing (1842 at the phase's start,
++3 — one pure `soloMatches` pin for the two row kinds, two dom pins for
+the mixed area under a capturing and a captureless pattern); `pnpm
+build` clean. No Rust touched.
+
+**Open owner design question (not decided here).** Landing a
+*captureless* pattern on page 1 is what makes a quick name filter read
+as "it only kept one signal". The alternative — a captureless pattern
+lands on **All**, so it reads as a plain filter, and only a capturing
+one lands on page 1 to start stepping — is a change to the "entering or
+modifying the pattern lands on page 1" ruling (§3) and so needs an
+owner ruling; it was deliberately not made here. A second, smaller
+option is to raise the default `solo_page_size`, which is a setting
+rather than a semantics change.
+
 ## Blockers / side effects
 
 - **The `plotSolo.ts` NUL fix nearly re-triggered the whole-file-diff

@@ -27,7 +27,7 @@ import {
   stepSoloPage,
   type SoloGroup,
 } from "./plotSolo";
-import { catalogPath, resolvePatterns } from "./signalSelection";
+import { applyAreaSelection, catalogPath, resolvePatterns } from "./signalSelection";
 import { signalRefKey, type PlotAreaConfig, type SignalRef } from "./plotPanelConfig";
 import type { SignalDescriptorRecord } from "./types";
 
@@ -163,6 +163,27 @@ describe("soloMatches", () => {
   it("is empty for an invalid or empty pattern", () => {
     expect(soloMatches(AREAS, "Cell(", fullPathOf)).toEqual([]);
     expect(soloMatches(AREAS, "", fullPathOf)).toEqual([]);
+  });
+
+  it("reads a pattern-provided row exactly like a manual pick of it", () => {
+    // An area may define its rows by `patterns` rather than picking them
+    // (ADR 0038); those rows are materialized from the same catalog the
+    // resolver indexes. Solo therefore sees no difference between the
+    // two kinds — same subject, same captures — whether or not the solo
+    // pattern captures anything.
+    const catalog = ["Cell1", "Cell16", "PackVoltage", "cell16b", "Current"].map(desc);
+    const picked = area("a1", ["Cell1", "Cell16"]);
+    const materialized = applyAreaSelection(
+      { id: "a1", signals: [] as SignalRef[], patterns: ["Pack/Cell"] },
+      catalog,
+      BUS_NAMES,
+    );
+    expect(materialized.signals.map((s) => s.signalName)).toEqual(["Cell1", "Cell16"]);
+    const read = (a: PlotAreaConfig, pattern: string) =>
+      soloMatches([a], pattern, fullPathOf).map((m) => [m.name, m.path, [...m.captures]]);
+    for (const pattern of ["Cell", "Cell(\\d+)$"]) {
+      expect(read(materialized, pattern)).toEqual(read(picked, pattern));
+    }
   });
 });
 
