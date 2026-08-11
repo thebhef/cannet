@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { RbsView } from "./types";
 
@@ -62,6 +62,7 @@ import {
 } from "./projectElements";
 import type { ProjectElement } from "./types";
 import type { TraceState } from "./trace";
+import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
 
 const projectCtx = {
   buses: [
@@ -455,5 +456,40 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     expect(screen.getByText("Configure as sequence counter…")).toBeInTheDocument();
     fireEvent.click(item);
     await waitFor(() => expect(screen.getByText(/Calculated fields — Status/)).toBeInTheDocument());
+  });
+});
+
+describe("RbsPanel command registration (panel.find)", () => {
+  function renderWithCommands() {
+    const { registry } = makeRegistry("el", "/tmp/sim.cannet_rbs", false);
+    const commands = createPanelCommandRegistry();
+    const api = { updateParameters: vi.fn() };
+    const props = { params: { elementId: "el" }, api } as unknown as Parameters<
+      typeof RbsPanel
+    >[0];
+    render(
+      <ProjectContext.Provider value={projectCtx}>
+        <ElementRegistryContext.Provider value={registry}>
+          <PanelCommandsContext.Provider value={commands}>
+            <RbsPanel {...props} />
+          </PanelCommandsContext.Provider>
+        </ElementRegistryContext.Provider>
+      </ProjectContext.Provider>,
+    );
+    return commands;
+  }
+
+  it("focuses and selects the filter box", async () => {
+    VIEW = sampleView();
+    const commands = renderWithCommands();
+    const filterBox = (await screen.findByLabelText("filter")) as HTMLInputElement;
+    fireEvent.change(filterBox, { target: { value: "AliveCtr" } });
+    expect(document.activeElement).not.toBe(filterBox);
+    act(() => {
+      commands.invoke("el", "panel.find");
+    });
+    expect(document.activeElement).toBe(filterBox);
+    expect(filterBox.selectionStart).toBe(0);
+    expect(filterBox.selectionEnd).toBe(filterBox.value.length);
   });
 });

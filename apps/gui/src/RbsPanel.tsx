@@ -50,6 +50,7 @@ import {
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
 import { useDismissableMenu } from "./useDismissableMenu";
+import { usePanelCommands } from "./panelCommands";
 import { toggleInSet } from "./toggleSet";
 import { formatBytes } from "./format";
 import { GridviewFilterBox, useGridviewFilter } from "./gridviewFilter";
@@ -181,6 +182,15 @@ export function RbsPanel(props: IDockviewPanelProps) {
     [view, rowIds],
   );
   const filter = useGridviewFilter(buildFilterEntries);
+  /// The filter box, so `panel.find` (Mod+F, ADR 0018) can focus and
+  /// select it.
+  const filterInputRef = useRef<HTMLInputElement | null>(null);
+  usePanelCommands(elementId, {
+    "panel.find": () => {
+      filterInputRef.current?.focus();
+      filterInputRef.current?.select();
+    },
+  });
 
   // ---- expansion state ----
   // Buses and ECUs default to open, so the set holds what the user has
@@ -331,6 +341,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
           inputType="text"
           placeholder="filter messages / signals"
           ariaLabel="filter"
+          inputRef={filterInputRef}
         />
         <span className="rbs-path" title={path ?? "not saved to a file yet"}>
           {path == null ? "(unsaved)" : path.split(/[/\\]/).pop()}

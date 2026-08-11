@@ -10,7 +10,7 @@
 /// whole dataset in frontend state, which the paged-model rule forbids —
 /// those views keep their host-side narrowing.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import { Fzf } from "fzf";
 
 import { diagCount } from "./diag";
@@ -169,6 +169,9 @@ interface GridviewFilterBoxProps {
   /// is active, carrying this class. Omitted ⇒ no count (the panels that
   /// never showed one keep their toolbar as it was).
   matchCountClassName?: string;
+  /// Exposes the input element to the panel — e.g. so `panel.find`
+  /// (ADR 0018, Mod+F) can focus and select it.
+  inputRef?: RefObject<HTMLInputElement>;
 }
 
 /// The shared search box. Rendered wherever the panel's own toolbar
@@ -180,10 +183,12 @@ export function GridviewFilterBox({
   ariaLabel,
   inputType = "search",
   matchCountClassName,
+  inputRef,
 }: GridviewFilterBoxProps) {
   return (
     <>
       <input
+        ref={inputRef}
         type={inputType}
         className={className}
         placeholder={placeholder}

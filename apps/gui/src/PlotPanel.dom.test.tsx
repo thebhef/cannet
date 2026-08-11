@@ -1957,6 +1957,19 @@ describe("PlotPanel command registration (f / l hotkeys)", () => {
     });
     expect(checkbox).toBeChecked();
   });
+
+  it("panel.find focuses and selects the solo pattern box", () => {
+    const commands = renderWithCommands();
+    const solo = screen.getByLabelText("solo pattern") as HTMLInputElement;
+    fireEvent.change(solo, { target: { value: "Engine" } });
+    expect(document.activeElement).not.toBe(solo);
+    act(() => {
+      commands.invoke("el-test", "panel.find");
+    });
+    expect(document.activeElement).toBe(solo);
+    expect(solo.selectionStart).toBe(0);
+    expect(solo.selectionEnd).toBe(solo.value.length);
+  });
 });
 
 

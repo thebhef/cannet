@@ -129,6 +129,8 @@ import {
 import { diagCounts } from "./diag";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
+import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
+import { DBC_PANEL_ID } from "./dockLayout";
 
 /// Minimal registry stub — the panel only reads `entries` (for the
 /// ambient colormap resolver behind the value column).
@@ -1223,5 +1225,37 @@ describe("DbcPanel", () => {
     // Coming back into view resumes it.
     act(() => api.setVisible(true));
     await waitFor(() => expect(pageCalls()).toBeGreaterThan(whileHidden));
+  });
+});
+
+describe("DbcPanel command registration (panel.find)", () => {
+  function renderWithCommands() {
+    const api = fakePanelApi();
+    const commands = createPanelCommandRegistry();
+    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    render(
+      <ProjectContext.Provider value={projectCtx}>
+        <ElementRegistryContext.Provider value={emptyRegistry}>
+          <PanelCommandsContext.Provider value={commands}>
+            <DbcPanel {...props} />
+          </PanelCommandsContext.Provider>
+        </ElementRegistryContext.Provider>
+      </ProjectContext.Provider>,
+    );
+    return commands;
+  }
+
+  it("focuses and selects the search box", async () => {
+    const commands = renderWithCommands();
+    await screen.findByText("EngineData");
+    const search = screen.getByLabelText("search DBC content") as HTMLInputElement;
+    fireEvent.change(search, { target: { value: "EngineSpeed" } });
+    expect(document.activeElement).not.toBe(search);
+    act(() => {
+      commands.invoke(DBC_PANEL_ID, "panel.find");
+    });
+    expect(document.activeElement).toBe(search);
+    expect(search.selectionStart).toBe(0);
+    expect(search.selectionEnd).toBe(search.value.length);
   });
 });

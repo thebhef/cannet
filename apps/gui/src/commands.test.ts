@@ -74,6 +74,27 @@ describe("the shipped command set", () => {
     // The toggle itself is always available.
     expect(available(ctx())).toContain("view.fullscreen");
   });
+
+  it("binds panel.find on Mod+F, not suppressed while typing", () => {
+    const binding = DEFAULT_BINDINGS.find((b) => b.commandId === "panel.find");
+    expect(binding?.chord).toBe("Mod+F");
+    expect(binding?.skipEditable).toBeFalsy();
+  });
+
+  it("panel.find is offered only for findable panels (plot, rbs, dbc)", () => {
+    const available = (c: CommandContext) =>
+      commandsAvailableIn(COMMANDS, c).map((s) => s.id);
+    for (const kind of ["plot", "rbs", "dbc"] as const) {
+      expect(available(ctx({ focusedPanelKind: kind }))).toContain("panel.find");
+    }
+    // Not listed elsewhere — inert rather than erroring in a panel with
+    // no find/filter box (DBC/Settings' cost-vs-defer split: Settings
+    // has no filter affordance at all).
+    for (const kind of ["trace", "signals", "transmit", "colormap", "settings", "project"] as const) {
+      expect(available(ctx({ focusedPanelKind: kind }))).not.toContain("panel.find");
+    }
+    expect(available(ctx())).not.toContain("panel.find");
+  });
 });
 
 describe("findBindingConflicts", () => {
