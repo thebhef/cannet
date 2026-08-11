@@ -149,9 +149,9 @@ The one row a gridview's keyboard navigation is on. Not the
 selection — moving the cursor collapses the selection to it.
 
 **Selection**:
-The set of gridview rows (and pattern chips) that mouse gestures
-have selected; what a drag carries and a bulk action acts on.
-Ephemeral — never persisted.
+The set of gridview rows (and pattern chips) the click gestures — and
+Shift+Up/Down from the keyboard — have selected; what a drag carries
+and a bulk action acts on. Ephemeral — never persisted.
 
 ### Plot view
 

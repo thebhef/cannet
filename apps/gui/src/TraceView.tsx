@@ -905,6 +905,11 @@ function EventRow({
           onKeyDown={(e) => {
             if (e.key === "Enter") commit();
             else if (e.key === "Escape") {
+              // Consumed here, so the gridview leaves the press alone
+              // (ADR 0044): the grid's Escape takes focus back to the
+              // container, and this field commits on blur — abandoning
+              // the edit would commit the draft being abandoned.
+              e.preventDefault();
               setDraft(event.label);
               setEditing(false);
             }

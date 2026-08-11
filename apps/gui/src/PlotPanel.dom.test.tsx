@@ -3807,6 +3807,51 @@ describe("PlotPanel signal-row selection", () => {
     expect(primaryName()).toBe("EngineTemp");
   });
 
+  it("extends the selection with Shift+Up/Down, from the anchor", async () => {
+    // The gridview's keyboard range gesture (ADR 0044) over the signal
+    // rows: the press is the panel's, so it works from anywhere in the
+    // panel, and it runs on the area the selection already belongs to.
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    const panel = document.querySelector(".plot-panel")!;
+    clickRow("EngineTemp");
+
+    fireEvent.keyDown(panel, { key: "ArrowDown", shiftKey: true });
+    expect(selectedNames()).toEqual(["EngineTemp", "LimitNominal"]);
+    // The anchor is the range's fixed end, so coming back shrinks the
+    // range through it and then extends the other way.
+    fireEvent.keyDown(panel, { key: "ArrowUp", shiftKey: true });
+    expect(selectedNames()).toEqual(["EngineTemp"]);
+    fireEvent.keyDown(panel, { key: "ArrowUp", shiftKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "EngineTemp"]);
+    // Only a plain click promotes, so the range gesture leaves the
+    // primary where it was.
+    expect(primaryName()).toBe("EngineTemp");
+  });
+
+  it("leaves Shift+Up/Down to a text field in the panel", async () => {
+    // Shift+arrow is how text is selected; the solo box keeps it even
+    // though the press would otherwise reach the panel's handler.
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp"]);
+    clickRow("EngineSpeed");
+    fireEvent.keyDown(screen.getByLabelText("solo pattern"), {
+      key: "ArrowDown",
+      shiftKey: true,
+    });
+    expect(selectedNames()).toEqual(["EngineSpeed"]);
+  });
+
+  it("does nothing on Shift+Up/Down while no row is selected", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp"]);
+    fireEvent.keyDown(document.querySelector(".plot-panel")!, {
+      key: "ArrowDown",
+      shiftKey: true,
+    });
+    expect(selectedNames()).toEqual([]);
+  });
+
   it("ranges across a per-unit area's derived axes, in the area's own order", async () => {
     // One logical area, four signals, three units → three PlotArea
     // instances, each holding a slice of the area's rows (ADR 0026). A

@@ -1,8 +1,9 @@
-// The gridview's mouse-built selection model (ADR 0044): click
-// replaces, Ctrl/Cmd+click toggles, Shift+click replaces with the range
-// from the click anchor, Ctrl+Shift+click adds that range, Ctrl/Cmd+A
-// takes every selectable row, and a cursor move collapses the selection
-// to the cursor.
+// The gridview's selection model (ADR 0044): click replaces,
+// Ctrl/Cmd+click toggles, Shift+click replaces with the range from the
+// click anchor, Ctrl+Shift+click adds that range, Shift+Up/Down extends
+// the range to the row the cursor moved onto, Ctrl/Cmd+A takes every
+// selectable row, and a plain cursor move collapses the selection to
+// the cursor.
 
 import { describe, expect, it } from "vitest";
 
@@ -10,6 +11,7 @@ import { arrayRowSpace, type GridviewRow } from "./gridviewRows";
 import {
   EMPTY_SELECTION,
   collapseToCursor,
+  extendToCursor,
   selectAll,
   selectOnClick,
   selectableIdsInOrder,
@@ -160,6 +162,62 @@ describe("Ctrl+Shift+click", () => {
     const next = selectOnClick(selection(["a"], "gone"), "c", MOD_SHIFT, ORDER);
     expect(selected(next)).toEqual(["a", "c"]);
     expect(next.anchor).toBe("c");
+  });
+});
+
+describe("Shift+Up/Down (extend to the cursor)", () => {
+  it("takes in the row the cursor moved onto", () => {
+    const next = extendToCursor(selection(["b"], "b"), "b", "c", ORDER);
+    expect(selected(next)).toEqual(["b", "c"]);
+    expect(next.anchor).toBe("b");
+  });
+
+  it("grows the range while the cursor keeps going", () => {
+    let s = extendToCursor(selection(["b"], "b"), "b", "c", ORDER);
+    s = extendToCursor(s, "c", "d", ORDER);
+    expect(selected(s)).toEqual(["b", "c", "d"]);
+    expect(s.anchor).toBe("b");
+  });
+
+  it("shrinks back through the anchor when the direction reverses", () => {
+    // The VS Code rule: the anchor is the range's fixed end, so coming
+    // back drops what the outbound leg took and then extends the other
+    // way past it.
+    let s = selection(["b", "c", "d"], "b");
+    s = extendToCursor(s, "d", "c", ORDER);
+    expect(selected(s)).toEqual(["b", "c"]);
+    s = extendToCursor(s, "c", "b", ORDER);
+    expect(selected(s)).toEqual(["b"]);
+    s = extendToCursor(s, "b", "a", ORDER);
+    expect(selected(s)).toEqual(["a", "b"]);
+    expect(s.anchor).toBe("b");
+  });
+
+  it("drops what was selected outside the range", () => {
+    const next = extendToCursor(selection(["a", "e"], "b"), "b", "c", ORDER);
+    expect(selected(next)).toEqual(["b", "c"]);
+  });
+
+  it("anchors on the row the cursor came from when there is no anchor yet", () => {
+    // Reaching a row with the plain arrows leaves it anchored, but a
+    // cursor that landed on an unselectable row cleared both — the row
+    // the press starts from is the fixed end either way.
+    const next = extendToCursor(EMPTY_SELECTION, "c", "d", ORDER);
+    expect(selected(next)).toEqual(["c", "d"]);
+    expect(next.anchor).toBe("c");
+  });
+
+  it("falls back to the destination alone when neither end is in the order", () => {
+    const next = extendToCursor(selection(["a"], "gone"), "also-gone", "c", ORDER);
+    expect(selected(next)).toEqual(["c"]);
+    expect(next.anchor).toBe("c");
+  });
+
+  it("leaves the selection alone when the cursor moved onto an unselectable row", () => {
+    // The cursor still moves — that is the caller's business — but a row
+    // the adapter won't allow to be selected cannot join a range.
+    const before = selection(["b", "c"], "b");
+    expect(extendToCursor(before, "c", "structure", ORDER)).toBe(before);
   });
 });
 

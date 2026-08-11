@@ -70,6 +70,7 @@ import { SourcesMenuSection } from "./SourcesPicker";
 import { useElementPanel, useElementSources } from "./useElementPanel";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { busLookup } from "./traceColumns";
+import { isEditableTarget } from "./keybindings";
 import {
   type MeasurementKey,
   type PanelHover,
@@ -245,6 +246,7 @@ import {
 } from "./plotAreaLayout";
 import {
   NO_PLOT_SIGNAL_SELECTION,
+  extendPlotSignalSelection,
   selectPlotSignal,
   type PlotSignalSelection,
 } from "./plotAreaSelection";
@@ -1422,11 +1424,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [soloMatchCount],
   );
-  /// PgDn / PgUp cycle the matches, scoped to the plot panel: this is a
-  /// `keydown` on the panel root, so it acts while focus is anywhere
-  /// inside the panel — which the mousedown handler below keeps true for
-  /// the parts of the view that take no focus of their own.
-  /// Deliberately not a global command (ADR
+  /// The panel's own keys: PgDn / PgUp cycle the solo matches, and
+  /// Shift+Up/Down extends the signal-row selection. Both are scoped to
+  /// the plot panel — this is a `keydown` on the panel root, so they act
+  /// while focus is anywhere inside the panel, which the mousedown
+  /// handler below keeps true for the parts of the view that take no
+  /// focus of their own.
+  /// PgDn / PgUp are deliberately not a global command (ADR
   /// 0018): PageUp / PageDown are the gridview's navigation keys
   /// (`keybindings.ts`), and while the plot panel is not a gridview, a
   /// global binding on them would be suppressed in every panel that is.
@@ -1434,8 +1438,29 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// whenever solo has no matches to step.
   const onPanelKeyDown = useCallback(
     (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // Shift+Up/Down extends the signal-row selection — the gridview's
+      // keyboard range gesture (ADR 0044), which the rows follow though
+      // the side list is not a gridview yet. Panel-scoped for the same
+      // reason the solo stepping below is: the rows take no focus of
+      // their own, so the press arrives at the panel root. The selection
+      // and the per-area order are read through refs (declared further
+      // down, and only read once the callback runs) so this handler
+      // stays as stable as the memoised areas need it to be.
+      if (e.shiftKey) {
+        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+        // A text field owns Shift+arrow — that is how text is selected —
+        // so the solo box and the pattern editors keep it.
+        if (isEditableTarget(e.target)) return;
+        const key = e.key === "ArrowUp" ? "ArrowUp" : "ArrowDown";
+        const sel = signalSelectionRef.current;
+        if (sel.areaId == null) return;
+        const order = selectionOrderRef.current.get(sel.areaId) ?? [];
+        e.preventDefault();
+        setSignalSelection((prev) => extendPlotSignalSelection(prev, key, order));
+        return;
+      }
       if (e.key !== "PageDown" && e.key !== "PageUp") return;
-      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
       if (soloMatchCount === 0) return;
       e.preventDefault();
       stepSoloBy(e.key === "PageDown" ? 1 : -1);

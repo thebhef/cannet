@@ -401,8 +401,8 @@ range, mux indicator, float kind, attributes, value table) and
 per-message detail (length, FD/BRS, mux flag, attributes). Drag a
 signal or message row onto a plot panel to add it as a series, or onto
 the transmit panel to create a new TX frame for that message;
-multi-select (click / Shift-click / Cmd-Ctrl-click) drags the whole
-selection at once. The host watches every loaded DBC file and
+multi-select (click / Shift-click / Cmd-Ctrl-click, or Shift+↑/↓ from
+the keyboard) drags the whole selection at once. The host watches every loaded DBC file and
 auto-reloads the in-memory copy when the file changes on disk — no
 need to click Reload after editing a DBC in another tool. Turn
 **`dbc_auto_reload`** off if you would rather choose the moment the
@@ -713,7 +713,11 @@ resample at the end.
   units label the y axis) — the long-standing promote gesture, now with
   a highlight. **Ctrl/⌘-click** adds or removes a row from the
   selection and **shift-click** takes the range from the last row
-  clicked; neither of those moves the primary. A selected signal's line
+  clicked; neither of those moves the primary. **Shift+↑/↓** extends
+  the selection a row at a time from the same anchor, the gridview
+  panels' keyboard range gesture — it works from anywhere in the plot
+  panel except a text box (which keeps Shift+arrow for selecting text).
+  A selected signal's line
   is drawn **bold** in the plot, so the selection reads on the canvas
   and not only in the side panel. A selection belongs to
   **one plot area**: clicking a row in another area starts that area's

@@ -1152,7 +1152,14 @@ function SectionNameInput({
       onChange={(e) => setDraft(e.target.value)}
       onKeyDown={(e) => {
         if (e.key === "Enter") commit();
-        else if (e.key === "Escape") onCancel();
+        else if (e.key === "Escape") {
+          // Consumed here, so the gridview leaves the press alone
+          // (ADR 0044): the grid's Escape takes focus back to the
+          // container, and this field commits on blur — abandoning the
+          // edit would commit the very draft it is abandoning.
+          e.preventDefault();
+          onCancel();
+        }
       }}
       onBlur={commit}
     />

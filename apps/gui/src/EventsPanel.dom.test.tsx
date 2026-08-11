@@ -145,6 +145,29 @@ describe("event row focus and editing", () => {
     expect(screen.queryByLabelText("event label")).toBeNull();
   });
 
+  it("abandons a rename on Escape without committing the draft", () => {
+    // The row sits inside a gridview, whose Escape takes focus back to
+    // the container (ADR 0044) — and this field commits on blur. The
+    // editor consumes the press for that reason; if it stopped doing so
+    // the abandoned draft would be committed by the blur that follows.
+    const ctx = notesCtx([note]);
+    render(
+      <TraceDataProvider value={traceData}>
+        <NotesContext.Provider value={ctx}>
+          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
+        </NotesContext.Provider>
+      </TraceDataProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("rename event"));
+    const input = screen.getByLabelText("event label") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "crunch" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(ctx.renameNote).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("event label")).toBeNull();
+    expect(screen.getByText("boom")).toBeInTheDocument();
+  });
+
   it("still takes a double-click on the label as a rename", () => {
     renderPanel([note]);
     fireEvent.doubleClick(screen.getByText("boom"));

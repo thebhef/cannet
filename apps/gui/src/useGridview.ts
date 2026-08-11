@@ -18,6 +18,7 @@ import {
 import {
   EMPTY_SELECTION,
   collapseToCursor,
+  extendToCursor,
   selectAll,
   selectOnClick,
   selectableIdsInOrder,
@@ -165,6 +166,27 @@ export function useGridview({
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent) => {
       const container = e.currentTarget as HTMLElement;
+      // Escape is the way *out* of a row's content, mirroring Tab's way
+      // in (ADR 0044): focus returns to the container and the cursor is
+      // still where it was, so the arrows navigate again. Content keeps
+      // first claim — a control that consumed the press either stopped
+      // it reaching here (a combobox closing its dropdown) or marked it
+      // handled, and a global Escape command's capture-phase
+      // `preventDefault` counts the same way. A press on the container
+      // itself has nothing to come back from and is left alone.
+      if (
+        e.key === "Escape" &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.target !== container &&
+        !e.defaultPrevented
+      ) {
+        e.preventDefault();
+        container.focus();
+        return;
+      }
       // A text field inside a row owns its own keys: the arrows move
       // the caret, Home/End jump within the value, Ctrl+A selects the
       // text. The rows carry inline editors (a section's name, an event
@@ -212,8 +234,26 @@ export function useGridview({
         target.focus();
         return;
       }
-      // Every other chord belongs to the command dispatcher, and
-      // Shift+arrow to nobody — there is no keyboard multiselect.
+      // Shift+Up/Down: move the cursor exactly where the plain arrow
+      // moves it, and extend the selection from the anchor to it
+      // (ADR 0044).
+      if (
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        (e.key === "ArrowUp" || e.key === "ArrowDown")
+      ) {
+        e.preventDefault();
+        const action = cursorAction(adapter, cursor, e.key, pageRows);
+        if (action.type !== "move") return;
+        const order = selectionOrder();
+        setCursor(action.id);
+        setSelection((current) => extendToCursor(current, cursor, action.id, order));
+        adapter.scrollToRow(action.index);
+        return;
+      }
+      // Every other chord belongs to the command dispatcher.
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
       // Enter ships unbound.
       if (e.key === "Enter") return;
