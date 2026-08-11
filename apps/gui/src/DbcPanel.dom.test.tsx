@@ -467,6 +467,16 @@ describe("DbcPanel", () => {
     expectRowNotSelected("GearState");
   });
 
+  it("takes the keyboard when a row is clicked", async () => {
+    // Without this the tree never holds focus in a mouse-then-keyboard
+    // session: focus stays on `<body>`, where the arrows and Tab are
+    // dead until the user happens to click the container's border.
+    renderPanel();
+    await screen.findByText("EngineData");
+    fireEvent.click(screen.getByText("EngineData").closest(".dbc-row") as HTMLElement);
+    expect(document.activeElement).toBe(screen.getByRole("tree"));
+  });
+
   it("marks its tree as a gridview so the global dispatcher stays off its keys", async () => {
     // ADR 0044's D10 suppression: the marker on the container is what
     // the capture-phase dispatcher reads. (The end-to-end assertion over

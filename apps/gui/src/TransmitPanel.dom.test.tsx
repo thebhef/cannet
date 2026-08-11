@@ -784,6 +784,21 @@ describe("TransmitPanel on the gridview", () => {
     expect(tiles()[1].querySelector(".tx-expanded")).toBeInTheDocument();
   });
 
+  it("takes the keyboard when a tile is clicked, and leaves it to a control", async () => {
+    // Without this the list never holds focus in a mouse-then-keyboard
+    // session: focus stays on `<body>`, where the arrows and Tab are
+    // dead until the user happens to click the container's border.
+    POOL = [frame("a")];
+    renderPanel("el", ["a"]);
+    await waitFor(() => expect(tiles()).toHaveLength(1));
+    fireEvent.click(tiles()[0].querySelector(".tx-frame-body") as HTMLElement);
+    expect(document.activeElement).toBe(list());
+    const description = screen.getAllByLabelText("frame description")[0];
+    description.focus();
+    fireEvent.click(description);
+    expect(document.activeElement).toBe(description);
+  });
+
   it("marks its list as a gridview so the global dispatcher stays off its keys", async () => {
     POOL = [frame("a")];
     renderPanel("el", ["a"]);

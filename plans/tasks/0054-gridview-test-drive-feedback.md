@@ -89,6 +89,50 @@ focus-on-click get it.
   and after. `SectionHeaderRow` (the section header's own drag grip)
   is untouched — out of scope for item 1, which is signal rows only.
 
+- **2026-08-07 (item 2, the Tab contract in the shared layer):** Landed
+  on `task54b-gridview-tab-contract`. The keyboard-only path now works
+  end to end from `useGridview.ts`: Tab pressed on the container moves
+  focus to the cursor row's first tabbable control (`document.getElementById(rowDomId(cursor))`,
+  `tabindex="-1"` and disabled controls skipped), Shift+Tab to its last,
+  and both leave the press to the browser when the cursor names a row
+  that is not on screen or the row has no controls. Focus inside a row
+  keeps native Tab. Enter/Escape on an editable inside the container
+  reclaims focus for the container **only when the press left focus on
+  `<body>`** — the editors blur themselves, and this rescues what they
+  drop without fighting one that moves focus deliberately.
+  `docs/adr/0044-gridview-interaction-base.md` gains the paragraph
+  describing all of that and its key-table row now reads
+  "Tab / Shift+Tab"; `ShortcutsPanel.tsx`'s user-facing table matches.
+  Tests: 3 failing RBS DOM tests written first
+  (`RbsPanel.gridview.dom.test.tsx`), then 6 shared-layer tests in
+  `useGridview.dom.test.tsx` replacing the one that pinned "the grid
+  must not consume Tab". `apps/gui` suite 1485/1485 → 1492/1492 (130
+  files), `pnpm --dir apps/gui build` green.
+
+- **2026-08-07 (item 2, focus-on-click for the last three panels):**
+  `RbsPanel`, `DbcPanel` and `TransmitPanel` now hand the grid container
+  the keyboard when a row is clicked, matching `SignalsPanel` /
+  `ByIdTable` / `TraceView`'s existing `closest("button, input") == null`
+  guard. RBS's row click is the cached one in
+  `rbsRowIdentity.ts`, so `makeRowGridPropsCache` takes the container ref
+  as a second argument; DBC's `handleRowClick` gained the click target as
+  a third argument (the row component already built the modifiers, not
+  the event). ADR 0044's cursor/selection paragraph states the rule.
+  Tests: one DOM test per panel written failing first, plus a unit test
+  over the cache's focus branch. Suite 1492/1492 → 1496/1496 (130
+  files), build green.
+
+- **2026-08-07 (item 2, the dispatcher's view of Shift+Tab):** Claiming
+  Shift+Tab in the grid left `keybindings.ts` inconsistent with it —
+  `isGridviewKey` / `chordSuppressedInGridview` rejected *every* shifted
+  stroke, so a globally-bound Shift+Tab would have fired alongside the
+  grid's focus move, and the shortcuts view would have said the binding
+  was live in a gridview when it is not. Both predicates now take
+  Shift+Tab (and only Shift+Tab among shifted strokes); ADR 0044's
+  suppression paragraph lists it. The keybindings tests prove the two
+  against each other, so display and dispatch cannot drift. Suite stays
+  1496/1496.
+
 ## Blockers / side effects
 
 - Verified the other gridview-migrated surfaces already drag whole-row
@@ -96,6 +140,35 @@ focus-on-click get it.
   `TraceView.tsx` (~line 723), `DbcPanel.tsx` (~line 1165), and
   `PlotArea.tsx`'s `.plot-signal-row` (~line 2828) all set
   `draggable`/`onDragStart` on the row element itself. No fix needed.
+- **Item 2's Shift+Tab reading.** ADR 0044's key table said only "Tab —
+  into the row's interactive content", so Shift+Tab was undefined. Read
+  as the mirror: from the container it focuses the cursor row's **last**
+  tabbable control, so the row is reachable from either direction
+  without first leaving the grid, and the two presses are inverses of
+  each other. The alternative reading — Shift+Tab exits the grid
+  backwards, native — was rejected because it makes the row's controls
+  unreachable from below and gives the container two different tab
+  meanings depending on direction. Recorded in the ADR as what is.
+- **Item 2's `ValidatedInput` decision: it is untouched.** The
+  focus-return is handled entirely by the gridview layer, which reclaims
+  focus on an Enter/Escape from an editable inside its container *only
+  when the press left `document.activeElement` on `<body>`*. That covers
+  `ValidatedInput`'s self-blur without a new prop, without a call-site
+  change, and without breaking its non-gridview call sites (nothing
+  outside a gridview container sees the handler at all). It also covers
+  any other self-blurring control a row grows later — `Combobox`
+  included — and by construction never fights a control that moves focus
+  somewhere of its own choosing.
+- **Not done in item 2: the RBS content block is not part of "the
+  row".** `.rbs-message-row` (the element carrying the row's DOM id) and
+  the disclosed `.rbs-signals` table are DOM siblings, so Tab from the
+  container lands on the row's own controls (enable checkbox, then the
+  period cell) and the browser's native Tab carries on into the signal
+  inputs, which follow in document order. The keyboard-only path works
+  end to end, but the layer's "first control of the row" is scoped to
+  the row element, not to the row plus its content block. If a panel
+  ever renders its content block *before* its row element, or outside
+  it, that would need revisiting.
 - Two pre-existing exceptions remain grip-only, not whole-row:
   `TransmitFrameRow.tsx`'s `.tx-drag-handle` (~line 191) and
   `PlotArea.tsx`'s `.plot-area-grip` reorder handle on the area head

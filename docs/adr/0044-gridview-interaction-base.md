@@ -44,8 +44,11 @@ container holds DOM focus and names the active row via
 `aria-activedescendant` (row DOM nodes are recycled or absent in
 paged viewports, so focus cannot live on them). The selection is a
 separate id set with a click anchor. Both are ephemeral — never
-persisted. There is no active cell: interactive content inside a row
-is reached by Tab, not by the grid cursor.
+persisted. Clicking a row hands the container that focus, unless the
+click was aimed at a control that takes focus itself; without it a
+mouse-then-keyboard session leaves focus on the document body and the
+grid's keys point at nothing. There is no active cell: interactive
+content inside a row is reached by Tab, not by the grid cursor.
 
 **One key table for every gridview:**
 
@@ -59,11 +62,26 @@ is reached by Tab, not by the grid cursor.
 | Home/End | first/last row | ″ | ″ |
 | PageUp/Down | move cursor one viewport | ″ | ″ |
 | Ctrl/Cmd+A | select all selectable rows | ″ | ″ |
-| Tab | into the row's interactive content | ″ | ″ |
+| Tab / Shift+Tab | into the cursor row's controls, first / last | ″ | ″ |
 
 Space, not Enter, is the action key, and the action is the panel's
 to define (transmit: send the focused message once); expansion is
 already covered by Left/Right, so no default action is bound.
+
+**The layer owns the way into a row's content, and only that.** Tab
+pressed on the container moves focus to the cursor row's first control
+in tab order, Shift+Tab to its last — the mirror, so the row is
+reachable from either direction without first leaving the grid.
+Controls that opt out of the tab order (`tabindex="-1"` carets, clear-
+override buttons) are skipped, and a cursor naming a row that is not
+on screen — routine in a paged viewport — leaves the press to the
+browser. Once focus is inside a row, Tab is the browser's again: it
+walks that row's own controls and then out of the row. Coming back is
+the layer's job too, because a row's editors end an edit by blurring
+themselves (commit on Enter, revert on Escape) and a blur with nowhere
+to go leaves focus on the document body, where the grid's keys are
+dead and the next Tab restarts from the top of the page — so the
+container takes focus back whenever such a press drops it.
 
 **Multiselect is mouse-built.** Plain click replaces the selection;
 Ctrl/Cmd+click toggles a row; Shift+click *replaces* the selection with
@@ -97,8 +115,8 @@ The dispatcher's capture-phase listener fires before any panel
 handler, so the layer marks its container and the dispatcher treats
 focus-inside-a-gridview like its existing focus-inside-an-editable
 suppression for the keys the grid consumes (unmodified navigation
-keys, Space, Tab, Ctrl/Cmd+A). The grid makes that same
-editable-target exemption of its own: a text field inside a row (a
+keys, Space, Tab, plus Ctrl/Cmd+A and Shift+Tab). The grid makes that
+same editable-target exemption of its own: a text field inside a row (a
 section's name, an event row's label) keeps its keys, or the caret
 cannot be moved inside it, and a **focused button keeps Space** — that
 is how a button is activated, so a grid claiming the press would fire

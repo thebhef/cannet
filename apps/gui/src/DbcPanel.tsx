@@ -953,8 +953,12 @@ export function DbcPanel(props: IDockviewPanelProps) {
   const dragContext = useRef({ rows, content });
   dragContext.current = { rows, content };
   const handleRowClick = useCallback(
-    (id: string, modifiers: { shift: boolean; mod: boolean }) => {
+    (id: string, modifiers: { shift: boolean; mod: boolean }, target: HTMLElement | null) => {
       gridRef.current.onRowClick(id, modifiers);
+      // Clicking a row hands the grid the keyboard — the container is
+      // the only thing in a gridview that holds focus (ADR 0044) —
+      // unless the click was aimed at a control that wants it itself.
+      if (target?.closest("button, input") == null) treeRef.current?.focus();
     },
     [],
   );
@@ -1094,7 +1098,11 @@ interface DbcRowProps {
   value?: SignalSnapshotRecord | null;
   resolveColor: ColorResolver | null;
   onToggle: (id: string, expanded: boolean) => void;
-  onClick: (id: string, modifiers: { shift: boolean; mod: boolean }) => void;
+  onClick: (
+    id: string,
+    modifiers: { shift: boolean; mod: boolean },
+    target: HTMLElement | null,
+  ) => void;
   onDragStart: (e: React.DragEvent, row: RenderRow) => void;
 }
 
@@ -1140,7 +1148,11 @@ const DbcRow = memo(function DbcRow({
     // Every click moves the gridview's cursor here; on a container row
     // that is all it does (they aren't selectable) and the row doubles
     // as its own disclosure.
-    onClick(row.id, { shift: e.shiftKey, mod: e.metaKey || e.ctrlKey });
+    onClick(
+      row.id,
+      { shift: e.shiftKey, mod: e.metaKey || e.ctrlKey },
+      e.target as HTMLElement | null,
+    );
     if (isContainerRow && row.hasChildren) onToggle(row.id, !row.expanded);
   };
   const onChevronClick = (e: React.MouseEvent) => {

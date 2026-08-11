@@ -132,7 +132,7 @@ describe("ShortcutsPanel binding contexts", () => {
   it("lists the keys a grid view owns, Enter among them as unbound", () => {
     renderPanel();
     const grid = group("In a grid view");
-    for (const keys of ["↑ / ↓", "← / →", "Home / End", "PageUp / PageDown", "Ctrl+A", "Tab", "Space", "Enter"]) {
+    for (const keys of ["↑ / ↓", "← / →", "Home / End", "PageUp / PageDown", "Ctrl+A", "Tab / Shift+Tab", "Space", "Enter"]) {
       expect(within(grid).getByText(keys)).toBeInTheDocument();
     }
     expect(within(grid).getByText(/Unbound/)).toBeInTheDocument();
