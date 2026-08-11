@@ -269,7 +269,143 @@ ruling — root-causing happens on the signal's first real occurrence
 (now that a never-connected run fails loudly instead of silently),
 likely during this task's later perf-gate runs.
 
+**2026-08-08 — Phase 57.D, item 5 (the failure contract's exit code, and
+the readiness flake's root cause), branch
+`task57d-capture-exit-and-flake`.**
+
+Commits: `a508f54` (exit code), `b559507` (readiness flake), `a3018b2`
+(rustfmt of the former).
+
+Test counts: Rust 498 passed / 0 failed / 2 ignored (`cargo test -p
+cannet-gui`, was 496); JS 139 files / 1666 tests (was 138 / 1664), all
+green. `tsc --noEmit`, `cargo clippy -p cannet-gui --all-targets` and
+`cargo fmt --check` clean.
+
+### A. `exit_process(1)` reached the OS as 0
+
+**Observation** (57.C, twice). A `--connect-on-start
+--perf-capture-secs 60` run hit the readiness timeout, logged the cause,
+wrote no report — and the launching shell saw `0`. The dom tests assert
+`exit_process` is *invoked*, so the loss is below the frontend.
+
+**H1 — the runtime drops the requested code.** Experiment: read the
+pinned sources. Data: `AppHandle::exit(code)` → `request_exit(code)` →
+`Message::RequestExit(code)`; the wry handler emits `RunEvent::
+ExitRequested { code: Some(code) }` and, on the next line, sets
+`*control_flow = ControlFlow::Exit` — which tao defines as
+`ExitWithCode(0)` (`tao-0.35.2/src/event_loop.rs:177`). The code is
+dropped one statement after it is delivered, and `App::run` exits with
+whatever the loop returned. **Confirmed by construction**; the two rival
+hypotheses in the brief (a `finally`/teardown race, an `ExitRequested`
+handler overriding the code) need no separate test — this one accounts
+for the observation on its own, and the host's handler never touched the
+code because it never read it.
+
+**Reproduction, before.** Release build; an isolated scratchpad copy of
+`examples/ev-zonal` with both `interface_bindings[].server` repointed at
+`127.0.0.1:9` (nothing listens there, so connect can never land a
+session — the originals were not touched); launched
+`--connect-on-start --perf-capture-secs 5`. Data: 3 connect attempts
+logged, **no report**, `echo $?` → **0**.
+
+**Fix.** `run()` takes `App::run_return` instead of `App::run`, keeps
+the code off `RunEvent::ExitRequested`, and exits the process itself:
+`final_exit_code(requested, event_loop_code) = requested
+.unwrap_or(event_loop_code)`, unit-tested both ways. This is not a
+change of shutdown shape — tao's own `run` *is* `run_return` followed by
+`process::exit(code)`; the only difference is who supplies the code.
+
+**Verification, after.** Same reproduction, rebuilt: 3 attempts, no
+report, **exit 1**. Success path unaffected: a real 5 s capture against
+the ev-zonal copy connected, wrote its report, **exit 0**.
+
+### B. The readiness flake — the sidecar was never slow
+
+**Observation.** Both 57.C failures logged `connect preconditions not
+ready after 30000ms (bindings=2, sidecar=not ready)`.
+
+**H2 (the standing suspicion) — the frozen sidecar's first start after a
+fresh build is pushed past 30 s by the filter-stack/AV toll 57.C
+measured (~14 ms per newly written file).** Experiment: measure
+`sidecar started (pid …)` → `listening on …` in `cannet.log`, for the
+two failures and for this session's first launch after a fresh `tauri
+build` (which rewrites the whole frozen tree). Data: the **failing runs
+took 1.27 s and 1.21 s**; this session, first-after-a-fresh-build
+**2.42 s and 2.51 s** (two fresh builds), later launches **1.04–2.41 s**
+across eleven. **Refuted** — and
+refuted twice over, because in both failures the sidecar's `listening`
+banner is in the log **~31 s before** the timeout fired.
+
+**H3 — the host's published status never moved to ready.** Experiment:
+look for the side effect only `set_phase(Ready, addr)` produces — it
+starts the `WatchInterfaces` subscription against the bound address.
+Data: the sidecar's own log shows `WatchInterfaces stream opened` **9 ms
+after** the banner in the failing run (15:08:23,152 → 15:08:23,161
+local). **Refuted** — the host held `ready` + the address the whole
+time; only the frontend's copy was stale.
+
+**H4 — the transition was published into the gap between the frontend's
+snapshot and its listener registration.** `useSidecarStatus` awaited
+`get_sidecar_status`, *then* awaited `listen(...)`; an event emitted in
+between reaches nobody, and a healthy sidecar never transitions again,
+so the miss is permanent. Experiments: (a) a dom test that publishes the
+transition while the registration promise is still pending — the hook
+stays `starting` forever (red before the fix, green after); (b) the
+timing correlation across the session's 13 launches — the two failures
+are the **two smallest** banner→frontend-boot gaps (**172 ms** and
+**258 ms**), while every run that connected had the banner land either
+≥406 ms before the frontend booted (so its snapshot already read ready)
+or after its listener was live. **Confirmed.**
+
+**Fix.** Re-read the status once the listener is attached — the same
+post-listener refetch `useHostMirror` already standardises, and what
+`sidecar.rs`'s `STATUS_EVENT` rustdoc already claimed subscribers do.
+
+**No readiness-policy change, deliberately.** `AUTOMATION_READY_TIMEOUT_
+MS` stays 30 s: the measurement says a cold sidecar needs ~2.5 s, so
+30 s remains the right "genuinely dead" bound, and the candidate shapes
+in the brief (a liveness-keyed wait, a longer capture-run timeout, a
+build-step warm touch) would each have papered over a lost event rather
+than fixed it — none would have helped, since no amount of waiting
+recovers an event that was already delivered to nobody.
+
+**Verification.** Six consecutive `--connect-on-start
+--perf-capture-secs 5` runs on the rebuilt binary, the first of them the
+first launch after a fresh `tauri build` (the flake's stated trigger
+condition): 6/6 connected, 6/6 wrote a report, 6/6 exited 0.
+
 ## Blockers / side effects
+
+Phase 57.D:
+
+- **The stuck status had an interactive face too.** The same lost event
+  left the Connection panel's "Local sidecar" row reading `starting…`
+  for the life of a session whose sidecar was up — `useSidecarStatus` is
+  shared by `App` and `ProjectPanel`. Fixed for both by the same change;
+  worth knowing that the perf harness only made a user-visible bug
+  legible.
+- **Two sibling hooks have the same shape and were left alone.**
+  `useConnectionStates` (`connectionStates.ts`) and the interface-cache
+  effect in `ConnectionManagement.tsx` both snapshot before they
+  `listen`, so both can lose a transition the same way. Neither is on
+  the readiness path this phase was chartered to fix, and both recover
+  on any later event (bus state and interface lists move repeatedly,
+  unlike a sidecar that binds once), so they are a latent-but-quieter
+  instance of the same bug rather than this one.
+- **`run()` is now `-> !`.** It ends in `std::process::exit`, so it can
+  no longer return to `main`. No caller changes; noted because the
+  signature is public.
+- Rebuilding the release host with a bare `cargo build --release -p
+  cannet-gui` produces a binary with **no frontend at all** (it points
+  at the Vite dev server without the `custom-protocol` feature the tauri
+  CLI passes) — it boots, spawns the sidecar, and then sits there
+  silently, which looks exactly like a hang. README § *Self-driving
+  performance runs* already says so; recorded here because it costs a
+  confusing 20 minutes if you skip it, and because
+  `--features tauri/custom-protocol` is a working shortcut when the
+  frontend bundle is already built.
+
+Phase 57.A:
 
 - The `!ready` log line fires for *any* `--connect-on-start` run, not
   only a perf capture (item 1 of the grooming map is written that

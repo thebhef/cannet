@@ -2215,3 +2215,26 @@ fn the_capability_set_grants_set_title() {
         "capabilities/default.json must grant core:window:allow-set-title          (core:default covers only the title getter). Granted: {granted:?}"
     );
 }
+
+/// A webview-requested exit code has to survive the event loop. The wry
+/// runtime translates an `AppHandle::exit(code)` request into tao's
+/// `ControlFlow::Exit` — an alias for `ExitWithCode(0)` — so the loop's
+/// own code is 0 however the exit was asked for, and the requested code
+/// is only ever seen on `RunEvent::ExitRequested`. Verified in a real
+/// run: a `--connect-on-start --perf-capture-secs` launch that failed to
+/// connect invoked `exit_process(1)`, wrote no report, and the shell saw
+/// exit 0. ADR 0031's failure contract needs the non-zero code to reach
+/// the launching CLI, so the requested code wins here.
+#[test]
+fn a_requested_exit_code_beats_the_event_loops_own() {
+    assert_eq!(final_exit_code(Some(1), 0), 1);
+    assert_eq!(final_exit_code(Some(0), 0), 0);
+}
+
+/// A normal quit (window close) requests no code, so nothing overrides
+/// what the event loop returned.
+#[test]
+fn an_unrequested_exit_keeps_the_event_loops_code() {
+    assert_eq!(final_exit_code(None, 0), 0);
+    assert_eq!(final_exit_code(None, 3), 3);
+}

@@ -386,7 +386,22 @@ fn signal_cache_dir(scratch: &std::path::Path) -> std::path::PathBuf {
     scratch.join(signal_cache::PYRAMID_SUBDIR)
 }
 
-/// Boot the Tauri runtime.
+/// The code the process exits with once the event loop has returned.
+///
+/// `AppHandle::exit(code)` is the only way the webview can set an exit
+/// code, and the runtime drops it: an exit request is translated into
+/// tao's `ControlFlow::Exit`, an alias for `ExitWithCode(0)`, so
+/// `event_loop_code` is 0 no matter what was asked for. The requested
+/// code does arrive intact on `RunEvent::ExitRequested`, so `run` keeps
+/// it from there and prefers it here. ADR 0031's failure contract — a
+/// perf capture that never connected writes no report and exits
+/// non-zero — depends on the requested code reaching the OS.
+fn final_exit_code(requested: Option<i32>, event_loop_code: i32) -> i32 {
+    requested.unwrap_or(event_loop_code)
+}
+
+/// Boot the Tauri runtime. Never returns: the process exits with
+/// [`final_exit_code`] once the event loop is done.
 ///
 /// # Panics
 /// Panics if the platform runtime fails to start (no display, missing
@@ -394,7 +409,7 @@ fn signal_cache_dir(scratch: &std::path::Path) -> std::path::PathBuf {
 /// loudly rather than silently exiting.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[allow(clippy::too_many_lines)]
-pub fn run() {
+pub fn run() -> ! {
     // Set up `tracing`'s `fmt` layer for stderr so dev logs still show
     // up alongside the in-process ring the System Messages panel
     // renders. Idempotent — safe to call again from tests.
@@ -414,7 +429,12 @@ pub fn run() {
     // webview fetches the result via `diag_autostart` on boot. `None` on a
     // normal launch leaves boot behaviour untouched.
     let autostart = diag::AutomationConfig::from_args(std::env::args());
-    tauri::Builder::default()
+    // Where an `AppHandle::exit(code)` request is caught on its way past
+    // (see `final_exit_code`). Written by the `ExitRequested` arm below,
+    // read after the event loop returns.
+    let requested_exit_code = Arc::new(Mutex::new(None::<i32>));
+    let exit_code_slot = Arc::clone(&requested_exit_code);
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         // Persist the main window's size, position, and maximized /
         // fullscreen state across launches. The `setup` hook below runs
@@ -624,25 +644,36 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while running cannet")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                // Opt-in "clear scratch cache on exit" (Settings, ADR 0002
-                // DS-7): wipe the session buffer so the prior session isn't
-                // reloaded next launch. This is the same reset the Clear
-                // command runs — it clears the live, still-mapped scratch in
-                // place (dropping segments + manifest + identity/derived), so
-                // no unmap dance is needed. Otherwise harden the scratch with
-                // one synchronous flush, since the periodic flusher only
-                // queues async writeback (ADR 0002 DS-2) and a power loss
-                // right after quit could lose the trailing window.
-                if settings::get_settings(app_handle.clone()).clear_scratch_on_exit {
-                    clear_trace_store(app_handle.clone(), app_handle.state());
-                } else if let Err(e) = app_handle.state::<AppState>().trace_store.flush() {
-                    tracing::warn!(error = %e, "shutdown trace flush failed");
-                }
+        .expect("error while running cannet");
+    // `run_return` rather than `run`, so the requested exit code caught
+    // below can be handed to the OS ourselves — `run` exits the process
+    // with the event loop's own code, which is always 0 (see
+    // `final_exit_code`).
+    let event_loop_code = app.run_return(move |app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { code, .. } = event {
+            if code.is_some() {
+                *exit_code_slot.lock().expect("exit code mutex poisoned") = code;
             }
-        });
+            // Opt-in "clear scratch cache on exit" (Settings, ADR 0002
+            // DS-7): wipe the session buffer so the prior session isn't
+            // reloaded next launch. This is the same reset the Clear
+            // command runs — it clears the live, still-mapped scratch in
+            // place (dropping segments + manifest + identity/derived), so
+            // no unmap dance is needed. Otherwise harden the scratch with
+            // one synchronous flush, since the periodic flusher only
+            // queues async writeback (ADR 0002 DS-2) and a power loss
+            // right after quit could lose the trailing window.
+            if settings::get_settings(app_handle.clone()).clear_scratch_on_exit {
+                clear_trace_store(app_handle.clone(), app_handle.state());
+            } else if let Err(e) = app_handle.state::<AppState>().trace_store.flush() {
+                tracing::warn!(error = %e, "shutdown trace flush failed");
+            }
+        }
+    });
+    let requested = *requested_exit_code
+        .lock()
+        .expect("exit code mutex poisoned");
+    std::process::exit(final_exit_code(requested, event_loop_code));
 }
 
 // ------------------------------------------------------------------
