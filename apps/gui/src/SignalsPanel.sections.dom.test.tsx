@@ -289,8 +289,8 @@ describe("SignalsPanel sections", () => {
     // clips. jsdom does no layout, so the original tests found the
     // button either way; the structural fact is what the real WebView
     // acted on — the real intent is that the button is reachable, not
-    // that the row can't be a drag source. Task 54 widened the drag
-    // source to the whole row (ADR 0045), so `.trace-row` is legitimately
+    // that the row can't be a drag source. The drag source was widened
+    // to the whole row (ADR 0045), so `.trace-row` is legitimately
     // `[draggable="true"]` now; what must still hold is that the button
     // sits outside the clipped name cell, in its own column, and that
     // dragging is still wired to the row rather than the button.

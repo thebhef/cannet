@@ -3,7 +3,7 @@
 // Verifies the BLF channel-map modal's default seeding (channel N
 // defaults to project bus at position N — see CLAUDE.md § File
 // formats), the capture metadata line, the collapsible markers
-// gridview, and the selectable import time range (task 58.B).
+// gridview, and the selectable import time range (ADR 0046).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";

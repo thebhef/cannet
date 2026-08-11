@@ -1,10 +1,11 @@
 # Task 61 — Ingest Perf Round 2
 
 Opened by owner ruling 2026-08-09 from the two largest data-named
-items in task 58's ingest profiling (measurements recorded in
-0058-ingest-and-rebuild-at-scale.md § Status log, phase 58.A). Both
-were out of task 58's scope; both are now one task so the store
-change and the string change land against the same benchmark.
+items in the 2026-08-08 ingest profiling; the figures are restated
+below, and the full attribution run is in git history (the retired
+task-58 file's status log). Both were out of that round's scope; both
+are now one task so the store change and the string change land
+against the same benchmark.
 
 ## Items
 
@@ -15,7 +16,7 @@ is 0.64 µs/frame — 43 % of the shared per-frame ingest budget, larger
 than the whole BLF decode. The cost lives in ADR 0002's store
 (`cannet-spill`: payload placement, meta encode, by-id posting, ring
 push/pop), so cutting it is a raw-store change, profiled first (the
-58.A harness `bench_blf_import` is the instrument — extend, don't
+existing `bench_blf_import` harness is the instrument — extend, don't
 replace).
 
 ### 2. `bus_id: Option<String>` interning
