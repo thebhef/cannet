@@ -34,7 +34,8 @@ the order below is the order of work, top first.
    visibility from a context menu and selection drag (no bulk
    recolor; the add combobox goes away). Pulled into this
    implementation slice 2026-08-07 — the selection model itself
-   lands with task 55's bold-selected item.
+   landed 2026-08-08 with task 55's bold-selected item, leaving
+   the bulk actions outstanding here.
 4. [Task 56 — Regex-Derived Signal Attributes
    (Generators)](0056-regex-signal-generators.md) — project-stored
    rules (like color maps) deriving per-signal attributes from

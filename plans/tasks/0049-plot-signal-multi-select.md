@@ -155,3 +155,117 @@ this task carries the bulk actions. Rulings so far:
   areas that hold no selected row.
 - README's plot-panel section documents the interaction, including what
   a plain click now does.
+
+## Status log
+
+- **2026-08-08 (the selection model + bold selected series):** Landed on
+  `task49a-area-selection` in three commits. This phase is the
+  *selection model* and task 55 item 5's bolding; the bulk actions
+  (context-menu visibility, selection drag, removing the toolbar's
+  `add signal…` Combobox) are the next phase and were deliberately not
+  touched.
+  - `d37e28a` — **the reducer, pure.** Design question 5 answered
+    **reuse**: `gridviewSelection.selectOnClick` is already written
+    against an *ordered list of ids* rather than a row space, so it
+    drops in with no change and no gridview machinery comes along (no
+    `useGridview`, no cursor, no keyboard multiselect — question 6 stays
+    mouse-only). `plotAreaSelection.ts` is the thin wrapper that adds
+    the one rule the plot side panel needs: the selection carries the
+    logical area it belongs to, and a click in a different area starts
+    from empty. `gridviewSelection.ts`'s module doc now says it has a
+    second caller. 9 pure tests (`plotAreaSelection.test.ts`) cover
+    plain click, ctrl-toggle both ways, shift-range in both directions
+    with a sticky anchor, no-anchor fallback, clear-on-other-area, and
+    identity preservation for a key the area does not hold.
+  - **Design decision — one active selection per panel** (the reading
+    taken of question 1's "per logical area only"). The state is a
+    single `{areaId, ids, anchor}`, not a map of per-area selections:
+    "a selection never spans areas" is enforced by *there being one*,
+    which also makes "what does clicking in another area do" have an
+    obvious answer (that area's selection starts, the previous clears)
+    rather than leaving invisible selections parked in areas the user
+    has moved on from. A map would make bulk actions ambiguous about
+    which area they act on; a single selection cannot be.
+  - `71ccdcc` — **the gestures.** Question 2 as groomed: plain click
+    selects that row *and* promotes it to primary; ctrl/shift only
+    select. The row's existing `defaultPrevented` guard already keeps
+    the swatch's hide-toggle and colour picker out of it, so those
+    keep working and change no selection (covered by a test). Rows get
+    the app's shared `--surface-row-selected` wash, listed after
+    `.primary` so a row that is both shows the selection and keeps the
+    primary's inset marker.
+  - **How the slice reaches `PlotArea`** (questions 1 + 7). The panel
+    computes `selectedKeysByAxis`: for every *derived* axis, the
+    intersection of that axis's signals with the selection, and the
+    shared `EMPTY_KEY_SET` constant whenever that intersection is
+    empty. So an axis holding no selected row is handed an
+    identity-unchanged prop and its memo holds. The range order is the
+    *logical area's* `effectiveAreas` signal list
+    (`selectionOrderByArea`), which is what lets a shift-range span the
+    axes `per-unit` / `individual` splits an area into. The click
+    callback is routed to the parent area in `AxisHandlers` and is
+    stable across selection changes, so `areaHandlers` does not churn.
+  - `555eb41` — **bold selected series** (task 55 item 5). 2px against
+    1px, applied by writing `series[i].width` on the live uPlot
+    instance plus a redraw, with the construction path seeding widths
+    from the standing selection through a ref so the rebuild a
+    signal-set change forces doesn't drop the bolding. See
+    Blockers for why this is a write and not the literal "live width
+    function".
+  - Tests: 9 pure + 9 new DOM tests in `PlotPanel.dom.test.tsx`
+    ("PlotPanel signal-row selection") — plain click selects and
+    promotes, ctrl-toggle and shift-range each leave the primary alone,
+    a range across a three-axis `per-unit` area sweeps the middle axis's
+    row in and stops at the range end, a click in a second area clears
+    the first, the swatch's hide toggle leaves the selection alone,
+    bold-on-select without a rebuild, bolding survives a rebuild, and
+    the memo guard: with three seeded areas, extending the selection
+    inside area 1 costs exactly 1 `PlotArea` render and moving it to
+    area 2 costs exactly 2 (area 3 untouched). The standing
+    "re-renders no plot area when only panel-local state changes" guard
+    is unchanged and green. `apps/gui` test suite: 1518 → 1536 passing
+    (130 → 131 files); `pnpm --dir apps/gui build` green at every
+    commit.
+  - README's plot section gains a "Selecting signal rows" bullet (the
+    three gestures, what a plain click now does, the one-area rule, the
+    cross-axis range, bold lines, view-state-not-persisted), and the
+    y-axis-mode bullet's "click a series row to promote it" now says it
+    selects too. **No ADR written**: nothing here is a durable
+    cross-panel rule — the reused reducer is already ADR 0044's, and
+    the per-area scoping is one panel's UX choice, recorded above. If
+    the bulk-action phase finds itself defining how selections behave
+    across panels, that is the point to reconsider.
+
+## Blockers / side effects
+
+- **uPlot resolves `width` as a number, not a function**, so the
+  groomed "live width function following the exact pattern of the live
+  stroke-color function" is not literally implementable: uPlot calls
+  `stroke` (`fnOrSelf`) but reads `series[i].width` as a plain number on
+  every draw and multiplies it by `pxRatio`, so a function there yields
+  `NaN`. Implemented the closest faithful reading — the same
+  read-live-per-draw seam, driven by an effect that *writes* the width
+  onto the live instance and redraws. The property the ruling was
+  protecting (no uPlot rebuild on a selection change) holds and is
+  pinned by a test asserting the instance identity is unchanged across
+  a selection click. A getter on the series object would have been the
+  literal function shape, but uPlot assigns `s.width = s.width` during
+  init, which throws on a getter-only property in strict mode.
+- **The per-area render-count test needs an explicit settle loop.**
+  Measured while writing it: the first `act` after a panel mounts can
+  absorb a one-off *panel-wide* fan-out (all areas re-render) from
+  mount-time async — the value-table fetch landing, the first-sample
+  wait settling, or a previous test's `void hydrateSettings()`
+  resolving — and its timing moves with test-file load, so a fixed
+  400 ms wait made the assertion flaky (passing alone, failing in
+  suite). The test now flushes until a flush costs no renders before
+  taking its baseline. Not a property of the selection slice: with the
+  fan-out settled, repeated selection clicks cost only the clicked
+  area's render, which is what the assertions pin.
+- **Stack-wide fan-out on any `areas` edit is unchanged and still
+  pre-existing** (recorded during task 55 item 4): a *plain* click also
+  moves the primary, which rewrites `areas` and re-renders every
+  `PlotArea` because `derivedAreaConfigs` mints fresh derived configs
+  for the whole stack. The selection-slice guard is therefore asserted
+  with ctrl-clicks, which change nothing but the selection. Fixing the
+  underlying derivation is still out of scope here.

@@ -33,10 +33,19 @@ vi.mock("uplot", () => {
     data: unknown = [[]];
     width = 600;
     cursor = { left: -10 };
-    opts: { hooks?: Record<string, ((u: FakeUPlot) => void)[]> };
+    opts: {
+      hooks?: Record<string, ((u: FakeUPlot) => void)[]>;
+      series?: { width?: number }[];
+    };
     root: HTMLElement;
+    /** The live series objects, as real uPlot exposes them off the
+     * options it was constructed with. Their `width` is read back on
+     * every draw, so writing to it is how a restyle that changes no
+     * data (a bolded selection) reaches the canvas. */
+    series: { width?: number }[];
     constructor(opts: FakeUPlot["opts"], data: unknown, el: HTMLElement) {
       this.opts = opts;
+      this.series = opts.series ?? [];
       this.root = el;
       this.data = data;
       el.appendChild(document.createElement("canvas"));
@@ -207,6 +216,7 @@ type FakeUPlotInst = {
   root: HTMLElement;
   over: HTMLElement;
   data: unknown;
+  series: { width?: number }[];
   scales: Record<string, { min?: number; max?: number }>;
   xCalls: { min: number; max: number }[];
   redraws: number;
@@ -2911,6 +2921,265 @@ describe("PlotPanel area collapse", () => {
     const area = document.querySelector(".plot-area") as HTMLElement;
     expect(area.classList.contains("collapsed")).toBe(true);
     expect(screen.getByRole("button", { name: "expand plot area" })).toBeDisabled();
+  });
+});
+
+describe("PlotPanel signal-row selection", () => {
+  /// The signal names of every selected row, in DOM order — the panel's
+  /// selection as it reads on screen.
+  const selectedNames = () =>
+    Array.from(document.querySelectorAll(".plot-signal-row.selected")).map(
+      (r) => r.querySelector(".plot-signal-name")?.textContent ?? "",
+    );
+
+  /// The row whose signal name is `name`, optionally within one area.
+  /// The same signal can sit in several areas, so multi-area tests scope
+  /// the lookup; a single-area test omits `areaLabel` and searches the
+  /// whole panel (its rows may be spread over several derived axes).
+  function row(name: string, areaLabel?: string): HTMLElement {
+    const scope: ParentNode =
+      areaLabel == null ? document : screen.getByText(areaLabel).closest(".plot-area")!;
+    const found = Array.from(scope.querySelectorAll(".plot-signal-row")).find(
+      (r) => r.querySelector(".plot-signal-name")?.textContent === name,
+    );
+    if (!found) throw new Error(`no signal row for ${name}${areaLabel ? ` in ${areaLabel}` : ""}`);
+    return found as HTMLElement;
+  }
+
+  const clickRow = (name: string, init?: Record<string, unknown>, areaLabel?: string) =>
+    fireEvent.click(row(name, areaLabel), init);
+
+  /// The name of the row marked primary (drives the y-axis units).
+  const primaryName = () =>
+    document.querySelector(".plot-signal-row.primary .plot-signal-name")?.textContent ?? null;
+
+  async function addToFocused(names: string[]) {
+    const picker = screen.getByLabelText("add signal to focused plot area");
+    for (const n of names) {
+      await pickCombobox(picker, `*|s:256:${n}`);
+      await waitFor(() => expect(row(n)).toBeInTheDocument());
+    }
+  }
+
+  it("selects a row and promotes it to primary on a plain click", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp"]);
+    // The first-added signal is the default primary, and nothing is
+    // selected until the user clicks.
+    expect(primaryName()).toBe("EngineSpeed");
+    expect(selectedNames()).toEqual([]);
+
+    clickRow("EngineTemp");
+    expect(selectedNames()).toEqual(["EngineTemp"]);
+    expect(primaryName()).toBe("EngineTemp");
+
+    // A second plain click replaces the selection rather than adding.
+    clickRow("EngineSpeed");
+    expect(selectedNames()).toEqual(["EngineSpeed"]);
+    expect(primaryName()).toBe("EngineSpeed");
+  });
+
+  it("toggles membership on ctrl-click, leaving the primary alone", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    clickRow("EngineSpeed");
+    expect(primaryName()).toBe("EngineSpeed");
+
+    clickRow("LimitNominal", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "LimitNominal"]);
+    // Only a *plain* click promotes — the modified chords build the
+    // selection and nothing else.
+    expect(primaryName()).toBe("EngineSpeed");
+
+    clickRow("EngineSpeed", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["LimitNominal"]);
+    expect(primaryName()).toBe("EngineSpeed");
+  });
+
+  it("range-selects from the anchor on shift-click, leaving the primary alone", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    clickRow("EngineTemp");
+    clickRow("LimitNominal", { shiftKey: true });
+    expect(selectedNames()).toEqual(["EngineTemp", "LimitNominal"]);
+    expect(primaryName()).toBe("EngineTemp");
+
+    // The anchor stays on the first click's row, so the next range runs
+    // the other way from the same point.
+    clickRow("EngineSpeed", { shiftKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "EngineTemp"]);
+    expect(primaryName()).toBe("EngineTemp");
+  });
+
+  it("ranges across a per-unit area's derived axes, in the area's own order", async () => {
+    // One logical area, four signals, three units → three PlotArea
+    // instances, each holding a slice of the area's rows (ADR 0026). A
+    // range is over the *area's* order, not any one axis's.
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal", "LimitEffective"]);
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    expect(document.querySelectorAll(".plot-area").length).toBe(3);
+
+    clickRow("EngineSpeed");
+    clickRow("LimitNominal", { shiftKey: true });
+    // EngineTemp sits on a third axis between them and is swept in.
+    expect(selectedNames()).toEqual(["EngineSpeed", "EngineTemp", "LimitNominal"]);
+    // …and the row past the range's end is not.
+    expect(row("LimitEffective").classList.contains("selected")).toBe(false);
+  });
+
+  it("never spans two areas — a click in another area clears the first", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp"]);
+    clickRow("EngineSpeed");
+    clickRow("EngineTemp", { ctrlKey: true });
+    expect(selectedNames()).toEqual(["EngineSpeed", "EngineTemp"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    await act(async () => dropSignal("Area 2", "LimitNominal", "A"));
+    // Ctrl-click, so nothing but the selection can move: it still lands
+    // wholly in area 2.
+    clickRow("LimitNominal", { ctrlKey: true }, "Area 2");
+    expect(selectedNames()).toEqual(["LimitNominal"]);
+    expect(row("EngineSpeed", "Area 1").classList.contains("selected")).toBe(false);
+  });
+
+  it("leaves the selection alone when the swatch toggles hidden", async () => {
+    renderPanel();
+    await addToFocused(["EngineSpeed", "EngineTemp"]);
+    clickRow("EngineSpeed");
+    expect(selectedNames()).toEqual(["EngineSpeed"]);
+    // The swatch's own handler stops the row click, so hide/show is not
+    // a selection gesture.
+    fireEvent.click(row("EngineTemp").querySelector(".plot-signal-swatch")!);
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
+    expect(selectedNames()).toEqual(["EngineSpeed"]);
+    expect(primaryName()).toBe("EngineSpeed");
+  });
+
+  it("draws the selected series bold, without rebuilding the chart", async () => {
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await addToFocused(["EngineSpeed", "EngineTemp"]);
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const inst = liveInstanceIn("Area 1");
+      // series[0] is x; the signal series follow in order.
+      const widths = () => inst.series.slice(1).map((s) => s.width);
+      expect(widths()).toEqual([1, 1]);
+
+      const redraws = inst.redraws;
+      await act(async () => {
+        clickRow("EngineTemp", { ctrlKey: true });
+      });
+      expect(widths()).toEqual([1, 2]);
+      // The same instance, restyled and redrawn — a rebuild would cost a
+      // cold whole-window refetch on every selection click.
+      expect(liveInstanceIn("Area 1")).toBe(inst);
+      expect(inst.redraws).toBeGreaterThan(redraws);
+
+      // Deselecting puts the line back.
+      await act(async () => {
+        clickRow("EngineTemp", { ctrlKey: true });
+      });
+      expect(widths()).toEqual([1, 1]);
+      expect(liveInstanceIn("Area 1")).toBe(inst);
+    });
+  });
+
+  it("keeps the selection bold across a rebuild of the chart", async () => {
+    // A signal-set change does rebuild the instance; the fresh one has
+    // to open with the widths the standing selection implies, or the
+    // bolding silently drops off the moment a signal is added.
+    await withSizedCanvas(async () => {
+      renderPanel();
+      await addToFocused(["EngineSpeed", "EngineTemp"]);
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const before = liveInstanceIn("Area 1");
+      await act(async () => {
+        clickRow("EngineSpeed", { ctrlKey: true });
+      });
+
+      await addToFocused(["LimitNominal"]);
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      const after = liveInstanceIn("Area 1");
+      expect(after).not.toBe(before);
+      expect(after.series.slice(1).map((s) => s.width)).toEqual([2, 1, 1]);
+    });
+  });
+
+  it("re-renders no plot area that holds none of the affected rows", async () => {
+    // The selection reaches each `PlotArea` as an area-scoped slice, so
+    // a click that changes it must not invalidate the memo on areas that
+    // hold neither the rows leaving the selection nor the ones joining
+    // it. Ctrl-clicks throughout: a plain click also moves the primary,
+    // which rewrites the areas list and legitimately re-renders the
+    // stack.
+    await withSizedCanvas(async () => {
+      // Three areas seeded from a saved config, so they all mount
+      // together and no area's own settling (first-sample wait, the
+      // post-mount uPlot rebuild) can land mid-measurement. A *stopped*
+      // panel, so no self-paced resample can either.
+      const sig = (signalName: string, unit: string) => ({
+        busId: null,
+        messageId: 256,
+        extended: false,
+        signalName,
+        messageName: "EngineData",
+        unit,
+        color: "#4ecbff",
+      });
+      const registry = makeRegistry({
+        id: "el-sel-memo",
+        config: {
+          areas: [
+            { id: "a1", signals: [sig("EngineSpeed", "rpm"), sig("EngineTemp", "degC")] },
+            { id: "a2", signals: [sig("LimitNominal", "A")] },
+            { id: "a3", signals: [sig("LimitEffective", "A")] },
+          ],
+        },
+        trace: { start: 0, end: 60, isPaused: false },
+      });
+      renderPanel({ params: { elementId: "el-sel-memo" }, registry });
+      const counter = (k: string) => diagCounts().get(k) ?? 0;
+      // Everything the mount kicks off asynchronously — the value-table
+      // fetch, the first-sample wait, the settings hydration a previous
+      // test's teardown left in flight — re-renders the stack when it
+      // lands. Flush until a flush costs nothing, so the counts below
+      // measure the click and only the click.
+      for (let i = 0; i < 20; i++) {
+        const settled = counter("render.PlotArea");
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 60));
+        });
+        if (counter("render.PlotArea") === settled) break;
+      }
+
+      await act(async () => {
+        clickRow("EngineSpeed", { ctrlKey: true }, "Area 1");
+      });
+      // Extending the selection inside area 1: only area 1 re-renders.
+      let before = counter("render.PlotArea");
+      await act(async () => {
+        clickRow("EngineTemp", { ctrlKey: true }, "Area 1");
+      });
+      expect(selectedNames()).toEqual(["EngineSpeed", "EngineTemp"]);
+      expect(counter("render.PlotArea") - before).toBe(1);
+
+      // Moving the selection to area 2: areas 1 and 2 re-render (one
+      // loses its highlight, the other gains one) and area 3 does not.
+      before = counter("render.PlotArea");
+      await act(async () => {
+        clickRow("LimitNominal", { ctrlKey: true }, "Area 2");
+      });
+      expect(selectedNames()).toEqual(["LimitNominal"]);
+      expect(counter("render.PlotArea") - before).toBe(2);
+    });
   });
 });
 

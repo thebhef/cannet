@@ -2803,6 +2803,14 @@ button.trace-event-swatch {
   background: var(--surface-row-primary);
   box-shadow: inset 2px 0 0 var(--accent-marker);
 }
+/* A selected signal row — the app's shared selected-row wash. Selection
+ * and primary are independent (a plain click sets both; a ctrl/shift
+ * click only selects), so the selected wash is listed after `.primary`
+ * and wins on a row that is both: what the user just built is the more
+ * useful thing to see, and the primary keeps its own inset marker. */
+.plot-signal-row.selected {
+  background: var(--surface-row-selected);
+}
 
 /* The swatch doubles as the show/hide toggle. Pinned to the top row
  * (aligns with the signal name) so it doesn't drift down on rows that

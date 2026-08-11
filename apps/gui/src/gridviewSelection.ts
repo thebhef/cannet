@@ -6,6 +6,11 @@
 /// *adds* that same range, Ctrl/Cmd+A takes everything selectable.
 /// There is no keyboard multiselect. Both the set and the anchor are
 /// ephemeral — never persisted.
+///
+/// [`selectOnClick`] is written against an ordered list of ids rather
+/// than the row space, so it is the click reducer for any mouse-built
+/// selection, gridview or not — the plot panel's per-area signal
+/// selection (`plotAreaSelection.ts`) is the other caller.
 
 import type { GridviewRow, GridviewRowSpace } from "./gridviewRows";
 

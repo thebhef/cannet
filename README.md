@@ -633,7 +633,8 @@ resample at the end.
   share one y scale (the union of their observed ranges) and each
   unit group auto-scales independently to fill the axis; the y-tick
   labels always show the primary signal's real engineering values
-  (click a series row to promote it). Switching modes re-stacks the
+  (click a series row to select it and promote it). Switching modes
+  re-stacks the
   area's canvases; the side panel for each derived axis lists only
   the signals it draws. The area-level chrome (filter editor,
   y-axis-mode selector itself, remove ×) appears only on the top
@@ -680,6 +681,21 @@ resample at the end.
   doesn't recolor it. The shared x-axis spans 0 to the longest plotted
   signal across the panel's areas, so a signal added late still shows
   over the existing span.
+- **Selecting signal rows.** A **plain click** on a signal row selects
+  that row *and* promotes it to the area's primary (the signal whose
+  units label the y axis) — the long-standing promote gesture, now with
+  a highlight. **Ctrl/⌘-click** adds or removes a row from the
+  selection and **shift-click** takes the range from the last row
+  clicked; neither of those moves the primary. A selected signal's line
+  is drawn **bold** in the plot, so the selection reads on the canvas
+  and not only in the side panel. A selection belongs to
+  **one plot area**: clicking a row in another area starts that area's
+  selection and clears the first, and a shift-range runs over the whole
+  area's signal list — in `per-unit` / `individual` mode that means
+  across every axis the mode splits the area into. The selection is
+  view state; it is not saved with the project. The swatch's hide/show
+  click and its right-click color picker are not selection gestures and
+  leave the selection where it is.
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives
