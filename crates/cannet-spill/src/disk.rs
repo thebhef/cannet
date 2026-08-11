@@ -34,6 +34,11 @@
 //! `O(segments)` with no capture rebuild scan. The un-flushed RAM-ring
 //! tail is not in the manifest: a crash loses only frames appended since
 //! the last flush.
+//!
+//! Those `O(segments)` mappings are the whole cost of a restore, and each
+//! one is latency- rather than CPU-bound, so they are taken in parallel
+//! ([`crate::seg::open_segments`]); [`DiskRawStore::reopen_timed`] reports
+//! what each phase spent and how many files it mapped.
 
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -43,7 +48,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::byid::{ByIdIndex, BYID_PREFIX};
 use crate::record::{rebuild_payload, split_payload, MetaRecord, BUS_NONE, RECORD_SIZE};
-use crate::seg::{open_segment, remove_files_with_prefixes, Segment};
+use crate::seg::{open_segments, remove_files_with_prefixes, Segment};
 use crate::seg_chain::{evict_leading, grow_fixed};
 use crate::{RawStore, RawTraceFrame};
 
@@ -113,6 +118,11 @@ const META_PREFIX: &str = "meta.";
 /// File-name prefix for a raw payload segment.
 const PAYLOAD_PREFIX: &str = "payload.";
 
+/// Wall-clock milliseconds elapsed since `t`, for the reopen breakdown.
+fn ms_since(t: std::time::Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
+}
+
 fn meta_seg_path(dir: &Path, i: usize) -> PathBuf {
     dir.join(format!("{META_PREFIX}{i:06}"))
 }
@@ -128,6 +138,42 @@ fn payload_seg_path(dir: &Path, i: usize) -> PathBuf {
 #[must_use]
 pub fn is_raw_frame_segment(name: &str) -> bool {
     name.starts_with(META_PREFIX) || name.starts_with(PAYLOAD_PREFIX)
+}
+
+/// What one [`DiskRawStore::reopen_timed`] cost, split by phase, with the
+/// file counts that make the durations interpretable (ADR 0002 DS-7).
+///
+/// Reopen is `O(segments)`, so a duration only means something beside the
+/// number of segment files that phase mapped: 40 ms is fast for 2000 files
+/// and slow for two. Durations are wall-clock milliseconds.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ReopenStats {
+    /// Reading and parsing `manifest.json`.
+    pub manifest_ms: f64,
+    /// Distinct ids in the by-id directory — one posting chain each.
+    pub byid_ids: usize,
+    /// By-id posting segment files mapped.
+    pub byid_files: usize,
+    pub byid_ms: f64,
+    /// Metadata segment files mapped.
+    pub meta_files: usize,
+    pub meta_ms: f64,
+    /// Payload segment files mapped.
+    pub payload_files: usize,
+    pub payload_ms: f64,
+    /// Frames read back from the mappings to refill the RAM ring.
+    pub ring_frames: usize,
+    pub ring_ms: f64,
+    /// The whole reopen, end to end.
+    pub total_ms: f64,
+}
+
+impl ReopenStats {
+    /// Every segment file this reopen mapped, across all three families.
+    #[must_use]
+    pub fn total_files(&self) -> usize {
+        self.meta_files + self.payload_files + self.byid_files
+    }
 }
 
 /// Disk-backed [`RawStore`]. See the module docs.
@@ -252,13 +298,27 @@ impl DiskRawStore {
     /// un-flushed RAM-ring tail (DS-2) is not part of the manifest, so a
     /// crash loses only the frames appended since that flush.
     pub fn reopen(dir: impl AsRef<Path>) -> io::Result<Option<Self>> {
+        Ok(Self::reopen_timed(dir)?.map(|(store, _)| store))
+    }
+
+    /// [`Self::reopen`] with a per-phase cost breakdown ([`ReopenStats`]).
+    ///
+    /// The restore path is the one place a launch pays `O(segments)` before
+    /// the user sees anything, so it reports what it spent and on how many
+    /// files; the host logs the breakdown on every restore. Everything else
+    /// calls [`Self::reopen`] and ignores it.
+    pub fn reopen_timed(dir: impl AsRef<Path>) -> io::Result<Option<(Self, ReopenStats)>> {
+        let started = std::time::Instant::now();
+        let mut stats = ReopenStats::default();
         let dir = dir.as_ref().to_path_buf();
         let manifest_path = dir.join(MANIFEST_NAME);
         if !manifest_path.exists() {
             return Ok(None);
         }
+        let phase = std::time::Instant::now();
         let manifest: Manifest = serde_json::from_slice(&std::fs::read(&manifest_path)?)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        stats.manifest_ms = ms_since(phase);
         let len = usize::try_from(manifest.len).unwrap_or(usize::MAX);
         let cfg = manifest.cfg;
         let first_index = usize::try_from(manifest.first_index).unwrap_or(0);
@@ -269,8 +329,13 @@ impl DiskRawStore {
         // A meta segment is dropped (DS-8) iff it falls entirely below the
         // mark; the first surviving segment is the one holding `first_index`.
         let meta_seg_base = first_index / cfg.records_per_seg;
+        let phase = std::time::Instant::now();
+        let by_id = ByIdIndex::reopen(&dir, &manifest.byid)?;
+        stats.byid_ms = ms_since(phase);
+        stats.byid_files = by_id.segment_count();
+        stats.byid_ids = by_id.id_count();
         let mut store = Self {
-            by_id: ByIdIndex::reopen(&dir, &manifest.byid)?,
+            by_id,
             dir,
             cfg,
             len,
@@ -290,10 +355,13 @@ impl DiskRawStore {
         // Map the surviving metadata segments — from the dropped base up to
         // the count the watermark implies.
         let meta_segs_count = len.div_ceil(cfg.records_per_seg);
-        for i in meta_seg_base..meta_segs_count {
-            let path = meta_seg_path(&store.dir, i);
-            store.meta_segs.push(open_segment(&path)?);
-        }
+        let phase = std::time::Instant::now();
+        let meta_paths: Vec<PathBuf> = (meta_seg_base..meta_segs_count)
+            .map(|i| meta_seg_path(&store.dir, i))
+            .collect();
+        store.meta_segs = open_segments(&meta_paths)?;
+        stats.meta_ms = ms_since(phase);
+        stats.meta_files = store.meta_segs.len();
         // The lowest live payload byte is the first live row's payload
         // offset; payload segments wholly below it were dropped, so map from
         // there. (Reading the first live meta record needs the meta segments
@@ -311,20 +379,26 @@ impl DiskRawStore {
                 .unwrap_or(usize::MAX)
                 + 1
         };
-        for i in store.payload_seg_base..payload_segs_count {
-            let path = payload_seg_path(&store.dir, i);
-            store.payload_segs.push(open_segment(&path)?);
-        }
+        let phase = std::time::Instant::now();
+        let payload_paths: Vec<PathBuf> = (store.payload_seg_base..payload_segs_count)
+            .map(|i| payload_seg_path(&store.dir, i))
+            .collect();
+        store.payload_segs = open_segments(&payload_paths)?;
+        stats.payload_ms = ms_since(phase);
+        stats.payload_files = store.payload_segs.len();
         // Refill the RAM ring from the durable tail so a follow-live read
         // behaves the same as it would on a never-exited store. Collect
         // from the mappings *first* (with the ring still empty, so every
         // `read_frame` resolves to a mapping), then install — pushing as we
         // read would move `ring_start` down and make later reads hit the
         // half-filled ring.
+        let phase = std::time::Instant::now();
         let ring_from = len.saturating_sub(cfg.ring_capacity);
         let tail: Vec<RawTraceFrame> = (ring_from..len)
             .filter_map(|i| store.read_frame(i))
             .collect();
+        stats.ring_ms = ms_since(phase);
+        stats.ring_frames = tail.len();
         // Seed the running max from that same tail. It isn't persisted in
         // the manifest, and the newest timestamp is not necessarily the
         // last row (see `RawStore::max_ts`) — but the ring is orders of
@@ -336,7 +410,8 @@ impl DiskRawStore {
         // need only sync what is appended after this point.
         store.flushed_meta_bytes = store.len as u64 * RECORD_SIZE as u64;
         store.flushed_payload_bytes = store.payload_cursor;
-        Ok(Some(store))
+        stats.total_ms = ms_since(started);
+        Ok(Some((store, stats)))
     }
 
     /// Serialize the current watermarks and directory to the manifest.
@@ -874,6 +949,45 @@ mod tests {
             payload_seg_bytes: 64,
             ring_capacity: 3,
         }
+    }
+
+    #[test]
+    fn reopen_timed_counts_every_segment_it_maps() {
+        // The reopen breakdown is only interpretable next to how much work
+        // each phase did, so the counts have to match the files actually
+        // mapped — not the manifest's idea of them.
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap(); // rps = 4
+            for i in 0u32..20 {
+                // Two ids, so the by-id index has two posting chains.
+                s.append(frame(u64::from(i) * 10, i % 2));
+            }
+            s.flush().unwrap();
+        }
+        let count_prefixed = |p: &str| {
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|e| e.file_name().to_string_lossy().starts_with(p))
+                .count()
+        };
+        let (s, stats) = DiskRawStore::reopen_timed(dir.path())
+            .unwrap()
+            .expect("manifest present");
+        assert_eq!(s.len(), 20);
+        assert_eq!(stats.meta_files, count_prefixed("meta."));
+        assert_eq!(stats.payload_files, count_prefixed("payload."));
+        assert_eq!(stats.byid_files, count_prefixed("byid."));
+        assert_eq!(stats.byid_ids, 2, "one posting chain per distinct id");
+        assert_eq!(
+            stats.ring_frames, 3,
+            "the ring refill reads back `ring_capacity` frames"
+        );
+        assert_eq!(
+            stats.total_files(),
+            stats.meta_files + stats.payload_files + stats.byid_files
+        );
     }
 
     #[test]

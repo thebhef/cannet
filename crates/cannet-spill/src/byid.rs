@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::seg::{open_segment, Segment};
+use crate::seg::{open_segments, Segment};
 use crate::seg_chain::{
     evict_leading, geometric_locate, geometric_push_grow, geometric_seg_capacity, lower_bound,
 };
@@ -145,7 +145,14 @@ impl ByIdIndex {
         entries: &[(u32, bool, u64, u64)],
     ) -> std::io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
-        let mut map = HashMap::new();
+        // Plan every id's chain first — the geometry is pure arithmetic —
+        // then map the whole directory's segment files in one parallel
+        // pass. Mapping is the expensive half by three orders of magnitude
+        // (see [`open_segments`]), and pooling the paths across ids is what
+        // keeps a capture with few, deep chains as parallel as one with
+        // many shallow ones.
+        let mut plans: Vec<((u32, bool), IdPostings)> = Vec::with_capacity(entries.len());
+        let mut paths: Vec<PathBuf> = Vec::new();
         for &(id, extended, len, first_slot) in entries {
             let len = usize::try_from(len).unwrap_or(usize::MAX);
             let first_slot = usize::try_from(first_slot).unwrap_or(0);
@@ -161,19 +168,35 @@ impl ByIdIndex {
             // `first_slot` is a segment boundary; the segments below it were
             // dropped on eviction (DS-8), so map only those at/above it.
             let seg_base = post.cum_cap.partition_point(|&c| c <= first_slot);
-            for i in seg_base..post.cum_cap.len() {
-                post.segs
-                    .push(open_segment(&seg_path(&dir, id, extended, i))?);
-            }
+            paths.extend((seg_base..post.cum_cap.len()).map(|i| seg_path(&dir, id, extended, i)));
             post.len = len;
             post.first_slot = first_slot;
             post.seg_base = seg_base;
             // Reopened bytes are durable; the next flush syncs only what
             // is appended after this point.
             post.flushed_len = len;
-            map.insert((id, extended), post);
+            plans.push(((id, extended), post));
+        }
+        let mut segs = open_segments(&paths)?.into_iter();
+        let mut map = HashMap::with_capacity(plans.len());
+        for (key, mut post) in plans {
+            let want = post.cum_cap.len() - post.seg_base;
+            post.segs.extend(segs.by_ref().take(want));
+            map.insert(key, post);
         }
         Ok(Self { dir, map })
+    }
+
+    /// Total posting segment files currently mapped, across every id —
+    /// the "how much work did it do" companion to the reopen timing
+    /// breakdown (ADR 0002 DS-7).
+    pub(crate) fn segment_count(&self) -> usize {
+        self.map.values().map(|p| p.segs.len()).sum()
+    }
+
+    /// Distinct ids with a posting chain.
+    pub(crate) fn id_count(&self) -> usize {
+        self.map.len()
     }
 
     /// The persisted directory: one `(id, extended, len, first_slot)` per

@@ -8,7 +8,7 @@
 
 use std::fs::OpenOptions;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use memmap2::MmapMut;
 
@@ -94,6 +94,54 @@ impl Segment {
     }
 }
 
+/// Threads used by [`open_segments`].
+///
+/// Mapping an existing segment is *latency*-bound, not CPU-bound: on
+/// Windows the first open of a just-written file goes through the
+/// filesystem filter stack (real-time antivirus scans it) and costs
+/// ~14 ms of pure waiting, against ~0.1 ms once scanned — measured
+/// 2026-08-08 on the restore path, where it was 99% of a 10 s launch.
+/// So the useful width is set by how many opens can be in flight, not by
+/// the core count: 16-way on a 32-core box turned 14.3 ms/file into
+/// 1.08 ms/file (13x) in that measurement, which is why this is a
+/// constant rather than `available_parallelism`.
+const OPEN_SEGMENTS_THREADS: usize = 16;
+
+/// Map each of `paths` with [`open_segment`], in parallel, returning the
+/// mappings **in the order the paths were given** — the reopen path
+/// (ADR 0002 DS-7), whose cost is one such open per segment file.
+///
+/// Every path is independent work with no shared state, so the whole
+/// parallel part is: cut the list into contiguous chunks, map each chunk
+/// on its own thread, concatenate. The first failing chunk's error is
+/// returned and the rest of the mappings are dropped, exactly as the
+/// serial loop would.
+pub(crate) fn open_segments(paths: &[PathBuf]) -> io::Result<Vec<Segment>> {
+    if paths.len() < 2 {
+        return paths.iter().map(|p| open_segment(p)).collect();
+    }
+    let threads = OPEN_SEGMENTS_THREADS.min(paths.len());
+    let chunk = paths.len().div_ceil(threads);
+    let chunks: Vec<io::Result<Vec<Segment>>> = std::thread::scope(|s| {
+        let handles: Vec<_> = paths
+            .chunks(chunk)
+            .map(|slice| s.spawn(move || slice.iter().map(|p| open_segment(p)).collect()))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| panic!("segment mapping thread panicked"))
+            })
+            .collect()
+    });
+    let mut out = Vec::with_capacity(paths.len());
+    for c in chunks {
+        out.extend(c?);
+    }
+    Ok(out)
+}
+
 /// Remove every file in `dir` whose name starts with one of `prefixes`,
 /// after the caller has dropped the mappings (so Windows allows removal).
 pub(crate) fn remove_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> io::Result<()> {
@@ -106,4 +154,36 @@ pub(crate) fn remove_files_with_prefixes(dir: &Path, prefixes: &[&str]) -> io::R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn open_segments_preserves_order_and_surfaces_a_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let paths: Vec<PathBuf> = (0..40u8)
+            .map(|i| {
+                let p = dir.path().join(format!("seg.{i:03}"));
+                // One byte per file identifying it, so a shuffled result
+                // would be visible.
+                create_segment(&p, 8).unwrap().map[0] = i;
+                p
+            })
+            .collect();
+        let segs = open_segments(&paths).expect("all present");
+        assert_eq!(segs.len(), paths.len());
+        for (i, s) in segs.iter().enumerate() {
+            let want = u8::try_from(i).unwrap();
+            assert_eq!(s.map[0], want, "segment {i} came back out of order");
+        }
+        let mut missing = paths.clone();
+        missing.push(dir.path().join("seg.absent"));
+        assert!(
+            open_segments(&missing).is_err(),
+            "a path that cannot be mapped fails the whole call"
+        );
+    }
 }

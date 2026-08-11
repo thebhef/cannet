@@ -19,7 +19,7 @@ use crate::app_state::AppState;
 use crate::ipc::{LogFinished, OpenLogResult};
 use crate::notes::{self, Note};
 use crate::trace_store;
-use crate::{sys_error, sys_info, sys_warn};
+use crate::{sys_debug, sys_error, sys_info, sys_warn};
 // `run_pump` / `panic_message` live in `session` once it is split out;
 // they resolve at the crate root until then.
 use crate::session::{panic_message, run_pump};
@@ -533,27 +533,42 @@ pub(crate) fn restore_scratch_capture(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> RestoredCapture {
+    let started = std::time::Instant::now();
     let active = *state.active_project_id();
-    if !active.is_some_and(|pid| state.trace_store.try_reload(pid)) {
+    let Some(breakdown) = active.and_then(|pid| state.trace_store.try_reload(pid)) else {
         return RestoredCapture {
             count: 0,
             first_index: 0,
             first_index_ts_ns: None,
             session_start_seconds: 0.0,
         };
-    }
+    };
     let (count, first_index_usize, first_index_ts_ns) = state.trace_store.len_and_low_water();
     let first_index = first_index_usize as u64;
     let session_start_ns = state.trace_store.session_start_ns();
     // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the
     // scratch's own copy, independent of any BLF round-trip.
+    let notes_at = std::time::Instant::now();
     if let Some(restored) = state.notes.restore() {
         let _ = app.emit("notes-changed", restored);
     }
+    let notes_ms = notes_at.elapsed().as_secs_f64() * 1000.0;
+    // What a large-cache launch actually waited for, in the log every
+    // launch already writes. The total goes on the line the user sees so a
+    // slow restore is self-evident; the phase split and its file counts sit
+    // behind it at debug, next to the command's own wall clock — which
+    // together say whether a slow launch was spent restoring or waiting to
+    // be asked to (ADR 0002 DS-7).
+    let total_ms = started.elapsed().as_secs_f64() * 1000.0;
     sys_info!(
         &app,
         "project",
-        "restored {count} frames from prior capture"
+        "restored {count} frames from prior capture in {total_ms:.0} ms"
+    );
+    sys_debug!(
+        &app,
+        "project",
+        "restore: {breakdown} notes {notes_ms:.0} command {total_ms:.0}"
     );
     #[allow(clippy::cast_precision_loss)]
     RestoredCapture {

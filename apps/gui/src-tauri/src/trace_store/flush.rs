@@ -391,24 +391,39 @@ impl TraceStore {
     /// the scratch's recorded identity matches `project_id` (ADR 0002
     /// DS-7). On a match with a reopenable store, this swaps in the
     /// disk-spill store, restores the derived state and session-start
-    /// anchor, and returns `true`; otherwise it leaves the store untouched
-    /// (the scratch stays on disk, neither loaded nor wiped) and returns
-    /// `false`. The reloaded trace's per-id rates read zero — it isn't
-    /// live.
-    pub fn try_reload(&self, project_id: Uuid) -> bool {
+    /// anchor, and returns the reload's per-phase cost breakdown ready to
+    /// log; otherwise it leaves the store untouched (the scratch stays on
+    /// disk, neither loaded nor wiped) and returns `None`. The reloaded
+    /// trace's per-id rates read zero — it isn't live.
+    ///
+    /// The breakdown is a deliverable, not scaffolding: reloading is the
+    /// one place a launch pays `O(segments)` before the user sees anything
+    /// (ADR 0002 DS-7), and its phases have wildly different costs
+    /// depending on how many segment files the capture spans, so every
+    /// restore says where its time went and on how many files.
+    pub fn try_reload(&self, project_id: Uuid) -> Option<String> {
+        let started = Instant::now();
         let mut inner = self.lock_inner();
-        let Some(dir) = inner.scratch_dir.clone() else {
-            return false;
-        };
+        let dir = inner.scratch_dir.clone()?;
+        let identity_at = Instant::now();
         let matches = read_json::<ScratchIdentity>(&dir.join(IDENTITY_FILE))
             .is_some_and(|id| id.project_id == project_id);
         if !matches {
-            return false;
+            return None;
         }
-        let Ok(Some(reopened)) = DiskRawStore::reopen(&dir) else {
-            return false;
+        let identity_ms = ms_since(identity_at);
+        let Ok(Some((reopened, reopen))) = DiskRawStore::reopen_timed(&dir) else {
+            return None;
         };
         inner.raw = Box::new(reopened);
+        // The mux index describes frames that went through the extractor on
+        // append; none of the reloaded ones did. Re-root its coverage at the
+        // new tip — same promise `set_mux_extractor` makes — so queries over
+        // the restored history take the bounded backward scan instead of
+        // reading an empty map as proof that no group ever matched.
+        inner.latest_mux = HashMap::new();
+        inner.mux_rates = HashMap::new();
+        inner.mux_index_from = inner.raw.len();
         // Restore the derived state the by-id view and filter resolution
         // read. Rates are left with only their count (a reloaded trace is
         // stopped, so every rate reads zero); the newest-index and frame are
@@ -416,7 +431,10 @@ impl TraceStore {
         inner.per_key = HashMap::new();
         inner.key_generation = inner.key_generation.wrapping_add(1);
         inner.session_start_ns = 0;
+        let derived_at = Instant::now();
+        let mut derived_entries = 0usize;
         if let Some(derived) = read_json::<DerivedState>(&dir.join(DERIVED_FILE)) {
+            derived_entries = derived.entries.len();
             inner.session_start_ns = derived.session_start_ns;
             let now = Instant::now();
             for e in derived.entries {
@@ -442,8 +460,32 @@ impl TraceStore {
                 );
             }
         }
-        true
+        // Durations only read as fast or slow beside the file counts, so
+        // each phase carries how much work it did.
+        Some(format!(
+            "reload {total:.0} ms: identity {identity_ms:.0} manifest {manifest:.0} \
+             byid {byid:.0} ({byid_files} files, {byid_ids} ids) \
+             meta {meta:.0} ({meta_files} files) payload {payload:.0} ({payload_files} files) \
+             ring {ring:.0} ({ring_frames} frames) derived {derived:.0} ({derived_entries} keys)",
+            total = ms_since(started),
+            manifest = reopen.manifest_ms,
+            byid = reopen.byid_ms,
+            byid_files = reopen.byid_files,
+            byid_ids = reopen.byid_ids,
+            meta = reopen.meta_ms,
+            meta_files = reopen.meta_files,
+            payload = reopen.payload_ms,
+            payload_files = reopen.payload_files,
+            ring = reopen.ring_ms,
+            ring_frames = reopen.ring_frames,
+            derived = ms_since(derived_at),
+        ))
     }
+}
+
+/// Wall-clock milliseconds elapsed since `t`, for the restore breakdown.
+fn ms_since(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
 }
 
 impl Inner {
@@ -733,7 +775,7 @@ mod tests {
             assert!(store.slice(0, 1).is_empty(), "evicted before reopen");
         }
         let booted = TraceStore::new_disk(&dir).unwrap();
-        assert!(booted.try_reload(pid), "matching project reloads");
+        assert!(booted.try_reload(pid).is_some(), "matching project reloads");
         let rare = booted
             .latest_since(0)
             .into_iter()
@@ -989,11 +1031,11 @@ mod tests {
         let booted = TraceStore::new_disk(&dir).unwrap();
         assert_eq!(booted.len(), 0);
         // Mismatched project: nothing loads, the scratch is left intact.
-        assert!(!booted.try_reload(uuid::Uuid::new_v4()));
+        assert!(booted.try_reload(uuid::Uuid::new_v4()).is_none());
         assert_eq!(booted.len(), 0);
         // Matching project: reloads as a stopped trace with derived state
         // and the session-start anchor restored.
-        assert!(booted.try_reload(pid));
+        assert!(booted.try_reload(pid).is_some());
         assert_eq!(booted.len(), 3);
         assert_eq!(booted.session_start_ns(), 1_000);
         // Multi-bus same-id stays faithful (fork P persists the full key):
@@ -1012,6 +1054,50 @@ mod tests {
     }
 
     #[test]
+    fn try_reload_leaves_no_false_mux_coverage_over_the_restored_history() {
+        // `mux_index_from` promises "every frame at or above me passed
+        // through the current extractor". A reload swaps in frames that
+        // never did, so the promise has to be re-made at the new tip —
+        // otherwise a launch (where the DBC set installs its extractor over
+        // an *empty* store, leaving the mark at 0) claims coverage of the
+        // whole restored history and every mux group reads blank.
+        let dir = std::env::temp_dir().join(format!("cannet-muxreload-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        let muxed = |ts: u64, sel: u8| RawTraceFrame {
+            payload: CanFramePayload::Classic(vec![sel]),
+            ..dummy(ts, 0x10)
+        };
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            store.write_scratch_identity(Some(pid));
+            store.append(muxed(1_000, 0));
+            store.append(muxed(2_000, 1));
+            store.append(muxed(3_000, 0));
+            store.flush().unwrap();
+        }
+        let booted = TraceStore::new_disk(&dir).unwrap();
+        // The open path's order: the DBC set installs the extractor while
+        // the store is still empty, then the capture is restored.
+        booted.set_mux_extractor(Some(std::sync::Arc::new(|f: &RawTraceFrame| {
+            f.payload.data().first().copied().map(u64::from)
+        })));
+        assert!(booted.try_reload(pid).is_some());
+        let got = booted.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, usize::MAX);
+        assert_eq!(
+            got.get(&0).map(|(i, f)| (*i, f.timestamp_ns)),
+            Some((2, 3_000)),
+            "group 0's latest restored frame"
+        );
+        assert_eq!(
+            got.get(&1).map(|(i, f)| (*i, f.timestamp_ns)),
+            Some((1, 2_000)),
+            "group 1's latest restored frame"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn start_session_wipes_the_scratch_so_a_later_reload_misses() {
         let dir = std::env::temp_dir().join(format!("cannet-wipe-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1025,12 +1111,15 @@ mod tests {
         {
             // A Clear / new-capture reset wipes the scratch identity.
             let store = TraceStore::new_disk(&dir).unwrap();
-            assert!(store.try_reload(pid));
+            assert!(store.try_reload(pid).is_some());
             store.start_session(0);
             store.flush().unwrap();
         }
         let booted = TraceStore::new_disk(&dir).unwrap();
-        assert!(!booted.try_reload(pid), "wiped identity must not reload");
+        assert!(
+            booted.try_reload(pid).is_none(),
+            "wiped identity must not reload"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
