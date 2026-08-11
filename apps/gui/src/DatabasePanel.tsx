@@ -63,7 +63,10 @@ import { Icon } from "./Icon";
  * The host owns the DBC set; the panel is a pure viewer over
  * [`list_dbc_content`]. The tree is organised
  * bus → DBC → ECU → message → signal (the ECU level mirrors the RBS
- * panel's per-transmitter grouping). Search runs against an
+ * panel's per-transmitter grouping). A **multiplexed** message gains
+ * one more level — its arms (see {@link groupByMux}) — so the signals
+ * that ride each selector read as a group and drag as one. Search runs
+ * against an
  * [`fzf`](https://github.com/ajitid/fzf-for-js)-backed matcher; while
  * a filter is active only matches, the paths to them, and expanded
  * children of matches render — everything else is removed, so a
@@ -177,6 +180,18 @@ function signalNodeId(
 ): string {
   return `sig:${busId}::${key}::${extended ? "x" : "s"}${messageId}::${signalName}`;
 }
+/// One mux arm of a multiplexed message. Keyed by the raw selector,
+/// not the `VAL_` label — renaming the label in the DBC must not drop
+/// the user's expand state for that arm.
+function muxNodeId(
+  busId: string,
+  key: string,
+  messageId: number,
+  extended: boolean,
+  selector: number,
+): string {
+  return `mux:${busId}::${key}::${extended ? "x" : "s"}${messageId}::${selector}`;
+}
 
 /// Stable identity for one source file's file-backed branch, built the
 /// same way [`dbcKey`] is and for the same reason: node ids are
@@ -254,6 +269,76 @@ function groupByEcu(messages: readonly DbcMessageContentRecord[]): EcuGroup[] {
   });
 }
 
+/// One mux arm of a multiplexed message — the signals that ride the
+/// frame only when the multiplexor carries `selector`. `label` is the
+/// multiplexor's `VAL_` description for that selector, or `null` when
+/// the DBC names none.
+export interface MuxArm {
+  selector: number;
+  label: string | null;
+  signals: DbcSignalContentRecord[];
+}
+
+/// A message's signals split into the always-present ones and the
+/// per-arm ones.
+export interface MuxGrouping {
+  /// The multiplexor plus every `plain` signal, in declared order —
+  /// present on every frame regardless of the selector, so they render
+  /// directly under the message with no arm level.
+  common: DbcSignalContentRecord[];
+  /// One entry per selector, ascending. Signals within an arm keep
+  /// their `SG_` declared order.
+  arms: MuxArm[];
+}
+
+/// Split a message's signals per mux arm, or `null` when the message
+/// doesn't multiplex (no arms to group — the tree keeps its flat
+/// message → signal shape).
+///
+/// A DBC declares a signal's arm as a bare selector number; the human
+/// name for that arm lives in the multiplexor's own `VAL_` table
+/// (e.g. `EventType` 3 = "CellVoltageStatus"), which is why the
+/// grouping resolves labels here rather than leaving them to the
+/// renderer. An arm with no `VAL_` entry — or a message whose
+/// multiplexor is missing entirely — still groups, just unnamed.
+///
+/// Extended mux (`m<N>M`) buckets by its single selector: the
+/// frontend's mux record carries no nested-range representation, and
+/// the message's `usesExtendedMux` flag surfaces that caveat.
+export function groupByMux(message: DbcMessageContentRecord): MuxGrouping | null {
+  const bySelector = new Map<number, DbcSignalContentRecord[]>();
+  const common: DbcSignalContentRecord[] = [];
+  let multiplexor: DbcSignalContentRecord | null = null;
+  for (const s of message.signals) {
+    if (s.mux.kind === "multiplexed" || s.mux.kind === "multiplexor_and_multiplexed") {
+      const arm = bySelector.get(s.mux.selector);
+      if (arm) arm.push(s);
+      else bySelector.set(s.mux.selector, [s]);
+      continue;
+    }
+    if (s.mux.kind === "multiplexor") multiplexor = s;
+    common.push(s);
+  }
+  if (bySelector.size === 0) return null;
+  const labels = new Map(
+    (multiplexor?.valueTable ?? []).map((v) => [v.raw, v.label] as const),
+  );
+  const arms = [...bySelector.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([selector, signals]) => ({
+      selector,
+      label: labels.get(selector) ?? null,
+      signals,
+    }));
+  return { common, arms };
+}
+
+/// Display text for an arm row: the DBC's own `m<N>` notation, plus
+/// the multiplexor's name for it when there is one.
+export function muxArmLabel(arm: MuxArm): string {
+  return arm.label === null ? `m${arm.selector}` : `m${arm.selector} · ${arm.label}`;
+}
+
 /// Last path component for display — DBC file paths can get long; the
 /// basename is what the user actually recognises. Falls back to the
 /// whole path when there's no separator.
@@ -288,10 +373,17 @@ function messageHaystack(busPrefix: string, m: DbcMessageContentRecord): string 
     .join(".");
   return `${dotted} ${m.comment} ${decId} ${hexId} ${attrs}`.trim();
 }
+/// `arm` is the mux arm the signal belongs to, or `null` for a plain /
+/// multiplexor signal. A *named* arm's `m<N> · label` text joins the
+/// haystack so a query for the event name reaches the signals that ride
+/// that arm. An unnamed arm contributes nothing: its only text is the
+/// bare selector, which no query is looking for, and appending it to
+/// every signal in a wide message is pure noise.
 function signalHaystack(
   busPrefix: string,
   m: DbcMessageContentRecord,
   s: DbcSignalContentRecord,
+  arm: MuxArm | null,
 ): string {
   const vals = s.valueTable
     .map((e) => `${e.raw} ${e.label}`)
@@ -300,9 +392,31 @@ function signalHaystack(
   const dotted = [busPrefix, m.transmitter ?? "", m.name, s.name]
     .filter((p) => p !== "")
     .join(".");
+  const armText = arm?.label == null ? "" : muxArmLabel(arm);
   // Other fields are appended so a query against units / comments /
   // value-table labels / attribute names still hits.
-  return `${dotted} ${s.unit} ${s.comment} ${vals} ${attrs}`.trim();
+  return `${dotted} ${s.unit} ${s.comment} ${vals} ${attrs} ${armText}`.trim();
+}
+
+/// Haystack for a mux-arm row: the same dotted ancestry the message
+/// carries, with the arm's name in the signal position — so
+/// `bms.ServiceEvent.CellVoltageStatus` and a bare `CellVoltageStatus`
+/// both land on the arm.
+///
+/// Only **named** arms are indexed (see {@link buildSearchIndex}). An
+/// unnamed arm's dotted ancestry would be a near-duplicate of its
+/// message's haystack, so every message-name query would drag in all of
+/// that message's arms — on a wide multiplexed message that is dozens
+/// of spurious matches crowding out the row the user asked for.
+function muxHaystack(
+  busPrefix: string,
+  m: DbcMessageContentRecord,
+  label: string,
+): string {
+  const dotted = [busPrefix, m.transmitter ?? "", m.name, label]
+    .filter((p) => p !== "")
+    .join(".");
+  return `${dotted} ${label}`.trim();
 }
 
 /// Bus-name prefix used when building haystacks. Empty for sentinel
@@ -367,6 +481,18 @@ interface RenderRow {
         extended: boolean;
         messageName: string;
         signal: DbcSignalContentRecord;
+      }
+    | {
+        /// One mux arm of a multiplexed message — a container for the
+        /// signals that ride the frame when the multiplexor carries
+        /// this selector, and itself a drag source for all of them.
+        tag: "mux";
+        busId: string | null;
+        dbcPath: string;
+        messageId: number;
+        extended: boolean;
+        messageName: string;
+        arm: MuxArm;
       }
     /// A capture file that carried signal definitions (ADR 0052) — the
     /// root of its own branch, beside the bus groups.
@@ -591,21 +717,22 @@ function buildRows(
             kind: { tag: "message", busId: dragBusId, dbcPath: dbc.dbcPath, message: m },
           });
           if (!mExpanded) continue;
-          for (const s of m.signals) {
-            const sId = signalNodeId(
-              g.busId,
-              key,
-              m.messageId,
-              m.extended,
-              s.name,
-            );
-            // Under a matched message every signal shows (the user
-            // explicitly expanded it); under a merely-expanded
-            // message only matched signals do.
-            if (filterActive && !mMatched && !matchSet.has(sId)) continue;
+          // A multiplexed message renders its arms as an extra level;
+          // any other message keeps the flat message → signal shape.
+          const grouped = groupByMux(m);
+          const pushSignal = (
+            s: DbcSignalContentRecord,
+            depth: number,
+            visible: boolean,
+          ) => {
+            const sId = signalNodeId(g.busId, key, m.messageId, m.extended, s.name);
+            // Under a matched container every signal shows (the user
+            // explicitly expanded it); under a merely-expanded one
+            // only matched signals do.
+            if (filterActive && !visible && !matchSet.has(sId)) return;
             out.push({
               id: sId,
-              depth: 4,
+              depth,
               expanded: false,
               hasChildren: false,
               kind: {
@@ -618,6 +745,36 @@ function buildRows(
                 signal: s,
               },
             });
+          };
+          for (const s of grouped?.common ?? m.signals) {
+            pushSignal(s, 4, mMatched);
+          }
+          for (const arm of grouped?.arms ?? []) {
+            const xId = muxNodeId(g.busId, key, m.messageId, m.extended, arm.selector);
+            const xMatched = matchSet.has(xId);
+            if (filterActive && !mMatched && !xMatched && !ancestorsOfMatches.has(xId)) {
+              continue;
+            }
+            const xExpanded = effectiveExpanded.has(xId);
+            out.push({
+              id: xId,
+              depth: 4,
+              expanded: xExpanded,
+              hasChildren: arm.signals.length > 0,
+              kind: {
+                tag: "mux",
+                busId: dragBusId,
+                dbcPath: dbc.dbcPath,
+                messageId: m.messageId,
+                extended: m.extended,
+                messageName: m.name,
+                arm,
+              },
+            });
+            if (!xExpanded) continue;
+            for (const s of arm.signals) {
+              pushSignal(s, 5, mMatched || xMatched);
+            }
           }
         }
       }
@@ -694,12 +851,36 @@ export function buildSearchIndex(groups: readonly BusGroup[]): GridviewFilterEnt
           ancestors: [bId, dId, eId],
           haystack: messageHaystack(prefix, m),
         });
-        for (const s of m.signals) {
+        const grouped = groupByMux(m);
+        const pushSignal = (
+          s: DbcSignalContentRecord,
+          ancestors: string[],
+          arm: MuxArm | null,
+        ) => {
           out.push({
             id: signalNodeId(g.busId, key, m.messageId, m.extended, s.name),
-            ancestors: [bId, dId, eId, mId],
-            haystack: signalHaystack(prefix, m, s),
+            ancestors,
+            haystack: signalHaystack(prefix, m, s, arm),
           });
+        };
+        for (const s of grouped?.common ?? m.signals) {
+          pushSignal(s, [bId, dId, eId, mId], null);
+        }
+        for (const arm of grouped?.arms ?? []) {
+          const xId = muxNodeId(g.busId, key, m.messageId, m.extended, arm.selector);
+          // Unnamed arms carry no searchable text of their own; they
+          // still render as the path to a matched signal beneath them
+          // (they're in that signal's `ancestors`).
+          if (arm.label !== null) {
+            out.push({
+              id: xId,
+              ancestors: [bId, dId, eId, mId],
+              haystack: muxHaystack(prefix, m, arm.label),
+            });
+          }
+          for (const s of arm.signals) {
+            pushSignal(s, [bId, dId, eId, mId, xId], arm);
+          }
         }
       }
     }
@@ -818,6 +999,20 @@ function rowToSignalRefs(
     ];
   }
   const busId = row.kind.busId;
+  if (row.kind.tag === "mux") {
+    // A mux arm contributes its own signals only. The multiplexor is
+    // a mode indicator on an unrelated scale and stays draggable on
+    // its own row.
+    const armKind = row.kind;
+    return armKind.arm.signals.map((s) => ({
+      busId,
+      messageId: armKind.messageId,
+      extended: armKind.extended,
+      signalName: s.name,
+      messageName: armKind.messageName,
+      unit: s.unit,
+    }));
+  }
   if (row.kind.tag === "signal") {
     const s = row.kind.signal;
     return [
@@ -853,12 +1048,12 @@ function rowToSignalRefs(
 }
 
 /// Bus / DBC / ECU / source-file / channel-group nodes structure the
-/// tree and nothing else; message and signal nodes (of either format)
-/// are the things a user picks and drags. The gridview asks per row
-/// rather than per kind for exactly this shape — a message is a
-/// *selectable branch* (ADR 0044).
+/// tree and nothing else; message, mux-arm and signal nodes (of either
+/// format) are the things a user picks and drags. The gridview asks per
+/// row rather than per kind for exactly this shape — a message and a
+/// mux arm are *selectable branches* (ADR 0044).
 function isSelectableRow(row: RenderRow): boolean {
-  return isSignalRow(row) || row.kind.tag === "message";
+  return isSignalRow(row) || row.kind.tag === "message" || row.kind.tag === "mux";
 }
 
 /// A row that stands for one signal, of either provenance — a leaf in
@@ -1516,8 +1711,8 @@ const DbcRow = memo(function DbcRow({
   const indent = `${row.depth * 14}px`;
   // Container rows (bus / DBC / ECU, source file / channel group):
   // clicking anywhere toggles expand (they aren't selectable). Message
-  // / signal rows: row body selects, chevron toggles expand separately.
-  // A draggable row carries the drag-source handlers.
+  // / mux-arm / signal rows: row body selects, chevron toggles expand
+  // separately. A draggable row carries the drag-source handlers.
   const isContainerRow =
     row.kind.tag === "bus" ||
     row.kind.tag === "dbc" ||
@@ -1798,6 +1993,17 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
       <span className="dbc-row-label">
         <NameText name={kind.label} />
       </span>
+    );
+  }
+  if (kind.tag === "mux") {
+    const n = kind.arm.signals.length;
+    return (
+      <>
+        <span className="dbc-row-label">{muxArmLabel(kind.arm)}</span>
+        <span className="dbc-row-meta">
+          {n} signal{n === 1 ? "" : "s"}
+        </span>
+      </>
     );
   }
   if (kind.tag === "message") {
