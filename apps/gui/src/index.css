@@ -2110,6 +2110,14 @@ button.trace-event-swatch {
   min-height: 0;
 }
 
+/* The panel root is focusable (tabIndex -1) only so a click on a part
+ * of the plot that takes no focus of its own still leaves the panel's
+ * key handling live. That focus is never the user's own tab stop, so
+ * it draws no ring. */
+.plot-panel:focus {
+  outline: none;
+}
+
 .plot-panel-toolbar {
   display: flex;
   align-items: center;

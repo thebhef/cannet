@@ -1,4 +1,13 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -1414,9 +1423,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [soloMatchCount],
   );
   /// PgDn / PgUp cycle the matches, scoped to the plot panel: this is a
-  /// `keydown` on the panel root, so it acts only while focus is inside
-  /// the panel — which after typing a pattern or clicking a step control
-  /// is where it already is. Deliberately not a global command (ADR
+  /// `keydown` on the panel root, so it acts while focus is anywhere
+  /// inside the panel — which the mousedown handler below keeps true for
+  /// the parts of the view that take no focus of their own.
+  /// Deliberately not a global command (ADR
   /// 0018): PageUp / PageDown are the gridview's navigation keys
   /// (`keybindings.ts`), and while the plot panel is not a gridview, a
   /// global binding on them would be suppressed in every panel that is.
@@ -1432,6 +1442,20 @@ export function PlotPanel(props: IDockviewPanelProps) {
     },
     [soloMatchCount, stepSoloBy],
   );
+  /// …and the panel root claims focus for the presses that would
+  /// otherwise fall out of it. Most of the plot view — the canvas, the
+  /// signal rows, the area chrome — takes no focus of its own, so a
+  /// click there left `document.body` focused and the keystroke never
+  /// reached the handler above: stepping worked from the toolbar's own
+  /// controls and nowhere else. The root is `tabIndex={-1}` (reachable
+  /// programmatically, not in the tab order) and takes focus only when
+  /// the press isn't already headed for something that takes it.
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const onPanelMouseDown = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("input, button, select, textarea, a[href]")) return;
+    panelRef.current?.focus();
+  }, []);
 
   /// Per-area manual-pick keys (from *stored* state, not the effective
   /// list) — how the row renderer tells a manual pick from a
@@ -2035,7 +2059,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [soloMenuAt, setSoloMenuAt] = useState<{ x: number; y: number } | null>(null);
 
   return (
-    <div className="plot-panel" onKeyDown={onPanelKeyDown}>
+    <div
+      className="plot-panel"
+      ref={panelRef}
+      tabIndex={-1}
+      onKeyDown={onPanelKeyDown}
+      onMouseDown={onPanelMouseDown}
+    >
       <div
         className="plot-panel-toolbar"
         onContextMenu={(e) => {
