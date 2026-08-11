@@ -227,6 +227,81 @@ better).
   - README's plot section documents the button and the Clear-then-All-data
     recovery workflow, in the same commit.
 
+- **2026-08-08 (item 4, collapsible plot areas):** Landed on
+  `task55c-collapsible-areas` in three commits. The whole item rides the
+  existing fully-hidden-axis collapse machinery rather than adding a
+  parallel one — the lift was a single predicate widening, not a state
+  move.
+  - `9031147` — **persisted flag + head toggle.**
+    `PlotAreaConfig.collapsed?: boolean` (parsed in `areasFromParams`,
+    only a literal `true`; expanding drops the key rather than storing
+    `false`, so the blob stays sparse). The panel's per-axis
+    `collapsed` becomes `parentArea.collapsed === true || (axis has
+    signals && all hidden)`, which is the whole lift: the flag inherits
+    flex-grow 0, the dropped canvas, the compact side-panel rows,
+    `splitterPartnerAbove` suppression + reach-over, and the
+    gesture-replaying placeholder, with no new layout path. Because the
+    flag is read off the *parent*, one toggle collapses every derived
+    axis of the area in per-unit / individual mode — the "one logical
+    area = one collapse state" requirement falls out for free. The
+    ▾/▸ toggle sits on the parent head beside the reorder grip (same
+    `isParentHead` gate as the remove ×), so it is exactly one per
+    logical area and stays reachable inside the collapsed strip.
+    **Design decision — auto-collapse wins over the flag, and the
+    toggle says so:** an area collapsed only because every signal is
+    hidden has no expanded form to go to (there is nothing to draw), so
+    the toggle renders `disabled` with a title naming the reason rather
+    than being a control that does nothing. Un-hiding a signal is the
+    way back, and its rows are already listed for that. An *empty* area
+    (no signals at all) still does not auto-collapse — the existing
+    `signals.length > 0` guard is kept, so a freshly added area doesn't
+    collapse itself out from under the user.
+  - `95896ca` — **one shared drag handle per contiguous collapsed run.**
+    New pure `collapsedRunHeads(collapsed[])` in `plotAreaLayout.ts`
+    (`c && !collapsed[i-1]`) marks the first axis of each run; that axis
+    draws a `.plot-area-collapsed-handle` in its otherwise blank canvas
+    column and the rest of the run draws none. **Design decision —
+    drop targeting inside a run:** the handle is a *drag source* only,
+    carrying its own parent area with the same `PLOT_AREA_DND_MIME`
+    payload the head grip uses. Drops keep landing on whichever
+    `.plot-area` row the pointer released over (the row root's existing
+    `areaDrop`), so a drop on the shared handle targets the run's
+    **first** area — the one it visually belongs to — and an area
+    buried deeper in a run is targeted by dropping on its own
+    side-panel strip, which stays fully rendered and receptive. No new
+    drop routing; nothing had to learn about runs.
+  - `ed17df9` — **slim splitter ink.** `.plot-area-splitter` split its
+    hit area (`::before`) from its visual (`::after`): the grab band
+    grew 8px → 12px while what it draws on hover/drag shrank from an
+    8px tinted band to a 2px line on the border it straddles. The
+    collapsed run's handle uses the same split (10px band, 2px line).
+    CSS-only; no test.
+  - Tests: `plotPanelConfig.test.ts` pins the parse (+ the exact
+    persisted key set); `plotAreaLayout.test.ts` pins
+    `collapsedRunHeads` over four run shapes; `PlotPanel.dom.test.tsx`
+    gains a "PlotPanel area collapse" suite — head toggle collapses /
+    expands and persists `collapsed: true`, individual mode collapses
+    all derived axes from one flag (and shows exactly one toggle), a
+    four-axis stack with two collapsed in the middle renders exactly
+    one shared handle in the run's first row, dragging that handle
+    reorders the panel, and a no-visible-signals area's toggle is
+    disabled. `apps/gui` test suite: 1508 → 1518 passing (130 files);
+    `pnpm --dir apps/gui build` green at every commit.
+  - Persistence round trip: the area config rides the panel's existing
+    `persist({ areas, … })` — panel params are an opaque JSON blob to
+    the host (`settings.rs` knows only the y-axis-mode spellings), so
+    no schema change. `collapsed: undefined` on an expanded area is
+    already safe against the dirty check: `projectElements.ts`'s
+    `valuesEqual` treats an undefined-valued key as absent (the same
+    rule `patterns` relies on), so opening a saved project doesn't mark
+    it dirty. Write side covered by the DOM toggle test, read side by
+    the `areasFromParams` test.
+  - README's plot section gains a "Collapse / expand an area" bullet
+    (toggle, one per area, all-hidden auto-collapse, the run's shared
+    handle); ADR 0026 gains an area-collapse paragraph in the decision
+    and two implementation-status notes (the collapse derivation +
+    handle, and the splitter's hit/visual split).
+
 ## Blockers / side effects
 
 - None from item 1. No matrix cell failed; nothing to fix in that phase.
@@ -239,3 +314,40 @@ better).
   `{start: 0, end: n}` shape the note describes literally). No
   redesign beyond that; flagging the literal-vs-intent gap in the note
   for the record.
+- Item 4, **the grooming note's "gives up all vertical space except a
+  drag handle" is read as the *plot* region, not the whole row.** The
+  same sentence says the side-panel entry stays, and the entry is what
+  keeps a fully-hidden area's swatches clickable (ADR 0026) — a row
+  shrunk to handle height would take that away. Implemented as: the
+  area claims no plot height (flex-grow 0, no canvas — already what a
+  fully-hidden axis did) and its blank canvas column carries the run's
+  thin drag handle, while the compact side-panel strip stays. Closest
+  faithful reading; recording it because the literal sentence also
+  admits a row-height reading.
+- Item 4, **collapse fan-out is stack-wide, and was before this
+  phase.** Measured with a throwaway probe on a two-area panel
+  (`diagCounts()["render.PlotArea"]` delta, since removed): a collapse
+  toggle costs 4 `PlotArea` renders, and an ordinary signal-hide click
+  costs 3 — both re-render the untouched area too. Cause is
+  pre-existing and not collapse-specific: `derivedAreaConfigs` mints
+  fresh derived `PlotAreaConfig` objects for *every* axis on any
+  `areas` change, and `areaHandlers` is memoised on that array, so
+  every `PlotArea` gets new props identities on any area edit. The
+  standing memo guard ("re-renders no plot area when only panel-local
+  state changes") is unaffected and stays green. Scoping the derivation
+  per area would be a refactor of the panel's core render path, so it
+  is recorded rather than done here.
+- Item 4, **a collapsed area keeps resampling if it had a live uPlot.**
+  The rebuild effect's deps don't include `collapsed`, so collapsing an
+  area that is already drawing leaves its uPlot alive and its self-paced
+  resample fetching for a hidden canvas; an area collapsed at *mount*
+  never constructs one (the canvas is `display: none`, so the effect's
+  zero-size guard installs a probe and returns) and its `resample`
+  bails on `if (!u) return`. Pre-existing shape — the same divergence
+  already applied to hiding an axis's last visible signal, since the
+  fetch covers hidden signals too (their side-panel readouts keep
+  updating) — so this phase inherits it rather than introducing it.
+  Adding `collapsed` to the rebuild effect's deps would fix both cases
+  (React destroys the instance in the previous cleanup, then the
+  zero-size guard parks it) but touches the file's riskiest effect for
+  a pre-existing issue, so it is recorded rather than done here.

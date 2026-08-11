@@ -82,6 +82,18 @@ export function splitterPartnerAbove(collapsed: readonly boolean[], idx: number)
   return null;
 }
 
+/** Which collapsed axes head a contiguous run of them — the ones that
+ * draw the run's shared drag handle (ADR 0026).
+ *
+ * A collapsed axis gives up its plot height, so a stack of them is a
+ * band of empty canvas column. One drag handle for that whole band
+ * reads as one thing to grab; a handle per collapsed axis would be a
+ * ladder of them saying nothing extra. The run's *first* axis carries
+ * it, since that is where the band starts. */
+export function collapsedRunHeads(collapsed: readonly boolean[]): boolean[] {
+  return collapsed.map((c, i) => c && !collapsed[i - 1]);
+}
+
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }

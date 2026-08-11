@@ -4,6 +4,7 @@ import {
   AXIS_WEIGHT_DEFAULT,
   applySplitterDelta,
   axisWeightsFromRaw,
+  collapsedRunHeads,
   equalizePair,
   pruneAxisWeights,
   resolveAxisWeights,
@@ -39,6 +40,32 @@ describe("splitterPartnerAbove", () => {
     // axis has no weight to trade, so it gets none and its neighbours
     // pair up across it.
     expect(splitterPartnerAbove([false, true], 1)).toBeNull();
+  });
+});
+
+describe("collapsedRunHeads", () => {
+  it("marks the first axis of each contiguous collapsed run", () => {
+    // One handle per run, not one per collapsed axis — a stack with
+    // six collapsed axes in two runs shows two handles.
+    expect(collapsedRunHeads([false, true, true, false, true])).toEqual([
+      false,
+      true,
+      false,
+      false,
+      true,
+    ]);
+  });
+
+  it("marks a run that starts at the top of the stack", () => {
+    expect(collapsedRunHeads([true, true, false])).toEqual([true, false, false]);
+  });
+
+  it("marks nothing when nothing is collapsed", () => {
+    expect(collapsedRunHeads([false, false])).toEqual([false, false]);
+  });
+
+  it("marks one head for an all-collapsed stack", () => {
+    expect(collapsedRunHeads([true, true, true])).toEqual([true, false, false]);
   });
 });
 

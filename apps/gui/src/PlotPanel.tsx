@@ -224,6 +224,7 @@ import {
   type AxisWeights,
   applySplitterDelta,
   axisWeightsFromRaw,
+  collapsedRunHeads,
   equalizePair,
   pruneAxisWeights,
   resolveAxisWeights,
@@ -758,6 +759,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const setAreaYAxisMode = useCallback((id: string, mode: YAxisMode) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, yAxisMode: mode } : a)));
   }, []);
+  /// Collapse / expand a whole logical area (ADR 0026). Stored on the
+  /// area, so every axis it derives shares one collapse state and the
+  /// setting persists with the panel. Expanding drops the flag rather
+  /// than storing `false`, keeping the persisted blob sparse.
+  const toggleAreaCollapsed = useCallback((id: string) => {
+    setAreas((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, collapsed: a.collapsed ? undefined : true } : a)),
+    );
+  }, []);
   const setAreaPrimarySignal = useCallback((id: string, key: string | null) => {
     setAreas((prev) => prev.map((a) => (a.id === id ? { ...a, primarySignalKey: key } : a)));
   }, []);
@@ -1210,11 +1220,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
       isFirstOfParent: boolean;
       subtitle: string | null;
       enumLanes: boolean;
-      // Every signal on this axis is hidden — the axis draws nothing, so
-      // it's excluded from the fit-to-panel height distribution and its
-      // canvas collapses. Its rows stay in the side panel so they remain
-      // un-hideable (ADR 0026 hidden-signal handling).
+      // This axis draws nothing, so it's excluded from the fit-to-panel
+      // height distribution and its canvas collapses; its rows stay in
+      // the side panel so they remain un-hideable (ADR 0026). Two ways
+      // to get here: the user collapsed the parent *area* (one flag,
+      // every derived axis of that area), or every signal on this one
+      // axis is hidden.
       collapsed: boolean;
+      // The parent area's own collapse flag drove it (as opposed to the
+      // all-hidden rule) — what the head toggle can undo.
+      collapsedByFlag: boolean;
     }> = [];
     const isEnum = (k: string) => enumKeys.has(k);
     for (const a of effectiveAreas) {
@@ -1231,6 +1246,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
           yAxisMode: a.yAxisMode,
           primarySignalKey: a.primarySignalKey,
           patterns: i === 0 ? a.patterns : undefined,
+          collapsed: a.collapsed,
         };
         out.push({
           area: derivedArea,
@@ -1238,7 +1254,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
           isFirstOfParent: i === 0,
           subtitle: ax.subtitle,
           enumLanes: ax.kind === "enum-lanes",
-          collapsed: ax.signals.length > 0 && ax.signals.every((s) => s.hidden),
+          collapsed:
+            a.collapsed === true || (ax.signals.length > 0 && ax.signals.every((s) => s.hidden)),
+          collapsedByFlag: a.collapsed === true,
         });
       });
     }
@@ -1357,6 +1375,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         onPlaceCursorY: (which, v) => placeCursorY(axisId, which, v),
         onSetPrimarySignal: (k) => setAreaPrimarySignal(parent.id, k),
         onSetYAxisMode: (mode) => setAreaYAxisMode(parent.id, mode),
+        onToggleCollapsed: () => toggleAreaCollapsed(parent.id),
         onFocus: () => setFocusedAreaId(parent.id),
         onRemoveArea: () => removeArea(parent.id),
         onReorderArea: (draggedId) => reorderArea(draggedId, parent.id),
@@ -1376,6 +1395,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     placeCursorY,
     setAreaPrimarySignal,
     setAreaYAxisMode,
+    toggleAreaCollapsed,
     removeArea,
     reorderArea,
     removeSignal,
@@ -1396,6 +1416,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
     () => derivedAreaConfigs.map((d) => d.collapsed),
     [derivedAreaConfigs],
   );
+  /// Which collapsed axis heads each contiguous run of them — one
+  /// shared drag handle per run rather than one per axis (ADR 0026).
+  const runHeadFlags = useMemo(() => collapsedRunHeads(collapsedFlags), [collapsedFlags]);
 
   // Iterate the *derived* axes, not the parent areas: `reportSeries`
   // stores each axis's sampled series under its derived id (which in
@@ -1691,6 +1714,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 area={d.area}
                 flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
                 collapsed={d.collapsed}
+                collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}
                 yScale={axisScales[d.area.id]}
               label={

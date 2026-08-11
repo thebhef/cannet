@@ -118,7 +118,22 @@ describe("areasFromParams", () => {
     // migrate onto — it is dropped, as it has been since ADR 0026.
     const areas = areasFromParams([{ id: "a", signals: [], yMode: { min: 0, max: 100 } }]);
     expect(areas[0]).not.toHaveProperty("yMode");
-    expect(Object.keys(areas[0]).sort()).toEqual(["id", "patterns", "primarySignalKey", "signals", "yAxisMode"]);
+    expect(Object.keys(areas[0]).sort()).toEqual([
+      "collapsed",
+      "id",
+      "patterns",
+      "primarySignalKey",
+      "signals",
+      "yAxisMode",
+    ]);
+  });
+
+  it("keeps a persisted collapsed flag, and only a literal `true`", () => {
+    expect(areasFromParams([{ id: "a", signals: [], collapsed: true }])[0].collapsed).toBe(true);
+    // Anything else is "not collapsed" — the flag is absent on every
+    // area nobody collapsed, so the persisted blob stays sparse.
+    expect(areasFromParams([{ id: "a", signals: [], collapsed: "yes" }])[0].collapsed).toBeUndefined();
+    expect(areasFromParams([{ id: "a", signals: [] }])[0].collapsed).toBeUndefined();
   });
 
   it("synthesizes an id when missing", () => {
