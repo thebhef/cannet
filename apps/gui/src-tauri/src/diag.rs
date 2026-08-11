@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// The display refresh budget: a frame is "late" once a synchronous task
 /// overruns ~16.7 ms (60 Hz). Long-task time divided by this estimates
@@ -696,6 +696,18 @@ pub struct AutomationState(pub Option<AutomationConfig>);
 #[allow(clippy::needless_pass_by_value)]
 pub fn diag_autostart(state: State<'_, AutomationState>) -> Option<AutomationConfig> {
     state.0.clone()
+}
+
+/// Exit the process with `code`. The webview has no other way to set a
+/// process exit code — window close / `destroy()` always tears down with
+/// 0 — so the perf automation (ADR 0031) calls this to fail a run loudly:
+/// a capture window that never connected writes no report (absence is
+/// the failure signal) and must still make the launching CLI see a
+/// non-zero exit rather than a quiet success.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn exit_process(app: AppHandle, code: i32) {
+    app.exit(code);
 }
 
 #[cfg(test)]

@@ -528,6 +528,7 @@ pub fn run() {
             diag::diag_push,
             diag::diag_capture_finish,
             diag::diag_autostart,
+            diag::exit_process,
             report_js_heap,
             signal_generator::validate_signal_generator,
             signal_generator::evaluate_signal_generators,

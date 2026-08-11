@@ -329,6 +329,12 @@ report is written.
   last-opened pointer). Usable on its own to just open a project.
 - `--connect-on-start` fires the same connect a user clicks, once the
   project's bindings (and, for a local binding, the sidecar) are ready.
+  Paired with `--perf-capture-secs`, a failed connect is retried a
+  bounded number of times before the run is failed outright: **no report
+  is written and the process exits non-zero** (the failure cause is
+  logged to the System Messages panel / `cannet.log`), rather than the
+  capture running over a session that never connected and writing a
+  normal-shaped, empty report.
 - `--perf-capture-secs <n>` captures the frontend diagnostics for `n`
   seconds after the session settles, then writes the report and exits.
 - `--perf-out <path>` is where the `RenderReport` JSON lands;

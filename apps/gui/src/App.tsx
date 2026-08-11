@@ -176,6 +176,17 @@ const AUTOMATION_SETTLE_MS = 2000;
 // Cap on waiting for connect preconditions (bindings loaded; sidecar
 // ready for a local binding) before giving up on the auto-connect.
 const AUTOMATION_READY_TIMEOUT_MS = 30000;
+// Perf-capture-only retry budget for `--connect-on-start` (ADR 0031): a
+// capture that never connects must not run over dead air and write an
+// fps-0 report indistinguishable from real idle data (observed
+// 2026-08-08 — a fresh-build sidecar startup delay silently skipped
+// connect and the capture ran anyway). These bounds only delay *when*
+// the capture window starts, never its length — `AUTOMATION_CONNECT_RETRY_ATTEMPTS`
+// attempts, each given `AUTOMATION_CONNECT_CONFIRM_MS` to land a running
+// session before it's retried after `AUTOMATION_CONNECT_RETRY_DELAY_MS`.
+const AUTOMATION_CONNECT_RETRY_ATTEMPTS = 3;
+const AUTOMATION_CONNECT_CONFIRM_MS = 3000;
+const AUTOMATION_CONNECT_RETRY_DELAY_MS = 1000;
 
 /// Dockview panel-component registry, defined at module scope so
 /// dockview never sees a fresh object and re-registers. The
@@ -419,6 +430,10 @@ export function App() {
   const interfaceBindingsRef = useRef<InterfaceBinding[]>([]);
   const sidecarAddressRef = useRef<string | null>(null);
   const handleConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  // Mirrors `remoteConnected` (below) for the perf-capture connect-retry
+  // loop, which needs to poll connectedness from inside a once-mounted
+  // effect rather than re-subscribing to it.
+  const remoteConnectedRef = useRef(false);
 
   // --- element registry ops ---
   // Latest bus list, mirrored into a ref so element creation can
@@ -1536,7 +1551,26 @@ export function App() {
       }
       return true;
     };
+    // Mirrors the System Messages / cannet.log sink so a never-connected
+    // run leaves a cause behind instead of the silent skip this guards
+    // against (2026-08-08: a fresh-build sidecar startup delay skipped
+    // `handleConnect` with zero logging, and the capture ran empty anyway).
+    const logAutomation = (level: "warn" | "error", message: string) => {
+      void invoke("gui_emit_system_log", {
+        level,
+        source: "automation",
+        message,
+      }).catch(() => {});
+    };
+    // Captured once: narrows `automation.captureSecs` for TypeScript at
+    // every use below, and names the "this run must produce a report"
+    // condition the retry/assert/fail-loud behaviour is scoped to. A
+    // plain `--connect-on-start` (no capture) still just connects once,
+    // unretried — there's no capture window whose absence needs a report
+    // suppressed.
+    const captureSecs = automation.captureSecs;
     void (async () => {
+      let failed = false;
       try {
         if (automation.connectOnStart) {
           const ready = await waitUntil(
@@ -1547,9 +1581,64 @@ export function App() {
             AUTOMATION_READY_TIMEOUT_MS,
           );
           if (cancelled) return;
-          if (ready) await handleConnectRef.current();
+          if (!ready) {
+            logAutomation(
+              "error",
+              `perf automation: connect preconditions not ready after ` +
+                `${AUTOMATION_READY_TIMEOUT_MS}ms (bindings=` +
+                `${interfaceBindingsRef.current.length}, sidecar=` +
+                `${sidecarAddressRef.current ?? "not ready"})`,
+            );
+            failed = captureSecs != null;
+          } else if (captureSecs != null) {
+            // Bounded retry (ADR 0031): only delays *when* the capture
+            // window starts below, never its length.
+            let connected = false;
+            for (
+              let attempt = 1;
+              attempt <= AUTOMATION_CONNECT_RETRY_ATTEMPTS;
+              attempt++
+            ) {
+              await handleConnectRef.current();
+              if (cancelled) return;
+              connected = await waitUntil(
+                () => remoteConnectedRef.current,
+                AUTOMATION_CONNECT_CONFIRM_MS,
+              );
+              if (connected || cancelled) break;
+              if (attempt < AUTOMATION_CONNECT_RETRY_ATTEMPTS) {
+                logAutomation(
+                  "warn",
+                  `perf automation: connect attempt ${attempt} did not ` +
+                    `establish a session; retrying`,
+                );
+                await sleep(AUTOMATION_CONNECT_RETRY_DELAY_MS);
+                if (cancelled) return;
+              }
+            }
+            if (!connected) {
+              logAutomation(
+                "error",
+                `perf automation: failed to connect after ` +
+                  `${AUTOMATION_CONNECT_RETRY_ATTEMPTS} attempts; failing ` +
+                  `the capture`,
+              );
+              failed = true;
+            }
+          } else {
+            await handleConnectRef.current();
+          }
         }
-        if (automation.captureSecs != null) {
+        if (captureSecs != null) {
+          if (failed) {
+            // Failure contract: no report (`beginDiagCapture` /
+            // `endDiagCapture` are never called, so the host never arms —
+            // absence is the one signal no consumer can misread) and a
+            // non-zero exit so the launching CLI sees a failed run. The
+            // frontend has no other way to set the process exit code.
+            await invoke("exit_process", { code: 1 }).catch(() => {});
+            return;
+          }
           // Synthetic interaction (ADR 0031) starts *before* the capture
           // brackets: its warm-up zooms the plot from whatever width the
           // project was saved at down to a working one, and those 30-odd
@@ -1567,20 +1656,37 @@ export function App() {
           await beginDiagCapture(
             automation.label ?? automation.project ?? "perf",
           );
-          await sleep(automation.captureSecs * 1000);
+          await sleep(captureSecs * 1000);
           if (cancelled) return;
           await endDiagCapture(automation.out ?? undefined);
         }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("perf automation run failed", err);
+        // A capture run has no code after `endDiagCapture` inside the
+        // try, so any exception here — a rejected `handleConnect`, a
+        // `beginDiagCapture` failure, anything — means the report is
+        // absent or unfinished. Same failure contract as a never-
+        // connected run: fail loudly and exit non-zero instead of the
+        // `finally` block's normal `destroy()`, which would otherwise
+        // reach the same quiet exit-0-no-report outcome the retry/
+        // assert logic above exists to prevent.
+        if (captureSecs != null) {
+          logAutomation(
+            "error",
+            `perf automation: capture run failed: ${String(err)}`,
+          );
+          failed = true;
+          await invoke("exit_process", { code: 1 }).catch(() => {});
+        }
       } finally {
         stopInteraction?.();
         // A capture run is unattended — exit so the launching CLI
         // returns. `destroy` skips the dirty-close prompt (applying the
-        // project marks it dirty). A connect-only / project-only
-        // run leaves the app open for interactive use.
-        if (!cancelled && automation.captureSecs != null) {
+        // project marks it dirty). A connect-only / project-only run
+        // leaves the app open for interactive use. A failed capture has
+        // already exited non-zero via `exit_process` above.
+        if (!cancelled && captureSecs != null && !failed) {
           getCurrentWindow().destroy();
         }
       }
@@ -2274,6 +2380,13 @@ export function App() {
 
   const remoteConnected = Array.from(remoteSessions.values()).some(
     (s) => s.kind === "running" || s.kind === "connecting",
+  );
+  // Strictly "a session is up", for the perf-capture connect-retry loop —
+  // unlike `remoteConnected` above, a merely "connecting" session doesn't
+  // count, since that's exactly the state a retry must not mistake for
+  // success.
+  remoteConnectedRef.current = Array.from(remoteSessions.values()).some(
+    (s) => s.kind === "running",
   );
   const connectedAddresses = useMemo(
     () =>
