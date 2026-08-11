@@ -12,6 +12,18 @@ import type { TraceState } from "./trace";
 export interface RegistryEntry {
   element: ProjectElement;
   trace: TraceState;
+  /// Generation counter for the element's `config` blob — the view
+  /// config a panel reads when it mounts. Bumped by
+  /// [`applyElementPatch`] every time a patch actually changes `config`,
+  /// so a mounted panel can tell "my element's view config was rewritten
+  /// under me" from "nothing happened". Absent on a fresh entry (reads
+  /// as `0`).
+  configEpoch?: number;
+  /// Who wrote the config at `configEpoch`: the opaque writer token the
+  /// patch carried, or `undefined` for a write from outside any panel.
+  /// A panel resyncs on every bump whose origin isn't its own token, so
+  /// its own persist echo can't clobber the state that produced it.
+  configOrigin?: string;
 }
 
 /// The element registry: every project element + its runtime state,
@@ -39,7 +51,12 @@ export interface ElementRegistry {
   /// `kind` and `id` must match the existing entry; mismatches are a
   /// no-op (so a stale closure can't accidentally retype an element).
   /// Unknown ids are also a no-op.
-  update(id: string, patch: Partial<ProjectElement>): void;
+  ///
+  /// `writer` is an opaque token identifying the panel making the write
+  /// (see [`RegistryEntry.configOrigin`]); omit it for a write that
+  /// isn't a panel persisting its own view config, so every mounted
+  /// panel showing the element resyncs from it.
+  update(id: string, patch: Partial<ProjectElement>, writer?: string): void;
   /// Remove an element and close its panel, if any.
   remove(id: string): void;
 }
@@ -198,10 +215,17 @@ function stringList(v: unknown, fallback: string[]): string[] {
 /// filter → ... → itself) is also a no-op. Pulled out as a pure
 /// function so the registry's `update` logic is testable without
 /// rendering React.
+///
+/// A patch that actually changes the element's `config` also bumps the
+/// entry's [`RegistryEntry.configEpoch`] and stamps `writer` as its
+/// origin — that pair is what lets a mounted panel resync its view state
+/// from an externally rewritten config while ignoring the echo of its
+/// own persist.
 export function applyElementPatch(
   entries: readonly RegistryEntry[],
   id: string,
   patch: Partial<ProjectElement>,
+  writer?: string,
 ): readonly RegistryEntry[] {
   const i = entries.findIndex((e) => e.element.id === id);
   if (i < 0) return entries;
@@ -229,7 +253,25 @@ export function applyElementPatch(
   if (patchIsNoOp(current, patch)) return entries;
   const merged = { ...current, ...patch } as ProjectElement;
   const next = entries.slice();
-  next[i] = { ...entries[i], element: merged };
+  // Only a *config* change moves the epoch: it is the one field panels
+  // snapshot into view state at mount, so it is the one field a mounted
+  // panel has to be told about. Everything else (`sources`, `name`,
+  // `rules`, the behavior fields) is read live off the element by
+  // whoever cares.
+  const configChanged =
+    "config" in patch &&
+    !valuesEqual(
+      (current as unknown as { config?: unknown }).config,
+      (patch as unknown as { config?: unknown }).config,
+    );
+  next[i] = configChanged
+    ? {
+        ...entries[i],
+        element: merged,
+        configEpoch: (entries[i].configEpoch ?? 0) + 1,
+        configOrigin: writer,
+      }
+    : { ...entries[i], element: merged };
   return next;
 }
 

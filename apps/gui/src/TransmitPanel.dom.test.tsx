@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { SignalDescriptorRecord, TransmitFrameRecord } from "./types";
 
@@ -68,6 +68,7 @@ import {
   resizeDataHexPreserving,
 } from "./transmitFrameConfig";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { makeLiveRegistry } from "./registryTestKit";
 import {
   ElementRegistryContext,
   type ElementRegistry,
@@ -804,5 +805,34 @@ describe("TransmitPanel on the gridview", () => {
     renderPanel("el", ["a"]);
     await waitFor(() => expect(tiles()).toHaveLength(1));
     expect(list()).toHaveAttribute("data-gridview");
+  });
+});
+
+describe("TransmitPanel rehydration", () => {
+  it("repaints from an externally rewritten element — it reads the registry live", async () => {
+    // The transmit element carries no view `config` to resync: the
+    // group it renders is the element's `frameIds`, read every render.
+    POOL = [frame("a"), frame("b")];
+    const { Provider, control } = makeLiveRegistry([
+      { kind: "transmit", id: "el", sinks: [], frameIds: ["a"] } as ProjectElement,
+    ]);
+    const api = { updateParameters: vi.fn() };
+    const props = { params: { elementId: "el" }, api } as unknown as Parameters<
+      typeof TransmitPanel
+    >[0];
+    render(
+      <ProjectContext.Provider value={projectCtx}>
+        <SignalCatalogProvider>
+          <Provider>
+            <TransmitPanel {...props} />
+          </Provider>
+        </SignalCatalogProvider>
+      </ProjectContext.Provider>,
+    );
+    await waitFor(() => expect(screen.getAllByLabelText("frame description")).toHaveLength(1));
+    await act(async () => {
+      control.update("el", { frameIds: ["a", "b"] } as never);
+    });
+    expect(screen.getAllByLabelText("frame description")).toHaveLength(2);
   });
 });

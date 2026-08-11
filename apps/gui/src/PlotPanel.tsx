@@ -67,7 +67,7 @@ import { Combobox, type ComboboxOption } from "./Combobox";
 import { formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
-import { useElementPanel, useElementSources } from "./useElementPanel";
+import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { busLookup } from "./traceColumns";
 import { isEditableTarget } from "./keybindings";
@@ -408,15 +408,37 @@ function deriveAreaConfigs(
   });
 }
 
+/// The persisted x-cursor pair, tolerating whatever the config blob
+/// carries (it round-trips opaquely through the layout snapshot).
+function cursorXFromRaw(raw: unknown): XCursors {
+  const o = raw as { a?: unknown; b?: unknown } | undefined;
+  return { a: typeof o?.a === "number" ? o.a : null, b: typeof o?.b === "number" ? o.b : null };
+}
+
+/// The persisted per-area horizontal cursors, same tolerance.
+function cursorYByAreaFromRaw(raw: unknown): Record<string, { h1: number | null; h2: number | null }> {
+  const out: Record<string, { h1: number | null; h2: number | null }> = {};
+  if (typeof raw !== "object" || raw === null) return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "object" && v !== null) {
+      const vv = v as Record<string, unknown>;
+      out[k] = { h1: typeof vv.h1 === "number" ? vv.h1 : null, h2: typeof vv.h2 === "number" ? vv.h2 : null };
+    }
+  }
+  return out;
+}
+
+/// A persisted boolean knob, falling back when the config omits it.
+const boolFromRaw = (raw: unknown, fallback: boolean): boolean =>
+  typeof raw === "boolean" ? raw : fallback;
+
 export function PlotPanel(props: IDockviewPanelProps) {
   diagCount("render.PlotPanel"); // DIAG
   const model = useTraceModel();
   const capture = useTraceLive();
   const { buses } = useProjectContext();
-  const { elementId, registry, element, savedConfig, persist } = useElementPanel<PlotPanelParams>(
-    props,
-    "plot",
-  );
+  const panel = useElementPanel<PlotPanelParams>(props, "plot");
+  const { elementId, registry, element, savedConfig, persist } = panel;
   const { currentSources, availableFilters, handleSourcesChange } = useElementSources(
     registry,
     elementId,
@@ -430,21 +452,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const winEnd = trace.offset + trace.frameCount;
 
   const [areas, setAreas] = useState<PlotAreaConfig[]>(() => areasFromParams(savedConfig?.areas));
-  const [followLive, setFollowLive] = useState(() =>
-    typeof savedConfig?.followLive === "boolean" ? savedConfig.followLive : true,
-  );
+  const [followLive, setFollowLive] = useState(() => boolFromRaw(savedConfig?.followLive, true));
   const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(savedConfig?.cursorMode));
-  const [measEnabled, setMeasEnabled] = useState(() =>
-    typeof savedConfig?.measEnabled === "boolean" ? savedConfig.measEnabled : false,
-  );
+  const [measEnabled, setMeasEnabled] = useState(() => boolFromRaw(savedConfig?.measEnabled, false));
   const [measKeys, setMeasKeys] = useState<MeasurementKey[]>(() => measKeysFromRaw(savedConfig?.measKeys));
   /** Show the per-row y / t-range diagnostic readout under each
    * signal's value. Off by default — useful for development and for
    * users debugging cache / auto-norm issues, but visually noisy in
    * normal use. Persisted in panel params. */
-  const [showDiag, setShowDiag] = useState(() =>
-    typeof savedConfig?.showDiag === "boolean" ? savedConfig.showDiag : false,
-  );
+  const [showDiag, setShowDiag] = useState(() => boolFromRaw(savedConfig?.showDiag, false));
   const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(savedConfig?.showPoints));
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel config. */
@@ -480,25 +496,29 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
   const { catalog, refresh: refreshCatalog } = useSignalCatalog();
 
-  const [cursorX, setCursorX] = useState<XCursors>(() => {
-    const o = savedConfig?.cursorX as { a?: unknown; b?: unknown } | undefined;
-    return { a: typeof o?.a === "number" ? o.a : null, b: typeof o?.b === "number" ? o.b : null };
-  });
+  const [cursorX, setCursorX] = useState<XCursors>(() => cursorXFromRaw(savedConfig?.cursorX));
   const [cursorYByArea, setCursorYByArea] = useState<Record<string, { h1: number | null; h2: number | null }>>(
-    () => {
-      const o = savedConfig?.cursorYByArea;
-      const out: Record<string, { h1: number | null; h2: number | null }> = {};
-      if (typeof o === "object" && o !== null) {
-        for (const [k, v] of Object.entries(o as Record<string, unknown>)) {
-          if (typeof v === "object" && v !== null) {
-            const vv = v as Record<string, unknown>;
-            out[k] = { h1: typeof vv.h1 === "number" ? vv.h1 : null, h2: typeof vv.h2 === "number" ? vv.h2 : null };
-          }
-        }
-      }
-      return out;
-    },
+    () => cursorYByAreaFromRaw(savedConfig?.cursorYByArea),
   );
+
+  // …and re-read every one of those fields when the element's config is
+  // rewritten by anyone else — the mirror image of the seeding above,
+  // and the same set the persist effect below writes.
+  useElementRehydrate(panel, (config) => {
+    setAreas(areasFromParams(config.areas));
+    setFollowLive(boolFromRaw(config.followLive, true));
+    setCursorMode(cursorModeFromRaw(config.cursorMode));
+    setMeasEnabled(boolFromRaw(config.measEnabled, false));
+    setMeasKeys(measKeysFromRaw(config.measKeys));
+    setShowDiag(boolFromRaw(config.showDiag, false));
+    setShowPoints(showPointsFromRaw(config.showPoints));
+    setSignalsWidth(signalsWidthFromRaw(config.signalsWidthPx));
+    setAxisWeights(axisWeightsFromRaw(config.axisWeights));
+    setAxisScales(axisScalesFromRaw(config.axisScales));
+    setSolo(soloFromRaw(config.solo));
+    setCursorX(cursorXFromRaw(config.cursorX));
+    setCursorYByArea(cursorYByAreaFromRaw(config.cursorYByArea));
+  });
   // Notes live in the session-scoped host store. The
   // panel reads `notes` through `useNotes()` (absolute trace ns)
   // and converts to/from display-relative seconds against

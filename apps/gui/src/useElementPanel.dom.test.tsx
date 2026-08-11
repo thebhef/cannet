@@ -1,15 +1,16 @@
 // @vitest-environment jsdom
 //
 // The shared element-panel lifecycle hooks: id resolution + `ensure` +
-// `config` hydration + dual-write persist (`useElementPanel`), and the
-// sources-picker kind-narrowing (`useElementSources`). Four panels
-// (trace, plot, transmit, rbs) build on these; this is the canonical
-// coverage for the shared logic itself — each panel's own DOM test
-// still covers its integration (which config keys it round-trips,
-// how it wires the picker's presentation).
+// `config` hydration + dual-write persist (`useElementPanel`), the
+// resync-from-element path (`useElementRehydrate`), and the
+// sources-picker kind-narrowing (`useElementSources`). Every
+// element-backed panel builds on these; this is the canonical coverage
+// for the shared logic itself — each panel's own DOM test still covers
+// its integration (which config keys it round-trips and re-applies, how
+// it wires the picker's presentation).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import {
@@ -17,7 +18,8 @@ import {
   type ElementRegistry,
   type RegistryEntry,
 } from "./projectElements";
-import { useElementPanel, useElementSources } from "./useElementPanel";
+import { makeLiveRegistry } from "./registryTestKit";
+import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
 import { freshTrace } from "./trace";
 import type { ProjectElement } from "./types";
 
@@ -51,6 +53,13 @@ function wrapperFor(registry: ElementRegistry) {
       <ElementRegistryContext.Provider value={registry}>{children}</ElementRegistryContext.Provider>
     );
   };
+}
+
+/// The live (real-state, real-`applyElementPatch`) registry, wrapped to
+/// this file's `{ Wrapper, control }` shape.
+function liveWrapperFor(elements: ProjectElement[]) {
+  const { Provider, control } = makeLiveRegistry(elements);
+  return { Wrapper: Provider, control };
 }
 
 afterEach(() => vi.clearAllMocks());
@@ -125,7 +134,13 @@ describe("useElementPanel", () => {
       { wrapper: wrapperFor(registry) },
     );
     result.current.persist({ mode: "chronological" });
-    expect(update).toHaveBeenCalledWith("t1", { config: { mode: "chronological" } });
+    // The third argument is this panel's writer token — what makes the
+    // write recognisable as its own echo rather than an external edit.
+    expect(update).toHaveBeenCalledWith(
+      "t1",
+      { config: { mode: "chronological" } },
+      expect.any(String),
+    );
     expect(api.updateParameters).toHaveBeenCalledWith({ elementId: "t1", mode: "chronological" });
   });
 
@@ -141,6 +156,104 @@ describe("useElementPanel", () => {
     result.current.persist();
     expect(update).not.toHaveBeenCalled();
     expect(api.updateParameters).toHaveBeenCalledWith({ elementId: "x1" });
+  });
+});
+
+describe("useElementPanel rehydration", () => {
+  const traceElement = { kind: "trace", id: "t1", sources: ["*"], config: { mode: "by-id" } } as
+    unknown as ProjectElement;
+
+  it("does not rehydrate on mount — `savedConfig` is the mount read", () => {
+    const { Wrapper } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    renderHook(
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
+      { wrapper: Wrapper },
+    );
+    expect(rehydrate).not.toHaveBeenCalled();
+  });
+
+  it("rehydrates from the element when its config is rewritten externally", () => {
+    const { Wrapper, control } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    renderHook(
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
+      { wrapper: Wrapper },
+    );
+    act(() => control.update("t1", { config: { mode: "chronological" } }));
+    expect(rehydrate).toHaveBeenCalledTimes(1);
+    expect(rehydrate).toHaveBeenCalledWith({ mode: "chronological" });
+  });
+
+  it("does not rehydrate from the panel's own persist (no self-clobber, no loop)", () => {
+    const { Wrapper } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    const { result } = renderHook(
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
+      { wrapper: Wrapper },
+    );
+    act(() => result.current.persist({ mode: "chronological" }));
+    expect(rehydrate).not.toHaveBeenCalled();
+  });
+
+  it("still rehydrates after the panel has persisted its own config", () => {
+    const { Wrapper, control } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    const { result } = renderHook(
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
+      { wrapper: Wrapper },
+    );
+    act(() => result.current.persist({ mode: "chronological" }));
+    act(() => control.update("t1", { config: { mode: "by-id" } }));
+    expect(rehydrate).toHaveBeenCalledTimes(1);
+    expect(rehydrate).toHaveBeenCalledWith({ mode: "by-id" });
+  });
+
+  it("ignores a write that leaves the config untouched (a sources rewire)", () => {
+    const { Wrapper, control } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const rehydrate = vi.fn();
+    renderHook(
+      () => {
+        const panel = useElementPanel({ params: { elementId: "t1" }, api } as never, "trace");
+        useElementRehydrate(panel, rehydrate);
+        return panel;
+      },
+      { wrapper: Wrapper },
+    );
+    act(() => control.update("t1", { sources: ["b1"] }));
+    expect(rehydrate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the element view live through an external write", () => {
+    const { Wrapper, control } = liveWrapperFor([traceElement]);
+    const api = { updateParameters: vi.fn() };
+    const { result } = renderHook(
+      () => useElementPanel({ params: { elementId: "t1" }, api } as never, "trace"),
+      { wrapper: Wrapper },
+    );
+    act(() => control.update("t1", { sources: ["b1"] }));
+    expect(result.current.element).toMatchObject({ sources: ["b1"] });
   });
 });
 

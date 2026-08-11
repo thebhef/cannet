@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import type { SignalPageRow, SignalSectionsWire } from "./types";
 
@@ -59,6 +59,8 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { freshTrace } from "./trace";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import { makeLiveRegistry } from "./registryTestKit";
+import type { ProjectElement } from "./types";
 
 class FakeResizeObserver {
   observe() {}
@@ -478,5 +480,53 @@ describe("SignalsPanel sections", () => {
     expect(sel.keys).toHaveLength(1);
     // The assignment stays, dormant: re-creating "Pack" restores it.
     expect(elementSections(registry)?.assignments).toEqual({ [ENGINE_KEY]: "Pack" });
+  });
+});
+
+describe("SignalsPanel rehydration", () => {
+  /// The panel over a registry that really applies patches, so a write
+  /// from outside the panel reaches it the way the app's would.
+  function renderLive(config: Record<string, unknown>) {
+    const { Provider, control } = makeLiveRegistry([
+      { kind: "signals", id: "s1", sources: ["*"], config } as unknown as ProjectElement,
+    ]);
+    const api = { updateParameters: vi.fn() };
+    const props = { params: { elementId: "s1" }, api } as unknown as Parameters<
+      typeof SignalsPanel
+    >[0];
+    render(
+      <TraceDataProvider value={traceData}>
+        <ProjectContext.Provider value={projectCtx}>
+          <SignalCatalogProvider>
+            <Provider>
+              <SignalsPanel {...props} />
+            </Provider>
+          </SignalCatalogProvider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+    return { control, api };
+  }
+
+  it("re-queries from an externally rewritten config", async () => {
+    ROWS = [];
+    const { control } = renderLive({ sections: { names: [], assignments: {}, patterns: {} } });
+    await waitFor(() => expect(lastSections()?.names).toEqual([]));
+    act(() => {
+      control.update("s1", {
+        config: { sections: { names: ["Pack"], assignments: {}, patterns: {} } },
+      } as never);
+    });
+    await waitFor(() => expect(lastSections()?.names).toEqual(["Pack"]));
+  });
+
+  it("keeps the panel's own edit — a persist is not a resync trigger", async () => {
+    ROWS = [];
+    const { control } = renderLive({ sections: { names: [], assignments: {}, patterns: {} } });
+    await waitFor(() => expect(lastSections()?.names).toEqual([]));
+    fireEvent.click(screen.getByRole("button", { name: "add section" }));
+    await waitFor(() => expect(lastSections()?.names).toEqual(["Section 1"]));
+    const el = control.entries()[0].element as { config?: { sections?: { names: string[] } } };
+    expect(el.config?.sections?.names).toEqual(["Section 1"]);
   });
 });

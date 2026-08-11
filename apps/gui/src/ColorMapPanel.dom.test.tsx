@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { openCombobox } from "./comboboxTestKit";
 
@@ -65,6 +65,7 @@ import {
 import { freshTrace } from "./trace";
 import type { ProjectElement } from "./types";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import { makeLiveRegistry } from "./registryTestKit";
 
 const projectCtx = {
   buses: [{ id: "b1", name: "Chassis" }],
@@ -199,5 +200,57 @@ describe("ColorMapPanel", () => {
       expect(document.body.textContent).toContain("No ranges yet"),
     );
     expect(document.body.textContent).not.toContain("SNA");
+  });
+});
+
+describe("ColorMapPanel rehydration", () => {
+  it("repaints from an externally rewritten element — it reads the registry live", async () => {
+    // A colormap panel keeps no mirrored copy of its element, so it
+    // needs no resync path of its own: the rules it renders are the
+    // registry's, every render.
+    const { Provider, control } = makeLiveRegistry([
+      {
+        kind: "colormap",
+        id: "cm1",
+        busId: "b1",
+        messageId: 0x100,
+        extended: false,
+        signalName: "Gear",
+        rules: [
+          { min: 0, max: 0, color: "#111111" },
+          { min: 1, max: 1, color: "#222222" },
+          { min: 2, max: 2, color: "#333333" },
+        ],
+      } as ProjectElement,
+    ]);
+    const props = { params: { elementId: "cm1" } } as unknown as Parameters<
+      typeof ColorMapPanel
+    >[0];
+    render(
+      <ProjectContext.Provider value={projectCtx}>
+        <SignalCatalogProvider>
+          <Provider>
+            <ColorMapPanel {...props} />
+          </Provider>
+        </SignalCatalogProvider>
+      </ProjectContext.Provider>,
+    );
+    await waitFor(() =>
+      expect((document.querySelectorAll('input[type="color"]')[0] as HTMLInputElement).value).toBe(
+        "#111111",
+      ),
+    );
+    act(() => {
+      control.update("cm1", {
+        rules: [
+          { min: 0, max: 0, color: "#aabbcc" },
+          { min: 1, max: 1, color: "#222222" },
+          { min: 2, max: 2, color: "#333333" },
+        ],
+      } as never);
+    });
+    expect((document.querySelectorAll('input[type="color"]')[0] as HTMLInputElement).value).toBe(
+      "#aabbcc",
+    );
   });
 });

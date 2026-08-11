@@ -19,7 +19,7 @@ import { useProjectContext } from "./projectContext";
 import { buildSinkPredicate } from "./sinkPredicate";
 import { buildColorResolver } from "./colorMap";
 import { SourcesContextMenu } from "./SourcesPicker";
-import { useElementPanel, useElementSources } from "./useElementPanel";
+import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
 import { hostSettings } from "./hostSettings";
 import { toggleInSet } from "./toggleSet";
 import {
@@ -66,6 +66,16 @@ function expandedFromConfig(raw: unknown): Set<string> {
   return new Set(raw.filter((v): v is string => typeof v === "string"));
 }
 
+// The three settings-seeded fields, read the same way whether the panel
+// is seeding itself at mount or resyncing from a rewritten config: a
+// config that doesn't carry the field falls back to the view default.
+const modeFromConfig = (c: TraceConfig | undefined): TraceMode =>
+  traceMode(c?.mode ?? hostSettings().trace_mode);
+const autoScrollFromConfig = (c: TraceConfig | undefined): boolean =>
+  typeof c?.autoScroll === "boolean" ? c.autoScroll : hostSettings().trace_auto_scroll;
+const showEventsFromConfig = (c: TraceConfig | undefined): boolean =>
+  typeof c?.showEvents === "boolean" ? c.showEvents : hostSettings().trace_show_events;
+
 /**
  * One trace-style panel: a view of one trace *element* (`useTrace`),
  * switchable between **chronological** (one row per frame, virtualized,
@@ -87,10 +97,8 @@ export function TracePanel(props: IDockviewPanelProps) {
   const project = useProjectContext();
   const buses = project.buses;
   const lookup = useMemo(() => busLookup(buses), [buses]);
-  const { elementId, registry, element, savedConfig, persist } = useElementPanel<TraceConfig>(
-    props,
-    "trace",
-  );
+  const panel = useElementPanel<TraceConfig>(props, "trace");
+  const { elementId, registry, element, savedConfig, persist } = panel;
   // Signal value→color maps (ADR 0029) are ambient: compile every
   // colormap element in the project into one resolver the decoded-signal
   // cells call to tint themselves. Rebuilt only when the element set
@@ -104,25 +112,15 @@ export function TracePanel(props: IDockviewPanelProps) {
   // `trace_show_events`) are read *here* and nowhere else — once, as
   // this panel seeds its state. A panel that already carries the value
   // keeps it, and a later change to a default leaves open panels alone.
-  const [mode, setMode] = useState<TraceMode>(() =>
-    traceMode(savedConfig?.mode ?? hostSettings().trace_mode),
-  );
+  const [mode, setMode] = useState<TraceMode>(() => modeFromConfig(savedConfig));
   const switchMode = useCallback((m: TraceMode) => setMode(m), []);
 
   // Per-panel: auto-scroll (chronological) and the column layout.
-  const [autoScroll, setAutoScroll] = useState(() =>
-    typeof savedConfig?.autoScroll === "boolean"
-      ? savedConfig.autoScroll
-      : hostSettings().trace_auto_scroll,
-  );
+  const [autoScroll, setAutoScroll] = useState(() => autoScrollFromConfig(savedConfig));
   const handleAutoScrollDisabled = useCallback(() => setAutoScroll(false), []);
   // View-local: whether timeline events (ADR 0035) interleave into this
   // chronological trace. Persisted with the rest of the config.
-  const [showEvents, setShowEvents] = useState(() =>
-    typeof savedConfig?.showEvents === "boolean"
-      ? savedConfig.showEvents
-      : hostSettings().trace_show_events,
-  );
+  const [showEvents, setShowEvents] = useState(() => showEventsFromConfig(savedConfig));
   const [columns, setColumns] = useState<ColumnState[]>(() => columnsFromParams(savedConfig?.columns));
   const handleColumnResize = useCallback(
     (key: ColumnKey, width: number) => setColumns((cs) => resizeColumn(cs, key, width)),
@@ -155,6 +153,16 @@ export function TracePanel(props: IDockviewPanelProps) {
   const onToggleExpand = useCallback((rowKey: string) => {
     setExpanded((prev) => toggleInSet(prev, rowKey));
   }, []);
+
+  // …and re-read the same fields when the element's config is rewritten
+  // by anyone else — the mirror image of the seeding above.
+  useElementRehydrate(panel, (config) => {
+    setMode(modeFromConfig(config));
+    setAutoScroll(autoScrollFromConfig(config));
+    setShowEvents(showEventsFromConfig(config));
+    setColumns(columnsFromParams(config.columns));
+    setExpanded(expandedFromConfig(config.expanded));
+  });
 
   // Dual-write this panel's persistable state (mode, auto-scroll,
   // column layout, events toggle, the open by-id rows) onto the element

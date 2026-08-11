@@ -12,7 +12,7 @@ import { sectionHeaderOf, signalOf } from "./types";
 import { TraceControls } from "./TraceControls";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import { useTrace } from "./trace";
-import { useElementRegistry } from "./projectElements";
+import { useElementPanel, useElementRehydrate } from "./useElementPanel";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { useSignalView } from "./useSignalView";
@@ -59,10 +59,15 @@ import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { diagCount } from "./diag"; // DIAG
 
-/// The element id from a panel's params, or a fresh one if absent.
-function elementIdFromParams(params: unknown): string {
-  const p = params as { elementId?: unknown } | undefined;
-  return typeof p?.elementId === "string" ? p.elementId : crypto.randomUUID();
+/// This panel's persisted view config: the selection, the column
+/// layout, and the sections — see {@link useElementPanel}. The fold set
+/// is *not* here: it rides the dockview params only (workspace state,
+/// not part of what the view means).
+interface SignalsConfig {
+  [key: string]: unknown;
+  selection?: unknown;
+  columns?: unknown;
+  sections?: unknown;
 }
 
 /// A persisted manual pick. Same fields as `DraggableSignalRef` — the
@@ -200,34 +205,20 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   // A signal with no stored override is colored from the theme's wheel
   // by a hash of its key — here, and in every `SignalRow` below.
   useThemeName();
-  const registry = useElementRegistry();
-  const { ensure, update } = registry;
   const project = useProjectContext();
-  const { api } = props;
   const buses = project.buses;
   const lookup = useMemo(() => busLookup(buses), [buses]);
+
+  // The fold set is the one persisted field that lives in the dockview
+  // params rather than on the element; everything else this panel saves
+  // arrives as `savedConfig`.
+  const params = props.params as { folded?: unknown } | undefined;
+  const panel = useElementPanel<SignalsConfig>(props, "signals");
+  const { elementId, registry, element, savedConfig, persist } = panel;
   const resolveColor = useMemo(
     () => buildColorResolver(registry.entries.map((e) => e.element)),
     [registry.entries],
   );
-
-  const params = props.params as
-    | {
-        elementId?: unknown;
-        selection?: unknown;
-        columns?: unknown;
-        sections?: unknown;
-        folded?: unknown;
-      }
-    | undefined;
-  const [elementId] = useState(() => elementIdFromParams(params));
-  useEffect(() => {
-    ensure(elementId, "signals");
-  }, [ensure, elementId]);
-  const [savedConfig] = useState<typeof params>(() => {
-    const cfg = (registry.get(elementId)?.element as { config?: typeof params } | undefined)?.config;
-    return cfg ?? params;
-  });
 
   // `false`: the signals view reads the window bounds and run state,
   // never a frame row — so it does not page one (ADR 0025).
@@ -366,18 +357,24 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     [sections.names],
   );
 
+  // …and re-read the selection, columns and sections when the element's
+  // config is rewritten by anyone else — the mirror image of the
+  // seeding above.
+  useElementRehydrate(panel, (config) => {
+    setSelection(selectionFromParams(config.selection));
+    setColumns(signalColumnsFromParams(config.columns));
+    setSections(sectionsFromConfig(config.sections));
+  });
+
   // Dual-write the persistable config (element + dockview params), the
   // same pattern as the trace/plot panels. `folded` goes to the params
   // only — it is workspace state, not part of what the view means.
   useEffect(() => {
-    const config = { selection, columns, sections };
-    update(elementId, { config });
-    api.updateParameters({ elementId, ...config, folded: [...folded] });
-  }, [api, update, elementId, selection, columns, sections, folded]);
+    persist({ selection, columns, sections }, { folded: [...folded] });
+  }, [persist, selection, columns, sections, folded]);
 
   // Sources wiring (sink node): bounds the catalog, the patterns, and
   // the rows to the buses this view consumes.
-  const element = registry.get(elementId)?.element;
   const currentSources =
     element &&
     element.kind !== "transmit" &&

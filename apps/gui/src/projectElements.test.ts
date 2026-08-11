@@ -351,6 +351,47 @@ describe("applyElementPatch", () => {
     expect((after[0].element as { config?: { followLive?: boolean } }).config?.followLive).toBe(false);
   });
 
+  it("bumps the entry's config epoch when a config patch lands, tagged with the writer", () => {
+    // The epoch is how a mounted panel learns its element's view config
+    // changed under it; the writer tag is how the panel that made the
+    // change recognises (and skips) its own echo.
+    const plot: RegistryEntry = {
+      element: { kind: "plot", id: "p", sources: ["*"], config: { followLive: true } },
+      trace: freshTrace(0),
+    };
+    const after = applyElementPatch([plot], "p", { config: { followLive: false } }, "writer-1");
+    expect(after[0].configEpoch).toBe(1);
+    expect(after[0].configOrigin).toBe("writer-1");
+    const again = applyElementPatch(after, "p", { config: { followLive: true } });
+    expect(again[0].configEpoch).toBe(2);
+    // No writer given: the write came from outside any panel, so every
+    // mounted panel must resync from it.
+    expect(again[0].configOrigin).toBeUndefined();
+  });
+
+  it("leaves the config epoch alone for a patch that doesn't touch config", () => {
+    const plot: RegistryEntry = {
+      element: { kind: "plot", id: "p", sources: ["*"], config: { followLive: true } },
+      trace: freshTrace(0),
+      configEpoch: 4,
+      configOrigin: "writer-1",
+    };
+    const after = applyElementPatch([plot], "p", { sources: ["b1"] });
+    expect(after).not.toBe([plot]);
+    expect(after[0].configEpoch).toBe(4);
+    expect(after[0].configOrigin).toBe("writer-1");
+  });
+
+  it("leaves the config epoch alone for a no-op config patch (a panel re-persisting what it read)", () => {
+    const plot: RegistryEntry = {
+      element: { kind: "plot", id: "p", sources: ["*"], config: { followLive: true } },
+      trace: freshTrace(0),
+      configEpoch: 4,
+    };
+    const before = [plot];
+    expect(applyElementPatch(before, "p", { config: { followLive: true } }, "w")).toBe(before);
+  });
+
   it("refuses a kind/id mismatch (stale closure protection)", () => {
     const before = [trace("t1")];
     expect(
