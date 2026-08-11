@@ -393,7 +393,8 @@ name, ECU, comment, value-table label, message id (hex or decimal),
 or attribute, and the tree filters to the matches: ancestors of a
 match auto-expand and everything else is hidden, so a filtered
 render stays bounded by the match set however large the database.
-The whole tree is keyboard-navigable — arrow up/down move, right
+**Ctrl/⌘+F** puts the cursor in that search box from anywhere in the
+panel. The whole tree is keyboard-navigable — arrow up/down move, right
 expands, left collapses (or walks to the parent), Enter selects.
 The toolbar's **details**
 toggle reveals the full per-signal detail (bit positions, scale,
@@ -755,11 +756,11 @@ resample at the end.
   blanks the plot. An area left with no visible series gives up its
   plot height like any all-hidden area, without touching its own
   collapse toggle. The pattern is saved with the panel in the project
-  file.
+  file. **Ctrl/⌘+F** focuses the box from anywhere in the plot panel.
 - **Stepping the matches.** The **‹ / ›** controls beside the solo box
-  (and **PgUp / PgDn** while the plot panel has focus, which is where
-  it is right after typing a pattern) walk the match list **one series
-  at a time**, wrapping at both ends — the item-by-item workflow the
+  (and **PgUp / PgDn** anywhere in the plot panel — clicking any part
+  of it, the canvas included, gives the panel focus) walk the match
+  list **one series at a time**, wrapping at both ends — the item-by-item workflow the
   box exists for. The read-out between them is the position, `3/17`;
   before you step, it is the bare match count. Stepping runs in panel
   order — areas top to bottom, rows within each area — so it crosses
@@ -1042,7 +1043,7 @@ In the panel:
   editing partial-encodes into it (enum labels and `0x…` raw hex are
   accepted), an overridden cell is marked and a light **×** clears
   it back to DBC-tracking. The fzf filter narrows by message /
-  signal name.
+  signal name; **Ctrl/⌘+F** focuses it from anywhere in the panel.
 - **Run** (persisted in the project, default off) starts the enabled
   messages on the host scheduler; actual transmission gates on
   per-bus connectivity (a bus that connects starts its messages, a
@@ -1618,14 +1619,23 @@ The bare `cannet-gui` binary is **not** statically self-contained:
 - **macOS:** uses the system WebKit framework; no extra runtime.
 
 Tauri can't cross-compile — each target is built on the matching OS.
-The release workflow does this automatically: pushing a `vX.Y.Z` tag
-first runs the full CI suite, then (only if it passes) builds the macOS
-arm64 and Windows x64 bundles on native GitHub Actions runners and
-publishes them to a draft pre-release (see § Downloads and
+The release workflow does this automatically: run it from the Actions
+tab with the version you want, and it first runs the full CI suite, then
+(only if it passes) builds the macOS arm64 and Windows x64 bundles on
+native GitHub Actions runners and publishes them to a draft pre-release
+(see § Downloads and
 [`.github/workflows/release.yml`](.github/workflows/release.yml)). The
 committed version stays `0.0.0`; the binary stamps its own
-`git describe` version (shown in the settings panel's About section)
-and the installer takes its version from the tag.
+`git describe --tags --dirty` version (shown in the settings panel's
+About section) and the installer takes its version from the tag.
+
+The runner writes that version into `tauri.conf.json` — a tracked file —
+so it commits the edit to its throwaway checkout *before* tagging, and
+asserts the stamp is exactly `vX.Y.Z` before building. Otherwise the
+edit would still be uncommitted when vergen reads the tree and every
+released binary would report `vX.Y.Z-dirty`. The `-dirty` suffix is
+meaningful and stays: a binary you build yourself from a tree with
+uncommitted changes to tracked files says so.
 
 ## Tests and lint
 

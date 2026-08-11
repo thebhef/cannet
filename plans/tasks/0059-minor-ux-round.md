@@ -483,8 +483,151 @@ between phases. 59.A's first commit carries this plan section.
     `docs/CONTEXT.md`'s **Selection** entry, and the README's DBC-tree
     and plot-signal-row paragraphs.
 
+- 2026-08-09 — Phase 59.G landed (`task59g-dirty-version`, off
+  `task59f-gridview-keys`). Two commits:
+  - `54d91d5` `fix(ci): release bundles stamp a clean version, not
+    -dirty` — the workflow fix plus the README paragraph it
+    invalidates.
+  - `bf23696` `docs(readme): document Ctrl/Cmd+F and the plot panel's
+    PgUp/PgDn scope` — two doc gaps found during the exit-criteria walk
+    (below), both from earlier phases of this task. Docs only.
+
+  ### Item 8 — the written report for the owner
+
+  **The first question, settled: it is specific to how CI writes the
+  version, not every build.** The stamp is
+  `VERGEN_GIT_DESCRIBE`, emitted by `apps/gui/src-tauri/build.rs` from
+  `git describe --tags --dirty` (vergen 8, `gitcl` — it shells out to
+  `git`), read back by `build_version()` in `lib.rs`. `--dirty` appends
+  the marker when the *tracked* content of the working tree differs from
+  `HEAD`; untracked files never count. So an ordinary build stamps
+  `-dirty` only when the tree genuinely is dirty — which for a dev
+  machine mid-edit is correct and is what the marker is for. What was
+  wrong is that a *release* runner starts from a pristine checkout and
+  then makes itself dirty before the stamp is taken.
+
+  **Observations.** Fresh `git clone` of this repository into a scratch
+  directory (Windows, `core.autocrlf=true`), checked out at the phase
+  branch:
+
+  | step | `git status --porcelain` | `git describe --tags --dirty` |
+  | --- | --- | --- |
+  | pristine clone | *(empty)* | `v0.8.1-142-g2e903fc` |
+  | `git tag v9.9.9` (workflow's "Tag the commit") | *(empty)* | `v9.9.9` |
+  | the workflow's "Set bundle version" `node -e`, verbatim | `M apps/gui/src-tauri/tauri.conf.json` (unstaged) | **`v9.9.9-dirty`** |
+  | `pnpm --dir apps/gui install --frozen-lockfile` | *(unchanged)* | *(unchanged)* |
+
+  **Cause, confirmed by the third row.** `.github/workflows/release.yml`
+  injects the release version into `apps/gui/src-tauri/tauri.conf.json`
+  — a **tracked** file, committed as `0.0.0` on purpose — and the tag
+  was created *before* that edit. By the time `tauri-action` ran cargo,
+  and cargo ran `build.rs`, and `build.rs` ran `git describe`, the tree
+  carried exactly one uncommitted modification. Every bundle the release
+  workflow has ever published therefore reported `vX.Y.Z-dirty`. Nothing
+  else in the recipe contributes: `pnpm install --frozen-lockfile`
+  leaves the tree untouched (measured, row four), and the sidecar freeze
+  writes only gitignored paths — `sidecar-dist/` (including its
+  `_build/` PyInstaller workpath) and the generated `licenses.json` —
+  which `--dirty` ignores anyway because they are untracked.
+
+  **The local suspect was investigated and refuted.** The root
+  `package-lock.json` does not churn on this machine: its blob is 85
+  bytes with zero CR, the working copy is 91 bytes with six CR, and
+  `core.autocrlf=true` reconciles the two — `git status --porcelain` is
+  empty both in the main tree and in the pristine clone. No tracked file
+  in the tree shows line-ending churn under the checked-out config, so
+  no `.gitattributes` was added; adding one would have been a change
+  with no observation behind it.
+
+  **Fix (`54d91d5`).** Commit the version bump to the runner's throwaway
+  checkout, *then* tag. `describe` then resolves to exactly `vX.Y.Z`
+  over a clean tree. The commit is never pushed — `tauri-action`
+  creates the real tag through the GitHub API — so the committed version
+  in the repository still stays `0.0.0`, and because the file edit still
+  happens the bundle/installer version and asset names are unchanged.
+  The commit is path-scoped to `tauri.conf.json` rather than `-a`, so it
+  cannot silently sweep up (and thereby hide) some other file a future
+  step dirties. A new **Assert the version stamp is clean** step runs
+  immediately before the bundle build and fails the release, loudly,
+  if `git describe --tags --dirty` is not exactly the release tag. That
+  is the last point where the check is possible: the sidecar freeze and
+  `pnpm build` run *inside* `tauri-action`, as `beforeBuildCommand`.
+  **The marker itself is untouched** — a genuinely modified tree still
+  stamps `-dirty`.
+
+  **Verification.**
+  - *CI recipe, locally.* The workflow's `run:` bodies were extracted
+    from the YAML by a parser (so the thing under test is the file, not
+    a paraphrase of it) and executed against the pristine clone with the
+    version substituted. Result: `vergen will stamp: v9.9.9`, `git
+    status --porcelain` empty, `tauri.conf.json` version `9.9.9`.
+    Negative control at the same point — append a newline to
+    `README.md` — makes the guard print `v9.9.9-dirty` and exit 1.
+  - *This machine's build.* From the committed-clean tree,
+    `cargo build -p cannet-gui` emits
+    `cargo:rustc-env=VERGEN_GIT_DESCRIBE=v0.8.1-143-g54d91d5` and the
+    string in `target/debug/cannet-gui.exe` is `v0.8.1-143-g54d91d5` —
+    no marker. Deliberately dirtying `README.md` and rebuilding gives
+    `v0.8.1-143-g54d91d5-dirty` in the binary; restoring the file and
+    rebuilding gives the clean string back.
+  - *Real CI:* **pending the next push.** This phase must not push, so
+    the release workflow has not run against the fix. The new assert
+    step is what will confirm it on the first release after the chain
+    lands — and will fail the run rather than ship a `-dirty` bundle if
+    something else has since started dirtying the tree.
+
+  **Not the same mechanism, don't confuse them:** the ADR-0031 perf
+  harness also writes `-dirty` into its snapshot filenames
+  (`measurement_filename` in `cannet-perf-measurement`), but it derives
+  that from `git status --porcelain`, so *untracked* files mark it dirty
+  too. It is unrelated to the binary's version string and was left
+  alone.
+
+  Verification for the phase as a whole: `cargo test -p cannet-gui` 529
+  passed, 0 failed, 4 ignored; `cargo clippy -p cannet-gui --all-targets`
+  clean; `pnpm --dir apps/gui test` 139 files, 1721 tests passed;
+  `pnpm --dir apps/gui build` clean. ADR-0031 perf gate deliberately not
+  run — the orchestrator runs the final gate.
+
 ## Blockers / side effects
 
+- **59.G — the CI half of item 8 is verified against the recipe, not
+  against a real run.** The phase is under a no-push instruction, so
+  `release.yml` has not executed on a GitHub runner since the fix. What
+  *was* executed is the workflow's own `run:` bodies, parsed out of the
+  YAML and run against a pristine clone — which proves the recipe, not
+  the runner. Two things only a real run can settle: whether
+  `tauri-action` minds that `HEAD` is a local commit that does not exist
+  on the remote (it creates the tag through the API against the pushed
+  sha, so it should not), and whether either runner image dirties a
+  tracked file in a way this machine does not (Windows line-ending
+  handling being the obvious candidate). The new **Assert the version
+  stamp is clean** step is exactly the instrument for both: the first
+  real release either passes it or names the file that dirtied the tree.
+- **59.G — the release runner now makes a commit in its own checkout.**
+  It is local to the ephemeral workspace, path-scoped to
+  `apps/gui/src-tauri/tauri.conf.json`, authored as `cannet release
+  <release@users.noreply.github.com>`, and never pushed — but it does
+  mean `HEAD` during a release build is not a commit that exists
+  anywhere else, and `git describe` reports the tag rather than a
+  commit anyone can fetch. That is the intended reading (the released
+  binary should say `v0.1.0`, not `v0.1.0-1-gdeadbee`), and the
+  repository's committed version still stays `0.0.0`. Recorded because
+  it changes what a release runner's git state means, which is the sort
+  of thing a future reader of the workflow will want stated.
+- **59.G — the repository carries a root `package-lock.json` with no
+  `package.json` beside it.** 85 bytes, `"packages": {}`, tracked, in a
+  pnpm workspace whose real lockfile is `apps/gui/pnpm-lock.yaml`. It
+  was the named local suspect for item 8 and is **not** the cause — it
+  does not churn under the checked-out config (blob LF, worktree CRLF,
+  `core.autocrlf=true` reconciling them; `git status --porcelain` empty
+  in both the main tree and a fresh clone). Left in place rather than
+  deleted: removing a tracked file nothing in this phase's evidence
+  implicates would be a drive-by. Flagging it because it is still a
+  latent trap — anything that runs `npm` at the repository root would
+  rewrite it, and that *would* dirty the tree at stamp time. The assert
+  step added in `54d91d5` would catch it in CI; a local build would
+  simply stamp `-dirty`, correctly.
 - **59.F — the shared Escape needed two row editors to declare that
   they consume it.** Both revert on Escape *and* commit on blur, so the
   grid taking focus back blurred them into committing the very draft
@@ -663,3 +806,123 @@ between phases. 59.A's first commit carries this plan section.
   in CI, with a written report of the cause for the owner.
 - Docs updated where behavior changed (README settings/themes;
   ADR 0018 bindings list if it enumerates defaults).
+
+## Exit criteria walk
+
+2026-08-09, at the end of phase 59.G, over the branch chain
+`task59a-theme-menu` → … → `task59g-dirty-version` (HEAD `bf23696`).
+One line per criterion above, in order. Suite figures cited below are
+from re-runs on this branch, not from the phase logs:
+`cargo test -p cannet-gui` 529 passed / 0 failed / 4 ignored;
+`cargo clippy -p cannet-gui --all-targets` clean;
+`pnpm --dir apps/gui test` 139 files / 1721 tests passed;
+`pnpm --dir apps/gui build` clean. The ADR-0031 perf gate is the
+orchestrator's to run, not the implementing phases' — its verdict is
+the closing entry below the nine criteria.
+
+1. **Theme combobox dark/light/lighthk; `normal_mode` gone; theme +
+   palette tests green — MET.** 59.A, commits `10579b2` (host) and
+   `a5121a4` (frontend). Re-checked in the tree rather than taken from
+   the log: `settings.rs:519` is
+   `pub const THEMES: &[&str] = &["dark", "light", "lighthk"];`, and a
+   repo-wide grep for `normal_mode`, `resolveTheme` and `ThemeSetting`
+   across `apps/` and `crates/` returns nothing. `theme.test.ts`,
+   `palette.test.ts`, `themeSync.dom.test.ts` green in the 1721.
+   README documented in `663f40b`.
+2. **No-project session restores window size/position only, dom-tested
+   both directions — MET.** 59.B, commit `ad9442c`. Four cases in
+   `App.bootReopen.dom.test.tsx`; the two scratch-direction ones were
+   watched fail pre-fix, the two project-direction ones are the
+   "still works" guard. `tauri_plugin_window_state` untouched, which is
+   what leaves geometry restoring. Scope note recorded as a blocker:
+   "a project being open" is `projectPath !== null`, so a never-saved
+   project counts as scratch.
+3. **Ctrl+F focuses the plot and RBS find boxes, palette-listed, no
+   binding conflicts; DBC/Settings covered or deferral recorded — MET.**
+   59.C, commits `2a5cbfc` / `bd443af` / `3522aeb` / `594a96a`.
+   `commands.ts:94` defines `FINDABLE_PANEL_KINDS` and gates `panel.find`
+   on it, which is also what governs palette listing; the import-time
+   `findBindingConflicts` self-check stayed green, i.e. `Mod+F`
+   collided with nothing. DBC **covered** (`594a96a`) rather than
+   deferred. Settings **deferred, with the reason recorded** in the 59.C
+   entry: `SettingsPanel.tsx` has no find box for the command to focus,
+   so binding it there would bind a key to nothing. Documented in the
+   README as of `bf23696` (see criterion 9).
+4. **The three solo bugs have regression tests; one fails pre-fix,
+   the other two pass against the unmodified panel — MET as AMENDED.**
+   The criterion in this file was already rewritten during 59.D to
+   describe the outcome the evidence supports, and it is honest:
+   item 4.3 (PgUp/PgDn scope) reproduced and is fixed (`5e7bb8e`, test
+   watched red first: "expected body to be div.plot-panel"); items 4.1
+   and 4.2 did **not** reproduce, their groomed diagnoses were each
+   falsified by an experiment, and the experiments stayed as
+   characterisation tests (`a2b03e1`, `d48015e`). Two blockers record
+   what could still be true for 4.1/4.2 and what a reproduction from the
+   owner would settle. **This is the one amended criterion in the
+   task**; it is not "met" in the sense originally groomed, and the
+   underlying reports are not closed.
+5. **Autosave-on-exit saves an explicit-dir project silently, prompts
+   otherwise, overridable per project — MET.** 59.E, commits `15db05c`
+   / `a367682` / `1a8290a`. `settings.rs:73` registers
+   `("autosave_on_exit", Scope::UserOverridable)` — the per-project
+   override is that scope, not a new storage layer. Three dom cases in
+   `App.closeConfirm.dom.test.tsx` at the close-flow seam, the
+   silent-save one watched red first. One corner recorded as a blocker:
+   a never-saved RBS can still raise its own save-path dialog.
+6. **Escape in gridview row content returns focus without stealing
+   Escape from content that consumes it — MET.** 59.F, commit
+   `82bba5f`. Dom-tested in the shared `useGridview` (four cases plus a
+   global-command case) and in RBS. Two row editors had to declare their
+   Escape consumption — recorded as a blocker, and now the standing rule
+   for the layer. ADR 0044 updated in the same commit.
+7. **Shift+Up/Down extends the selection directionally from the anchor
+   in every gridview and the plot signal rows — MET.** 59.F, commits
+   `1517946` (shared: `extendToCursor` in `gridviewSelection.ts:121`,
+   seven pure cases + two hook dom cases) and `7c53a6b` (plot consumer:
+   `extendPlotSignalSelection`, six pure + three dom cases). One
+   deliberate reading recorded as a blocker: a press onto an
+   unselectable structure row moves the cursor without growing the
+   range, because the alternative needs an unbounded walk of a
+   host-paged row space. ADR 0044's rejected-alternatives entry was
+   amended rather than contradicted — flagged as a reversal of a written
+   user ruling.
+8. **A build from a clean checkout stamps a version without `-dirty`,
+   cause identified and fixed, genuine dirt still stamped; verified on
+   this machine and in CI, with a written report — MET on this machine;
+   the CI half is verified against the recipe but NOT YET against a real
+   run.** 59.G, commit `54d91d5`; the written report is the 59.G status
+   entry above. Cause: the release workflow edited the tracked
+   `tauri.conf.json` after tagging and before the stamp. This machine's
+   build: `v0.8.1-143-g54d91d5` clean, `…-dirty` when a tracked file is
+   modified, clean again when restored. CI: the workflow's own `run:`
+   bodies, extracted from the YAML and executed against a pristine
+   clone, stamp `v9.9.9` with an empty `git status`, and the new assert
+   step fails as intended when the tree is dirtied. **A real CI run is
+   pending the next push** — this phase is under a no-push instruction,
+   so nothing has exercised `release.yml` on a runner. The assert step
+   exists so that first real run reports the answer itself.
+9. **Docs updated where behavior changed — MET, with two gaps closed
+   during this walk.** README covered themes (`663f40b`), the scratch
+   layout (`ad9442c`), autosave (`1a8290a`), gridview/plot selection
+   (`7c53a6b`) and the release/version story (`54d91d5`); ADR 0044 and
+   `docs/CONTEXT.md` were updated by 59.F. The parenthetical's second
+   clause is **vacuous**: ADR 0018 does not enumerate default bindings
+   (it names only the two palette strokes in prose), so there was no
+   list to extend for `Mod+F`. Two real gaps surfaced and were fixed in
+   `bf23696`: the README never named the `Ctrl/⌘+F` binding in any of
+   the three panels that now answer it, and it still said the plot's
+   PgUp/PgDn stepping needs focus "right after typing a pattern", which
+   59.D's fix made untrue.
+
+**ADR-0031 perf gate — MET.** Run by the orchestrator, not by the
+implementing phases (every phase brief said so, and each phase's status
+entry records the deferral). Final gate at `95b3ee2`, **two runs, both
+`check passed (31 metrics gated)`** — 31/31 each — with the reports
+committed unmodified as
+`docs/performance-measurements/frontend/2026-08-09-95b3ee2-task59-final-run1.json`
+and `...-run2.json`. Sanity clean on both: `ids_measured` 173, and in
+the committed reports `fps.rx` / `fps.tx` 1611.5 / 1612.3 (run 1) and
+1609.1 / 1608.8 (run 2) with retention 0.9998–1.0003 — flat across
+halves, so nothing degrades over the minute. 59.D was also gated
+mid-chain (two runs, 31/31), which is the run that matters most in this
+task: it is the only phase that touched the plot repaint path.

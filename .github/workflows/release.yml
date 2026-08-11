@@ -3,8 +3,10 @@ name: Release
 # Cuts a release on demand. Trigger it from the Actions tab ("Run
 # workflow") and supply the version, e.g. `0.1.0`. The workflow:
 #   1. runs the full CI suite as a gate (no publish if it fails),
-#   2. tags the commit `vX.Y.Z` (so the binary's vergen `git describe`
-#      version matches), injects the version into the bundle, and
+#   2. injects the version into the bundle config, commits that edit to
+#      the runner's throwaway checkout, and tags the result `vX.Y.Z` (so
+#      the binary's vergen `git describe` version matches and the tree it
+#      describes is clean — see "Commit + tag" below), and
 #   3. builds unsigned bundles on native runners (Tauri cannot
 #      cross-compile) — macOS Apple Silicon (aarch64) and Windows x64 —
 #      publishing them to a draft pre-release for review.
@@ -71,10 +73,6 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Tag the commit (local, for vergen)
-        shell: bash
-        run: git tag "${{ steps.ver.outputs.tag }}"
-
       - uses: pnpm/action-setup@v6
         with:
           version: 11.5.2
@@ -103,6 +101,23 @@ jobs:
         run: |
           node -e "const fs=require('fs'),p='apps/gui/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version='${{ steps.ver.outputs.version }}';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
 
+      # vergen stamps the binary with `git describe --tags --dirty`, and
+      # the step above modifies a *tracked* file — so tagging before it
+      # (as this workflow used to) made every released binary report
+      # `vX.Y.Z-dirty`. Commit the edit to this throwaway checkout first,
+      # then tag: `describe` then resolves to exactly `vX.Y.Z` over a
+      # clean tree. The commit is local to the runner and never pushed —
+      # tauri-action creates the real tag through the API — so the
+      # committed version in the repository still stays 0.0.0.
+      - name: Commit + tag the version bump (local, for vergen)
+        shell: bash
+        run: |
+          git -c user.name='cannet release' \
+              -c user.email='release@users.noreply.github.com' \
+              commit -m "release: bundle version ${{ steps.ver.outputs.version }}" \
+              -- apps/gui/src-tauri/tauri.conf.json
+          git tag "${{ steps.ver.outputs.tag }}"
+
       - run: pnpm --dir apps/gui install --frozen-lockfile
 
       # Freeze the python-can sidecar for THIS runner's OS/arch before
@@ -119,6 +134,23 @@ jobs:
           version: "0.9.21"
           enable-cache: true
           cache-dependency-glob: servers/cannet-python-can/uv.lock
+
+      # Guard the invariant the commit-then-tag step exists for: whatever
+      # a release runner ends up writing before the bundle build, the
+      # tree must be clean when vergen reads it. Fail here — loudly, and
+      # before the expensive build — rather than shipping a `-dirty`
+      # binary. Last chance to check: the sidecar freeze and `pnpm build`
+      # run inside the step below, as `beforeBuildCommand`.
+      - name: Assert the version stamp is clean
+        shell: bash
+        run: |
+          DESCRIBE="$(git describe --tags --dirty)"
+          echo "vergen will stamp: $DESCRIBE"
+          if [ "$DESCRIBE" != "${{ steps.ver.outputs.tag }}" ]; then
+            echo "::error::expected the stamp to be exactly ${{ steps.ver.outputs.tag }}; the working tree is not clean at stamp time:"
+            git status --porcelain
+            exit 1
+          fi
 
       - name: Build and publish bundle
         uses: tauri-apps/tauri-action@v0
