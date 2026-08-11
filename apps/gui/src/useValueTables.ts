@@ -37,8 +37,18 @@ export function useValueTables(
   // (memoized derived state), and an identity-keyed effect would then
   // refetch → setState → re-render forever. `signalsRef` gives the
   // effect the live list without widening its dependency.
+  //
+  // Sorted, so the key is the set and not the sequence: the result is a
+  // map from signal key to table, so reordering the request cannot
+  // change the answer — and refetching would replace that map, which for
+  // a caller deriving state from it reads as "every signal's table
+  // changed".
   const signalsKey = useMemo(
-    () => signals.map((s) => signalKey(s.busId, s.messageId, s.extended, s.signalName)).join("|"),
+    () =>
+      signals
+        .map((s) => signalKey(s.busId, s.messageId, s.extended, s.signalName))
+        .sort()
+        .join("|"),
     [signals],
   );
   const signalsRef = useRef(signals);

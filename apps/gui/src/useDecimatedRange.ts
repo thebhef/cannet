@@ -45,8 +45,13 @@ export interface DecimatedSignal {
 /// `winEnd` that shrank below the last seen one re-anchors the window.
 export interface DecimatedRequest {
   /// Memo key for the signal set — changing it re-anchors the window.
+  /// The cached window is a map from signal key to series, so this must
+  /// identify the set's *membership* and nothing else: a caller that
+  /// folded render order in here would throw a still-valid window away
+  /// whenever its series were reordered.
   descriptor: string;
-  /// Signals to sample, in render order (matches `descriptor`).
+  /// Signals to sample, in render order. Independent of `descriptor` —
+  /// the answer comes back keyed by `key`, not by position.
   signals: DecimatedSignal[];
   /// The trace window `[winStart, winEnd)`: the fetch anchor, and the
   /// buffer-clear sentinel (a `winEnd` below the last seen re-anchors).

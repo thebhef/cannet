@@ -201,12 +201,13 @@ function targetLagFor(fetchIntervalMs: number): number {
 // Pattern-selection helpers live in `./signalSelection` so the
 // pure-logic tests can import them without dragging uplot into a jsdom run.
 import {
-  applyAreaSelections,
+  applyAreaSelection,
   effectiveSourceBuses,
   resolvePatterns,
   scopeCatalog,
   type PatternResolution,
 } from "./signalSelection";
+import { useKeyedMemo, useStableMembers } from "./keyedMemo";
 import {
   GUTTER_HYSTERESIS_PX,
   createGutterCoordinator,
@@ -321,6 +322,79 @@ function SoloMatchMenu({
       ))}
     </div>
   );
+}
+
+/// One derived axis: the `PlotAreaConfig` a single `PlotArea` renders,
+/// plus the parent area it came from so panel-level callbacks (add
+/// signal, set primary, set mode, remove area) can route to the right
+/// place.
+interface DerivedAreaConfig {
+  area: PlotAreaConfig;
+  parentArea: PlotAreaConfig;
+  isFirstOfParent: boolean;
+  subtitle: string | null;
+  enumLanes: boolean;
+  /// This axis draws nothing, so it's excluded from the fit-to-panel
+  /// height distribution and its canvas collapses; its rows stay in the
+  /// side panel so they remain un-hideable (ADR 0026). Two ways to get
+  /// here: the user collapsed the parent *area* (one flag, every derived
+  /// axis of that area), or every signal on this one axis is hidden.
+  collapsed: boolean;
+  /// The parent area's own collapse flag drove it (as opposed to the
+  /// all-hidden rule) — what the head toggle can undo.
+  collapsedByFlag: boolean;
+  /// Solo left this axis with nothing visible — the same view-level
+  /// collapse as all-hidden, and equally not the area's own flag.
+  collapsedBySolo: boolean;
+}
+
+/// Expand one effective area into its derived axes, based on the area's
+/// `yAxisMode` (ADR 0026). Unified produces one entry per area; per-unit
+/// groups signals by unit (with all enums on one shared enum-lanes
+/// axis); individual is one entry per signal. `soloMask` is the visible
+/// set while solo is active, `null` while it is not.
+function deriveAreaConfigs(
+  a: PlotAreaConfig,
+  isEnum: (key: string) => boolean,
+  soloMask: ReadonlySet<string> | null,
+): DerivedAreaConfig[] {
+  const axes = deriveAxesForArea(a.id, a.signals, a.yAxisMode ?? "unified", isEnum);
+  return axes.map((ax, i) => {
+    // Solo masks *after* the axes are derived, never before: the axis
+    // set (and so every id keyed by it — weights, manual ranges, uPlot
+    // instances) is a function of the area's signals and its y-axis
+    // mode, and a view mask must not move it. What the mask changes is
+    // only which of an axis's series draw (`plotSolo.ts`) — the same
+    // lever `hidden` pulls, composed on top of it and never written
+    // back.
+    const signals = soloMask ? soloMaskSignals(a.id, ax.signals, soloMask) : ax.signals;
+    // The derived `PlotAreaConfig` carries the axis's slice of signals.
+    // `patterns` is preserved only on the first derived axis so the
+    // filter UI / status bar doesn't render N times for one logical
+    // area.
+    const derivedArea: PlotAreaConfig = {
+      id: ax.id,
+      signals,
+      yAxisMode: a.yAxisMode,
+      primarySignalKey: a.primarySignalKey,
+      patterns: i === 0 ? a.patterns : undefined,
+      collapsed: a.collapsed,
+    };
+    const allHidden = signals.length > 0 && signals.every((s) => s.hidden);
+    return {
+      area: derivedArea,
+      parentArea: a,
+      isFirstOfParent: i === 0,
+      subtitle: ax.subtitle,
+      enumLanes: ax.kind === "enum-lanes",
+      collapsed: a.collapsed === true || allHidden,
+      collapsedByFlag: a.collapsed === true,
+      // An axis whose only reason to be blank is the solo mask — it
+      // collapses like any all-hidden axis, but says why, and its area's
+      // persisted `collapsed` stays untouched.
+      collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
+    };
+  });
 }
 
 export function PlotPanel(props: IDockviewPanelProps) {
@@ -954,10 +1028,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
           // and it keeps resolving its color like any unpicked series.)
           const existing = prev.flatMap((a) => a.signals).find((s) => signalRefKey(s) === key);
           const moved = existing ?? ref;
-          const stripped = prev.map((a) => ({
-            ...a,
-            signals: a.signals.filter((s) => signalRefKey(s) !== key),
-          }));
+          // Areas that never held the ref come through untouched, by
+          // identity — a move out of one area must not read downstream
+          // as an edit to every other one.
+          const stripped = prev.map((a) =>
+            a.signals.some((s) => signalRefKey(s) === key)
+              ? { ...a, signals: a.signals.filter((s) => signalRefKey(s) !== key) }
+              : a,
+          );
           return stripped.map((a) => {
             if (a.id !== toAreaId) return a;
             if (beforeKey == null) return { ...a, signals: [...a.signals, moved] };
@@ -1205,10 +1283,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // Signal value→color maps (ADR 0029): one resolver over every
   // colormap element, fed to each area so an enum lane box can be tinted
   // by its held value. Rebuilt only when the element set changes.
-  const resolveColor = useMemo(
-    () => buildColorResolver(registry.entries.map((e) => e.element)),
-    [registry.entries],
+  //
+  // Keyed on the colormap elements rather than on `registry.entries`:
+  // the entries array is replaced whenever *any* element is patched —
+  // this panel persisting its own `areas` included — and a fresh
+  // resolver is a changed prop on every `PlotArea` in the stack.
+  const colorMapElements = useStableMembers(
+    registry.entries.filter((e) => e.element.kind === "colormap").map((e) => e.element),
   );
+  const resolveColor = useMemo(() => buildColorResolver(colorMapElements), [colorMapElements]);
 
   /// The project's generator answers (ADR 0026), host-evaluated once
   /// for every panel — a rule edit changes this map's identity, which
@@ -1223,19 +1306,24 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return (s: SignalRef) => resolve(signalRefKey(s), s.colorPick);
   }, [generatorIndexes]);
 
+  /// The filters this plot's `sources` wiring can resolve through, held
+  /// by their own identity rather than the registry's — same reason as
+  /// `colorMapElements` above, and this one matters more: it feeds the
+  /// `catalog` prop and through it every derived value the areas read.
+  const filterElements = useStableMembers(
+    registry.entries.filter((e) => e.element.kind === "filter").map((e) => e.element),
+  );
   /// The catalog restricted to the plot's effective `sources` wiring
   /// (`signalSelection.ts`): the picker and the patterns only offer /
   /// match signals on buses this plot can actually sample. Unwired or
   /// `"*"` = the full catalog.
   const scopedCatalog = useMemo(() => {
     const filterSources = new Map<string, readonly string[]>(
-      registry.entries
-        .filter((e) => e.element.kind === "filter")
-        .map((e) => [e.element.id, (e.element as { sources?: string[] }).sources ?? []]),
+      filterElements.map((e) => [e.id, (e as { sources?: string[] }).sources ?? []]),
     );
     const busSet = effectiveSourceBuses(currentSources, buses.map((b) => b.id), filterSources);
     return scopeCatalog(catalog, busSet);
-  }, [catalog, currentSources, buses, registry.entries]);
+  }, [catalog, currentSources, buses, filterElements]);
 
   /// `messageEcuKey` → transmitting ECU, built once for the whole
   /// panel: every area's signal rows name their message by its DBC
@@ -1252,10 +1340,22 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// (`signalSelection.ts`): the effective series list is the manual
   /// picks plus the pattern matches not already picked. Storage state
   /// (`areas`) holds only the manual picks + the pattern strings.
-  const effectiveAreas = useMemo(
-    () => applyAreaSelections(areas, scopedCatalog, busNameLookup),
-    [areas, scopedCatalog, busNameLookup],
-  );
+  /// Resolved per area rather than over the list, so an edit to one area
+  /// leaves every other area's resolved object — and the derived configs
+  /// and memoised `PlotArea`s hanging off it — at the identity it
+  /// already had. `applyAreaSelection` returns a pattern-free area
+  /// unchanged; the memo extends that to a patterned one whose patterns
+  /// and catalog didn't move.
+  const effectiveAreaMemo = useKeyedMemo<string, PlotAreaConfig>();
+  const effectiveAreas = useMemo(() => {
+    const out = areas.map((a) =>
+      effectiveAreaMemo.get(a.id, [a, scopedCatalog, busNameLookup], () =>
+        applyAreaSelection(a, scopedCatalog, busNameLookup),
+      ),
+    );
+    effectiveAreaMemo.commit();
+    return out;
+  }, [areas, scopedCatalog, busNameLookup, effectiveAreaMemo]);
 
   /// The solo match list — every plotted series whose display name the
   /// pattern matches, in panel order (areas in stack order, rows in area
@@ -1327,10 +1427,20 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// Per-area manual-pick keys (from *stored* state, not the effective
   /// list) — how the row renderer tells a manual pick from a
   /// pattern-derived row (which gets no per-row × and a pattern badge).
-  const manualKeysByArea = useMemo(
-    () => new Map(areas.map((a) => [a.id, new Set(a.signals.map((s) => signalRefKey(s)))])),
-    [areas],
-  );
+  /// Per area, so that an edit to one area's signals doesn't hand every
+  /// other area a fresh (identical) set.
+  const manualKeysMemo = useKeyedMemo<string, ReadonlySet<string>>();
+  const manualKeysByArea = useMemo(() => {
+    const m = new Map<string, ReadonlySet<string>>();
+    for (const a of areas) {
+      m.set(
+        a.id,
+        manualKeysMemo.get(a.id, [a.signals], () => new Set(a.signals.map((s) => signalRefKey(s)))),
+      );
+    }
+    manualKeysMemo.commit();
+    return m;
+  }, [areas, manualKeysMemo]);
 
   /// Each logical area's signal keys in the panel's canonical order —
   /// what a Shift+click range walks. Taken from the *effective* area, so
@@ -1341,12 +1451,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
     () => new Map(effectiveAreas.map((a) => [a.id, a.signals.map((s) => signalRefKey(s))])),
     [effectiveAreas],
   );
+  /// Read through a ref for the same reason `selectedRefsFor` below is:
+  /// `selectSignal` goes into every axis's handler bundle, and closing
+  /// over the order map — which is rebuilt whenever any area's signals
+  /// move — would remint every bundle on any area edit.
+  const selectionOrderRef = useRef(selectionOrderByArea);
+  selectionOrderRef.current = selectionOrderByArea;
   const selectSignal = useCallback(
     (areaId: string, key: string, modifiers: { mod: boolean; shift: boolean }) => {
-      const order = selectionOrderByArea.get(areaId) ?? [];
+      const order = selectionOrderRef.current.get(areaId) ?? [];
       setSignalSelection((prev) => selectPlotSignal(prev, areaId, key, modifiers, order));
     },
-    [selectionOrderByArea],
+    [],
   );
 
   /// Live mirrors of the selection and the effective (materialized)
@@ -1553,13 +1669,25 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// Per-area pattern resolutions for the filter UI (match counts,
   /// invalid flags) — evaluated against the same catalog the effective
   /// series come from.
-  const patternResolutionsByArea = useMemo(
-    () =>
-      new Map(
-        areas.map((a) => [a.id, resolvePatterns(a.patterns ?? [], scopedCatalog, busNameLookup)]),
-      ),
-    [areas, scopedCatalog, busNameLookup],
-  );
+  /// Per area, and only for areas that actually carry patterns — a
+  /// pattern-free area falls back to the shared `EMPTY_RESOLUTIONS`
+  /// where it is read, so it never sees a fresh empty array.
+  const patternResolutionMemo = useKeyedMemo<string, PatternResolution[]>();
+  const patternResolutionsByArea = useMemo(() => {
+    const m = new Map<string, PatternResolution[]>();
+    for (const a of areas) {
+      const patterns = a.patterns;
+      if (!patterns?.length) continue;
+      m.set(
+        a.id,
+        patternResolutionMemo.get(a.id, [patterns, scopedCatalog, busNameLookup], () =>
+          resolvePatterns(patterns, scopedCatalog, busNameLookup),
+        ),
+      );
+    }
+    patternResolutionMemo.commit();
+    return m;
+  }, [areas, scopedCatalog, busNameLookup, patternResolutionMemo]);
 
   /// Panel-level enum detection (ADR 0026). One `list_value_tables`
   /// fetch over every signal in the panel (via the shared
@@ -1582,77 +1710,33 @@ export function PlotPanel(props: IDockviewPanelProps) {
     return set;
   }, [panelValueTables]);
 
-  /// Expand each effective area into one or more derived axes, based on
-  /// the area's `yAxisMode` (ADR 0026). Unified produces one entry per
-  /// area (identical to today); per-unit groups signals by unit (with
-  /// all enums on one shared enum-lanes axis); and individual is one
-  /// entry per signal. Each derived entry carries the parent area so
-  /// panel-level callbacks (add signal, set primary, set mode, remove
-  /// area) can route to the right place.
+  /// The panel's derived axes (`deriveAreaConfigs`), scoped per logical
+  /// area: an `areas` edit re-derives the area it touched and hands
+  /// every other one back the entries — and so the `area` objects — it
+  /// already had, which is what keeps the memoised `PlotArea`s of
+  /// untouched areas off the render.
+  ///
+  /// The solo mask is panel-wide by construction (its pattern spans
+  /// every area, and a non-matching area's rows all read hidden), so
+  /// while solo is *active* an areas edit does re-derive every axis.
+  /// While it is off the dependency is the constant `null`, which is
+  /// what keeps the ordinary edit scoped — `soloVisible` itself is
+  /// rebuilt from the areas on every edit.
+  const derivedAreaMemo = useKeyedMemo<string, DerivedAreaConfig[]>();
   const derivedAreaConfigs = useMemo(() => {
-    const out: Array<{
-      area: PlotAreaConfig;
-      parentArea: PlotAreaConfig;
-      isFirstOfParent: boolean;
-      subtitle: string | null;
-      enumLanes: boolean;
-      // This axis draws nothing, so it's excluded from the fit-to-panel
-      // height distribution and its canvas collapses; its rows stay in
-      // the side panel so they remain un-hideable (ADR 0026). Two ways
-      // to get here: the user collapsed the parent *area* (one flag,
-      // every derived axis of that area), or every signal on this one
-      // axis is hidden.
-      collapsed: boolean;
-      // The parent area's own collapse flag drove it (as opposed to the
-      // all-hidden rule) — what the head toggle can undo.
-      collapsedByFlag: boolean;
-      // Solo left this axis with nothing visible — the same view-level
-      // collapse as all-hidden, and equally not the area's own flag.
-      collapsedBySolo: boolean;
-    }> = [];
     const isEnum = (k: string) => enumKeys.has(k);
+    const soloMask = soloActive ? soloVisible : null;
+    const out: DerivedAreaConfig[] = [];
     for (const a of effectiveAreas) {
-      const mode = a.yAxisMode ?? "unified";
-      const axes = deriveAxesForArea(a.id, a.signals, mode, isEnum);
-      axes.forEach((ax, i) => {
-        // Solo masks *after* the axes are derived, never before: the
-        // axis set (and so every id keyed by it — weights, manual
-        // ranges, uPlot instances) is a function of the area's signals
-        // and its y-axis mode, and a view mask must not move it. What
-        // the mask changes is only which of an axis's series draw
-        // (`plotSolo.ts`) — the same lever `hidden` pulls, composed on
-        // top of it and never written back.
-        const signals = soloActive ? soloMaskSignals(a.id, ax.signals, soloVisible) : ax.signals;
-        // The derived `PlotAreaConfig` carries the axis's slice of
-        // signals. `patterns` is preserved only on the first
-        // derived axis so the filter UI / status bar doesn't render N
-        // times for one logical area.
-        const derivedArea: PlotAreaConfig = {
-          id: ax.id,
-          signals,
-          yAxisMode: a.yAxisMode,
-          primarySignalKey: a.primarySignalKey,
-          patterns: i === 0 ? a.patterns : undefined,
-          collapsed: a.collapsed,
-        };
-        const allHidden = signals.length > 0 && signals.every((s) => s.hidden);
-        out.push({
-          area: derivedArea,
-          parentArea: a,
-          isFirstOfParent: i === 0,
-          subtitle: ax.subtitle,
-          enumLanes: ax.kind === "enum-lanes",
-          collapsed: a.collapsed === true || allHidden,
-          collapsedByFlag: a.collapsed === true,
-          // An axis whose only reason to be blank is the solo mask —
-          // it collapses like any all-hidden axis, but says why, and
-          // its area's persisted `collapsed` stays untouched.
-          collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
-        });
-      });
+      out.push(
+        ...derivedAreaMemo.get(a.id, [a, enumKeys, soloMask], () =>
+          deriveAreaConfigs(a, isEnum, soloMask),
+        ),
+      );
     }
+    derivedAreaMemo.commit();
     return out;
-  }, [effectiveAreas, enumKeys, soloActive, soloVisible]);
+  }, [effectiveAreas, enumKeys, soloActive, soloVisible, derivedAreaMemo]);
 
   /// Per-*derived-axis* slice of the selection — the shape that keeps a
   /// selection click off the memoised areas that hold none of the
@@ -1758,42 +1842,74 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [soloMatchList, areaLabels, solo.indices],
   );
 
-  /// Per-derived-axis callback bundle, rebuilt only when the axis set
-  /// itself changes. Building these inline in the render loop handed
+  /// Per-derived-axis callback bundle, rebuilt only when that axis's own
+  /// inputs change. Building these inline in the render loop handed
   /// every `PlotArea` a dozen fresh function identities per panel
   /// render, which defeated memoising the component: the whole stack
   /// re-rendered whenever any panel state moved, however unrelated.
+  /// Keying it per axis extends that to an `areas` edit — every callback
+  /// below is either panel-stable or reads live state through a ref, so
+  /// an untouched axis's bundle survives the edit.
+  const areaHandlerMemo = useKeyedMemo<string, AxisHandlers>();
   const areaHandlers = useMemo(() => {
     const m = new Map<string, AxisHandlers>();
     for (const d of derivedAreaConfigs) {
       const axisId = d.area.id;
       const parent = d.parentArea;
-      m.set(axisId, {
-        onPlaceCursorY: (which, v) => placeCursorY(axisId, which, v),
-        onSetPrimarySignal: (k) => setAreaPrimarySignal(parent.id, k),
-        onSelectSignal: (key, modifiers) => selectSignal(parent.id, key, modifiers),
-        onSetYAxisMode: (mode) => setAreaYAxisMode(parent.id, mode),
-        onToggleCollapsed: () => toggleAreaCollapsed(parent.id),
-        onFocus: () => setFocusedAreaId(parent.id),
-        onRemoveArea: () => removeArea(parent.id),
-        onDragArea: (dataTransfer) => dragArea(parent.id, dataTransfer),
-        onDropArea: (payload, copy) => dropArea(payload, parent.id, copy),
-        onRemoveSignal: (key) => removeSignal(parent.id, key),
-        onDropSignal: (ref, beforeKey, isInternalMove) =>
-          placeSignal(ref, parent.id, beforeKey, isInternalMove),
-        onToggleHidden: (ref) => toggleSignalHidden(parent.id, ref),
-        onSetSignalColor: (ref, color) => setSignalColor(parent.id, ref, color),
-        onSetPatterns: (ps) => setAreaPatterns(parent.id, ps),
-        onMaterializePatterns: () => materializePatterns(parent.id, parent.signals),
-        onSetYScale: (patch) => setAxisScales((prev) => setAxisScale(prev, axisId, patch)),
-        onSetSelectionHidden: (hidden) => setSelectionHidden(parent.id, hidden),
-        onDragSelection: (dataTransfer) => dragSelection(parent.id, dataTransfer),
-        onSortArea: () => sortArea(parent.id),
-      });
+      m.set(
+        axisId,
+        areaHandlerMemo.get(
+          axisId,
+          [
+            parent,
+            placeCursorY,
+            setAreaPrimarySignal,
+            selectSignal,
+            setAreaYAxisMode,
+            toggleAreaCollapsed,
+            removeArea,
+            dragArea,
+            dropArea,
+            removeSignal,
+            placeSignal,
+            toggleSignalHidden,
+            setSignalColor,
+            setAreaPatterns,
+            materializePatterns,
+            setSelectionHidden,
+            dragSelection,
+            sortArea,
+          ],
+          () => ({
+            onPlaceCursorY: (which, v) => placeCursorY(axisId, which, v),
+            onSetPrimarySignal: (k) => setAreaPrimarySignal(parent.id, k),
+            onSelectSignal: (key, modifiers) => selectSignal(parent.id, key, modifiers),
+            onSetYAxisMode: (mode) => setAreaYAxisMode(parent.id, mode),
+            onToggleCollapsed: () => toggleAreaCollapsed(parent.id),
+            onFocus: () => setFocusedAreaId(parent.id),
+            onRemoveArea: () => removeArea(parent.id),
+            onDragArea: (dataTransfer) => dragArea(parent.id, dataTransfer),
+            onDropArea: (payload, copy) => dropArea(payload, parent.id, copy),
+            onRemoveSignal: (key) => removeSignal(parent.id, key),
+            onDropSignal: (ref, beforeKey, isInternalMove) =>
+              placeSignal(ref, parent.id, beforeKey, isInternalMove),
+            onToggleHidden: (ref) => toggleSignalHidden(parent.id, ref),
+            onSetSignalColor: (ref, color) => setSignalColor(parent.id, ref, color),
+            onSetPatterns: (ps) => setAreaPatterns(parent.id, ps),
+            onMaterializePatterns: () => materializePatterns(parent.id, parent.signals),
+            onSetYScale: (patch) => setAxisScales((prev) => setAxisScale(prev, axisId, patch)),
+            onSetSelectionHidden: (hidden) => setSelectionHidden(parent.id, hidden),
+            onDragSelection: (dataTransfer) => dragSelection(parent.id, dataTransfer),
+            onSortArea: () => sortArea(parent.id),
+          }),
+        ),
+      );
     }
+    areaHandlerMemo.commit();
     return m;
   }, [
     derivedAreaConfigs,
+    areaHandlerMemo,
     placeCursorY,
     setAreaPrimarySignal,
     selectSignal,

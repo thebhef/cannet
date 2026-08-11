@@ -288,6 +288,32 @@ likely during this task's later perf-gate runs.
   `signalSetKey`, capture-restore cost) or the ADR-0031 gate re-run —
   out of this phase's scope (item 5 only).
 
+Phase 57.B (items 1 and 3):
+
+- `useValueTables` is shared (plot, colormap, transmit, RBS panels), so
+  the sorted fetch key changes all of them: a caller that reorders the
+  same signals no longer refetches. The hook's result has always been a
+  map keyed by signal, so no caller can observe a difference beyond the
+  saved round-trips and the map's identity holding still.
+- `patternResolutionsByArea` no longer carries an entry for an area
+  without patterns (it used to hold a fresh empty array). The two
+  readers both cope — the render falls back to the shared
+  `EMPTY_RESOLUTIONS`, the bus-rename warning effect iterates what is
+  there — but a future reader must not assume one entry per area.
+- `scopedCatalog` / `resolveColor` now key on the filter / colormap
+  *elements* rather than on `registry.entries`. That relies on
+  `applyElementPatch` replacing the element object it patches (it does,
+  and its no-op short-circuit returns the array unchanged); an element
+  mutated **in place** would no longer reach these memos.
+- While solo is active, an `areas` edit still re-derives every axis in
+  the panel: the mask's visible set is rebuilt from the areas on every
+  edit, and a non-matching area's rows all read hidden, so the mask is
+  panel-wide by construction. Unchanged from before this phase, and
+  stated in the code where the dependency is taken.
+- Reordering an area's rows still destroys and rebuilds its uPlot
+  instance — the scope ruling's accepted half of the trade, now pinned
+  by a test so a future reader doesn't take it for an oversight.
+
 **2026-08-08 — follow-up: the outer `catch` was still a quiet-exit-0
 hole.** Review found that an exception during the capture window
 (`handleConnect` rejecting instead of just failing to land a session,
@@ -319,3 +345,111 @@ outer `catch` in isolation from the retry/assert paths. Confirmed red
 - Test counts: JS 137 files / 1652 tests (was 1651) all green
   (`pnpm --dir apps/gui test`); `tsc --noEmit` clean. No Rust files
   touched by this follow-up.
+
+**2026-08-08 — Phase 57.B, item 1 (per-area scoping of the plot panel's
+derived configs), branch `task57b-render-path-scoping`.**
+
+- `7f4ff46` — `perf(gui): scope the plot panel's derived area configs per
+  logical area`.
+- Sequencing: item 1 first, item 3 second (they touch adjacent seams but
+  not the same lines — item 1 is `PlotPanel`'s derivation chain, item 3
+  is `PlotArea`'s cache/rebuild keys). One render-count test written for
+  item 1 turned out to need item 3's work to pass, and moved to that
+  slice (below).
+- New `keyedMemo.ts`: `createKeyedMemo` / `useKeyedMemo` (a per-key memo
+  whose entry survives while that key's own dependency list does,
+  `Object.is` per entry, keys not asked for in a pass retire) and
+  `useStableMembers` (holds a freshly-filtered list's identity while its
+  members are the same objects in the same order). 4 unit tests.
+- Scoped per logical area: `effectiveAreas` (via a new single-area
+  `applyAreaSelection` in `signalSelection.ts`, with the plural now
+  mapping over it), `derivedAreaConfigs` (its body lifted to a
+  module-level pure `deriveAreaConfigs`), `manualKeysByArea`,
+  `patternResolutionsByArea` (pattern-free areas are now simply absent,
+  falling back to the shared `EMPTY_RESOLUTIONS` instead of a fresh
+  empty array), and `areaHandlers`. `selectSignal` now reads the
+  selection order through a ref — it was the one handler that closed
+  over a value rebuilt on every areas edit, which alone re-minted every
+  axis's bundle. `placeSignal`'s internal-move path leaves untouched
+  areas at their existing identity.
+- **Discovered prerequisite, recorded because it was not in the grooming
+  map:** the scoping is undone one render later without it. The element
+  registry replaces its whole `entries` array whenever *any* element is
+  patched — including this panel persisting its own `areas` — and
+  `scopedCatalog` / `resolveColor` were keyed on that array, so the
+  persist round-trip re-minted the `catalog`, `ecuLookup`, `valueFormats`
+  and `resolveColor` props of every area. Both now key on the filter /
+  colormap *elements* (`useStableMembers`), which `applyElementPatch`
+  leaves alone when the edit was elsewhere. This is very likely the bulk
+  of 55.C's "4 renders on a 2-area panel": 1 for the edit + one per area
+  for the persist.
+- Measured, `render.PlotArea` deltas on a stopped 3-area panel (2 rows
+  each, no canvas so the areas' own resample machinery is inert and the
+  count is pure prop fan-out) — **before → after**: collapse `6 → 1`,
+  hide a row `3 → 1`, promote a row to primary `3 → 1`, panel re-render
+  after the edit's persist `3 → 0`.
+- Tests: new `describe("PlotPanel per-area render scoping")` in
+  `PlotPanel.dom.test.tsx` (4 render-count regression tests, the 55.C
+  probe methodology made permanent) plus `keyedMemo.test.ts` (4). Both
+  standing memo guards re-run and green; the ctrl-click selection-slice
+  guard's comment updated where it claimed a plain click "legitimately
+  re-renders the stack" — it no longer does.
+- The new tests' settle loop waits past `FIRST_SAMPLE_INDICATOR_MS`
+  before measuring: with no canvas nothing ever settles the first-sample
+  gate, so each area's "building…" timer fires ~300 ms after mount and
+  otherwise lands inside the measurement window.
+- Test counts: JS 138 files / 1660 tests (was 1652) all green
+  (`pnpm --dir apps/gui test`); `tsc --noEmit` clean. No Rust touched.
+
+**2026-08-08 — Phase 57.B, item 3 (`signalSetKey`: membership vs
+order), same branch.**
+
+- `ea75ae6` — `perf(gui): key a plot area's sampled data on membership,
+  not order`.
+- The split, as groomed: `signalSetKey` (ordered) still keys the uPlot
+  construction effect — the destroy+rebuild on reorder stays, per the
+  scope ruling, and no series-remap path was built. A new
+  `signalMembershipKey` (the same keys, sorted) keys everything about
+  the *data*: the decimation cache `descriptor` inside `resample`, the
+  `builtSignalSetRef` compare (so a reorder takes the
+  repaint-from-cache else-branch instead of `resetRange()`), and
+  `useFirstSampleWait` (so no "building…" flash). The two copies of the
+  descriptor string the grooming map warned about are now one
+  expression, read from both places.
+- Two order dependencies had to move with it, or the split would have
+  been wrong rather than merely ineffective:
+  - `hostExtentsRef` held the `signal_min_max` sidecar's answer as an
+    array parallel to the signals *at fetch time*, read positionally
+    (`hostExtents?.[i]`). Keeping it across a reorder-driven repaint
+    would have normalised each series against its neighbour's all-time
+    range. It is a `Map` keyed by signal key now, like the decimation
+    cache beside it.
+  - `useValueTables` keyed its fetch on the ordered key, so a reorder
+    refetched every table and replaced the result map — which
+    `PlotPanel` turns into `enumKeys`, a dependency of every area's axis
+    derivation. One area's reorder re-derived the whole panel. Its key
+    is sorted now (the result was always keyed by signal, so order
+    cannot change the answer); pinned by a new unit test, confirmed red
+    against the unsorted key first.
+- Tests: new `describe("PlotPanel signal set: membership vs order")` in
+  `PlotPanel.dom.test.tsx` — order-only change repaints from cache (no
+  new `sample_signals`, no "building…", same drawn point count, and the
+  expected fresh uPlot instance), membership change still fetches, and
+  the reorder render-scoping test deferred from item 1 (the other area
+  does not re-render). Plus one `useValueTables.test.ts` case.
+- Test counts: JS 138 files / 1664 tests (was 1660) all green
+  (`pnpm --dir apps/gui test`); `tsc --noEmit` clean. No Rust touched.
+- Docs: `DecimatedRequest.descriptor`'s rustdoc-equivalent comment now
+  states the membership rule (and why order must stay out of it) in the
+  same commit as the code.
+- Two review tidy-ups after the fact, no behavior change: `1b55f3a`
+  (the membership key written down among `resample`'s dependencies —
+  it is derived from `signals`, which was already listed) and `497f30b`
+  (the scoped-catalog doc comment put back on the scoped catalog after
+  the filter-element hoist landed between them).
+
+**Phase 57.B closing state.** Items 1 and 3 meet their exit criteria
+(`areas` edits scoped by render-count test; order-only changes repaint
+from cache, membership changes fetch, both tested). Items 4
+(capture-restore startup cost) and the ADR-0031 gate re-run are
+untouched — the gate is the orchestrator's to run after this phase.

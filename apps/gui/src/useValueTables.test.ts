@@ -49,6 +49,25 @@ describe("useValueTables", () => {
     expect(result.current.has(signalKey("b1", 100, false, "Good"))).toBe(true);
   });
 
+  it("does not refetch when the same signals arrive in a different order", async () => {
+    // The result is keyed by signal, so order cannot change the answer —
+    // and refetching would replace the map, which a caller deriving
+    // state from it (the plot panel's enum-key set) reads as every
+    // signal's table having changed.
+    mockInvoke.mockImplementation(async () => [{ raw: 0, label: "Off" }]);
+    const { result, rerender } = renderHook(
+      ({ signals }: { signals: ValueTableSignal[] }) => useValueTables(signals),
+      { initialProps: { signals: [sig("Mode"), sig("Counter")] } },
+    );
+    await waitFor(() => expect(result.current.size).toBe(2));
+    const first = result.current;
+    const calls = mockInvoke.mock.calls.length;
+
+    rerender({ signals: [sig("Counter"), sig("Mode")] });
+    await waitFor(() => expect(mockInvoke.mock.calls.length).toBe(calls));
+    expect(result.current).toBe(first);
+  });
+
   it("an empty signal list never invokes and returns an empty map — the gate panels use to skip non-enum signals", async () => {
     const { result } = renderHook(() => useValueTables([]));
     expect(result.current.size).toBe(0);
