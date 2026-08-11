@@ -256,7 +256,7 @@ describe("what a grab means", () => {
     expect(payload.sourcePanelId).not.toBeNull();
   });
 
-  it("drags from anywhere on the row, not just the name (owner ruling, task 54)", async () => {
+  it("drags from anywhere on the row, not just the name (ADR 0045)", async () => {
     renderPanel(SECTIONED);
     await screen.findByText(/EngineSpeed/);
     const row = nameCell("EngineSpeed").closest(".trace-row") as HTMLElement;

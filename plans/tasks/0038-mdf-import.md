@@ -60,7 +60,8 @@ outcome in `technology-inventory.md`.
 
 ## Later (not this task)
 
-- **MF4 export.** MDF is vendor-neutral and read by every major tool
+- **MF4 export** — now [Task 64](0064-mdf-export.md). MDF is
+  vendor-neutral and read by every major tool
   chain; also better equipped than BLF for
   [ADR 0010](../../docs/adr/0010-no-sidecar-files.md) — AT attachment
   blocks are a sanctioned in-file embedding mechanism (DBC-in-logfile

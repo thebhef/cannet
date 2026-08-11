@@ -176,12 +176,11 @@ describe("resolveAxisRange (manual-range regression matrix)", () => {
   // Owner's 0.7.0 repro: a manual range set within a signal's own
   // 0.0-1.0 value band rendered offscreen — the bug's own account was a
   // raw-vs-normalised mismatch at this exact seam. Confirmed not to
-  // reproduce on current code (`plans/tasks/0055-plot-feedback-round.md`
-  // item 1 grooming); these pin the seam's contract per value shape so a
-  // regression here is caught. `resolveAxisRange` takes no y-axis-mode
-  // argument — each derived axis (unified / per-unit / individual) calls
-  // it identically regardless of mode — so the mode dimension of the
-  // matrix is exercised at the DOM level instead
+  // reproduce on current code; these pin the seam's contract per value
+  // shape so a regression here is caught. `resolveAxisRange` takes no
+  // y-axis-mode argument — each derived axis (unified / per-unit /
+  // individual) calls it identically regardless of mode — so the mode
+  // dimension of the matrix is exercised at the DOM level instead
   // (`PlotPanel.dom.test.tsx`'s "PlotArea y-normalisation" suite).
 
   it("float: a manual range wider than the 0.0-1.0 data band is honoured in engineering units", () => {

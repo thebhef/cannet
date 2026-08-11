@@ -22,52 +22,11 @@ work or admit it isn't going to happen and delete it.
 
 ## Items
 
-### High priority
-
-Near-term work — fold these into a phase before picking up the
-lower-priority follow-ups below. The original "Minimum Usability
-Tasks" list shipped across **Task 11** (transmit signals),
-**Task 12** (DBC view + drag/drop), **Task 15** (plot
-refinements), and **Task 16** (hotkey framework).
-
-- takes a long time to exit gracefully
-
-#### Other near-term work
-
-- `[test-fixtures]` **Vendor python-can BLF fixtures under
-  `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 10 Step 1
-  listed this as the first of four test sources but
-  deferred actual vendoring; today the step's coverage is
-  synthetic-bytes per-module tests + the vector_blf oracle
-  cross-check (gated behind `vector-blf-oracle`). Adding the
-  python-can-written files would give us a third-party-writer
-  cross-check that runs without C++ toolchain. ~30 KB binary
-  per file, expect ~5 files covering classic / FD / error / mixed
-  channels / big payloads.
-
 ### CI / checks
-
-- `[cleanup]` **`apps/gui/src-tauri/Cargo.toml` has no `custom-protocol`
-  feature**, so `cargo build --release -p cannet-gui` produces a binary
-  that still points at the Vite dev server and comes up with no frontend
-  — silently, since the window opens and the host runs. The Tauri
-  template carries `custom-protocol = ["tauri/custom-protocol"]` for
-  exactly this. `pnpm --dir apps/gui tauri build` is unaffected (the CLI
-  passes the feature), and the README now says to use it, but the
-  failure mode costs whoever hits it a debugging session. (Found taking
-  the Task 44 release capture.)
 
 Static and automated checks we'd like running on the repo to catch a
 class of bug before it ships, rather than relying on the next user to
 trip over it.
-
-- `[ci]` **Verify the release workflow produces installable bundles.**
-  Task 26 stood up `release.yml` (manual `workflow_dispatch` → draft
-  pre-release with macOS arm64 `.dmg` + Windows x64 `.msi`/NSIS), but
-  it has never been dispatched — its "produces installers" and
-  "version shows in the title bar" exit criteria are unverified. Run
-  it once and confirm the artifacts install and launch before relying
-  on it for the alpha.
 
 - `[ci]` **Typed Tauri command bindings via `tauri-specta`.** The
   `invoke<T>(cmd, args)` signature types only the return value; `args`
@@ -116,6 +75,17 @@ trip over it.
   spin the suite against each shipping server in CI so a divergence
   shows up as a test failure rather than at runtime in the GUI.
 
+- `[test-fixtures]` **Vendor python-can BLF fixtures under
+  `crates/cannet-blf/tests/fixtures/python-can/`.** Phase 10 Step 1
+  listed this as the first of four test sources but
+  deferred actual vendoring; today the step's coverage is
+  synthetic-bytes per-module tests + the vector_blf oracle
+  cross-check (gated behind `vector-blf-oracle`). Adding the
+  python-can-written files would give us a third-party-writer
+  cross-check that runs without C++ toolchain. ~30 KB binary
+  per file, expect ~5 files covering classic / FD / error / mixed
+  channels / big payloads.
+
 ### Trace view
 
 - `[feat]` **Timestamp display mode (absolute / delta), and the ADR
@@ -152,10 +122,14 @@ trip over it.
 - `[ui]` trace view (`TraceView.tsx`): under a fast (unlimited-rate)
   stream, scrolling up doesn't reliably leave auto-scroll and a parked
   panel can be yanked back to the live tail — the auto-scroll re-pin
-  effect races the async `onAutoScrollDisabled`. Fix: a synchronous
-  "user took control" ref that gates the re-pin / pin-to-tail effects
-  until the parent's `autoScroll` flips. (Surfaced during Windows
-  stress testing; macOS at moderate rates is fine.)
+  effect races the async `onAutoScrollDisabled`. (Surfaced during
+  Windows stress testing; macOS at moderate rates is fine.) The
+  originally-proposed fix — a synchronous "user took control" ref — is
+  *not* what the file carries: `TraceView.tsx` instead holds the stored
+  anchor inert while `autoScroll` is still true (`const anchor =
+  autoScroll ? null : anchoredRow`) plus a `programmaticScrollRef`, so
+  the first step when picking this up is re-running the fast-stream
+  stress case to see whether the symptom survives that mitigation.
 - `[ui]` trace panel (`TracePanel.tsx` / `TraceView.tsx`): the
   scaled-scrollbar virtualizer's interaction model needs a rework — the
   per-pixel resolution gets coarse on huge traces, the wheel-notch
@@ -167,76 +141,30 @@ trip over it.
 
 ### Plot panel
 
-- `[perf]` `cannet-gui` `PlotPanel.tsx` / `scrollJank.ts`: **the
-  follow-live window advances with ~2–3 ms of timing error per step.**
-  Measured, not diagnosed — Task 44 Tier 0's job was the measurement.
-  Two release captures (`2026-08-03-e0b83f9-release-resting` and
-  `-release-follow`): the window's rate of advance deviates by ~6.5–7 %
-  of the scroll rate at *both* a 24.2 s and a 0.7 s window, i.e. the
-  error is fixed in time (~1.8 ms/step at 28 ms cadence, ~3.4 ms/step at
-  49 ms). Invisible when zoomed out (0.12 px) and ~7 px mean / 30 px
-  worst when zoomed in, because pixels-per-second scales with the zoom.
-  Candidates, none tested: `advanceLiveEdge`'s EMA pull toward the data
-  edge injects a correction that varies with arrival jitter; the slide
-  is armed by a resample rather than by a frame, so its cadence
-  inherits the fetch loop's jitter. Worth an experiment before any
-  change — the numbers to move are `scroll_jank_px` at a *fixed* zoom.
-- `[perf]` **Nothing pins the plot's x-window width for a measurement
-  run.** `winw` read 170.4 s, 24.2 s and 0.7 s across ADR-0031 captures
-  of the same project, because the saved panel config carries whatever
-  the window was last left at. That is why the scroll-smoothness gauges
-  cannot be gated (Task 44 Tier 0 § 3): two runs are two different
-  experiments. A capture flag or a scenario-fixed window would make
-  them gateable.
 - `[bug]` `cannet-gui` `PlotPanel.tsx`: **cursor A/B marker chips and
   the x-axis intermittently don't render.** Reachable state where the
   cursor marker titles/text disappear, and possibly where the x-axis
   itself stops drawing. Not yet reproduced deterministically; likely a
-  draw-hook / rebuild timing window (relates to the uPlot-staleness bug
-  below). Capture the repro before fixing. (Task 32 QA.)
-- `[bug]` `cannet-gui` plot panel: **uncaught uPlot TypeError after
-  dev reload while streaming.** Seen during the rename-lockup
-  investigation: `Uncaught TypeError: object null is not iterable` at
-  `drawAxesGrid` (uPlot `_commit`) right after a dev-server reload
-  mid-capture, alongside Tauri "couldn't find callback" warnings.
-  Looks like a draw on a destroyed / rebuilt instance. Reproduce and
-  guard (likely a `uplotRef.current` staleness window in
-  `PlotPanel.tsx`'s create/destroy effect).
-  **2026-07-25 update:** the null is `axis._found` destructured in
-  `drawAxesGrid` — a shown axis drawn without axis-calc. Deterministic
-  trigger found and removed (StrictMode double boot-open storming
-  dbc-changed mid-stream; fixed by `bootOpenRanRef`), but the draw
-  itself is still unguarded — a dbc-refresh storm or reload mid-stream
-  can still reach it, and one throw in an effect unmounts the whole
-  React root (blank app). Guard the draw path when picked up.
-
+  draw-hook / rebuild timing window in `PlotArea.tsx`'s uPlot
+  create/destroy path. Capture the repro before fixing. (Task 32 QA.)
 - `[bug]` `signalCatalogContext.tsx`: the `dbc-changed` listener has the
   same attach-gap race `useHostMirror` was built to close (a change
   landing between the snapshot fetch and the async `listen()` attach is
   lost) — inherited from the pre-consolidation panel code. Migrate the
   provider onto `useHostMirror`, or add the post-listener refetch.
   (2026-07-26 task-30 closeout review.)
-- `[cleanup]` `PlotPanel.tsx:1077` contains two **raw NUL bytes**
-  (`a.path.join` on a literal 0x00 separator, not the escape), so
-  ripgrep classifies the file as binary and content search skips it.
-  Replace with `\u0000` escapes. Pre-existing, surfaced 2026-07-26.
-
-- `[feat]` **Sorting signals in the plot signal panel** would be nice;
-  maybe difficult with inconsistent signal names. (Owner test drive
-  2026-08-07. Task 56's regex generators may supply the sort key.)
+- `[feat]` **A standing sort for signal lists — the plot signal panel,
+  and a generator-keyed sort column in the signal view.** Sorting the
+  plot's side list would be nice; maybe difficult with inconsistent
+  signal names (owner test drive 2026-08-07). A one-shot "Sort area"
+  action ships, keyed by the regex generators, so what is left is a
+  sort that *stays* applied — and, in the signal view, a sort column
+  on the same derived keys, which needs the generator key in the
+  host's sort path. No driving ask yet.
 - `[ui]` **Individual y-axis mode can blow up the plot window** — 16
   signals means 16 axes and the panel is basically taken over.
-  (Owner test drive 2026-08-07; task 55's collapsible plot areas may
-  mitigate.)
-- `[idea]` **Per-area color-wheel indices.** Four areas × 16 signals
-  didn't get consistent color slots across areas; owner's first
-  conclusion was a per-area running index. The inconsistency is
-  `stableSignalColor` hashing working as designed (ADR 0026 one
-  wheel), so this is a rule change, not a bug — and task 56's regex
-  generators solve the motivating Cell1–16 case better (Cell N →
-  slot N, stable everywhere). Revisit only if generators don't
-  cover it. (Dropped from task 55, 2026-08-07.)
-
+  (Owner test drive 2026-08-07; the collapsible plot areas that have
+  since shipped may mitigate.)
 ### DBC view
 
 - `[ui]` **DBC panel table-tree rework.** The current per-signal detail
@@ -246,30 +174,6 @@ trip over it.
   during Task 20 spec grilling: the signal *value* column ships with
   Task 20 on the existing tree; this item is the presentation rework
   on top.
-
-- `[perf]` `cannet-gui` `DbcPanel.tsx`: **window the flat row list if
-  broad filters prove janky.** The task-33 rework bounds a filtered
-  render by the match set and the unfiltered tree by the expanded set,
-  but a broad query (e.g. "bms" over `examples/ev-zonal` → ~1.3k
-  matches) or a deliberate expand-all still renders every matching row.
-  `buildRows` already yields a flat `RenderRow[]`, so viewport
-  windowing is a render-only change. Measure first — no jank observed
-  at ev-zonal scale so far.
-
-### Transmit panel
-
-- `[perf]` `cannet-gui` `run_transmit_scheduler`: per-bus
-  `FrameBatch` batching. The scheduler currently fires each due
-  message through `transmit_frame_inner` individually (one
-  trace-append + one wire `FrameBatch` of one frame each). When many
-  messages on the same bus come due in the same tick they could be
-  coalesced into one `FrameBatch` (the wire protocol's
-  `FrameBatch.frames` is already a `Vec`) and one bulk trace append —
-  cutting per-frame gRPC encode/framing overhead at high aggregate
-  rates. Deferred: the `bench_tx_*` numbers (≈828k frames/s
-  single-threaded) show this isn't needed to hit the current target
-  (arbitrarily many 5–10 ms messages across buses). Pick up if a
-  future use case pushes aggregate rates toward bus saturation.
 
 ### Cursors and markers
 
@@ -287,10 +191,6 @@ timestamp (`eventMerge` splices host-anchored events — `frame_indices_at_ns`
 view rendering only events; and an `EventContextMenu` edits
 name/color/remove on any editable event row. Remaining follow-ups:
 
-- `[ui]` **Color editing on the plot's own event list** (`EventLogRow` in
-  `PlotPanel`). The trace + events panel have it; the plot's note list still
-  only renames/removes. Add a color swatch there for parity (the host
-  `recolor_note` command + `recolorNote` context dispatcher already exist).
 - `[bug]` **macOS: the event color picker opens in the wrong location.**
   The native color picker for events appears in odd positions on macOS
   (the plot series color picker seems to open correctly, so compare the
@@ -302,10 +202,6 @@ name/color/remove on any editable event row. Remaining follow-ups:
   concrete anchor rect at the swatch. If a Mac confirms this resolves the
   mis-positioning, close the item; if not, revert the CSS and investigate
   the virtualized-row scroll-offset anchor path instead.
-- `[feat]` **Interleave events into the *filtered* chronological trace.** The
-  unfiltered view interleaves; a filtered view pages its own (filtered) index
-  space, which the raw-frame anchors don't map to — events would need
-  filtered-position anchors.
 - `[ui/feat]` cursor + marker rework.
   - Each cursor-created marker carries an editable description; the
     list UI gets an expand-to-show body on the row, collapsed by
@@ -364,10 +260,13 @@ name/color/remove on any editable event row. Remaining follow-ups:
   setting.** Task 45 Stage 5's palettes item says it outright: *there
   is no global remedy for a color-blind user — per-signal overrides
   only*. Promoting a chooser is blocked on the thing being chosen from:
-  - **There is one palette to pick, and it is two palettes.**
-    `palette.ts`'s `SIGNAL_WHEEL` is 16 colors; `busColor.ts`'s
-    `BUS_COLORS` is 8. A user with a CVD needs both replaced, and they
-    are sized and used differently.
+  - **There is one palette to pick, and it is two palettes, per
+    theme.** The wheels moved into the theme layer: each theme in
+    `theme.ts` carries a 16-entry `signalWheel` (read through
+    `palette.ts`'s `signalWheel()`) and an 8-entry `busWheel` (read
+    through `busColor.ts`). A user with a CVD needs both replaced, they
+    are sized and used differently, and today the only thing that
+    selects a wheel pair is the `theme` setting.
   - **Sixteen distinguishable CVD-safe colors is a design problem, not
     a table.** The canonical safe set (Okabe–Ito) is eight, and
     `palette.test.ts` additionally requires every entry to hold WCAG-AA
@@ -384,10 +283,8 @@ name/color/remove on any editable event row. Remaining follow-ups:
     before a field is added.
 - `[feat]` **UI density / type scale.** Task 45 Stage 5 listed "theme
   and density (dark-only, fixed type scale)" as one item; the theme
-  half was promoted to
-  [task 53](tasks/0053-theme-token-layer-light-theme.md) (2026-08-05,
-  on a user request for a light theme). Density stays here — it fails
-  for its own reason:
+  half shipped (the dark / light / lighthk theme menu, 2026-08).
+  Density stays here — it fails for its own reason:
   - **A type scale would break the virtualised views.** The rem side
     looks cheap — ~595 rem lengths against ~307 px, most of them 1–4 px
     borders and radii — but the scroll geometry is px in JavaScript:
@@ -414,12 +311,6 @@ name/color/remove on any editable event row. Remaining follow-ups:
   scope creep. The change is small; the churn is in `Project`'s TS
   shape (`schema_version` becomes optional on the way in) and the
   fixtures that name it.
-- `[cleanup]` **`SystemMessagesPanelParams` in `systemLog.ts` has no
-  consumer.** `SystemMessagesPanel.tsx` declares its own local
-  `PanelParams` with the same one field and uses that; the exported
-  interface is a second declaration of one fact. Pre-existing; Stage 2
-  trimmed both to `filterSource` rather than deleting one, to keep the
-  change surgical.
 - `[feat]` **Detect-and-focus when a project is already open.** Task 47
   leaves re-opening an already-open project directory as undefined
   behaviour, because doing it properly needs single-instance /
@@ -434,63 +325,19 @@ name/color/remove on any editable event row. Remaining follow-ups:
   it is worth doing before the project-directory concept is load-bearing
   for many users.
 
-- `[ui]` **Missing scroll controls on scrollable panels.** Panels that
-  overflow their viewport have no visible/usable scroll affordance for
-  the overflow axis: the trace view can't be scrolled horizontally
-  (left/right) to reach off-screen columns, and the project panel can't
-  be scrolled vertically (up/down) to reach off-screen rows. Add the
-  missing scrollbars / wheel handling so all overflow is reachable.
-
-- `[ui]` `cannet-gui` Settings panel: **remove the read-only section.**
-  The custom settings panel
-  ([ADR 0034](../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md))
-  shows a read-only block (machine-local state / derived info the user
-  can't edit). Non-editable rows don't belong in a settings panel —
-  drop the section (relocate anything worth surfacing to
-  About/diagnostics). Deferred by priority, not an open question.
-
-- `[feat]` **Replay an already-loaded BLF.** Once a BLF is loaded into
-  the session buffer, offer to replay it through the pipeline
-  (time-accurate, from its own start time) without re-opening the file
-  — a playback control over the capture already in the model, so
-  consumers (trace / plot / graph) see it stream as if live. Decide the
-  interaction (transport controls, speed, loop) and how it coexists
-  with a live capture on the same buses. Note: this is *not* the fix for
-  a view added after load coming up empty — that's the subscribe-on-
-  create fix that shipped in the initial-feedback batch (former Task
-  32); replay is a standalone playback feature, kept here on its own
-  merits.
-
-- `[bug]` `cannet-gui` `state.json`: **project-scoped plot/panel
-  definitions leak into the no-project layout snapshot.** `state.layout`
-  is the opaque dockview blob the host round-trips verbatim
-  ([state.rs:48–52](apps/gui/src-tauri/src/state.rs#L48)); dockview
-  serializes every open panel's full `params`, so a project's plot panels
-  (`plot-<element>`, e.g. `plot-battery` / `plot-powertrain`) get their
-  complete definitions — areas, `busId`-scoped signal keys like
-  `batt|s:768:PackCurrent`, colors — baked into machine-local
-  `state.json`, byte-identical to the `.cannet_prj` copy. That's
-  project-owned data (thin-views principle) mirrored into UI state, and
-  stale-by-construction: the signals reference project-scoped buses that
-  don't exist with no project open, so the plot resolves empty in the
-  exact "no project" case the snapshot is *for*. Decide whether the
-  no-project snapshot should strip project-scoped panels (or skip
-  capturing them while a project is open) at the `set_state` layout-write
-  path. Relates to the ephemeral-view-state item below — both concern
-  what `state.json` legitimately owns. (Surfaced 2026-07-11.)
-- `[feat]` **Persist ephemeral view state with the project/scratch.** A
-  reopened session restores the capture and its origin (ADR 0002 DS-7 +
-  ADR 0024) but not *where each view was looking* — plot x-windows,
-  trace/by-id scroll positions & follow-live state, cursor placements,
-  filter-view offsets. These aren't project data in the classic sense,
-  but they're project-relevant: reopening lands you at a different view
-  than you left. Decide what to snapshot (per-element view state) and
-  where it rides (scratch alongside `session_start_ns`, or the project
-  file) so "exit and reopen" returns you to the same framing. The
-  layout-undo snapshot stack (`apps/gui/src/viewHistory.ts`, view
-  undo/redo) captures serialized layouts already — a candidate base for
-  the snapshot mechanism. Surfaced during the plot window-start-origin
-  fix (ADR 0024).
+- `[feat]` **Persist the ephemeral view state that still isn't
+  persisted.** A reopened session restores the capture and its origin
+  (ADR 0002 DS-7 + ADR 0024) but not *where each view was looking*.
+  Part of this has since closed by another route: a plot panel's
+  `followLive`, cursor mode and cursor placements, and a trace panel's
+  `autoScroll` all ride the element's `PanelViewConfig` and come back
+  with the project. What is still lost on reopen is the **plot
+  x-window** (`winStart` / `winEnd` are not in the panel's `persist`
+  call) and every view's **scroll offset** (no `scrollTop` anywhere in
+  the project types), so a reopened session lands at the live tail
+  rather than where you left it. Decide what to snapshot and where it
+  rides (scratch alongside `session_start_ns`, or the project file).
+  Surfaced during the plot window-start-origin fix (ADR 0024).
 
 - `[test]` **View-chord interception on macOS / Linux webviews.** The
   view keyboard actions are verified on Windows (WebView2 honours
@@ -500,6 +347,16 @@ name/color/remove on any editable event row. Remaining follow-ups:
   menu item), and `Ctrl+Tab` / `Mod+W` interception is untested in
   WKWebView and WebKitGTK. If a mac/Linux user reports a dead chord,
   this is the diagnosis; verify when hardware is in reach.
+
+- `[bug]` **A keyboard edit right after a drag can amend the drag's
+  coalesced undo step.** The stale-gesture close is the next pointer
+  press, so the one path still open is a drag whose `pointerup` went
+  missing (released off-window) followed by an element edit made
+  without touching the pointer at all — pressing `l` over a plot
+  (`plot.followLive.enable`, which persists) is the reachable example.
+  That edit amends the drag's step instead of making its own. Closing
+  it needs a second rule keyed on the keyboard, which has to know not
+  to close the rename gesture the user is typing into.
 
 - `[feat]` **Multi-step sequence capture in the shortcuts panel.** The
   keybinding framework parses and dispatches sequence chords (e.g.
@@ -527,23 +384,6 @@ name/color/remove on any editable event row. Remaining follow-ups:
 - `[bug]` **Plot vs trace divider drag fix** (former Task 24) — the
   divider between the plot area and its trace/event list doesn't drag
   reliably.
-- `[docs]` **BLF f64-timestamp precision note** (former Task 24) —
-  document the precision limit of BLF's f64 seconds timestamps in a
-  user-facing surface, if it hasn't already been folded into one.
-- `[ui]` `cannet-gui`: a global UI frame-rate / responsiveness readout
-  (rAF-based FPS, maybe long-task / dropped-frame counts) — the plot
-  panel shows its own re-sample rate now; generalise that to a small
-  always-available indicator so other panels' costs are visible too.
-  Useful while tuning the trace virtualizer and any future heavy view.
-- `[feat]` **Configurable log volume / verbosity.** Logging volume is
-  fixed today — the host System Messages bus, the python-can sidecar,
-  and the frontend `diag` stream each emit at a hard-coded level with no
-  user control. We'll want a way to configure how much is logged: a
-  minimum level (and ideally per-source filtering) plus volume guards
-  (rate limiting / retention or ring-buffer caps) so a chatty source
-  can't drown the panel or grow unbounded. Natural home is the Settings
-  panel. Surfaced while building the frontend perf capture, which adds
-  yet another log/metric stream.
 - `[ui]` GUI-wide visual restyle: adopt the dark "scope" visual
   language from `plans/plot-panel-reference.html` (the prototype's color
   variables, monospace type scale, panel chrome, control styling) across
@@ -583,24 +423,23 @@ next pass on this surface can address them as one piece.
 
 ### Host crates, wire, and sidecar
 
-- `[cleanup]` **Extract a host-model crate out of `cannet-gui`.**
-  `trace_store` / `filter` / `signal_cache` / `signal_sampler` are
-  tauri-free and don't need to live in the app crate; `cannet-perf-measurement`
-  already depends on `cannet-gui` via documented `pub mod` escapes to
-  reach them (a deliberate tradeoff at the time). Now that the lib.rs
-  god-file split (task 30) has landed these into their own modules,
-  pulling them into a standalone crate is mechanical. Do it if/when
-  another consumer besides `cannet-perf-measurement` needs the same
-  escape, or the `pub mod` seam starts to hurt.
+- `[perf]` **Quitting within ~1 min of a large cold rebuild costs
+  ~11 s of synchronous pyramid flush** (drains to ~2.5 s once the
+  cadence has idled). Levers identified: raise the idle
+  cadence-flush budget, or harden pages as the rebuild writes them.
+  Current behavior stands per the owner's shutdown-flush ruling —
+  revisit if it bites. (The general exit hang this grew out of was
+  fixed — the rebuild no longer holds the model lock, ADR 0048.)
 - `[cleanup]` **Sweep task-step-number comments (`6d`, `Step 3`, …) out
-  of source.** ~20+ sites across `cannet-spill` and host files (filter,
-  signal_cache, emitters, trace_store's flush module among them) cite
-  plan-step numbers in comments, violating the no-plan-refs rule
+  of source.** ~14 sites remain across `cannet-spill` (`filter_index`,
+  `byid`, `disk`, `sample_seq`) and host files (`signal_cache`,
+  `emitters`, `trace_store`'s flush module), plus a few in
+  `cannet-perf-measurement` and two `cannet-blf` `Cargo.toml` headers,
+  citing plan-step numbers in comments — the no-plan-refs rule
   (CLAUDE.md § Documentation: source cites ADRs, never `plans/`).
-  Surfaced by the 2026-07-02 quality audit (task 30) and reconfirmed
-  outstanding as of the task-30 close-out (2026-07-26) — replace each
-  with an ADR reference or plain inline rationale, in one commit so the
-  sweep doesn't drag.
+  Most survivors now hang off a stable ADR clause (`ADR 0002 DS-8 /
+  6d`), so the sweep is mostly dropping the trailing step number rather
+  than reconstructing rationale. One commit, so it doesn't drag.
 - `[idea]` `cannet-gui` disk-spill eviction (task 0018 Step 6): **pin
   note-bearing regions against eviction.** The windowed-ring cap drops the
   oldest frames purely by age; a section the user annotated with a note is
@@ -612,41 +451,23 @@ next pass on this surface can address them as one piece.
   stops being a single monotonic floor (it becomes a set of live ranges),
   so weigh that complexity against the benefit. Deferred from Step 6 — the
   base cap evicts by age only; notes are kept but may dangle below the floor.
-- `[bug]` `cannet-gui` disk-spill scratch: **two app instances share and
-  stomp one `current/` dir.** The scratch lives at a single fixed path
-  (`<OS cache>/dev.cannet.app/current/`), and nothing arbitrates exclusive
-  ownership. [ADR 0002 DS-7](../docs/adr/0002-disk-spill-store.md)'s
-  `project_id` identity gate decides what a launch *reloads*, but it does
-  not stop a second concurrent instance from opening the same dir and
-  appending/clearing into the same segment files as the first — mutual
-  corruption (and a second instance's capture silently destroys the
-  first's reloadable session). Options: an OS advisory lock / lockfile in
-  `current/` taken at boot (second instance falls back to a per-pid
-  scratch dir, or refuses, or runs RAM-only), or a per-instance scratch
-  subdir keyed by pid with the identity gate scanning siblings. Decide
-  the contract (single-instance-wins vs. multi-instance-isolated) when
-  picking up. Surfaced while wiring 5.3c reload.
-  reductions.** The per-tick O(session length) rescan is fixed — the
-  follow-live tail now resumes from an incremental count checkpoint and
-  scans only *backward* from the tip for its page (`fetch_filtered_trace`
-  fast path + `useFilteredTrace` cursor), so a filtered panel parked at the
-  tail costs O(Δ + page span) per tick, not O(buffer). Two residual pieces
-  remain, sharing one invalidation story (filter edited / DBC set changed):
-  - *Positioned deep-scroll fetch.* A non-tail page (the user scrolled into
-    history) still scans from `scan_start` to place itself by match-index —
-    O(offset), but on the scroll, not the live tick. A per-filter match
-    index (like `by_id`, remembering matched indices) would make it
-    O(log + page); only worth it if deep-scrolling a filtered view on a
-    huge buffer proves janky.
-  - *Cached candidate sets.* `decode_candidate_ids` re-runs the
-    name/signal resolution against every loaded DBC on every fetch
-    (4 Hz+ per filtered panel), though it's a pure function of
-    (predicate, loaded DBCs) and both have change events. Cache keyed
-    by predicate + a databases generation counter; the risky part is
-    auditing every `state.databases` mutation site (load, remove,
-    reload-all, watcher reload, bus-rescope) for the bump — a missed
-    invalidation is a wrong-results bug, which is why this wasn't done
-    inline with the gate itself.
+- `[bug]` `cannet-gui` disk-spill scratch: **two app instances open the
+  same project's cache and stomp it.** Nothing arbitrates exclusive
+  ownership of a cache directory. [ADR 0002
+  DS-7](../docs/adr/0002-disk-spill-store.md)'s `project_id` identity
+  gate decides what a launch *reloads*, but it does not stop a second
+  concurrent instance from opening the same dir and appending/clearing
+  into the same segment files as the first — mutual corruption (and a
+  second instance's capture silently destroys the first's reloadable
+  session). ADR 0042 §4 narrowed the blast radius: the scratch is no
+  longer one fixed `current/` dir but a per-project cache dir under the
+  app cache root, keyed by a uuid-v5 hash of the project directory, so
+  the collision is now specifically *two instances on the same project*.
+  Options: an OS advisory lock / lockfile in the cache dir taken at boot
+  (second instance falls back to a per-pid dir, or refuses, or runs
+  RAM-only), or a per-instance subdir keyed by pid with the identity
+  gate scanning siblings. Decide the contract (single-instance-wins vs.
+  multi-instance-isolated) when picking up.
 - `[bug]` `cannet-gui` BLF ingest: **root panic behind the 2026-07-10
   poisoned-mutex crash is still unidentified.** A third-party
   (TSMaster-written) BLF panicked the ingest path mid-append (file not
@@ -670,45 +491,34 @@ next pass on this surface can address them as one piece.
   `millis`/`millis_overflow`/`micros` per frame, identify the
   mechanism, and file against python-can and/or mac-can PCBUSB.
 
-- `[cleanup]` `cannet-python-can` `_proto_to_frame`: direction
-  `UNSPECIFIED` is silently coerced to TX (`is_rx = direction ==
-  DIRECTION_RX`) where Rust's `convert.rs` rejects it — asymmetric with
-  the frame-*kind* seam, which now rejects `UNSPECIFIED` on both sides.
-  Unreachable from Rust peers (`frame_to_proto` always sets Rx/Tx);
-  align when next touching the seam. (2026-07-26 closeout review.)
-- `[ui]` `cannet-python-can` sidecar: **suppress the `xlReceive failed
-  (XL_ERROR)` warning emitted on normal close.** Closing a Vector
-  channel while `_rx_pump` is blocked in `ch.recv` surfaces as a
-  WARN-level `rx for <id> failed: xlReceive failed (XL_ERROR) [Error
-  Code 255]` System Message on every disconnect — teardown noise, not
-  a fault. Detect the closed/closing state in the pump (or close the
-  channel only after the pump exits) so a clean unsubscribe doesn't
-  log a scary error.
-- `[perf]` `cannet-gui` status residency (task 0018 6g-C, deferred): the
-  status line's memory figure is whole-application RSS (host + WebView
-  children) labelled `RAM`, not a store-only residency estimate. A true
-  mapped-resident metric (`mincore` on Linux / `VirtualQuery` on Windows
-  over the mmap'd cache segments) plus a health-log breakdown refinement
-  (split `other` into by-id / filter / JSON; surface pyramid *file count*
-  rather than depth) would make the split honest. Low value / fragile
-  cross-platform — mmap paging already bounds store residency and the
-  `RAM` label doesn't claim otherwise. Pick up only if residency needs
-  real metering.
+- `[ui]` `cannet-python-can` sidecar: **two sources of scary-but-benign
+  log noise.** (1) Closing a Vector channel while `_rx_pump` is blocked
+  in `ch.recv` logs a WARN `xlReceive failed (XL_ERROR)` System Message
+  on every disconnect — teardown, not a fault; detect the closing state
+  (or close the channel only after the pump exits). (2) Startup
+  enumeration imports every python-can hardware backend, and each
+  missing vendor lib logs a WARNING that trips the panel's default Warn
+  filter (`vxlapi64 not found`, `Kvaser canlib is unavailable`) — add a
+  `logging.Filter` on the root handler demoting `can.interfaces.vector`
+  / `.kvaser` import noise to INFO so the breadcrumb survives below the
+  panel's default filter. Test with synthesized `LogRecord`s.
 - `[perf]` `cannet-gui` `save_capture` **materializes the entire capture in
-  RAM** (lib.rs:925–947, 1058–1113): it pulls the whole store into one
-  `Vec` before writing the BLF, under a comment saying "which we'll
-  revisit when disk-spill lands" — disk-spill has landed (ADR 0002;
-  windowed-ring eviction shipped in task 18), so saving a large spilled
+  RAM** (`capture.rs`: `state.trace_store.slice(0, len())` into one
+  `Vec`, handed whole to `write_capture`), under a comment saying "which
+  we'll revisit when disk-spill lands" — disk-spill has landed (ADR
+  0002; windowed-ring eviction shipped), so saving a large spilled
   capture now defeats the spill. Stream the write in chunks off the
   store's paged read path instead. (2026-07-02 audit.)
 - `[perf]` `cannet-python-can` server: **TX hot path re-resolves the
-  interface through the registry per frame** (server.py:788, 848,
-  878–908) even though the session already holds the handle
-  (635–640) — a per-frame dict/lock round-trip on the highest-rate
-  path. Cache the handle on the session. (2026-07-02 audit.)
-- `[perf]` `cannet-core`: revisit `CanFramePayload::Classic`/`Fd` to share
-  a fixed-size inline buffer instead of `Vec<u8>` once the trace store /
-  perf benchmark shows allocator pressure.
+  interface through the registry per frame** (`server/service.py`'s
+  per-frame `self._registry.transmit(...)` → a locked dict lookup in
+  `server/shared_interface.py`, then the interface lock again inside
+  `_SharedInterface.transmit`) even though the session already knows
+  which interfaces it holds — two lock acquisitions plus a dict lookup
+  per frame on the highest-rate path. Cache the handle on the session.
+  (The pump around it has since changed — TX enqueues to a bounded
+  per-interface queue drained by a `_tx_pump` thread — but the
+  per-frame resolution is unchanged.) (2026-07-02 audit.)
 - `[feat]` `cannet-server` (Phase 2+): multi-client support. Phase 2 is
   single-client per server; a second connection is rejected with
   `Error::BUSY`. Lift this when there's a real use case (e.g. a second
@@ -727,36 +537,20 @@ next pass on this surface can address them as one piece.
   bitrate the BLF was captured at. Additive proto change.
 - `[feat]` `cannet-gui` host: bridge wire-level `LogMessage` envelopes
   from an active sidecar Session stream into the System Messages bus.
-  Phase 8 delivers the process-level sidecar lifecycle bridge (stdout
-  / stderr / exit-code → System Messages tagged `sidecar:python-can`);
-  once the GUI opens a Session against the sidecar it should also
-  forward in-band `LogMessage` envelopes through the same tag so a
-  vendor SDK warning surfaced mid-session reaches the user without
-  the sidecar having to also `print` it.
+  Only the process-level bridge is live (stdout / stderr / exit-code →
+  System Messages tagged `sidecar:python-can`); in-band `LogMessage`
+  envelopes never arrive, so a vendor SDK warning surfaced mid-session
+  reaches the user only if the sidecar also `print`s it. Both ends of
+  the wiring exist and neither is connected: the sidecar emits them,
+  and the host has `system_log.rs`'s `bridge_wire_log` — which has no
+  production caller, because `cannet-client`'s rx loop drops
+  `Body::Log(_)` on the floor "for the GUI host to bridge". Picking
+  this up is surfacing the log body out of the client and calling the
+  function that is already written and tested.
 - `[feat]` Linux `vcan` via socketcan as a writable CAN source. An
   actual local virtual-bus device on Linux is the honest follow-up to
   the in-process virtual bus. Reconsider alongside future hardware
   work — PEAK's Linux kernel driver path could go via socketcan too.
-
-- `[ui]` `cannet-python-can` sidecar: **demote python-can backend "driver
-  not installed" WARNINGs to INFO.** On startup the sidecar's enumeration
-  triggers python-can's hardware backends to import their native vendor
-  libs; when the lib isn't present each backend emits a `WARNING` via its
-  module logger that the host promotes to a Warn-level System Message
-  (e.g. `can.interfaces.vector.canlib Could not import vxlapi: Vector XL
-  library not found: vxlapi64`; `can.interfaces.kvaser.canlib Kvaser
-  canlib is unavailable.`, confirmed by direct import). Expected on any
-  workstation that doesn't have every CAN vendor installed — not
-  actionable, but trips the panel's default Warn filter. Add a
-  `logging.Filter` in
-  [`__main__.py`](../servers/cannet-python-can/cannet_python_can/__main__.py)
-  installed on the root handler after `basicConfig` that rewrites
-  `levelno=WARNING → INFO` (and `levelname`) for records whose `name`
-  starts with `can.interfaces.vector` or `can.interfaces.kvaser`. Other
-  loggers untouched. Result: line still surfaces at Info level (via
-  `classify_stderr_line` → `LogLevel::Info`), preserving the breadcrumb
-  without raising the panel. Test the filter directly with synthesized
-  `LogRecord`s in a new sidecar test.
 
 - `[test]` **Phase 13 live / hardware sign-off (deferred from the Phase 13
   exit criteria).** The virtual-bus + bridge surface is code-complete and
@@ -825,20 +619,18 @@ next pass on this surface can address them as one piece.
   Gatekeeper/SmartScreen warnings.
 
 - `[sidecar]` **Configurable sidecar entrypoint path(s).** The host
-  resolves the sidecar launcher (or additional launchers?) by fixed probe order
-  (frozen binary next to the GUI exe, then `uv`/`python3` dev paths) in
-  [`apps/gui/src-tauri/src/sidecar.rs`](apps/gui/src-tauri/src/sidecar.rs). Add
-  an override (env var and/or setting) that points cannet at a user-chosen
+  resolves the sidecar *launcher* by fixed probe order (frozen binary
+  next to the GUI exe, then `uv`/`python3` dev paths) in
+  [`apps/gui/src-tauri/src/sidecar.rs`](apps/gui/src-tauri/src/sidecar.rs).
+  The overrides that exist point at the sidecar *package* directory
+  (`CANNET_SIDECAR_DIR` / the `sidecar_dir` setting, env winning) and
+  at the driver module (`CANNET_DRIVER_MODULE` / `driver_module`) —
+  the launcher binary itself is still not overridable. Add an override
+  (env var and/or setting) that points cannet at a user-chosen
   sidecar executable. Reinforces the LGPL §4 replace story (see
   [`servers/cannet-python-can/LICENSING.md`](../servers/cannet-python-can/LICENSING.md)):
   a user who swaps in a modified sidecar / `python-can` can point cannet
   straight at it instead of editing files inside the frozen onedir.
-
-- `[naming]` `sidecar.rs` internal identifiers `LaunchPath::BundledUv`
-  and `bundled_uv_path()` predate the "fetched, not bundled" decision
-  and should be renamed (e.g. `LocalUv` / `local_uv_path`) for
-  consistency. User-facing strings and module docs are already
-  updated; this is a code-only follow-up.
 
 - `[dev]` **Dev server port is fixed, blocking concurrent `tauri dev`
   instances.** The Vite dev port lives in two places that must agree:
@@ -873,15 +665,6 @@ next pass on this surface can address them as one piece.
   stream-inflate the container body in bounded chunks rather than
   materialising the whole uncompressed payload.
 
-- `[cannet-gui]` **Project save absolutizes DBC paths.** Opening and
-  closing a project rewrites its `.cannet_prj` with each DBC's path
-  expanded to an absolute machine-specific one (`dbc/pack.dbc` →
-  `C:\Users\...\dbc/pack.dbc`), observed 2026-07-25 when a GUI session
-  against `examples/ev-zonal` dirtied the checked-in example and broke
-  `parses_the_checked_in_ev_zonal_example_project`. Paths that arrived
-  relative should persist relative (portability; examples are
-  checked in). Find the save path that resolves before serializing.
-
 - `[cannet-gui]` **Connect while already connected spins an error
   loop.** Clicking Connect (or `--connect-on-start` racing the
   project's auto-connect) with a live session to the same address
@@ -900,8 +683,9 @@ next pass on this surface can address them as one piece.
   tree (~5 MB on the reference 5-DBC project), and the DBC panel
   re-pulls all of it on every `dbc-changed` event and every bus/scope
   edit ([`apps/gui/src/DbcPanel.tsx`](apps/gui/src/DbcPanel.tsx)
-  `refreshContent`). Task 41 ruled this explicitly out of scope — the
-  layout cliff it was chasing was DOM-side and is fixed — but the
+  `refreshContent`). The DBC-panel rework that surfaced this ruled it
+  explicitly out of scope — the layout cliff it was chasing was
+  DOM-side and is fixed — but the
   payload is still the largest single round-trip in the app and the
   panel still holds the whole tree in frontend state. If it bites,
   page `list_dbc_content` the way the trace and signal views are paged
@@ -988,21 +772,6 @@ next pass on this surface can address them as one piece.
   moving — i.e. alongside Task 45's promotions — rather than now, when
   three keys are overridable and none is by default.
 
-- `[cannet-gui]` **Deleting an auto-located project's cache leaves its
-  project directory behind, unlisted.** ADR 0042 §5's table says Delete
-  leaves the project directory untouched, without qualification, and
-  Task 47 branch 3 implemented it literally — so deleting an
-  auto-located row forgets the entry but leaves
-  `<app_cache_dir>/projects/<key>/` (a `.cannet/` holding two empty JSON
-  files, a `.gitignore`, and a dangling cache link) with nothing pointing
-  at it. A few hundred bytes, and reopening that project re-registers
-  it, so it is a tidiness question rather than a leak that matters. If it
-  is ever worth fixing, the honest form is an amendment to the ADR saying
-  the
-  "untouched" column means *a directory the user owns* — cannet created
-  that one in its own cache space unasked, and decision 2's symmetry
-  would let it remove one there too.
-
 - **Colormap wishes.** Three related asks, all "would be nice", none
   urgent, and probably one design rather than three: colormaps that
   apply across a *selection* of signals sharing a type instead of being
@@ -1029,16 +798,14 @@ next planning pass.
 - `[feat]` **Gridview deferred set** (task 51 D-decisions): plot
   signal side-list and project-panel element-list migrations onto the
   layer; host-side fuzzy search for the paged views; type-ahead
-  search; keyboard multiselect; branch-with-content affordance.
+  search; keyboard multiselect beyond Shift+arrows (Shift+Up/Down
+  range extension shipped 2026-08-08 — ADR 0044; Ctrl+arrows /
+  Ctrl+Space remain out); branch-with-content affordance.
 - `[feat]` **Host id↔ref resolution for paged selections.** Ctrl+A
   and multi-row drag in the paged views (chrono/by-ID/signal) cover
   only the loaded page; a cursor scrolled out of a paged window
   restarts at row 0. Both want a host command resolving row ids
   beyond the page.
-- `[chore]` **Render counters for `RbsPanel`/`DbcPanel`/
-  `TransmitPanel`.** Their absence hid RbsPanel's per-refresh render
-  cost during the task-51 heap investigation (dockview keeps
-  inactive tabs mounted, so "no counter" read as "not rendering").
 - `[feat]` **`ConfigureBus` acknowledgement needs a wire-model
   decision (ADR).** "What the driver actually applied" exists
   nowhere: ADR 0022 is fire-and-forget, the client rx loop drops
@@ -1064,7 +831,8 @@ next planning pass.
   (`plot_fetch_interval_ms` case). Reproduced across several
   full-suite runs during tasks 52–53; passes isolated.
 - `[feat]` **DBC-carried generator rules (`Cannet*` database-level
-  `BA_`).** Task 56 v1 stores regex generators project-side; the
+  `BA_`).** The shipped regex generators store their rules
+  project-side; the
   DBC-carried form — so a BMS DBC ships its own `/Cell(\d+)/`
   coloration to anyone who opens it — is deferred, not rejected.
   Confirmed feasible with zero library work: `can-dbc` already

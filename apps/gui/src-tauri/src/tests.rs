@@ -1830,7 +1830,7 @@ fn write_capture_round_trips_frames_and_notes() {
     );
 }
 
-/// The import time range (ADR 0046, task 58.B): `open_log` wraps the
+/// The import time range (ADR 0046): `open_log` wraps the
 /// BLF source in `cannet_core::WindowedSource` ahead of `run_pump`, so
 /// the range is a filter at the `CanFrameSource` seam and not a second
 /// ingest path. This drives the identical per-frame body `run_pump`

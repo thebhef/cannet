@@ -478,8 +478,8 @@ function dropSignal(areaLabel: string, signalName: string, unit: string) {
 
 /// Drop `name` onto the panel's first area ("Area 1") — the setup most
 /// tests below need ("there is a signal on the plot"), now that drag
-/// and the patterns editor are the add paths (task 49.B removed the
-/// toolbar's single-pick `add signal…` combobox). None of these tests
+/// and the patterns editor are the add paths (the toolbar's
+/// single-pick `add signal…` combobox is gone). None of these tests
 /// change which area is focused before calling this, so the target is
 /// always the panel's default first area. The unit comes from the
 /// fixture `SIGNALS` catalog, same as the old picker resolved it from.
@@ -640,7 +640,7 @@ describe("PlotPanel", () => {
 
   it("dropping the same signal onto an area twice is a no-op the second time", async () => {
     // Restates the old toolbar picker's "repeat pick is a no-op" pin
-    // now that drag is the add path (task 49.B removed the combobox):
+    // now that drag is the add path (the combobox is gone):
     // the drop handler's own per-area dedup (`onDropSignal`) is what
     // makes a second drop of the same signal onto the same area inert.
     renderPanel();
@@ -2662,8 +2662,8 @@ describe("PlotArea y-normalisation", () => {
   describe("manual-range regression matrix", () => {
     // Owner's 0.7.0 repro: a manual range set within a 0.0-1.0-valued
     // float signal's own band rendered offscreen. Grooming confirmed it
-    // does not reproduce (`plans/tasks/0055-plot-feedback-round.md` item
-    // 1) and called for regression-pinning across value shapes
+    // does not reproduce on current code, and called for
+    // regression-pinning across value shapes
     // (float/int/uint) and y-axis modes (unified/per-unit/individual)
     // rather than a bisect. `resolveAxisRange` is pinned per shape in
     // `plotAxisScale.test.ts`; these walk the real normalisation
@@ -2928,7 +2928,7 @@ describe("PlotPanel Fit Data over a parked window", () => {
   });
 });
 
-// Task 55 item 3 (post-DBC-reload recovery): Clear collapses the window
+// Post-DBC-reload recovery: Clear collapses the window
 // to now so re-picking signals against a freshly-reloaded DBC resamples
 // cheaply; All data then widens the window back out to the whole buffer
 // for one full-history resample, fitting the x-axis to it.
