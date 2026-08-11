@@ -269,3 +269,106 @@ this task carries the bulk actions. Rulings so far:
   for the whole stack. The selection-slice guard is therefore asserted
   with ctrl-clicks, which change nothing but the selection. Fixing the
   underlying derivation is still out of scope here.
+
+- **2026-08-08 (the bulk actions):** Landed on `task49b-bulk-actions`
+  (from `task49a-area-selection`) in three commits, closing out the
+  task.
+  - `9bade33` — **test prep.** ~40 call sites across
+    `PlotPanel.dom.test.tsx` used the toolbar's `add signal…` combobox
+    purely as setup ("there is a signal on the plot"). Before touching
+    production code, they were moved onto a new `addFocusedSignal` /
+    `addToFocused`, built on the existing `dropSignal` drag simulant
+    rather than the picker being removed next. Two tests that pinned
+    picker-specific behaviour were retired: the option-grouping test
+    (no picker, nothing to group) and the same-area repeat-pick dedup
+    test, restated against the drop handler's own per-area dedup
+    (`dropSignal` twice onto one area). The stale empty-area
+    placeholder text ("pick a signal above…", which named the control
+    about to go) was fixed in the same commit to name what actually
+    adds a signal now.
+  - `ee36e93` — **the feature.** Context menu, selection drag, and the
+    combobox removal, together — the three scope items share the same
+    edit sites (`AxisHandlers`, the row's click/drag handlers,
+    `areaHandlers`), so splitting them into separate commits would
+    have meant re-deriving interleaved hunks for no reviewability
+    gain.
+    - **Hide/Show context menu**: `PlotArea.tsx` gets a
+      `SignalSelectionMenu` (same floating shell as `YAxisScaleMenu`
+      and the sources picker's context menu), opened from a row's new
+      `onContextMenu`. `PlotPanel.tsx` gets `setSelectionHidden` — the
+      batched sibling of the existing `toggleSignalHidden` sitting
+      right after it — which resolves the parent area's current
+      selection to its *effective* `SignalRef`s (`selectedRefsFor`,
+      spanning every derived axis a `per-unit`/`individual` mode
+      splits the area into) and applies `hidden` to all of them in one
+      `setAreas` call. That one call is what makes it one persist (the
+      panel's `persist` effect fires once per `areas` reference
+      change) and one resample per touched derived axis (each axis's
+      own `signalSetKey` changes once, the same trigger the single-row
+      toggle already relies on) — never N.
+    - **Selection drag**: a `dragstart` on a row already in the
+      selection calls a new `onDragSelection` (bound to `dragSelection`
+      in `PlotPanel.tsx`, built the same way as `setSelectionHidden`)
+      instead of the row's own single-ref payload. The existing drop
+      path needed no change — `signalDrop` already fans an array
+      payload out per-ref (`for (const r of refs) onDropSignal(...)`,
+      predating this task), so a multi-signal payload lands with
+      exactly the same move/copy/materialize semantics a single-ref
+      drag always had, just N times.
+    - **Combobox removed**: `addSignalToFocused`, `catalogOptions`,
+      the `<Combobox>` JSX, and the `SignalDescriptorRecord` /
+      `signalKey` imports it alone used. `focusedAreaId` / the
+      `focused` prop stay — they still drive the area-highlight
+      outline, a `PlotArea` render input unrelated to the removed
+      control.
+    - CSS: `.plot-selection-menu` / `.plot-selection-menu-action`,
+      styled off the same shell `.plot-axis-menu` and
+      `.sources-context-menu-action` already establish.
+    - Tests added (10, all in `PlotPanel signal-row selection`):
+      combobox-absence; bulk hide in one persist; bulk show; a
+      selection spanning a `per-unit` area's three derived axes,
+      still one persist; a selection over two pattern-derived rows,
+      materializing both while the pattern itself stays live (still
+      one pattern, still one persist); the not-in-selection
+      right-click; the swatch's own context menu still wins (no
+      selection-menu leak, selection untouched); the selection-drag
+      payload for both the selected-row and unselected-row case; and a
+      resample-count bound (≤ 2 for a two-row hide sharing one axis)
+      pinning the batching at the seam that actually costs something.
+      **Verified genuinely red-then-green**: stashed the three
+      production files, re-ran the suite — the combobox-absence test
+      and all seven feature-dependent new tests failed as expected,
+      the two pure-regression-guard tests (swatch precedence,
+      unselected-row drag) passed anyway (they pin behaviour that
+      doesn't depend on the new code), then restored and confirmed all
+      110 green again.
+    - `apps/gui` test suite: 1536 → 1545 passing (131 files
+      throughout); `pnpm --dir apps/gui build` green at every commit.
+  - `2b654f1` — **docs.** README's plot-panel section: the "Plot
+    areas" bullet drops the combobox and names drag + patterns as the
+    add paths; "Selecting signal rows" gains the context menu and the
+    selection-drag paragraph.
+  - **Design readings** (recorded here per the phase brief):
+    - **Not-in-selection right-click**: right-click replaces the
+      selection with just the clicked row before opening the menu —
+      the Explorer/Finder/VS Code convention. No in-repo right-click
+      precedent existed to follow (`DbcPanel` has none); this is new
+      but standard, and it differs from the drag case on purpose — a
+      context menu inherently asks "what does this apply to" and needs
+      an unambiguous, on-screen answer, where a drag payload can be
+      computed invisibly without disturbing what's on screen.
+    - **Unselected-row drag**: leaves the selection exactly as it is
+      and drags only the grabbed row — `DbcPanel`'s own doc comment on
+      `handleDragStart` states this explicitly ("the panel's visible
+      selection is unchanged so the user can keep it"), so this phase
+      matches it rather than inventing a third behaviour.
+  - **Exit criteria**: all four are met. Selection can be hidden/shown
+    from the context menu or dragged as one payload in every y-axis
+    mode; no bulk recolor; the toolbar combobox is gone; every design
+    question in this file was already answered in 49.A's entry or
+    settled by the readings above (no new ADR — the per-panel UX
+    choices here follow directly from the already-recorded rulings,
+    nothing durable/cross-panel emerged); the reducer + bulk-edit tests
+    exist per the exit criteria's own list; the render-count guard is
+    unchanged and still green; README documents the interaction. This
+    closes task 49.
