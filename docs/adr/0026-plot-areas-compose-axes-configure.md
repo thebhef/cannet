@@ -130,17 +130,21 @@ flag — there is nothing to draw on it — which is the rule that already
 collapses a fully-hidden axis.
 
 **Solo masks the view; it never rewrites what is hidden.** A panel-wide
-regex over the series display names can restrict the panel to the
-series it matches. That is a *view* mask composed on top of each
-series' own `hidden` flag — a series draws when it is not hidden **and**
-(solo is off, or it is in solo's visible set) — not a bulk edit of the
-other series' flags. Solo is a question ("show me these"), and answering
-it by writing `hidden: true` across the panel would destroy the answer
-to a different question the user already gave; clearing solo must
-restore the view verbatim, hidden rows included. It follows that an
-area left with no *solo-visible* series collapses by the same
-all-hidden rule above, and equally without touching its persisted
-`collapsed` flag.
+regex over the canonical signal path (ADR 0038 — the same subject an
+area's pattern filter uses) can restrict the panel to the series it
+matches. That is a *view* mask composed on top of each series' own
+`hidden` flag — a series draws when it is not hidden **and** (solo is
+off, or its area matched nothing, or it is in solo's visible set) — not
+a bulk edit of the other series' flags. Solo is a question ("show me
+these"), and answering it by writing `hidden: true` across the panel
+would destroy the answer to a different question the user already gave;
+clearing solo must restore the view verbatim, hidden rows included. The
+mask is scoped to the areas the pattern found something in: an area
+with no match renders exactly as solo-off leaves it, so a pattern aimed
+at one area never blanks the rest of the panel. Within an area solo
+does apply to, being left with no *solo-visible* series collapses it by
+the same all-hidden rule above, and equally without touching its
+persisted `collapsed` flag.
 
 **One wheel, and one point where a signal's color is decided.** Every
 surface that draws a signal in its own color — the signal view's name

@@ -123,8 +123,8 @@ export interface PlotPanelParams {
   /** Per-derived-axis vertical weight (flex-grow), keyed by axis id.
    * See {@link AxisWeights}. Absent axes default to weight 1. */
   axisWeights?: unknown;
-  /** The panel's solo state — the regex and, in step / subset mode, the
-   * visible positions in its match list. See `plotSolo.ts`. Sparse:
+  /** The panel's solo state — the regex and, when a page of its match
+   * groups is on show, that page's index. See `plotSolo.ts`. Sparse:
    * absent while solo is off. */
   solo?: unknown;
   /** Per-derived-axis manual y range + log flag, keyed by axis id.

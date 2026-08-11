@@ -226,12 +226,11 @@ pub struct Settings {
     /// How many recently-run commands the palette floats to the top.
     /// Default 10. `0` remembers none.
     pub recent_commands_limit: u64,
-    /// How many solo matches one `PageDown` / `PageUp` press moves through
-    /// in a plot panel. Default 1 — the press walks the match list one
-    /// at a time, which is what the next / previous buttons beside the
-    /// solo box do. Larger values page. The first press after the
-    /// matches-only view always lands on the first (or last) match
-    /// whatever this is, so paging never skips the start of the list.
+    /// How many match groups one page of a plot panel's solo view holds.
+    /// Default 1 — one group per page, so the cycle steps a group at a
+    /// time. A solo pattern's capture groups bucket its matches into
+    /// keyed groups (no captures: one group per match), and `‹ / ›` and
+    /// `PageUp` / `PageDown` alike walk pages of them.
     pub solo_page_size: u64,
     /// How often the host pushes a `trace-grew` event with the latest
     /// count, rate, and live tail. Default 100 ms. It is *one* setting

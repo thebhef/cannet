@@ -745,33 +745,48 @@ resample at the end.
   afterward, and a signal a pattern added (not a manual pick) keeps
   following its pattern rather than moving.
 - **Solo (show only these series).** The toolbar's **solo** box takes a
-  regex — case-insensitive and partial, so `Cell16` finds `Cell16`
-  wherever it sits in a signal's name — and masks every series it
-  doesn't match out of the *view*, across every area of the panel. It
-  is a view mask, not a bulk hide: no series' own hide state is
-  touched, so clearing the box (or **Escape**, or the **×**) brings the
-  full view back exactly as it was, and a signal you really did hide
-  stays hidden. An unparseable pattern is inert — the box marks itself
-  **bad regex** and nothing is filtered — so a half-typed regex never
-  blanks the plot. An area left with no visible series gives up its
-  plot height like any all-hidden area, without touching its own
-  collapse toggle. The pattern is saved with the panel in the project
-  file. **Ctrl/⌘+F** focuses the box from anywhere in the plot panel.
-- **Stepping the matches.** The **‹ / ›** controls beside the solo box
-  (and **PgUp / PgDn** anywhere in the plot panel — clicking any part
-  of it, the canvas included, gives the panel focus) walk the match
-  list **one series at a time**, wrapping at both ends — the item-by-item workflow the
-  box exists for. The read-out between them is the position, `3/17`;
-  before you step, it is the bare match count. Stepping runs in panel
-  order — areas top to bottom, rows within each area — so it crosses
-  area boundaries on its own. **Escape** (or clearing the box) leaves
-  step mode and the whole solo view at once, and editing the pattern
-  starts the new match list back at "all matches visible".
-  **Right-click the solo control** for the match list itself — one
-  checkbox per match, labelled by area and signal — and check any
-  subset to show exactly those, which is the same mechanism as
-  stepping with more than one box ticked. The menu stays open while you
-  tick, and the position read-out becomes "how many of how many".
+  regex over the canonical signal path `bus/ecu/message/signal` — the
+  same dialect an area's pattern filter speaks, case-sensitive and
+  partial, so `Cell16` still finds a bare name as the path's tail while
+  `/EngineData/` selects a whole message. Every series it doesn't match
+  is masked out of the *view*. It is a view mask, not a bulk hide: no
+  series' own hide state is touched, so clearing the box (or
+  **Escape**, or the **×**) brings the full view back exactly as it
+  was, and a signal you really did hide stays hidden. An unparseable
+  pattern is inert — the box marks itself **bad regex** and nothing is
+  filtered — so a half-typed regex never blanks the plot. Solo applies
+  **only to the areas it matched something in**: an area with no match
+  renders exactly as if solo were off, and a pattern matching nothing
+  anywhere changes nothing at all. Inside an area it does apply to,
+  being left with no visible series gives up the plot height like any
+  all-hidden area, without touching its own collapse toggle. The
+  pattern is saved with the panel in the project file. **Ctrl/⌘+F**
+  focuses the box from anywhere in the plot panel.
+- **Stepping by group.** A solo pattern's **capture groups** decide
+  what one step covers: each match's key is what the pattern captured,
+  and every signal sharing that key steps as one — so `Cell(\d+)` walks
+  cell indices however many areas they are spread across. Keys sort
+  numerically (`Cell2` before `Cell10`); several groups make a tuple
+  key, in the order they are written, which a `$N` suffix on a *named*
+  group overrides (`Cell(?<cell$2>\d+)_Bank(?<bank$1>\d)` keys by bank
+  first, and the suffix is not shown). `(?:…)` captures nothing, so it
+  opts a group out of the key. A pattern with no capture groups steps
+  one matching series at a time, in panel order.
+  A **page** is *Solo groups per page* consecutive groups (Settings →
+  Plot; 1 by default), so `Cell0*(\d+)` at 5 per page gives cells 0–4,
+  then 5–9. The **‹ / ›** controls beside the box — and **PgUp / PgDn**
+  anywhere in the plot panel, clicking any part of it, the canvas
+  included, gives the panel focus — walk the cycle **all → page 1 → …
+  → page N → all**, so the whole matched set is always one press away.
+  The read-out between them says which: `all (96)`, or
+  `2/12 · cell=07 (16 of 96)` — page, the group it covers, and how many
+  of the matches that is (a page spanning several groups reads as the
+  range, `1/2 · "0"–"4" (40 of 96)`). It says `no matches` when the
+  pattern selected nothing. Typing or editing the pattern lands on page
+  1; **Escape** (or clearing the box) drops the whole solo view at
+  once. **Right-click the solo control** for the group list, and click
+  one to open the page it sits on; the menu stays open so you can
+  compare a few.
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives
