@@ -11,6 +11,8 @@ High-performance CAN traffic analyzer.
 - [x] Filtering, insertable into trace views
 - [x] Dockable panels with consistent sizing / resizing
 - [x] Transmit control panels
+- [x] Undo/redo for view changes (layout + element edits: signals, plot areas, filters, renames, colors, columns; one user gesture is one step; never reaches bus-facing state)
+- [x] Theme switching: dark / light / lighthk
 
 ## Application Features
 
@@ -33,8 +35,12 @@ High-performance CAN traffic analyzer.
   - [x] Window layouts
   - [x] Bus configs
   - [x] DBC references, reloadable from disk at any time
+  - [x] Autosave on exit (opt-in; projects with their own directory)
 - [x] Logical CAN bus layer: map CAN channels to logical project channels
 - [x] Read .blf logs
+  - [x] Channel-mapping dialog: map each BLF channel to a logical bus, or skip it
+  - [x] Import shows capture metadata + markers (frame count, duration, wall-clock start, GLOBAL_MARKER events)
+  - [x] Time-range selection narrows the import
 - [x] Trace capture
   - [x] Session buffer: every frame received since the current connection (replaced on new connection, lost on app exit)
   - [x] A trace is a capture window over the buffer: a start point and a running / paused / stopped state
