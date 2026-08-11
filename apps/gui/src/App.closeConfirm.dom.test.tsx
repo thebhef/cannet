@@ -2,9 +2,17 @@
 //
 // Closing the window with unsaved work prompts (Save & close / Discard &
 // close / Cancel — ADR 0028 folds dirty `.cannet_rbs` files into the same
-// prompt). The prompt is unconditional: there is no setting that
-// suppresses it, and a `settings.json` that still carries the removed
-// `confirm_unsaved_on_exit` key does not resurrect one.
+// prompt). A `settings.json` that still carries the removed
+// `confirm_unsaved_on_exit` key does not resurrect a suppressed prompt —
+// that opt-out is gone for good.
+//
+// `autosave_on_exit` is a narrower, later addition: enabled, it replaces
+// the prompt with a silent save, but only when the session's active
+// project directory is one the user pointed cannet at explicitly (not
+// auto-located, and not a never-saved session) — checked host-side via
+// `active_project_is_auto_located` at the moment of close, never guessed
+// from `projectPath` in JS. Off (the default) or against an auto-located
+// directory, the prompt behaves exactly as it always has.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -17,17 +25,65 @@ const listeners = new Map<string, Handler[]>();
 /// can drive a close attempt without a real window.
 let closeRequested: ((event: { preventDefault: () => void }) => unknown) | null = null;
 
-const knobs = { staleOptOut: false, rbsDirty: true };
+const knobs = {
+  staleOptOut: false,
+  rbsDirty: true,
+  // Autosave-on-exit knobs. `lastProject` set + `reopen` true reopens a
+  // project at boot (giving `projectPath` a real value, the same way an
+  // explicit-dir project always gets one — by being opened or Saved As);
+  // `autoLocated` is what the host reports for the session's *active*
+  // project directory, independent of whether a project file happens to
+  // be open.
+  autosaveOnExit: false,
+  autoLocated: true,
+  reopen: true,
+  lastProject: null as string | null,
+};
+
+/// Commands the silent-save path drives, tracked so a test can tell a
+/// save actually ran (as opposed to the prompt being skipped for no
+/// reason).
+const saveCalls: string[] = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => {
     switch (cmd) {
+      case "get_state":
+        return {
+          last_project: knobs.lastProject,
+          layout: null,
+          recent_blfs: [],
+          recent_commands: [],
+          blf_channel_maps: {},
+        };
       case "get_settings":
-        // A file left over from the build that had the opt-out. The
-        // host ignores an unknown key; nothing may read it back.
-        return knobs.staleOptOut ? { confirm_unsaved_on_exit: false } : {};
+        return {
+          // A file left over from the build that had the opt-out. The
+          // host ignores an unknown key; nothing may read it back.
+          ...(knobs.staleOptOut ? { confirm_unsaved_on_exit: false } : {}),
+          autosave_on_exit: knobs.autosaveOnExit,
+          reopen_last_project: knobs.reopen,
+        };
+      case "open_project":
+        return {
+          schema_version: 7,
+          buses: [],
+          interface_bindings: [],
+          dbcs: [],
+          local_virtual_buses: [],
+          elements: [],
+          layout: null,
+        };
+      case "active_project_is_auto_located":
+        return knobs.autoLocated;
+      case "save_project":
+      case "save_project_as":
+      case "rbs_save":
+        saveCalls.push(cmd);
+        return "project-id";
       // Unsaved work, without needing to drive the project dirty flag:
-      // ADR 0028 puts a dirty RBS through the same prompt.
+      // ADR 0028 puts a dirty RBS through the same prompt (and the same
+      // silent-save path).
       case "rbs_dirty":
         return knobs.rbsDirty ? [{ elementId: "e1", path: "C:/fake/a.cannet_rbs" }] : [];
       case "diag_autostart":
@@ -62,6 +118,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
+const windowDestroy = vi.fn(async () => {});
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     onCloseRequested: async (cb: (event: { preventDefault: () => void }) => unknown) => {
@@ -74,7 +131,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     minimize: async () => {},
     toggleMaximize: async () => {},
     close: async () => {},
-    destroy: async () => {},
+    destroy: windowDestroy,
   }),
 }));
 
@@ -121,7 +178,10 @@ class FakeResizeObserver {
 async function boot(): Promise<void> {
   render(<App />);
   await act(async () => {
-    await new Promise((r) => setTimeout(r, 50));
+    // 100ms, not 50: the autosave tests reopen a project at boot
+    // (`open_project` + `applyProject` + `restore_scratch_capture`),
+    // which needs more settle time than the plain-rbsDirty tests did.
+    await new Promise((r) => setTimeout(r, 100));
   });
 }
 
@@ -144,6 +204,12 @@ beforeEach(async () => {
   closeRequested = null;
   knobs.staleOptOut = false;
   knobs.rbsDirty = true;
+  knobs.autosaveOnExit = false;
+  knobs.autoLocated = true;
+  knobs.reopen = true;
+  knobs.lastProject = null;
+  saveCalls.length = 0;
+  windowDestroy.mockClear();
   await hydrateState();
   await hydrateSettings();
 });
@@ -171,5 +237,57 @@ describe("unsaved-changes prompt on close", () => {
     const preventDefault = await requestClose();
     expect(preventDefault).toHaveBeenCalled();
     expect(screen.getByText(/unsaved changes to the project/i)).toBeInTheDocument();
+  });
+});
+
+describe("autosave_on_exit", () => {
+  it("saves silently and closes, no prompt, for a dirty explicit-dir project", async () => {
+    knobs.lastProject = "C:/fake/project.cannet_prj"; // reopened at boot — projectPath is real
+    knobs.autosaveOnExit = true;
+    knobs.autoLocated = false; // the host says this directory is not auto-located
+    await hydrateSettings();
+    await hydrateState(); // re-read `last_project` — beforeEach cached it null
+    await boot();
+
+    const preventDefault = await requestClose();
+
+    expect(preventDefault).toHaveBeenCalled(); // native close is still deferred to async work
+    expect(screen.queryByText(/unsaved changes to the project/i)).not.toBeInTheDocument();
+    expect(saveCalls.length).toBeGreaterThan(0); // the silent save actually ran
+    expect(windowDestroy).toHaveBeenCalled(); // and the window closed on its own
+  });
+
+  // Auto-located covers both an auto-located project directory (a loose
+  // project file) and a session with nothing ever opened — `resolve`
+  // (`project_dir.rs`) hands back the same auto-located answer for
+  // both, so one knob covers both cases.
+  it("still prompts for an auto-located / never-saved session, even with autosave enabled", async () => {
+    knobs.autosaveOnExit = true;
+    knobs.autoLocated = true; // no project was opened; the host default
+    await hydrateSettings();
+    await boot();
+
+    const preventDefault = await requestClose();
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(screen.getByText(/unsaved changes to the project/i)).toBeInTheDocument();
+    expect(saveCalls).toHaveLength(0);
+    expect(windowDestroy).not.toHaveBeenCalled();
+  });
+
+  it("still prompts for a dirty explicit-dir project when autosave is disabled", async () => {
+    knobs.lastProject = "C:/fake/project.cannet_prj";
+    knobs.autosaveOnExit = false; // the default — off
+    knobs.autoLocated = false;
+    await hydrateSettings();
+    await hydrateState();
+    await boot();
+
+    const preventDefault = await requestClose();
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(screen.getByText(/unsaved changes to the project/i)).toBeInTheDocument();
+    expect(saveCalls).toHaveLength(0);
+    expect(windowDestroy).not.toHaveBeenCalled();
   });
 });

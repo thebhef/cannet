@@ -70,6 +70,7 @@ const SETTINGS_FILE: &str = "settings.json";
 pub(crate) const SCOPES: ScopeTable = &[
     ("scratch_cap_bytes", Scope::UserOverridable),
     ("clear_scratch_on_exit", Scope::UserOverridable),
+    ("autosave_on_exit", Scope::UserOverridable),
     ("keybindings", Scope::UserOverridable),
     ("show_developer_settings", Scope::User),
     ("system_log_min_level", Scope::User),
@@ -137,6 +138,19 @@ pub struct Settings {
     /// `false`: a prior session is kept and reloads on the next launch
     /// (ADR 0002 DS-7).
     pub clear_scratch_on_exit: bool,
+    /// Whether a dirty close saves silently instead of showing the
+    /// unsaved-changes prompt. Default `false` — prompting stays the
+    /// behaviour until a user opts in.
+    ///
+    /// Scoped narrower than the name alone would suggest: it fires only
+    /// for a project directory the user pointed cannet at explicitly
+    /// (`.cannet_prj` beside a `.cannet/`, ADR 0042 §1) that is dirty —
+    /// checked at close time against [`crate::project_dir::ProjectDir::is_auto_located`].
+    /// An auto-located project directory (a loose project file, or no
+    /// project opened at all) is inert: the prompt behaves exactly as it
+    /// does with this setting off, because there is no project file to
+    /// save silently *to* without minting one the user never asked for.
+    pub autosave_on_exit: bool,
     /// User keybinding customisation (ADR 0018). `None` (the default) means
     /// "use the app's built-in default bindings"; `Some(list)` is the whole
     /// effective binding set, which replaces the defaults. The host only
@@ -509,6 +523,7 @@ impl Default for Settings {
         Self {
             scratch_cap_bytes: None,
             clear_scratch_on_exit: false,
+            autosave_on_exit: false,
             keybindings: None,
             show_developer_settings: false,
             system_log_min_level: "info".to_string(),
@@ -1009,6 +1024,7 @@ mod tests {
         Settings {
             scratch_cap_bytes: Some(8 * 1024 * 1024 * 1024),
             clear_scratch_on_exit: true,
+            autosave_on_exit: true,
             keybindings: Some(vec![
                 Binding {
                     chord: "Mod+k".into(),
@@ -1081,6 +1097,7 @@ mod tests {
         let d = Settings::default();
         assert_eq!(d.scratch_cap_bytes, None);
         assert!(!d.clear_scratch_on_exit);
+        assert!(!d.autosave_on_exit);
         assert_eq!(d.keybindings, None);
         assert!(!d.show_developer_settings);
         assert_eq!(d.system_log_min_level, "info");

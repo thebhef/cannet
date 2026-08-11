@@ -373,9 +373,88 @@ between phases. 59.A's first commit carries this plan section.
     No Rust touched, so `cargo test` / clippy were not re-run.
     ADR-0031 perf gate deliberately not run here — the orchestrator
     runs it after this phase.
+- 2026-08-09 — Phase 59.E landed (`task59e-autosave-exit`, off
+  `task59d-solo-bugs`). Three commits:
+  - `15db05c` `feat(gui): expose whether the active project directory is
+    auto-located` — `active_project_is_auto_located` (`project_dir.rs`)
+    wraps `ActiveProjectDir::is_auto_located`, queried fresh from the
+    frontend at close time rather than mirrored into React state (the
+    active directory can change mid-session on open/Save As, and the
+    close flow only ever needs the answer once, at the moment it
+    decides). This is the "model's own notion, not a path heuristic in
+    JS" the task file called for. Landed as its own commit because it
+    hit a build wrinkle worth isolating — see the blocker below.
+  - `a367682` `feat(gui): add the autosave_on_exit user-overridable
+    setting` — `settings.rs` (`SCOPES`, the field, `Default`, the test
+    `sample()`), `settings_descriptor.rs` (one `Spec` row, `Surface::General`,
+    `Kind::Behaviour`, `Control::Bool` — no hardcoded key list blocked
+    it), and `hostSettings.ts`'s TS mirror. Off by default. Not yet
+    wired to the close flow. `cargo test -p cannet-gui`: 529 passed, 0
+    failed, 4 ignored. `cargo clippy -p cannet-gui --all-targets`: clean.
+  - `1a8290a` `feat(gui): autosave-on-exit saves a dirty explicit-dir
+    project silently` — the close-flow wiring in `App.tsx`'s
+    `onCloseRequested`: with the setting on and
+    `active_project_is_auto_located` false, it calls the same
+    `handleSaveAll` a manual "Save & close" already uses and destroys
+    the window itself, skipping the prompt. An auto-located directory,
+    a failed save, or an unreachable host all fall through to the
+    ordinary prompt unchanged — never lose the close request silently.
+    Three dom tests in `App.closeConfirm.dom.test.tsx`
+    (dirty+enabled+explicit-dir → silent save; dirty+enabled+auto-located
+    → prompts as today; dirty+disabled → prompts as today), watched red
+    against the unmodified handler first — only the silent-save case
+    could fail there, which it did (`expected element).not.toBeInTheDocument()`
+    finding the prompt anyway), and the fix made it green without
+    disturbing the other two. README's project paragraph and Settings
+    list updated in the same commit. `pnpm --dir apps/gui test`: 139
+    files, 1695 tests passed (1692 before; 3 new). `pnpm --dir apps/gui
+    build`: clean.
+  - Re-verified after all three: `cargo test -p cannet-gui` 529 passed;
+    `cargo clippy -p cannet-gui --all-targets` clean; `pnpm --dir
+    apps/gui test` 1695 passed; `pnpm --dir apps/gui build` clean.
 
 ## Blockers / side effects
 
+- **59.E — a bare `#[tauri::command]` fn added directly to `lib.rs` hit
+  a reproducible rustc/tauri macro collision.** `cargo check -p
+  cannet-gui` refused with `E0255: the name
+  __cmd__<fn> is defined multiple times` — both "definitions" pointing
+  at the exact same `#[tauri::command]` line, i.e. the macro colliding
+  with itself. Bisected before concluding it was structural: renaming
+  the function changed nothing; dropping the paired
+  `#[allow(clippy::needless_pass_by_value)]` changed nothing; a `cargo
+  clean -p cannet-gui` changed nothing; the failure reproduced with
+  `--lib` alone (no bin target involved). Moving the identical function
+  body into `project_dir.rs` (with `use tauri::Manager;` added) compiled
+  clean on the first try. Every other project-directory command already
+  lives in its owning module and is registered module-qualified in
+  `generate_handler!`
+  (`project::open_project`, `rbs::rbs_load`, …); the handful of bare
+  names in that list look like a small legacy set nothing has added to
+  in a while, which fits a latent bug nobody had triggered. Not
+  chased further since the module-qualified home is also the better
+  structural fit and the fix cost nothing; if another bare `lib.rs`
+  command hits the same `E0255` later, this entry is the pointer to
+  what already worked around it once.
+- **59.E — autosave's silent save can still open a native file picker
+  for a never-saved RBS.** The setting is scoped to the *project* (an
+  explicit-dir project always has a path — that is what makes it
+  explicit-dir), so the project half of the silent save never prompts.
+  But the silent save reuses `handleSaveAll`, which also saves every
+  dirty `.cannet_rbs`, and an RBS that has never been saved has no path
+  to write to — `handleSaveAll`'s existing branch for that case opens
+  a save dialog to ask for one, exactly as a manual "Save & close"
+  already does. Autosave inherits that dialog rather than suppressing
+  it: skipping the RBS save instead would silently drop the user's
+  simulation config, and picking a path for them would be inventing
+  data they didn't provide. The one thing that changes under autosave
+  is that the unsaved-changes *prompt itself* never shows — a
+  never-saved RBS's own save-path dialog is a different, narrower ask
+  that was already part of "Save" before this phase. Not a defect
+  against the task's wording ("the session has a dirty, explicit-dir
+  project open"), which is about the project, but worth recording since
+  "saves silently" reads as stronger than what happens in this one
+  corner case.
 - **59.D — two of the three reported solo bugs do not reproduce, so two
   of the three regression tests pass pre-fix.** The exit criterion asks
   for three tests that fail before the fix and pass after; only item 4.3
