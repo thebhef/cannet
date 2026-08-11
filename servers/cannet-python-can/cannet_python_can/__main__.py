@@ -45,7 +45,10 @@ open/close, reconfigure, rejections, pump crashes, and the existing
 periodic rx/tx rate lines — never per-frame content. A bus at
 100k frames/s would otherwise rotate the whole 5 MB budget away in
 under a second and pay a logging call on the hot path for the
-privilege.
+privilege. The same boundary applies to third-party interface
+loggers: python-can's PCAN backend logs per-frame content inside its
+own ``send()``, so :data:`NOISY_PER_FRAME_LOGGERS` caps it at INFO in
+the file while every other logger stays at DEBUG.
 """
 
 from __future__ import annotations
@@ -85,6 +88,20 @@ LOG_FILE_MAX_BYTES = 1024 * 1024
 #: … and four backups behind the live file, so the sidecar's logs cost
 #: at most ~5 MB of disk however long the session runs.
 LOG_FILE_BACKUP_COUNT = 4
+
+#: Third-party interface loggers that log per-frame content inside
+#: ``send``/``recv`` rather than lifecycle-and-faults only. python-can's
+#: PCAN backend (module logger ``can.pcan``) emits two DEBUG records per
+#: transmitted frame ("Data: …", "Type: …"); at design load that is
+#: thousands of records/s through the rotating handler and throttles the
+#: transmit path the file exists to diagnose. This module's own streaming
+#: paths honour "lifecycle and faults, never per-frame content" (see the
+#: module docstring); capping these loggers at INFO in the file extends
+#: that same boundary to bundled interfaces that don't. Checked the other
+#: bundled python-can interfaces (vector, kvaser — the other two vendors
+#: this sidecar drives) and found no per-frame logging on their send/recv
+#: paths, so only ``can.pcan`` is listed here.
+NOISY_PER_FRAME_LOGGERS = ("can.pcan",)
 
 
 def _configure_logging(level: str, log_file: Optional[str]) -> Optional[Path]:
@@ -129,6 +146,8 @@ def _configure_logging(level: str, log_file: Optional[str]) -> Optional[Path]:
     # handler attached directly — enumeration results and the bound
     # address only exist there.
     BANNER.addHandler(handler)
+    for name in NOISY_PER_FRAME_LOGGERS:
+        logging.getLogger(name).setLevel(logging.INFO)
     return path
 
 
