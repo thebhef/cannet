@@ -142,6 +142,20 @@ area left with no *solo-visible* series collapses by the same
 all-hidden rule above, and equally without touching its persisted
 `collapsed` flag.
 
+**One wheel, and one point where a signal's color is decided.** Every
+surface that draws a signal in its own color — the signal view's name
+text, a plot series' stroke and swatch — resolves it through a single
+precedence rule: an **explicit user pick** (the signal view's
+project-level `signal_colors` entry; a plot series' picked color) → a
+**generator**, when the project declares a rule deriving a wheel index
+from the signal's identity → the **stable-by-identity hash** of the
+signal's canonical `(bus, message, signal)` key. One key, one theme
+wheel, one rule, so a signal nobody picked a color for reads the same
+in every view with nothing persisted to make it so. (This is signal
+*identity* color. A value→color map ([ADR 0029](0029-signal-value-color-maps.md))
+tints a signal's *value* and is a separate question with its own
+resolver.)
+
 **Each axis maps to one uPlot instance.** This keeps us consistent
 with [ADR 0007](0007-uplot-plot-renderer.md):
 
@@ -291,10 +305,19 @@ below:
   intent. The menu is omitted on enum-lanes and single-enum axes,
   whose geometry comes from a value table rather than a value range.
 - **Per-series color picker** is on each signal-row's swatch
-  (right-click opens the browser's native picker).
-- **16-color wheel** is the seed; a dragged-in series picks its
-  color from the wheel index equal to the count of series already
-  in the target area.
+  (right-click opens the browser's native picker). What it writes is
+  the series' `colorPick` — the *only* color a plot stores.
+- **One resolution point**, `signalColorResolver.ts`: pick →
+  generator → `stableSignalColor` hash over the signal's canonical
+  key, compiled once per render from the project's elements and read
+  live by the signal view's rows and by a plot series' stroke, swatch
+  and lane accent alike. Adding a series stores no color: the old
+  seeding — the wheel index equal to the count of series already in
+  the target area — is gone, along with the disagreement it produced
+  between areas holding the same signals. A `color` stored by that
+  seeding is dropped on load rather than read as a pick, since the two
+  are indistinguishable, so those series re-resolve; a `colorPick` is
+  a pick and stands.
 - **X-axis cursor labels** render the cursor's letter + time on every
   axis (used to only render on the bottom axis). Tick spacing is
   label-width-aware so zoomed-in elapsed-time labels (more fractional

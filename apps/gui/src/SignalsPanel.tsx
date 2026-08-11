@@ -38,7 +38,7 @@ import {
   scopeCatalog,
 } from "./signalSelection";
 import { signalKey } from "./plotData";
-import { stableSignalColor } from "./palette";
+import { buildSignalColorResolver } from "./signalColorResolver";
 import { useThemeName } from "./theme";
 import { elementLabel } from "./elementLabel";
 import { SourcesContextMenu } from "./SourcesPicker";
@@ -877,6 +877,13 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   const contentWidthVar = useMemo(() => contentWidthStyle(columns), [columns]);
   const manualKeys = useMemo(() => new Set(selection.keys.map(keyOf)), [selection.keys]);
   const signalColors = project.signalColors;
+  /// A signal's name color, through the one shared resolution point
+  /// (ADR 0026): this view's explicit pick is the project's
+  /// `signal_colors` entry, and an unpicked signal resolves live.
+  const signalColor = useMemo(() => {
+    const resolve = buildSignalColorResolver(registry.entries.map((e) => e.element));
+    return (key: string) => resolve(key, signalColors[key]);
+  }, [registry.entries, signalColors]);
 
   const positions = [];
   for (let i = 0; i < rows; i++) {
@@ -988,7 +995,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                   <span className="signals-manual-pick" key={key}>
                     <span
                       className="signals-manual-name"
-                      style={{ color: signalColors[key] ?? stableSignalColor(key) }}
+                      style={{ color: signalColor(key) }}
                     >
                       {k.signalName}
                     </span>
@@ -1096,7 +1103,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
                     busLookup={lookup}
                     resolveColor={resolveColor}
                     manual={manualKeys}
-                    signalColors={signalColors}
+                    signalColor={signalColor}
                     onSetSignalColor={project.onSetSignalColor}
                     onOpenSectionMenu={openSectionMenu}
                   />
@@ -1379,7 +1386,8 @@ interface SignalRowProps {
   busLookup: ReadonlyMap<string, string>;
   resolveColor: ReturnType<typeof buildColorResolver> | null;
   manual: ReadonlySet<string>;
-  signalColors: Record<string, string>;
+  /// This row's name color, already resolved (ADR 0026).
+  signalColor: (key: string) => string;
   onSetSignalColor: (key: string, color: string | null) => void;
   onOpenSectionMenu: (
     e: React.MouseEvent,
@@ -1405,13 +1413,13 @@ function SignalRow({
   busLookup: lookup,
   resolveColor,
   manual,
-  signalColors,
+  signalColor,
   onSetSignalColor,
   onOpenSectionMenu,
 }: SignalRowProps) {
   useThemeName();
   const key = row ? signalKey(row.bus_id, row.message_id, row.extended, row.signal_name) : "";
-  const nameColor = row ? signalColors[key] ?? stableSignalColor(key) : undefined;
+  const nameColor = row ? signalColor(key) : undefined;
   const colorInputRef = useRef<HTMLInputElement>(null);
   const cell = (column: SignalColumnKey): React.ReactNode => {
     if (!row) return null;

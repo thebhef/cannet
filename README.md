@@ -684,8 +684,11 @@ resample at the end.
   area or panel — or by an area's **patterns…** regex editor; there is
   no separate add-signal picker. **Drag a signal row** to re-order it,
   onto another plot area, or onto another plot panel (cross-panel drops
-  in a copy); **×** removes it. A signal keeps the color it was given
-  when added — re-ordering / moving doesn't recolor it. The shared
+  in a copy); **×** removes it. A series' color comes from the signal's
+  own identity, so the same signal reads the same in every area, every
+  panel and the signal view, and re-ordering or moving it changes
+  nothing; right-clicking its swatch pins a color of your own, and that
+  pick is the only thing stored. The shared
   x-axis spans 0 to the longest plotted signal across the panel's
   areas, so a signal added late still shows over the existing span.
 - **Selecting signal rows.** A **plain click** on a signal row selects

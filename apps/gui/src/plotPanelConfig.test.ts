@@ -7,9 +7,6 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string) => (cmd === "get_settings" ? { ...storedSettings } : null)),
 }));
 
-const { signalWheel } = await import("./palette");
-const TRACE_COLORS = signalWheel();
-
 const {
   areasFromParams,
   cursorModeFromRaw,
@@ -23,7 +20,7 @@ const {
   signalRefKey,
   reorderAreas,
   signalsWidthFromRaw,
-  withColor,
+  signalRefFromRaw,
   yAxisModeFromRaw,
 } = await import("./plotPanelConfig");
 type SignalRef = import("./plotPanelConfig").SignalRef;
@@ -46,8 +43,8 @@ const core = {
 
 describe("signalRefKey", () => {
   it("matches the canonical signalKey shape (bus + s/x id discriminator)", () => {
-    expect(signalRefKey({ ...core, color: "#fff" })).toBe("b1|s:291:Speed");
-    expect(signalRefKey({ ...core, extended: true, color: "#fff" })).toBe("b1|x:291:Speed");
+    expect(signalRefKey({ ...core })).toBe("b1|s:291:Speed");
+    expect(signalRefKey({ ...core, extended: true })).toBe("b1|x:291:Speed");
   });
 });
 
@@ -64,16 +61,26 @@ describe("isSignalRefCore", () => {
   });
 });
 
-describe("withColor", () => {
-  it("preserves a string color", () => {
-    expect(withColor({ ...core, color: "#abcdef" }, 0).color).toBe("#abcdef");
+describe("signalRefFromRaw", () => {
+  it("keeps an explicit color pick", () => {
+    expect(signalRefFromRaw({ ...core, colorPick: "#abcdef" }).colorPick).toBe("#abcdef");
   });
-  it("seeds a wheel color by fallback index (wrapping) when absent", () => {
-    expect(withColor(core, 0).color).toBe(TRACE_COLORS[0]);
-    expect(withColor(core, TRACE_COLORS.length + 2).color).toBe(TRACE_COLORS[2]);
+  it("keeps a hidden flag, and leaves an unhidden series without one", () => {
+    expect(signalRefFromRaw({ ...core, hidden: true }).hidden).toBe(true);
+    expect(signalRefFromRaw({ ...core }).hidden).toBeUndefined();
+  });
+  it("drops a stored `color` — a seeded one and a picked one are indistinguishable", () => {
+    // Every series written before the resolver carries a `color` the
+    // panel seeded from its position in the area, which is exactly what
+    // made four areas of the same 16 signals disagree. Nothing tells
+    // those apart from a color the user picked, so all of them go and
+    // the series re-resolve (ADR 0026).
+    const ref = signalRefFromRaw({ ...core, color: "#abcdef" } as never);
+    expect(ref.colorPick).toBeUndefined();
+    expect((ref as unknown as Record<string, unknown>).color).toBeUndefined();
   });
   it("coerces a non-string busId to null", () => {
-    expect(withColor({ ...core, busId: 5 as unknown as string }, 0).busId).toBeNull();
+    expect(signalRefFromRaw({ ...core, busId: 5 as unknown as string }).busId).toBeNull();
   });
 });
 
@@ -85,13 +92,13 @@ describe("areasFromParams", () => {
     expect(areas[0].primarySignalKey).toBeNull();
   });
 
-  it("filters malformed signals and colors the survivors", () => {
+  it("filters malformed signals and stores no color for the survivors", () => {
     const areas = areasFromParams([
       { id: "a", signals: [core, { bogus: true }] },
     ]);
     expect(areas).toHaveLength(1);
     expect(areas[0].signals).toHaveLength(1);
-    expect(areas[0].signals[0].color).toBe(TRACE_COLORS[0]);
+    expect(areas[0].signals[0].colorPick).toBeUndefined();
   });
 
   it("migrates a pre-patterns single `signalFilter` regex to a one-entry pattern list", () => {
@@ -316,5 +323,5 @@ describe("reorderAreas", () => {
 });
 
 // Type-only guard: SignalRef stays structurally usable here.
-const _typed: SignalRef = { ...core, color: "#fff" };
+const _typed: SignalRef = { ...core };
 void _typed;

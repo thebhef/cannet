@@ -27,10 +27,11 @@ export const DRAG_SIGNALS_MIME = "application/x-cannet-drag-signals";
 export const DRAG_PATTERNS_MIME = "application/x-cannet-drag-patterns";
 
 /// The fields a draggable signal must carry — every field the plot
-/// panel needs to identify and sample it. `color` is intentionally
-/// absent: the receiver assigns a color at drop time (existing plot
-/// panel behaviour). Same shape as the plot panel's internal
-/// `SignalRef` minus `color` / `hidden`.
+/// panel needs to identify and sample it. No color travels with a
+/// drag: a dropped series resolves its color from its identity
+/// (ADR 0026), and only a pick the user makes afterwards is stored.
+/// Same shape as the plot panel's internal `SignalRef` minus
+/// `colorPick` / `hidden`.
 export interface DraggableSignalRef {
   /// Logical bus this signal is bound to. `null` is the legacy "any
   /// bus" path — used only when the project has no buses configured.

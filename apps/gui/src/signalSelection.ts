@@ -9,7 +9,6 @@
 
 import type { SignalDescriptorRecord } from "./types";
 import { signalKey } from "./plotData";
-import { stableSignalColor } from "./palette";
 import type { SignalRef } from "./plotPanelConfig";
 
 /// The canonical signal path (ADR 0038). Segments are the DBC names
@@ -84,11 +83,12 @@ export interface SelectableArea {
 const refKey = (s: SignalRef) =>
   signalKey(s.busId, s.messageId, s.extended, s.signalName);
 
-/// Resolve `patterns` to colored refs, deduped across patterns and
-/// against `exclude` (the area's manual picks — a manual pick wins, so
-/// its color/hide state is authoritative). Pattern-matched signals get
-/// their stable-by-identity wheel color (`palette.ts`), so a signal
-/// keeps its color across re-evaluations, sorts, and views.
+/// Resolve `patterns` to refs, deduped across patterns and against
+/// `exclude` (the area's manual picks — a manual pick wins, so its
+/// color/hide state is authoritative). A pattern match carries no
+/// color: like any series nobody picked one for, it resolves live
+/// through `signalColorResolver.ts` (ADR 0026), which keeps its color
+/// stable across re-evaluations, sorts, and views without storing it.
 export function signalsFromPatterns(
   patterns: readonly string[],
   catalog: readonly SignalDescriptorRecord[],
@@ -109,7 +109,6 @@ export function signalsFromPatterns(
         signalName: s.signal_name,
         messageName: s.message_name,
         unit: s.unit,
-        color: stableSignalColor(key),
       });
     }
   }

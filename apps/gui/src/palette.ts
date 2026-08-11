@@ -22,8 +22,9 @@ export function wheelColor(index: number): string {
 /// A signal's stable-by-identity color: the wheel entry at the hash
 /// of its descriptor key (`signalKey` in plotData.ts). The same signal
 /// keeps the same color across sorts, views, and sessions without
-/// anything being stored; a per-signal project-persisted override
-/// (looked up by the caller) wins over this base.
+/// anything being stored. This is the *last* rung of the precedence
+/// rule — views call `signalColorResolver.ts`, which puts an explicit
+/// pick and a generator ahead of it, not this function directly.
 ///
 /// FNV-1a over the key string. The hash is part of the visual contract
 /// — changing it silently recolors every non-overridden signal.

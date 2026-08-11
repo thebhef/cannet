@@ -42,7 +42,7 @@ describe("axisGutterWidth", () => {
 import type { SignalRef } from "./plotPanelConfig";
 import { isEnumValueTable } from "./types";
 
-function s(name: string, unit: string, color = "#fff"): SignalRef {
+function s(name: string, unit: string): SignalRef {
   return {
     busId: "b1",
     messageId: 100,
@@ -50,7 +50,6 @@ function s(name: string, unit: string, color = "#fff"): SignalRef {
     signalName: name,
     messageName: "Msg",
     unit,
-    color,
   };
 }
 
