@@ -172,6 +172,45 @@ describe("resolveAxisRange (log)", () => {
   });
 });
 
+describe("resolveAxisRange (manual-range regression matrix, task 55 item 1)", () => {
+  // Owner's 0.7.0 repro: a manual range set within a signal's own
+  // 0.0-1.0 value band rendered offscreen — the bug's own account was a
+  // raw-vs-normalised mismatch at this exact seam. Confirmed not to
+  // reproduce on current code (`plans/tasks/0055-plot-feedback-round.md`
+  // item 1 grooming); these pin the seam's contract per value shape so a
+  // regression here is caught. `resolveAxisRange` takes no y-axis-mode
+  // argument — each derived axis (unified / per-unit / individual) calls
+  // it identically regardless of mode — so the mode dimension of the
+  // matrix is exercised at the DOM level instead
+  // (`PlotPanel.dom.test.tsx`'s "PlotArea y-normalisation" suite).
+
+  it("float: a manual range wider than the 0.0-1.0 data band is honoured in engineering units", () => {
+    const auto = { lo: 0.2, hi: 0.8 };
+    const resolved = resolveAxisRange(auto, { min: 0, max: 1 }, null);
+    expect(resolved).toEqual({ lo: 0, hi: 1, log: false });
+    expect(normalizeOnAxis(0.2, resolved!)).toBeCloseTo(0.2, 12);
+    expect(normalizeOnAxis(0.5, resolved!)).toBeCloseTo(0.5, 12);
+    expect(normalizeOnAxis(0.8, resolved!)).toBeCloseTo(0.8, 12);
+  });
+
+  it("uint: a manual range covering the full 0-255 band is honoured, not the narrower auto extent", () => {
+    const auto = { lo: 50, hi: 200 };
+    const resolved = resolveAxisRange(auto, { min: 0, max: 255 }, null);
+    expect(resolved).toEqual({ lo: 0, hi: 255, log: false });
+    expect(normalizeOnAxis(50, resolved!)).toBeCloseTo(50 / 255, 12);
+    expect(normalizeOnAxis(200, resolved!)).toBeCloseTo(200 / 255, 12);
+  });
+
+  it("int: a manual range covering the full signed -128..127 band is honoured, not the narrower auto extent", () => {
+    const auto = { lo: -100, hi: 100 };
+    const resolved = resolveAxisRange(auto, { min: -128, max: 127 }, null);
+    expect(resolved).toEqual({ lo: -128, hi: 127, log: false });
+    expect(normalizeOnAxis(-100, resolved!)).toBeCloseTo(28 / 255, 12);
+    expect(normalizeOnAxis(0, resolved!)).toBeCloseTo(128 / 255, 12);
+    expect(normalizeOnAxis(100, resolved!)).toBeCloseTo(228 / 255, 12);
+  });
+});
+
 describe("normalizeOnAxis / denormalizeOnAxis", () => {
   it("maps a linear range onto [0, 1] and back", () => {
     const r = { lo: 10, hi: 20, log: false };
