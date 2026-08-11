@@ -20,6 +20,9 @@ import { DEFAULT_MEASUREMENTS, type MeasurementKey, type Series, isMeasurementKe
 import type { YAxisMode } from "./plotAxisDerivation";
 import type { AxisScalePatch } from "./plotAxisScale";
 import type { SignalDescriptorRecord } from "./types";
+// Type-only, so the cycle with `plotAreaTransfer` (which parses areas
+// through this module) is erased at build time.
+import type { PlotAreaDragPayload } from "./plotAreaTransfer";
 import { parseSignalDragData } from "./dragSignals";
 
 export type CursorMode = "off" | "x" | "y" | "note";
@@ -165,7 +168,13 @@ export interface AxisHandlers {
   onToggleCollapsed: () => void;
   onFocus: () => void;
   onRemoveArea: () => void;
-  onReorderArea: (draggedAreaId: string) => void;
+  /** The parent area's grip (or its collapsed run's handle) started a
+   * drag: write the area's payloads onto the transfer (ADR 0045). */
+  onDragArea: (dataTransfer: DataTransfer) => void;
+  /** A plot-area drag was released on this area — the panel decides
+   * what that means from the payload's source panel and whether Ctrl
+   * was held at the drop (`copy`). */
+  onDropArea: (payload: PlotAreaDragPayload, copy: boolean) => void;
   onRemoveSignal: (key: string) => void;
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (ref: SignalRef) => void;

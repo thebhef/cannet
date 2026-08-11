@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { comboboxValue, pickCombobox } from "./comboboxTestKit";
 
@@ -227,6 +227,9 @@ const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[]
 import { invoke } from "@tauri-apps/api/core";
 
 import { PlotPanel } from "./PlotPanel";
+import { PLOT_AREA_DND_MIME } from "./plotPanelConfig";
+import { parsePlotAreaDragData } from "./plotAreaTransfer";
+import { SIGNAL_DND_MIME, parseSignalDragData } from "./dragSignals";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
@@ -456,6 +459,18 @@ function areaDragTransfer() {
   };
 }
 
+/// Fire a drop carrying a modifier state. jsdom implements no
+/// `DragEvent`, so `fireEvent.drop` builds a plain `Event` and drops
+/// every `MouseEventInit` field on the floor — `ctrlKey` included,
+/// which is how the plot area tells a move from a copy. Define it on
+/// the event object instead; React's synthetic event reads it straight
+/// off the native one.
+function dropWithCtrl(target: Element, dataTransfer: unknown, ctrlKey: boolean): void {
+  const ev = createEvent.drop(target, { dataTransfer });
+  Object.defineProperty(ev, "ctrlKey", { value: ctrlKey });
+  fireEvent(target, ev);
+}
+
 /// Let React render the way it does in the app — batched per update,
 /// not collected into an `act` scope. Render *cadence* is only
 /// measurable outside `act`, which flushes everything queued in its
@@ -560,11 +575,6 @@ describe("PlotPanel", () => {
     fireEvent.drop(first, { dataTransfer: dt });
 
     expect(stackedSignal()).toEqual(["BottomSignal", "TopSignal"]);
-  });
-
-  it("offers no reorder grip while a panel holds a single area", () => {
-    renderPanel();
-    expect(screen.queryAllByLabelText("reorder plot area").length).toBe(0);
   });
 
   it("names a signal row's message by its DBC ancestry, ECU included", async () => {
@@ -4015,5 +4025,303 @@ describe("PlotPanel diagnostic readouts", () => {
       expect(screen.getByRole("menu")).toBeInTheDocument();
       expect(counter("render.PlotArea") - before).toBe(0);
     });
+  });
+});
+
+describe("PlotPanel area drag payload", () => {
+  const sig = (signalName: string, unit = "V") => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "Pack",
+    unit,
+    color: "#112233",
+  });
+
+  it("drags the whole area: its config, its manual ranges, and a signal payload", () => {
+    // One gesture, two payloads (ADR 0045). Another plot panel reads the
+    // area; a panel that only knows signals reads the degraded half and
+    // adds them.
+    const registry = makeRegistry({
+      id: "el-area-drag",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [sig("Cell1"), sig("Cell2")],
+            patterns: ["Cell\d+"],
+            yAxisMode: "per-unit",
+            collapsed: true,
+          },
+          { id: "a2", signals: [sig("Other", "A")] },
+        ],
+        axisScales: { a1: { max: 10 }, "a1/u:unit:V": { min: 1 }, a2: { max: 99 } },
+      },
+    });
+    renderPanel({ params: { elementId: "el-area-drag" }, registry });
+
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(screen.getAllByLabelText("reorder plot area")[0], { dataTransfer: dt });
+
+    const area = parsePlotAreaDragData(dt.getData(PLOT_AREA_DND_MIME));
+    expect(area).not.toBeNull();
+    expect(area!.sourcePanelId).toBe("el-area-drag");
+    expect(area!.area.id).toBe("a1");
+    expect(area!.area.signals.map((s) => s.signalName)).toEqual(["Cell1", "Cell2"]);
+    expect(area!.area.patterns).toEqual(["Cell\d+"]);
+    expect(area!.area.yAxisMode).toBe("per-unit");
+    expect(area!.area.collapsed).toBe(true);
+    // Only this area's ranges travel — not the neighbour's, and not the
+    // layout weights.
+    expect(area!.axisScales).toEqual({ a1: { max: 10 }, "a1/u:unit:V": { min: 1 } });
+
+    const signals = parseSignalDragData(dt.getData(SIGNAL_DND_MIME));
+    expect(signals.signals.map((s) => s.signalName)).toEqual(["Cell1", "Cell2"]);
+    expect(signals.patterns).toEqual(["Cell\d+"]);
+    expect(signals.sourcePanelId).toBe("el-area-drag");
+  });
+
+  it("drags a collapsed run's shared handle with the same payload", () => {
+    const registry = makeRegistry({
+      id: "el-area-drag-run",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1")] },
+          { id: "a2", collapsed: true, signals: [sig("Cell2")] },
+        ],
+        axisScales: { a2: { max: 4 } },
+      },
+    });
+    renderPanel({ params: { elementId: "el-area-drag-run" }, registry });
+
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(document.querySelector(".plot-area-collapsed-handle")!, {
+      dataTransfer: dt,
+    });
+    const area = parsePlotAreaDragData(dt.getData(PLOT_AREA_DND_MIME));
+    expect(area!.area.id).toBe("a2");
+    expect(area!.area.collapsed).toBe(true);
+    expect(area!.axisScales).toEqual({ a2: { max: 4 } });
+  });
+
+  it("never lands an area drag as a signal drop inside a plot panel", async () => {
+    // The area drag carries signals too (the degradation payload), and a
+    // signal row is a drop target of its own. Inside a plot panel the
+    // gesture is an area gesture: dropping on a row must reorder areas,
+    // not move that area's series into the row's area.
+    const registry = makeRegistry({
+      id: "el-area-drag-row",
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1")] },
+          { id: "a2", signals: [sig("Cell2")] },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-area-drag-row" }, registry });
+    const stacked = () =>
+      Array.from(document.querySelectorAll(".plot-area")).map((el) =>
+        Array.from(el.querySelectorAll(".plot-signal-name")).map((n) => n.textContent),
+      );
+    expect(stacked()).toEqual([["Cell1"], ["Cell2"]]);
+
+    const dt = areaDragTransfer();
+    fireEvent.dragStart(screen.getAllByLabelText("reorder plot area")[1], { dataTransfer: dt });
+    const row = document.querySelectorAll(".plot-area")[0].querySelector(".plot-signal-row")!;
+    fireEvent.dragOver(row, { dataTransfer: dt });
+    fireEvent.drop(row, { dataTransfer: dt });
+
+    // Reordered, and no series changed hands.
+    expect(stacked()).toEqual([["Cell2"], ["Cell1"]]);
+  });
+});
+
+describe("PlotPanel area drag between panels", () => {
+  const sig = (signalName: string, unit = "V") => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "Pack",
+    unit,
+    color: "#112233",
+  });
+
+  /// Two plot panels sharing one element registry — what a cross-panel
+  /// drag needs. Each reads its own config off its dockview params (the
+  /// panel falls back to them when the registry carries none) and gets
+  /// its own `updateParameters` spy, so each panel's persisted state is
+  /// observable on its own.
+  function renderTwoPanels(a: Record<string, unknown>, b: Record<string, unknown>) {
+    const apiA = { updateParameters: vi.fn() };
+    const apiB = { updateParameters: vi.fn() };
+    const registry = makeRegistry();
+    const props = (params: Record<string, unknown>, api: { updateParameters: unknown }) =>
+      ({ params, api }) as unknown as Parameters<typeof PlotPanel>[0];
+    render(
+      <TraceDataProvider value={traceData}>
+        <ProjectContext.Provider value={projectCtx}>
+          <SignalCatalogProvider>
+            <ElementRegistryContext.Provider value={registry}>
+              <div data-testid="panel-a">
+                <PlotPanel {...props(a, apiA)} />
+              </div>
+              <div data-testid="panel-b">
+                <PlotPanel {...props(b, apiB)} />
+              </div>
+            </ElementRegistryContext.Provider>
+          </SignalCatalogProvider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+    return { apiA, apiB };
+  }
+
+  /// Each area of a panel, as the signal names it lists — the stack's
+  /// contents, in order.
+  const stackOf = (panel: string) =>
+    Array.from(screen.getByTestId(panel).querySelectorAll(".plot-area")).map((el) =>
+      Array.from(el.querySelectorAll(".plot-signal-name")).map((n) => n.textContent),
+    );
+
+  const lastPersist = (api: { updateParameters: { mock: { calls: unknown[][] } } }) => {
+    const calls = api.updateParameters.mock.calls;
+    return (calls[calls.length - 1]?.[0] ?? {}) as {
+      areas?: { id: string; collapsed?: boolean; patterns?: string[]; yAxisMode?: string; primarySignalKey?: string | null }[];
+      axisScales?: Record<string, unknown>;
+    };
+  };
+
+  /// The whole gesture: grab `from`'s grip number `grip`, release it on
+  /// area number `onArea` of panel `to`.
+  function dragAreaBetween(
+    from: string,
+    grip: number,
+    to: string,
+    onArea: number,
+    opts?: { ctrlKey?: boolean; cancel?: boolean },
+  ) {
+    const dt = areaDragTransfer();
+    const handle = within(screen.getByTestId(from)).getAllByLabelText("reorder plot area")[grip];
+    fireEvent.dragStart(handle, { dataTransfer: dt });
+    if (opts?.cancel) {
+      fireEvent.dragEnd(handle, { dataTransfer: dt });
+      return;
+    }
+    const target = screen.getByTestId(to).querySelectorAll(".plot-area")[onArea];
+    fireEvent.dragOver(target, { dataTransfer: dt });
+    dropWithCtrl(target, dt, opts?.ctrlKey ?? false);
+  }
+
+  const SOURCE = {
+    elementId: "el-src",
+    areas: [
+      {
+        id: "a1",
+        signals: [sig("Cell1")],
+        patterns: ["Cell\d+"],
+        yAxisMode: "per-unit",
+        primarySignalKey: "pk",
+        collapsed: true,
+      },
+      { id: "a2", signals: [sig("Other", "A")] },
+    ],
+    axisScales: { a1: { max: 10 }, "a1/u:unit:V": { min: 1 }, a2: { max: 99 } },
+  };
+  const TARGET = { elementId: "el-dst", areas: [{ id: "b1", signals: [sig("Bee")] }] };
+
+  it("moves an area to the drop position of another panel, ranges and all", () => {
+    const { apiA, apiB } = renderTwoPanels(SOURCE, TARGET);
+    expect(stackOf("panel-a")).toEqual([["Cell1"], ["Other"]]);
+    expect(stackOf("panel-b")).toEqual([["Bee"]]);
+
+    dragAreaBetween("panel-a", 0, "panel-b", 0);
+
+    // Landed above the area it was dropped on; gone from the source.
+    expect(stackOf("panel-b")).toEqual([["Cell1"], ["Bee"]]);
+    expect(stackOf("panel-a")).toEqual([["Other"]]);
+
+    const moved = lastPersist(apiB).areas![0];
+    expect(moved.id).toBe("a1");
+    expect(moved.patterns).toEqual(["Cell\d+"]);
+    expect(moved.yAxisMode).toBe("per-unit");
+    expect(moved.primarySignalKey).toBe("pk");
+    expect(moved.collapsed).toBe(true);
+    expect(screen.getByTestId("panel-b").querySelectorAll(".plot-area")[0]).toHaveClass("collapsed");
+    // The manual ranges travelled under the same keys — the area id
+    // moved with the area — and the layout weights did not travel.
+    expect(lastPersist(apiB).axisScales).toEqual({ a1: { max: 10 }, "a1/u:unit:V": { min: 1 } });
+    expect(lastPersist(apiB)).not.toHaveProperty("axisWeights.a1");
+    // The source kept its own area's range and let the moved one go.
+    expect(lastPersist(apiA).axisScales).toEqual({ a2: { max: 99 } });
+    expect(lastPersist(apiA).areas!.map((a) => a.id)).toEqual(["a2"]);
+  });
+
+  it("copies instead of moving when Ctrl is held at the drop", () => {
+    const { apiA, apiB } = renderTwoPanels(SOURCE, TARGET);
+    dragAreaBetween("panel-a", 0, "panel-b", 0, { ctrlKey: true });
+
+    // Both panels hold it now.
+    expect(stackOf("panel-a")).toEqual([["Cell1"], ["Other"]]);
+    expect(stackOf("panel-b")).toEqual([["Cell1"], ["Bee"]]);
+
+    const copy = lastPersist(apiB).areas![0];
+    expect(copy.id).not.toBe("a1");
+    expect(copy.patterns).toEqual(["Cell\d+"]);
+    expect(copy.collapsed).toBe(true);
+    // The copy is its own area, so its ranges are re-keyed onto its id.
+    expect(lastPersist(apiB).axisScales).toEqual({
+      [copy.id]: { max: 10 },
+      [`${copy.id}/u:unit:V`]: { min: 1 },
+    });
+    // The source is untouched, ranges included.
+    expect(lastPersist(apiA).areas!.map((a) => a.id)).toEqual(["a1", "a2"]);
+    expect(lastPersist(apiA).axisScales).toEqual({
+      a1: { max: 10 },
+      "a1/u:unit:V": { min: 1 },
+      a2: { max: 99 },
+    });
+  });
+
+  it("keeps a same-panel drop a reorder, Ctrl or no Ctrl", () => {
+    const { apiA } = renderTwoPanels(SOURCE, TARGET);
+    const dt = areaDragTransfer();
+    const grips = within(screen.getByTestId("panel-a")).getAllByLabelText("reorder plot area");
+    fireEvent.dragStart(grips[1], { dataTransfer: dt });
+    const first = screen.getByTestId("panel-a").querySelectorAll(".plot-area")[0];
+    fireEvent.dragOver(first, { dataTransfer: dt });
+    fireEvent.drop(first, { dataTransfer: dt, ctrlKey: true });
+
+    expect(stackOf("panel-a")).toEqual([["Other"], ["Cell1"]]);
+    expect(lastPersist(apiA).areas!.map((a) => a.id)).toEqual(["a2", "a1"]);
+  });
+
+  it("leaves both panels alone when the drag is cancelled", () => {
+    // Nothing is claimed until a plot panel takes the drop, which is
+    // also why dropping the degraded signal payload on some other
+    // receptive panel adds there without emptying the source.
+    renderTwoPanels(SOURCE, TARGET);
+    dragAreaBetween("panel-a", 0, "panel-b", 0, { cancel: true });
+    expect(stackOf("panel-a")).toEqual([["Cell1"], ["Other"]]);
+    expect(stackOf("panel-b")).toEqual([["Bee"]]);
+  });
+
+  it("leaves a fresh empty area behind when a panel gives up its last one", () => {
+    const { apiA } = renderTwoPanels(
+      { elementId: "el-solo-src", areas: [{ id: "a1", signals: [sig("Cell1")] }] },
+      TARGET,
+    );
+    dragAreaBetween("panel-a", 0, "panel-b", 0);
+    expect(stackOf("panel-b")).toEqual([["Cell1"], ["Bee"]]);
+    // A plot panel always shows an area to drop into.
+    expect(stackOf("panel-a")).toEqual([[]]);
+    expect(lastPersist(apiA).areas!.map((a) => a.id)).not.toContain("a1");
+  });
+
+  it("offers the grip on a single area too — it is the move handle", () => {
+    // Reorder needs a second area; moving to another panel does not.
+    renderPanel();
+    expect(screen.getAllByLabelText("reorder plot area").length).toBe(1);
   });
 });

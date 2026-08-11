@@ -655,9 +655,17 @@ resample at the end.
 - **Plot areas.** A plot panel is a **stack of plot areas** — it starts
   with one; **add plot area** appends more, all sharing one time axis,
   and they flex to fill the panel (one fills it; several split it).
-  Once a panel holds more than one, the **grip (⠿)** at the left of an
-  area's signal-panel heading **drags that area to another area's
-  position** in the stack. Each
+  The **grip (⠿)** at the left of an area's signal-panel heading drags
+  the whole area: **within the panel**, onto another area's position in
+  the stack; **onto another plot panel**, where it lands at the drop
+  position and *leaves* the source panel — hold **Ctrl** as you let go
+  to copy it instead. A moved or copied area brings its series, its
+  patterns, its y-axis mode, its primary signal, its collapsed state and
+  its manual y ranges with it; the stack's vertical weights stay behind.
+  A panel that gives up its last area keeps a fresh empty one. Dropped
+  on a panel that understands only *signals*, the same drag reads as an
+  add of the area's signals and patterns there, and the source keeps its
+  area. Each
   plot area has a uPlot canvas (time axis at the bottom) plus a **signal
   panel** beside it listing that area's signals: a color swatch (click
   to hide / show the line — the value keeps updating, the swatch dims;
@@ -742,9 +750,10 @@ resample at the end.
   the project file. An area whose signals are **all hidden** collapses
   on its own (there is nothing to draw); its toggle is inert until you
   un-hide one. Stacked collapsed areas leave a band of empty canvas
-  column with **one drag handle for the whole run** — grab it to
-  reorder the run's first area; to move a specific area buried inside
-  a run, drag its own grip or drop onto its side-panel strip.
+  column with **one drag handle for the whole run** — grab it to drag
+  the run's first area, reordering it here or moving it to another
+  panel like any grip; to move a specific area buried inside a run,
+  drag its own grip or drop onto its side-panel strip.
 - **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
   wheel** pans x (synced); **right-drag** box-zooms x; **⌘/ctrl +
   wheel** zooms y on the hovered area (buried — y is usually set with

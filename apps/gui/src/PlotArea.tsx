@@ -48,6 +48,7 @@ import {
   type SignalValueFormat,
   type XSync,
 } from "./plotPanelConfig";
+import { parsePlotAreaDragData, type PlotAreaDragPayload } from "./plotAreaTransfer";
 import { showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { nextResampleDelayMs } from "./plotPacing";
 import { Combobox, type ComboboxOption } from "./Combobox";
@@ -187,6 +188,7 @@ const Y_AXIS_MODE_OPTIONS: ComboboxOption[] = Y_AXIS_MODES.map((m) => ({ value: 
  * decision happens at drop time via `sourcePanelId`, so the cursor need
  * not match the post-drop semantics. */
 function signalDragOver(e: DragEvent<HTMLElement>, stopEvent: boolean): void {
+  if (isAreaDrag(e)) return;
   if (!e.dataTransfer.types.includes(SIGNAL_DND_MIME)) return;
   e.preventDefault();
   if (stopEvent) e.stopPropagation();
@@ -211,6 +213,7 @@ function signalDrop(
     onDropPatterns: (patterns: readonly string[]) => void;
   },
 ): void {
+  if (isAreaDrag(e)) return;
   const { refs, patterns, sourcePanelId } = parseDroppedSignals(
     e.dataTransfer.getData(SIGNAL_DND_MIME),
   );
@@ -232,16 +235,31 @@ function signalDrop(
  * "move" cursor carry the affordance; the areas are large enough that
  * which one the pointer is over is unambiguous. */
 function areaDragOver(e: DragEvent<HTMLElement>): void {
-  if (!e.dataTransfer.types.includes(PLOT_AREA_DND_MIME)) return;
+  if (!isAreaDrag(e)) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = "move";
 }
 
-function areaDrop(e: DragEvent<HTMLElement>, onReorderArea: (id: string) => void): boolean {
-  const dragged = e.dataTransfer.getData(PLOT_AREA_DND_MIME);
-  if (!dragged) return false;
+/** Is the drag in flight a plot-area drag? Read from the mime list,
+ * which is all `dragover` gets. An area drag also carries the signal
+ * payload for panels that only understand signals (ADR 0045), so inside
+ * a plot panel — where both handlers sit on the same surfaces — the
+ * area half wins and the signal half is ignored. */
+function isAreaDrag(e: DragEvent<HTMLElement>): boolean {
+  return e.dataTransfer.types.includes(PLOT_AREA_DND_MIME);
+}
+
+function areaDrop(
+  e: DragEvent<HTMLElement>,
+  onDropArea: (payload: PlotAreaDragPayload, copy: boolean) => void,
+): boolean {
+  const payload = parsePlotAreaDragData(e.dataTransfer.getData(PLOT_AREA_DND_MIME));
+  if (!payload) return false;
   e.preventDefault();
-  onReorderArea(dragged);
+  // Ctrl is read *at the drop*, not at the grab: the user decides
+  // move-vs-copy while dragging, and the modifier they are holding when
+  // they let go is the answer.
+  onDropArea(payload, e.ctrlKey);
   return true;
 }
 
@@ -477,14 +495,6 @@ interface PlotAreaProps {
    * only on the head so we don't surface N copies of the same control
    * when an area is in per-unit or individual mode. */
   isParentHead: boolean;
-  /** The id of the *logical* area this axis belongs to — what an area
-   * drag carries and what a drop reorders. Differs from `area.id` in
-   * per-unit / individual mode, where `area` is a derived axis. */
-  parentAreaId: string;
-  /** Offer the drag-to-reorder grip (only meaningful once the panel has
-   * more than one area). Like `removable`, the panel sets it on the
-   * parent head so one logical area shows one grip. */
-  reorderable: boolean;
   winStart: number;
   winEnd: number;
   /** The application-level trace start (absolute seconds, ADR 0024): the
@@ -566,9 +576,15 @@ interface PlotAreaProps {
   onToggleCollapsed: () => void;
   onFocus: () => void;
   onRemoveArea: () => void;
-  /** Another area of this panel was dropped on this one: move it to
-   * this area's position in the stack. */
-  onReorderArea: (draggedAreaId: string) => void;
+  /** This area's grip (or its collapsed run's shared handle) started a
+   * drag: the panel writes the area's payloads onto the transfer
+   * (ADR 0045). */
+  onDragArea: (dataTransfer: DataTransfer) => void;
+  /** A plot-area drag was dropped on this one. What it means — a
+   * reorder of this panel's stack, or an area arriving from another
+   * panel, moved or (Ctrl) copied — is the panel's decision, from the
+   * payload and the modifier held at the drop. */
+  onDropArea: (payload: PlotAreaDragPayload, copy: boolean) => void;
   onRemoveSignal: (key: string) => void;
   /** A signal was dropped here. `beforeKey` null ⇒ append to this area;
    * otherwise insert before that row (re-order / move). `isInternalMove`
@@ -740,8 +756,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     focused,
     removable,
     isParentHead,
-    parentAreaId,
-    reorderable,
     winStart,
     winEnd,
     originSeconds,
@@ -778,7 +792,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     onToggleCollapsed,
     onFocus,
     onRemoveArea,
-    onReorderArea,
+    onDragArea,
+    onDropArea,
     onRemoveSignal,
     onDropSignal,
     onToggleHidden,
@@ -2714,7 +2729,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         signalDragOver(e, false);
       }}
       onDrop={(e) => {
-        if (areaDrop(e, onReorderArea)) return;
+        if (areaDrop(e, onDropArea)) return;
         signalDrop(e, {
           beforeKey: null,
           stopEvent: false,
@@ -2769,12 +2784,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             <div
               className="plot-area-collapsed-handle"
               aria-label="reorder collapsed plot area"
-              title="drag to reorder this plot area"
+              title="drag to reorder this plot area, or to move it to another plot panel (Ctrl to copy)"
               draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(PLOT_AREA_DND_MIME, parentAreaId);
-                e.dataTransfer.effectAllowed = "move";
-              }}
+              onDragStart={(e) => onDragArea(e.dataTransfer)}
             />
           )}
         </div>
@@ -2832,19 +2844,18 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       />
       <div className="plot-area-signals" style={{ flexBasis: `${signalsWidth}px` }}>
         <div className="plot-area-signals-head">
-          {isParentHead && reorderable && (
+          {isParentHead && (
             // The grip alone is draggable, not the whole head: the head
             // holds a combobox and buttons, and a draggable ancestor
-            // eats their pointer gestures.
+            // eats their pointer gestures. It renders on a single-area
+            // panel too — there is nothing to reorder there, but the
+            // area can still be dragged to another plot panel.
             <span
               className="plot-area-grip"
               aria-label="reorder plot area"
-              title="drag to reorder this plot area"
+              title="drag to reorder this plot area, or to move it to another plot panel (Ctrl to copy)"
               draggable
-              onDragStart={(e) => {
-                e.dataTransfer.setData(PLOT_AREA_DND_MIME, parentAreaId);
-                e.dataTransfer.effectAllowed = "move";
-              }}
+              onDragStart={(e) => onDragArea(e.dataTransfer)}
             >
               ⠿
             </span>
