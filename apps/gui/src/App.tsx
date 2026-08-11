@@ -321,6 +321,10 @@ export function App() {
   >(() => new Map());
   // Path of the open project file, or null for an unsaved project.
   const [projectPath, setProjectPath] = useState<string | null>(null);
+  // Same value for the dockview callbacks, which are registered once in
+  // `handleDockReady` and so can't close over the state.
+  const projectPathRef = useRef<string | null>(null);
+  projectPathRef.current = projectPath;
   // True when the project has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
   // The host build's version string, for the window title. Empty until
@@ -2229,8 +2233,22 @@ export function App() {
         });
       });
 
+      // The persisted layout snapshot belongs to a project session; a
+      // launch that opens nothing starts from the default seed instead
+      // (window size and position are a separate, plugin-owned track and
+      // do resume). The reopen decision itself is made below — but the
+      // half that decides *whether* one is coming is synchronous, so it
+      // can be read here, before the dock's first paint. Automation's
+      // `--project` (fetched asynchronously below) is the one case this
+      // reads as "no reopen": that run seeds the default layout and
+      // `applyProject` replaces it a moment later. Deliberate — waiting
+      // for that answer would push the restore behind an IPC round trip
+      // and flash an empty dock on *every* launch, to spare an unwatched
+      // self-driving run one extra layout swap.
+      const reopenComing =
+        hostSettings().reopen_last_project && hostState().last_project != null;
       let restored = false;
-      const saved = validateLayout(hostState().layout);
+      const saved = reopenComing ? validateLayout(hostState().layout) : null;
       if (saved) {
         try {
           api.fromJSON(saved);
@@ -2243,11 +2261,6 @@ export function App() {
         seedDefaultLayout();
       }
 
-      // Persist after the initial restore/seed so we never write an
-      // empty or half-built layout. Best-effort (ADR 0032). This is the
-      // "no project open" layout — a reopened named project (below)
-      // overwrites it. Any layout change (panels added / dragged /
-      // closed, columns resized) also marks the project dirty.
       // Full-screen state for the command context (gates Escape).
       api.onDidMaximizedGroupChange(() => {
         setHasMaximizedView(api.hasMaximizedGroup());
@@ -2258,7 +2271,15 @@ export function App() {
         // Strip the transient full-screen marker so neither the
         // persisted layout nor the undo history reopens maximized.
         const json = stripMaximizedNode(api.toJSON());
-        persistLayout(json);
+        // Only a project's working layout is recorded (best-effort, ADR
+        // 0032; it lands in that project's own state file, ADR 0042). A
+        // session with nothing open leaves no view state behind — its
+        // next launch starts from the default seed, matching the restore
+        // gate above. Registered after the initial restore/seed, so this
+        // never writes an empty or half-built layout either.
+        if (projectPathRef.current !== null) persistLayout(json);
+        // Any layout change (panels added / dragged / closed, columns
+        // resized) also marks the project dirty.
         setDirty(true);
         // Feed the undo stack — except while a programmatic
         // `fromJSON`/seed is echoing (the guard) or before the initial
