@@ -2859,6 +2859,411 @@ describe("PlotPanel area collapse", () => {
   });
 });
 
+describe("PlotPanel solo", () => {
+  const sig = (signalName: string, unit = "V", hidden?: boolean) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "Pack",
+    unit,
+    color: "#4ecbff",
+    ...(hidden ? { hidden: true } : {}),
+  });
+
+  /// The `areas` list in the panel's most recent persist.
+  const persistedAreas = (api: { updateParameters: { mock: { calls: unknown[][] } } }) => {
+    const calls = api.updateParameters.mock.calls;
+    const last = (calls[calls.length - 1]?.[0] ?? {}) as { areas?: Array<Record<string, unknown>> };
+    return last.areas ?? [];
+  };
+  /// The `solo` blob in the panel's most recent persist.
+  const persistedSolo = (api: { updateParameters: { mock: { calls: unknown[][] } } }) => {
+    const calls = api.updateParameters.mock.calls;
+    return (calls[calls.length - 1]?.[0] as { solo?: unknown } | undefined)?.solo;
+  };
+
+  /// Every signal row's name paired with whether it renders hidden —
+  /// what "only the matches are visible" reads as on screen.
+  const rowVisibility = () =>
+    Array.from(document.querySelectorAll(".plot-signal-row")).map(
+      (r) =>
+        [
+          r.querySelector(".plot-signal-name")?.textContent ?? "",
+          !r.classList.contains("hidden"),
+        ] as [string, boolean],
+    );
+
+  const soloBox = () => screen.getByLabelText("solo pattern") as HTMLInputElement;
+  const typeSolo = (pattern: string) => fireEvent.change(soloBox(), { target: { value: pattern } });
+
+  /// One panel, two areas, cell-voltage-style names — the workflow the
+  /// feature exists for.
+  const cellRegistry = (id: string, config?: Record<string, unknown>) =>
+    makeRegistry({
+      id,
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1"), sig("Cell16")] },
+          { id: "a2", signals: [sig("PackVoltage")] },
+        ],
+        ...config,
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+
+  it("shows only the matching series across every area of the panel", () => {
+    const registry = cellRegistry("el-solo-basic");
+    renderPanel({ params: { elementId: "el-solo-basic" }, registry });
+    expect(rowVisibility()).toEqual([
+      ["Cell1", true],
+      ["Cell16", true],
+      ["PackVoltage", true],
+    ]);
+
+    typeSolo("Cell16");
+    expect(rowVisibility()).toEqual([
+      ["Cell1", false],
+      ["Cell16", true],
+      ["PackVoltage", false],
+    ]);
+    // A partial, case-insensitive match — `.?Cell16.?` is the owner's
+    // spelling and must find the same row.
+    typeSolo(".?cell16.?");
+    expect(rowVisibility()).toEqual([
+      ["Cell1", false],
+      ["Cell16", true],
+      ["PackVoltage", false],
+    ]);
+  });
+
+  it("never touches the other series' persisted hidden flags", () => {
+    // Solo is a view-layer mask: the non-matches are *drawn* hidden but
+    // their stored state is untouched, so clearing solo restores exactly
+    // the view the user had — including the one row they really did hide.
+    const registry = makeRegistry({
+      id: "el-solo-persist",
+      config: {
+        areas: [{ id: "a1", signals: [sig("Cell1"), sig("Cell16"), sig("PackVoltage", "V", true)] }],
+      },
+    });
+    const { api } = renderPanel({ params: { elementId: "el-solo-persist" }, registry });
+    typeSolo("Cell16");
+    expect(rowVisibility()).toEqual([
+      ["Cell1", false],
+      ["Cell16", true],
+      ["PackVoltage", false],
+    ]);
+    expect(
+      (persistedAreas(api)[0]?.signals as Array<Record<string, unknown>>).map((s) => [
+        s.signalName,
+        s.hidden,
+      ]),
+    ).toEqual([
+      ["Cell1", undefined],
+      ["Cell16", undefined],
+      ["PackVoltage", true],
+    ]);
+
+    typeSolo("");
+    expect(rowVisibility()).toEqual([
+      ["Cell1", true],
+      ["Cell16", true],
+      ["PackVoltage", false],
+    ]);
+  });
+
+  it("is inert while the pattern is invalid, and says so", () => {
+    const registry = cellRegistry("el-solo-invalid");
+    renderPanel({ params: { elementId: "el-solo-invalid" }, registry });
+    typeSolo("Cell1(");
+    expect(soloBox()).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("bad regex")).toBeInTheDocument();
+    // Nothing filtered — an unparseable pattern changes no visibility.
+    expect(rowVisibility().every(([, visible]) => visible)).toBe(true);
+    // Completing it makes it live again.
+    typeSolo("Cell1(6)?");
+    expect(soloBox()).not.toHaveAttribute("aria-invalid");
+    expect(rowVisibility()).toEqual([
+      ["Cell1", true],
+      ["Cell16", true],
+      ["PackVoltage", false],
+    ]);
+  });
+
+  it("restores the full view on Escape, and on clearing the box", () => {
+    const registry = cellRegistry("el-solo-clear");
+    const { api } = renderPanel({ params: { elementId: "el-solo-clear" }, registry });
+    typeSolo("Cell16");
+    fireEvent.keyDown(soloBox(), { key: "Escape" });
+    expect(soloBox().value).toBe("");
+    expect(rowVisibility().every(([, visible]) => visible)).toBe(true);
+    expect(persistedSolo(api)).toBeUndefined();
+
+    typeSolo("Cell16");
+    fireEvent.click(screen.getByRole("button", { name: "clear solo" }));
+    expect(soloBox().value).toBe("");
+    expect(rowVisibility().every(([, visible]) => visible)).toBe(true);
+  });
+
+  it("collapses an area with no solo-visible series, without persisting a collapse flag", () => {
+    // Same view-level rule as an all-hidden area: nothing to draw, so it
+    // gives up its plot height — but the area's own `collapsed` flag is
+    // not written, so clearing solo brings it back expanded.
+    const registry = cellRegistry("el-solo-collapse");
+    const { api } = renderPanel({ params: { elementId: "el-solo-collapse" }, registry });
+    const collapsedFlags = () =>
+      Array.from(document.querySelectorAll(".plot-area")).map((a) =>
+        a.classList.contains("collapsed"),
+      );
+    expect(collapsedFlags()).toEqual([false, false]);
+
+    typeSolo("Cell16");
+    expect(collapsedFlags()).toEqual([false, true]);
+    expect(persistedAreas(api)[1]?.collapsed).toBeFalsy();
+
+    typeSolo("");
+    expect(collapsedFlags()).toEqual([false, false]);
+  });
+
+  it("persists the pattern with the panel config, and restores it", () => {
+    const registry = cellRegistry("el-solo-save");
+    const { api } = renderPanel({ params: { elementId: "el-solo-save" }, registry });
+    // Absent while solo is off — the blob stays sparse, like `collapsed`.
+    expect(persistedSolo(api)).toBeUndefined();
+    typeSolo("Cell16");
+    expect(persistedSolo(api)).toEqual({ pattern: "Cell16" });
+
+    cleanup();
+    const restored = cellRegistry("el-solo-restore", { solo: { pattern: "Cell16" } });
+    renderPanel({ params: { elementId: "el-solo-restore" }, registry: restored });
+    expect(soloBox().value).toBe("Cell16");
+    expect(rowVisibility()).toEqual([
+      ["Cell1", false],
+      ["Cell16", true],
+      ["PackVoltage", false],
+    ]);
+  });
+
+  /// Three matching series across two areas — a match list long enough
+  /// to step through and to wrap around.
+  const stepRegistry = (id: string, config?: Record<string, unknown>) =>
+    makeRegistry({
+      id,
+      config: {
+        areas: [
+          { id: "a1", signals: [sig("Cell1"), sig("Cell2")] },
+          { id: "a2", signals: [sig("Cell3"), sig("PackVoltage")] },
+        ],
+        ...config,
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+
+  const soloPosition = () => screen.getByLabelText("solo position").textContent;
+  const visibleNames = () =>
+    rowVisibility()
+      .filter(([, visible]) => visible)
+      .map(([name]) => name);
+
+  it("steps one match at a time with next / previous, wrapping at both ends", () => {
+    const registry = stepRegistry("el-solo-step");
+    renderPanel({ params: { elementId: "el-solo-step" }, registry });
+    typeSolo("Cell");
+    // Matches-only until a step control is used: every match visible,
+    // and the read-out is the bare count, not a position.
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3"]);
+    expect(soloPosition()).toBe("3");
+
+    const next = screen.getByRole("button", { name: "next solo match" });
+    const prev = screen.getByRole("button", { name: "previous solo match" });
+    fireEvent.click(next);
+    expect(visibleNames()).toEqual(["Cell1"]);
+    expect(soloPosition()).toBe("1/3");
+    // …stepping across the area boundary in panel order.
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(visibleNames()).toEqual(["Cell3"]);
+    expect(soloPosition()).toBe("3/3");
+    // Wraps forward…
+    fireEvent.click(next);
+    expect(visibleNames()).toEqual(["Cell1"]);
+    // …and backward.
+    fireEvent.click(prev);
+    expect(visibleNames()).toEqual(["Cell3"]);
+    expect(soloPosition()).toBe("3/3");
+  });
+
+  it("cycles the matches with PgDn / PgUp while the panel has focus", () => {
+    const registry = stepRegistry("el-solo-keys");
+    renderPanel({ params: { elementId: "el-solo-keys" }, registry });
+    typeSolo("Cell");
+    const panel = document.querySelector(".plot-panel")!;
+
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1"]);
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell2"]);
+    // Wrapping, both ways — the keys are the step buttons' twins.
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1"]);
+    fireEvent.keyDown(panel, { key: "PageUp" });
+    expect(visibleNames()).toEqual(["Cell3"]);
+
+    // …and from inside the solo box itself, which is where focus sits
+    // right after typing a pattern.
+    fireEvent.keyDown(soloBox(), { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1"]);
+  });
+
+  it("ignores PgDn / PgUp while no solo pattern is matching", () => {
+    const registry = stepRegistry("el-solo-keys-off");
+    renderPanel({ params: { elementId: "el-solo-keys-off" }, registry });
+    const panel = document.querySelector(".plot-panel")!;
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3", "PackVoltage"]);
+    // A pattern that matches nothing has nothing to step through either.
+    typeSolo("Nope");
+    fireEvent.keyDown(panel, { key: "PageDown" });
+    expect(visibleNames()).toEqual([]);
+    expect(soloPosition()).toBe("0");
+  });
+
+  it("restores the full view from step mode on Escape", () => {
+    const registry = stepRegistry("el-solo-step-escape");
+    const { api } = renderPanel({ params: { elementId: "el-solo-step-escape" }, registry });
+    typeSolo("Cell");
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(visibleNames()).toEqual(["Cell1"]);
+    expect(persistedSolo(api)).toEqual({ pattern: "Cell", indices: [0] });
+
+    fireEvent.keyDown(soloBox(), { key: "Escape" });
+    expect(visibleNames()).toEqual(["Cell1", "Cell2", "Cell3", "PackVoltage"]);
+    expect(persistedSolo(api)).toBeUndefined();
+  });
+
+  it("starts a re-typed pattern back at the matches-only view", () => {
+    // The indices are positions in the *old* match list; a new pattern
+    // is a new list, so they cannot carry over.
+    const registry = stepRegistry("el-solo-retype");
+    renderPanel({ params: { elementId: "el-solo-retype" }, registry });
+    typeSolo("Cell");
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(soloPosition()).toBe("1/3");
+    typeSolo("Cell2");
+    expect(visibleNames()).toEqual(["Cell2"]);
+    expect(soloPosition()).toBe("1");
+  });
+
+  /// Open the solo control's context menu and read its checkbox items.
+  const openSoloMenu = () => fireEvent.contextMenu(document.querySelector(".plot-solo")!);
+  const menuItems = () =>
+    Array.from(document.querySelectorAll('[role="menuitemcheckbox"]')).map(
+      (b) => [b.getAttribute("aria-label"), b.getAttribute("aria-checked") === "true"] as const,
+    );
+
+  it("lists the current matches as checkboxes, every one checked in the matches-only view", () => {
+    const registry = stepRegistry("el-solo-menu");
+    renderPanel({ params: { elementId: "el-solo-menu" }, registry });
+    typeSolo("Cell");
+    openSoloMenu();
+    expect(menuItems()).toEqual([
+      ["Area 1 · Cell1", true],
+      ["Area 1 · Cell2", true],
+      ["Area 2 · Cell3", true],
+    ]);
+  });
+
+  it("shows any checked subset of the matches, and stays open while checking", () => {
+    const registry = stepRegistry("el-solo-subset");
+    const { api } = renderPanel({ params: { elementId: "el-solo-subset" }, registry });
+    typeSolo("Cell");
+    openSoloMenu();
+
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Area 1 · Cell2" }));
+    expect(visibleNames()).toEqual(["Cell1", "Cell3"]);
+    expect(soloPosition()).toBe("2/3");
+    // The menu stays up so several can be checked in one visit.
+    expect(menuItems()).toEqual([
+      ["Area 1 · Cell1", true],
+      ["Area 1 · Cell2", false],
+      ["Area 2 · Cell3", true],
+    ]);
+    expect(persistedSolo(api)).toEqual({ pattern: "Cell", indices: [0, 2] });
+  });
+
+  it("generalizes step mode to a subset — the stepped match plus whatever is checked", () => {
+    const registry = stepRegistry("el-solo-subset-step");
+    renderPanel({ params: { elementId: "el-solo-subset-step" }, registry });
+    typeSolo("Cell");
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(visibleNames()).toEqual(["Cell1"]);
+
+    openSoloMenu();
+    expect(menuItems()).toEqual([
+      ["Area 1 · Cell1", true],
+      ["Area 1 · Cell2", false],
+      ["Area 2 · Cell3", false],
+    ]);
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Area 2 · Cell3" }));
+    expect(visibleNames()).toEqual(["Cell1", "Cell3"]);
+    expect(soloPosition()).toBe("2/3");
+  });
+
+  it("offers no match menu while the pattern is empty or unparseable", () => {
+    const registry = stepRegistry("el-solo-menu-off");
+    renderPanel({ params: { elementId: "el-solo-menu-off" }, registry });
+    openSoloMenu();
+    expect(menuItems()).toEqual([]);
+    typeSolo("Cell(");
+    openSoloMenu();
+    expect(menuItems()).toEqual([]);
+  });
+
+  it("flips visibility without a host round-trip or a chart rebuild", async () => {
+    // Every plotted signal is already sampled — hidden ones included —
+    // so a solo change is a re-normalise + redraw of the window each
+    // area already holds: no fetch, and no new uPlot instance (which at
+    // the series counts this panel targets is the expensive thing).
+    // A stopped trace, so no self-paced tick can be mistaken for either.
+    await withSizedCanvas(async () => {
+      const registry = cellRegistry("el-solo-nofetch");
+      renderPanel({ params: { elementId: "el-solo-nofetch" }, registry });
+      // Past the one-shot post-mount rebuild (250 ms) first, then flush
+      // until a flush costs nothing — so the counts below measure the
+      // solo change and only it.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      for (let i = 0; i < 20; i++) {
+        const settled = sampleCalls();
+        await act(async () => {
+          await new Promise((r) => setTimeout(r, 100));
+        });
+        if (sampleCalls() === settled) break;
+      }
+      const before = sampleCalls();
+      const builtBefore = uplotInstances.length;
+      expect(before).toBeGreaterThan(0);
+      const instance = liveInstanceIn("Area 1");
+      const drawn = drawnPoints(instance);
+      expect(drawn).toBeGreaterThan(0);
+
+      await act(async () => {
+        typeSolo("Cell16");
+        await new Promise((r) => setTimeout(r, 200));
+      });
+      expect(sampleCalls()).toBe(before);
+      expect(uplotInstances.length).toBe(builtBefore);
+      // …and the same instance still draws its window rather than
+      // blanking out until the next pan/zoom.
+      expect(liveInstanceIn("Area 1")).toBe(instance);
+      expect(drawnPoints(instance)).toBe(drawn);
+    });
+  });
+});
+
 describe("PlotPanel signal-row selection", () => {
   /// The signal names of every selected row, in DOM order — the panel's
   /// selection as it reads on screen.

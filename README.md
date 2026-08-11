@@ -705,6 +705,34 @@ resample at the end.
   once, the same convention the DBC panel's multi-select drag uses;
   dragging a row that isn't selected drags only that row and leaves the
   selection as it was.
+- **Solo (show only these series).** The toolbar's **solo** box takes a
+  regex — case-insensitive and partial, so `Cell16` finds `Cell16`
+  wherever it sits in a signal's name — and masks every series it
+  doesn't match out of the *view*, across every area of the panel. It
+  is a view mask, not a bulk hide: no series' own hide state is
+  touched, so clearing the box (or **Escape**, or the **×**) brings the
+  full view back exactly as it was, and a signal you really did hide
+  stays hidden. An unparseable pattern is inert — the box marks itself
+  **bad regex** and nothing is filtered — so a half-typed regex never
+  blanks the plot. An area left with no visible series gives up its
+  plot height like any all-hidden area, without touching its own
+  collapse toggle. The pattern is saved with the panel in the project
+  file.
+- **Stepping the matches.** The **‹ / ›** controls beside the solo box
+  (and **PgUp / PgDn** while the plot panel has focus, which is where
+  it is right after typing a pattern) walk the match list **one series
+  at a time**, wrapping at both ends — the item-by-item workflow the
+  box exists for. The read-out between them is the position, `3/17`;
+  before you step, it is the bare match count. Stepping runs in panel
+  order — areas top to bottom, rows within each area — so it crosses
+  area boundaries on its own. **Escape** (or clearing the box) leaves
+  step mode and the whole solo view at once, and editing the pattern
+  starts the new match list back at "all matches visible".
+  **Right-click the solo control** for the match list itself — one
+  checkbox per match, labelled by area and signal — and check any
+  subset to show exactly those, which is the same mechanism as
+  stepping with more than one box ticked. The menu stays open while you
+  tick, and the position read-out becomes "how many of how many".
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
   area: it gives up its plot height entirely — every axis it derives

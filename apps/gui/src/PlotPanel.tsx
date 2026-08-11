@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -235,12 +235,80 @@ import {
   selectPlotSignal,
   type PlotSignalSelection,
 } from "./plotAreaSelection";
+import {
+  SOLO_OFF,
+  soloFromRaw,
+  soloMaskSignals,
+  soloMatches,
+  soloPatternInvalid,
+  soloPositionLabel,
+  soloRegex,
+  soloToParams,
+  soloVisibleKeys,
+  stepSolo,
+  toggleSoloIndex,
+  type SoloState,
+} from "./plotSolo";
 import { setSignalDragData } from "./dragSignals";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
 import { PlotArea } from "./PlotArea";
 import { MeasurementMenu, PlotMeasurementStrip, type PlottedSignal } from "./PlotMeasurements";
 
+
+/**
+ * The solo control's context menu: the current match list, one
+ * checkbox per match, so the visible set generalizes from the
+ * one-at-a-time step to any subset the user checks. Same floating
+ * shell as the plot's other context menus (`SignalSelectionMenu` /
+ * `YAxisScaleMenu` in `PlotArea.tsx`).
+ *
+ * It stays open while items are checked — building a subset is
+ * inherently several clicks — and dismisses the way every other menu
+ * here does (click away / Escape, via `useDismissableMenu`).
+ */
+function SoloMatchMenu({
+  position,
+  items,
+  onToggle,
+  onClose,
+}: {
+  position: { x: number; y: number };
+  /// One entry per match, in match-list order: its label (area + signal
+  /// name, so the same signal in two areas reads apart) and whether it
+  /// is currently visible.
+  items: readonly { label: string; checked: boolean }[];
+  onToggle: (index: number) => void;
+  onClose: () => void;
+}) {
+  const menuRef = useDismissableMenu<HTMLDivElement>(true, onClose);
+  return (
+    <div
+      ref={menuRef}
+      className="plot-solo-menu"
+      role="menu"
+      style={{ left: position.x, top: position.y }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="plot-solo-menu-title">solo matches</div>
+      {items.map((it, i) => (
+        <button
+          key={`${it.label}#${i}`}
+          type="button"
+          role="menuitemcheckbox"
+          aria-label={it.label}
+          aria-checked={it.checked}
+          onClick={() => onToggle(i)}
+        >
+          <span className="plot-solo-menu-mark" aria-hidden="true">
+            {it.checked ? "✓" : ""}
+          </span>
+          {it.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function PlotPanel(props: IDockviewPanelProps) {
   diagCount("render.PlotPanel"); // DIAG
@@ -296,6 +364,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [axisScales, setAxisScales] = useState<AxisScales>(() =>
     axisScalesFromRaw(savedConfig?.axisScales),
   );
+  /** Solo (`plotSolo.ts`): a panel-wide regex over the series display
+   * names, masking everything it doesn't match out of the *view*. It
+   * never rewrites a series' persisted `hidden` flag — clearing solo
+   * restores exactly the visibility the user had. Persisted with the
+   * panel config like the other view params, sparsely (absent = off). */
+  const [solo, setSolo] = useState<SoloState>(() => soloFromRaw(savedConfig?.solo));
   const [focusedAreaId, setFocusedAreaId] = useState<string>(() => areas[0]?.id ?? "");
   /** The signal rows the user has selected, in one logical area
    * (`plotAreaSelection.ts`). Transient view state — deliberately not in
@@ -714,10 +788,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
       showPoints,
       axisWeights,
       axisScales,
+      solo: soloToParams(solo),
     });
   }, [
     persist,
     areas,
+    solo,
     followLive,
     cursorMode,
     measEnabled,
@@ -1152,6 +1228,73 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [areas, scopedCatalog, busNameLookup],
   );
 
+  /// The solo match list — every plotted series whose display name the
+  /// pattern matches, in panel order (areas in stack order, rows in area
+  /// order). Taken from the *effective* areas, so pattern-derived rows
+  /// are solo-able like manual picks. Empty while the pattern is empty
+  /// or unparseable, which is what makes an invalid pattern inert.
+  const soloMatchList = useMemo(
+    () => soloMatches(effectiveAreas, solo.pattern),
+    [effectiveAreas, solo.pattern],
+  );
+  const soloActive = soloRegex(solo.pattern) != null;
+  /// The `soloMaskKey`s solo leaves visible — every match, or the
+  /// stepped / checked subset of them.
+  const soloVisible = useMemo(
+    () => soloVisibleKeys(soloMatchList, solo.indices),
+    [soloMatchList, solo.indices],
+  );
+  const soloInvalid = soloPatternInvalid(solo.pattern);
+  /// Editing the pattern drops any stepped / checked subset: the
+  /// positions index the *old* match list, and a new pattern is a new
+  /// list — so a fresh pattern always starts as the matches-only view.
+  const setSoloPattern = useCallback(
+    (pattern: string) => setSolo({ pattern, indices: null }),
+    [],
+  );
+  const clearSolo = useCallback(() => setSolo(SOLO_OFF), []);
+  /// Step mode: next / previous walk the match list one at a time,
+  /// wrapping, and entering it from the matches-only view lands on the
+  /// first (forward) or last (backward) match. A no-op with nothing to
+  /// step through, so the keyboard binding below can stay unconditional.
+  const soloMatchCount = soloMatchList.length;
+  const stepSoloBy = useCallback(
+    (delta: 1 | -1) => {
+      if (soloMatchCount === 0) return;
+      setSolo((s) => ({ ...s, indices: stepSolo(s.indices, soloMatchCount, delta) }));
+    },
+    [soloMatchCount],
+  );
+  /// Check / uncheck one match from the solo control's context menu —
+  /// the visible set generalized from step mode's one-at-a-time to any
+  /// subset. Unchecking out of the matches-only view materializes the
+  /// rest (`toggleSoloIndex`).
+  const toggleSoloMatch = useCallback(
+    (index: number) => {
+      setSolo((s) => ({ ...s, indices: toggleSoloIndex(s.indices, soloMatchCount, index) }));
+    },
+    [soloMatchCount],
+  );
+  /// PgDn / PgUp cycle the matches, scoped to the plot panel: this is a
+  /// `keydown` on the panel root, so it acts only while focus is inside
+  /// the panel — which after typing a pattern or clicking a step control
+  /// is where it already is. Deliberately not a global command (ADR
+  /// 0018): PageUp / PageDown are the gridview's navigation keys
+  /// (`keybindings.ts`), and while the plot panel is not a gridview, a
+  /// global binding on them would be suppressed in every panel that is.
+  /// Nothing else claims them, and the keys pass through untouched
+  /// whenever solo has no matches to step.
+  const onPanelKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.key !== "PageDown" && e.key !== "PageUp") return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if (soloMatchCount === 0) return;
+      e.preventDefault();
+      stepSoloBy(e.key === "PageDown" ? 1 : -1);
+    },
+    [soloMatchCount, stepSoloBy],
+  );
+
   /// Per-area manual-pick keys (from *stored* state, not the effective
   /// list) — how the row renderer tells a manual pick from a
   /// pattern-derived row (which gets no per-row × and a pattern badge).
@@ -1312,38 +1455,53 @@ export function PlotPanel(props: IDockviewPanelProps) {
       // The parent area's own collapse flag drove it (as opposed to the
       // all-hidden rule) — what the head toggle can undo.
       collapsedByFlag: boolean;
+      // Solo left this axis with nothing visible — the same view-level
+      // collapse as all-hidden, and equally not the area's own flag.
+      collapsedBySolo: boolean;
     }> = [];
     const isEnum = (k: string) => enumKeys.has(k);
     for (const a of effectiveAreas) {
       const mode = a.yAxisMode ?? "unified";
       const axes = deriveAxesForArea(a.id, a.signals, mode, isEnum);
       axes.forEach((ax, i) => {
+        // Solo masks *after* the axes are derived, never before: the
+        // axis set (and so every id keyed by it — weights, manual
+        // ranges, uPlot instances) is a function of the area's signals
+        // and its y-axis mode, and a view mask must not move it. What
+        // the mask changes is only which of an axis's series draw
+        // (`plotSolo.ts`) — the same lever `hidden` pulls, composed on
+        // top of it and never written back.
+        const signals = soloActive ? soloMaskSignals(a.id, ax.signals, soloVisible) : ax.signals;
         // The derived `PlotAreaConfig` carries the axis's slice of
         // signals. `patterns` is preserved only on the first
         // derived axis so the filter UI / status bar doesn't render N
         // times for one logical area.
         const derivedArea: PlotAreaConfig = {
           id: ax.id,
-          signals: ax.signals,
+          signals,
           yAxisMode: a.yAxisMode,
           primarySignalKey: a.primarySignalKey,
           patterns: i === 0 ? a.patterns : undefined,
           collapsed: a.collapsed,
         };
+        const allHidden = signals.length > 0 && signals.every((s) => s.hidden);
         out.push({
           area: derivedArea,
           parentArea: a,
           isFirstOfParent: i === 0,
           subtitle: ax.subtitle,
           enumLanes: ax.kind === "enum-lanes",
-          collapsed:
-            a.collapsed === true || (ax.signals.length > 0 && ax.signals.every((s) => s.hidden)),
+          collapsed: a.collapsed === true || allHidden,
           collapsedByFlag: a.collapsed === true,
+          // An axis whose only reason to be blank is the solo mask —
+          // it collapses like any all-hidden axis, but says why, and
+          // its area's persisted `collapsed` stays untouched.
+          collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
         });
       });
     }
     return out;
-  }, [effectiveAreas, enumKeys]);
+  }, [effectiveAreas, enumKeys, soloActive, soloVisible]);
 
   /// Per-*derived-axis* slice of the selection — the shape that keeps a
   /// selection click off the memoised areas that hold none of the
@@ -1436,6 +1594,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
     lastBusesRef.current = buses;
   }, [patternResolutionsByArea, buses]);
   const areaLabels = useMemo(() => new Map(areas.map((a, i) => [a.id, `Area ${i + 1}`])), [areas]);
+
+  /// The solo control's context menu: one checkbox per match, labelled
+  /// by area + signal name so the same signal plotted in two areas
+  /// reads apart. Checked = currently visible.
+  const soloMenuItems = useMemo(
+    () =>
+      soloMatchList.map((m, i) => ({
+        label: `${areaLabels.get(m.areaId) ?? "Area"} · ${m.name}`,
+        checked: solo.indices == null || solo.indices.includes(i),
+      })),
+    [soloMatchList, areaLabels, solo.indices],
+  );
 
   /// Per-derived-axis callback bundle, rebuilt only when the axis set
   /// itself changes. Building these inline in the render loop handed
@@ -1580,9 +1750,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const toolbarMenuRef = useDismissableMenu<HTMLDivElement>(toolbarMenuAt != null, () =>
     setToolbarMenuAt(null),
   );
+  /** Where the solo control's match menu is anchored, or `null` when
+   * it's closed. */
+  const [soloMenuAt, setSoloMenuAt] = useState<{ x: number; y: number } | null>(null);
 
   return (
-    <div className="plot-panel">
+    <div className="plot-panel" onKeyDown={onPanelKeyDown}>
       <div
         className="plot-panel-toolbar"
         onContextMenu={(e) => {
@@ -1631,6 +1804,74 @@ export function PlotPanel(props: IDockviewPanelProps) {
           />
         </label>
         <span className="plot-toolbar-sep" />
+        <label
+          className="plot-solo"
+          title="solo: show only the series whose name matches this regex (case-insensitive, partial). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back. Right-click for the match list."
+          onContextMenu={(e) => {
+            // The control's own menu, not the toolbar's — stop the
+            // event either way, so a right-click aimed at solo never
+            // opens the unrelated panel menu behind it.
+            e.preventDefault();
+            e.stopPropagation();
+            if (soloMenuItems.length === 0) return;
+            setSoloMenuAt({ x: e.clientX, y: e.clientY });
+          }}
+        >
+          solo
+          <input
+            className="plot-solo-input"
+            aria-label="solo pattern"
+            aria-invalid={soloInvalid || undefined}
+            placeholder="regex"
+            value={solo.pattern}
+            onChange={(e) => setSoloPattern(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                clearSolo();
+              }
+            }}
+          />
+          {soloInvalid && <span className="plot-solo-error">bad regex</span>}
+          {solo.pattern !== "" && !soloInvalid && (
+            <>
+              <button
+                className="plot-solo-step"
+                aria-label="previous solo match"
+                title="previous match (PgUp) — show one match at a time"
+                onClick={() => stepSoloBy(-1)}
+              >
+                ‹
+              </button>
+              <span
+                className="plot-solo-pos"
+                aria-label="solo position"
+                title="the visible match's position in the match list, or the number of matches when they are all shown"
+              >
+                {soloPositionLabel(solo.indices, soloMatchCount)}
+              </span>
+              <button
+                className="plot-solo-step"
+                aria-label="next solo match"
+                title="next match (PgDn) — show one match at a time"
+                onClick={() => stepSoloBy(1)}
+              >
+                ›
+              </button>
+            </>
+          )}
+          {solo.pattern !== "" && (
+            <button
+              className="plot-solo-clear"
+              aria-label="clear solo"
+              title="clear solo — every series goes back to its own visibility"
+              onClick={clearSolo}
+            >
+              ×
+            </button>
+          )}
+        </label>
+        <span className="plot-toolbar-sep" />
         <label className="plot-cursor-ctl">
           cursors
           <Combobox
@@ -1659,6 +1900,14 @@ export function PlotPanel(props: IDockviewPanelProps) {
           {dpr.toFixed(2)} · win {fmtCount(winFrames)} · cache {fmtCount(badge.value.cachePts)}
         </span>
       </div>
+      {soloMenuAt && soloMenuItems.length > 0 && (
+        <SoloMatchMenu
+          position={soloMenuAt}
+          items={soloMenuItems}
+          onToggle={toggleSoloMatch}
+          onClose={() => setSoloMenuAt(null)}
+        />
+      )}
       {toolbarMenuAt && (
         <div
           ref={toolbarMenuRef}
@@ -1786,6 +2035,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 area={d.area}
                 flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
                 collapsed={d.collapsed}
+                collapsedBySolo={d.collapsedBySolo}
                 collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}
                 yScale={axisScales[d.area.id]}

@@ -3172,6 +3172,53 @@ button.trace-event-swatch {
   font: inherit;
   font-size: 0.8rem;
 }
+/* Solo control: the panel-wide "show only these series" regex box, its
+   step controls and its position read-out. */
+.plot-solo {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.plot-solo-input {
+  width: 7rem;
+  background: var(--surface-control);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+.plot-solo-input[aria-invalid="true"] {
+  border-color: var(--danger-text);
+}
+.plot-solo-error {
+  color: var(--danger-text);
+  font-size: 0.72rem;
+}
+.plot-solo-pos {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  min-width: 2.5rem;
+  text-align: center;
+}
+.plot-solo-step,
+.plot-solo-clear {
+  background: none;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+}
+.plot-solo-step:hover,
+.plot-solo-clear:hover {
+  background: var(--surface-control-hover);
+}
 .plot-perf {
   margin-left: auto;
   font-size: 0.72rem;
@@ -3243,6 +3290,58 @@ button.trace-event-swatch {
   outline: none;
 }
 .plot-toolbar-menu-mark {
+  display: inline-block;
+  width: 0.9em;
+  text-align: center;
+}
+
+/* Solo control's match menu — the same floating shell as the toolbar
+ * menu, one checkbox row per current match. Scrolls: a broad pattern
+ * can match every series on the panel. */
+.plot-solo-menu {
+  position: fixed;
+  z-index: 30;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  white-space: nowrap;
+  max-height: 60vh;
+  overflow-y: auto;
+  box-shadow: 0 4px 12px var(--shadow-menu);
+}
+.plot-solo-menu-title {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 0.1rem 0.4rem 0.2rem;
+  border-bottom: 1px solid var(--border-default);
+}
+.plot-solo-menu button {
+  appearance: none;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  padding: 0.25rem 0.4rem;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.plot-solo-menu button:hover,
+.plot-solo-menu button:focus-visible {
+  background: var(--surface-hover);
+  outline: none;
+}
+.plot-solo-menu-mark {
   display: inline-block;
   width: 0.9em;
   text-align: center;

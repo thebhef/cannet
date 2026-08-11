@@ -315,6 +315,86 @@ better).
   under task 49's Blockers. Task 49 keeps the bulk actions on the
   selection.
 
+- **2026-08-08 (item 2, solo):** Landed on `task55d-solo` in four
+  commits. Solo is a **view-layer mask** — the whole item turns on that
+  ruling — composed on top of each series' `hidden`, never a rewrite of
+  it.
+  - `3a63a1a` — **the pure model** (`plotSolo.ts` + 32 tests): the
+    case-insensitive partial-match regex (invalid ⇒ `null`, inert,
+    never a throw), the match list in panel order (areas in stack
+    order, rows in area order, keyed by *area + signal* so the same
+    signal in two areas is two entries), the visible-key set, the
+    wrapping step, the check/uncheck of one match, the position
+    read-out, the per-axis mask application (returns the input array
+    when nothing is masked), and the sparse persisted shape.
+  - `830533f` — **the box, the mask, collapse, persistence.** The
+    toolbar gains the solo control; `derivedAreaConfigs` applies the
+    mask **per derived axis, after `deriveAxesForArea`**, onto nothing
+    but the `hidden` the renderer reads. **Design decision — mask after
+    derivation:** the axis set (and every id keyed by it — weights,
+    manual ranges, uPlot instances) is a function of the area's signals
+    and y-axis mode; masking before derivation would move axis
+    identity on a *view* change. Masking after means solo reduces
+    exactly to the existing hidden-signal treatment (scale unions, lane
+    re-flow, collapse), so **the collapse interaction needed no new
+    rule**: an axis with no solo-visible series is all-hidden by the
+    predicate that already existed, gives up its plot height, and its
+    area's persisted `collapsed` is untouched — verified by a test
+    asserting the persisted flag stays falsy. The head toggle stays
+    inert there and now names solo instead of blaming hidden rows
+    (`collapsedBySolo`). Nothing is written back to `areas`: a test
+    pins the persisted `hidden` flags across a solo, including a row
+    the user really did hide (which stays hidden after solo is
+    cleared).
+  - `8c68f89` — **step mode.** ‹ / › plus **PgUp / PgDn**, wrapping,
+    with the `3/17` position read-out. **Design decision — PgUp/PgDn
+    scope:** a `keydown` on the plot panel root, i.e. panel-focused,
+    *not* a global command (ADR 0018). Those keys are the gridview's
+    navigation set (`keybindings.ts` `GRIDVIEW_NAV_KEYS`), so a global
+    binding on them would be suppressed in every gridview panel; the
+    plot panel is not a gridview, nothing else claims them, and the
+    dispatcher's capture-phase listener passes them through when no
+    binding matches. They no-op (and are not `preventDefault`ed) when
+    solo has no matches to step. Not added to the Shortcuts view: that
+    lists global chords plus ADR 0044's grid key table, and this is a
+    panel-local control whose own tooltips name the keys.
+  - `c9fe91e` — **the match menu.** Right-click the solo control for
+    the match list, one `menuitemcheckbox` per match labelled `Area N ·
+    Signal`; any checked subset is the visible set (step mode
+    generalized). Same floating shell as `SignalSelectionMenu` /
+    `YAxisScaleMenu`, but it stays open while ticking. Unchecking out
+    of the matches-only view materializes the remaining indices, so the
+    first uncheck reads as "all but this one".
+  - **No refetch, no rebuild.** A visibility flip still has to resample
+    (a hidden series contributes nothing to its group's scale, and
+    normalisation only happens on a resample), but it now repaints from
+    the window the area already holds — `repaintFromCacheRef`, the path
+    a uPlot rebuild already used — instead of dropping the fetch memo.
+    Verified both ways: the test fails (4 → 6 `sample_signals` calls)
+    with the old `resetRange()` path and passes with the repaint, and
+    it also pins that no new uPlot instance is constructed.
+  - **Persistence:** `solo: { pattern, indices? }` in the panel params,
+    sparse the way `collapsed` is — absent while off, no `indices` key
+    in the matches-only view — so an untouched panel doesn't mark the
+    project dirty (`projectElements.ts`'s `valuesEqual` treats an
+    undefined-valued key as absent). Parse/format round trip covered in
+    `plotSolo.test.ts`, write + restore in the DOM suite.
+  - Tests: `apps/gui` suite 1545 → 1593 passing (131 → 132 files) — 32
+    pure in `plotSolo.test.ts`, 16 DOM in `PlotPanel.dom.test.tsx`'s
+    new "PlotPanel solo" suite (matches-only across areas, no persisted
+    mutation, invalid-is-inert, Escape / × restore, collapse
+    interaction, persist + restore, step + wrap, PgUp/PgDn + wrap,
+    keys ignored with no matches, re-typed pattern resets to
+    matches-only, the menu's checkboxes / subset / stay-open, no menu
+    without matches, and the no-fetch-no-rebuild guard).
+    `pnpm --dir apps/gui build` green at every commit; the standing
+    memo guard ("re-renders no plot area when only panel-local state
+    changes") stayed green throughout.
+  - Docs in the same commits: README's plot section gains three
+    bullets (solo, stepping, the match menu); ADR 0026 gains a
+    "solo masks the view, never rewrites what is hidden" decision
+    paragraph and an implementation-status bullet.
+
 ## Blockers / side effects
 
 - None from item 1. No matrix cell failed; nothing to fix in that phase.
@@ -364,3 +444,40 @@ better).
   (React destroys the instance in the previous cleanup, then the
   zero-size guard parks it) but touches the file's riskiest effect for
   a pre-existing issue, so it is recorded rather than done here.
+- Item 2, **the "3/17-style" read-out is a bare count while every match
+  is visible.** `17/17` for the matches-only view reads as "the last
+  one", which is exactly the position the indicator otherwise means, so
+  the all-visible case shows `17` and only a stepped / checked subset
+  shows `n/17`. Closest faithful reading of the grooming note's
+  spelling; recorded because it is a literal deviation from it.
+- Item 2, **a solo-masked row looks like a hidden row.** Both render
+  `.plot-signal-row.hidden` (dimmed, dimmed swatch) — the mask reaches
+  the renderer *as* `hidden`, which is what makes the whole feature one
+  predicate instead of a second visibility path threaded through
+  `PlotArea`. A user cannot tell "hidden by me" from "masked by solo"
+  from the row alone (clearing solo shows them apart). Adding a
+  distinct dimming state would mean a second per-row flag through
+  `PlotArea`'s rows, so it is recorded rather than done.
+- Item 2, **the swatch on a masked pattern-derived row persists
+  `hidden: true`.** Clicking the swatch of a row that has no manual
+  entry materializes it as a manual pick carrying the *toggled* state,
+  and under the mask the ref it is handed already reads hidden — so the
+  materialized pick lands `hidden: true` where an un-masked click would
+  have given `hidden: false`. Manual picks are unaffected
+  (`toggleSignalHidden` flips the *stored* row). Narrow enough that
+  fixing it means passing an un-masked ref down beside the masked one;
+  recorded instead.
+- Item 2, **every plot area re-renders on a solo change.** Same
+  pre-existing shape recorded under item 4: `derivedAreaConfigs` mints
+  fresh derived `PlotAreaConfig` objects for every axis whenever it
+  re-runs, so no `PlotArea`'s memo can hold across one. It is at least
+  honest here — a solo change is panel-wide by construction — and the
+  standing memo guard (panel-local state) is unaffected. Scoping the
+  derivation per area stays the refactor item 4 already logged.
+- Item 2, **an ordinary hide/show now repaints from cache too.** The
+  no-refetch requirement lands on the shared `hiddenKey` effect (solo
+  reaches the renderer as `hidden`, so it cannot have its own path), so
+  a swatch click no longer costs a host round-trip either. Same
+  rendered result — the fetch already covers hidden signals — and it
+  falls back to a real fetch when there is no cached window yet; noting
+  it because the change is wider than solo.
