@@ -512,6 +512,17 @@ interface PlotAreaProps {
    * hide state, is what left this axis with nothing to draw — the
    * head toggle's inert state says so instead of blaming hidden rows. */
   collapsedBySolo?: boolean;
+  /** Keys ({@link signalRefKey}) of this axis's rows solo's mask is
+   * hiding, from {@link soloMaskedKeys} — a row already hidden on its
+   * own isn't included (solo isn't why). The row renderer styles these
+   * with a solo marker instead of the plain hidden treatment. */
+  soloMaskedKeys?: ReadonlySet<string>;
+  /** Solo's match count for this (parent) area — `3 of 12 match` in the
+   * signal-panel heading — or `null` while solo isn't applying to it
+   * (off, or a zero-match area, which is left untouched by design). Set
+   * only on the first derived axis, so the chip renders once per
+   * logical area. */
+  soloChip?: { matched: number; total: number } | null;
   /** True when this collapsed axis heads a contiguous run of collapsed
    * axes — it draws the run's single shared drag handle (ADR 0026). */
   collapsedRunHead?: boolean;
@@ -795,6 +806,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     flexGrow,
     collapsed,
     collapsedBySolo,
+    soloMaskedKeys,
+    soloChip,
     collapsedRunHead,
     enumLanes,
     label,
@@ -3019,6 +3032,14 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           >
             {label}
           </span>
+          {soloChip && (
+            <span
+              className="plot-solo-chip"
+              title="how many of this area's series the solo pattern matches"
+            >
+              {soloChip.matched} of {soloChip.total} match
+            </span>
+          )}
           <button
             className="plot-area-fit-y"
             title="fit y to the currently visible data — useful when zoomed in and you want the visible region to fill the canvas height"
@@ -3134,9 +3155,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             const v = displayValueFor(key);
             const isPrimary = key === primaryKey;
             const isSelected = selectedKeys.has(key);
+            const isSoloMasked = !!soloMaskedKeys?.has(key);
             return (
               <div
-                className={`plot-signal-row${s.hidden ? " hidden" : ""}${isPrimary ? " primary" : ""}${isSelected ? " selected" : ""}`}
+                className={`plot-signal-row${s.hidden ? " hidden" : ""}${isSoloMasked ? " solo-masked" : ""}${isPrimary ? " primary" : ""}${isSelected ? " selected" : ""}`}
                 key={key}
                 title={
                   isPrimary

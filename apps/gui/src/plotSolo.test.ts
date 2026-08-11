@@ -15,6 +15,7 @@ import {
   soloLabel,
   soloMaskKey,
   soloMaskSignals,
+  soloMaskedKeys,
   soloMatchedAreaIds,
   soloMatches,
   soloPageCount,
@@ -483,6 +484,26 @@ describe("soloMaskSignals", () => {
 
   it("never un-hides a signal the user hid — solo composes on top of `hidden`", () => {
     expect(soloMaskSignals("a1", signals, allVisible)[1].hidden).toBe(true);
+  });
+});
+
+describe("soloMaskedKeys", () => {
+  // Cell1 draws on its own; PackVoltage is already hidden by the user,
+  // independent of solo.
+  const cell1 = sig("Cell1");
+  const packVoltage = sig("PackVoltage", true);
+  const signals = [cell1, packVoltage];
+  const allVisible = new Set(signals.map((s) => soloMaskKey("a1", signalRefKey(s))));
+
+  it("is empty when nothing is masked", () => {
+    expect(soloMaskedKeys("a1", signals, allVisible)).toEqual(new Set());
+  });
+
+  it("names only the signal solo pushed out of view, not one already hidden on its own", () => {
+    // Neither is in the visible set, but only Cell1 was actually drawing
+    // before solo — PackVoltage was already hidden, so solo isn't what
+    // took it away, and it doesn't belong to solo's mask feedback.
+    expect(soloMaskedKeys("a1", signals, new Set())).toEqual(new Set([signalRefKey(cell1)]));
   });
 });
 

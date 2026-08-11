@@ -324,7 +324,7 @@ export function soloMatchedAreaIds(matches: readonly SoloMatch[]): ReadonlySet<s
 /// The mask's key for one series in one area — solo is panel-wide, so a
 /// signal plotted in two areas is two independently maskable entries.
 export function soloMaskKey(areaId: string, key: string): string {
-  return `${areaId} ${key}`;
+  return `${areaId}\0${key}`;
 }
 
 /// How many pages a group list makes at `pageSize` groups per page.
@@ -439,6 +439,25 @@ export function soloMaskSignals(
     return s.hidden ? s : { ...s, hidden: true };
   });
   return masked ? out : (signals as SignalRef[]);
+}
+
+/// The series solo's mask actually took off the view: not in `visible`,
+/// *and* not already hidden on its own — a signal the user had hidden
+/// before solo was typed isn't solo's doing, so it's left out. This is
+/// the view-feedback question ("which rows does *solo* explain?"), a
+/// narrower one than {@link soloMaskSignals}'s ("what draws?"), so it's
+/// its own pass rather than a byproduct of that one.
+export function soloMaskedKeys(
+  areaId: string,
+  signals: readonly SignalRef[],
+  visible: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const s of signals) {
+    if (s.hidden) continue;
+    if (!visible.has(soloMaskKey(areaId, signalRefKey(s)))) out.add(signalRefKey(s));
+  }
+  return out;
 }
 
 /// Parse the persisted `solo` blob. Anything unrecognised reads as solo

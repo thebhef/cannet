@@ -228,8 +228,110 @@ zero-match area, the nowhere-matching pattern, keyed cross-area
 stepping, the restored-page clamp, the pre-catalog restore, and the
 pre-paging blob.
 
+### 2026-08-09 — phase 62.B (branch `task62b-solo-feedback`)
+
+The four visibility-feedback surfaces from §4, plus the two small
+items (the `plotSolo.ts` NUL spelling, this doc sweep). Six commits,
+each green on `pnpm --dir apps/gui test` + `pnpm --dir apps/gui build`
+(no Rust touched — frontend-only phase):
+
+| commit | subject |
+| --- | --- |
+| `6d22fc3` | `style(gui): spell soloMaskKey's separator, not embed it` |
+| `e582274` | `feat(gui): mark a solo-masked row distinctly from a user-hidden one` |
+| `f096406` | `feat(gui): show a per-area solo match chip in the signal-panel heading` |
+| `bff8a39` | `feat(gui): give the solo toolbar's no-matches state its own look` |
+| `366e08c` | `feat(gui): open the solo match menu on a left-click too` |
+| `05ca732` | `docs(readme): describe the solo view's four new feedback surfaces` |
+
+Final gates: frontend **142 files / 1842 tests** passing (1836 at the
+phase's start, +6 — 2 pure-function cases for `soloMaskedKeys` plus 4
+dom pins, one per surface); `pnpm build` clean.
+
+What landed, against the groomed design (§4):
+
+1. **Distinct solo-masked styling.** `soloMaskedKeys(areaId, signals,
+   visible)` (`plotSolo.ts`) names the rows solo itself took off the
+   view — explicitly excluding a signal already hidden on its own, so
+   a row you really did hide keeps the plain treatment and solo isn't
+   blamed for something it didn't do. `deriveAreaConfigs` computes it
+   once per axis alongside the existing `soloMaskSignals` call (one
+   place, no duplicated mask logic) and hands it down as
+   `DerivedAreaConfig.soloMaskedKeys`; the row renderer adds a
+   `solo-masked` class *alongside* `hidden` (never replacing it, so
+   every existing visibility dom pin reading the `hidden` class kept
+   passing unchanged) and `index.css` gives it its own inset marker
+   and opacity, overriding the plain-hidden italic.
+2. **Per-area match chip.** `soloAreaMatchCounts` (a `Map<areaId,
+   count>` built off `soloMatchList`) feeds `DerivedAreaConfig.soloChip
+   = {matched, total}`, set only on an area's first derived axis (like
+   `patterns`) and only when solo applies to that area — so a
+   zero-match area gets `null` and renders no chip, matching §4.2
+   exactly. `PlotArea.tsx` renders it as `3 of 12 match` beside the
+   area label.
+3. **Toolbar readout finish.** The read-out's text is now computed
+   once (`soloPosLabel`) and compared against `soloLabel`'s own
+   documented `"no matches"` literal to add a `plot-solo-pos-empty`
+   class — muted-italic, distinct from an ordinary position label.
+4. **Left-click opens the match menu.** The position span's own
+   `onClick` opens the same `SoloMatchMenu` the control's right-click
+   does (right-click, which was already bound to the whole `.plot-solo`
+   label and so already fired from the read-out too, is untouched);
+   styled clickable (cursor, hover) only while there's a menu to open —
+   the no-matches state has nothing behind it.
+5. **`plotSolo.ts` NUL spelling.** The one literal `NUL` byte
+   (`soloMaskKey`'s separator) is now the escaped `\0` — same runtime
+   character, source-only change. `git diff` for the file now renders
+   as text.
+6. **Docs.** README's solo section (rewritten in 62.A) now covers all
+   four surfaces; no other doc needed touching (`docs/adr/0026`'s solo
+   paragraph states the model rule, which none of this phase's changes
+   touch — a masked row's `hidden` flag and the mask's area-scoping are
+   exactly as 62.A left them, only the view's *labeling* of the two
+   hidden causes changed).
+
+Every exit criterion in this task file now reads as met, including the
+"four feedback surfaces land, dom-tested" line this phase closes.
+
+### 2026-08-09 — ADR-0031 gate (orchestrator)
+
+Five harness runs on the task62 build (tip `e5fe450`, release,
+`ev-zonal` project, scrub interaction, expected 1608 rx/tx fps). Runs
+2–5 passed all 31 gated metrics; run 1 failed a single metric,
+`jsheap_mb_drift_per_min`, at 17.7 MB/min against the 16.4 MB/min limit
+(baseline 5.7), with the other 30 metrics green.
+
+Investigation (observation → hypothesis → experiment → data →
+conclusion): task62's five samples were 17.7 / 14.0 / 5.7 / 4.0 / −1.9;
+the pre-task62 build (`9dcfa87`) sampled the same day gave 13.1 / 8.7 /
+2.5 committed earlier plus 2.0 / 11.6 from a same-day fresh-rebuild
+control. The fresh 59h control's FIRST post-build run landing at 2.0
+refuted the cold-machine-state hypothesis, and its 2.0 → 11.6 ordering
+refuted run-order decay; means 7.9 vs 7.6 MB/min across five runs each
+are statistically indistinguishable, so the conclusion is run-to-run
+GC-timing variance unchanged by task 62 — run 1's 17.7 is the tail of
+the same distribution, not a regression.
+
+Verdict: gate green; runs 2–4 committed as the record; the excursion
+documented here rather than in a committed report so future
+worst-to-worst comparisons aren't poisoned by a known-noise sample.
+(Owner may overrule at review.)
+
 ## Blockers / side effects
 
+- **The `plotSolo.ts` NUL fix nearly re-triggered the whole-file-diff
+  hazard, from the opposite direction.** Once the byte was replaced,
+  `git diff` against the pre-fix blob (still holding the `NUL`, so git
+  still sniffs it as binary on that side) reported all 467 lines
+  changed under this repo's `core.autocrlf=true`, even though the
+  working file differed from `HEAD` by exactly the one intended byte —
+  confirmed with a raw byte-for-byte comparison. `git -c
+  core.autocrlf=false diff` showed the true 1-line diff; staging with
+  `git -c core.autocrlf=false add` before committing kept the landed
+  commit proportionate. The file is ordinary text to git from this
+  commit on, so a normal `git add` normalises it like any other
+  tracked file from here — this was only a one-time risk for the
+  commit that flipped its binary status.
 - **`plotSolo.ts` is a binary file to git.** `soloMaskKey` joins its
   two parts with a literal `NUL`, which predates this task; git
   therefore skips CRLF normalisation on the file, and a tool that
@@ -247,3 +349,26 @@ pre-paging blob.
   change therefore takes effect on the panel's next render rather than
   immediately; the previous code had the same property (it read the
   setting at press time). Left as is.
+
+## Exit-criteria walk (2026-08-09)
+
+1. **MET.** Zero-match areas render untouched under an active solo,
+   pinned both ways by 62.A's dom tests (matching area masked,
+   zero-match area identical to solo-off) and the nowhere-matching
+   pattern; the toolbar's `no matches` state is 62.B's readout test.
+2. **MET.** Solo and area patterns share one regex dialect — 62.A's
+   agreement test runs the same regexes through `soloMatches` and
+   `resolvePatterns` and asserts the same selection.
+3. **MET.** Group-by-capture stepping is covered by 62.A's
+   pure-function suites for `soloKeySlots`, `soloGroups`, paging, and
+   the cycle, plus the dom-tested All-cycle and lands-on-page-1 rules.
+4. **MET.** The four feedback surfaces (distinct solo styling,
+   per-area chip, two-form/no-matches readout, click-to-open match
+   menu) land dom-tested in 62.B.
+5. **MET.** Stale-restore behavior is covered by 62.A's restored-page
+   clamp and pre-catalog restore dom pins.
+6. **MET.** Docs: the README solo section was rewritten in 62.A and
+   extended in 62.B; ADR 0026 was corrected in place; no new ADR, per
+   the default.
+
+ADR-0031 gate green per the gate entry above.

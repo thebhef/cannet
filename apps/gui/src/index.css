@@ -2545,6 +2545,21 @@ button.trace-event-swatch {
   font-size: 0.66rem;
 }
 
+/* Solo's per-area match count (`3 of 12 match`), next to the area
+ * label — appears only on an area solo applies to (PlotArea.tsx's
+ * `soloChip` prop, sourced from `plotSolo.ts`). Not uppercase like the
+ * rest of the head, so "match" reads as a word, not an acronym. */
+.plot-solo-chip {
+  color: var(--text-muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  font-size: 0.66rem;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+
 /* Drag handle for reordering a panel's plot areas. Only the grip is
    draggable, so the head's own controls keep their pointer gestures. */
 .plot-area-grip {
@@ -3175,6 +3190,18 @@ button.trace-event-swatch {
   opacity: 0.45;
   font-style: italic;
 }
+/* A row solo's mask is hiding, not the user (`soloMaskedKeys` —
+ * PlotPanel.tsx / plotSolo.ts): the row still doesn't draw, but the
+ * marker says why solo, not the plain italic "hidden" dim. Declared
+ * after `.hidden` so it wins the properties both rules set. */
+.plot-signal-row.solo-masked {
+  box-shadow: inset 2px 0 0 var(--border-strong);
+}
+.plot-signal-row.solo-masked .plot-signal-name,
+.plot-signal-row.solo-masked .plot-signal-message {
+  opacity: 0.55;
+  font-style: normal;
+}
 
 /* Right readout column: value on top, optional Δ and diagnostic
  * stacked underneath, all right-aligned. */
@@ -3368,6 +3395,21 @@ button.trace-event-swatch {
   font-variant-numeric: tabular-nums;
   min-width: 2.5rem;
   text-align: center;
+}
+/* The pattern parses but selects nothing — distinct from an ordinary
+ * position label (`soloLabel`'s "no matches" form), so it doesn't read
+ * as just another page count. */
+.plot-solo-pos-empty {
+  color: var(--danger-text-muted);
+  font-style: italic;
+}
+/* Clickable whenever there's a match list behind it — left-click opens
+ * the same `SoloMatchMenu` right-click does. */
+.plot-solo-pos-clickable {
+  cursor: pointer;
+}
+.plot-solo-pos-clickable:hover {
+  color: var(--text-secondary);
 }
 .plot-solo-step,
 .plot-solo-clear {

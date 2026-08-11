@@ -259,6 +259,7 @@ import {
   soloKeySlots,
   soloLabel,
   soloMaskSignals,
+  soloMaskedKeys,
   soloMatchedAreaIds,
   soloMatches,
   soloPageCount,
@@ -363,6 +364,16 @@ interface DerivedAreaConfig {
   /// Solo left this axis with nothing visible — the same view-level
   /// collapse as all-hidden, and equally not the area's own flag.
   collapsedBySolo: boolean;
+  /// Keys of this axis's rows solo's mask is why they don't draw — a
+  /// signal already hidden on its own doesn't count (solo isn't why).
+  /// What the row renderer styles with the solo marker instead of the
+  /// plain hidden treatment. Empty (the shared {@link EMPTY_KEY_SET})
+  /// while solo isn't applying to this axis.
+  soloMaskedKeys: ReadonlySet<string>;
+  /// The parent area's solo match count, `null` unless solo applies to
+  /// it — set only on the first derived axis (like `patterns`) so the
+  /// per-area chip renders once per logical area, not once per axis.
+  soloChip: { matched: number; total: number } | null;
 }
 
 /// Expand one effective area into its derived axes, based on the area's
@@ -374,6 +385,7 @@ function deriveAreaConfigs(
   a: PlotAreaConfig,
   isEnum: (key: string) => boolean,
   soloMask: ReadonlySet<string> | null,
+  soloMatchCount: number,
 ): DerivedAreaConfig[] {
   const axes = deriveAxesForArea(a.id, a.signals, a.yAxisMode ?? "unified", isEnum);
   return axes.map((ax, i) => {
@@ -410,6 +422,8 @@ function deriveAreaConfigs(
       // collapses like any all-hidden axis, but says why, and its area's
       // persisted `collapsed` stays untouched.
       collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
+      soloMaskedKeys: soloMask ? soloMaskedKeys(a.id, ax.signals, soloMask) : EMPTY_KEY_SET,
+      soloChip: soloMask && i === 0 ? { matched: soloMatchCount, total: a.signals.length } : null,
     };
   });
 }
@@ -1436,6 +1450,15 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// The areas solo applies to — the ones it found a match in. Every
   /// other area renders as if solo were off.
   const soloMatchedAreas = useMemo(() => soloMatchedAreaIds(soloMatchList), [soloMatchList]);
+  /// Per-area match count, for the per-area chip (`3 of 12 match`) —
+  /// how many of *this* area's own series the pattern matched, out of
+  /// its total (read off `a.signals.length` at the render site). An
+  /// area absent here has no match, and so no chip (§4.2: untouched).
+  const soloAreaMatchCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const match of soloMatchList) m.set(match.areaId, (m.get(match.areaId) ?? 0) + 1);
+    return m;
+  }, [soloMatchList]);
   /// The step sequence: the matches bucketed by what the pattern
   /// captured, so one step covers every signal sharing a key.
   const soloGroupList = useMemo(
@@ -1853,15 +1876,24 @@ export function PlotPanel(props: IDockviewPanelProps) {
     const out: DerivedAreaConfig[] = [];
     for (const a of effectiveAreas) {
       const soloMask = soloActive && soloMatchedAreas.has(a.id) ? soloVisible : null;
+      const soloMatchCount = soloAreaMatchCounts.get(a.id) ?? 0;
       out.push(
-        ...derivedAreaMemo.get(a.id, [a, enumKeys, soloMask], () =>
-          deriveAreaConfigs(a, isEnum, soloMask),
+        ...derivedAreaMemo.get(a.id, [a, enumKeys, soloMask, soloMatchCount], () =>
+          deriveAreaConfigs(a, isEnum, soloMask, soloMatchCount),
         ),
       );
     }
     derivedAreaMemo.commit();
     return out;
-  }, [effectiveAreas, enumKeys, soloActive, soloMatchedAreas, soloVisible, derivedAreaMemo]);
+  }, [
+    effectiveAreas,
+    enumKeys,
+    soloActive,
+    soloMatchedAreas,
+    soloVisible,
+    soloAreaMatchCounts,
+    derivedAreaMemo,
+  ]);
 
   /// Per-*derived-axis* slice of the selection — the shape that keeps a
   /// selection click off the memoised areas that hold none of the
@@ -2150,6 +2182,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /** Where the solo control's match menu is anchored, or `null` when
    * it's closed. */
   const [soloMenuAt, setSoloMenuAt] = useState<{ x: number; y: number } | null>(null);
+  /// The toolbar read-out's text, computed once so the render below can
+  /// both show it and key the no-matches styling off the same value
+  /// `soloLabel` already commits to (its doc comment nails the literal
+  /// string down as one of its three unambiguous forms).
+  const soloPosLabel = soloLabel(soloGroupList, soloPage, soloPageSize, soloMatchCount);
 
   return (
     <div
@@ -2248,11 +2285,18 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 ‹
               </button>
               <span
-                className="plot-solo-pos"
+                className={`plot-solo-pos${soloPosLabel === "no matches" ? " plot-solo-pos-empty" : ""}${soloMenuItems.length > 0 ? " plot-solo-pos-clickable" : ""}`}
                 aria-label="solo position"
-                title="which page of matching groups is on show, the group it covers, and how many of the matches that is"
+                title="which page of matching groups is on show, the group it covers, and how many of the matches that is — click for the match list"
+                onClick={(e) => {
+                  // Same menu the control's own right-click opens
+                  // (below); left-click is the more discoverable
+                  // gesture for "open the list", so it opens it too.
+                  if (soloMenuItems.length === 0) return;
+                  setSoloMenuAt({ x: e.clientX, y: e.clientY });
+                }}
               >
-                {soloLabel(soloGroupList, soloPage, soloPageSize, soloMatchCount)}
+                {soloPosLabel}
               </span>
               <button
                 className="plot-solo-step"
@@ -2444,6 +2488,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 flexGrow={d.collapsed ? 0 : resolvedAxisWeights[d.area.id]}
                 collapsed={d.collapsed}
                 collapsedBySolo={d.collapsedBySolo}
+                soloMaskedKeys={d.soloMaskedKeys}
+                soloChip={d.soloChip}
                 collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}
                 yScale={axisScales[d.area.id]}
