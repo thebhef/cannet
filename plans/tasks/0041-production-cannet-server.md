@@ -178,6 +178,51 @@ subcommand's defaults and flags, the removed top-level
 `--virtual-bus` flag and bare positional BLF path no longer parsing,
 and the bare-invocation error message).
 
+### 2026-08-12 — phase 3: bare `cannet-server` is the proxy
+
+The 2026-08-11 pass-through grooming note is implemented.
+`ProxyServerImpl` relays all three RPCs 1:1 and interprets nothing:
+`ListInterfaces` returns the upstream's list unchanged, each
+`WatchInterfaces` forwards one upstream watch stream, and each client
+`Session` opens exactly one upstream `Session` and relays envelopes
+verbatim both ways. The proxy adds no arbitration — a second client is
+offered to the upstream and gets back whatever it answers, in-band
+`Busy` included — and the two session directions run to completion
+together, so a client hanging up ends the upstream's request stream
+(releasing what it held) while an upstream error reaches the client as
+the same `Status`.
+
+The upstream address is a closure resolved per RPC, because a
+supervised sidecar re-binds a different ephemeral port on every
+restart. That seam is also the test seam: the default suite points the
+proxy at this crate's own in-process servers — the virtual bus for the
+traffic cases, the single-client BLF replay for `Busy` and for the
+hang-up case — and never at Python.
+
+Bare `cannet-server` now runs it. The CLI is the `SidecarHost`: flags
+where the GUI has `settings.json` (`--sidecar-log-level`,
+`--sidecar-restart-budget`, both with defaults matching the GUI's),
+stderr where the GUI has System Messages, and
+`tokio::runtime::Handle::spawn_blocking` for the wait loop's thread.
+`--bind` defaults to `127.0.0.1:50051`, so a routable bind stays a
+deliberate act while Task 42 is outstanding. Frozen resolution is the
+one thing the shared crate cannot do for a CLI: it looks for
+`cannet-python-can/<launcher>` beside the executable, and a
+`debug_assertions` build prefers the sidecar source tree so `cargo run`
+picks up sidecar edits.
+
+Verified once against the real sidecar on the dev machine
+(`cargo test -p cannet-server --test proxy_sidecar -- --ignored`,
+`uv`-launched source tree): the proxy came up, the supervisor caught
+the `listening` banner, and `ListInterfaces` through the proxy returned
+both PEAK PCAN-USB FD channels under their real ids. That test stays
+`#[ignore]`d.
+
+Tests: `cannet-server` 31 → 39 (six proxy integration tests, one unit
+test for the no-upstream-yet window, and the CLI-parsing tests for the
+proxy's flags replacing the removed bare-invocation error message),
+plus one ignored real-sidecar test. Commits: `6e52517`, `4fa1a1f`.
+
 ## Blockers / side effects
 
 - **`cannet-perf-measurement` has its own sidecar spawn**
@@ -188,6 +233,15 @@ and the bare-invocation error message).
   host and the crate. Worth folding in when the harness is touched
   for the proxy-overhead comparison, which already has to point at a
   spawned `cannet-server`.
+- **The frozen onedir's name in the archive is `cannet-python-can/`,
+  not `sidecar/`.** The 2026-08-11 archive grooming note calls it "the
+  already-frozen `sidecar/` onedir"; what
+  `scripts/build-sidecar.py` actually emits is a directory named
+  `cannet-python-can` (which is also where the GUI looks inside its
+  resource dir). Phase 3 resolves the launcher at
+  `<exe dir>/cannet-python-can/<launcher>`, so phase 4's archive must
+  pack the onedir under that name — renaming it in the archive would
+  cost a per-consumer rename for no gain.
 - **ADR 0021 still says `cannet-server --virtual-bus` throughout**
   (it uses the flag as the concept's identifying label in a dozen-odd
   places, not as runnable examples). Phase 2's doc scope was
