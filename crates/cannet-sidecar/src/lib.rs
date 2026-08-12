@@ -72,33 +72,89 @@
 //! At every step, the failure case logs through the host at the right
 //! severity and surfaces the install instructions; nothing panics on a
 //! missing sidecar.
+//!
+//! ## Retry budget
+//!
+//! A sidecar that crashes (non-zero exit) gets at most a budget of
+//! auto-restarts ([`SidecarHost::restart_budget`]) before the
+//! supervisor stops trying; an error-level line tells the user to
+//! restart it by hand. The budget resets when
+//! [`SidecarSupervisor::restart`] runs, so the user's own restart never
+//! lands on an exhausted counter.
+//!
+//! ## Lifecycle: the sidecar dies when its host dies
+//!
+//! The supervisor pipes the sidecar's stdin and writes nothing to it.
+//! The `Child` keeps the write end open for its own lifetime; when the
+//! host process exits (clean or not), the OS closes the pipe and the
+//! sidecar's stdin-EOF watcher
+//! (`cannet_python_can.__main__._install_stdin_eof_watcher`)
+//! gracefully stops the gRPC server. That cross-platform "your parent
+//! went away" contract is why a host crash never leaves an orphaned
+//! sidecar holding hardware open — no `prctl(PR_SET_PDEATHSIG)` /
+//! Windows job-object plumbing required.
 
 mod banner;
 mod launch;
+mod supervise;
 
 pub use banner::{classify_stderr_line, classify_stdout_line, parse_listening_address, LogLevel};
 pub use launch::{
     env_over_setting, frozen_launcher_name, resolve_command, Resolved, SidecarConfig,
     DRIVER_MODULE_ENV, SIDECAR_DIR_ENV,
 };
+pub use supervise::{SidecarPhase, SidecarStatus, SidecarSupervisor};
 
 /// What a host supplies so this crate can run a sidecar for it: where
-/// its configuration comes from, and where the sidecar's chatter goes.
+/// its configuration comes from, where the sidecar's chatter goes, and
+/// what to do with a thread.
 ///
-/// Both halves are per-host by nature — a Tauri app reads
+/// Every method is per-host by nature — a Tauri app reads
 /// `settings.json` and publishes System Messages, a CLI server reads
 /// its flags and writes `tracing` events — and everything else about
 /// running a sidecar is the same, which is why it lives here.
-pub trait SidecarHost {
+///
+/// `Send + Sync + 'static` because the supervisor's wait loop outlives
+/// the call that started it.
+pub trait SidecarHost: Send + Sync + 'static {
     /// The configuration for **this** spawn attempt, resolved fresh
     /// each time so a settings change takes effect on the next
     /// restart without one being cached across it.
     fn config(&self) -> SidecarConfig;
 
-    /// Publish one line about the sidecar. `message` is already
-    /// user-facing text; the host decides where it lands and under
-    /// what source tag ([`SOURCE`]).
+    /// Publish one line *about* the sidecar — a lifecycle event this
+    /// crate produced. `message` is already user-facing text; the host
+    /// decides where it lands and under what source tag ([`SOURCE`]).
     fn log(&self, level: LogLevel, message: String);
+
+    /// Publish one line *from* the sidecar — a stdout banner or stderr
+    /// line the child itself wrote, already classified. Separate from
+    /// [`SidecarHost::log`] because the volume is different by orders
+    /// of magnitude: a host may well want its own lifecycle events on
+    /// every sink it has, and the child's output only on the cheap
+    /// ones. Defaults to treating both alike.
+    fn log_sidecar_output(&self, level: LogLevel, message: String) {
+        self.log(level, message);
+    }
+
+    /// How many times a crashing sidecar is auto-restarted before the
+    /// host gives up for the rest of the session. Read at the moment a
+    /// crash is handled, not cached at spawn, so a host whose budget is
+    /// a live setting honours the current one.
+    fn restart_budget(&self) -> u64;
+
+    /// The supervised sidecar moved from `previous` to `current`.
+    /// Called once per actual change, never for a repeat, and never
+    /// with the supervisor's lock held — a host is free to take its own
+    /// locks here.
+    fn status_changed(&self, previous: &SidecarStatus, current: &SidecarStatus);
+
+    /// Run `task` on a thread of the host's choosing. It blocks for the
+    /// supervised child's whole lifetime, so it must not land on an
+    /// async runtime's worker; hosts hand it to a blocking pool
+    /// (`tauri::async_runtime::spawn_blocking`,
+    /// `tokio::task::spawn_blocking`) or a plain thread.
+    fn spawn_blocking(&self, task: Box<dyn FnOnce() + Send + 'static>);
 }
 
 /// The log source tag every sidecar event should be published under.

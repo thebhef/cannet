@@ -130,3 +130,44 @@ configured `Command`; the GUI still spawns and supervises it.
 
 Tests: `cannet-sidecar` 8 → 28; `cannet-gui` 523 → 503, the same
 twenty moved. Still 531 across the two.
+
+### 2026-08-12 — phase 1, slice 3: supervision itself
+
+`SidecarSupervisor` now owns the process: spawn with stdin piped (the
+parent-death signal), the stdout/stderr pumps, the `listening`-banner
+phase transitions, the `try_wait` loop, the crash budget, and the
+manual restart that kills the previous child first. The `SidecarHost`
+trait grew the three things supervision needs from a host —
+`restart_budget()`, `status_changed(previous, current)`, and
+`spawn_blocking()` for the thread the wait loop lives on — plus
+`log_sidecar_output()`, separate from `log()` because the GUI mirrors
+its own lifecycle lines to `tracing` and the child's output (orders of
+magnitude more of it) only to the ring, exactly as before.
+
+The GUI keeps what is genuinely its own: the `SidecarStatus` /
+`SidecarPhase` wire shapes its frontend reads, the `STATUS_EVENT`
+emit, and the `interfaces::watch` / `unwatch` moves a phase change
+implies. `sidecar.rs` is 489 lines lighter and holds no process
+handling at all.
+
+Supervision arrived untested — it needed a live `AppHandle` — so the
+extraction brought six tests with it, against a recording host: a
+crash inside the budget asks for a respawn and numbers it, a crash
+past the budget refuses and says how to recover, a manual restart
+hands the full budget back, and a phase change is published once,
+with both sides, and again when a restart re-binds a new ephemeral
+port.
+
+Tests: `cannet-sidecar` 28 → 34; `cannet-gui` 503, unchanged. 537
+across the two, up six from the 531 this phase started at.
+
+## Blockers / side effects
+
+- **`cannet-perf-measurement` has its own sidecar spawn**
+  (`crates/cannet-perf-measurement/src/sidecar.rs`: its own
+  `CANNET_SIDECAR_DIR` read, its own `uv run` invocation, its own
+  banner wait). It is a third would-be consumer of
+  `cannet-sidecar` and was left alone — phase 1's scope is the GUI
+  host and the crate. Worth folding in when the harness is touched
+  for the proxy-overhead comparison, which already has to point at a
+  spawned `cannet-server`.

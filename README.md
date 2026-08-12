@@ -85,9 +85,13 @@ crates/
                  `Drop`.
   cannet-sidecar/
                  The python-can sidecar's host side (ADR 0036), shared
-                 by every process that runs one: the stdout banner and
-                 stderr grammars a host parses to learn the sidecar's
-                 bound address and log its lines.
+                 by every process that runs one: the launch chain
+                 (frozen binary, else `uv` / `python3` over the source
+                 tree), the stdout banner and stderr grammars, and
+                 `SidecarSupervisor` — spawn, restart budget, piped
+                 stdin as the parent-death signal, published phase. A
+                 host supplies a `SidecarHost`: where its settings
+                 come from and where a log line goes.
   cannet-perf-measurement/
                  Agent-runnable performance / integration harness. Runs a
                  rest-of-bus simulation of the `examples/ev-demo` workload
@@ -1453,11 +1457,13 @@ entirely, so an unmapped slot in the VHC app view can't break open
 or close.
 
 **Auto-launch**. The GUI's Tauri host spawns the sidecar at startup
-(`apps/gui/src-tauri/src/sidecar.rs`); the user does not run anything
+(`crates/cannet-sidecar` does the supervising;
+`apps/gui/src-tauri/src/sidecar.rs` supplies the GUI's settings and
+log surface); the user does not run anything
 in `servers/cannet-python-can/` by hand. The sidecar binds to an
 OS-assigned ephemeral port (`127.0.0.1:0`) and reports the actual
 address back on its `sidecar\tlistening\t<addr>` banner; the host
-parses it into `SidecarState` and exposes it through the
+parses it into the supervisor's status and exposes it through the
 `get_sidecar_status` Tauri command and the `sidecar-status-changed`
 event, which the project panel's "Local sidecar" row reads so the
 user can bind interfaces without typing an address. The sidecar's
