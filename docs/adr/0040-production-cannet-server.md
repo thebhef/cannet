@@ -40,10 +40,11 @@ reachable over the network. One process, one network endpoint.
   production server is the remote deployment unit, not a local
   dependency.
 - **Prior server modes are subordinate.** BLF replay and
-  `--virtual-bus` began as dev/debug tooling. Each either rolls into
-  the production server, is renamed as an explicitly dev-facing tool,
-  or is dropped once the production server covers its use. None of
-  them defines what `cannet-server` is.
+  `--virtual-bus` began as dev/debug tooling and are renamed as
+  explicitly dev-facing subcommands, `cannet-server debug replay
+  <blf>` and `cannet-server debug vbus`. Bare `cannet-server` is the
+  production hardware proxy; none of the debug subcommands defines
+  what `cannet-server` is.
 - **Distribution is a per-OS archive** bundling the server binary and
   the frozen sidecar onedir; the dev flow stays `cargo run` plus the
   existing sidecar discovery chain.

@@ -46,7 +46,7 @@ crates/
   cannet-core/   CanFrame model + CanFrameSource / CanFrameSink traits,
                  plus the `SharedBus` virtual-bus primitive (ADR 0021)
                  used in-process by the GUI host and over the wire by
-                 `cannet-server --virtual-bus`. Every other crate
+                 `cannet-server debug vbus`. Every other crate
                  either produces or consumes through these — the seam
                  where network transports and hardware adapters slot
                  in. See its rustdoc for the contract.
@@ -64,15 +64,17 @@ crates/
                  stubs, conversion helpers between `cannet_core`
                  frames and the wire types, and a batching adapter
                  layer so application code stays in `Stream<CanFrame>`.
-  cannet-server/ BLF replay server + `--virtual-bus` server. The
-                 replay mode loads a BLF into memory and streams its
+  cannet-server/ Bare `cannet-server` is the production hardware-proxy
+                 entry point (ADR 0040; not yet implemented). `debug
+                 replay <blf>` and `debug vbus` are dev/test tooling:
+                 replay loads a BLF into memory and streams its
                  channels on a loop while a client is subscribed
-                 (transmits rejected, read-only; single-client).
-                 The `--virtual-bus` mode (ADR 0021) hosts a multi-
-                 client virtual CAN bus: one factory interface, fan-
-                 out with sender attribution, `NoAcknowledger` on
-                 zero-recipient transmits, runtime `ConfigureBus`.
-                 Ships a `cannet-server` binary; lib is reusable.
+                 (transmits rejected, read-only; single-client). vbus
+                 (ADR 0021) hosts a multi-client virtual CAN bus: one
+                 factory interface, fan-out with sender attribution,
+                 `NoAcknowledger` on zero-recipient transmits, runtime
+                 `ConfigureBus`. Ships a `cannet-server` binary; lib is
+                 reusable.
   cannet-client/ Phase-2 gRPC client. `list_interfaces` is a one-shot
                  async RPC for the connection panel. `connect_and_
                  subscribe` returns a `RemoteCanFrameSource` (sync
@@ -995,7 +997,7 @@ Where a sent frame goes:
   `Error::TX_REJECTED`, which surfaces in the system messages log
   (no per-frame status panel — successful sends show as Tx-confirm
   rows in the trace; failures are visible in the log). A
-  `cannet-server --virtual-bus` server accepts transmits on its
+  `cannet-server debug vbus` server accepts transmits on its
   allocated participant id and fans them out to every other
   subscriber; a solo subscriber's transmit reaches no recipients and
   comes back as `Error::NO_ACKNOWLEDGER` instead.
@@ -1015,16 +1017,16 @@ Where a sent frame goes:
 
 #### Virtual-bus server demo
 
-`cannet-server --virtual-bus` exposes one factory interface,
-`virtual:bus0`, and hosts a multi-client virtual CAN bus (ADR 0021).
-Each connecting client `Subscribes` to the factory, the server
-allocates them a fresh participant (`virtual:bus0/p<n>` returned via
-`InterfaceAllocated`), and every transmit from one participant fans
-out as `Rx` frames to every other participant tagged with the
-sender's allocated id.
+`cannet-server debug vbus` is dev/test tooling that exposes one
+factory interface, `virtual:bus0`, and hosts a multi-client virtual
+CAN bus (ADR 0021). Each connecting client `Subscribes` to the
+factory, the server allocates them a fresh participant
+(`virtual:bus0/p<n>` returned via `InterfaceAllocated`), and every
+transmit from one participant fans out as `Rx` frames to every other
+participant tagged with the sender's allocated id.
 
 ```sh
-cargo run -p cannet-server -- --virtual-bus
+cargo run -p cannet-server -- debug vbus
 # → virtual-bus mode: factory virtual:bus0 (speed 500000 bit/s, fd data off)
 # → listening on 127.0.0.1:50051
 ```
@@ -1042,7 +1044,7 @@ resulting frame stream into the bus as a bridge participant. The new
 bridge is published as `virtual:bus0/bridge-<name>` and every open
 `WatchInterfaces` stream gets a fresh snapshot. `DetachBridge { name }`
 tears it down; the same `WatchInterfaces` push announces the removal.
-Pointing a bridge at another `cannet-server --virtual-bus`'s factory
+Pointing a bridge at another `cannet-server debug vbus`'s factory
 yields the **CAN-over-IP gateway shape**: traffic on one server fans
 out across the bridge to the other and vice-versa.
 
@@ -1614,14 +1616,14 @@ next time you save.
 ### Phase-2 client / server demo
 
 Phase 2 splits the data source out behind a gRPC service. The
-`cannet-server` binary loads a BLF and replays it on a loop;
-the GUI's toolbar grew a connection panel that consumes the
-same protocol.
+`cannet-server` binary's `debug replay` subcommand (dev/test tooling)
+loads a BLF and replays it on a loop; the GUI's toolbar grew a
+connection panel that consumes the same protocol.
 
 In one terminal, start a server:
 
 ```sh
-cargo run -p cannet-server -- examples/cannet-demo.blf
+cargo run -p cannet-server -- debug replay examples/cannet-demo.blf
 # → loaded N interface(s) from examples/cannet-demo.blf
 # → listening on 127.0.0.1:50051
 ```
