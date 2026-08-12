@@ -184,3 +184,67 @@ server re-prompts, accepted (N21).
   move `proposed` → `adopted` (or record the alternative chosen).
 - README covers launching a protected server and connecting the GUI,
   including `--insecure` and its tradeoff.
+
+## Status log
+
+### 2026-08-12 — phase 1: server identity + TLS endpoint
+
+Landed on `task42a-server-tls`, four commits off
+`task41e-perf-proxy-comparison` (`29cd7b0`):
+
+| commit | what |
+|--------|------|
+| `0756485` | docs(plans): the plan review + the task-41 criteria walk |
+| `de20dc9` | feat(server): generate, persist, and fingerprint a TLS identity |
+| `507059d` | feat(server): terminate TLS on the proxy's endpoint |
+| `4da779a` | feat(server): refuse an unprotected routable bind |
+
+`cannet-server` tests: 34 → 51 (lib 5 → 11, bin 9 → 19, new
+`tests/tls.rs` 3; the pre-existing integration suites are unchanged).
+`cannet-client` (7 + 5) and `cannet-gui` (503) still pass under the
+new `tonic/tls` feature; `cannet-perf-measurement` is clippy-clean.
+
+What shipped:
+
+- `identity.rs` — `ServerIdentity` (generate/persist/reload,
+  operator `--cert`/`--key` material) and `CertFingerprint` (SHA-256
+  over the end-entity DER, `SHA256:` + unpadded standard-alphabet
+  base64, pinned against an independently computed digest). Key file
+  created `0o600` on Unix via `OpenOptions`, temp+rename for both
+  files. Default dir `<data-local-dir>/cannet-server`.
+- `install_crypto_provider()` — explicit `ring`, called first thing in
+  `main` and by the TLS tests (B1).
+- `ServerTlsConfig` on the proxy's endpoint; fingerprint printed with
+  a direct `eprintln!`.
+- `guard_bind` + a `Protections` struct at all three `--bind` sites,
+  with IPv4-mapped-loopback canonicalization (N16) and an
+  `--insecure` that suppresses the refusal only (S7).
+- `tests/tls.rs` — real handshake: a tonic client holding the
+  generated certificate as `ca_certificate` (`domain_name("localhost")`,
+  matching a SAN) completes `ListInterfaces`; a client without it is
+  refused; a plaintext client gets nowhere.
+
+**Design call the plan did not specify — a `--tls` flag.** The plan
+says both "the identity is auto-generated on first run" and "a
+non-loopback bind without TLS is a startup error unless `--insecure`",
+and S7 adds that `--insecure` suppresses the error only. Those are
+only simultaneously true if TLS is something the operator turns on:
+if a routable bind enabled TLS automatically, the refusal could never
+fire for the proxy and S7 would have nothing to suppress. So TLS is on
+when `--tls` (generated identity) or `--cert`/`--key` (operator
+material) is given, and off otherwise; loopback stays plaintext by
+default either way. Phase 2 should gate the token the same way rather
+than auto-enabling it.
+
+Dependency decisions recorded in `technology-inventory.md`: rcgen
+0.14 (not 0.13 — the plan review named the then-current version) and
+tonic `tls` move to `adopted`, plus three the plan review had not
+enumerated — `ring` 0.17, `rustls-pemfile` 2 (end-entity DER out of
+the PEM chain, rather than hand-rolled DER scanning), and `dirs` 6
+(the per-user data dir; the headless server has no Tauri path API).
+`base64` is pinned to 0.22, the version already in the lock, so the
+build carries one major.
+
+Not in this phase, per the plan: the token (phase 2), the pin-only
+client verifier and the GUI TOFU flow (phase 3). The exit criteria
+covering those are still open.
