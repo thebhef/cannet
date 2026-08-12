@@ -49,6 +49,10 @@ cannet-blf = { path = "../../../crates/cannet-blf" }
 # `unsafe` mmap surface so this crate stays `unsafe`-free.
 cannet-spill = { path = "../../../crates/cannet-spill" }
 cannet-client = { path = "../../../crates/cannet-client" }
+# Spawn/supervise the python-can sidecar (ADR 0036) — the same
+# implementation `cannet-server` uses, so the host only supplies where
+# its settings live and where its log lines go.
+cannet-sidecar = { path = "../../../crates/cannet-sidecar" }
 cannet-dbc = { path = "../../../crates/cannet-dbc" }
 # Phase 7: bridge wire-level LogMessage envelopes into the local bus.
 cannet-wire = { path = "../../../crates/cannet-wire" }

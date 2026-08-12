@@ -444,6 +444,7 @@ dependencies = [
  "cannet-client",
  "cannet-core",
  "cannet-dbc",
+ "cannet-sidecar",
  "cannet-spill",
  "cannet-wire",
  "chrono",
@@ -503,6 +504,10 @@ dependencies = [
  "tokio-stream",
  "tonic",
 ]
+
+[[package]]
+name = "cannet-sidecar"
+version = "0.0.0"
 
 [[package]]
 name = "cannet-spill"

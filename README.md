@@ -83,6 +83,11 @@ crates/
                  shutdown halves alongside a Phase-5
                  `SessionTransmitter` for client TX. Drops cleanly on
                  `Drop`.
+  cannet-sidecar/
+                 The python-can sidecar's host side (ADR 0036), shared
+                 by every process that runs one: the stdout banner and
+                 stderr grammars a host parses to learn the sidecar's
+                 bound address and log its lines.
   cannet-perf-measurement/
                  Agent-runnable performance / integration harness. Runs a
                  rest-of-bus simulation of the `examples/ev-demo` workload

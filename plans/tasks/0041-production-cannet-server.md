@@ -97,3 +97,19 @@ untouched.
   touched by this work.
 - README documents running the server on a server host; rustdoc on
   the new/changed public crate surfaces.
+
+## Status log
+
+### 2026-08-12 — phase 1, slice 1: the banner grammar moves to a crate
+
+`crates/cannet-sidecar` exists, dependency-free, holding the half of
+the sidecar contract that is pure parsing: the stdout banner grammar
+(`classify_stdout_line`, `parse_listening_address`), the sidecar's
+Python-logger stderr grammar (`classify_stderr_line`), the shared
+`LogLevel` those classify into, and the two names both hosts must
+agree on (`SOURCE`, `SIDECAR_LOG_FILE`). The GUI host renames the
+crate's `LogLevel` into its own System Messages ladder at the two
+stream pumps and is otherwise unchanged.
+
+Tests: `cannet-sidecar` 0 → 8 (the eight moved verbatim);
+`cannet-gui` 531 → 523, same eight, no net loss.

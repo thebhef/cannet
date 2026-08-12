@@ -1,4 +1,4 @@
-//! Vendor-driver sidecar lifecycle.
+//! Vendor-driver sidecar lifecycle, GUI-host side.
 //!
 //! At startup the host spawns the `cannet-python-can` sidecar (a
 //! Python process that uses `python-can` to enumerate Vector,
@@ -8,37 +8,10 @@
 //! status into [`sys_debug!`] / [`sys_info!`] / [`sys_warn!`] /
 //! [`sys_error!`] System Messages tagged with [`SOURCE`].
 //!
-//! ## Stdout banner format
-//!
-//! The sidecar's stdout uses a small, deliberately stable
-//! tab-separated banner format so the bridge can parse it without
-//! pulling JSON in:
-//!
-//! ```text
-//! sidecar\tversion\t<v>
-//! sidecar\tlogfile\t<path>
-//! sidecar\tinterfaces\t<n>
-//! interface\t<id>\t<display_name>\t<fd|classic>
-//! sidecar\tlistening\t<addr>
-//! sidecar\tshutdown\tsignal=<n>
-//! sidecar\texit\t<code>
-//! ```
-//!
-//! Anything that does *not* match those shapes falls through as a
-//! plain info-level message — so a stray `print` from a vendor SDK
-//! still reaches the user without code changes here. Stderr is
-//! routed to warn level.
-//!
-//! ## Two sidecar log sinks
-//!
-//! The child's stderr is one sink and the panel reads it, so it stays
-//! at the `sidecar_log_level` setting. The host also hands the sidecar
-//! `--log-file <log_dir>/`[`SIDECAR_LOG_FILE`] — a second, **always
-//! debug** rolling sink (1 MiB × 5 generations) next to the host's own
-//! `cannet.log`, holding every gRPC command with its arguments and
-//! outcome and every driver traceback. Raising the file's detail
-//! therefore never raises the panel's. The sidecar echoes the path back
-//! on the `logfile` banner line so the user can find it.
+//! The banner and stderr grammars the bridge parses live in
+//! [`cannet_sidecar`], which is shared with `cannet-server` — see its
+//! crate docs for the format itself and for the two log sinks the host
+//! configures below.
 //!
 //! ## Launch strategy
 //!
@@ -107,15 +80,22 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+pub use cannet_sidecar::{parse_listening_address, SIDECAR_LOG_FILE, SOURCE};
+
 use crate::system_log::LogLevel;
 use crate::{emit_system_log, sys_debug, sys_error, sys_info, sys_warn};
 
-/// The System Messages source tag every sidecar event is published
-/// under. Must match `cannet_python_can.server.WIRE_SOURCE` in the
-/// Python sidecar so an in-band `LogMessage` envelope from the
-/// sidecar later ends up under the same panel filter as the
-/// process-level lifecycle events.
-pub const SOURCE: &str = "sidecar:python-can";
+/// The shared crate's classification of a sidecar line, said in the
+/// host's own [`LogLevel`] ladder. Same four levels, so this is a
+/// rename and never a judgement call.
+fn host_level(level: cannet_sidecar::LogLevel) -> LogLevel {
+    match level {
+        cannet_sidecar::LogLevel::Debug => LogLevel::Debug,
+        cannet_sidecar::LogLevel::Info => LogLevel::Info,
+        cannet_sidecar::LogLevel::Warn => LogLevel::Warn,
+        cannet_sidecar::LogLevel::Error => LogLevel::Error,
+    }
+}
 
 /// How many times the host auto-restarts a crashing sidecar before
 /// giving up for the rest of the session, from `settings.json`
@@ -298,12 +278,6 @@ pub fn build_command(launcher: LaunchPath, sidecar_dir: &std::path::Path) -> Com
     }
 }
 
-/// Pull the `<addr>` out of a `sidecar\tlistening\t<addr>` banner line.
-/// `None` for any other input. Pure; testable without spawning.
-pub fn parse_listening_address(line: &str) -> Option<&str> {
-    line.strip_prefix("sidecar\tlistening\t")
-}
-
 /// Absolute path to the frozen sidecar launcher inside the Tauri
 /// resource directory, or `None` if the frozen artifact isn't present
 /// (the developer flow). Resolved through Tauri's framework-canonical
@@ -383,11 +357,6 @@ fn apply_sidecar_settings(
         cmd.env(DRIVER_MODULE_ENV, module);
     }
 }
-
-/// File name of the sidecar's rolling logfile, a sibling of the host's
-/// own [`crate::crash::LOG_FILE`] in the same per-OS log directory — one
-/// place to look, and one directory to attach to a bug report.
-pub const SIDECAR_LOG_FILE: &str = "sidecar-python-can.log";
 
 /// Where to tell the sidecar to write its logfile, creating the
 /// directory if it isn't there yet (the sidecar creates it too, but the
@@ -857,8 +826,8 @@ fn stream_stdout(app: &AppHandle, stdout: ChildStdout) {
         if line.is_empty() {
             continue;
         }
-        let (level, message) = classify_stdout_line(&line);
-        emit_system_log(app, SOURCE, level, message);
+        let (level, message) = cannet_sidecar::classify_stdout_line(&line);
+        emit_system_log(app, SOURCE, host_level(level), message);
         if let Some(addr) = parse_listening_address(&line) {
             set_phase(app, SidecarPhase::Ready, Some(addr.to_string()));
         }
@@ -959,83 +928,8 @@ fn stream_stderr(app: &AppHandle, stderr: ChildStderr) {
         if line.is_empty() {
             continue;
         }
-        let (level, message) = classify_stderr_line(&line);
-        emit_system_log(app, SOURCE, level, message);
-    }
-}
-
-/// Parse one stderr line from the sidecar against the Python logger
-/// format configured by `logging.basicConfig` in `__main__.py`:
-/// `"%(asctime)s %(levelname)s %(name)s %(message)s"`. Returns the
-/// embedded severity (mapped onto our 3-level [`LogLevel`]) so a
-/// run-of-the-mill `INFO` line isn't surfaced as a warning, and the
-/// timestamp is stripped from the displayed text (the System Messages
-/// panel already stamps its own time).
-///
-/// Anything that doesn't look like that format — a raw traceback
-/// frame, an unbuffered `print`, a third-party library writing
-/// directly to stderr — falls through as `Warn` with the line
-/// unchanged. Warn is the safest default: it lands at the panel's
-/// default filter level so the user actually sees it, without
-/// pretending to know its real severity.
-pub fn classify_stderr_line(line: &str) -> (LogLevel, String) {
-    // asctime = "YYYY-MM-DD HH:MM:SS,mmm" → two whitespace-separated
-    // tokens. `splitn(5, …)` then peels: date, time, levelname, name,
-    // message-rest.
-    let mut parts = line.splitn(5, ' ');
-    let _date = parts.next();
-    let _time = parts.next();
-    let level_token = parts.next();
-    let name = parts.next();
-    let message = parts.next();
-    let (Some(level_token), Some(name), Some(message)) = (level_token, name, message) else {
-        return (LogLevel::Warn, line.to_string());
-    };
-    let level = match level_token {
-        // Python: DEBUG / INFO / WARNING / ERROR / CRITICAL — plus the
-        // `WARN` alias some loggers emit. The sidecar's own INFO is our
-        // Debug (it is reporting on itself; nobody asked for it), and
-        // CRITICAL collapses to Error.
-        "DEBUG" | "INFO" => LogLevel::Debug,
-        "WARNING" | "WARN" => LogLevel::Warn,
-        "ERROR" | "CRITICAL" => LogLevel::Error,
-        // Token doesn't look like a Python level — bail out so a
-        // traceback frame like `  File "x.py", line 42, in foo`
-        // isn't mis-classified.
-        _ => return (LogLevel::Warn, line.to_string()),
-    };
-    (level, format!("{name} {message}"))
-}
-
-/// Parse one tab-separated banner line from the sidecar's stdout into
-/// a level + message. Anything we don't recognise falls through as a
-/// plain info-level message so a stray `print` still reaches the
-/// panel.
-pub fn classify_stdout_line(line: &str) -> (LogLevel, String) {
-    let parts: Vec<&str> = line.split('\t').collect();
-    match parts.as_slice() {
-        ["sidecar", "version", v] => (LogLevel::Debug, format!("sidecar version {v}")),
-        ["sidecar", "interfaces", n] => (LogLevel::Debug, format!("discovered {n} interface(s)")),
-        // Coming up and going down is the pair a user reads to see whether
-        // local capture is available; the rest of the banner is the
-        // sidecar reporting on itself.
-        ["sidecar", "listening", addr] => (LogLevel::Info, format!("listening on {addr}")),
-        // Where the sidecar's own always-debug rolling log went. Info,
-        // like `listening`: it is the answer to "what do I attach to
-        // the bug report", so it has to be readable at the panel's
-        // default filter.
-        ["sidecar", "logfile", path] => (LogLevel::Info, format!("detailed log: {path}")),
-        ["sidecar", "shutdown", reason] => (LogLevel::Info, format!("shutting down ({reason})")),
-        ["sidecar", "exit", code] => (LogLevel::Debug, format!("exit code {code}")),
-        // Top-level Python failure surfaced by `__main__.py`'s
-        // last-chance handler. The matching multi-line traceback
-        // follows on stderr (one `LogLevel::Warn` line per frame).
-        ["sidecar", "error", msg] => (LogLevel::Error, format!("sidecar fatal: {msg}")),
-        ["interface", id, display, kind] => (
-            LogLevel::Debug,
-            format!("interface {id} ({display}) [{kind}]"),
-        ),
-        _ => (LogLevel::Debug, line.to_string()),
+        let (level, message) = cannet_sidecar::classify_stderr_line(&line);
+        emit_system_log(app, SOURCE, host_level(level), message);
     }
 }
 
@@ -1103,100 +997,6 @@ pub fn restart_sidecar(app: AppHandle, state: State<'_, SidecarState>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn classify_stdout_recognises_banner_lines() {
-        // The sidecar's own status is Debug; only "listening" / "shutdown"
-        // — is local capture available or not — rate as Info.
-        assert!(matches!(
-            classify_stdout_line("sidecar\tversion\t0.1.0"),
-            (LogLevel::Debug, _)
-        ));
-        assert!(matches!(
-            classify_stdout_line("sidecar\tlistening\t127.0.0.1:50061"),
-            (LogLevel::Info, _)
-        ));
-        let (_lvl, msg) = classify_stdout_line("sidecar\tinterfaces\t0");
-        assert!(msg.contains('0'));
-        let (_lvl, msg) = classify_stdout_line("sidecar\tlistening\t127.0.0.1:50061");
-        assert!(msg.contains("127.0.0.1:50061"));
-        let (_lvl, msg) = classify_stdout_line(
-            "interface\tvector:VN1630A(SN:12345, ch:0)\tVector VN1630A ch0\tfd",
-        );
-        assert!(msg.contains("vector:VN1630A(SN:12345, ch:0)"));
-        assert!(msg.contains("[fd]"));
-    }
-
-    #[test]
-    fn classify_stdout_passes_through_unknown_lines() {
-        let (lvl, msg) = classify_stdout_line("a stray print from the sidecar");
-        assert!(matches!(lvl, LogLevel::Debug));
-        assert_eq!(msg, "a stray print from the sidecar");
-    }
-
-    #[test]
-    fn classify_stderr_reads_python_levelname() {
-        // The Python sidecar's basicConfig format is
-        // "%(asctime)s %(levelname)s %(name)s %(message)s".
-        let (lvl, msg) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 INFO cannet_python_can.server ListInterfaces -> 2 channels",
-        );
-        assert!(
-            matches!(lvl, LogLevel::Debug),
-            "the sidecar's INFO is our Debug, and must not be warned"
-        );
-        assert_eq!(
-            msg, "cannet_python_can.server ListInterfaces -> 2 channels",
-            "timestamp should be stripped; name + message retained"
-        );
-
-        let (lvl, _) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 WARNING cannet_python_can.server rx pump for X failed",
-        );
-        assert!(matches!(lvl, LogLevel::Warn));
-
-        let (lvl, _) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 ERROR cannet_python_can sidecar fatal error",
-        );
-        assert!(matches!(lvl, LogLevel::Error));
-
-        let (lvl, _) =
-            classify_stderr_line("2026-05-25 16:05:43,487 CRITICAL cannet_python_can boom");
-        assert!(matches!(lvl, LogLevel::Error));
-
-        let (lvl, _) =
-            classify_stderr_line("2026-05-25 16:05:43,487 DEBUG cannet_python_can chatty");
-        assert!(matches!(lvl, LogLevel::Debug));
-    }
-
-    #[test]
-    fn classify_stderr_falls_back_to_warn_on_unrecognised_lines() {
-        // Traceback frame — no levelname token at position 2.
-        let (lvl, msg) = classify_stderr_line("  File \"server.py\", line 42, in <module>");
-        assert!(matches!(lvl, LogLevel::Warn));
-        assert_eq!(msg, "  File \"server.py\", line 42, in <module>");
-
-        // Looks roughly right but the level token isn't a real level.
-        let (lvl, msg) =
-            classify_stderr_line("2026-05-25 16:05:43,487 BANANAS cannet_python_can not a level");
-        assert!(matches!(lvl, LogLevel::Warn));
-        assert!(msg.contains("BANANAS"));
-    }
-
-    #[test]
-    fn classify_stdout_promotes_error_banner_to_error_level() {
-        let (lvl, msg) =
-            classify_stdout_line("sidecar\terror\tVersionError: protobuf gencode/runtime mismatch");
-        assert!(matches!(lvl, LogLevel::Error));
-        assert!(
-            msg.contains("VersionError"),
-            "expected exception text preserved, got {msg}"
-        );
-        assert!(
-            msg.starts_with("sidecar fatal:"),
-            "expected `sidecar fatal:` prefix, got {msg}"
-        );
-    }
 
     /// Cross-platform stand-in for the sidecar directory in tests —
     /// `/tmp/...` is Unix-only, and `std::env::temp_dir()` returns an
@@ -1338,28 +1138,6 @@ mod tests {
     fn plan_launch_none_when_nothing_is_resolvable() {
         assert_eq!(plan_launch(true, None, None), None);
         assert_eq!(plan_launch(false, None, None), None);
-    }
-
-    #[test]
-    fn parse_listening_address_strips_the_banner_prefix() {
-        assert_eq!(
-            parse_listening_address("sidecar\tlistening\t127.0.0.1:43891"),
-            Some("127.0.0.1:43891"),
-        );
-        assert_eq!(
-            parse_listening_address("sidecar\tlistening\t[::1]:43891"),
-            Some("[::1]:43891"),
-        );
-    }
-
-    #[test]
-    fn parse_listening_address_ignores_other_banner_lines() {
-        assert_eq!(parse_listening_address("sidecar\tversion\t0.1.0"), None);
-        assert_eq!(
-            parse_listening_address("interface\tvector:ch0\tVector ch0\tfd"),
-            None,
-        );
-        assert_eq!(parse_listening_address(""), None);
     }
 
     // The *reads* of the process environment stay untested — the
@@ -1505,20 +1283,6 @@ mod tests {
             !cmd.get_args().any(|a| a == "--log-file"),
             "{:?}",
             cmd.get_args().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn the_logfile_banner_line_is_readable_at_the_default_filter() {
-        // Debug-level would hide it behind the panel's default filter,
-        // which defeats the point: this line is how a user finds the
-        // file to attach to a bug report.
-        let (lvl, msg) =
-            classify_stdout_line("sidecar\tlogfile\t/home/u/.local/share/cannet/logs/s.log");
-        assert!(matches!(lvl, LogLevel::Info));
-        assert!(
-            msg.contains("/home/u/.local/share/cannet/logs/s.log"),
-            "the path must survive verbatim, got {msg}"
         );
     }
 
