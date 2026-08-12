@@ -162,14 +162,23 @@ without reshaping callers.
   the fingerprint's standard-alphabet unpadded form (and later the
   token's base64url). Pinned to the version already in the lock so the
   build does not carry two `base64` majors.
-- **Token-auth support crates** — `proposed` (Task 42): with the
-  `ring` backend in-tree, `ring` itself covers the 256-bit OS CSPRNG
-  (`SystemRandom`) and the constant-time compare, so the token needs
-  no new dependency beyond the `base64` above.
-  `getrandom`/`rand`/`subtle`/`sha2` —
+- **Token-auth support crates** — resolved (Task 42). `ring`'s
+  `SystemRandom` mints the 256-bit token and `base64` (above) renders
+  it, so neither is a new dependency. `getrandom`/`rand`/`sha2` —
   `rejected` as direct deps (redundant with ring). No
   structured-token library (JWT/PASETO) — there are no claims to
   carry (ADR 0041 rejected accounts/tiers).
+- **`subtle` 2.6** (Rust, BSD-3-Clause) — `adopted` (Task 42), direct
+  dep of `cannet-server`; already in the lock as rustls' own
+  constant-time primitive. Compares a presented bearer token against
+  the server's. It was listed `rejected` as redundant with
+  `ring::constant_time` until the code met the crate: ring 0.17.14
+  renamed that module `deprecated_constant_time` and deprecated
+  `verify_slices_are_equal` as "internal, no promises regarding side
+  channels" — precisely the promise a credential compare needs. Both
+  crates were named as acceptable when the token was groomed; the
+  remaining alternative is hand-rolling the XOR-fold, which is the
+  kind of primitive we don't hand-roll.
 - **mDNS/DNS-SD crate** — `proposed` (Task 43); candidates
   `mdns-sd`, `libmdns`. Server-side advertisement of `_cannet._tcp`
   and GUI-side browse per

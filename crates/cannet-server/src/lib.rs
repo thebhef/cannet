@@ -21,6 +21,8 @@
 //!
 //! ## Crate layout
 //!
+//! - [`auth`] — the bearer token clients present and the check every
+//!   RPC passes through (ADR 0041).
 //! - [`identity`] — the server's TLS certificate/key material and the
 //!   fingerprint clients pin (ADR 0041).
 //! - [`proxy`] — pass-through tonic service over an upstream endpoint.
@@ -34,6 +36,7 @@
 //! The CLI binary (`src/main.rs`) is a thin wrapper that parses
 //! arguments and chooses one of the services.
 
+pub mod auth;
 pub mod bridge_client;
 pub mod identity;
 pub mod proxy;
@@ -41,6 +44,7 @@ pub mod replay;
 pub mod server;
 pub mod virtual_bus;
 
+pub use auth::{AccessToken, TokenError};
 pub use identity::{install_crypto_provider, CertFingerprint, IdentityError, ServerIdentity};
 pub use proxy::ProxyServerImpl;
 pub use replay::{LoopingBlfReplay, ReplayError};
