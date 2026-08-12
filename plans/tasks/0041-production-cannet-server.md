@@ -56,6 +56,14 @@ untouched.
   builds only the server archive (cargo build + sidecar freeze + tar,
   no Tauri bundling). One draft pre-release: 2 GUI bundles + 3 server
   archives.
+- **2026-08-12 — proxy overhead perf criterion (owner).** The
+  existing integrated perf harness (ADR 0031, two PEAK dongles,
+  local-only) gains the ability to point at a locally spawned
+  `cannet-server` instead of the sidecar — that retargeting is the
+  whole scope. Both paths get the same timing/performance visibility
+  so the comparison is straightforward; through-the-proxy must
+  perform about the same as direct. Multiple runs, worst-to-worst as
+  well as means, per the perf-gate discipline.
 - **2026-08-11 — exactly one supervised sidecar; no id namespacing.**
   Single is the only planned direction: the python-can sidecar
   already lists all interfaces on the system and multiplexes
@@ -81,6 +89,9 @@ untouched.
   host and the server; GUI behavior unchanged (existing tests green).
 - The fate of BLF replay and `--virtual-bus` is decided and
   implemented (rolled in / renamed / dropped), docs updated to match.
+- Perf comparison: local server proxying local hardware performs
+  about the same as the sidecar reached directly (per the grooming
+  note); result recorded in the status log.
 - Per-OS archive containing server + frozen sidecar is produced by CI.
 - ADR cleanup: remaining "test rig" phrasing scrubbed from ADRs
   touched by this work.
