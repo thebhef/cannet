@@ -71,6 +71,18 @@ they arrive — the decoded-signal cache and the latest-by-id index.
 Bounded and rebuildable from the raw store; never a second source of
 truth.
 
+**File-backed signal**:
+A signal imported from a capture file as an already-decoded value
+series (MDF's "message-independent" signal channels) — no bus message
+carries it and no DBC decodes it. It lives in the capture model with
+the same series shape as a DBC-decoded signal, differing only in
+**provenance**: DBC-backed signals derive from frames and keep their
+message relationship; file-backed signals have none, and a DBC reload
+never changes them. They appear in series-shaped views (catalog,
+plot, signal grid), never as trace rows.
+_Avoid_: "message-independent signal" outside file-format contexts —
+in the model the term is file-backed.
+
 **Filter predicate**:
 A frame-matching condition (by id, bus, signal value, …). Applying one
 narrows every data view to the matching frames — the filtered Trace

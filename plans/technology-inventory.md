@@ -124,13 +124,29 @@ without reshaping callers.
   run (ADR 0041). The de-facto Rust cert-generation crate (used by
   rustls' own test infra); alternative is shelling out to `openssl`,
   which reintroduces a runtime binary dependency.
+- **Token-auth support crates** — `proposed` (Task 42):
+  `getrandom` (or `rand`) for the 256-bit OS-CSPRNG bearer token,
+  `base64` for its base64url form (already in the workspace via the
+  perf harness), and constant-time comparison via `subtle` or
+  `ring::constant_time` (ring is already in-tree under rustls). No
+  structured-token library (JWT/PASETO) — there are no claims to
+  carry (ADR 0041 rejected accounts/tiers).
 - **mDNS/DNS-SD crate** — `proposed` (Task 43); candidates
   `mdns-sd`, `libmdns`. Server-side advertisement of `_cannet._tcp`
   and GUI-side browse per
   [ADR 0040](../docs/adr/0040-production-cannet-server.md).
   Evaluate-dependency pass is the Task 43 blocking prerequisite —
-  must cover register + browse (or one crate per side); hand-rolled
-  UDP beacon rejected in ADR 0040.
+  must cover register + browse (or one crate per side; `libmdns` is
+  register-only); hand-rolled UDP beacon rejected in ADR 0040.
+- **MDF 4.x library** — `proposed` (Task 38); candidates `mdf4-rs`
+  (pure Rust, young) and `mdflib` via FFI (mature C++, costs a C++
+  toolchain); `mdfr` (GPL-3) and the abandoned `asammdf`-rs / `mdf4`
+  crates rejected up front. One evaluate-dependency pass covers
+  **read and write** (import + export are one task) against
+  CANedge / CANape / asammdf fixtures; outcome may be one library or
+  an explicit read/write split. Python **asammdf** serves as
+  dev/CI-time oracle and fixture generator only — never a runtime
+  dependency.
 - **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2 as a
   wire-crate stream-adapter helper; **removed 2026-07-26**: its last
   consumer (`cannet-wire`'s `batch.rs` stream adapters) was deleted as
