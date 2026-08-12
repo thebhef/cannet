@@ -113,22 +113,36 @@ without reshaping callers.
 - Network transport: **tonic / gRPC over HTTP/2** + **prost** —
   `adopted` (Phase 2). Schema in `crates/cannet-wire`, `tonic-build`
   codegen on both ends. See [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
-- **tonic `tls` feature (rustls)** — `proposed` (Task 42). Transport
-  security for the production cannet server's public endpoint per
-  [ADR 0041](../docs/adr/0041-remote-connection-security.md);
-  rustls is already the tonic-blessed TLS stack, no new top-level
-  crate. Loopback links stay plaintext; the wire crate does not
-  hard-require it.
+- **tonic `tls` feature (rustls 0.23, `ring` backend)** — `proposed`
+  (Task 42). Transport security for the production cannet server's
+  public endpoint per
+  [ADR 0041](../docs/adr/0041-remote-connection-security.md). Not a
+  mere feature flip: rustls is absent from today's lock; enabling
+  `tonic/tls` adds rustls 0.23 + tokio-rustls + rustls-pki-types, and
+  `cannet-client` takes `rustls`/`rustls-pki-types` as direct deps to
+  implement the pin-only `ServerCertVerifier`. The process-level
+  crypto provider is installed explicitly (`ring`); everything in the
+  tree stays on that one backend (see the Task 42 plan review, B1).
+  The pinned client dials through `Endpoint::connect_with_connector`
+  (tonic 0.12's `ClientTlsConfig` cannot carry a custom verifier) —
+  hyper-rustls vs a small tokio-rustls connector is a spike decision
+  recorded here when made. Loopback links stay plaintext; the wire
+  crate does not hard-require TLS.
 - **`rcgen`** (Rust, MIT / Apache-2.0) — `proposed` (Task 42).
   Generates the server's self-signed keypair/certificate on first
   run (ADR 0041). The de-facto Rust cert-generation crate (used by
   rustls' own test infra); alternative is shelling out to `openssl`,
-  which reintroduces a runtime binary dependency.
-- **Token-auth support crates** — `proposed` (Task 42):
-  `getrandom` (or `rand`) for the 256-bit OS-CSPRNG bearer token,
-  `base64` for its base64url form (already in the workspace via the
-  perf harness), and constant-time comparison via `subtle` or
-  `ring::constant_time` (ring is already in-tree under rustls). No
+  which reintroduces a runtime binary dependency. Taken with
+  `default-features = false, features = ["crypto", "pem", "ring"]` —
+  its default `aws-lc-rs` backend would collide with rustls-`ring`
+  at runtime (plan review, B1) and cost a cmake/C toolchain.
+- **Token-auth support crates** — `proposed` (Task 42): with the
+  `ring` backend in-tree, `ring` itself covers the 256-bit OS CSPRNG
+  (`SystemRandom`), the constant-time compare, and SHA-256 — so the
+  only new direct dep is `base64` 0.22 (already in the lock via the
+  perf harness) for the token's base64url and the fingerprint's
+  standard-alphabet display. `getrandom`/`rand`/`subtle`/`sha2` —
+  `rejected` as direct deps (redundant with ring). No
   structured-token library (JWT/PASETO) — there are no claims to
   carry (ADR 0041 rejected accounts/tiers).
 - **mDNS/DNS-SD crate** — `proposed` (Task 43); candidates
