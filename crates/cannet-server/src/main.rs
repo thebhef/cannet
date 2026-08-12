@@ -1,8 +1,7 @@
 //! `cannet-server` CLI.
 //!
-//! Bare invocation is the production hardware proxy (ADR 0040);
-//! phase 3 of [Task 41](../../../plans/tasks/0041-production-cannet-server.md)
-//! wires it up; today it prints an error and exits non-zero.
+//! Bare invocation is the production hardware proxy (ADR 0040), not
+//! yet implemented: today it prints an error and exits non-zero.
 //!
 //! `debug replay <blf>` and `debug vbus` are the prior BLF-replay and
 //! `--virtual-bus` modes, kept as explicitly dev/test tooling: replay
@@ -143,9 +142,8 @@ async fn run_vbus(
 
 /// Message printed (and returned as the process's error) when
 /// `cannet-server` is invoked bare. The production hardware proxy
-/// (ADR 0040) lands in a later phase of
-/// [Task 41](../../../plans/tasks/0041-production-cannet-server.md);
-/// today bare invocation has nothing to serve.
+/// (ADR 0040) is not yet implemented, so today bare invocation has
+/// nothing to serve.
 fn production_proxy_not_yet_implemented() -> String {
     "cannet-server: the production hardware proxy is not yet implemented; \
      use `cannet-server debug replay <blf>` or `cannet-server debug vbus` \
