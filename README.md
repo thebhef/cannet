@@ -383,6 +383,13 @@ Flags:
 - `--sidecar-restart-budget <n>` — how many times a crashing sidecar is
   restarted automatically before the server gives up and says so
   (default 3). Restarting the server hands the budget back.
+- `--insecure` — bind a routable address with no protection at all.
+  Without it, `--bind` on anything but loopback and no TLS is a startup
+  refusal, because a routable cannet endpoint hands control of physical
+  hardware to whoever reaches the port. The flag suppresses that
+  refusal and nothing else: TLS you configured stays on. The same flag,
+  and the same refusal, apply to `debug replay` and `debug vbus`, which
+  take no certificate of their own.
 
 With TLS on, the server prints its certificate fingerprint at startup —
 `SHA256:` followed by unpadded base64, the same shape OpenSSH prints
@@ -1129,7 +1136,9 @@ Tunable via `--speed-bps` (arbitration-phase bit rate, default
 500 000) and `--fd-data-speed-bps` (data-phase bit rate for FD frames
 with BRS; `0` leaves the bus classic-only). Runtime reconfiguration
 goes through the wire's `ConfigureBus` envelope and takes effect on
-the next arbitration round.
+the next arbitration round. `--bind` defaults to loopback and, like
+`debug replay`, terminates no TLS — a routable bind needs `--insecure`
+(§ Running the production server).
 
 **Bridges.** Any session may install a bridge with `AttachBridge {
 remote_address, interface_id, name }`. The server opens a session to
@@ -1729,6 +1738,9 @@ subscribed.
 CLI flags:
 
 - `--bind <addr>` — listen address (default `127.0.0.1:50051`).
+  Dev/test tooling terminates no TLS, so binding anything but
+  loopback needs `--insecure` (§ Running the production server).
+- `--insecure` — bind a routable address unprotected anyway.
 - `--rate <multiplier>` — replay pacing. `1.0` plays the BLF at
   its recorded cadence (real-time emulation, the closest match
   to a hardware bus); `100` plays it 100× faster; `0` (the
