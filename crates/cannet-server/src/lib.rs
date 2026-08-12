@@ -21,6 +21,8 @@
 //!
 //! ## Crate layout
 //!
+//! - [`identity`] — the server's TLS certificate/key material and the
+//!   fingerprint clients pin (ADR 0041).
 //! - [`proxy`] — pass-through tonic service over an upstream endpoint.
 //! - [`replay`] — pure-data: load a BLF file into memory, partition it by
 //!   channel, expose interfaces and frame slices.
@@ -33,11 +35,13 @@
 //! arguments and chooses one of the services.
 
 pub mod bridge_client;
+pub mod identity;
 pub mod proxy;
 pub mod replay;
 pub mod server;
 pub mod virtual_bus;
 
+pub use identity::{CertFingerprint, IdentityError, ServerIdentity};
 pub use proxy::ProxyServerImpl;
 pub use replay::{LoopingBlfReplay, ReplayError};
 pub use server::CannetServerImpl;

@@ -10,15 +10,21 @@ name = "cannet-server"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 cannet-blf = { path = "../cannet-blf" }
 cannet-core = { path = "../cannet-core" }
 cannet-sidecar = { path = "../cannet-sidecar" }
 cannet-wire = { path = "../cannet-wire" }
 clap = { version = "4", features = ["derive"] }
+dirs = "6"
 futures-core = "0.3"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+rustls-pemfile = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 tokio-stream = { version = "0.1", features = ["net", "time"] }
-tonic = "0.12"
+tonic = { version = "0.12", features = ["tls"] }
 
 [dev-dependencies]
 blf_asc = "0.2"
