@@ -113,3 +113,20 @@ stream pumps and is otherwise unchanged.
 
 Tests: `cannet-sidecar` 0 → 8 (the eight moved verbatim);
 `cannet-gui` 531 → 523, same eight, no net loss.
+
+### 2026-08-12 — phase 1, slice 2: the discovery chain follows
+
+The launch half moves too: the frozen-vs-source decision, the
+`uv` → PATH-`uv` → `python3` fallback chain, the per-flavour command
+shapes, the `--log-level` / `--log-file` / driver-module arguments, the
+CWD-independent sidecar-directory walk-up, the Windows
+no-console flag, and the environment-beats-setting precedence rule.
+The seam is a `SidecarHost` trait with two methods — `config()` for
+what this spawn should be, `log()` for where a line goes — so the crate
+owns *how* a sidecar is found and run while the host keeps what only it
+can answer: `settings.json`, Tauri's `resource_dir()`, and the System
+Messages ring. `cannet_sidecar::resolve_command(&host)` returns the
+configured `Command`; the GUI still spawns and supervises it.
+
+Tests: `cannet-sidecar` 8 → 28; `cannet-gui` 523 → 503, the same
+twenty moved. Still 531 across the two.

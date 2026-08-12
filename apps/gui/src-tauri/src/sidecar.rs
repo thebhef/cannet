@@ -8,48 +8,12 @@
 //! status into [`sys_debug!`] / [`sys_info!`] / [`sys_warn!`] /
 //! [`sys_error!`] System Messages tagged with [`SOURCE`].
 //!
-//! The banner and stderr grammars the bridge parses live in
-//! [`cannet_sidecar`], which is shared with `cannet-server` — see its
-//! crate docs for the format itself and for the two log sinks the host
-//! configures below.
-//!
-//! ## Launch strategy
-//!
-//! Two launch flavours exist; which is preferred depends on the build
-//! profile (`plan_launch`), with the other as fallback:
-//!
-//! - **Release builds prefer the frozen self-contained binary** — the
-//!   end-user path. The `PyInstaller` onedir sidecar launcher, bundled
-//!   into the installer as a Tauri resource and resolved through the
-//!   framework-canonical `resource_dir()` (see ADR 0036 — *not* the
-//!   exe walk-up the dev paths use, since on macOS the resources land
-//!   in `Contents/Resources/`, a sibling of the exe's `Contents/MacOS/`
-//!   and never an ancestor). The frozen artifact embeds its own
-//!   `CPython` and dependencies, so it runs with no `uv`, no Python, and
-//!   no `sidecar_dir` resolution.
-//! - **Dev builds (`tauri dev`; Tauri emits the `dev` cfg) prefer the
-//!   sidecar source tree**, so edits to `servers/cannet-python-can`
-//!   take effect on the next sidecar restart without re-running
-//!   `scripts/build-sidecar.py` — the frozen resource is bundled in
-//!   dev too (Tauri copies it next to the dev binary) and would
-//!   otherwise shadow live source.
-//!
-//! The source-tree launchers, in priority order
-//! (`resolve_launch_path`); they resolve `uv`/`python3` against the
-//! sidecar *source* tree:
-//!
-//! 1. **Local `uv`** at `tools/uv/<os>-<arch>/uv[.exe]` relative to
-//!    the GUI binary's parent directory. `scripts/fetch-uv.sh`
-//!    populates this path for dev builds. The runtime contract —
-//!    "look here first" — is stable regardless of who wrote the file.
-//! 2. **`uv` on `PATH`** — the developer-machine fallback.
-//! 3. **`python3 -m cannet_python_can`** — last resort if `uv` is
-//!    not installed at all. Logs a warn-level System Message so the
-//!    user knows to install `uv` for full functionality.
-//!
-//! At every step, the failure case logs a System Message at the right
-//! severity and surfaces the install instructions; the process never
-//! panics on a missing sidecar.
+//! The banner and stderr grammars the bridge parses, and the launch
+//! strategy it follows (frozen binary vs. `uv` source tree, and the
+//! order between them), live in [`cannet_sidecar`], which is shared
+//! with `cannet-server` — see its crate docs. What stays here is the
+//! half only a Tauri app can answer: where its settings live, where
+//! its resources are, and where a log line goes.
 //!
 //! ## Retry budget
 //!
@@ -71,15 +35,15 @@
 //! sidecar holding hardware open — no `prctl(PR_SET_PDEATHSIG)` /
 //! Windows job-object plumbing required.
 
-use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use cannet_sidecar::{env_over_setting, Resolved, SidecarConfig, SidecarHost};
 pub use cannet_sidecar::{parse_listening_address, SIDECAR_LOG_FILE, SOURCE};
 
 use crate::system_log::LogLevel;
@@ -180,182 +144,27 @@ pub struct SidecarStatus {
     pub address: Option<String>,
 }
 
-/// Which **developer-machine** launcher to use. The frozen end-user
-/// path is resolved separately ([`frozen_launcher_path`] →
-/// [`build_frozen_command`]) and never routed through this enum, so its
-/// variants are exactly the dev fallbacks. They exist as discrete states
-/// so the launcher can tell the user what flow they just got — the
-/// System Messages text is different per branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LaunchPath {
-    /// Bundled `uv` binary under `tools/uv/...` next to the GUI.
-    BundledUv,
-    /// `uv` resolved through `PATH`.
-    PathUv,
-    /// `python3 -m cannet_python_can` — last-resort fallback when
-    /// `uv` is not available.
-    SystemPython,
-}
-
-/// The resolved launch decision: which flavour of sidecar to run,
-/// with everything needed to build its `Command`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LaunchPlan {
-    /// Run the frozen self-contained launcher at this path.
-    Frozen(PathBuf),
-    /// Run a developer launcher against this sidecar source directory.
-    Source(LaunchPath, PathBuf),
-}
-
-/// Pick between the frozen binary and the source tree, given what's
-/// actually resolvable. Dev builds prefer the editable source tree so
-/// edits to `servers/cannet-python-can` take effect on the next
-/// sidecar restart without re-freezing — the frozen artifact is
-/// bundled as a Tauri resource even in dev, and would otherwise
-/// shadow them. Release builds prefer the frozen binary (ADR 0036).
-/// Either way the other flavour is the fallback. Pure; testable.
-fn plan_launch(
-    dev: bool,
-    frozen: Option<PathBuf>,
-    source: Option<(LaunchPath, PathBuf)>,
-) -> Option<LaunchPlan> {
-    let frozen = frozen.map(LaunchPlan::Frozen);
-    let source = source.map(|(launcher, dir)| LaunchPlan::Source(launcher, dir));
-    if dev {
-        source.or(frozen)
-    } else {
-        frozen.or(source)
-    }
-}
-
-/// Resolve which launcher to use without spawning the child yet.
-/// Split out so tests can inspect the choice without touching the
-/// process table.
-pub fn resolve_launch_path() -> Option<LaunchPath> {
-    if bundled_uv_path().is_some() {
-        return Some(LaunchPath::BundledUv);
-    }
-    if which_uv().is_some() {
-        return Some(LaunchPath::PathUv);
-    }
-    if which_python().is_some() {
-        return Some(LaunchPath::SystemPython);
-    }
-    None
-}
-
-/// Build the `Command` for a given launch path. Pure; no spawning
-/// happens here. `sidecar_dir` is the absolute path to the
-/// `cannet-python-can` package directory — see [`resolve_sidecar_dir`]
-/// for how the caller obtains it.
-///
-/// No `--bind` is passed: the sidecar's own default is `127.0.0.1:0`
-/// (let the OS pick a free ephemeral port), and we read the actual
-/// address back from the `sidecar\tlistening\t<addr>` banner in
-/// [`stream_stdout`]. Hard-coding a port here would just re-create the
-/// "stale instance holds 50061" failure mode the random-port
-/// selection was added to fix.
-pub fn build_command(launcher: LaunchPath, sidecar_dir: &std::path::Path) -> Command {
-    match launcher {
-        LaunchPath::BundledUv => {
-            let mut cmd = Command::new(bundled_uv_path().expect("local uv pre-checked"));
-            cmd.arg("--directory").arg(sidecar_dir);
-            cmd.args(["run", "cannet-python-can"]);
-            cmd
-        }
-        LaunchPath::PathUv => {
-            let mut cmd = Command::new("uv");
-            cmd.arg("--directory").arg(sidecar_dir);
-            cmd.args(["run", "cannet-python-can"]);
-            cmd
-        }
-        LaunchPath::SystemPython => {
-            let mut cmd = Command::new(which_python().unwrap_or_else(|| PathBuf::from("python3")));
-            cmd.env("PYTHONPATH", sidecar_dir);
-            cmd.args(["-m", "cannet_python_can"]);
-            cmd
-        }
-    }
-}
-
 /// Absolute path to the frozen sidecar launcher inside the Tauri
 /// resource directory, or `None` if the frozen artifact isn't present
 /// (the developer flow). Resolved through Tauri's framework-canonical
-/// `resource_dir()` -- not the exe walk-up -- because on macOS the
-/// bundled resources live in `Contents/Resources/`, a sibling of the
-/// exe's `Contents/MacOS/` and never an ancestor (see ADR 0036).
+/// `resource_dir()` -- not the exe walk-up the dev paths use -- because
+/// on macOS the bundled resources live in `Contents/Resources/`, a
+/// sibling of the exe's `Contents/MacOS/` and never an ancestor (see
+/// ADR 0036). Which is why the shared crate cannot resolve it: only a
+/// Tauri app knows where a Tauri app keeps its resources.
+///
+/// Not unit-tested: it needs a live `AppHandle` to reach
+/// `resource_dir()`, which can't be constructed in a plain unit test.
+/// Its two moving parts — the platform suffix and the "no args" launch
+/// shape — are covered in [`cannet_sidecar`].
 fn frozen_launcher_path(app: &AppHandle) -> Option<PathBuf> {
     let launcher = app
         .path()
         .resource_dir()
         .ok()?
         .join("cannet-python-can")
-        .join(frozen_launcher_name());
+        .join(cannet_sidecar::frozen_launcher_name());
     launcher.is_file().then_some(launcher)
-}
-
-/// The frozen launcher's file name — platform-suffixed to match what
-/// `PyInstaller` emits (`.exe` on Windows, bare elsewhere).
-fn frozen_launcher_name() -> &'static str {
-    if cfg!(windows) {
-        "cannet-python-can.exe"
-    } else {
-        "cannet-python-can"
-    }
-}
-
-/// Build the `Command` for the frozen self-contained launcher. Pure;
-/// no spawning. The frozen onedir bundles its own interpreter and deps,
-/// so unlike the dev paths there is no `--directory` / `PYTHONPATH` /
-/// `--bind` -- the sidecar's own `127.0.0.1:0` default still applies and
-/// the bound address is read back from the `listening` banner.
-pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
-    Command::new(launcher)
-}
-
-/// Apply the settings-derived sidecar configuration to an already-built
-/// command, whichever launcher flavour built it — the frozen binary and
-/// the dev launchers differ in how they *find* the sidecar, not in how
-/// it is configured, so this is stated once here rather than in each
-/// `build_*_command`.
-///
-/// `log_level` is the sidecar's own `--log-level`, one of
-/// [`crate::settings::SIDECAR_LOG_LEVELS`]. It governs how much the
-/// sidecar writes to stderr, which is what
-/// [`classify_stderr_line`] turns into System Messages — so it is the
-/// verbosity of everything the sidecar contributes to a log a user
-/// ships back. It was unreachable only because the host passed the
-/// child no arguments at all.
-///
-/// `driver_module` is forwarded as [`DRIVER_MODULE_ENV`], which the
-/// sidecar reads to pick its driver implementation; `None` leaves the
-/// child environment alone so the sidecar uses its own default. The host
-/// never set this before, which is what made a replaced driver
-/// unreachable from the GUI.
-///
-/// `log_file` is the sidecar's own rolling, **always-debug** logfile
-/// ([`sidecar_log_file`]). It is a separate sink from stderr, on
-/// purpose: stderr is what becomes System Messages and stays at
-/// `log_level`, while the file records every gRPC command with its
-/// arguments and outcome plus every driver traceback — the detail a
-/// per-channel connect failure needs after the fact, without making the
-/// panel noisier for everyone. `None` means "don't write one", which is
-/// also the sidecar's own default when the flag is absent.
-///
-/// `--bind` is still deliberately not passed — see [`build_command`].
-fn apply_sidecar_settings(
-    cmd: &mut Command,
-    log_level: &str,
-    log_file: Option<&std::path::Path>,
-    driver_module: Option<&OsStr>,
-) {
-    cmd.arg("--log-level").arg(log_level);
-    if let Some(path) = log_file {
-        cmd.arg("--log-file").arg(path);
-    }
-    if let Some(module) = driver_module {
-        cmd.env(DRIVER_MODULE_ENV, module);
-    }
 }
 
 /// Where to tell the sidecar to write its logfile, creating the
@@ -379,215 +188,72 @@ fn sidecar_log_file(app: &AppHandle) -> Option<PathBuf> {
     Some(dir.join(SIDECAR_LOG_FILE))
 }
 
-/// Windows: suppress the console window a console-subsystem child would
-/// otherwise pop up. The release GUI is built `windows_subsystem =
-/// "windows"` (see `main.rs`), so it has no console of its own; spawning
-/// a console-subsystem executable — the frozen `PyInstaller` launcher, or
-/// `uv`/`python` on the dev paths — makes Windows allocate a fresh console
-/// window for it. `CREATE_NO_WINDOW` runs the child with no console at
-/// all; stdin/stdout/stderr are piped regardless (see `spawn_blocking_inner`),
-/// so the tab-separated banner protocol is unaffected. No-op off Windows,
-/// where a console app never spawns a stray window.
-#[cfg_attr(
-    not(windows),
-    allow(unused_variables, clippy::needless_pass_by_ref_mut)
-)]
-fn suppress_console_window(cmd: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW from winbase.h; inlined to avoid a whole
-        // winapi dependency for a single constant.
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-}
-
-/// The environment variable that names the sidecar package directory —
-/// the escape hatch `sidecar_dir` is the persistent form of.
-const SIDECAR_DIR_ENV: &str = "CANNET_SIDECAR_DIR";
-
-/// The environment variable the *sidecar* reads to pick its driver
-/// implementation. Must match `helpers.DRIVER_MODULE_ENV` in the Python
-/// sidecar; the host forwards `driver_module` to the child through it.
-const DRIVER_MODULE_ENV: &str = "CANNET_DRIVER_MODULE";
-
-/// What an environment-versus-setting resolution decided.
-struct Resolved {
-    /// The effective value; `None` when neither source said anything,
-    /// so the built-in behaviour applies.
-    value: Option<OsString>,
-    /// The line to put on the system log when the environment shadowed
-    /// a value `settings.json` shows. `None` when nothing was shadowed.
-    shadowed: Option<String>,
-}
-
-/// Precedence between an environment variable and its `settings.json`
-/// equivalent: **the environment wins**, and the shadowed setting is
-/// reported rather than silently dropped.
-///
-/// The env vars predate the settings and exist as escape hatches — for
-/// tests, CI, packaging experiments, and deployment shapes nobody
-/// foresaw. An escape hatch a persisted file can override is not an
-/// escape hatch; and harnesses already drive cannet by setting these,
-/// so a settings file must not quietly change what such a run does.
-/// The setting is therefore the *persistent default* that the
-/// environment overrides for one run.
-///
-/// The cost of that order is that `settings.json` can show a value the
-/// app is not using, which ADR 0034 does not let pass silently — hence
-/// [`Resolved::shadowed`], which the caller puts on the system log, the
-/// same treatment a refused value gets.
-///
-/// Blank means "nothing here" on both sides, so an empty env var falls
-/// through to the setting rather than resolving to an empty path.
-fn env_over_setting(var: &str, key: &str, env: Option<OsString>, setting: &str) -> Resolved {
-    let setting = setting.trim();
-    let from_setting = (!setting.is_empty()).then(|| OsString::from(setting));
-    let from_env = env.filter(|v| !v.is_empty());
-    match from_env {
-        Some(value) => {
-            let shadowed = from_setting.is_some().then(|| {
-                format!(
-                    "{var}={} in the environment overrides the {key} setting (\"{setting}\") \
-                     for this run",
-                    value.to_string_lossy()
-                )
-            });
-            Resolved {
-                value: Some(value),
-                shadowed,
-            }
-        }
-        None => Resolved {
-            value: from_setting,
-            shadowed: None,
-        },
-    }
-}
-
 /// Where to look for the `cannet-python-can` package: the
-/// [`SIDECAR_DIR_ENV`] variable, else the `sidecar_dir` setting, else
-/// nowhere (the built-in walk-up applies).
+/// [`cannet_sidecar::SIDECAR_DIR_ENV`] variable, else the `sidecar_dir`
+/// setting, else nowhere (the shared crate's walk-up applies).
 fn sidecar_dir_override() -> Resolved {
     env_over_setting(
-        SIDECAR_DIR_ENV,
+        cannet_sidecar::SIDECAR_DIR_ENV,
         "sidecar_dir",
-        std::env::var_os(SIDECAR_DIR_ENV),
+        std::env::var_os(cannet_sidecar::SIDECAR_DIR_ENV),
         &crate::settings::effective().sidecar_dir,
     )
 }
 
 /// Which driver module the sidecar should load: the
-/// [`DRIVER_MODULE_ENV`] variable already in the host's environment,
-/// else the `driver_module` setting, else nothing (the sidecar's own
-/// default).
+/// [`cannet_sidecar::DRIVER_MODULE_ENV`] variable already in the host's
+/// environment, else the `driver_module` setting, else nothing (the
+/// sidecar's own default).
 fn driver_module_override() -> Resolved {
     env_over_setting(
-        DRIVER_MODULE_ENV,
+        cannet_sidecar::DRIVER_MODULE_ENV,
         "driver_module",
-        std::env::var_os(DRIVER_MODULE_ENV),
+        std::env::var_os(cannet_sidecar::DRIVER_MODULE_ENV),
         &crate::settings::effective().driver_module,
     )
 }
 
-/// Resolve the absolute path to the `cannet-python-can` package
-/// directory, deliberately **independent of the GUI's CWD**.
-///
-/// Resolution order (first hit wins):
-///
-/// 1. **`override_dir`** — what [`sidecar_dir_override`] resolved from
-///    the `CANNET_SIDECAR_DIR` env var and the `sidecar_dir` setting.
-///    Used verbatim; if it's a non-existent path, the launcher will
-///    surface the resulting spawn failure.
-/// 2. **Walk up from the GUI binary's location** looking for
-///    `pyproject.toml` under either:
-///    - `<ancestor>/servers/cannet-python-can/` (dev / `cargo build`
-///      layouts — workspace root is somewhere above `target/`), or
-///    - `<ancestor>/cannet-python-can/` (production layout — the
-///      sidecar source sits next to the GUI binary inside the
-///      bundle).
-///
-///    Capped at 8 ancestors so a misconfigured deployment fails
-///    loudly instead of crawling the filesystem.
-///
-/// The returned path is the directory containing `pyproject.toml`,
-/// suitable for `uv --directory <path>` or `PYTHONPATH=<path>`.
-pub fn resolve_sidecar_dir(override_dir: Option<OsString>) -> Option<PathBuf> {
-    if let Some(override_dir) = override_dir {
-        return Some(PathBuf::from(override_dir));
-    }
-    let exe = std::env::current_exe().ok()?;
-    let mut cursor = exe.parent()?.to_path_buf();
-    for _ in 0..8 {
-        // Dev / workspace layout.
-        let nested = cursor.join("servers").join("cannet-python-can");
-        if nested.join("pyproject.toml").is_file() {
-            return Some(nested);
+/// The GUI's half of the sidecar contract: `settings.json` plus the
+/// escape-hatch environment variables on the way in, System Messages on
+/// the way out. Everything else about running a sidecar is
+/// [`cannet_sidecar`]'s.
+struct GuiSidecarHost {
+    app: AppHandle,
+}
+
+impl SidecarHost for GuiSidecarHost {
+    fn config(&self) -> SidecarConfig {
+        let sidecar_dir = sidecar_dir_override();
+        let driver_module = driver_module_override();
+        for note in [&sidecar_dir.shadowed, &driver_module.shadowed]
+            .into_iter()
+            .flatten()
+        {
+            sys_warn!(&self.app, SOURCE, "{note}");
         }
-        // Production "next to the binary" layout.
-        let sibling = cursor.join("cannet-python-can");
-        if sibling.join("pyproject.toml").is_file() {
-            return Some(sibling);
-        }
-        if !cursor.pop() {
-            break;
+        SidecarConfig {
+            frozen_launcher: frozen_launcher_path(&self.app),
+            // Tauri emits the `dev` cfg for `tauri dev`, where the
+            // editable source tree must win over the frozen resource
+            // bundled beside the dev binary (ADR 0036).
+            prefer_source_tree: cfg!(dev),
+            sidecar_dir: sidecar_dir.value,
+            log_level: crate::settings::effective().sidecar_log_level.clone(),
+            log_file: sidecar_log_file(&self.app),
+            driver_module: driver_module.value,
         }
     }
-    None
-}
 
-/// Where [`resolve_sidecar_dir`] looked, formatted for the System
-/// Messages panel so the user can see what we tried.
-fn sidecar_dir_search_summary() -> String {
-    let exe = std::env::current_exe().map_or_else(
-        |e| format!("<current_exe failed: {e}>"),
-        |p| p.display().to_string(),
-    );
-    format!(
-        "{SIDECAR_DIR_ENV} and the sidecar_dir setting (both unset) → walk up from {exe} looking for `servers/cannet-python-can/pyproject.toml` or `cannet-python-can/pyproject.toml`"
-    )
-}
-
-fn bundled_uv_path() -> Option<PathBuf> {
-    // Resolved relative to the GUI binary directory. The real Tauri
-    // bundle will sit it alongside the executable; in development
-    // (cargo run) it'll be next to the workspace `target/`, which is
-    // also fine for the developer flow.
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let candidate = exe_dir.join("tools").join("uv").join(uv_filename());
-    if candidate.is_file() {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
-fn uv_filename() -> &'static str {
-    if cfg!(windows) {
-        "uv.exe"
-    } else {
-        "uv"
-    }
-}
-
-fn which_uv() -> Option<PathBuf> {
-    which_binary(if cfg!(windows) { "uv.exe" } else { "uv" })
-}
-
-fn which_python() -> Option<PathBuf> {
-    which_binary("python3").or_else(|| which_binary("python"))
-}
-
-fn which_binary(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
+    fn log(&self, level: cannet_sidecar::LogLevel, message: String) {
+        // Through the macros, not `emit_system_log`, so these lifecycle
+        // lines keep their `tracing` mirror to dev stderr.
+        match level {
+            cannet_sidecar::LogLevel::Debug => sys_debug!(&self.app, SOURCE, "{message}"),
+            cannet_sidecar::LogLevel::Info => sys_info!(&self.app, SOURCE, "{message}"),
+            cannet_sidecar::LogLevel::Warn => sys_warn!(&self.app, SOURCE, "{message}"),
+            cannet_sidecar::LogLevel::Error => sys_error!(&self.app, SOURCE, "{message}"),
         }
     }
-    None
 }
 
 /// Spawn the sidecar in the background. Safe to call from
@@ -603,90 +269,10 @@ pub fn spawn_sidecar(app: &AppHandle) {
     });
 }
 
-/// Resolve the sidecar invocation to a ready-to-configure [`Command`]
-/// plus a human-readable "source" line for the invocation summary
-/// (there is no `sidecar_dir` on the frozen path, so the frozen and dev
-/// branches converge here and share the whole spawn tail below).
-/// Frozen-vs-source preference is [`plan_launch`]'s call: dev builds
-/// (Tauri emits the `dev` cfg) prefer the editable source tree,
-/// release builds the frozen binary. `None` — after logging an
-/// error-level System Message — when neither flavour resolves.
-fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
-    let frozen = frozen_launcher_path(app);
-    let launcher = resolve_launch_path();
-    let sidecar_dir = sidecar_dir_override();
-    let driver_module = driver_module_override();
-    for note in [&sidecar_dir.shadowed, &driver_module.shadowed]
-        .into_iter()
-        .flatten()
-    {
-        sys_warn!(app, SOURCE, "{note}");
-    }
-    let log_level = crate::settings::effective().sidecar_log_level.clone();
-    let log_file = sidecar_log_file(app);
-    let configure = |mut cmd: Command| {
-        apply_sidecar_settings(
-            &mut cmd,
-            &log_level,
-            log_file.as_deref(),
-            driver_module.value.as_deref(),
-        );
-        cmd
-    };
-    // Resolve the sidecar source directory to an absolute path
-    // BEFORE we build the command — uv's `--directory` and Python's
-    // `PYTHONPATH` are then independent of whatever CWD the GUI was
-    // launched with. The previous relative-path version blew up with
-    // a terse "No such file or directory" any time the GUI's CWD
-    // wasn't the workspace root.
-    let source = launcher.zip(resolve_sidecar_dir(sidecar_dir.value));
-    match plan_launch(cfg!(dev), frozen, source) {
-        Some(LaunchPlan::Frozen(path)) => {
-            sys_debug!(app, SOURCE, "starting sidecar via frozen binary");
-            Some((
-                configure(build_frozen_command(&path)),
-                "source: frozen self-contained binary".to_string(),
-            ))
-        }
-        Some(LaunchPlan::Source(launcher, sidecar_dir)) => {
-            match launcher {
-                LaunchPath::BundledUv => sys_debug!(app, SOURCE, "starting sidecar via local uv"),
-                LaunchPath::PathUv => sys_debug!(app, SOURCE, "starting sidecar via PATH uv"),
-                LaunchPath::SystemPython => sys_warn!(
-                    app,
-                    SOURCE,
-                    "uv not found; falling back to python3 -m cannet_python_can. Install uv for the supported flow."
-                ),
-            }
-            sys_debug!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
-            Some((
-                configure(build_command(launcher, &sidecar_dir)),
-                format!("sidecar dir: {}", sidecar_dir.display()),
-            ))
-        }
-        None if launcher.is_none() => {
-            sys_error!(
-                app,
-                SOURCE,
-                "no sidecar launcher found (frozen binary, local uv, PATH uv, or python3); install uv: https://docs.astral.sh/uv/"
-            );
-            None
-        }
-        None => {
-            sys_error!(
-                app,
-                SOURCE,
-                "could not locate the cannet-python-can package directory. Searched: {}",
-                sidecar_dir_search_summary()
-            );
-            None
-        }
-    }
-}
-
 #[allow(clippy::too_many_lines)]
 fn spawn_blocking_inner(app: &AppHandle) {
-    let Some((mut cmd, source_summary)) = resolve_command(app) else {
+    let host = GuiSidecarHost { app: app.clone() };
+    let Some((mut cmd, source_summary)) = cannet_sidecar::resolve_command(&host) else {
         return;
     };
     set_phase(app, SidecarPhase::Starting, None);
@@ -703,9 +289,6 @@ fn spawn_blocking_inner(app: &AppHandle) {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Keep the console-subsystem child from popping a terminal window
-    // (Windows only); stdio stays piped so the banner protocol works.
-    suppress_console_window(&mut cmd);
     // Capture the resolved invocation so we can both log it at info
     // level on the happy path AND attach it to the error-level
     // failure message when the sidecar exits non-zero — the panel's
@@ -992,325 +575,4 @@ pub fn restart_sidecar(app: AppHandle, state: State<'_, SidecarState>) {
     }
     sys_info!(&app, SOURCE, "manual restart");
     spawn_sidecar(&app);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Cross-platform stand-in for the sidecar directory in tests —
-    /// `/tmp/...` is Unix-only, and `std::env::temp_dir()` returns an
-    /// absolute path on every supported OS.
-    fn sample_sidecar_dir() -> PathBuf {
-        std::env::temp_dir().join("cannet-python-can")
-    }
-
-    #[test]
-    fn build_command_uses_expected_program_for_each_path() {
-        let cmd = build_command(LaunchPath::SystemPython, &sample_sidecar_dir());
-        let program = cmd.get_program().to_string_lossy().to_string();
-        assert!(
-            program.ends_with("python3") || program.ends_with("python"),
-            "expected python program, got {program}",
-        );
-    }
-
-    #[test]
-    fn build_command_passes_absolute_sidecar_dir_to_uv() {
-        let dir = sample_sidecar_dir();
-        let cmd = build_command(LaunchPath::PathUv, &dir);
-        let args: Vec<std::ffi::OsString> =
-            cmd.get_args().map(std::ffi::OsStr::to_os_string).collect();
-        let idx = args
-            .iter()
-            .position(|a| a == "--directory")
-            .expect("uv invocation must include --directory");
-        assert_eq!(args[idx + 1], dir.as_os_str());
-    }
-
-    #[test]
-    fn build_command_threads_sidecar_dir_into_pythonpath_for_system_python() {
-        let dir = sample_sidecar_dir();
-        let cmd = build_command(LaunchPath::SystemPython, &dir);
-        let pythonpath = cmd
-            .get_envs()
-            .find_map(|(k, v)| (k == "PYTHONPATH").then(|| v.map(std::ffi::OsStr::to_os_string)))
-            .flatten()
-            .expect("SystemPython launcher must set PYTHONPATH");
-        assert_eq!(pythonpath, dir.as_os_str());
-    }
-
-    #[test]
-    fn build_command_does_not_pin_a_bind_address() {
-        // The sidecar's own default (`127.0.0.1:0`) is the contract
-        // for "host doesn't care about the port" — if we ever start
-        // passing `--bind` from here again we'd silently re-create
-        // the stale-instance-holds-50061 wedge that random-port
-        // selection was added to fix.
-        for launcher in [LaunchPath::PathUv, LaunchPath::SystemPython] {
-            let cmd = build_command(launcher, &sample_sidecar_dir());
-            let has_bind = cmd.get_args().any(|a| a == "--bind");
-            assert!(
-                !has_bind,
-                "{launcher:?} command should not pass --bind; got {:?}",
-                cmd.get_args().collect::<Vec<_>>()
-            );
-        }
-    }
-
-    #[test]
-    fn build_frozen_command_runs_the_launcher_with_no_args() {
-        // The frozen onedir is self-contained: the launcher embeds its
-        // own interpreter and deps, so the command is just the launcher
-        // path — no `--directory`, no `--bind`, no `run` subcommand.
-        let launcher = std::env::temp_dir().join(frozen_launcher_name());
-        let cmd = build_frozen_command(&launcher);
-        assert_eq!(cmd.get_program(), launcher.as_os_str());
-        assert_eq!(
-            cmd.get_args().count(),
-            0,
-            "frozen launcher takes no args; got {:?}",
-            cmd.get_args().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn frozen_launcher_name_matches_target_os_suffix() {
-        #[cfg(windows)]
-        assert_eq!(frozen_launcher_name(), "cannet-python-can.exe");
-        #[cfg(not(windows))]
-        assert_eq!(frozen_launcher_name(), "cannet-python-can");
-    }
-
-    // Note: `frozen_launcher_path` itself isn't unit-tested — it needs a
-    // live `AppHandle` to reach `resource_dir()`, which can't be
-    // constructed in a plain unit test (same constraint that keeps
-    // `CANNET_SIDECAR_DIR` eyeball-verified below). Its two moving
-    // parts — the platform suffix and the "no args" launch shape — are
-    // covered by the two tests above.
-
-    fn frozen_path() -> PathBuf {
-        PathBuf::from("/res/cannet-python-can/launcher")
-    }
-
-    fn source_tree() -> (LaunchPath, PathBuf) {
-        (
-            LaunchPath::BundledUv,
-            PathBuf::from("/repo/servers/cannet-python-can"),
-        )
-    }
-
-    #[test]
-    fn plan_launch_dev_prefers_source_tree_over_frozen() {
-        // The regression this locks in: with the frozen resource bundled
-        // (it is, since the sidecar became a Tauri resource), a dev build
-        // must still run the editable source tree so sidecar edits take
-        // effect without re-freezing.
-        let (launcher, dir) = source_tree();
-        assert_eq!(
-            plan_launch(true, Some(frozen_path()), Some(source_tree())),
-            Some(LaunchPlan::Source(launcher, dir)),
-        );
-    }
-
-    #[test]
-    fn plan_launch_release_prefers_frozen_over_source_tree() {
-        assert_eq!(
-            plan_launch(false, Some(frozen_path()), Some(source_tree())),
-            Some(LaunchPlan::Frozen(frozen_path())),
-        );
-    }
-
-    #[test]
-    fn plan_launch_falls_back_when_the_preferred_flavour_is_missing() {
-        assert_eq!(
-            plan_launch(true, Some(frozen_path()), None),
-            Some(LaunchPlan::Frozen(frozen_path())),
-        );
-        let (launcher, dir) = source_tree();
-        assert_eq!(
-            plan_launch(false, None, Some(source_tree())),
-            Some(LaunchPlan::Source(launcher, dir)),
-        );
-    }
-
-    #[test]
-    fn plan_launch_none_when_nothing_is_resolvable() {
-        assert_eq!(plan_launch(true, None, None), None);
-        assert_eq!(plan_launch(false, None, None), None);
-    }
-
-    // The *reads* of the process environment stay untested — the
-    // workspace forbids `unsafe` (`unsafe_code = "forbid"` in the
-    // top-level Cargo.toml) and `std::env::set_var` is `unsafe` since
-    // Rust 2024, so a test cannot set one. What the reads feed is
-    // `env_over_setting`, which is pure and is covered below.
-
-    /// `value` as the environment (or a setting) hands it over.
-    fn os(value: &str) -> OsString {
-        value.into()
-    }
-
-    #[test]
-    fn the_environment_wins_over_the_setting_and_says_so() {
-        // The env vars are escape hatches — tests, CI, packaging
-        // experiments — and an escape hatch a persisted file can
-        // override is not an escape hatch. But `settings.json` must not
-        // then show a value nothing is using without a word (ADR 0034),
-        // so the shadowing is reported.
-        let r = env_over_setting(
-            "CANNET_SIDECAR_DIR",
-            "sidecar_dir",
-            Some(os("from-the-environment")),
-            "from-the-file",
-        );
-        assert_eq!(r.value, Some(os("from-the-environment")));
-        let note = r.shadowed.expect("a shadowed setting is reported");
-        assert!(note.contains("CANNET_SIDECAR_DIR"), "{note}");
-        assert!(note.contains("sidecar_dir"), "{note}");
-        assert!(note.contains("from-the-file"), "{note}");
-        assert!(note.contains("from-the-environment"), "{note}");
-    }
-
-    #[test]
-    fn the_setting_applies_when_the_environment_is_silent() {
-        let r = env_over_setting("CANNET_SIDECAR_DIR", "sidecar_dir", None, "from-the-file");
-        assert_eq!(r.value, Some(os("from-the-file")));
-        assert_eq!(r.shadowed, None, "nothing was shadowed");
-    }
-
-    #[test]
-    fn the_environment_alone_is_not_a_shadowing() {
-        // The untouched install: the setting is blank, so there is no
-        // file value to report as overridden.
-        let r = env_over_setting(
-            "CANNET_SIDECAR_DIR",
-            "sidecar_dir",
-            Some(os("only-the-env")),
-            "",
-        );
-        assert_eq!(r.value, Some(os("only-the-env")));
-        assert_eq!(r.shadowed, None);
-    }
-
-    #[test]
-    fn a_blank_value_on_either_side_means_unset() {
-        // Blank is how both sources say "nothing here", so the built-in
-        // behaviour applies and neither shadows the other.
-        for (e, setting) in [
-            (None, ""),
-            (None, "   "),
-            (Some(os("")), ""),
-            (Some(os("")), "  "),
-        ] {
-            let r = env_over_setting("CANNET_SIDECAR_DIR", "sidecar_dir", e.clone(), setting);
-            assert_eq!(r.value, None, "env {e:?} setting {setting:?}");
-            assert_eq!(r.shadowed, None);
-        }
-        // An empty env var does not shadow a real setting either.
-        let r = env_over_setting(
-            "CANNET_SIDECAR_DIR",
-            "sidecar_dir",
-            Some(os("")),
-            "from-the-file",
-        );
-        assert_eq!(r.value, Some(os("from-the-file")));
-        assert_eq!(r.shadowed, None);
-    }
-
-    #[test]
-    fn an_override_is_used_verbatim_as_the_sidecar_dir() {
-        let dir = sample_sidecar_dir();
-        assert_eq!(
-            resolve_sidecar_dir(Some(dir.clone().into_os_string())),
-            Some(dir),
-            "the override short-circuits the walk-up entirely"
-        );
-    }
-
-    #[test]
-    fn the_sidecar_log_level_reaches_the_child_and_bind_still_does_not() {
-        // The sidecar's `--log-level` was unreachable because the host
-        // passed no arguments at all. `--bind` stays unpassed for the
-        // reason `build_command_does_not_pin_a_bind_address` gives —
-        // adding one argument must not smuggle in the other.
-        for mut cmd in [
-            build_command(LaunchPath::PathUv, &sample_sidecar_dir()),
-            build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
-            build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
-        ] {
-            apply_sidecar_settings(&mut cmd, "warning", None, None);
-            let args: Vec<OsString> = cmd.get_args().map(OsStr::to_os_string).collect();
-            let at = args
-                .iter()
-                .position(|a| a == "--log-level")
-                .unwrap_or_else(|| panic!("no --log-level in {args:?}"));
-            assert_eq!(args[at + 1], OsStr::new("warning"));
-            assert!(!args.iter().any(|a| a == "--bind"), "{args:?}");
-        }
-    }
-
-    #[test]
-    fn the_sidecar_logfile_path_reaches_the_child_on_every_launcher() {
-        // The always-debug file is the only place a per-channel connect
-        // failure is diagnosable after the fact, and the sidecar writes
-        // one only when told where — so the flag has to be on every
-        // launch flavour, frozen included.
-        let path = std::env::temp_dir().join("logs").join(SIDECAR_LOG_FILE);
-        for mut cmd in [
-            build_command(LaunchPath::PathUv, &sample_sidecar_dir()),
-            build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
-            build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
-        ] {
-            apply_sidecar_settings(&mut cmd, "info", Some(&path), None);
-            let args: Vec<OsString> = cmd.get_args().map(OsStr::to_os_string).collect();
-            let at = args
-                .iter()
-                .position(|a| a == "--log-file")
-                .unwrap_or_else(|| panic!("no --log-file in {args:?}"));
-            assert_eq!(args[at + 1], path.as_os_str());
-        }
-    }
-
-    #[test]
-    fn no_logfile_path_means_no_flag_at_all() {
-        // `None` must not degrade into an empty argument: the sidecar
-        // reads a bare `--log-file` as an error, and its own default is
-        // exactly "write no file".
-        let mut cmd = build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name()));
-        apply_sidecar_settings(&mut cmd, "info", None, None);
-        assert!(
-            !cmd.get_args().any(|a| a == "--log-file"),
-            "{:?}",
-            cmd.get_args().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn the_driver_module_is_forwarded_to_the_sidecar_process() {
-        // `CANNET_DRIVER_MODULE` is read by the *sidecar*, and the host
-        // never set it — so the only way to select a driver was to
-        // launch the GUI from a shell that already had it. The setting
-        // is the host-side half of that contract.
-        let mut cmd = build_command(LaunchPath::PathUv, &sample_sidecar_dir());
-        apply_sidecar_settings(&mut cmd, "info", None, Some(OsStr::new("my_team.driver")));
-        let value = cmd
-            .get_envs()
-            .find_map(|(k, v)| (k == DRIVER_MODULE_ENV).then_some(v))
-            .flatten()
-            .expect("the driver module must reach the child");
-        assert_eq!(value, OsStr::new("my_team.driver"));
-    }
-
-    #[test]
-    fn no_driver_module_leaves_the_child_environment_alone() {
-        // The untouched install must launch exactly as it did before
-        // the setting existed: the sidecar picks its own default.
-        let mut cmd = build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name()));
-        apply_sidecar_settings(&mut cmd, "info", None, None);
-        assert!(
-            !cmd.get_envs().any(|(k, _)| k == DRIVER_MODULE_ENV),
-            "nothing should be set when neither the env nor the setting names one"
-        );
-    }
 }
