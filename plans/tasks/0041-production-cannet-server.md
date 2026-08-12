@@ -52,10 +52,12 @@ untouched.
 - **2026-08-11 — archive via the existing release workflow.** The
   macOS arm64 and Windows x64 release legs additionally pack
   `cannet-server-vX.Y.Z-<target>` (server binary + the already-frozen
-  `sidecar/` onedir) beside the GUI bundle; a new Linux x64 leg
-  builds only the server archive (cargo build + sidecar freeze + tar,
-  no Tauri bundling). One draft pre-release: 2 GUI bundles + 3 server
-  archives.
+  `sidecar/` onedir [phase 3 correction: the onedir is named
+  `cannet-python-can/`, not `sidecar/` — see `## Blockers / side
+  effects`; phase 4 packs it under that name]) beside the GUI bundle;
+  a new Linux x64 leg builds only the server archive (cargo build +
+  sidecar freeze + tar, no Tauri bundling). One draft pre-release: 2
+  GUI bundles + 3 server archives.
 - **2026-08-12 — proxy overhead perf criterion (owner).** The
   existing integrated perf harness (ADR 0031, two PEAK dongles,
   local-only) gains the ability to point at a locally spawned

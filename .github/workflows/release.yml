@@ -7,9 +7,16 @@ name: Release
 #      the runner's throwaway checkout, and tags the result `vX.Y.Z` (so
 #      the binary's vergen `git describe` version matches and the tree it
 #      describes is clean — see "Commit + tag" below), and
-#   3. builds unsigned bundles on native runners (Tauri cannot
+#   3. builds unsigned GUI bundles on native runners (Tauri cannot
 #      cross-compile) — macOS Apple Silicon (aarch64) and Windows x64 —
-#      publishing them to a draft pre-release for review.
+#      each additionally packing a `cannet-server-vX.Y.Z-<target>`
+#      archive (server binary + the already-frozen `cannet-python-can`
+#      sidecar onedir) beside the GUI bundle, and
+#   4. builds a Linux x64 `cannet-server` archive on its own runner —
+#      cargo build + sidecar freeze + tar, no Tauri bundling — since
+#      cannet's Linux support is server-only for now.
+#   All artifacts publish to one draft pre-release for review: 2 GUI
+#   bundles + 3 server archives.
 #
 # CI builds on every push to main are cheap (Linux); the expensive
 # cross-platform bundle build runs only here, when you actually release.
@@ -44,6 +51,11 @@ jobs:
   bundle:
     name: Bundle (${{ matrix.label }})
     needs: verify
+    # Both matrix legs compute the same tag from the same input, so
+    # either leg's value is correct here — the Linux server-only job
+    # below reads it instead of re-deriving it.
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -152,6 +164,15 @@ jobs:
             exit 1
           fi
 
+      # Independent of the GUI bundle — cannet-server has no frontend
+      # and no vergen version stamp — so build it before the expensive
+      # Tauri step to fail fast on a server-only regression. `-p`
+      # restricts the build to this crate and its dependency graph,
+      # which does not reach the GUI crate.
+      - name: Build cannet-server (release)
+        shell: bash
+        run: cargo build --release -p cannet-server --target ${{ matrix.rust-target }}
+
       - name: Build and publish bundle
         uses: tauri-apps/tauri-action@v0
         env:
@@ -165,3 +186,108 @@ jobs:
           releaseDraft: true
           prerelease: true
           args: ${{ matrix.args }}
+
+      # The Tauri build above just froze this runner's
+      # `cannet-python-can` onedir as a bundle resource (ADR 0036); the
+      # server archive reuses that exact artifact rather than freezing
+      # a second time. Archive layout: the onedir sits beside the
+      # binary as `cannet-python-can/`, which is where
+      # `cannet-server`'s own discovery looks
+      # (`crates/cannet-server/src/main.rs`), not `sidecar/`.
+      - name: Package server archive (macOS tar.gz)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          NAME="cannet-server-${{ steps.ver.outputs.tag }}-${{ matrix.rust-target }}"
+          STAGE="$RUNNER_TEMP/$NAME"
+          mkdir -p "$STAGE"
+          cp "target/${{ matrix.rust-target }}/release/cannet-server" "$STAGE/"
+          cp -R apps/gui/src-tauri/sidecar-dist/cannet-python-can "$STAGE/cannet-python-can"
+          tar -czf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
+          echo "SERVER_ARCHIVE_PATH=$RUNNER_TEMP/$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      # Windows gets a .zip, not a .tar.gz: the platform's own bundle
+      # formats in this workflow (.msi, NSIS .exe) are already
+      # Windows-native installers, and zip is the Windows-native
+      # archive format (native `Compress-Archive`, no tar dependency),
+      # matching that same native-to-the-platform choice.
+      - name: Package server archive (Windows zip)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $Name = "cannet-server-${{ steps.ver.outputs.tag }}-${{ matrix.rust-target }}"
+          $Stage = Join-Path $env:RUNNER_TEMP $Name
+          New-Item -ItemType Directory -Path $Stage | Out-Null
+          Copy-Item "target/${{ matrix.rust-target }}/release/cannet-server.exe" -Destination $Stage
+          Copy-Item -Recurse "apps/gui/src-tauri/sidecar-dist/cannet-python-can" -Destination (Join-Path $Stage "cannet-python-can")
+          $ArchivePath = Join-Path $env:RUNNER_TEMP "$Name.zip"
+          Compress-Archive -Path $Stage -DestinationPath $ArchivePath
+          "SERVER_ARCHIVE_PATH=$ArchivePath" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload server archive to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.ver.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
+
+  # cannet's Linux support is server-only for now: no Tauri bundle, no
+  # WebView host libraries, no frontend build — just the server binary
+  # and the sidecar it supervises. Depends on `bundle` (which already
+  # depends on `verify`) because it uploads to the tag/draft release
+  # that job creates and reads the tag string it computed, rather than
+  # re-deriving it.
+  server-only:
+    name: Server archive (Linux x64)
+    needs: bundle
+    runs-on: ubuntu-latest
+    env:
+      RUST_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v7
+
+      # rust-toolchain.toml pins the version. The host target already
+      # is x86_64-unknown-linux-gnu on this runner, but add it
+      # explicitly so `--target` below never relies on that by
+      # accident.
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup show
+          rustup target add "$RUST_TARGET"
+
+      - uses: Swatinem/rust-cache@v2
+
+      # uv provisions the CPython pinned by
+      # servers/cannet-python-can/.python-version and the sidecar's
+      # locked deps for the freeze below (ADR 0036) — the same setup
+      # the other legs use for their own freeze.
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          version: "0.9.21"
+          enable-cache: true
+          cache-dependency-glob: servers/cannet-python-can/uv.lock
+
+      - name: Freeze the python-can sidecar
+        run: uv run --no-project scripts/build-sidecar.py
+
+      # `-p` restricts the build to this crate and its dependency
+      # graph, which does not reach `cannet-gui` (confirmed with
+      # `cargo tree -p cannet-server`) — so this leg never needs the
+      # WebView host libraries a `cannet-gui` build would (README §
+      # Prerequisites → Linux) and correctly builds only the server.
+      - name: Build cannet-server (release)
+        run: cargo build --release -p cannet-server --target "$RUST_TARGET"
+
+      - name: Package server archive (Linux tar.gz)
+        run: |
+          NAME="cannet-server-${{ needs.bundle.outputs.tag }}-$RUST_TARGET"
+          STAGE="$RUNNER_TEMP/$NAME"
+          mkdir -p "$STAGE"
+          cp "target/$RUST_TARGET/release/cannet-server" "$STAGE/"
+          cp -R apps/gui/src-tauri/sidecar-dist/cannet-python-can "$STAGE/cannet-python-can"
+          tar -czf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
+          echo "SERVER_ARCHIVE_PATH=$RUNNER_TEMP/$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload server archive to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.bundle.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
