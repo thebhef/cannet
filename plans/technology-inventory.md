@@ -113,17 +113,22 @@ without reshaping callers.
 - Network transport: **tonic / gRPC over HTTP/2** + **prost** —
   `adopted` (Phase 2). Schema in `crates/cannet-wire`, `tonic-build`
   codegen on both ends. See [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
-- **tonic `tls` feature (rustls 0.23, `ring` backend)** — `proposed`
-  (Task 42). Transport security for the production cannet server's
-  public endpoint per
+- **tonic `tls` feature (rustls 0.23, `ring` backend)** — `adopted`
+  (Task 42) on `cannet-server`; still `proposed` for `cannet-client`.
+  Transport security for the production cannet server's public
+  endpoint per
   [ADR 0041](../docs/adr/0041-remote-connection-security.md). Not a
-  mere feature flip: rustls is absent from today's lock; enabling
-  `tonic/tls` adds rustls 0.23 + tokio-rustls + rustls-pki-types, and
+  mere feature flip: rustls was absent from the lock; enabling
+  `tonic/tls` added rustls 0.23 + tokio-rustls + rustls-webpki +
+  rustls-pki-types + subtle. `cannet-server` also takes `rustls` as a
+  direct dep (`default-features = false, features = ["ring", "std",
+  "logging", "tls12"]` — the defaults would pull `aws-lc-rs`) to
+  install the process-level crypto provider explicitly at startup;
+  everything in the tree stays on that one backend (see the Task 42
+  plan review, B1). Still to come on the client side:
   `cannet-client` takes `rustls`/`rustls-pki-types` as direct deps to
-  implement the pin-only `ServerCertVerifier`. The process-level
-  crypto provider is installed explicitly (`ring`); everything in the
-  tree stays on that one backend (see the Task 42 plan review, B1).
-  The pinned client dials through `Endpoint::connect_with_connector`
+  implement the pin-only `ServerCertVerifier`, and dials through
+  `Endpoint::connect_with_connector`
   (tonic 0.12's `ClientTlsConfig` cannot carry a custom verifier) —
   hyper-rustls vs a small tokio-rustls connector is a spike decision
   recorded here when made. Loopback links stay plaintext; the wire

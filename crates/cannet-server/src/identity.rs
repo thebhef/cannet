@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD_NO_PAD;
 use base64::Engine as _;
+use tonic::transport::{Identity, ServerTlsConfig};
 
 /// File name of the persisted certificate inside the identity
 /// directory.
@@ -142,6 +143,28 @@ impl ServerIdentity {
     pub fn fingerprint(&self) -> CertFingerprint {
         self.fingerprint
     }
+
+    /// This identity as tonic's server-side TLS configuration, ready
+    /// for `Server::builder().tls_config(..)`.
+    #[must_use]
+    pub fn tls_config(&self) -> ServerTlsConfig {
+        ServerTlsConfig::new().identity(Identity::from_pem(&self.cert_pem, &self.key_pem))
+    }
+}
+
+/// Install `ring` as the process-wide rustls crypto provider.
+///
+/// rustls refuses to build a configuration when the process has no
+/// default provider and more than one is compiled in, and it picks one
+/// silently when exactly one is. Naming ours here makes the choice
+/// explicit and immune to a future dependency dragging in a second
+/// backend: without it, the first handshake is where that would be
+/// discovered.
+///
+/// Idempotent — a provider already installed (by an earlier call, or by
+/// another test in the same process) is left alone.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 /// The default per-user directory the generated identity is persisted

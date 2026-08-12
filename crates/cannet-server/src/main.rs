@@ -3,7 +3,9 @@
 //! Bare invocation is the production hardware proxy (ADR 0040): it
 //! supervises the `cannet-python-can` sidecar on loopback and relays
 //! the sidecar's interfaces, under their real identities, to one
-//! network endpoint.
+//! network endpoint. That endpoint terminates TLS on request
+//! (ADR 0041), under the server's own generated certificate or
+//! operator-supplied material.
 //!
 //! `debug replay <blf>` and `debug vbus` are the prior BLF-replay and
 //! `--virtual-bus` modes, kept as explicitly dev/test tooling: replay
@@ -17,8 +19,8 @@ use std::sync::Arc;
 
 use cannet_core::BusConfig;
 use cannet_server::{
-    CannetServerImpl, LoopingBlfReplay, ProxyServerImpl, VirtualBusServerImpl,
-    VIRTUAL_BUS_FACTORY_ID,
+    identity, install_crypto_provider, CannetServerImpl, IdentityError, LoopingBlfReplay,
+    ProxyServerImpl, ServerIdentity, VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
 };
 use cannet_sidecar::{
     LogLevel, SidecarConfig, SidecarHost, SidecarPhase, SidecarStatus, SidecarSupervisor, SOURCE,
@@ -54,6 +56,37 @@ struct ProxyArgs {
     /// before this server gives up and says so.
     #[arg(long, default_value_t = 3)]
     sidecar_restart_budget: u64,
+    /// Terminate TLS on the bound endpoint, using the server's own
+    /// certificate — generated and persisted in the per-user data
+    /// directory on first use, so its fingerprint survives restarts.
+    /// Implied by `--cert`.
+    #[arg(long)]
+    tls: bool,
+    /// PEM certificate (or chain) to present instead of the generated
+    /// one. Requires `--key`. Renewing this certificate changes the
+    /// fingerprint, so every pinned client has to accept it again.
+    #[arg(long, value_name = "PATH", requires = "key")]
+    cert: Option<PathBuf>,
+    /// PEM private key for `--cert`.
+    #[arg(long, value_name = "PATH", requires = "cert")]
+    key: Option<PathBuf>,
+}
+
+impl ProxyArgs {
+    /// The TLS identity this invocation serves with, or `None` when it
+    /// serves plaintext. Operator material wins over the generated
+    /// identity; `--tls` alone reaches for the generated one.
+    fn identity(&self) -> Result<Option<ServerIdentity>, IdentityError> {
+        match (&self.cert, &self.key) {
+            (Some(cert), Some(key)) => ServerIdentity::from_files(cert, key).map(Some),
+            // clap's `requires` rejects one without the other, so the
+            // remaining cases are "neither".
+            _ if self.tls => {
+                ServerIdentity::load_or_generate(&identity::default_identity_dir()?).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -261,6 +294,8 @@ impl SidecarHost for CliSidecarHost {
 /// current address per RPC rather than capturing one at startup — a
 /// restart re-binds a different port.
 async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let identity = args.identity()?;
+
     let supervisor = Arc::new(SidecarSupervisor::default());
     let host: Arc<dyn SidecarHost> = Arc::new(CliSidecarHost {
         log_level: args.sidecar_log_level,
@@ -269,18 +304,39 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     });
     supervisor.spawn(&host);
 
-    eprintln!("hardware proxy: listening on {}", args.bind);
+    let mut builder = Server::builder();
+    if let Some(identity) = &identity {
+        builder = builder.tls_config(identity.tls_config())?;
+        // Straight to stderr, never through `tracing`: this is the
+        // string the operator reads off the console and compares in the
+        // client, so it must not be filterable by a log level.
+        eprintln!(
+            "hardware proxy: certificate fingerprint {}",
+            identity.fingerprint()
+        );
+    }
+    eprintln!(
+        "hardware proxy: listening on {} ({})",
+        args.bind,
+        if identity.is_some() {
+            "tls"
+        } else {
+            "plaintext"
+        }
+    );
+
     let upstream = Arc::clone(&supervisor);
     let service = ProxyServerImpl::new(move || upstream.status().address).into_service();
-    Server::builder()
-        .add_service(service)
-        .serve(args.bind)
-        .await?;
+    builder.add_service(service).serve(args.bind).await?;
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Before any TLS configuration is built: rustls picks its crypto
+    // backend from the process default, and we name ours rather than
+    // let the dependency graph decide.
+    install_crypto_provider();
     let cli = Cli::parse();
     match cli.command {
         Some(Command::Debug(DebugCommand::Replay { blf, bind, rate })) => {
@@ -311,6 +367,49 @@ mod tests {
         );
         assert_eq!(cli.proxy.sidecar_log_level, "info");
         assert_eq!(cli.proxy.sidecar_restart_budget, 3);
+        // Plaintext by default: a loopback endpoint is the dev and
+        // local-GUI path (ADR 0041).
+        assert!(!cli.proxy.tls);
+        assert!(cli.proxy.identity().unwrap().is_none());
+    }
+
+    #[test]
+    fn cert_and_key_come_as_a_pair() {
+        Cli::try_parse_from(["cannet-server", "--cert", "server.pem"])
+            .expect_err("--cert without --key should not parse");
+        Cli::try_parse_from(["cannet-server", "--key", "server.key"])
+            .expect_err("--key without --cert should not parse");
+        Cli::try_parse_from([
+            "cannet-server",
+            "--cert",
+            "server.pem",
+            "--key",
+            "server.key",
+        ])
+        .expect("--cert with --key should parse");
+    }
+
+    #[test]
+    fn operator_material_is_served_instead_of_the_generated_identity() {
+        // Stand-in for an operator's PEM files: material generated
+        // somewhere other than the per-user data directory, named on
+        // the command line.
+        let dir = tempfile::tempdir().unwrap();
+        let generated = ServerIdentity::load_or_generate(dir.path()).unwrap();
+        let cli = Cli::try_parse_from([
+            "cannet-server",
+            "--cert",
+            dir.path().join("server-cert.pem").to_str().unwrap(),
+            "--key",
+            dir.path().join("server-key.pem").to_str().unwrap(),
+        ])
+        .expect("--cert/--key should parse");
+        let identity = cli
+            .proxy
+            .identity()
+            .unwrap()
+            .expect("operator material means TLS, with or without --tls");
+        assert_eq!(identity.fingerprint(), generated.fingerprint());
     }
 
     #[test]

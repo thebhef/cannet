@@ -41,7 +41,7 @@ pub mod replay;
 pub mod server;
 pub mod virtual_bus;
 
-pub use identity::{CertFingerprint, IdentityError, ServerIdentity};
+pub use identity::{install_crypto_provider, CertFingerprint, IdentityError, ServerIdentity};
 pub use proxy::ProxyServerImpl;
 pub use replay::{LoopingBlfReplay, ReplayError};
 pub use server::CannetServerImpl;
