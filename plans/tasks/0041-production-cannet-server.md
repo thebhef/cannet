@@ -225,6 +225,63 @@ test for the no-upstream-yet window, and the CLI-parsing tests for the
 proxy's flags replacing the removed bare-invocation error message),
 plus one ignored real-sidecar test. Commits: `6e52517`, `4fa1a1f`.
 
+### 2026-08-12 — phase 4: distribution + doc close-out
+
+The 2026-08-11 archive grooming note is implemented, correcting its
+`sidecar/` wording per the phase-3 finding (grooming note annotated in
+place). `.github/workflows/release.yml`'s macOS arm64 and Windows x64
+legs each additionally `cargo build --release -p cannet-server
+--target <triple>` and, after the Tauri build has frozen this runner's
+`cannet-python-can` onedir, tar/zip it beside the server binary as
+`cannet-server-vX.Y.Z-<target>` and `gh release upload` it to the same
+draft pre-release the GUI bundle publishes to — no second sidecar
+freeze. A new `server-only` job (Linux x64, `needs: bundle` for the
+tag) builds and packs a third archive with no Tauri involvement:
+`rustup target add`, `cargo build --release -p cannet-server --target
+x86_64-unknown-linux-gnu`, `uv run scripts/build-sidecar.py`, then tar.
+One draft pre-release now carries 2 GUI bundles + 3 server archives.
+
+Windows packs `.zip` (`Compress-Archive`), macOS and Linux pack
+`.tar.gz`: no zip/tar precedent exists elsewhere in this repo's
+workflows to match against (the existing Windows leg produces `.msi`
+and NSIS `.exe` installers, not an archive), so this follows the
+platform-native convention every other Rust-CLI release does the same
+way.
+
+ADR cleanup: `git grep -in "test rig" docs/adr/` hits only ADR 0008
+(a hypothetical future sidecar client, not this task's work) and ADR
+0028 (unrelated); neither ADR touched by this task (0040, 0036 — the
+only two touched per `git log --name-only -- docs/adr/` over this
+task's branches) contains the phrase, so no scrub needed. Read ADR
+0040's CLI/discovery text against `crates/cannet-server/src/main.rs`:
+the CLI bullet (bare = production proxy, `debug replay`/`debug vbus`)
+matches what phases 2–3 shipped exactly; the mDNS/`--name`/`--no-mdns`
+discovery bullet describes Task 43 (explicitly this task's non-goal)
+and nothing in phases 1–3 implements it, so there is nothing shipped
+for it to mismatch — left as the forward-looking part of the
+architecture decision.
+
+README's "Running the production server" section gained an archive
+table (macOS/Windows/Linux artifact names cross-referencing §
+Downloads) and per-OS unpack + Gatekeeper/SmartScreen notes, ahead of
+the existing run instructions (which already named `cannet-python-can/`
+correctly, per the phase-3 finding — nothing there needed fixing).
+
+Verified locally: `actionlint` (downloaded binary, v1.7.12) and a
+`yaml.safe_load` parse both clean on the edited workflow; `cargo tree
+-p cannet-server` confirmed the dependency graph never reaches
+`apps/gui/src-tauri`; `cargo build --release -p cannet-server --target
+x86_64-pc-windows-msvc` built and the Windows packaging step's
+`Compress-Archive` logic was run against that binary plus the
+already-frozen local `sidecar-dist/cannet-python-can` onedir — the
+resulting zip's layout is `cannet-server-*/cannet-server.exe` beside
+`cannet-server-*/cannet-python-can/cannet-python-can.exe`, matching
+`frozen_launcher_in()`'s expectation exactly. Not locally verifiable:
+the macOS leg's packaging step (no macOS runner here), the Linux leg
+end-to-end (no local Linux sandbox with the sidecar freeze toolchain
+exercised in this session), and the actual `gh release upload` /
+concurrent-upload behavior across three jobs — those are CI-only.
+
 ## Blockers / side effects
 
 - **`cannet-perf-measurement` has its own sidecar spawn**
