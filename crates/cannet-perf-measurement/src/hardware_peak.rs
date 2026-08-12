@@ -8,6 +8,10 @@
 //! driver and the wire end to end; it needs hardware, so it can't run in
 //! CI. Reuses the grpc mode's wire ingest / transmit loops — only the frame
 //! source (sidecar + hardware vs in-process virtual bus) differs.
+//!
+//! The sidecar can be dialled directly or through a locally spawned
+//! production `cannet-server` proxying it ([`crate::upstream`]); the run is
+//! otherwise identical, so the two measure the proxy's overhead.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,7 +22,7 @@ use cannet_gui_lib::trace_store::TraceStore;
 use crate::runner::{
     build_report, current_rss_mb, parse_predicate, scan_loop, HarnessReport, RunParams,
 };
-use crate::sidecar::SidecarProcess;
+use crate::upstream::{Upstream, UpstreamSpec};
 use crate::LoadedExample;
 
 /// Hardware-PEAK-mode run parameters.
@@ -51,16 +55,21 @@ impl Default for HardwarePeakConfig {
     }
 }
 
-/// Run the hardware-peak workload against real PEAK hardware.
+/// Run the hardware-peak workload against real PEAK hardware, reaching the
+/// sidecar the way `upstream` says.
 ///
 /// # Errors
-/// Returns a message if the sidecar won't start, no PEAK interface is
+/// Returns a message if the upstream won't start, no PEAK interface is
 /// enumerated, or the session can't be opened.
 ///
 /// # Panics
 /// Panics if a worker thread panics (e.g. the trace store mutex is
 /// poisoned).
-pub fn run(ex: &LoadedExample, cfg: &HardwarePeakConfig) -> Result<HarnessReport, String> {
+pub fn run(
+    ex: &LoadedExample,
+    cfg: &HardwarePeakConfig,
+    upstream: &UpstreamSpec,
+) -> Result<HarnessReport, String> {
     let schedule = Arc::new(crate::workload::build_schedule(ex));
     let bus_by_id: Arc<std::collections::HashMap<u32, String>> = Arc::new(
         schedule
@@ -69,8 +78,8 @@ pub fn run(ex: &LoadedExample, cfg: &HardwarePeakConfig) -> Result<HarnessReport
             .collect(),
     );
 
-    let sidecar = SidecarProcess::spawn()?;
-    let address = sidecar.address().to_string();
+    let upstream_process = Upstream::spawn(upstream)?;
+    let address = upstream_process.address().to_string();
 
     // Enumerate interfaces (async one-shot) and pick the PEAK adapters.
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
@@ -141,11 +150,11 @@ pub fn run(ex: &LoadedExample, cfg: &HardwarePeakConfig) -> Result<HarnessReport
     let rss_end = current_rss_mb();
 
     handle.shutdown();
-    drop(sidecar);
+    drop(upstream_process);
 
     Ok(build_report(
         &RunParams {
-            mode: "hardware-peak",
+            mode: upstream.mode(),
             scan: cfg.scan,
             scan_hz: cfg.scan_hz,
             ingest_hz: cfg.tx_hz,

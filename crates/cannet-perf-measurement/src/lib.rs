@@ -36,6 +36,7 @@ pub mod screenshot;
 pub mod sidecar;
 pub mod signal_bench;
 pub mod tracebuffer;
+pub mod upstream;
 pub mod workload;
 
 /// A DBC loaded from the example, with its resolved on-disk path.

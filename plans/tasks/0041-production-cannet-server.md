@@ -291,7 +291,13 @@ concurrent-upload behavior across three jobs — those are CI-only.
   `cannet-sidecar` and was left alone — phase 1's scope is the GUI
   host and the crate. Worth folding in when the harness is touched
   for the proxy-overhead comparison, which already has to point at a
-  spawned `cannet-server`.
+  spawned `cannet-server`. [Phase 5 touched the harness and declined
+  the fold: the proxy path needs no banner grammar and no launcher
+  discovery at all — it spawns `cannet-server --bind <free port>` and
+  polls `ListInterfaces` until the server's own supervised sidecar
+  answers — so the shared crate would have simplified nothing about
+  the retarget. The bespoke `uv run` spawn still stands alone on the
+  direct path, and folding it in remains a standalone cleanup.]
 - **The frozen onedir's name in the archive is `cannet-python-can/`,
   not `sidecar/`.** The 2026-08-11 archive grooming note calls it "the
   already-frozen `sidecar/` onedir"; what

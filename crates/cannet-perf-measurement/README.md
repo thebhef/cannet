@@ -130,11 +130,30 @@ id/bus predicate needs no decode, isolating lock cost; default
 | `hardware-peak` | `--target-frames` | 20000 | stop once the receiver has stored this many |
 | | `--tx-hz` | 1000 | transmit pace onto the bus; `0` = flat-out |
 | | `--speed-bps` | 500000 | bit rate to configure the PEAK adapters at |
+| | `--via-server` | — | measure through a locally spawned production `cannet-server` (path to the binary) instead of dialling the sidecar directly |
 
 (The ingest pace is accelerated far above a real bus so a run is short,
 but bounded so it coexists with the scan the way a real bus does —
 flat-out ingest would fill the buffer before the scan runs, and would
 pathologically starve on the unfair mutex.)
+
+### Measuring proxy overhead
+
+`hardware-peak --via-server <path-to-cannet-server>` points the same run
+at a locally spawned production server instead of the sidecar: the
+harness reserves a loopback port, spawns the binary **bare** (`--bind`,
+no subcommand — the production hardware proxy, ADR 0040), waits until an
+enumeration crosses it, then runs the identical workload against that
+address. The server supervises its own sidecar, so the run differs from
+the direct one by the proxy hop and nothing else, and the report is the
+same shape — tagged `hardware-peak-proxy` so the two can't be confused.
+Comparing several runs of each is how proxy overhead is measured; the
+`baseline` / `check` gate always takes the direct path.
+
+A `cargo build -p cannet-server` (debug) binary resolves its sidecar from
+the source tree via `uv`, the same sidecar the direct path spawns — which
+is what keeps the comparison apples-to-apples. A release binary instead
+wants the frozen onedir unpacked beside it.
 
 ## The report
 
@@ -142,7 +161,7 @@ Every mode prints (and `baseline` stores a subset of) this JSON:
 
 | field | meaning |
 | --- | --- |
-| `mode` | which mode produced the report (`tracebuffer` / `grpc` / `hardware-peak`) |
+| `mode` | which mode produced the report (`tracebuffer` / `grpc` / `hardware-peak` / `hardware-peak-proxy`) |
 | `scan` / `scan_hz` | whether the contending scan ran, and at what rate |
 | `ingest_hz` | the offered ingest/transmit pace the run was configured with |
 | `predicate` | the filter predicate the scan evaluated |

@@ -19,6 +19,7 @@ use cannet_perf_measurement::hardware_peak::{self, HardwarePeakConfig};
 use cannet_perf_measurement::screenshot;
 use cannet_perf_measurement::signal_bench::{self, SignalBenchConfig};
 use cannet_perf_measurement::tracebuffer::{self, StoreKind, TracebufferConfig};
+use cannet_perf_measurement::upstream::UpstreamSpec;
 use cannet_perf_measurement::{
     default_baseline_path, default_example_dir, default_measurements_dir, load_example,
     measurement_filename, workload,
@@ -227,9 +228,20 @@ struct HardwarePeakArgs {
     /// Filter predicate the scan evaluates, as JSON.
     #[arg(long, default_value = "{\"bus\":\"pt\"}")]
     predicate: String,
+    /// Measure through a locally spawned production `cannet-server` (this
+    /// binary, absolute path) instead of dialling the sidecar directly:
+    /// the server supervises its own sidecar and proxies it, so the run
+    /// differs only by the proxy hop. Omit for the direct path — the one
+    /// `baseline` / `check` use.
+    #[arg(long)]
+    via_server: Option<PathBuf>,
 }
 
 impl HardwarePeakArgs {
+    fn upstream(&self) -> UpstreamSpec {
+        UpstreamSpec::from_server_binary(self.via_server.clone())
+    }
+
     fn into_config(self) -> Result<HardwarePeakConfig, String> {
         Ok(HardwarePeakConfig {
             target_frames: self.target_frames,
@@ -387,7 +399,9 @@ fn run_baseline(
 
     eprintln!("capturing hardware-peak…");
     let hw_cfg = HardwarePeakConfig::default();
-    let hw_rep = hardware_peak::run(&ex, &hw_cfg);
+    // The captured — and therefore gated — hardware path is the direct
+    // one; `hardware-peak --via-server` is a comparison run, not a gate.
+    let hw_rep = hardware_peak::run(&ex, &hw_cfg, &UpstreamSpec::Sidecar);
     if let Err(e) = &hw_rep {
         eprintln!("  hardware-peak skipped: {e}");
     }
@@ -472,7 +486,7 @@ fn run_check(
         }
     }
     if let Some(mb) = &baseline.hardware_peak {
-        match hardware_peak::run(&ex, &mb.config) {
+        match hardware_peak::run(&ex, &mb.config, &UpstreamSpec::Sidecar) {
             Ok(rep) => verdicts.extend(check::check_mode("hardware-peak", &mb.metrics, &rep)),
             Err(e) => skipped.push(("hardware-peak", e)),
         }
@@ -565,8 +579,9 @@ fn run_grpc(dir: &std::path::Path, args: GrpcArgs) -> Result<ExitCode, String> {
 
 fn run_hardware_peak(dir: &std::path::Path, args: HardwarePeakArgs) -> Result<ExitCode, String> {
     let ex = load_example(dir)?;
+    let upstream = args.upstream();
     let cfg = args.into_config()?;
-    let report = hardware_peak::run(&ex, &cfg)?;
+    let report = hardware_peak::run(&ex, &cfg, &upstream)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
