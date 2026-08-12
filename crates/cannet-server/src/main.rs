@@ -1,7 +1,9 @@
 //! `cannet-server` CLI.
 //!
-//! Bare invocation is the production hardware proxy (ADR 0040), not
-//! yet implemented: today it prints an error and exits non-zero.
+//! Bare invocation is the production hardware proxy (ADR 0040): it
+//! supervises the `cannet-python-can` sidecar on loopback and relays
+//! the sidecar's interfaces, under their real identities, to one
+//! network endpoint.
 //!
 //! `debug replay <blf>` and `debug vbus` are the prior BLF-replay and
 //! `--virtual-bus` modes, kept as explicitly dev/test tooling: replay
@@ -10,14 +12,18 @@
 //! bus.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cannet_core::BusConfig;
 use cannet_server::{
-    CannetServerImpl, LoopingBlfReplay, VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
+    CannetServerImpl, LoopingBlfReplay, ProxyServerImpl, VirtualBusServerImpl,
+    VIRTUAL_BUS_FACTORY_ID,
 };
-use clap::{Parser, Subcommand};
+use cannet_sidecar::{
+    LogLevel, SidecarConfig, SidecarHost, SidecarPhase, SidecarStatus, SidecarSupervisor, SOURCE,
+};
+use clap::{Args, Parser, Subcommand};
 use tonic::transport::Server;
 
 #[derive(Parser, Debug)]
@@ -25,6 +31,29 @@ use tonic::transport::Server;
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+    #[command(flatten)]
+    proxy: ProxyArgs,
+}
+
+/// Options for the bare invocation — the production hardware proxy.
+/// Ignored when a `debug` subcommand is given.
+#[derive(Args, Debug)]
+struct ProxyArgs {
+    /// Address to bind the gRPC service on. The default is loopback:
+    /// serving the network is an explicit choice, and until
+    /// connections are authenticated a non-loopback bind is
+    /// unprotected.
+    #[arg(long, default_value = "127.0.0.1:50051")]
+    bind: SocketAddr,
+    /// The supervised sidecar's own `--log-level`, which governs how
+    /// much it writes to stderr — and so how much of this server's log
+    /// is the sidecar talking.
+    #[arg(long, default_value = "info")]
+    sidecar_log_level: String,
+    /// How many times a crashing sidecar is restarted automatically
+    /// before this server gives up and says so.
+    #[arg(long, default_value_t = 3)]
+    sidecar_restart_budget: u64,
 }
 
 #[derive(Subcommand, Debug)]
@@ -140,15 +169,114 @@ async fn run_vbus(
     Ok(())
 }
 
-/// Message printed (and returned as the process's error) when
-/// `cannet-server` is invoked bare. The production hardware proxy
-/// (ADR 0040) is not yet implemented, so today bare invocation has
-/// nothing to serve.
-fn production_proxy_not_yet_implemented() -> String {
-    "cannet-server: the production hardware proxy is not yet implemented; \
-     use `cannet-server debug replay <blf>` or `cannet-server debug vbus` \
-     for dev/test tooling"
-        .to_string()
+/// The name of the frozen sidecar's onedir, as
+/// `scripts/build-sidecar.py` emits it. A distribution archive unpacks
+/// it beside the server binary.
+const FROZEN_SIDECAR_DIR: &str = "cannet-python-can";
+
+/// The frozen sidecar launcher inside `dir`, or `None` when it isn't
+/// there — the developer flow, where the shared crate falls back to
+/// running the sidecar's source tree through `uv`.
+fn frozen_launcher_in(dir: &Path) -> Option<PathBuf> {
+    let launcher = dir
+        .join(FROZEN_SIDECAR_DIR)
+        .join(cannet_sidecar::frozen_launcher_name());
+    launcher.is_file().then_some(launcher)
+}
+
+/// This CLI as the sidecar supervisor's host. A headless server has no
+/// settings file and no message ring, so the two halves the trait asks
+/// about are its own flags on the way in and its stderr on the way out.
+struct CliSidecarHost {
+    log_level: String,
+    restart_budget: u64,
+    /// The runtime the wait loop's thread is taken from. Captured
+    /// rather than looked up per call so a restart dispatched from
+    /// inside the wait loop's own blocking thread cannot depend on
+    /// that thread carrying the runtime context.
+    runtime: tokio::runtime::Handle,
+}
+
+impl SidecarHost for CliSidecarHost {
+    fn config(&self) -> SidecarConfig {
+        SidecarConfig {
+            frozen_launcher: std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().and_then(frozen_launcher_in)),
+            // A debug build is a developer running `cargo run`, where
+            // edits to the sidecar source tree must win over any frozen
+            // artifact that happens to be lying beside the binary
+            // (ADR 0036).
+            prefer_source_tree: cfg!(debug_assertions),
+            sidecar_dir: std::env::var_os(cannet_sidecar::SIDECAR_DIR_ENV),
+            log_level: self.log_level.clone(),
+            // No `--log-file`: a headless server's log *is* its stderr,
+            // and everything the sidecar writes is already on it.
+            log_file: None,
+            // Nothing to forward: the child inherits this process's
+            // environment, so a driver-module override set for the
+            // server reaches the sidecar untouched.
+            driver_module: None,
+        }
+    }
+
+    fn log(&self, level: LogLevel, message: String) {
+        let level = match level {
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        };
+        eprintln!("[{level}] {SOURCE}: {message}");
+    }
+
+    fn restart_budget(&self) -> u64 {
+        self.restart_budget
+    }
+
+    fn status_changed(&self, _previous: &SidecarStatus, current: &SidecarStatus) {
+        // The proxy reads the same status per RPC, so this line is
+        // purely the operator's view of why the endpoint is (or isn't)
+        // answering yet.
+        match (current.phase, current.address.as_deref()) {
+            (SidecarPhase::Ready, Some(address)) => {
+                eprintln!("[info] {SOURCE}: upstream ready on {address}");
+            }
+            (SidecarPhase::Starting, _) => eprintln!("[info] {SOURCE}: starting"),
+            (SidecarPhase::Offline, _) => {
+                eprintln!("[warn] {SOURCE}: offline; sessions are unavailable until it returns");
+            }
+            (SidecarPhase::Ready, None) => {}
+        }
+    }
+
+    fn spawn_blocking(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+        self.runtime.spawn_blocking(task);
+    }
+}
+
+/// The production role (ADR 0040): supervise one sidecar on loopback
+/// and proxy it at `bind`. The sidecar picks an ephemeral port and
+/// reports it on its banner, so the proxy asks the supervisor for the
+/// current address per RPC rather than capturing one at startup — a
+/// restart re-binds a different port.
+async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = Arc::new(SidecarSupervisor::default());
+    let host: Arc<dyn SidecarHost> = Arc::new(CliSidecarHost {
+        log_level: args.sidecar_log_level,
+        restart_budget: args.sidecar_restart_budget,
+        runtime: tokio::runtime::Handle::current(),
+    });
+    supervisor.spawn(&host);
+
+    eprintln!("hardware proxy: listening on {}", args.bind);
+    let upstream = Arc::clone(&supervisor);
+    let service = ProxyServerImpl::new(move || upstream.status().address).into_service();
+    Server::builder()
+        .add_service(service)
+        .serve(args.bind)
+        .await?;
+    Ok(())
 }
 
 #[tokio::main]
@@ -163,7 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             speed_bps,
             fd_data_speed_bps,
         })) => run_vbus(bind, speed_bps, fd_data_speed_bps).await,
-        None => Err(production_proxy_not_yet_implemented().into()),
+        None => run_proxy(cli.proxy).await,
     }
 }
 
@@ -172,9 +300,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bare_invocation_has_no_subcommand() {
+    fn bare_invocation_is_the_proxy_with_a_loopback_default() {
+        // Loopback by default: exposing the hardware to the network is
+        // an explicit `--bind`, never something a bare launch does.
         let cli = Cli::try_parse_from(["cannet-server"]).expect("bare invocation should parse");
         assert!(cli.command.is_none());
+        assert_eq!(
+            cli.proxy.bind,
+            "127.0.0.1:50051".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(cli.proxy.sidecar_log_level, "info");
+        assert_eq!(cli.proxy.sidecar_restart_budget, 3);
+    }
+
+    #[test]
+    fn the_proxy_accepts_bind_and_the_sidecar_options() {
+        let cli = Cli::try_parse_from([
+            "cannet-server",
+            "--bind",
+            "0.0.0.0:9000",
+            "--sidecar-log-level",
+            "debug",
+            "--sidecar-restart-budget",
+            "10",
+        ])
+        .expect("the proxy's flags should parse");
+        assert!(cli.command.is_none());
+        assert_eq!(
+            cli.proxy.bind,
+            "0.0.0.0:9000".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(cli.proxy.sidecar_log_level, "debug");
+        assert_eq!(cli.proxy.sidecar_restart_budget, 10);
+    }
+
+    #[test]
+    fn a_frozen_launcher_beside_the_binary_is_found() {
+        // The distribution archive's layout: the onedir unpacks next to
+        // the server binary, under the name the freeze script emits.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            frozen_launcher_in(dir.path()),
+            None,
+            "an unpacked-from-source tree has no frozen sidecar"
+        );
+
+        let onedir = dir.path().join(FROZEN_SIDECAR_DIR);
+        std::fs::create_dir(&onedir).unwrap();
+        let launcher = onedir.join(cannet_sidecar::frozen_launcher_name());
+        std::fs::write(&launcher, b"").unwrap();
+        assert_eq!(frozen_launcher_in(dir.path()), Some(launcher));
     }
 
     #[test]
@@ -269,12 +444,5 @@ mod tests {
     fn old_top_level_positional_blf_no_longer_parses() {
         Cli::try_parse_from(["cannet-server", "capture.blf"])
             .expect_err("a bare positional BLF path is no longer accepted; it is `debug replay`");
-    }
-
-    #[test]
-    fn bare_invocation_error_message_names_the_debug_subcommands() {
-        let msg = production_proxy_not_yet_implemented();
-        assert!(msg.contains("debug replay"));
-        assert!(msg.contains("debug vbus"));
     }
 }
