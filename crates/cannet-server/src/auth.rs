@@ -75,9 +75,17 @@ impl AccessToken {
     /// Use `value` as this run's token, persisting nothing — the
     /// `--token` / `CANNET_TOKEN` path, where the operator already has
     /// the secret and wants the server to accept that one.
-    #[must_use]
-    pub fn from_value(value: String) -> Self {
-        Self(value)
+    ///
+    /// Surrounding whitespace is trimmed, because a pasted value tends
+    /// to carry some. An empty value is refused rather than accepted as
+    /// a token nobody can guess: an empty secret matches an empty
+    /// presentation, which is no authentication at all.
+    pub fn from_value(value: &str) -> Result<Self, TokenError> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Err(TokenError::EmptyValue);
+        }
+        Ok(Self(value.to_string()))
     }
 
     /// The token as the operator sees it on the startup banner and as a
@@ -172,6 +180,8 @@ pub enum TokenError {
     /// token; an empty one is not silently replaced, because a client
     /// may be holding the value that used to be there.
     Empty(PathBuf),
+    /// An operator-supplied token was blank.
+    EmptyValue,
 }
 
 impl TokenError {
@@ -193,6 +203,10 @@ impl fmt::Display for TokenError {
                 "access token: {} is empty; delete it to have a new token generated",
                 path.display()
             ),
+            Self::EmptyValue => write!(
+                f,
+                "access token: the token given is empty, which would authenticate everyone"
+            ),
         }
     }
 }
@@ -201,7 +215,7 @@ impl std::error::Error for TokenError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::Generate | Self::Empty(_) => None,
+            Self::Generate | Self::Empty(_) | Self::EmptyValue => None,
         }
     }
 }
@@ -276,9 +290,25 @@ mod tests {
         // `--token` / `CANNET_TOKEN`: the secret is the operator's, and
         // the server must not write it anywhere.
         let dir = tempfile::tempdir().unwrap();
-        let token = AccessToken::from_value("operator-chosen".to_string());
-        assert_eq!(token.as_str(), "operator-chosen");
+        let token = AccessToken::from_value("  operator-chosen\n").unwrap();
+        assert_eq!(
+            token.as_str(),
+            "operator-chosen",
+            "a pasted value carries whitespace that is not part of the secret"
+        );
         assert!(!dir.path().join(TOKEN_FILE).exists());
+    }
+
+    #[test]
+    fn a_blank_operator_supplied_token_is_refused() {
+        // An empty token would match an empty `Bearer ` presentation —
+        // authentication that authenticates everyone.
+        for blank in ["", "   ", "\n"] {
+            let Err(err) = AccessToken::from_value(blank) else {
+                panic!("{blank:?} must not become a usable token");
+            };
+            assert!(matches!(err, TokenError::EmptyValue), "{err}");
+        }
     }
 
     #[test]
@@ -308,7 +338,7 @@ mod tests {
 
     #[test]
     fn matches_accepts_the_token_and_nothing_else() {
-        let token = AccessToken::from_value("abcdef".to_string());
+        let token = AccessToken::from_value("abcdef").unwrap();
         assert!(token.matches("abcdef"));
         assert!(!token.matches("abcdeg"));
         assert!(!token.matches("abcde"), "a prefix is not the token");
@@ -330,7 +360,7 @@ mod tests {
     }
 
     fn token() -> AccessToken {
-        AccessToken::from_value("t0k3n-abc_DEF".to_string())
+        AccessToken::from_value("t0k3n-abc_DEF").unwrap()
     }
 
     #[track_caller]

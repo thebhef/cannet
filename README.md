@@ -342,6 +342,7 @@ tar xzf cannet-server-vX.Y.Z-<target>.tar.gz    # macOS / Linux archive
 cd cannet-server-vX.Y.Z-<target>
 ./cannet-server --bind 0.0.0.0:50051 --tls      # from a distribution archive
 # → hardware proxy: certificate fingerprint SHA256:qF3…RmA
+# → hardware proxy: client token 8Jd…q1w
 # → hardware proxy: listening on 0.0.0.0:50051 (tls)
 # → [info] sidecar:python-can: sidecar started (pid 61024)
 # → [info] sidecar:python-can: upstream ready on 127.0.0.1:60481
@@ -377,6 +378,13 @@ Flags:
   fingerprint**, and every client that pinned the old one has to
   accept the new one — the certificate as a whole is the identity, so
   re-keying and re-issuing look the same from the client's side.
+- `--token <value>` — accept this bearer token from clients for this
+  run instead of the generated one; nothing is written. A command line
+  is visible to every process lister on the machine, so prefer
+  `CANNET_TOKEN=<value>`, which the server reads the same way and which
+  `--token` overrides. Either is ignored — with a warning — on a
+  plaintext endpoint, because a bearer token must not ride an
+  unencrypted channel.
 - `--sidecar-log-level <level>` — the sidecar's own verbosity
   (default `info`). Its output, and the server's supervision events,
   are written to stderr tagged `sidecar:python-can`.
@@ -387,16 +395,38 @@ Flags:
   Without it, `--bind` on anything but loopback and no TLS is a startup
   refusal, because a routable cannet endpoint hands control of physical
   hardware to whoever reaches the port. The flag suppresses that
-  refusal and nothing else: TLS you configured stays on. The same flag,
-  and the same refusal, apply to `debug replay` and `debug vbus`, which
-  take no certificate of their own.
+  refusal and nothing else: TLS you configured stays on, and so does
+  the token. The same flag, and the same refusal, apply to `debug
+  replay` and `debug vbus`, which take no certificate of their own.
 
-With TLS on, the server prints its certificate fingerprint at startup —
-`SHA256:` followed by unpadded base64, the same shape OpenSSH prints
-for a host key. That string is the server's identity: a connecting
-client compares what the server presented against it, and whoever can
-read this console is the one who tells the client which fingerprint to
-trust. It changes only when the certificate does.
+With TLS on, the server prints two strings at startup and both are
+meant to be read off the console:
+
+- **The certificate fingerprint** — `SHA256:` followed by unpadded
+  base64, the same shape OpenSSH prints for a host key. That string is
+  the server's identity: a connecting client compares what the server
+  presented against it. It changes only when the certificate does.
+- **The client token** — 43 characters of random base64url that a
+  client must present on every RPC, in an
+  `authorization: Bearer <token>` header. Without it, or with the
+  wrong one, every call is refused before it reaches the hardware.
+  Like the certificate, it is generated the first time it is needed
+  and kept in the same per-user directory, so it survives restarts and
+  a client that stored it keeps working. **To rotate it, delete the
+  `access-token` file in that directory** and restart; the next start
+  prints a new one and every client has to be told the new value.
+
+Both are printed straight to stderr and never to the log, so no log
+level hides them and no log file collects the token. Whoever can read
+this console is authorized to use the server's buses — that is the
+trust boundary
+([ADR 0041](docs/adr/0041-remote-connection-security.md)).
+
+Neither protection exists on a plaintext endpoint: the token is
+enforced exactly when TLS is, because presenting it over an
+unencrypted channel would hand it to anyone on the path. That is why
+a routable bind wants `--tls`, and why a loopback bind — your own
+machine, and the GUI's local path — needs neither.
 
 The sidecar is found the same way the GUI finds it
 ([ADR 0036](docs/adr/0036-frozen-python-can-sidecar.md)): a release

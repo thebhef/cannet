@@ -19,8 +19,9 @@ use std::sync::Arc;
 
 use cannet_core::BusConfig;
 use cannet_server::{
-    identity, install_crypto_provider, CannetServerImpl, IdentityError, LoopingBlfReplay,
-    ProxyServerImpl, ServerIdentity, VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
+    auth, identity, install_crypto_provider, AccessToken, CannetServerImpl, IdentityError,
+    LoopingBlfReplay, ProxyServerImpl, ServerIdentity, VirtualBusServerImpl,
+    VIRTUAL_BUS_FACTORY_ID,
 };
 use cannet_sidecar::{
     LogLevel, SidecarConfig, SidecarHost, SidecarPhase, SidecarStatus, SidecarSupervisor, SOURCE,
@@ -69,6 +70,13 @@ struct ProxyArgs {
     /// PEM private key for `--cert`.
     #[arg(long, value_name = "PATH", requires = "cert")]
     key: Option<PathBuf>,
+    /// Accept this bearer token from clients for this run, instead of
+    /// the one generated and persisted beside the certificate. Nothing
+    /// is written. Note that a command line is visible to anyone who
+    /// can list this machine's processes; `CANNET_TOKEN` carries the
+    /// same value without that exposure.
+    #[arg(long, value_name = "VALUE")]
+    token: Option<String>,
     /// Allow an unprotected endpoint to be bound to a routable address.
     /// Suppresses the startup refusal and nothing else — TLS that is
     /// configured stays on.
@@ -91,7 +99,32 @@ impl ProxyArgs {
             _ => Ok(None),
         }
     }
+
+    /// The token this invocation accepts from clients. `--token` wins
+    /// over `CANNET_TOKEN`, and either wins over — and leaves
+    /// untouched — the one persisted in `dir`.
+    fn access_token(
+        &self,
+        dir: &Path,
+        from_env: Option<&str>,
+    ) -> Result<AccessToken, auth::TokenError> {
+        match self.token.as_deref().or(from_env) {
+            Some(value) => AccessToken::from_value(value),
+            None => AccessToken::load_or_generate(dir),
+        }
+    }
+
+    /// True when the operator named a token themselves, by either
+    /// route. Distinguishes "no token was asked for" from "a token was
+    /// asked for and this endpoint cannot carry one".
+    fn token_was_supplied(&self, from_env: Option<&str>) -> bool {
+        self.token.is_some() || from_env.is_some()
+    }
 }
+
+/// The environment variable a token may arrive in, for operators who
+/// would rather keep it out of the process list.
+const TOKEN_ENV: &str = "CANNET_TOKEN";
 
 /// What protects a bound endpoint, one field per requirement.
 ///
@@ -102,6 +135,8 @@ impl ProxyArgs {
 struct Protections {
     /// The endpoint terminates TLS.
     tls: bool,
+    /// The endpoint requires a bearer token on every RPC.
+    token: bool,
 }
 
 impl Protections {
@@ -111,6 +146,14 @@ impl Protections {
         let mut missing = Vec::new();
         if !self.tls {
             missing.push("TLS (--tls, or --cert with --key)");
+        }
+        if !self.token {
+            // In practice this travels with the line above: a token is
+            // derived whenever TLS is on, because it may not ride a
+            // plaintext channel. The requirement is still listed on its
+            // own, so the refusal never claims more protection than the
+            // endpoint actually has.
+            missing.push("client authentication");
         }
         missing
     }
@@ -391,10 +434,21 @@ impl SidecarHost for CliSidecarHost {
 /// restart re-binds a different port.
 async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let identity = args.identity()?;
+    let from_env = std::env::var(TOKEN_ENV).ok();
+    // The token is enforced exactly when TLS is (ADR 0041): presenting
+    // a bearer token on a plaintext channel hands it to the path, so an
+    // endpoint that cannot protect it does not ask for it.
+    let token = if identity.is_some() {
+        Some(args.access_token(&identity::default_identity_dir()?, from_env.as_deref())?)
+    } else {
+        None
+    };
+    let token_was_supplied = args.token_was_supplied(from_env.as_deref());
     guard_bind(
         args.bind,
         Protections {
             tls: identity.is_some(),
+            token: token.is_some(),
         },
         args.insecure,
     )?;
@@ -410,12 +464,24 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = Server::builder();
     if let Some(identity) = &identity {
         builder = builder.tls_config(identity.tls_config())?;
-        // Straight to stderr, never through `tracing`: this is the
-        // string the operator reads off the console and compares in the
-        // client, so it must not be filterable by a log level.
+        // Straight to stderr, never through `tracing`: these are the
+        // strings the operator reads off the console and carries to the
+        // client, so they must not be filterable by a log level — and
+        // the token in particular must not reach a log file at all.
         eprintln!(
             "hardware proxy: certificate fingerprint {}",
             identity.fingerprint()
+        );
+    }
+    if let Some(token) = &token {
+        eprintln!("hardware proxy: client token {}", token.as_str());
+    } else if token_was_supplied {
+        // Saying nothing here would let an operator believe they had
+        // configured authentication when the endpoint cannot carry it.
+        eprintln!(
+            "hardware proxy: warning: the token given is not enforced on a plaintext \
+             endpoint, because a bearer token must not ride an unencrypted channel. \
+             Add --tls (or --cert with --key)."
         );
     }
     eprintln!(
@@ -430,7 +496,14 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let upstream = Arc::clone(&supervisor);
     let service = ProxyServerImpl::new(move || upstream.status().address).into_service();
-    builder.add_service(service).serve(args.bind).await?;
+    // A server-wide layer rather than a per-service interceptor: every
+    // RPC this endpoint answers is gated by construction, including any
+    // service added later.
+    builder
+        .layer(tonic::service::interceptor(auth::token_gate(token)))
+        .add_service(service)
+        .serve(args.bind)
+        .await?;
     Ok(())
 }
 
@@ -478,6 +551,59 @@ mod tests {
         // local-GUI path (ADR 0041).
         assert!(!cli.proxy.tls);
         assert!(cli.proxy.identity().unwrap().is_none());
+        assert!(cli.proxy.token.is_none());
+    }
+
+    #[test]
+    fn a_token_on_the_command_line_is_used_and_persisted_nowhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["cannet-server", "--tls", "--token", "operator-chosen"])
+            .expect("--token should parse");
+        let token = cli.proxy.access_token(dir.path(), None).unwrap();
+        assert_eq!(token.as_str(), "operator-chosen");
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "an operator's own token is theirs to keep; the server writes nothing"
+        );
+    }
+
+    #[test]
+    fn the_environment_carries_a_token_when_the_flag_does_not() {
+        // The non-persisting path for operators who would rather not
+        // put a secret in argv, where every process lister can read it.
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["cannet-server", "--tls"]).unwrap();
+        let token = cli
+            .proxy
+            .access_token(dir.path(), Some("from-the-environment"))
+            .unwrap();
+        assert_eq!(token.as_str(), "from-the-environment");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn the_flag_wins_over_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli =
+            Cli::try_parse_from(["cannet-server", "--tls", "--token", "from-the-flag"]).unwrap();
+        let token = cli
+            .proxy
+            .access_token(dir.path(), Some("from-the-environment"))
+            .unwrap();
+        assert_eq!(token.as_str(), "from-the-flag");
+    }
+
+    #[test]
+    fn without_either_the_persisted_token_is_reloaded() {
+        // The default flow: the token is minted once and reprinted on
+        // every later start, so a client that stored it keeps working.
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["cannet-server", "--tls"]).unwrap();
+        let first = cli.proxy.access_token(dir.path(), None).unwrap();
+        let second = cli.proxy.access_token(dir.path(), None).unwrap();
+        assert_eq!(first.as_str(), second.as_str());
+        assert_eq!(first.as_str().len(), 43);
     }
 
     #[test]
@@ -696,14 +822,36 @@ mod tests {
 
     #[test]
     fn a_protected_routable_bind_is_allowed() {
-        guard_bind(addr("0.0.0.0:50051"), Protections { tls: true }, false)
-            .expect("TLS is what makes a routable bind acceptable");
-        guard_bind(
-            addr("[2001:db8::1]:50051"),
-            Protections { tls: true },
+        let protected = Protections {
+            tls: true,
+            token: true,
+        };
+        guard_bind(addr("0.0.0.0:50051"), protected, false)
+            .expect("TLS and a token are what make a routable bind acceptable");
+        guard_bind(addr("[2001:db8::1]:50051"), protected, false).expect("the same holds for IPv6");
+    }
+
+    #[test]
+    fn an_encrypted_but_unauthenticated_routable_bind_is_still_refused() {
+        // Encryption alone protects the traffic, not the hardware: ADR
+        // 0041's primary risk is an unauthorized *connection*, so a
+        // routable endpoint anyone may open a session on is refused
+        // even with TLS on it.
+        let err = guard_bind(
+            addr("0.0.0.0:50051"),
+            Protections {
+                tls: true,
+                token: false,
+            },
             false,
         )
-        .expect("the same holds for IPv6");
+        .expect_err("TLS without client authentication is not enough");
+        let message = err.to_string();
+        assert!(message.contains("client authentication"), "{message}");
+        assert!(
+            !message.contains("TLS"),
+            "TLS is not what is missing: {message}"
+        );
     }
 
     #[test]
