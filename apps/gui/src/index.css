@@ -1138,6 +1138,21 @@ header {
   color: var(--text-on-accent);
 }
 
+.blf-map-skipped-section {
+  margin-bottom: 0.6rem;
+}
+
+.blf-map-skipped-list {
+  margin: 0.2rem 0 0.6rem 0.95rem;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
 .graph-panel {
   display: flex;
   flex-direction: column;

@@ -119,6 +119,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     context: (ctx) => ctx.hasProjectOpen,
   },
   { id: "blf.open", label: "Open BLF…", category: "File" },
+  { id: "mdf.open", label: "Open MDF…", category: "File" },
   { id: "dbc.add", label: "Add DBC…", category: "File" },
   { id: "connection.connect", label: "Connect", category: "Connection" },
   { id: "connection.disconnect", label: "Disconnect", category: "Connection" },

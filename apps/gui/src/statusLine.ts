@@ -7,17 +7,29 @@
 // bar settles back to the residency readout. Kept here as pure logic so
 // the classification is unit-testable without rendering.
 
-import type { OpenLogResult, RemoteSessionResult, SystemLogLevel } from "./types";
+import type { ImportMdfResult, OpenLogResult, RemoteSessionResult, SystemLogLevel } from "./types";
 import { formatFrameCount } from "./format";
 
-/// BLF open/replay lifecycle, mirrored from the host `open_log` /
-/// replay pump. `result.blf_path` is the source file.
+/// Whatever a capture-source command (`open_log`, `import_mdf`) handed
+/// back once its worker started. Both shapes carry exactly one field —
+/// the source path, under a format-specific key — so `capturePath`
+/// below is the one place that needs to know both key names.
+export type CaptureResult = OpenLogResult | ImportMdfResult;
+
+/// BLF/MDF open/replay lifecycle, mirrored from the host `open_log` /
+/// `import_mdf` / replay pump. `result` carries the source path.
 export type LogState =
   | { kind: "idle" }
-  | { kind: "loading"; result: OpenLogResult }
-  | { kind: "running"; result: OpenLogResult }
-  | { kind: "done"; result: OpenLogResult; total: number }
+  | { kind: "loading"; result: CaptureResult }
+  | { kind: "running"; result: CaptureResult }
+  | { kind: "done"; result: CaptureResult; total: number }
   | { kind: "error"; message: string };
+
+/// The source path out of a `CaptureResult`, whichever format it came
+/// from.
+export function capturePath(result: CaptureResult): string {
+  return "blf_path" in result ? result.blf_path : result.mdf_path;
+}
 
 /// One remote streaming session's status, keyed by `host:port`.
 export type RemoteStatus =
@@ -57,6 +69,8 @@ export interface StatusInputs {
   /// anything to show, so on a large log the pick-a-file gesture is
   /// followed by seconds of nothing — this is what says why.
   scanningBlfPath: string | null;
+  /// Same notice, for an MDF census in flight (`scan_mdf_channels`).
+  scanningMdfPath: string | null;
 }
 
 /// Classify the current app state into a resting line + optional
@@ -96,6 +110,9 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
   if (inp.scanningBlfPath != null) {
     return { resting: `Scanning ${shortenPath(inp.scanningBlfPath)} … ${dbc}.`, transient: null };
   }
+  if (inp.scanningMdfPath != null) {
+    return { resting: `Scanning ${shortenPath(inp.scanningMdfPath)} … ${dbc}.`, transient: null };
+  }
 
   // Remote sessions take priority over the BLF idle/done line — the user
   // is actively streaming. Running sessions form the resting residency
@@ -133,10 +150,13 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
       return { resting: idlePrompt, transient: null };
     case "loading":
       // Ongoing activity — resting, not a flashed notice.
-      return { resting: `Opening ${shortenPath(state.result.blf_path)} … ${dbc}.`, transient: null };
+      return {
+        resting: `Opening ${shortenPath(capturePath(state.result))} … ${dbc}.`,
+        transient: null,
+      };
     case "running":
       return {
-        resting: `Streaming ${shortenPath(state.result.blf_path)} (${residency}). ${dbc}.`,
+        resting: `Streaming ${shortenPath(capturePath(state.result))} (${residency}). ${dbc}.`,
         transient: null,
       };
     case "done":
@@ -146,7 +166,7 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
       return {
         resting: count > 0 ? `${residency}. ${dbc}.` : idlePrompt,
         transient: {
-          text: `Done: ${formatNumber(state.total)} frames from ${shortenPath(state.result.blf_path)}.`,
+          text: `Done: ${formatNumber(state.total)} frames from ${shortenPath(capturePath(state.result))}.`,
           level: "info",
         },
       };

@@ -205,4 +205,80 @@ describe("BlfChannelMapModal", () => {
       endNs: first + 60_000_000_000,
     });
   });
+
+  it("defaults the title to BLF, and switches to MDF when asked", () => {
+    const { rerender } = render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.blf"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+      />,
+    );
+    expect(screen.getByText("Map BLF channels to logical buses")).toBeInTheDocument();
+
+    rerender(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.mf4"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+        format="MDF"
+      />,
+    );
+    expect(screen.getByText("Map MDF channels to logical buses")).toBeInTheDocument();
+  });
+
+  it("lists skipped per-message decoded groups when given any, and hides the section otherwise", () => {
+    const { rerender } = render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.mf4"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+        format="MDF"
+      />,
+    );
+    expect(screen.queryByText(/already covered/)).not.toBeInTheDocument();
+
+    rerender(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.mf4"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+        format="MDF"
+        skippedDecodedGroups={[
+          { source_path: "CAN1.CAN_DataFrame.ID=0x100 EXT=False", name: "Engine", signal_count: 2 },
+          { source_path: "CAN1.CAN_DataFrame.ID=0x1a5 EXT=False", name: null, signal_count: 1 },
+        ]}
+      />,
+    );
+    expect(screen.getByText(/2 per-message decoded groups/)).toBeInTheDocument();
+    expect(screen.getByText(/Engine \(2 signals\)/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/CAN1\.CAN_DataFrame\.ID=0x1a5 EXT=False \(1 signal\)/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a not-imported-yet notice for message-independent signal groups", () => {
+    render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.mf4"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+        format="MDF"
+        signalGroupCount={3}
+      />,
+    );
+    expect(
+      screen.getByText(/3 message-independent signal groups found; not imported yet\./),
+    ).toBeInTheDocument();
+  });
 });

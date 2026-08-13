@@ -11,10 +11,12 @@ import type {
   Bus,
   DbcInfo,
   DbcRef,
+  ImportMdfResult,
   InterfaceBinding,
   InterfaceRecord,
   LocalVirtualBusDef,
   LogFinished,
+  MdfScanResult,
   OpenLogResult,
   Project,
   ProjectElement,
@@ -62,7 +64,13 @@ import {
   mergeSystemMessage,
   reconcileSnapshot,
 } from "./systemLog";
-import { splitStatus, type LogState, type RemoteStatus, type TransientStatus } from "./statusLine";
+import {
+  capturePath,
+  splitStatus,
+  type LogState,
+  type RemoteStatus,
+  type TransientStatus,
+} from "./statusLine";
 import { useTransientStatus } from "./useTransientStatus";
 import { hostSettings, useSetting } from "./hostSettings";
 import { NotesContext, type NotesContextValue } from "./notesContext";
@@ -1140,6 +1148,78 @@ export function App() {
       }
     },
     [pendingBlf, resetSession, rememberRecentBlf, dropRecentBlf],
+  );
+
+  // MDF import has the same channel → bus mapping step as BLF import,
+  // over `scan_mdf_channels` / `import_mdf` instead of
+  // `scan_blf_channels` / `open_log`. There's no Recent-MDFs list yet
+  // (unlike `recentBlfs` above) — a deliberate scope trim recorded in
+  // the task's status log, not an oversight; the channel→bus mapping
+  // persistence (`blf_channel_maps`) is keyed by path + channel count
+  // alone, so it needs no MDF-specific counterpart and is reused as is.
+  const [pendingMdf, setPendingMdf] = useState<{
+    mdfPath: string;
+    scan: MdfScanResult;
+  } | null>(null);
+  // The MDF whose census is walking right now — same status-line role
+  // `scanningBlfPath` plays for BLF.
+  const [scanningMdfPath, setScanningMdfPath] = useState<string | null>(null);
+
+  const handleOpenMdf = useCallback(async () => {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "ASAM MDF", extensions: ["mf4"] }],
+    });
+    if (typeof selected !== "string") return;
+
+    // Same reasoning as the BLF census notice: the walk covers the
+    // whole file before the mapping dialog has anything to show.
+    setScanningMdfPath(selected);
+    try {
+      const scan = await invoke<MdfScanResult>("scan_mdf_channels", {
+        mdfPath: selected,
+      });
+      setPendingMdf({ mdfPath: selected, scan });
+    } catch (err) {
+      setState({ kind: "error", message: String(err) });
+    } finally {
+      setScanningMdfPath(null);
+    }
+  }, []);
+
+  // Confirm the MDF channel mapping and actually start the pump.
+  // Mirrors `handleBlfMapConfirm` exactly, modulo the command names and
+  // result shape.
+  const handleMdfMapConfirm = useCallback(
+    async (choices: Record<number, string>, range: ImportRange) => {
+      if (!pendingMdf) return;
+      const { mdfPath, scan } = pendingMdf;
+      setPendingMdf(null);
+      persistBlfChannelMaps(recordBlfChannelMap(hostState().blf_channel_maps, mdfPath, choices));
+      if (
+        !(await resetSession({
+          onError: (err) => setState({ kind: "error", message: String(err) }),
+        }))
+      ) {
+        return;
+      }
+      try {
+        const channelBusMapping = scan.channels.map((ch) => ({
+          channel: ch,
+          busId: choices[ch] ? choices[ch] : null,
+        }));
+        const result = await invoke<ImportMdfResult>("import_mdf", {
+          mdfPath,
+          channelBusMapping,
+          startNs: range.startNs,
+          endNs: range.endNs,
+        });
+        setState({ kind: "loading", result });
+      } catch (err) {
+        setState({ kind: "error", message: String(err) });
+      }
+    },
+    [pendingMdf, resetSession],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -2446,6 +2526,7 @@ export function App() {
     // the New-project action performs).
     "project.close": handleNewProject,
     "blf.open": () => void handleOpenLog(),
+    "mdf.open": () => void handleOpenMdf(),
     "dbc.add": () => void handleAddDbc(),
     "connection.connect": () => void handleConnect(),
     "connection.disconnect": () => void handleDisconnect(),
@@ -2661,6 +2742,7 @@ export function App() {
         scratchBytes,
         memBytes,
         scanningBlfPath,
+        scanningMdfPath,
       }),
     [
       state,
@@ -2673,6 +2755,7 @@ export function App() {
       scratchBytes,
       memBytes,
       scanningBlfPath,
+      scanningMdfPath,
     ],
   );
   // Transient status notices (errors, completions, remote connect/error
@@ -2788,7 +2871,7 @@ export function App() {
 
   const blfPath =
     state.kind === "loading" || state.kind === "running" || state.kind === "done"
-      ? state.result.blf_path
+      ? capturePath(state.result)
       : null;
 
   const projectContextValue: ProjectContextValue = useMemo(
@@ -2881,6 +2964,7 @@ export function App() {
     "sep",
     { id: "blf.open", label: "Open BLF…" },
     "recentBlfs",
+    { id: "mdf.open", label: "Open MDF…" },
     { id: "dbc.add", label: "Add DBC…" },
     "sep",
     "connection",
@@ -3052,6 +3136,24 @@ export function App() {
           )}
           onConfirm={handleBlfMapConfirm}
           onCancel={() => setPendingBlf(null)}
+        />
+      )}
+      {pendingMdf && (
+        <BlfChannelMapModal
+          blfPath={pendingMdf.mdfPath}
+          scan={pendingMdf.scan}
+          buses={buses}
+          initial={savedBlfChannelMap(
+            hostState().blf_channel_maps,
+            pendingMdf.mdfPath,
+            pendingMdf.scan.channels.length,
+            new Set(buses.map((b) => b.id)),
+          )}
+          onConfirm={handleMdfMapConfirm}
+          onCancel={() => setPendingMdf(null)}
+          format="MDF"
+          skippedDecodedGroups={pendingMdf.scan.skipped_decoded_groups}
+          signalGroupCount={pendingMdf.scan.signal_group_count}
         />
       )}
       <ServerTrustDialogs />
