@@ -172,6 +172,14 @@ Validator, and the public spec + ASAM wiki.
   (we always write sorted + finalized), compression, writer-tool
   metadata. Verified by the asammdf-oracle integration check.
 
+- **2026-08-12 — committed example MDF (owner).** `examples/` gains a
+  demo `.mf4` beside `cannet-demo.blf`, same conventions (small,
+  deterministic seeded generator script, README table entry): example
+  CAN traffic decodable with `cannet-demo.dbc`, **event markers**
+  (EV blocks), and **message-independent signal groups** (file-backed
+  signals) — so every Task 38 surface is exercisable from a fresh
+  clone. Synthetic content only.
+
 ## Later (not this task)
 
 - Signal-file (pre-decoded) import.
@@ -548,3 +556,154 @@ string, so the unit column is empty for all 452; rate is defined for
 every signal with ≥2 samples (32 per file).
 
 Still outstanding for this task: the whole export side (phase 5).
+
+### 2026-08-12 — phase 5: MDF export and the round-trip
+
+The round-trip closes. `MdfCaptureWriter` in `cannet-mdf` writes a
+capture back out as a **sorted, finalized MDF 4.10** file and
+`MdfCanFrameSource` reads what it wrote, field for field.
+
+**What the writer emits.** One data group per channel group (that is
+what sorted means), uncompressed `##DT`, `id_unfin_flags` clear.
+`CAN_DataFrame`, `CAN_ErrorFrame` and `CAN_RemoteFrame` groups are
+**always** written, empty or not, as the corpus's real logger files
+carry them — which also means an export of a frameless capture is still
+recognisably a logger file rather than a signal file the reader would
+reject. Each is a structure channel: one `##CN` spanning the frame at
+byte 8, its `cn_composition` reaching one `##CN` per member
+(`BusChannel` u16, `ID` u32, `IDE`, `DLC`, `DataLength`, `Dir`, `EDL`,
+`BRS`, `ESI`, then `DataBytes` sized once for the group), `cn_flags`
+bit 10 set on all of them, `cg_flags` 0x6, a `##SI` bus source. Record
+size is 21 + payload bytes; the master is `f64` seconds at byte 0.
+File-backed signals go out as **one channel group per signal** (a
+channel group is a shared sample axis by definition, and two series
+that came from one group need not still share one), each carrying the
+source group's `cg_acq_name`.
+
+**Timestamps.** `hd_start_time_ns` is the capture's earliest event —
+frames, notes and signal samples all considered, so nothing lands at a
+negative offset — and every master sample is seconds relative to it.
+Recovery is exact for any capture spanning under ~26 days (past that a
+nanosecond is finer than an `f64` second's last bit); pinned by a unit
+test over offsets from 1 ns to an hour and by the round-trip tests.
+
+**EV blocks.** A note becomes an `##EV` marker: `ev_tx_name` is the
+label, and the note's id and color ride in the event's `##MD` comment
+under `common_properties` (`cannet.id`, `cannet.color`) — MDF's own
+extension point for tool metadata, the same in-file principle ADR 0010
+applies to BLF's `GLOBAL_MARKER`. `ev_sync_base_value` is whole
+nanoseconds with `ev_sync_factor` 1e-9, so the marker's time is an
+integer on disk. Reading them back is new too
+(`MdfCanFrameSource::events()`, also on `scan_mdf`), so an MDF import
+now brings notes in the way a BLF import does; an event another tool
+wrote gets a synthetic `mdf-event-<n>` id, mirroring `blf-marker-<n>`.
+
+**AT attachments.** The project's DBCs are embedded uncompressed with
+their file name and `application/vnd.vector.dbc`, and read back via
+`attachments()`. A DBC that has moved since it was loaded is skipped
+rather than failing the save.
+
+**Host routing.** `save_capture` takes an explicit `format` and routes
+to `write_blf_capture` or `write_mdf_capture`; the
+dropped-file-backed-signals warning is now BLF-only. The MDF path reads
+the trace store in **chunks** (two passes: one to settle the origin and
+the widest payload, since MDF records are a fixed layout, one to write
+the records), so it does not add to the whole-capture materialization
+the BLF path still does.
+
+**Frontend.** The save dialog's filter list grows "ASAM MDF (`.mf4`)"
+beside "Vector BLF (`.blf`)". Recorded conflict, resolved by closest
+faithful reading: an OS save dialog reports the chosen filter in
+exactly one way — it stamps that filter's extension on the path it
+returns — and Tauri's `save()` surfaces nothing else. So the mapping
+filter → format lives in `saveFormat.ts` as a pure, unit-tested
+function on the frontend, and what crosses the wire is the format. The
+ruling's substance holds: the **host** never sniffs the path.
+
+**Tests.** `cargo test -p cannet-mdf`: **43 passed** (was 25 — 9 writer
+integration tests, 3 event-comment unit tests, 4 DLC / master-axis unit
+tests, plus the block-layout ones). `cargo test -p cannet-gui`: **569
+passed**, 0 failed, 6 ignored (was 566 — the full round-trip contract
+over `write_mdf_capture`, the synthetic-event-id rule, and the demo MDF
+import). `pnpm --dir apps/gui test`: **148 files / 1923 tests** (was
+147 / 1917 — `saveFormat.test.ts` and `App.saveCapture.dom.test.tsx`).
+`cargo clippy --workspace --all-targets -- -D warnings`, `cargo fmt
+--all --check` and `pnpm --dir apps/gui build` all clean.
+
+**asammdf oracle, wired into CI.** A new `mdf-export-oracle` job runs
+`cargo run -p cannet-mdf --example export_sample` and then
+`crates/cannet-mdf/tests/fixtures/validate_export.py` under
+`uv run --with asammdf`, deliberately separate from the `rust` job so
+`cargo test --workspace` stays Python-free. Locally: 30 frames, 3
+signals, 2 events, 1 attachment, CAN buses [1, 2] — OK, with asammdf's
+`bus_logging_map['CAN']` non-empty (the thing `mdf4-rs`'s own writer
+fails).
+
+**Committed example MDF.** `examples/cannet-demo.mf4` (35 KB, `##DZ`
+data blocks) carries the demo BLF's 1810 frames verbatim plus four
+`##EV` markers and two message-independent signal groups (`Ambient`:
+`AmbientTemp` degC, `CabinHumidity` %; `Charger`: `ChargerPower` kW).
+`examples/generate_mdf.py` is seeded and reads the frames out of the
+committed BLF rather than re-deriving the waveforms, so the two
+fixtures cannot drift; it pins the `##FH` block's time (asammdf's only
+non-deterministic field) so regeneration is byte-identical. Written
+with asammdf on purpose — a fixture produced by the code under test
+cannot catch that code being wrong. A host test drives it through the
+same calls `import_mdf` makes: 1810 frames on one bus channel, 3
+file-backed signals with their units and group names, 4 notes with
+their ids and colors, 0 synthetic ids.
+
+**Local verification, the 14-file user corpus** (kept out of the repo;
+nothing identifying recorded here), through a throwaway example deleted
+after the run. Every file imported → exported → re-imported: **14 of 14
+identical** on frame count, on a digest over every frame's timestamp,
+channel, id, addressing mode, direction and payload, on all 452
+file-backed series (name, unit, group name, values and timestamps
+verbatim) and on the attachment. 7,645–21,982 frames per file, matching
+phases 2–4 exactly; exports 247–654 KB, 36–77 ms each.
+
+Then the same 14 exports validated with **asammdf** against their
+sources: 14 of 14 match on the frame multiset (bus, id, IDE, length,
+payload, absolute ns) and on every message-independent series, with
+`bus_logging_map['CAN']` non-empty on every export. That took one
+correction, worth recording: 6 of 14 first reported a mismatch, on 2
+rows each out of 8,000–21,000. The rows were master samples like
+`1.5400390625` s, whose product with 1e9 is exactly `…062.5` — a tie,
+which Rust's `f64::round` breaks away from zero and Python's `round`
+breaks to even. The oracle now uses `floor(x + 0.5)` to match the
+reader. Not a writer bug and not a fidelity loss: cannet's own chain is
+self-consistent to the nanosecond either way.
+
+**Blockers / side effects**
+
+- *Conversion metadata is not round-tripped, because the model never
+  holds it.* The fidelity contract lists "file-backed signal series +
+  name/unit/conversion metadata verbatim", but a file-backed signal
+  enters the model as `FileSignalInfo { group, group_name, name, unit }`
+  — the source channel's `cc_type` is dropped at import (phase 4), and
+  the values it produced are already physical. Closest faithful
+  reading: export writes those physical values with no `##CC` block,
+  which is what verbatim means for the *series*; the conversion's name
+  was provenance the model never carried. Name, unit, values and
+  timestamps do round-trip exactly.
+- *File-backed signal timestamps round-trip at the model's resolution,
+  not the frame timeline's.* The signal cache stores sample times as
+  `f64` seconds since the epoch, so a present-day timestamp quantizes
+  to ~0.24 µs before export ever sees it. The round-trip test asserts
+  within 1 µs and says why; frames are unaffected and exact.
+- *Vector's MDF Validator was not run* — it is a Windows GUI tool that
+  is not installed on the reference machine. asammdf covers the same
+  ground programmatically and is the check CI runs; the exit criteria's
+  mention of the Validator is outstanding on that tool alone.
+- *No Recent MDFs list still.* A successful MDF save does not promote
+  its path anywhere, because `recentBlfs` has no MDF counterpart (the
+  phase-3 scope trim). Unchanged by this phase, noted so it is not
+  mistaken for a regression.
+
+Branch `task38e-mdf-export` off `task38d-file-backed-signals` (tip
+`a81aeb9`), five commits: `22dc19f` "feat(mdf): write captures back out
+as sorted, finalized MDF 4.10", `991df0e` "test(mdf): validate an MDF
+export against asammdf in CI", `1a4ffd1` "feat(gui): route capture.save
+to the BLF or the MDF writer", `066796a` "feat(examples): ship the demo
+capture as MDF too", `11147c4` "test(mdf): match the reader's tie rule
+in the asammdf oracle".

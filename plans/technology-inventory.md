@@ -310,7 +310,12 @@ without reshaping callers.
     Vector or CANape. mdf4-rs's *block serializers* do write
     `component_addr`, so the in-repo writer can build conformant
     composition on top of them; only the high-level writer API is
-    unusable.
+    unusable. **Settled when the writer landed**: `MdfCaptureWriter`
+    does exactly that — `mdf4-rs` serializes every block
+    (`##ID`/`##HD`/`##DG`/`##CG`/`##CN`/`##SI`/`##TX`/`##MD`/`##EV`/
+    `##AT`/`##FH`), cannet lays them out and writes the composition,
+    and asammdf reads the result as CAN bus logging with a non-empty
+    `bus_logging_map`.
   - **`mdflib` (ihedvall) via the `mdflib` / `mdflib-sys` crates** —
     `rejected`. The C++ library is the mature reference and covers
     everything the task needs (including `Edl`/`Brs`/`Esi`), but the
