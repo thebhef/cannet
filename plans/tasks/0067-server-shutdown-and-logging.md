@@ -440,6 +440,103 @@ Test counts, all green after the last commit:
 the sidecar. No frontend file was touched, so the pnpm suites were not
 in scope.
 
+### 2026-08-13 — phase 3, bounded shutdown
+
+Branch `task67c-bounded-shutdown`, off `task67b-session-robustness`
+(`383472a`). Three commits: the supervisor's `stop()` + tree kill, the
+server's shutdown sequence, and the log-line correction found by the
+manual verification.
+
+**The API** (`crates/cannet-sidecar`). `SidecarSupervisor::stop(host,
+grace) -> StopOutcome` — suppress restarts, drop the `ChildStdin`, poll
+for the exit every 25 ms up to `grace`, kill the process tree on expiry.
+The pipe is reachable at all because `install_child` (factored out of
+`run`) now **takes stdin out of the `Child`** and stashes it in
+`SupervisorInner`; left where it was, it belonged to the wait loop that
+was itself waiting for the child to exit, which is root cause (A) in one
+sentence. The wait loop clears the slot with `active`, and `restart`
+drops it before killing, so a merely-slow sidecar still gets its EOF.
+
+**Tree-kill design** (`process_tree.rs`, new). A pair: Unix children are
+spawned as their own **process-group leader** via the safe, stable
+`CommandExt::process_group(0)`, and the kill is `kill -KILL -<pgid>`;
+Windows needs no preparation and uses `taskkill /PID <pid> /T /F`, which
+walks the parent links Windows already records. **Why not job objects /
+`killpg`:** both are `unsafe` FFI, which the workspace forbids outside
+`crates/cannet-spill`, and a job object additionally has to be created
+and assigned at spawn. Shelling out keeps `cannet-sidecar`
+dependency-free (recorded `rejected` in
+`plans/technology-inventory.md`). Cost, accepted: an external binary
+(`taskkill`, `kill`) has to exist, so a failure falls back to killing the
+direct child; and on Unix the sidecar no longer receives the terminal's
+Ctrl-C, which makes our own stop the only thing that ends it — the same
+path every other OS already took. The same primitive replaced
+`restart`'s only-direct-child `Child::kill()` (the latent defect from
+phase 2's list).
+
+**The server** (`crates/cannet-server/src/main.rs`). `shut_down()` runs
+`stop()` (5 s grace, on `spawn_blocking` — it polls a child) and the
+mDNS goodbye **concurrently**, so the goodbye's ~1 s is spent inside the
+grace period rather than after it, and races both against a second
+`ctrl_c()` that `std::process::exit(130)`s — our exit and our code
+instead of the console host's `STATUS_CONTROL_C_EXIT`. `main` builds the
+runtime by hand (`#[tokio::main]` can only *drop* it) and ends in
+`shutdown_timeout(1 s)`: with `stop()` in place the blocking wait loop is
+already finished, so that bound is a guarantee, not the mechanism.
+
+**TDD.** The stand-in sidecar is the cannet-sidecar test binary
+re-executed at a `fake_sidecar_process` entry point (no Python, no `uv`,
+no shell, and it exists on every OS by construction): one mode honours
+EOF, one ignores it and spawns a grandchild that inherits the shared
+stdout pipe — so "the whole tree is gone" is observable as that pipe
+reaching EOF. Written red (no `stop`, no `StopOutcome`), then made
+green. Deliberately falsified afterwards: with `kill_tree` swapped back
+for `Child::kill()`, `stop_kills_the_whole_tree_once_the_grace_expires`
+and `a_manual_restart_kills_the_previous_tree_not_just_its_root` both
+fail ("the grandchild still holds the shared pipe open"). The graceful
+test asserts the child exited **0**, which a killed one cannot.
+
+| layer | command | result |
+| --- | --- | --- |
+| sidecar crate | `cargo test -p cannet-sidecar` | 39 passed |
+| server | `cargo test -p cannet-server` | 94 passed, 2 ignored |
+
+`cargo clippy --workspace --all-targets -- -D warnings` clean (the
+pre-commit gate ran it on every commit).
+
+**Manual verification**, this machine, real PCAN hardware (2 PEAK
+PCAN-USB FD), debug build, sidecar via the dev `uv` chain — 6 processes
+under the server: `uv → uv → cannet-python-can.exe → python → python`
+(plus a conhost). Ctrl-C was delivered as a real `CTRL_C_EVENT` by a
+harness in its own console that calls `SetConsoleCtrlHandler(NULL,
+FALSE)` **before** spawning the server (the phase-1 blocker: the agent's
+shell tree inherits an ignore-Ctrl+C state) and re-sets it for itself
+before firing, so it survives to measure.
+
+| run | invocation | to exit | code | tree left |
+| --- | --- | --- | --- | --- |
+| healthy | `--bind 127.0.0.1:50051` | **0.46–0.51 s** | 0 | 0 of 6 |
+| owner's flags | `--bind 0.0.0.0:50051 --tls` | **0.41 s** | 0 | 0 of 6 |
+| second Ctrl-C at 0.12 s | `--bind 127.0.0.1:50051` | **0.13 s** | **130** | 0 of 6 |
+| wedged sidecar | tree suspended (`NtSuspendProcess`) so the EOF cannot be acted on | **5.87 s** | 0 | 0 of 6 |
+
+The healthy runs take the graceful path — `shutting down
+(reason=stdin-eof)` → `exited on stdin EOF` → `exited cleanly`, no kill
+— which is the exit criterion's "the graceful stdin-EOF path, not the
+kill, is what fires when the sidecar is healthy". The wedged run is the
+backstop: `did not exit within 5s; killing its process tree` →
+`killed the sidecar process tree`, and all six suspended processes gone.
+Against the same build before this phase, every one of these hung
+indefinitely.
+
+**One line changed by what that verification showed.** The backstop's
+kill made the wait loop report `[error] sidecar (pid N) exited with exit
+code: 1` plus the whole invocation summary — which reads as a sidecar
+that failed to launch, on a shutdown we performed. A non-zero exit with
+`suppress_restart` set (only `stop` sets it) is now an info-level
+`exited with … after being stopped`; the warn line about the kill
+already carries the news. Verified by re-running the wedged scenario.
+
 ## Blockers / side effects
 
 - **Console Ctrl-C is disabled by inheritance in the agent's shell
@@ -462,7 +559,16 @@ in scope.
   produce one `rx for … failed` WARNING. Phase 2's scope was the nominal
   *close*, and suppressing it at the reconfigure site needs a different
   signal than `_stop`. Cosmetic, same family as (B).
-- **Latent, out of scope here:** `SidecarSupervisor::restart` kills
-  only the direct child. It happens to be sufficient on the dev `uv`
-  chain (E5) but is not a guarantee for other launcher shapes; folded
-  into the phase 3 verdict rather than left as a separate item.
+- ~~**Latent, out of scope here:** `SidecarSupervisor::restart` kills
+  only the direct child.~~ Fixed in phase 3 with the same tree-kill
+  primitive as the shutdown path, under its own test.
+- **New in phase 3, Unix only:** a sidecar spawned as its own
+  process-group leader no longer receives the terminal's Ctrl-C, so
+  where a foreground SIGINT used to reach it directly, the host's
+  `stop()` is now the only thing that ends it. Deliberate — it makes
+  every OS take the same shutdown path — and noted here because it
+  changes what a `kill -INT` on the server's group does.
+- **Unverified on this machine:** the Unix half of the tree kill
+  (`process_group(0)` + `kill -KILL -<pgid>`). The unit tests cover it
+  and CI runs them on Linux; the manual runs recorded above are Windows
+  (`taskkill /T /F`).
