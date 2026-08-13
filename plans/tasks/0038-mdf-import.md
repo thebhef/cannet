@@ -123,8 +123,9 @@ Two consequences the implementation must carry:
   it. Close it upstream, or with an in-repo decompress pre-pass —
   the crate offers only `from_file`, no from-bytes constructor.
 - **MSRV.** mdf4-rs 0.6 declares rustc 1.97.0; `rust-toolchain.toml`
-  pins 1.96.0. Adopting it means bumping the pin deliberately,
-  fixing any new clippy lints in the same change.
+  pinned 1.96.0. Bumping the pin deliberately, fixing any new clippy
+  lints in the same change, is the price of adoption — paid in
+  phase 2 (now 1.97.1).
 
 Oracles for validation: Python **asammdf** (LGPL, the ecosystem
 reference — also generates the fixtures), Vector's free MDF

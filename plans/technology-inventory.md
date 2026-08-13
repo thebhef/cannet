@@ -281,9 +281,10 @@ without reshaping callers.
       it, so this must be closed — by an upstream patch or by an
       in-repo decompress pre-pass (the crate has no from-bytes
       constructor, only `from_file`).
-    - Cost to note: mdf4-rs 0.6 declares MSRV **rustc 1.97.0**; the
-      repo's `rust-toolchain.toml` pins **1.96.0**. Adoption forces
-      a deliberate toolchain bump.
+    - Cost paid: mdf4-rs 0.6 declares MSRV **rustc 1.97.0**, so
+      `rust-toolchain.toml` moved **1.96.0 → 1.97.1** when the crate
+      was adopted. The bump was clean — no new clippy pedantic lints
+      anywhere in the workspace.
   - **`mdf4-rs`'s writer** — `rejected`. Its bus-logging writer
     emits a proprietary layout: one opaque `CAN_DataFrame` byte
     array per record, no composition, groups split by IDE, and
