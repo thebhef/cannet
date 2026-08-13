@@ -165,6 +165,36 @@ fn store_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     crate::persisted_json::config_dir(app)
 }
 
+/// What the host has stored for `address`. An unresolvable config dir,
+/// a missing file and a server nobody has answered a question about all
+/// read the same way: nothing is trusted, so the connection starts at
+/// trust-on-first-use.
+pub(crate) fn trust_for(app: &tauri::AppHandle, address: &str) -> TrustEntry {
+    let Ok(dir) = store_dir(app) else {
+        return TrustEntry::default();
+    };
+    read_servers(&dir)
+        .servers
+        .remove(&server_key(address))
+        .unwrap_or_default()
+}
+
+/// Persist an answer to a trust question, then let the connection that
+/// was waiting on it try again: the pending prompt is dropped and any
+/// running interface watch for `address` restarts against the new
+/// decision, so accepting an identity connects rather than leaving the
+/// user to find the retry button.
+fn answered(
+    app: &tauri::AppHandle,
+    address: &str,
+    write: std::io::Result<()>,
+) -> Result<(), String> {
+    write.map_err(|e| format!("failed to store the trust decision for {address}: {e}"))?;
+    crate::connect_flow::resolved(app, address);
+    crate::interfaces::rewatch(app, address);
+    Ok(())
+}
+
 /// Tauri command — every server the host has accepted something for, so
 /// the settings surface can list pins, show which carry a token, and
 /// offer to forget them.
@@ -204,14 +234,14 @@ pub fn accept_server_fingerprint(
     token: Option<String>,
 ) -> Result<(), String> {
     let dir = store_dir(&app)?;
-    update_server(&dir, &address, |entry| {
+    let write = update_server(&dir, &address, |entry| {
         entry.fingerprint = Some(fingerprint);
         entry.insecure = false;
         if let Some(token) = token {
             entry.token = Some(token);
         }
-    })
-    .map_err(|e| format!("failed to store the server's fingerprint: {e}"))
+    });
+    answered(&app, &address, write)
 }
 
 /// Tauri command — replace the bearer token stored for `address`, the
@@ -224,10 +254,10 @@ pub fn set_server_token(
     token: String,
 ) -> Result<(), String> {
     let dir = store_dir(&app)?;
-    update_server(&dir, &address, |entry| {
+    let write = update_server(&dir, &address, |entry| {
         entry.token = if token.is_empty() { None } else { Some(token) };
-    })
-    .map_err(|e| format!("failed to store the server's token: {e}"))
+    });
+    answered(&app, &address, write)
 }
 
 /// Tauri command — record that the operator chose to reach `address`
@@ -241,12 +271,12 @@ pub fn set_server_token(
 #[allow(clippy::needless_pass_by_value)]
 pub fn accept_server_insecure(app: tauri::AppHandle, address: String) -> Result<(), String> {
     let dir = store_dir(&app)?;
-    update_server(&dir, &address, |entry| {
+    let write = update_server(&dir, &address, |entry| {
         entry.insecure = true;
         entry.fingerprint = None;
         entry.token = None;
-    })
-    .map_err(|e| format!("failed to store the server's connection choice: {e}"))
+    });
+    answered(&app, &address, write)
 }
 
 /// Tauri command — forget everything stored for `address`. The next
@@ -255,8 +285,8 @@ pub fn accept_server_insecure(app: tauri::AppHandle, address: String) -> Result<
 #[allow(clippy::needless_pass_by_value)]
 pub fn forget_server(app: tauri::AppHandle, address: String) -> Result<(), String> {
     let dir = store_dir(&app)?;
-    update_server(&dir, &address, |entry| *entry = TrustEntry::default())
-        .map_err(|e| format!("failed to forget the server: {e}"))
+    let write = update_server(&dir, &address, |entry| *entry = TrustEntry::default());
+    answered(&app, &address, write)
 }
 
 #[cfg(test)]
@@ -268,7 +298,7 @@ mod tests {
     }
 
     /// What the store holds for `address` — an empty entry when nothing.
-    fn trust_for(dir: &Path, address: &str) -> TrustEntry {
+    fn stored(dir: &Path, address: &str) -> TrustEntry {
         read_servers(dir)
             .servers
             .remove(&server_key(address))
@@ -284,7 +314,7 @@ mod tests {
         })
         .unwrap();
 
-        let entry = trust_for(d.path(), "bench.local:50051");
+        let entry = stored(d.path(), "bench.local:50051");
         assert_eq!(
             entry.fingerprint.as_deref(),
             Some("SHA256:4EMRWrqj5MtP7Lxx4DjdNGUhBPIUijAl4UZekXCJwAc"),
@@ -306,11 +336,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            trust_for(d.path(), "bench:50051").fingerprint.as_deref(),
+            stored(d.path(), "bench:50051").fingerprint.as_deref(),
             Some("SHA256:aaa"),
         );
-        assert_eq!(trust_for(d.path(), "bench:50052").fingerprint, None);
-        assert_eq!(trust_for(d.path(), "other:50051").fingerprint, None);
+        assert_eq!(stored(d.path(), "bench:50052").fingerprint, None);
+        assert_eq!(stored(d.path(), "other:50051").fingerprint, None);
     }
 
     #[test]
@@ -321,7 +351,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            trust_for(d.path(), "bench:50051").fingerprint.as_deref(),
+            stored(d.path(), "bench:50051").fingerprint.as_deref(),
             Some("SHA256:aaa"),
         );
     }
@@ -345,11 +375,11 @@ mod tests {
     #[test]
     fn an_insecure_choice_is_stored_per_server_and_never_defaulted() {
         let d = dir();
-        assert!(!trust_for(d.path(), "bench:50051").insecure);
+        assert!(!stored(d.path(), "bench:50051").insecure);
         update_server(d.path(), "bench:50051", |e| e.insecure = true).unwrap();
-        assert!(trust_for(d.path(), "bench:50051").insecure);
+        assert!(stored(d.path(), "bench:50051").insecure);
         assert!(
-            !trust_for(d.path(), "elsewhere:50051").insecure,
+            !stored(d.path(), "elsewhere:50051").insecure,
             "one server's choice says nothing about another's",
         );
     }

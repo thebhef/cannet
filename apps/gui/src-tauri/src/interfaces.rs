@@ -24,18 +24,26 @@
 //! again. Cancellation is via the `AbortHandle` stored alongside the
 //! cache entry; calling [`unwatch`] aborts the task before the next
 //! `.await`, draining the address from the cache.
+//!
+//! **How a server is reached is not this module's decision.**
+//! [`crate::connect_flow`] plans every attempt from what the host has
+//! stored for the address (ADR 0041), and classifies every failure.
+//! Two of them — a certificate that is not the pinned one, and a
+//! refused credential — are terminal here: the loop stops and the
+//! question reaches the user instead of being retried once a second
+//! forever.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cannet_client::ConnectConfig;
 use serde::Serialize;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use crate::connect_flow::{self, Attempt, Outcome};
 use crate::ipc::InterfaceRecord;
-use crate::sys_warn;
+use crate::{server_trust, sys_error, sys_warn};
 
 /// Tauri event emitted whenever the host's cached interface list for
 /// some address changes. Payload is [`InterfacesChangedPayload`]; the
@@ -142,6 +150,29 @@ pub fn unwatch(app: &AppHandle, address: &str) {
     }
 }
 
+/// Restart the watch task for `address`, if one is running, against a
+/// freshly read trust decision. Called when the user answers a trust
+/// question: the loop that stopped on it has to try again, and waiting
+/// for a reconnect that will never come on its own is not an answer.
+///
+/// The cached snapshot is deliberately left in place — this is the same
+/// server, so there is nothing to clear and nothing to flicker.
+pub(crate) fn rewatch(app: &AppHandle, address: &str) {
+    let Some(state) = app.try_state::<InterfacesState>() else {
+        return;
+    };
+    let mut inner = state.inner.lock().expect("interfaces state poisoned");
+    let Some(entry) = inner.entries.get_mut(address) else {
+        return;
+    };
+    entry.task.abort();
+    let app_for_task = app.clone();
+    let address_for_task = address.to_string();
+    entry.task = tauri::async_runtime::spawn(async move {
+        run_watch(app_for_task, address_for_task).await;
+    });
+}
+
 /// Tauri command — snapshot the host's cached interface list for an
 /// address. Returns an empty list when the address isn't being
 /// watched (caller should not block on this; the watch task pushes
@@ -178,46 +209,112 @@ pub fn unwatch_interfaces(app: AppHandle, address: String) {
 /// fold the result into the cache. Wired to the "Discover" buttons
 /// in the connection panel so a user who can't wait for the next
 /// watch push can force the freshest possible answer.
+///
+/// This is also where trust-on-first-use usually starts: discovering a
+/// routable server the host knows nothing about probes its identity and
+/// raises the accept dialog, so the fingerprint is compared before any
+/// bus is bound to it.
 #[tauri::command]
 pub async fn refresh_interfaces(
     app: AppHandle,
     address: String,
 ) -> Result<Vec<InterfaceRecord>, String> {
-    let interfaces = cannet_client::list_interfaces(&ConnectConfig::plaintext(&address))
-        .await
-        .map_err(|e| e.to_string())?;
+    let attempt = connect_flow::plan(&address, &server_trust::trust_for(&app, &address));
+    let config = attempt.config(&address)?;
+    let interfaces = match cannet_client::list_interfaces(&config).await {
+        Ok(interfaces) => interfaces,
+        Err(e) => {
+            report_failure(&app, &address, &attempt, &e);
+            return Err(e.to_string());
+        }
+    };
+    connect_flow::resolved(&app, &address);
     let records: Vec<InterfaceRecord> = interfaces.into_iter().map(InterfaceRecord::from).collect();
     update_cache_and_emit(&app, &address, &records);
     Ok(records)
 }
 
 /// Long-lived task body: connect, subscribe, stream snapshots, retry
-/// on disconnect. Exits only when the `AbortHandle` is fired — by
-/// [`unwatch`] or implicitly when the entry is removed from the
-/// cache.
+/// on disconnect. Exits when the `AbortHandle` is fired — by
+/// [`unwatch`], by [`rewatch`], or implicitly when the entry is removed
+/// from the cache — and also when the failure is one retrying cannot
+/// fix (S13: a changed certificate or a refused token stops the loop
+/// and puts the question to the user).
 async fn run_watch(app: AppHandle, address: String) {
     loop {
-        match cannet_client::watch_interfaces(&ConnectConfig::plaintext(&address)).await {
+        let attempt = connect_flow::plan(&address, &server_trust::trust_for(&app, &address));
+        let config = match attempt.config(&address) {
+            Ok(config) => config,
+            Err(msg) => {
+                sys_error!(&app, SOURCE, "WatchInterfaces({address}): {msg}");
+                return;
+            }
+        };
+        match cannet_client::watch_interfaces(&config).await {
             Ok(mut stream) => {
-                while let Ok(Some(interfaces)) = stream.next().await {
-                    let records: Vec<InterfaceRecord> =
-                        interfaces.into_iter().map(InterfaceRecord::from).collect();
-                    update_cache_and_emit(&app, &address, &records);
+                // The connection stands, so whatever was being asked
+                // about this server has been answered.
+                connect_flow::resolved(&app, &address);
+                loop {
+                    match stream.next().await {
+                        Ok(Some(interfaces)) => {
+                            let records: Vec<InterfaceRecord> =
+                                interfaces.into_iter().map(InterfaceRecord::from).collect();
+                            update_cache_and_emit(&app, &address, &records);
+                        }
+                        Ok(None) => break,
+                        // A credential the server stops accepting
+                        // mid-stream is as terminal as one refused at
+                        // connect time.
+                        Err(e) => {
+                            if report_failure(&app, &address, &attempt, &e) {
+                                return;
+                            }
+                            break;
+                        }
+                    }
                 }
             }
             Err(e) => {
-                // First connect (or reconnect) failed. Log once at
-                // warn so the user sees something on a misconfigured
-                // remote; subsequent retries stay quiet to avoid log
-                // spam on a permanently-down server.
-                sys_warn!(
-                    &app,
-                    SOURCE,
-                    "WatchInterfaces({address}) connect failed: {e}; retrying"
-                );
+                if report_failure(&app, &address, &attempt, &e) {
+                    return;
+                }
             }
         }
         tokio::time::sleep(reconnect_backoff()).await;
+    }
+}
+
+/// Put a failed attempt on the system log and, when it is a question
+/// only the user can answer, in front of them. Returns whether the
+/// caller must stop trying.
+fn report_failure(
+    app: &AppHandle,
+    address: &str,
+    attempt: &Attempt,
+    error: &cannet_client::ConnectionError,
+) -> bool {
+    match connect_flow::classify(attempt, error) {
+        Outcome::Ask(prompt) => {
+            sys_warn!(
+                app,
+                SOURCE,
+                "{address}: {error}; waiting for an answer before trying again"
+            );
+            connect_flow::ask(app, address, prompt);
+            true
+        }
+        Outcome::Fatal(msg) => {
+            sys_error!(app, SOURCE, "{address}: {msg}");
+            true
+        }
+        // Log once at warn so the user sees something on a
+        // misconfigured remote; subsequent retries stay quiet to avoid
+        // log spam on a permanently-down server.
+        Outcome::Retry(msg) => {
+            sys_warn!(app, SOURCE, "{address}: {msg}; retrying");
+            false
+        }
     }
 }
 
