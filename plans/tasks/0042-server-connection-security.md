@@ -537,3 +537,41 @@ host-side) and the README walkthrough — *Connecting the GUI to a
 protected server*, covering the fingerprint comparison, the token paste,
 the changed-identity warning, the trusted-server list, and the
 `--insecure` tradeoff.
+
+## Exit-criteria walk (2026-08-12, orchestrator)
+
+- **Bind guard** — met. Non-loopback without TLS+token refuses with
+  the missing-protections list (`Display` form, non-zero exit);
+  `--insecure` suppresses the refusal only; the same guard sits at
+  the proxy and both `debug` binds; loopback plaintext unchanged.
+- **Integration tests** — met. TLS handshake vs the generated cert
+  (`tests/tls.rs`), token rejection before any RPC and success
+  end-to-end across all three RPCs (`tests/auth.rs` + interceptor
+  unit tests: missing / wrong / wrong-scheme / lowercase-scheme /
+  non-ASCII / correct).
+- **Verifier falsification** — met. Cert-A/key-B server (same
+  fingerprint as the pin) fails the pinned handshake at
+  `CertificateVerify` with no `PinObservation` published — the
+  signature delegation is real, not asserted.
+- **Proxy credential hygiene** — met. Regression test pins that no
+  `authorization` metadata reaches the upstream.
+- **GUI TOFU flow** — met. Host-side `servers.json` (user scope,
+  ADR 0032) holds pins + tokens keyed by `host:port`; the accept
+  dialog and trusted-servers list show the server console's exact
+  `SHA256:` string; mismatch and wrong-token are terminal for the
+  watch loop with explicit re-accept / re-enter paths; the
+  insecure-connect choice is per-server and explicit. Frontend never
+  holds a token value. Not yet exercised by a human against a live
+  protected server — flagged to the owner as the natural first
+  manual check.
+- **Inventory** — met. tonic-tls/rustls, rcgen, subtle, base64
+  `adopted` with versions and backend rationale; hyper-rustls
+  `rejected` (in-tree connector, zero new deps);
+  `getrandom`/`rand`/`sha2` stay `rejected`.
+- **README** — met. Protected-server launch, fingerprint compare,
+  token paste, `CANNET_TOKEN`/`--token` visibility note, rotation,
+  `--insecure` tradeoff, cert-renewal re-accept consequence.
+
+Open owner decision (surfaced 2026-08-12): `--tls` flag (as landed)
+vs auto-enabling TLS+token on any routable bind. Small change either
+way; recorded in the phase-1 status log.
