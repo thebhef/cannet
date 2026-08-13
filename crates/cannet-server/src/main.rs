@@ -46,7 +46,13 @@ use tonic::transport::Server;
 mod logging;
 use logging::{Level, PROXY, REPLAY, SERVER, VBUS};
 
-#[derive(Parser, Debug)]
+/// No `Debug`, here or on [`ProxyArgs`]: it holds `--token`, and a
+/// derived impl would print the operator's credential in full from a
+/// `dbg!` added during troubleshooting. `AccessToken` and
+/// `ServerIdentity` are kept unprintable for the same reason — the
+/// guarantee lives at the type rather than in every call site's memory.
+/// [`Command`] keeps its own `Debug`; it holds nothing sensitive.
+#[derive(Parser)]
 #[command(version, about = "cannet gRPC server")]
 struct Cli {
     #[command(subcommand)]
@@ -56,8 +62,9 @@ struct Cli {
 }
 
 /// Options for the bare invocation — the production hardware proxy.
-/// Ignored when a `debug` subcommand is given.
-#[derive(Args, Debug)]
+/// Ignored when a `debug` subcommand is given. Deliberately not
+/// `Debug` — see [`Cli`].
+#[derive(Args)]
 struct ProxyArgs {
     /// Address to bind the gRPC service on. The default is loopback:
     /// serving the network is an explicit choice, and an unprotected
@@ -848,10 +855,16 @@ mod tests {
 
     #[test]
     fn cert_and_key_come_as_a_pair() {
-        Cli::try_parse_from(["cannet-server", "--cert", "server.pem"])
-            .expect_err("--cert without --key should not parse");
-        Cli::try_parse_from(["cannet-server", "--key", "server.key"])
-            .expect_err("--key without --cert should not parse");
+        // `is_err` rather than `expect_err`: the latter needs `Cli:
+        // Debug`, which it deliberately does not have.
+        assert!(
+            Cli::try_parse_from(["cannet-server", "--cert", "server.pem"]).is_err(),
+            "--cert without --key should not parse"
+        );
+        assert!(
+            Cli::try_parse_from(["cannet-server", "--key", "server.key"]).is_err(),
+            "--key without --cert should not parse"
+        );
         Cli::try_parse_from([
             "cannet-server",
             "--cert",
@@ -1017,8 +1030,10 @@ mod tests {
 
     #[test]
     fn debug_replay_requires_a_blf_path() {
-        Cli::try_parse_from(["cannet-server", "debug", "replay"])
-            .expect_err("debug replay with no BLF path should fail to parse");
+        assert!(
+            Cli::try_parse_from(["cannet-server", "debug", "replay"]).is_err(),
+            "debug replay with no BLF path should fail to parse"
+        );
     }
 
     #[test]
@@ -1221,13 +1236,17 @@ mod tests {
 
     #[test]
     fn old_top_level_virtual_bus_flag_no_longer_parses() {
-        Cli::try_parse_from(["cannet-server", "--virtual-bus"])
-            .expect_err("--virtual-bus is no longer a top-level flag; it is `debug vbus`");
+        assert!(
+            Cli::try_parse_from(["cannet-server", "--virtual-bus"]).is_err(),
+            "--virtual-bus is no longer a top-level flag; it is `debug vbus`"
+        );
     }
 
     #[test]
     fn old_top_level_positional_blf_no_longer_parses() {
-        Cli::try_parse_from(["cannet-server", "capture.blf"])
-            .expect_err("a bare positional BLF path is no longer accepted; it is `debug replay`");
+        assert!(
+            Cli::try_parse_from(["cannet-server", "capture.blf"]).is_err(),
+            "a bare positional BLF path is no longer accepted; it is `debug replay`"
+        );
     }
 }

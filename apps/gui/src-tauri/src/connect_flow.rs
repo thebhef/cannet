@@ -45,7 +45,7 @@ use crate::server_trust::TrustEntry;
 pub const SERVER_PROMPTS_CHANGED_EVENT: &str = "server-prompts-changed";
 
 /// How the next attempt against a server is made.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Attempt {
     /// Plaintext HTTP/2, no credential.
     Plaintext,
@@ -58,6 +58,27 @@ pub enum Attempt {
     /// A trust-on-first-use probe. Always fails; the point is what it
     /// saw on the way.
     Probe,
+}
+
+/// Redacts the token, which the derived impl printed in full. An
+/// `&Attempt` travels into the failure-reporting helpers that sit
+/// beside the `sys_warn!` / `sys_error!` calls writing `cannet.log` —
+/// the file a bug report attaches — so a `{attempt:?}` added there
+/// while troubleshooting must not be a credential leak. The
+/// fingerprint is public material and stays legible; the same split
+/// [`crate::server_trust::TrustEntry`] makes.
+impl std::fmt::Debug for Attempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plaintext => f.write_str("Plaintext"),
+            Self::Probe => f.write_str("Probe"),
+            Self::Pinned { fingerprint, token } => f
+                .debug_struct("Pinned")
+                .field("fingerprint", fingerprint)
+                .field("token", &token.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
 }
 
 impl Attempt {
@@ -304,6 +325,32 @@ pub fn get_server_prompts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_attempts_debug_output_never_carries_the_token() {
+        // `&Attempt` is handed to `report_failure` and `ask_or_report`,
+        // which sit directly beside the `sys_warn!` / `sys_error!` calls
+        // that write `cannet.log` — the file a bug report attaches. A
+        // `{attempt:?}` added there while troubleshooting would be a
+        // one-line credential leak, so the type refuses to render one.
+        let attempt = Attempt::Pinned {
+            fingerprint: "SHA256:qF3".into(),
+            token: Some("the-bearer-token-value".into()),
+        };
+        let rendered = format!("{attempt:?}");
+        assert!(
+            !rendered.contains("the-bearer-token-value"),
+            "the token must not be printable: {rendered}"
+        );
+        assert!(rendered.contains("SHA256:qF3"), "{rendered}");
+        assert!(rendered.contains("redacted"), "{rendered}");
+        // An attempt with no token says so rather than saying nothing.
+        let none = Attempt::Pinned {
+            fingerprint: "SHA256:qF3".into(),
+            token: None,
+        };
+        assert!(!format!("{none:?}").contains("redacted"));
+    }
 
     fn pinned(fingerprint: &str, token: Option<&str>) -> TrustEntry {
         TrustEntry {
