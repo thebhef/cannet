@@ -131,7 +131,8 @@ see the verdict for where it goes.
    (stdin-EOF, the expected graceful path) → wait **5 s** → kill
    the process tree on expiry. Second Ctrl-C during the window
    hard-exits immediately by design, not by console-host force.
-4. **Logging parity + secrets sweep** — server gets the GUI's
+4. **Logging parity + secrets sweep** — *done 2026-08-13; see the
+   Status log.* Server gets the GUI's
    pattern: rolling `cannet-server.log` in the identity dir
    (`<data-local-dir>/cannet-server`, XDG-honoring), same
    rotation/flush/level semantics, timestamps + level tags on both
@@ -537,6 +538,134 @@ that failed to launch, on a shutdown we performed. A non-zero exit with
 `exited with … after being stopped`; the warn line about the kill
 already carries the news. Verified by re-running the wedged scenario.
 
+### 2026-08-13 — phase 4, logging parity + secrets sweep
+
+Branch `task67d-logging-parity`, off `task67c-bounded-shutdown`
+(`c6aed62`). Four commits.
+
+**The factoring choice: share, via a new `crates/cannet-log`**
+(`d09f300`). What `crash.rs`'s writer actually depends on is `std::fs`
+and `chrono` — no Tauri anywhere — so the "minimal server-side
+implementation" fallback was not needed. What the two hosts *cannot*
+share is the policy around it: the GUI reads its rotation cap from a
+live settings file and its panic hook must bypass the write lock
+without deadlocking, while the server's cap is a constant. So the crate
+is deliberately **stateless** — the caller owns the directory, the file
+name, the cap and any lock — and holds only what must not drift:
+`append_block` (create dir → rotate past cap → append → flush) and
+`iso8601_from_ms` / `unix_ms`. It is not `cannet-core` (zero-dependency
+CAN-model charter; `chrono` has no business there) and not
+`cannet-sidecar` (supervision charter, where a log writer is a misfit a
+future reader trips over). `cannet-gui` handed its direct `chrono`
+dependency over to the new crate, whose only dependency it is. **No new
+external dependency:** `tracing-appender` was considered and recorded
+`rejected` in `plans/technology-inventory.md` — its rotation is
+time-based behind a background writer thread, which is neither the size
+cap nor the flush-per-write that make an instant death still leave
+evidence.
+
+**Where the logs land.** The server's directory is the one it already
+owns — `identity::default_identity_dir()`, i.e.
+`dirs::data_local_dir()/cannet-server` — beside the certificate and the
+token:
+
+| OS | file |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\cannet-server\cannet-server.log` |
+| Linux | `$XDG_DATA_HOME/cannet-server/cannet-server.log` (default `~/.local/share/…`) |
+| macOS | `~/Library/Application Support/cannet-server/cannet-server.log` |
+
+Semantics are the GUI's, as fixed defaults: flushed per write,
+size-rotated at 5 MB to a single `.1` generation, debug floor on the
+file. Both sinks carry `<rfc3339> <LEVEL> <source>: <message>`; sources
+are `hardware proxy`, `sidecar:python-can`, `cannet-server` (fatal
+startup), `replay` and `vbus`. **No `--log-dir` and no level flag** —
+the only verbosity knob is the pre-existing `--sidecar-log-level`.
+Every `eprintln!` in the crate is gone; each line's wording survives
+minus the prefixes the tags now carry (a literal `warning:`, `[info]`,
+`error:`).
+
+**Sidecar logfile wired** (`5716b72`). `LaunchConfig::log_file` is now
+`sidecar_log_file(logging::dir())` — `sidecar-python-can.log` in the
+same directory, resolved per spawn so a restart after the directory
+becomes writable starts writing. An uncreatable directory is a warning
+and no `--log-file`, matching the GUI.
+
+**The token ruling, as built.** The banner is `logging::console_only`,
+which is `eprintln!` and touches no file. The log gets
+`logging::token_configured_note()` instead — a function that **takes no
+argument**, so no later edit can interpolate a secret into it. The
+certificate fingerprint went the other way: public by design
+(ADR 0041), so it is now an ordinary logged line rather than a
+console-only one.
+
+#### Secrets sweep — sink × secret
+
+Sinks: **S-err** server stderr, **S-log** `cannet-server.log`, **G-log**
+GUI `cannet.log` (and its panic hook), **SC-log** the sidecar's
+`sidecar-python-can.log`, **Err** an error string returned to a caller
+(tonic `Status` / Tauri `Err`).
+
+| # | Secret | Sink | Where | Verdict |
+| --- | --- | --- | --- | --- |
+| 1 | Server token (`--token` / `CANNET_TOKEN` / generated) | S-err | `main.rs` startup banner | **by design** — the operator reads it off the console; `console_only`, never the log layer |
+| 2 | Server token | S-log | `main.rs` | **absent** — the file gets `token_configured_note()`, which takes no argument |
+| 3 | Server token | SC-log | `launch.rs` `apply_settings` | **absent** — the sidecar is passed only `--log-level`, `--log-file`, `CANNET_DRIVER_MODULE` |
+| 4 | Server token | Err | `auth.rs` `TokenError` | **absent** — carries a `PathBuf` + `io::Error`, never file contents |
+| 5 | Server token | any | `auth.rs` `AccessToken` | **unprintable** — no `Debug`, no `Display`; `as_str` is the only renderer |
+| 6 | Presented credential (auth failure) | S-err / S-log / Err | `auth.rs` `token_gate` | **absent** — all four rejection causes return one constant `unauthenticated()`; nothing echoed, so it is not an oracle either |
+| 7 | TLS private key | any | `identity.rs` `ServerIdentity` | **unprintable** — no `Debug` derive |
+| 8 | TLS private key | Err | `identity.rs` `IdentityError` | **absent** — variants hold paths and `io::Error`; a bad PEM is the unit `NoCertificate`, not the text. `Generate(rcgen::Error)` is interpolated, but rcgen's error enum is categorical and holds no key bytes |
+| 9 | GUI trust-store token | G-log | `server_trust.rs` `TrustEntry` | **redacted** — hand-written `Debug`, regression-tested |
+| 10 | GUI trust-store token | frontend / IPC | `server_trust.rs` `TrustedServer` | **absent** — exposes `has_token: bool` |
+| 11 | GUI trust-store token | G-log | `server_trust.rs` `read_servers` | **absent** — whole-document `parse_or_default`; the per-key `read_scoped` path quotes a refused *value* into a logged complaint, so this document deliberately forgoes it (now recorded in its rustdoc) |
+| 12 | GUI trust-store token | G-log | `connect_flow.rs` `Attempt` | **fixed** — derived `Debug` printed it in full; now redacted (`239f7d3`) |
+| 13 | GUI trust-store token | G-log | `interfaces.rs`, `session.rs`, `connection_state.rs` | **absent** — every line interpolates `{error}` / `{msg}` / a classifier string, never the attempt |
+| 14 | GUI trust-store token | frontend event | `connect_flow.rs` `TrustPrompt` / `TokenRefused` | **absent** — fingerprints and transport detail; `TokenRefused` is a unit variant |
+| 15 | Client token | any | `cannet-client` `ConnectConfig` / `Trust` | **fixed** — a *public* type whose derived `Debug` printed it; now redacted (`239f7d3`) |
+| 16 | Client token | Err / G-log | `cannet-client` `ConnectionError` | **absent** — no variant carries it; `InvalidToken` refuses to echo the bad value |
+| 17 | Client token | downstream | `proxy.rs` | **absent** — the credential is deliberately not relayed; a fresh `Request` is built per upstream call |
+| 18 | Server token (`--token`) | S-err | `main.rs` `ProxyArgs` / `Cli` | **fixed** — derived `Debug` held it; removed outright (`239f7d3`) |
+| 19 | Any secret | SC-log | `cannet_python_can` CLI, `helpers.py`, `service.py` | **absent** — the sidecar's whole CLI is `--bind` / `--log-level` / `--log-file` / `--version`; its only `os.environ` read is `CANNET_DRIVER_MODULE`; loopback `add_insecure_port`, so there is no TLS material and no auth metadata to log |
+| 20 | Any secret | G-log | `sidecar.rs` `log_sidecar_output` | **absent** — it forwards every child stderr line, but the child holds no secret (19) |
+| 21 | Any secret | G-log panic hook | `crash.rs` | **absent** — the hook writes the panic payload; nothing in the repo panics on a secret-bearing value |
+
+No sink was found writing a credential today, so **no red-first
+regression of an actual leak was possible**. Three types did hold a
+plaintext token behind a *derived* `Debug` — one `{:?}` from a leak, in
+each case beside code that already logs — and those were fixed under
+red-first tests (rows 12, 15, 18): both redacting impls printed the
+token in full before the change, and the removed derives are
+compile-time. The pattern is the one `AccessToken`, `ServerIdentity`
+and `TrustEntry` already followed — the guarantee lives at the type,
+not in every call site's memory.
+
+**Empirical confirmation**, this machine, real PCAN hardware (2 PEAK
+PCAN-USB FD), debug build, sidecar via the dev `uv` chain. Two runs
+against a fresh `cannet-server.log`, one plaintext and one `--tls`:
+
+| check | result |
+| --- | --- |
+| logfile + sidecar logfile created in the identity dir | yes, both |
+| token value present on the console | yes — the ruling |
+| token value present in `cannet-server.log` | **no** |
+| token value present in `sidecar-python-can.log` | **no** |
+| `PRIVATE KEY` in either logfile | **no** |
+| fingerprint present in `cannet-server.log` | yes — public by design |
+
+| layer | command | result |
+| --- | --- | --- |
+| shared log crate | `cargo test -p cannet-log` | 6 passed |
+| sidecar crate | `cargo test -p cannet-sidecar` | 39 passed |
+| server | `cargo test -p cannet-server` | 100 passed, 2 ignored |
+| client | `cargo test -p cannet-client` | 29 passed |
+| host | `cargo test -p cannet-gui` | 568 passed, 6 ignored |
+
+`cargo clippy --workspace --all-targets -- -D warnings` clean (the
+pre-commit gate ran it on every commit). No frontend file was touched,
+so the pnpm suites were not in scope; no Python file was touched, so
+the sidecar suite was not either.
+
 ## Blockers / side effects
 
 - **Console Ctrl-C is disabled by inheritance in the agent's shell
@@ -549,9 +678,10 @@ already carries the news. Verified by re-running the wedged scenario.
 - **The auto-restart budget confounds any "kill the sidecar"
   experiment**: the supervisor spawns a replacement that re-takes a
   fresh stdin pipe. Run with `--sidecar-restart-budget 0`.
-- **The server log has no timestamps**, so an experiment timeline
+- ~~**The server log has no timestamps**, so an experiment timeline
   cannot be correlated against it without external markers. This was a
-  live cost during phase 1 and is first-hand motivation for phase 4.
+  live cost during phase 1 and is first-hand motivation for phase 4.~~
+  Fixed in phase 4: both sinks carry RFC-3339 timestamps.
 - **Same close race, other caller (noticed in phase 2, left alone):**
   `_SharedInterface.reconfigure` also closes the old channel out from
   under an in-flight `recv`, but without setting `_stop` — it is a swap,
@@ -568,6 +698,17 @@ already carries the news. Verified by re-running the wedged scenario.
   `stop()` is now the only thing that ends it. Deliberate — it makes
   every OS take the same shutdown path — and noted here because it
   changes what a `kill -INT` on the server's group does.
+- **New in phase 4, not a log leak but noticed by the sweep:**
+  `CANNET_TOKEN` is inherited by the sidecar child. The child inherits
+  the server's whole environment on purpose (so a driver-module
+  override set for the server reaches it), and the sidecar never reads
+  or dumps its environment — its only `os.environ` access is
+  `CANNET_DRIVER_MODULE` — so nothing writes it anywhere. But the
+  value does sit in the environment block of a process that is not the
+  one enforcing it, readable via `/proc/<pid>/environ` by the same
+  user on Linux. Clearing that one variable on the child would close
+  it; out of scope here because it changes what the child is spawned
+  with, not what any sink records.
 - **Unverified on this machine:** the Unix half of the tree kill
   (`process_group(0)` + `kill -KILL -<pgid>`). The unit tests cover it
   and CI runs them on Linux; the manual runs recorded above are Windows
