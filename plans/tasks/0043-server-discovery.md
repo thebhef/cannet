@@ -174,3 +174,67 @@ it just cannot browse.
   machines, not one.
 - Those auto-created Block rules still name the spike's temp paths;
   deleting them needs elevation, so they were left in place.
+
+### 2026-08-12 — phase 2: the server advertises
+
+Landed on `task43b-server-advertise`, off `task43a-mdns-eval`
+(`8761a8e`). Two commits:
+
+- `3fa3e4c` — `cannet-server::discovery` module:
+  `Advertisement::register` (builds the `ServiceInfo` — instance
+  name, bound port, single `ver=` TXT key — and registers it with
+  `enable_addr_auto()`) and `Advertisement::shutdown` (sends the
+  goodbye and awaits the daemon's own completion signal before
+  returning, per the phase-1 finding that a bare `shutdown()` with no
+  wait can lose the goodbye to process exit). `advertised_name`
+  resolves `--name` against the system hostname. `cannet-server`
+  gained `vergen` as a build-dependency (`build.rs` mirrors
+  `apps/gui/src-tauri/build.rs`) and `hostname` 0.4 as a direct dep
+  (new adoption — no `std` equivalent; see
+  `technology-inventory.md`). 6 unit tests on the service-info
+  assembly and name defaulting.
+- `3b96abb` — wired into `main.rs`: `--name` / `--no-mdns` flags,
+  `build_version()` (same `VERGEN_GIT_DESCRIBE`-or-`CARGO_PKG_VERSION`
+  fallback as the GUI), registration in `run_proxy` (warns and
+  continues on failure — discovery is convenience only, never a
+  startup refusal), and a `tokio::select!` between the server future
+  and `tokio::signal::ctrl_c()` so Ctrl-C awaits
+  `Advertisement::shutdown` before the process exits. `debug replay`
+  and `debug vbus` never call `discovery` — confirmed by reading the
+  call graph, not by a runtime check, since there is nothing to
+  assert against. 2 more CLI-parsing unit tests.
+
+**`enable_addr_auto()` is the phase-2 answer to the open point in the
+Grooming notes above** (binding only the interfaces actually served,
+vs. every interface): went with the simple default, unchanged from
+the phase-1 spike. No evidence surfaced that VM/WSL adapter noise is
+a real problem worth the extra config surface.
+
+**Live integration test**: `discovery::tests::register_and_browse_round_trip`,
+`#[ignore]`d (binds real multicast sockets). Registers an
+`Advertisement`, browses for it with a second `ServiceDaemon` in the
+same process, asserts the `ver` TXT and port on resolve, calls
+`shutdown()`, and asserts `ServiceRemoved` follows. Run once locally
+(Windows 11, same machine as the phase-1 spike):
+`cargo test -p cannet-server --lib -- --ignored register_and_browse` →
+1 passed in 1.81 s. Same-host only, consistent with the phase-1
+spike's own finding — not evidence of cross-machine reachability,
+which still needs the Windows inbound UDP 5353 allow noted below.
+
+**Manual smoke test**: `cargo run -p cannet-server` (bare, loopback,
+plaintext) printed `hardware proxy: advertising "RIPPY" (v0.8.1-83-
+g3fa3e4c-dirty) via mDNS (_cannet._tcp)` before the sidecar banner —
+vergen's `git describe` reached the TXT record as designed, hostname
+defaulting worked with no `--name` given. Process tree (including the
+spawned sidecar) exited cleanly under `timeout`; no leftover
+processes.
+
+**Docs**: ADR 0040's discovery bullet amended to the resolved TXT
+shape (single `ver=` key, no labels) in the module commit. README
+§ Running the production server documents `--name` / `--no-mdns`; the
+prebuilt-archive paragraph carries the Windows inbound UDP 5353 note
+for cross-machine discovery.
+
+**Not done in this phase** (phase 3, GUI browse):
+`plans/features.md`'s "Discoverable on the network" stays unchecked —
+the GUI does not browse yet, so the exit criterion isn't met.
