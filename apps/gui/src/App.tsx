@@ -86,6 +86,7 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { SignalGeneratorProvider } from "./signalGeneratorContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
+import { ServerTrustDialogs } from "./ServerTrustDialog";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
 import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
@@ -3053,6 +3054,7 @@ export function App() {
           onCancel={() => setPendingBlf(null)}
         />
       )}
+      <ServerTrustDialogs />
       {splashVisible && <SplashOverlay />}
     </main>
   );
