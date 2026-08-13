@@ -2053,6 +2053,24 @@ uv run --with asammdf --with numpy python gen_fixtures.py
 It rewrites every fixture and expectation, then re-reads each result
 through asammdf and checks it against the JSON it just wrote; a
 non-zero exit means the corpus does not match its own ground truth.
+
+### Validating an MDF export against asammdf
+
+The MDF **writer** is proved against `cannet-mdf`'s own reader by the
+default suite. asammdf — the ecosystem's reference implementation — is
+the independent second opinion, and it runs as its own CI job so
+`cargo test --workspace` stays Python-free. Locally:
+
+```sh
+cargo run -p cannet-mdf --example export_sample -- /tmp/sample.mf4
+uv run --with asammdf --with numpy python \
+    crates/cannet-mdf/tests/fixtures/validate_export.py /tmp/sample.mf4
+```
+
+The example writes a deterministic capture plus a `sample.json` listing
+exactly what went into it; the script opens the `.mf4` with asammdf and
+compares the two — the bus-logging map, every frame field for field, the
+signal groups, the events and the embedded attachment.
 asammdf is a dev-time oracle only — never a runtime dependency.
 
 ### Pre-commit hook
