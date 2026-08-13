@@ -1,11 +1,13 @@
-//! Capture-session commands: BLF open / save / scan, the raw↔core frame
-//! conversion, and the scratch-buffer lifecycle (clear / restore /
-//! restamp).
+//! Capture-session commands: BLF/MDF open / scan, BLF save, the
+//! raw↔core frame conversion, and the scratch-buffer lifecycle
+//! (clear / restore / restamp).
 //!
-//! Opening a BLF spawns a pump thread (`crate::run_pump`); saving writes
-//! the whole session buffer plus notes back out as a Vector BLF (ADR
-//! 0010 — no sidecar files); clearing/restoring manage the disk-spill
-//! scratch identity (ADR 0002 DS-7).
+//! Opening a BLF or an MDF spawns a pump thread (`crate::run_pump`,
+//! generic over `cannet_core::CanFrameSource`, so the same pipeline
+//! runs either source); saving writes the whole session buffer plus
+//! notes back out as a Vector BLF (ADR 0010 — no sidecar files);
+//! clearing/restoring manage the disk-spill scratch identity (ADR
+//! 0002 DS-7).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};

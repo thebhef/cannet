@@ -1,17 +1,19 @@
-//! Cannet Tauri host. Wires the BLF / DBC stack and the
+//! Cannet Tauri host. Wires the BLF / MDF / DBC stack and the
 //! remote-server client to the React frontend.
 //!
-//! Two source modes share one frontend pipeline:
+//! Three source modes share one frontend pipeline:
 //!
 //! - `open_log(blf_path)` — opens a Vector BLF file and spawns a worker
 //!   thread that streams frames into the trace store until the file is
 //!   exhausted.
+//! - `import_mdf(mdf_path)` — the same shape over an ASAM MDF 4.x
+//!   bus-logging file (`cannet_mdf::MdfCanFrameSource`).
 //! - `connect_remote_server(address)` — connects to a `cannet-server`
 //!   over gRPC, lists its interfaces, subscribes to all of them, and
 //!   spawns the same kind of worker thread to push frames into the
 //!   trace store. `disconnect_remote_server` ends the session.
 //!
-//! Both worker threads run [`run_pump`], which is generic over
+//! All three worker threads run [`run_pump`], which is generic over
 //! `CanFrameSource` — it doesn't know or care which source it's
 //! draining; it just appends each frame to the shared [`TraceStore`]
 //! until the source ends or a stop flag is set (the latter is how
