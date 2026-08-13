@@ -67,6 +67,7 @@ mod project_dir;
 mod project_registry;
 mod rbs;
 mod sampling;
+mod server_trust;
 mod session;
 mod settings;
 mod settings_descriptor;
@@ -521,6 +522,11 @@ pub fn run() -> ! {
             interfaces::watch_interfaces,
             interfaces::unwatch_interfaces,
             interfaces::refresh_interfaces,
+            server_trust::list_trusted_servers,
+            server_trust::accept_server_fingerprint,
+            server_trust::set_server_token,
+            server_trust::accept_server_insecure,
+            server_trust::forget_server,
             replay_local_virtual_buses,
             create_local_virtual_bus,
             drop_local_virtual_bus,
