@@ -133,7 +133,8 @@ use cannet_dbc::Database;
 #[cfg(test)]
 use capture::write_capture;
 use capture::{
-    clear_trace_store, open_log, restore_scratch_capture, save_capture, scan_blf_channels,
+    clear_trace_store, import_mdf, open_log, restore_scratch_capture, save_capture,
+    scan_blf_channels, scan_mdf_channels,
 };
 #[cfg(test)]
 use dbc_commands::decode_against;
@@ -464,6 +465,8 @@ pub fn run() -> ! {
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
+            import_mdf,
+            scan_mdf_channels,
             add_dbc,
             remove_dbc,
             clear_dbcs,

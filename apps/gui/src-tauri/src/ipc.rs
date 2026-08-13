@@ -159,6 +159,13 @@ pub struct OpenLogResult {
     pub blf_path: String,
 }
 
+/// Returned from `import_mdf` once the worker is running. The MDF
+/// counterpart of [`OpenLogResult`].
+#[derive(serde::Serialize, Clone)]
+pub struct ImportMdfResult {
+    pub mdf_path: String,
+}
+
 /// Returned from `attach_dbc` once the file is parsed and stored.
 #[derive(serde::Serialize, Clone)]
 pub struct DbcInfo {
