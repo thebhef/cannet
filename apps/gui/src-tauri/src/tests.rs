@@ -2225,6 +2225,80 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
     assert_eq!(attachments[0].data, MUX_SNAPSHOT_DBC.as_bytes());
 }
 
+/// The committed demo capture (`examples/cannet-demo.mf4`) is the MDF
+/// twin of `cannet-demo.blf` — the same 10 s of traffic, plus the two
+/// things an MDF carries that a BLF cannot. It imports cleanly: frames,
+/// file-backed signals and event markers all arrive, through the same
+/// calls `import_mdf` makes.
+#[test]
+fn the_demo_mdf_imports_frames_signals_and_markers() {
+    use cannet_core::CanFrameSource as _;
+
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../examples/cannet-demo.mf4");
+
+    // What the mapping dialog would show: one bus channel, the whole
+    // capture's span, and the file's markers.
+    let scan = cannet_mdf::scan_mdf(&path).expect("the demo MDF scans");
+    assert_eq!(scan.channels, vec![0], "the demo trace is single-bus");
+    assert_eq!(scan.frame_count, 1810);
+    assert!(!scan.unfinalized);
+    assert_eq!(scan.signal_group_names.len(), 2);
+    assert!(scan.skipped_decoded_groups.is_empty());
+    assert_eq!(scan.events.len(), 4);
+
+    // What the pump would ingest.
+    let mut source = cannet_mdf::MdfCanFrameSource::open(&path).expect("the demo MDF opens");
+    let mut frames = 0u64;
+    let mut fd = 0u64;
+    let mut extended = 0u64;
+    let mut last_ts = 0u64;
+    while let Some(frame) = source.next_frame().expect("every demo frame decodes") {
+        frames += 1;
+        fd += u64::from(frame.payload.is_fd());
+        extended += u64::from(frame.id.is_extended());
+        assert!(frame.timestamp_ns >= last_ts, "frames climb in time");
+        last_ts = frame.timestamp_ns;
+        assert_eq!(frame.channel, 0);
+    }
+    assert_eq!(frames, scan.frame_count);
+    assert!(
+        fd > 0 && extended > 0,
+        "the demo covers FD and extended ids"
+    );
+
+    // What `import_mdf` fills the signal caches with.
+    let state = test_state();
+    let (signals, samples) = capture::fill_file_backed_signals(
+        &state.signal_caches,
+        &source.signal_groups(),
+        None,
+        None,
+    );
+    assert_eq!(signals, 3);
+    assert!(samples > 0);
+    let listed = state.signal_caches.file_signals();
+    let names: Vec<&str> = listed.iter().map(|e| e.info.name.as_str()).collect();
+    assert_eq!(names, ["AmbientTemp", "CabinHumidity", "ChargerPower"]);
+    assert_eq!(listed[0].info.unit, "degC");
+    assert_eq!(listed[0].info.group_name.as_deref(), Some("Ambient"));
+
+    // And what it puts in the notes store.
+    let mut synthetic_idx = 0u64;
+    let notes: Vec<notes::Note> = source
+        .events()
+        .expect("the demo MDF's events read")
+        .iter()
+        .map(|e| capture::note_from_event(e, &mut synthetic_idx))
+        .collect();
+    assert_eq!(synthetic_idx, 0, "every demo event carries its own id");
+    let labels: Vec<&str> = notes.iter().map(|n| n.label.as_str()).collect();
+    assert_eq!(labels, ["run start", "gear shift", "GPS fix", "run end"]);
+    assert_eq!(notes[0].id, "demo-0");
+    assert_eq!(notes[1].color.as_deref(), Some("#FF8800"));
+    assert_eq!(notes[0].timestamp_ns, source.start_unix_nanos());
+}
+
 /// An event another tool wrote carries no `cannet.id`, so the import
 /// mints a deterministic one — the same rule a third-party BLF marker
 /// gets, and what keeps its rename/remove paths working.
