@@ -15,6 +15,7 @@ mdf4-rs = { version = "0.6", features = ["compression"] }
 
 [dev-dependencies]
 serde_json = "1"
+tempfile = "3"
 
 [lints]
 workspace = true

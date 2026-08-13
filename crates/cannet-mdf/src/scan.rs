@@ -44,6 +44,9 @@ pub struct MdfScan {
     pub signal_group_names: Vec<Option<String>>,
     /// The per-message DBC-decoded groups import will skip.
     pub skipped_decoded_groups: Vec<SkippedDecodedGroup>,
+    /// The file's timeline markers — its `##EV` blocks, in link order,
+    /// with absolute timestamps.
+    pub events: Vec<crate::MdfEvent>,
 }
 
 /// Walk `path` for its channel census, frame count, time span and content
@@ -97,5 +100,6 @@ pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
         unfinalized: file.unfinalized,
         signal_group_names,
         skipped_decoded_groups,
+        events: crate::events::read_events(&file)?,
     })
 }

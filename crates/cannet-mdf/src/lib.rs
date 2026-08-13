@@ -43,23 +43,39 @@
 //! reports the file's channel census for the import dialog's channel → bus
 //! mapping, mirroring `cannet_blf::scan_blf`.
 //!
+//! ## Writing
+//!
+//! [`MdfCaptureWriter`] is the inverse: it writes a capture back out as a
+//! sorted, finalized MDF 4.10 file — frames as bus-logging groups,
+//! directly recorded signals as their own signal groups, timeline events
+//! as `##EV` blocks and databases as embedded `##AT` attachments. What it
+//! writes, this crate reads back field for field; [`MdfCaptureWriter`]'s
+//! own docs carry the layout and its limits.
+//!
 //! ## What comes from `mdf4-rs`
 //!
-//! Block parsing, the bit-level value decoder, the CC conversion
-//! machinery and `##DZ` inflate (including the inverse transposition).
-//! The block-graph walk, the record cursor and the bus-logging
-//! composition layer are this crate's, because `mdf4-rs` never follows a
-//! channel's `cn_composition` link and so exposes no frame fields of its
-//! own.
+//! Block parsing and serialization, the bit-level value decoder, the CC
+//! conversion machinery and `##DZ` inflate (including the inverse
+//! transposition). The block-graph walk, the record cursor and the
+//! bus-logging composition layer are this crate's, in both directions:
+//! `mdf4-rs` never follows a channel's `cn_composition` link, so it
+//! exposes no frame fields of its own and its own bus-logging writer
+//! emits an opaque byte array no other tool reads as CAN traffic.
 
+mod attachments;
 mod bus;
 mod decode;
+mod events;
 mod file;
 mod scan;
 mod signals;
+mod write;
 
+pub use attachments::MdfAttachment;
+pub use events::MdfEvent;
 pub use scan::{scan_mdf, MdfScan};
 pub use signals::{FileSignal, SignalChannelGroup};
+pub use write::{MdfCaptureLayout, MdfCaptureWriter, MdfWriteError, MdfWritten};
 
 use std::path::Path;
 
@@ -166,6 +182,28 @@ impl MdfCanFrameSource {
     /// stepped over. Empty for a file that has none.
     pub fn skipped_decoded_groups(&self) -> &[SkippedDecodedGroup] {
         &self.skipped
+    }
+
+    /// The file's timeline markers — its `##EV` blocks, with absolute
+    /// timestamps. Empty for a file that carries none.
+    ///
+    /// # Errors
+    ///
+    /// [`MdfSourceError::Malformed`] if the event chain does not describe
+    /// itself, and the block-parsing errors of a bad `##EV`.
+    pub fn events(&self) -> Result<Vec<MdfEvent>, MdfSourceError> {
+        events::read_events(&self.file)
+    }
+
+    /// The files embedded in this capture as `##AT` attachments — the
+    /// databases it was recorded against, when its writer put them there.
+    ///
+    /// # Errors
+    ///
+    /// [`MdfSourceError::Malformed`] if the attachment chain does not
+    /// describe itself, and the block-parsing errors of a bad `##AT`.
+    pub fn attachments(&self) -> Result<Vec<MdfAttachment>, MdfSourceError> {
+        attachments::read_attachments(&self.file)
     }
 
     /// The file's `hd_start_time_ns` — the wall clock the master channels
