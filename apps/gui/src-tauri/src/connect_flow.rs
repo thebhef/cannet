@@ -108,6 +108,13 @@ pub fn plan(address: &str, trust: &TrustEntry) -> Attempt {
     Attempt::Probe
 }
 
+/// Plan and build the connection configuration for `address` in one
+/// step — what a call site with a single attempt and no retry loop
+/// needs. Failures still go through [`classify`] at the call site.
+pub(crate) fn config_for(app: &AppHandle, address: &str) -> Result<ConnectConfig, String> {
+    plan(address, &crate::server_trust::trust_for(app, address)).config(address)
+}
+
 /// A question only the user can answer, as the dialog receives it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
