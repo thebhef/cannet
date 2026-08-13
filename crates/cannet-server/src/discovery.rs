@@ -131,4 +131,71 @@ mod tests {
             "every host this runs on reports some hostname"
         );
     }
+
+    /// Registers a real advertisement and browses for it in the same
+    /// process, over the host's actual multicast interfaces.
+    ///
+    /// Binds real sockets and depends on the local network stack
+    /// permitting multicast loopback, so it is excluded from the
+    /// default suite. Run explicitly with
+    /// `cargo test -p cannet-server --lib -- --ignored register_and_browse`.
+    /// The Task 43 phase-1 spike exercised this same-host only — it is
+    /// not evidence of cross-machine reachability, which additionally
+    /// needs an inbound UDP 5353 firewall allow (see the README).
+    #[tokio::test]
+    #[ignore = "binds real multicast sockets; environment-dependent"]
+    async fn register_and_browse_round_trip() {
+        use std::time::{Duration, Instant};
+
+        use mdns_sd::ServiceEvent;
+
+        // A name unique to this process so a concurrent run (or a
+        // lingering advertisement from a previous one) can't collide.
+        let name = format!("cannet-discovery-test-{}", std::process::id());
+        let fullname = format!("{name}.{SERVICE_TYPE}");
+        let bind = "127.0.0.1:50061".parse().unwrap();
+
+        let advertisement = Advertisement::register(&name, bind, "v0.0.0-test")
+            .expect("register should succeed on a machine with a working mDNS stack");
+
+        let browser = ServiceDaemon::new().expect("browser daemon should start");
+        let events = browser.browse(SERVICE_TYPE).expect("browse should start");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut resolved = false;
+        while Instant::now() < deadline {
+            if let Ok(ServiceEvent::ServiceResolved(info)) =
+                events.recv_timeout(Duration::from_secs(1))
+            {
+                if info.get_fullname() == fullname {
+                    assert_eq!(info.get_property_val_str("ver"), Some("v0.0.0-test"));
+                    assert_eq!(info.get_port(), 50061);
+                    resolved = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            resolved,
+            "expected to resolve our own advertisement within 5s"
+        );
+
+        advertisement.shutdown().await;
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut removed = false;
+        while Instant::now() < deadline {
+            if let Ok(ServiceEvent::ServiceRemoved(_, removed_fullname)) =
+                events.recv_timeout(Duration::from_secs(1))
+            {
+                if removed_fullname == fullname {
+                    removed = true;
+                    break;
+                }
+            }
+        }
+        assert!(removed, "expected the goodbye's ServiceRemoved within 3s");
+
+        let _ = browser.shutdown();
+    }
 }

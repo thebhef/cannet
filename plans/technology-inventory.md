@@ -241,6 +241,14 @@ without reshaping callers.
   runtimes — a generality cannet has no use for, since it needs mDNS
   from exactly one tokio process and one Tauri process.
 - A **hand-rolled UDP beacon** remains `rejected` — see ADR 0040.
+- **`hostname` 0.4** (Rust, MIT) — `adopted` (Task 43 phase 2), direct
+  dep of `cannet-server`. Supplies `--name`'s default: the system
+  hostname, for the `ServiceInfo` DNS-SD instance name and SRV host.
+  No `std` equivalent exists; the crate is a thin, permissively
+  licensed wrapper over the platform call (`gethostname(2)` /
+  `GetComputerNameExW`) rather than hand-rolled per-OS FFI. Small
+  dependency footprint: `cfg-if` plus `libc` on Unix or
+  `windows-link` on Windows, both already common in the tree.
 - **MDF 4.x library** — `proposed` (Task 38); candidates `mdf4-rs`
   (pure Rust, young) and `mdflib` via FFI (mature C++, costs a C++
   toolchain); `mdfr` (GPL-3) and the abandoned `asammdf`-rs / `mdf4`
@@ -417,7 +425,9 @@ crate retained long-term).
   exact tag/commit it was cut from. The committed version stays `0.0.0`;
   the installer/bundle version is injected from the release tag in CI.
   `gitcl` shells out to the `git` already required to build. MIT /
-  Apache-2.0.
+  Apache-2.0. Also a build-dependency of `cannet-server` since Task 43
+  phase 2, stamping the same version string into the mDNS TXT record's
+  `ver=` key — same pattern, no new crate.
 - **PyInstaller** (Python, GPL-2.0-with-bootloader-exception; the
   exception lets the frozen output ship under any license) — `adopted`
   in Task 31 to freeze the `cannet-python-can` sidecar into a

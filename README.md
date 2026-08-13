@@ -340,6 +340,12 @@ or `xattr -dr com.apple.quarantine cannet-server`); Windows SmartScreen
 shows the same warning the GUI installer does (**More info → Run
 anyway**). Linux has no equivalent gate.
 
+On Windows, the first mDNS bind can trigger Defender Firewall to add
+inbound *Block* rules for the binary on the Public profile without
+prompting. Same-host discovery (the GUI and the server on one machine)
+still works; reaching another machine's advertisement needs an
+explicit inbound allow rule for UDP 5353.
+
 ```sh
 cargo run -p cannet-server                      # from a source checkout
 tar xzf cannet-server-vX.Y.Z-<target>.tar.gz    # macOS / Linux archive
@@ -403,6 +409,13 @@ Flags:
   refusal and nothing else: TLS you configured stays on, and so does
   the token. The same flag, and the same refusal, apply to `debug
   replay` and `debug vbus`, which take no certificate of their own.
+- `--name <name>` — instance name to advertise via mDNS/DNS-SD
+  (`_cannet._tcp`), default this machine's hostname. The GUI's browse
+  list shows it; `host:port` is unaffected.
+- `--no-mdns` — disable mDNS/DNS-SD advertisement entirely. The server
+  drops out of the GUI's browse list but stays reachable at a typed
+  `host:port`. `debug replay` and `debug vbus` never advertise, with
+  or without this flag.
 
 With TLS on, the server prints two strings at startup and both are
 meant to be read off the console:

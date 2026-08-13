@@ -27,13 +27,15 @@ reachable over the network. One process, one network endpoint.
   the operator gets a shell on the server host is their business.
 - **Discovery is mDNS/DNS-SD, and is convenience only.** The server
   advertises `_cannet._tcp` with an operator-chosen instance name
-  (`--name`, default hostname) and TXT metadata (protocol version,
-  optional labels); `--no-mdns` disables advertisement. The GUI
-  browses and offers a fuzzy-searchable pick list beside the manual
-  `host:port` field, which remains the path to servers beyond the
-  local subnet. Visibility is not access control — the connection
-  layer is the security boundary
-  ([ADR 0041](0041-remote-connection-security.md)).
+  (`--name`, default hostname) and a single TXT key, `ver=<release
+  version>`; `--no-mdns` disables advertisement. One server per host
+  means the instance name already identifies it, so there are no
+  labels — client-side fuzzy search over instance names and
+  `host:port` is enough. The GUI browses and offers that
+  fuzzy-searchable pick list beside the manual `host:port` field,
+  which remains the path to servers beyond the local subnet.
+  Visibility is not access control — the connection layer is the
+  security boundary ([ADR 0041](0041-remote-connection-security.md)).
 - **The GUI keeps its local fast path.** In-process `SharedBus` for
   local virtual buses and the GUI-spawned sidecar for local dongles
   ([ADR 0021](0021-virtual-bus-server.md)) are unchanged. The

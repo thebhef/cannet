@@ -5,13 +5,15 @@
 //! the sidecar's interfaces, under their real identities, to one
 //! network endpoint. That endpoint terminates TLS on request
 //! (ADR 0041), under the server's own generated certificate or
-//! operator-supplied material.
+//! operator-supplied material. Unless `--no-mdns` is given, it also
+//! advertises `_cannet._tcp` so the GUI's browse can find it, and a
+//! Ctrl-C waits for the mDNS goodbye packet before the process exits.
 //!
 //! `debug replay <blf>` and `debug vbus` are the prior BLF-replay and
 //! `--virtual-bus` modes, kept as explicitly dev/test tooling: replay
 //! serves a BLF file on a loop over the gRPC wire protocol defined in
 //! `cannet-wire`, and vbus (ADR 0021) hosts a multi-client virtual CAN
-//! bus.
+//! bus. Neither advertises — discovery is a production-server concern.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -19,8 +21,8 @@ use std::sync::Arc;
 
 use cannet_core::BusConfig;
 use cannet_server::{
-    auth, identity, install_crypto_provider, AccessToken, CannetServerImpl, IdentityError,
-    LoopingBlfReplay, ProxyServerImpl, ServerIdentity, VirtualBusServerImpl,
+    auth, discovery, identity, install_crypto_provider, AccessToken, CannetServerImpl,
+    IdentityError, LoopingBlfReplay, ProxyServerImpl, ServerIdentity, VirtualBusServerImpl,
     VIRTUAL_BUS_FACTORY_ID,
 };
 use cannet_sidecar::{
@@ -82,6 +84,15 @@ struct ProxyArgs {
     /// configured stays on.
     #[arg(long)]
     insecure: bool,
+    /// Instance name to advertise via mDNS/DNS-SD (`_cannet._tcp`).
+    /// Defaults to this machine's hostname. Ignored with `--no-mdns`.
+    #[arg(long, value_name = "NAME")]
+    name: Option<String>,
+    /// Disable mDNS/DNS-SD advertisement entirely (ADR 0040 —
+    /// discovery is convenience only; the manual `host:port` field
+    /// still reaches an unadvertised server).
+    #[arg(long)]
+    no_mdns: bool,
 }
 
 impl ProxyArgs {
@@ -125,6 +136,20 @@ impl ProxyArgs {
 /// The environment variable a token may arrive in, for operators who
 /// would rather keep it out of the process list.
 const TOKEN_ENV: &str = "CANNET_TOKEN";
+
+/// The build's version string: `git describe --tags` as captured by
+/// `build.rs` (vergen), e.g. `v0.1.0` on a release tag or
+/// `v0.1.0-3-gabc1234` for a build a few commits past one. Falls back
+/// to the Cargo crate version when the binary was built outside a git
+/// checkout (no `VERGEN_GIT_DESCRIBE` set) — the same fallback
+/// `apps/gui/src-tauri` uses. This is the value advertised as the
+/// mDNS TXT record's `ver` key.
+fn build_version() -> &'static str {
+    match option_env!("VERGEN_GIT_DESCRIBE") {
+        Some(v) if !v.is_empty() && v != "VERGEN_IDEMPOTENT_OUTPUT" => v,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
 
 /// What protects a bound endpoint, one field per requirement.
 ///
@@ -453,6 +478,31 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
         args.insecure,
     )?;
 
+    // Convenience only (ADR 0040): a failed advertisement is a
+    // warning, not a startup refusal — the manual `host:port` field
+    // still reaches this server either way.
+    let mdns = if args.no_mdns {
+        None
+    } else {
+        let name = discovery::advertised_name(args.name.as_deref())?;
+        let version = build_version();
+        match discovery::Advertisement::register(&name, args.bind, version) {
+            Ok(advertisement) => {
+                eprintln!(
+                    "hardware proxy: advertising \"{name}\" ({version}) via mDNS (_cannet._tcp)"
+                );
+                Some(advertisement)
+            }
+            Err(e) => {
+                eprintln!(
+                    "hardware proxy: warning: mDNS advertisement failed: {e}; \
+                     continuing without it (--no-mdns silences this warning)"
+                );
+                None
+            }
+        }
+    };
+
     let supervisor = Arc::new(SidecarSupervisor::default());
     let host: Arc<dyn SidecarHost> = Arc::new(CliSidecarHost {
         log_level: args.sidecar_log_level,
@@ -499,11 +549,29 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     // A server-wide layer rather than a per-service interceptor: every
     // RPC this endpoint answers is gated by construction, including any
     // service added later.
-    builder
+    let serve = builder
         .layer(tonic::service::interceptor(auth::token_gate(token)))
         .add_service(service)
-        .serve(args.bind)
-        .await?;
+        .serve(args.bind);
+
+    // Ctrl-C is the graceful path: it races the server future so a
+    // held connection can't block the goodbye. Whichever way this
+    // exits, the mDNS shutdown below waits for the goodbye packet to
+    // reach the wire before the process does (see `Advertisement::
+    // shutdown`) — a bare `shutdown()` with no wait can lose it.
+    let outcome = tokio::select! {
+        result = serve => Some(result),
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("hardware proxy: shutting down");
+            None
+        }
+    };
+    if let Some(advertisement) = mdns {
+        advertisement.shutdown().await;
+    }
+    if let Some(result) = outcome {
+        result?;
+    }
     Ok(())
 }
 
@@ -687,6 +755,25 @@ mod tests {
         );
         assert_eq!(cli.proxy.sidecar_log_level, "debug");
         assert_eq!(cli.proxy.sidecar_restart_budget, 10);
+    }
+
+    #[test]
+    fn no_name_and_no_no_mdns_is_the_default() {
+        // Bare invocation: no instance name override, advertisement on.
+        let cli = Cli::try_parse_from(["cannet-server"]).unwrap();
+        assert!(cli.proxy.name.is_none());
+        assert!(!cli.proxy.no_mdns);
+    }
+
+    #[test]
+    fn name_and_no_mdns_parse() {
+        let cli = Cli::try_parse_from(["cannet-server", "--name", "bench-rig-3"]).unwrap();
+        assert_eq!(cli.proxy.name.as_deref(), Some("bench-rig-3"));
+        assert!(!cli.proxy.no_mdns);
+
+        let cli = Cli::try_parse_from(["cannet-server", "--no-mdns"]).unwrap();
+        assert!(cli.proxy.name.is_none());
+        assert!(cli.proxy.no_mdns);
     }
 
     #[test]
