@@ -5,7 +5,7 @@
 // section. The rest of `ProjectPanel` (project actions, element list,
 // DBC scoping) is covered by the project / element-registry tests.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -17,7 +17,9 @@ import {
 } from "./comboboxTestKit";
 
 const { invokeMock } = vi.hoisted(() => ({
-  invokeMock: vi.fn(async () => [] as unknown[]),
+  // Typed with the command name the production code passes, so a test
+  // can answer per command instead of per call order.
+  invokeMock: vi.fn(async (_cmd: string) => [] as unknown[]),
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
@@ -346,8 +348,22 @@ describe("BusInterfaceCombo", () => {
 });
 
 describe("AddServerInline", () => {
+  // The form makes two different host calls now — the interface pull
+  // below, and the browsed-server list it reads on mount — so these
+  // mocks answer by command name rather than by call order. The
+  // browse list itself is covered in
+  // `AddServerInline.discovery.dom.test.tsx`.
+  const emptyHost = () => {
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async () => []);
+  };
+  beforeEach(emptyHost);
+  afterEach(emptyHost);
+
   it("discovers interfaces and forwards onPick with the selection", async () => {
-    invokeMock.mockResolvedValueOnce([REC_CAN0, REC_VCAN0]);
+    invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "refresh_interfaces" ? [REC_CAN0, REC_VCAN0] : [],
+    );
     const onPick = vi.fn();
     render(
       <AddServerInline
@@ -377,7 +393,10 @@ describe("AddServerInline", () => {
   });
 
   it("surfaces the error and stays open when Discover throws", async () => {
-    invokeMock.mockRejectedValueOnce(new Error("nope"));
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "refresh_interfaces") throw new Error("nope");
+      return [];
+    });
     render(
       <AddServerInline
         busLabel="Bus 1"
