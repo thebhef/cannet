@@ -218,10 +218,15 @@ and saves the result — the thing "export by provenance" deliberately
 does *not* write. Import has to decide what to do with it: the frames
 in shape 1 already carry the same information, so decoding shape 3
 would double-count every signal. Treating it as file-backed signal
-data would also double-count. The cheap, honest answer is to
-recognise shape 3 by its source path and **skip it**, since shape 1
-plus the project DBC reproduces it — but that is a decision this task
-still owes an answer to.
+data would also double-count.
+
+**2026-08-12 — resolved (owner): recognise shape 3 and skip it.**
+Shape 1 plus the project DBC reproduces it, so importing it can only
+double-count; skipping is symmetric with the export ruling, which
+declines to write shape 3 for the same reason. The skip is reported,
+never silent: the reader lists every skipped group with its source
+path, name and signal count, and the channel scan carries the same
+list so the import dialog can say what it is leaving behind.
 
 ## Status log
 
@@ -298,3 +303,64 @@ master sample, so no float formatting can drift.
 
 Nothing was committed to the repo but planning-document updates; no
 production code exists yet, and the spikes stayed in scratch.
+
+### 2026-08-12 — phase 2: the MDF reader crate
+
+`rust-toolchain.toml` moved **1.96.0 → 1.97.1** first, in its own
+commit, since `mdf4-rs` 0.6 declares that MSRV. The bump was clean:
+`cargo clippy --workspace --all-targets` warning-free with no new
+pedantic lints to fix, `cargo fmt --all --check` clean, and
+`cargo test --workspace` green. README § Prerequisites points at the
+toolchain file rather than naming a version, so it needed no edit.
+
+**Fixture corpus, committed.** The phase-1 generator landed at
+`crates/cannet-mdf/tests/fixtures/gen_fixtures.py`, grown from 7
+fixtures to **9**: the wrinkle matrix plus `sorted_finalized_dbcdecoded`
+(a logger file that also carries shape-3 groups) and `signal_only`
+(the shape-2-only file the reader must reject). asammdf will not set
+`cg_flags` bit 1 on an ordinary signal group, so the generator patches
+that byte on the decoded groups to match what real files carry —
+bus-event set, plain-bus-event clear. Nine files, 2.9–8.1 KB, each
+with an `expected/*.json`; the generator re-reads everything it writes
+and checks it against the JSON it just wrote. The Rust suite reads
+only the committed pair, so `cargo test` stays Python-free.
+
+**The crate.** `crates/cannet-mdf` — `MdfCanFrameSource` (a
+`CanFrameSource`), `scan_mdf` (the census `scan_blf` is the model
+for), `signal_groups()` for shape 2 and `skipped_decoded_groups()`
+for shape 3. **20 tests**: nine per-fixture decodes compared field by
+field against the expected JSON, the unfinalized-equals-finalized
+twin check, cross-group timestamp ordering, the census-agrees-with-
+decode check over eight fixtures, shape-2 extraction, shape-3
+skip-and-report, shape-2-only rejection, and the source-path
+classifier's unit tests.
+
+**DZ, and why there is no pre-pass.** The eval left the choice as
+"temp file or byte patching". Neither was needed once the block-graph
+walk moved in-repo, which it had to for an unrelated reason:
+`mdf4-rs`'s `MDF`/`ChannelGroup`/`Channel` handles borrow an
+`MdfFile` the crate only constructs privately from a path, so a
+source that holds its position between `next_frame` calls would have
+to be self-referential — and that same privacy is what puts the
+DZ-aware `resolved_data_blocks` out of reach. Owning `HD → DG → CG →
+CN` and holding records as `(chunk, offset)` indices answers both:
+a `##DZ` inflates into an owned chunk beside the borrowed `##DT`
+ranges, and the cursor is plain integers. `mdf4-rs` keeps the block
+parsers, the value decoder, the CC conversions and the DZ inflate.
+
+**Local verification against the user corpus** (14 files, nothing
+committed, no names or identifiers recorded here). All 14 open and
+decode. Frame counts and time spans match the phase-1 numbers exactly
+(7,645–21,982 frames each). A SHA-256 over every frame's id, extended
+flag, length, bus channel and payload bytes matched an asammdf oracle
+recomputed the same way on **14 of 14** files. Signal-group extraction
+was compared row by row against asammdf: **452 rows, 0 mismatches** on
+name, group index, unit, sample count, series sum, and first/last
+absolute nanosecond timestamp. The 18-per-file groups asammdf and the
+reader both leave out are VLSD text channels, not numeric series.
+Shape-3 detection found 28–29 decoded groups per file, matching the
+oracle's count.
+
+Still outstanding for this task: the `import_mdf` GUI command with its
+channel→bus mapping dialog, the model work for file-backed signals,
+and the whole export side.

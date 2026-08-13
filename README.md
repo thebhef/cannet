@@ -51,10 +51,21 @@ crates/
                  where network transports and hardware adapters slot
                  in. See its rustdoc for the contract.
   cannet-blf/    `BlfCanFrameSource`: Vector BLF files as a CanFrameSource.
-                 Wraps `blf-asc` and translates each object into a
-                 `cannet_core::CanFrame` (classic / FD / remote / error).
-                 Phase 9 added `BlfCaptureWriter` — the inverse direction
-                 for Save Capture, with an atomic temp-file + rename.
+                 A native reader (ADR 0009) that owns the on-disk codec
+                 end-to-end and translates each object into a
+                 `cannet_core::CanFrame` (classic / FD / remote / error),
+                 plus `BlfCaptureWriter` — the inverse direction for Save
+                 Capture, with an atomic temp-file + rename — and
+                 `scan_blf` for the import dialog's channel census.
+  cannet-mdf/    `MdfCanFrameSource`: ASAM MDF 4.x bus-logging files as a
+                 CanFrameSource, and `scan_mdf` for the same census.
+                 Sorted / unsorted, finalized / unfinalized, classic /
+                 FD, error + remote frames, DZ-compressed data. Follows
+                 the `cn_composition` link `mdf4-rs` does not, which is
+                 what turns a channel group into frames. Also exposes the
+                 file's message-independent signal groups, skips
+                 per-message DBC-decoded ones, and rejects pre-decoded
+                 signal files outright.
   cannet-dbc/    `Database::parse(text)` + `decode(frame)` + `signals()`
                  (the message/signal list a plot panel picks from).
                  Hand-rolled bit extraction (LE / Motorola sequential
@@ -1989,6 +2000,24 @@ uv run ruff format --check .
 uv run mypy
 uv run pytest
 ```
+
+### Regenerating the MDF fixture corpus
+
+`cannet-mdf`'s tests read committed `.mf4` files and a committed
+`expected/*.json` per file, so `cargo test` needs no Python. The pair
+is produced by
+[`crates/cannet-mdf/tests/fixtures/gen_fixtures.py`](crates/cannet-mdf/tests/fixtures/gen_fixtures.py),
+which only has to run when a fixture changes:
+
+```sh
+cd crates/cannet-mdf/tests/fixtures
+uv run --with asammdf --with numpy python gen_fixtures.py
+```
+
+It rewrites every fixture and expectation, then re-reads each result
+through asammdf and checks it against the JSON it just wrote; a
+non-zero exit means the corpus does not match its own ground truth.
+asammdf is a dev-time oracle only — never a runtime dependency.
 
 ### Pre-commit hook
 

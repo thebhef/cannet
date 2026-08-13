@@ -276,11 +276,27 @@ without reshaping callers.
       unsorted, and unsorted-plus-unfinalized).
     - **DZ-compressed data blocks fail to read.** `DzBlock` and its
       `decompress()` exist behind the `compression` feature, but the
-      data-block resolver accepts only `##DT`/`##DV`/`##DL`/`##HL`
-      and errors on `##DZ`. CANedge writes DZ and the task requires
-      it, so this must be closed — by an upstream patch or by an
-      in-repo decompress pre-pass (the crate has no from-bytes
-      constructor, only `from_file`).
+      data-block resolver used by the record iterator accepts only
+      `##DT`/`##DV`/`##DL`/`##HL` and errors on `##DZ`. CANedge
+      writes DZ and the task requires it.
+  - **What `cannet-mdf` ends up using** (settled when the reader
+    landed, and the reason both gaps above cost less than they
+    look). `mdf4-rs`'s *reader* types (`MDF`, `ChannelGroup`,
+    `Channel`) are unusable here on their own terms: they borrow a
+    file struct the crate only builds privately from a path
+    (`MdfFile` and friends are `pub(crate)`), so a streaming
+    `CanFrameSource` holding a position across calls would need a
+    self-referential struct, and the DZ-aware
+    `resolved_data_blocks` is out of reach behind the same privacy.
+    So cannet walks `HD → DG → CG → CN` itself and holds records as
+    `(chunk, offset)` indices — which makes DZ just another chunk,
+    with no temp-file pre-pass and no byte patching, and makes the
+    composition layer fall out of the same walk. What stays
+    borrowed is the part worth borrowing and 90% of the risk:
+    every block parser (`##ID`/`##HD`/`##DG`/`##CG`/`##CN`/`##SI`/
+    `##TX`/`##CC`/`##DT`/`##DL`/`##DZ`), the bit-level value
+    decoder, the CC conversion machinery, and the DZ inflate with
+    its inverse transposition.
     - Cost paid: mdf4-rs 0.6 declares MSRV **rustc 1.97.0**, so
       `rust-toolchain.toml` moved **1.96.0 → 1.97.1** when the crate
       was adopted. The bump was clean — no new clippy pedantic lints
