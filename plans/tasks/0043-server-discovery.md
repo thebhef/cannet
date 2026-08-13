@@ -238,3 +238,103 @@ for cross-machine discovery.
 **Not done in this phase** (phase 3, GUI browse):
 `plans/features.md`'s "Discoverable on the network" stays unchecked —
 the GUI does not browse yet, so the exit criterion isn't met.
+
+### 2026-08-12 — phase 3: the GUI browses
+
+Landed on `task43c-gui-browse`, off `task43b-server-advertise`
+(`b16fe8a`). Two code commits, plus the docs commit carrying this
+entry:
+
+- `fa0cf7b` — `cannet-gui::server_browse`: a `mdns-sd` browse task
+  spawned in `setup` for the app's lifetime, folding every
+  `ServiceResolved` / `ServiceRemoved` into `BrowseList`, keyed by
+  DNS-SD fullname per the dedupe ruling above. Merge rules: addresses
+  union across resolves (a responder reports what it has answered on so
+  far), port and `ver` latest-wins, either removal signal drops the
+  entry, a re-announce re-adds it clean. Every mutation returns whether
+  the *rendered snapshot* moved, so the eleven-resolves-per-instance
+  burst costs one event, not eleven, and the duplicate `ServiceRemoved`
+  costs none. Each entry renders one dialable `host:port` from a ranked
+  address choice — routable IPv4, then routable IPv6, then loopback
+  (which must never win: a remote server's advertised `127.0.0.1` would
+  silently dial the GUI's own machine), with link-local IPv6 skipped
+  because its scope id has nowhere to go in a `host:port` string. State
+  reaches the frontend the way the trust prompts do: a
+  `get_discovered_servers` snapshot command plus a
+  `discovered-servers-changed` event. 18 unit tests over synthetic event
+  sequences (multi-resolve merge, no-op resolve, two families one
+  fullname, removal, duplicate removal, removal of an unknown instance,
+  re-announce, restart on a new address, interleaved instances, address
+  ranking, nothing-dialable, name extraction, wire shape). `mdns-sd`
+  0.21 becomes a direct `cannet-gui` dependency — already `adopted` for
+  both sides in `technology-inventory.md`, so no inventory change.
+- `52650c6` — the connect surface: `serverDiscovery.ts`
+  (`useDiscoveredServers` mirrors the host list snapshot-then-event, no
+  polling; `matchDiscoveredServers` filters through the same `fzf` the
+  rest of the GUI searches with, over instance name + `host:port`) and
+  an *on this network* list inside `AddServerInline`, beside the address
+  field. Picking a row fills that field and runs the same
+  `refresh_interfaces` pull a typed address does — one path, so the Task
+  42 trust machinery is untouched by discovery. The empty state says the
+  address field is the way to a server that isn't advertising. 11
+  frontend tests (6 filter, 5 list/pick/event). Two existing
+  `AddServerInline` tests answered `invoke` by call order, which the
+  form's new mount-time host read displaced; they now answer by command
+  name.
+
+**Test counts**: `cargo test -p cannet-gui` 545 passed, 6 ignored;
+`pnpm --dir apps/gui test` 1907 passed across 146 files;
+`cargo clippy -p cannet-gui --all-targets` and `pnpm --dir apps/gui
+build` clean.
+
+**Live coverage.** `server_browse::tests::browse_a_live_advertisement`,
+`#[ignore]`d for the same reason the server's round-trip test is:
+registers a `cannet-server`-shaped `ServiceInfo` on a real
+`ServiceDaemon`, browses it with a second one, and drives the real
+adapter + reducer off the result — asserting the row carries the name,
+the `ver`, and the advertised port, then that the goodbye drops it. Run
+locally (Windows 11, same host as the phase-1 spike):
+`cargo test -p cannet-gui --lib -- --ignored browse_a_live_advertisement`
+→ 1 passed in 1.83 s.
+
+Walked once against a **real spawned `cannet-server`** with a temporary
+probe (not committed): `cannet-server --bind 127.0.0.1:50099` reduced
+through the same code path to
+
+```text
+DiscoveredServer { fullname: "RIPPY._cannet._tcp.local.", name: "RIPPY",
+                   address: "10.10.10.50:50099", version: Some("v0.8.1-87-g52650c6") }
+```
+
+— one row for a machine with six interfaces, the routable IPv4 chosen
+out of the pile `enable_addr_auto()` announces, and the vergen stamp
+intact. Re-run against `cannet-server --name mdns-off-probe --no-mdns`:
+nothing on the wire, so the `--no-mdns` exit criterion holds from the
+browse side. Both server processes (and their sidecars) were killed
+afterwards; nothing was left running.
+
+**Observation, not a blocker: the advertised address is not the bind
+address.** That probe bound `127.0.0.1` and still advertised
+`10.10.10.50`, because `enable_addr_auto()` announces every interface
+regardless of what the listener is bound to (the phase-2 decision, left
+as the simple default). Selecting such a row would offer an address the
+server is not listening on. It does not bite a real deployment — a
+server meant to be reached binds `0.0.0.0` — and the fix, if it ever
+matters, is server-side (advertise the bound addresses), not in the
+browse list.
+
+**Not walked here**: the exit criterion's GUI-window half — seeing the
+row in a running GUI and connecting through it — and the cross-machine
+walk the phase-1 log asks for. Both need the app launched (and, for
+cross-machine, the Windows inbound UDP 5353 allow), which is the
+owner's to do. Everything below the window is covered by the tests
+above.
+
+**Docs**: `plans/features.md`'s "Discoverable on the network" is
+checked. README § the connection panel documents the *on this network*
+list, the fuzzy search, that a pick is the same path as a typed
+address, and both directions of what the list will not show (another
+subnet or `--no-mdns` never appears; a killed server can linger to its
+TTL). The TOFU walkthrough now names the browse list beside typing an
+address. No ADR changed — ADR 0040's discovery bullet was already
+amended in phase 2, and the browse is what it described.
