@@ -33,7 +33,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use cannet_client::{
-    connect_and_subscribe, ConnectionError, SessionHandle, SessionTransmitter, Subscription,
+    connect_and_subscribe, ConnectConfig, ConnectionError, SessionHandle, SessionTransmitter,
+    Subscription,
 };
 use cannet_core::{
     BridgeHandle, BusConfig, CanFrame, CanFrameSink, LocalSink, LocalSource, SharedBus,
@@ -166,9 +167,11 @@ impl LocalBusRegistry {
         } else {
             Subscription::new(spec.interface.clone(), LOCAL_BUS_CHANNEL)
         };
-        let session = connect_and_subscribe(&spec.remote_address, vec![subscription]).map_err(
-            |e: ConnectionError| format!("bridge {:?} failed to connect: {e}", spec.name),
-        )?;
+        let session = connect_and_subscribe(
+            &ConnectConfig::plaintext(&spec.remote_address),
+            vec![subscription],
+        )
+        .map_err(|e: ConnectionError| format!("bridge {:?} failed to connect: {e}", spec.name))?;
         let effective_id = session
             .subscriptions()
             .first()

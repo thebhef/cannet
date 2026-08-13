@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use cannet_client::ConnectConfig;
 use serde::Serialize;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -182,7 +183,7 @@ pub async fn refresh_interfaces(
     app: AppHandle,
     address: String,
 ) -> Result<Vec<InterfaceRecord>, String> {
-    let interfaces = cannet_client::list_interfaces(&address)
+    let interfaces = cannet_client::list_interfaces(&ConnectConfig::plaintext(&address))
         .await
         .map_err(|e| e.to_string())?;
     let records: Vec<InterfaceRecord> = interfaces.into_iter().map(InterfaceRecord::from).collect();
@@ -196,7 +197,7 @@ pub async fn refresh_interfaces(
 /// cache.
 async fn run_watch(app: AppHandle, address: String) {
     loop {
-        match cannet_client::watch_interfaces(&address).await {
+        match cannet_client::watch_interfaces(&ConnectConfig::plaintext(&address)).await {
             Ok(mut stream) => {
                 while let Ok(Some(interfaces)) = stream.next().await {
                     let records: Vec<InterfaceRecord> =

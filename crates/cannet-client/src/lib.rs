@@ -7,6 +7,10 @@
 //!
 //! ## Surface
 //!
+//! - [`ConnectConfig`]: which server to reach and how the connection is
+//!   protected — plaintext for a loopback server, or TLS pinned to the
+//!   server's certificate fingerprint plus a bearer token for a routable
+//!   one (ADR 0041). Every entry point below takes one.
 //! - [`list_interfaces`]: async one-shot RPC. Connects, calls
 //!   `ListInterfaces`, disconnects. The GUI uses this to populate its
 //!   connection panel.
@@ -45,7 +49,10 @@
 //!   the resolved id through [`ResolvedSubscription::allocated_id`]
 //!   so the caller can transmit against it.
 
+pub mod tls;
+
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use cannet_core::{CanFrame, CanFrameSource};
@@ -58,11 +65,252 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tonic::transport::{Channel, Endpoint};
+
+use crate::tls::{CertPin, ObservedPin};
 
 /// Outgoing-envelope channel depth for the per-session request stream.
 /// Subscribes are bursty at startup; this gives them room without
 /// blocking the worker thread before the stream is up.
 const REQUEST_CHANNEL_DEPTH: usize = 16;
+
+/// How a connection to one server is protected — the argument every
+/// entry point in this crate takes in place of a bare address.
+///
+/// A cannet server is either unprotected (the loopback default: no TLS,
+/// no credential) or protected by both halves of ADR 0041 at once —
+/// TLS pinned to the server's certificate fingerprint, and a bearer
+/// token presented on every RPC. The constructors are the whole of the
+/// permitted combinations, so the two rules that matter cannot be
+/// expressed wrongly:
+///
+/// - **A credential never rides an unencrypted channel.** Only
+///   [`ConnectConfig::pinned_with_token`] carries a token, and it always
+///   pins.
+/// - **A pinned server is never dialled over `http://`.** The scheme
+///   follows the protection; an address that spells out a contradicting
+///   one is [`ConnectionError::InsecureScheme`] before any packet is
+///   sent.
+#[derive(Debug, Clone)]
+pub struct ConnectConfig {
+    /// `host:port`, optionally with an explicit scheme.
+    address: String,
+    trust: Trust,
+}
+
+/// The transport half of a [`ConnectConfig`].
+#[derive(Debug, Clone)]
+enum Trust {
+    /// No TLS and no credential — the loopback default, and what every
+    /// in-process and sidecar server speaks.
+    Plaintext,
+    /// TLS verified by certificate fingerprint. `pin` is `None` for a
+    /// trust-on-first-use probe, which by construction refuses the
+    /// handshake and reports what it saw.
+    Pinned {
+        pin: Option<CertPin>,
+        token: Option<String>,
+    },
+}
+
+impl ConnectConfig {
+    /// The unprotected path: plaintext HTTP/2, no credential.
+    ///
+    /// This is what a loopback server — the GUI's own sidecar, a
+    /// `--bind 127.0.0.1` proxy, an in-process test server — is reached
+    /// with. A server that is not on loopback refuses to start this way
+    /// without `--insecure`.
+    #[must_use]
+    pub fn plaintext(address: impl Into<String>) -> Self {
+        Self {
+            address: address.into(),
+            trust: Trust::Plaintext,
+        }
+    }
+
+    /// TLS against a server whose certificate fingerprint is already
+    /// known, with no credential. Useful for a server started with
+    /// `--tls` and no token.
+    #[must_use]
+    pub fn pinned(address: impl Into<String>, pin: CertPin) -> Self {
+        Self {
+            address: address.into(),
+            trust: Trust::Pinned {
+                pin: Some(pin),
+                token: None,
+            },
+        }
+    }
+
+    /// The fully protected path: TLS pinned to `pin`, and `token`
+    /// presented as an RFC 6750 `authorization: Bearer` credential on
+    /// every RPC.
+    #[must_use]
+    pub fn pinned_with_token(
+        address: impl Into<String>,
+        pin: CertPin,
+        token: impl Into<String>,
+    ) -> Self {
+        Self {
+            address: address.into(),
+            trust: Trust::Pinned {
+                pin: Some(pin),
+                token: Some(token.into()),
+            },
+        }
+    }
+
+    /// A trust-on-first-use probe: complete enough of a TLS handshake to
+    /// see the server's certificate, then refuse it.
+    ///
+    /// Nothing is pinned, so the connection *always* fails with
+    /// [`ConnectionError::PinMismatch`] carrying `expected: None` and
+    /// the fingerprint the server presented — the value a first-connect
+    /// dialog asks the user to accept. No RPC is made and no credential
+    /// is sent, because the handshake never completes.
+    #[must_use]
+    pub fn unpinned(address: impl Into<String>) -> Self {
+        Self {
+            address: address.into(),
+            trust: Trust::Pinned {
+                pin: None,
+                token: None,
+            },
+        }
+    }
+
+    /// The address as given, without any scheme this crate added.
+    #[must_use]
+    pub fn address(&self) -> &str {
+        &self.address
+    }
+
+    /// The bearer token to present, if this connection carries one.
+    fn token(&self) -> Option<&str> {
+        match &self.trust {
+            Trust::Plaintext => None,
+            Trust::Pinned { token, .. } => token.as_deref(),
+        }
+    }
+
+    /// The endpoint to dial, after checking the address against how this
+    /// connection is protected.
+    ///
+    /// A pinned connection whose address spells out `http://` is refused
+    /// here — before a socket is opened, let alone a credential sent —
+    /// rather than silently upgraded, because an address the user
+    /// believes is plaintext and a connection that is not is exactly the
+    /// confusion ADR 0041 exists to remove.
+    ///
+    /// The URI itself is always `http://`, even when the connection is
+    /// TLS: [`tls::pinned_connector`] explains why tonic requires that
+    /// of a hand-supplied connector.
+    fn endpoint(&self) -> Result<Endpoint, ConnectionError> {
+        let (scheme, authority) = match self.address.split_once("://") {
+            Some((scheme, rest)) => (Some(scheme), rest),
+            None => (None, self.address.as_str()),
+        };
+        if let (Some(scheme), Trust::Pinned { .. }) = (scheme, &self.trust) {
+            if !scheme.eq_ignore_ascii_case("https") {
+                return Err(ConnectionError::InsecureScheme {
+                    address: self.address.clone(),
+                });
+            }
+        }
+        Endpoint::from_shared(format!("http://{authority}"))
+            .map_err(|e| ConnectionError::Connect(e.to_string()))
+    }
+
+    /// Dial the server, terminating TLS against the pin when there is
+    /// one.
+    ///
+    /// A refused handshake reaches this function as an opaque transport
+    /// error with nothing certificate-shaped left in it, so the verifier
+    /// publishes what it saw through a side channel that is read here
+    /// and turned into [`ConnectionError::PinMismatch`].
+    async fn connect(&self) -> Result<Channel, ConnectionError> {
+        let endpoint = self.endpoint()?;
+        match self.trust {
+            Trust::Plaintext => endpoint
+                .connect()
+                .await
+                .map_err(|e| ConnectionError::Connect(e.to_string())),
+            Trust::Pinned { pin, .. } => {
+                let observed: ObservedPin = Arc::new(Mutex::new(None));
+                let connector = tls::pinned_connector(pin, observed.clone());
+                match endpoint.connect_with_connector(connector).await {
+                    Ok(channel) => Ok(channel),
+                    Err(e) => {
+                        let seen = observed.lock().ok().and_then(|slot| *slot);
+                        Err(match seen {
+                            Some(observation) => ConnectionError::PinMismatch {
+                                expected: observation.expected.map(|p| p.to_string()),
+                                observed: observation.observed.to_string(),
+                            },
+                            None => ConnectionError::Connect(e.to_string()),
+                        })
+                    }
+                }
+            }
+        }
+    }
+
+    /// A gRPC client over a freshly dialled channel, with this
+    /// connection's credential attached to every request it makes.
+    async fn client(
+        &self,
+    ) -> Result<
+        CannetServerClient<
+            tonic::service::interceptor::InterceptedService<Channel, BearerCredential>,
+        >,
+        ConnectionError,
+    > {
+        let channel = self.connect().await?;
+        Ok(CannetServerClient::with_interceptor(
+            channel,
+            BearerCredential::new(self.token())?,
+        ))
+    }
+}
+
+/// Attaches the connection's bearer token to every outgoing request.
+///
+/// Built once per connection rather than per call: the credential gates
+/// *every* RPC on the server (ADR 0041), so anything that forgets it is
+/// simply refused, and the only way not to forget is to not have the
+/// choice at the call site.
+#[derive(Clone)]
+pub struct BearerCredential(Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>);
+
+impl BearerCredential {
+    fn new(token: Option<&str>) -> Result<Self, ConnectionError> {
+        let Some(token) = token else {
+            return Ok(Self(None));
+        };
+        // The token is 43 characters of base64url as the server mints
+        // it, but an operator can supply any value with `--token`, and
+        // metadata is ASCII-only. A value that cannot be sent is a
+        // configuration error, not something to discover as a rejection.
+        let value = format!("Bearer {token}")
+            .parse()
+            .map_err(|_| ConnectionError::InvalidToken)?;
+        Ok(Self(Some(value)))
+    }
+}
+
+impl tonic::service::Interceptor for BearerCredential {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        if let Some(value) = &self.0 {
+            request
+                .metadata_mut()
+                .insert("authorization", value.clone());
+        }
+        Ok(request)
+    }
+}
 
 /// Hardware configuration the caller wants applied to an interface
 /// *before* the corresponding [`Subscription`] is sent. The server
@@ -192,15 +440,13 @@ impl From<cannet_wire::proto::Interface> for Interface {
 
 /// One-shot connect + `ListInterfaces`. The transport is closed before
 /// the function returns.
-pub async fn list_interfaces(address: &str) -> Result<Vec<Interface>, ConnectionError> {
-    let endpoint = format!("http://{address}");
-    let mut client = CannetServerClient::connect(endpoint)
-        .await
-        .map_err(|e| ConnectionError::Connect(e.to_string()))?;
-    let response = client
+pub async fn list_interfaces(config: &ConnectConfig) -> Result<Vec<Interface>, ConnectionError> {
+    let response = config
+        .client()
+        .await?
         .list_interfaces(ListInterfacesRequest {})
         .await
-        .map_err(|s| ConnectionError::Status(s.message().into()))?;
+        .map_err(ConnectionError::from)?;
     Ok(response
         .into_inner()
         .interfaces
@@ -219,15 +465,15 @@ pub async fn list_interfaces(address: &str) -> Result<Vec<Interface>, Connection
 /// dropping the stream ends the subscription. Reconnect-on-disconnect
 /// is the caller's job — for the GUI host that's the subscription
 /// manager in `sidecar.rs` (and the analogous remote manager).
-pub async fn watch_interfaces(address: &str) -> Result<InterfaceWatchStream, ConnectionError> {
-    let endpoint = format!("http://{address}");
-    let mut client = CannetServerClient::connect(endpoint)
-        .await
-        .map_err(|e| ConnectionError::Connect(e.to_string()))?;
-    let response = client
+pub async fn watch_interfaces(
+    config: &ConnectConfig,
+) -> Result<InterfaceWatchStream, ConnectionError> {
+    let response = config
+        .client()
+        .await?
         .watch_interfaces(WatchInterfacesRequest {})
         .await
-        .map_err(|s| ConnectionError::Status(s.message().into()))?;
+        .map_err(ConnectionError::from)?;
     Ok(InterfaceWatchStream {
         inner: response.into_inner(),
     })
@@ -254,7 +500,7 @@ impl InterfaceWatchStream {
                 list.interfaces.into_iter().map(Interface::from).collect(),
             )),
             Ok(None) => Ok(None),
-            Err(s) => Err(ConnectionError::Status(s.message().into())),
+            Err(s) => Err(ConnectionError::from(s)),
         }
     }
 }
@@ -269,17 +515,17 @@ impl InterfaceWatchStream {
 /// (e.g. unknown interface ids) surface on a subsequent
 /// [`RemoteCanFrameSource::next_frame`] call.
 pub fn connect_and_subscribe(
-    address: &str,
+    config: &ConnectConfig,
     subscriptions: Vec<Subscription>,
 ) -> Result<RemoteCanFrameSource, ConnectionError> {
-    let address = address.to_string();
+    let config = config.clone();
     let (frame_tx, frame_rx) = mpsc::channel::<Result<CanFrame, ConnectionError>>();
     let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<SessionReady, ConnectionError>>(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let thread = thread::Builder::new()
         .name("cannet-client".into())
-        .spawn(move || run_worker(address, subscriptions, frame_tx, ready_tx, shutdown_rx))
+        .spawn(move || run_worker(&config, subscriptions, frame_tx, ready_tx, shutdown_rx))
         .map_err(|e| ConnectionError::Thread(e.to_string()))?;
 
     match ready_rx.recv() {
@@ -545,7 +791,7 @@ fn is_per_frame_error_code(code: i32) -> bool {
 }
 
 fn run_worker(
-    address: String,
+    config: &ConnectConfig,
     subscriptions: Vec<Subscription>,
     frame_tx: mpsc::Sender<Result<CanFrame, ConnectionError>>,
     ready_tx: mpsc::SyncSender<Result<SessionReady, ConnectionError>>,
@@ -562,23 +808,22 @@ fn run_worker(
         }
     };
     runtime.block_on(async move {
-        run_session(address, subscriptions, frame_tx, ready_tx, shutdown_rx).await;
+        run_session(config, subscriptions, frame_tx, ready_tx, shutdown_rx).await;
     });
 }
 
 #[allow(clippy::too_many_lines)]
 async fn run_session(
-    address: String,
+    config: &ConnectConfig,
     subscriptions: Vec<Subscription>,
     frame_tx: mpsc::Sender<Result<CanFrame, ConnectionError>>,
     ready_tx: mpsc::SyncSender<Result<SessionReady, ConnectionError>>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
-    let endpoint = format!("http://{address}");
-    let mut client = match CannetServerClient::connect(endpoint).await {
+    let mut client = match config.client().await {
         Ok(c) => c,
         Err(e) => {
-            let _ = ready_tx.send(Err(ConnectionError::Connect(e.to_string())));
+            let _ = ready_tx.send(Err(e));
             return;
         }
     };
@@ -617,7 +862,7 @@ async fn run_session(
     let response = match client.session(ReceiverStream::new(req_rx)).await {
         Ok(r) => r,
         Err(s) => {
-            let _ = ready_tx.send(Err(ConnectionError::Status(s.message().into())));
+            let _ = ready_tx.send(Err(ConnectionError::from(s)));
             return;
         }
     };
@@ -803,13 +1048,11 @@ async fn run_session(
                 Some(Err(status)) => {
                     if !ready_sent {
                         if let Some(tx) = maybe_ready.take() {
-                            let _ = tx.send(Err(ConnectionError::Status(
-                                status.message().into(),
-                            )));
+                            let _ = tx.send(Err(ConnectionError::from(status)));
                         }
                         return;
                     }
-                    let _ = frame_tx.send(Err(ConnectionError::Status(status.message().into())));
+                    let _ = frame_tx.send(Err(ConnectionError::from(status)));
                     return;
                 }
                 None => {
@@ -833,6 +1076,31 @@ async fn run_session(
 pub enum ConnectionError {
     /// The gRPC transport failed to connect to the server.
     Connect(String),
+    /// The server presented a certificate whose fingerprint is not the
+    /// pinned one — or none was pinned yet. The handshake was refused
+    /// before any request was made, so nothing was disclosed to the
+    /// peer. Both fingerprints are in the `SHA256:` display form the
+    /// server prints, so a prompt can show them verbatim; `expected` is
+    /// `None` on a first contact.
+    ///
+    /// Terminal: retrying reaches the same server with the same
+    /// certificate. A new identity has to be accepted by the user.
+    PinMismatch {
+        expected: Option<String>,
+        observed: String,
+    },
+    /// The server refused the credential presented (or its absence).
+    ///
+    /// Terminal for the same reason: the token will not become correct
+    /// by asking again.
+    Unauthenticated,
+    /// The address names a scheme that contradicts how the connection
+    /// is protected — a pinned server dialled over `http://`. Raised
+    /// before any packet is sent.
+    InsecureScheme { address: String },
+    /// The bearer token configured for this server cannot be sent as
+    /// gRPC metadata, which is ASCII-only.
+    InvalidToken,
     /// The Session RPC could not be opened.
     Session(String),
     /// The server reported a tonic-level status error (transport-layer
@@ -853,6 +1121,31 @@ impl std::fmt::Display for ConnectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Connect(m) => write!(f, "failed to connect: {m}"),
+            Self::PinMismatch {
+                expected: Some(expected),
+                observed,
+            } => write!(
+                f,
+                "the server's certificate has changed: expected {expected}, got {observed}"
+            ),
+            Self::PinMismatch {
+                expected: None,
+                observed,
+            } => write!(
+                f,
+                "the server's certificate {observed} has not been accepted yet"
+            ),
+            Self::Unauthenticated => write!(f, "the server rejected the access token"),
+            Self::InsecureScheme { address } => write!(
+                f,
+                "{address} names an unencrypted scheme, but this server is reached over TLS"
+            ),
+            Self::InvalidToken => {
+                write!(
+                    f,
+                    "the access token contains characters that cannot be sent"
+                )
+            }
             Self::Session(m) => write!(f, "failed to open session: {m}"),
             Self::Status(m) => write!(f, "rpc status error: {m}"),
             Self::Server { code, message } => {
@@ -870,6 +1163,20 @@ impl std::error::Error for ConnectionError {
         match self {
             Self::Decode(e) => Some(e),
             _ => None,
+        }
+    }
+}
+
+impl From<tonic::Status> for ConnectionError {
+    /// `unauthenticated` gets its own variant because it is the one
+    /// status a caller must not retry: the server's gate refused the
+    /// credential (ADR 0041), and asking again with the same one is
+    /// hammering, not recovery. Everything else stays an opaque status.
+    fn from(status: tonic::Status) -> Self {
+        if status.code() == tonic::Code::Unauthenticated {
+            Self::Unauthenticated
+        } else {
+            Self::Status(status.message().into())
         }
     }
 }

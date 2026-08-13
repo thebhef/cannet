@@ -78,7 +78,12 @@ crates/
                  `NoAcknowledger` on zero-recipient transmits, runtime
                  `ConfigureBus`. Ships a `cannet-server` binary; lib is
                  reusable.
-  cannet-client/ Phase-2 gRPC client. `list_interfaces` is a one-shot
+  cannet-client/ Phase-2 gRPC client. Every entry point takes a
+                 `ConnectConfig` — plaintext for a loopback server, or
+                 TLS pinned to the server's certificate fingerprint
+                 plus a bearer token (ADR 0041), verified by an
+                 in-crate `rustls` `ServerCertVerifier`.
+                 `list_interfaces` is a one-shot
                  async RPC for the connection panel. `connect_and_
                  subscribe` returns a `RemoteCanFrameSource` (sync
                  `cannet_core::CanFrameSource`) backed by a worker
@@ -427,6 +432,31 @@ enforced exactly when TLS is, because presenting it over an
 unencrypted channel would hand it to anyone on the path. That is why
 a routable bind wants `--tls`, and why a loopback bind — your own
 machine, and the GUI's local path — needs neither.
+
+### Connecting to a protected server
+
+A client is given the two strings the server printed, and holds them
+together as a `cannet_client::ConnectConfig`:
+
+- `ConnectConfig::plaintext(address)` — the unprotected path, for a
+  loopback server. No TLS, no credential.
+- `ConnectConfig::pinned_with_token(address, pin, token)` — TLS
+  verified against the fingerprint, with the token on every RPC.
+
+There is no CA and no chain: the client compares the SHA-256 digest of
+the certificate the server presents against the pinned one and accepts
+nothing else, the way an SSH client treats a host key. Expiry dates
+and host names are therefore ignored — an identity that never expires
+is the point — but the handshake *signature* is verified in full, so
+holding a copy of the server's (public) certificate is not enough to
+impersonate it.
+
+A fingerprint that does not match aborts the handshake before any
+request is made and before the token is sent, and reports both the
+pinned and the presented fingerprint so they can be compared. Nothing
+is trusted on first sight: a server whose fingerprint has not been
+accepted yet is refused in exactly the same way, with the fingerprint
+to accept in hand.
 
 The sidecar is found the same way the GUI finds it
 ([ADR 0036](docs/adr/0036-frozen-python-can-sidecar.md)): a release

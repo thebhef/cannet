@@ -15,7 +15,9 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use cannet_client::{PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription};
+use cannet_client::{
+    ConnectConfig, PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription,
+};
 use cannet_core::CanFrameSource;
 
 use crate::app_state::AppState;
@@ -362,7 +364,8 @@ pub(crate) async fn connect_remote_server(
     }
 
     sys_debug!(&app, "connection", "connecting to {address}");
-    let interfaces = match cannet_client::list_interfaces(&address).await {
+    let interfaces = match cannet_client::list_interfaces(&ConnectConfig::plaintext(&address)).await
+    {
         Ok(v) => v,
         Err(e) => {
             let msg = e.to_string();
@@ -442,7 +445,10 @@ pub(crate) async fn connect_remote_server(
     let address_for_thread = address.clone();
     let subs_for_thread = subscriptions.clone();
     let source = match tokio::task::spawn_blocking(move || {
-        cannet_client::connect_and_subscribe(&address_for_thread, subs_for_thread)
+        cannet_client::connect_and_subscribe(
+            &ConnectConfig::plaintext(&address_for_thread),
+            subs_for_thread,
+        )
     })
     .await
     {

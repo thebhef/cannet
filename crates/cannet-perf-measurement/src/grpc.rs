@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cannet_client::{connect_and_subscribe, Subscription};
+use cannet_client::{connect_and_subscribe, ConnectConfig, Subscription};
 use cannet_core::{BusConfig, CanFrame, CanFramePayload, CanFrameSource, CanId, Direction};
 use cannet_gui_lib::trace_store::{RawTraceFrame, TraceStore};
 use cannet_server::{serve_virtual_bus_ephemeral, VIRTUAL_BUS_FACTORY_ID};
@@ -92,7 +92,7 @@ pub fn run(ex: &LoadedExample, cfg: &GrpcConfig) -> Result<HarnessReport, String
     // TX session (factory subscription, channel 0) and RX session
     // (channel 1) — the receiver sees the transmitter's frames fanned out.
     let tx_session = connect_and_subscribe(
-        &address,
+        &ConnectConfig::plaintext(&address),
         vec![Subscription::factory(VIRTUAL_BUS_FACTORY_ID, 0)],
     )
     .map_err(|e| format!("tx session connect: {e}"))?;
@@ -104,7 +104,7 @@ pub fn run(ex: &LoadedExample, cfg: &GrpcConfig) -> Result<HarnessReport, String
     let (tx_handle, _tx_recv, transmitter) = tx_session.into_parts();
 
     let rx_session = connect_and_subscribe(
-        &address,
+        &ConnectConfig::plaintext(&address),
         vec![Subscription::factory(VIRTUAL_BUS_FACTORY_ID, 1)],
     )
     .map_err(|e| format!("rx session connect: {e}"))?;

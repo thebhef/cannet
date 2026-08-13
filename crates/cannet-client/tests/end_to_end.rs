@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use blf_asc::{ArbitrationId, BlfWriter, DataBytes, Message};
 use cannet_client::{
-    connect_and_subscribe, list_interfaces, watch_interfaces, ConnectionError, FrameReceiver,
-    RemoteCanFrameSource, SessionHandle, Subscription,
+    connect_and_subscribe, list_interfaces, watch_interfaces, ConnectConfig, ConnectionError,
+    FrameReceiver, RemoteCanFrameSource, SessionHandle, Subscription,
 };
 use cannet_core::CanFrameSource;
 use cannet_server::{CannetServerImpl, LoopingBlfReplay};
@@ -20,6 +20,12 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 const TS_BASE: f64 = 1_700_000_000.0;
+
+/// These servers are in-process and unprotected, which is what a
+/// loopback bind is (ADR 0041).
+fn plaintext(address: &str) -> ConnectConfig {
+    ConnectConfig::plaintext(address)
+}
 
 fn classic_msg(timestamp: f64, channel: u16, id: u32, data: Vec<u8>) -> Message {
     Message {
@@ -92,7 +98,9 @@ fn drain_n(source: &mut RemoteCanFrameSource, n: usize) -> Vec<cannet_core::CanF
 #[tokio::test(flavor = "multi_thread")]
 async fn list_interfaces_round_trip() {
     let (addr, server) = spawn_server().await;
-    let interfaces = list_interfaces(&addr.to_string()).await.unwrap();
+    let interfaces = list_interfaces(&ConnectConfig::plaintext(addr.to_string()))
+        .await
+        .unwrap();
     assert_eq!(interfaces.len(), 2);
     assert_eq!(interfaces[0].id, "blf:0");
     assert_eq!(interfaces[1].id, "blf:1");
@@ -107,7 +115,9 @@ async fn list_interfaces_round_trip() {
 #[tokio::test(flavor = "multi_thread")]
 async fn watch_interfaces_emits_initial_snapshot() {
     let (addr, server) = spawn_server().await;
-    let mut stream = watch_interfaces(&addr.to_string()).await.unwrap();
+    let mut stream = watch_interfaces(&ConnectConfig::plaintext(addr.to_string()))
+        .await
+        .unwrap();
     let first = timeout(Duration::from_secs(2), stream.next())
         .await
         .expect("initial snapshot should arrive promptly")
@@ -134,7 +144,7 @@ async fn subscribe_one_interface_yields_frames_with_chosen_channel() {
     let address = addr.to_string();
 
     let mut source = tokio::task::spawn_blocking(move || {
-        connect_and_subscribe(&address, vec![Subscription::new("blf:0", 7)])
+        connect_and_subscribe(&plaintext(&address), vec![Subscription::new("blf:0", 7)])
     })
     .await
     .unwrap()
@@ -161,7 +171,7 @@ async fn subscribing_to_unknown_interface_surfaces_server_error() {
     let address = addr.to_string();
 
     let mut source = tokio::task::spawn_blocking(move || {
-        connect_and_subscribe(&address, vec![Subscription::new("blf:99", 0)])
+        connect_and_subscribe(&plaintext(&address), vec![Subscription::new("blf:99", 0)])
     })
     .await
     .unwrap()
@@ -189,7 +199,8 @@ async fn into_parts_lets_handle_and_receiver_live_in_different_threads() {
     let (handle, mut receiver, _transmitter): (SessionHandle, FrameReceiver, _) =
         tokio::task::spawn_blocking(move || {
             let source =
-                connect_and_subscribe(&address, vec![Subscription::new("blf:0", 0)]).unwrap();
+                connect_and_subscribe(&plaintext(&address), vec![Subscription::new("blf:0", 0)])
+                    .unwrap();
             source.into_parts()
         })
         .await
@@ -265,7 +276,7 @@ async fn factory_subscribe_surfaces_allocated_id_and_round_trips_tx() {
     let address_a = addr.to_string();
     let session_a = tokio::task::spawn_blocking(move || {
         connect_and_subscribe(
-            &address_a,
+            &plaintext(&address_a),
             vec![Subscription::factory(
                 cannet_server::VIRTUAL_BUS_FACTORY_ID,
                 0,
@@ -279,7 +290,7 @@ async fn factory_subscribe_surfaces_allocated_id_and_round_trips_tx() {
     let address_b = addr.to_string();
     let mut session_b = tokio::task::spawn_blocking(move || {
         connect_and_subscribe(
-            &address_b,
+            &plaintext(&address_b),
             vec![Subscription::factory(
                 cannet_server::VIRTUAL_BUS_FACTORY_ID,
                 9,
@@ -355,7 +366,9 @@ async fn dropping_source_disconnects_cleanly() {
     // beyond "the test doesn't hang" — the worker thread should exit
     // when the runtime drops, releasing the gRPC stream.
     tokio::task::spawn_blocking(move || {
-        let source = connect_and_subscribe(&address, vec![Subscription::new("blf:0", 0)]).unwrap();
+        let source =
+            connect_and_subscribe(&plaintext(&address), vec![Subscription::new("blf:0", 0)])
+                .unwrap();
         drop(source);
     })
     .await
@@ -364,7 +377,7 @@ async fn dropping_source_disconnects_cleanly() {
     // After the first session ends, a fresh connect should succeed
     // (i.e. the server's BUSY flag was released).
     let address = addr.to_string();
-    let interfaces = list_interfaces(&address).await.unwrap();
+    let interfaces = list_interfaces(&plaintext(&address)).await.unwrap();
     assert_eq!(interfaces.len(), 2);
 
     // Give the server's busy guard a generous moment to fire — it
@@ -374,7 +387,7 @@ async fn dropping_source_disconnects_cleanly() {
     for _ in 0..40 {
         let address = address.clone();
         match tokio::task::spawn_blocking(move || {
-            connect_and_subscribe(&address, vec![Subscription::new("blf:0", 0)])
+            connect_and_subscribe(&plaintext(&address), vec![Subscription::new("blf:0", 0)])
         })
         .await
         .unwrap()

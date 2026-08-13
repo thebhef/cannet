@@ -122,7 +122,9 @@ impl ServerProcess {
             if let Ok(Some(status)) = self.child.try_wait() {
                 return Err(format!("cannet-server exited early ({status})"));
             }
-            match rt.block_on(cannet_client::list_interfaces(&self.address)) {
+            match rt.block_on(cannet_client::list_interfaces(
+                &cannet_client::ConnectConfig::plaintext(&self.address),
+            )) {
                 Ok(_) => return Ok(()),
                 Err(e) if Instant::now() >= deadline => {
                     return Err(format!(

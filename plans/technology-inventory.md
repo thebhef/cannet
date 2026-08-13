@@ -114,7 +114,7 @@ without reshaping callers.
   `adopted` (Phase 2). Schema in `crates/cannet-wire`, `tonic-build`
   codegen on both ends. See [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
 - **tonic `tls` feature (rustls 0.23, `ring` backend)** — `adopted`
-  (Task 42) on `cannet-server`; still `proposed` for `cannet-client`.
+  (Task 42) on `cannet-server` and `cannet-client`.
   Transport security for the production cannet server's public
   endpoint per
   [ADR 0041](../docs/adr/0041-remote-connection-security.md). Not a
@@ -125,14 +125,28 @@ without reshaping callers.
   "logging", "tls12"]` — the defaults would pull `aws-lc-rs`) to
   install the process-level crypto provider explicitly at startup;
   everything in the tree stays on that one backend (see the Task 42
-  plan review, B1). Still to come on the client side:
-  `cannet-client` takes `rustls`/`rustls-pki-types` as direct deps to
-  implement the pin-only `ServerCertVerifier`, and dials through
-  `Endpoint::connect_with_connector`
-  (tonic 0.12's `ClientTlsConfig` cannot carry a custom verifier) —
-  hyper-rustls vs a small tokio-rustls connector is a spike decision
-  recorded here when made. Loopback links stay plaintext; the wire
+  plan review, B1). Loopback links stay plaintext; the wire
   crate does not hard-require TLS.
+- **A hand-written pinning connector, not `hyper-rustls`** —
+  `adopted` (Task 42) for `cannet-client`; `hyper-rustls` 0.27
+  `rejected`. tonic 0.12's `ClientTlsConfig` cannot carry a custom
+  `ServerCertVerifier`, so a fingerprint-pinning client has to dial
+  through `Endpoint::connect_with_connector` with its own
+  `rustls::ClientConfig` (and set `alpn_protocols = [b"h2"]` itself —
+  nothing on that path does it for you). Both candidates were weighed
+  on tree cost and on hand-written surface: `hyper-rustls` is a crate
+  the lock does not have, and it buys ~25 lines — connect a
+  `TcpStream`, wrap it in `tokio_rustls::TlsConnector`, hand tonic a
+  `hyper_util::rt::TokioIo`. `cannet-client` therefore takes `rustls`,
+  `tokio-rustls`, `hyper-util` and `tower` as direct deps, all four
+  already in the lock as tonic's own dependencies, so the dependency
+  tree does not grow at all. `ring`, `base64` and `subtle` become
+  direct deps for the same reason (fingerprint digest, its display
+  form, constant-time pin compare) — likewise already present.
+  Spike outcome that fixed the shape: with tonic's `tls` feature
+  compiled in, its internal `Connector` intercepts any `https://` URI
+  and refuses it unless *tonic's* TLS config is set, so the pinned
+  endpoint is dialled as `http://` and the connector does the TLS.
 - **`rcgen` 0.14** (Rust, MIT / Apache-2.0) — `adopted` (Task 42),
   direct dep of `cannet-server`. Generates the server's self-signed
   keypair/certificate on first run (ADR 0041). The de-facto Rust
