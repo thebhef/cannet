@@ -487,3 +487,89 @@ async fn an_unreachable_upstream_fails_the_rpc_rather_than_hanging() {
 
     proxy_handle.abort();
 }
+
+/// A bare TCP relay in front of `target`, on its own ephemeral port,
+/// whose connection can be severed on command. Cutting it drops both
+/// sockets with no protocol-level goodbye — no `GOAWAY`, no
+/// `END_STREAM`, nothing the peer can read as "I meant to leave" — which
+/// is what the server sees when a client process is killed. Serves one
+/// connection, which is all a session needs.
+async fn spawn_severable_tunnel(
+    target: SocketAddr,
+) -> (SocketAddr, tokio::sync::oneshot::Sender<()>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (cut_tx, cut_rx) = tokio::sync::oneshot::channel::<()>();
+    let handle = tokio::spawn(async move {
+        let (mut inbound, _) = listener.accept().await.unwrap();
+        let mut outbound = tokio::net::TcpStream::connect(target).await.unwrap();
+        tokio::select! {
+            _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound) => {}
+            _ = cut_rx => {}
+        }
+        // Both halves drop here.
+    });
+    (addr, cut_tx, handle)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_killed_mid_session_leaves_the_server_ready_for_the_next_one() {
+    // The owner's case: quit the GUI (or kill it) while a session is
+    // streaming, then connect again. Nothing nominal is ever sent — the
+    // transport simply dies — and the server has to notice on its own,
+    // or the hardware stays claimed by a client that no longer exists.
+    // A single-owner upstream is the witness: if the abandoned session
+    // leaked, the next one is told Busy forever.
+    let (upstream, upstream_handle) = spawn_blf_replay().await;
+    let (proxy, proxy_handle) = spawn_proxy(upstream).await;
+    let (tunnel, cut, tunnel_handle) = spawn_severable_tunnel(proxy).await;
+
+    let mut client = connect(tunnel).await;
+    let (tx, rx) = mpsc::channel::<Envelope>(8);
+    tx.send(subscribe("blf:0")).await.unwrap();
+    let mut stream = client
+        .session(ReceiverStream::new(rx))
+        .await
+        .unwrap()
+        .into_inner();
+    // A frame proves the session reached the upstream and is streaming
+    // — otherwise the assertion below could pass against a session that
+    // never claimed anything.
+    let env = next_envelope(&mut stream).await;
+    assert!(
+        matches!(env.body, Some(Body::FrameBatch(_))),
+        "expected a frame from the replay, got {env:?}",
+    );
+
+    // Sever the transport under the live session. The client side is
+    // left entirely intact — its request stream is still open, and it is
+    // held past the assertions below — so nothing here sends a close.
+    cut.send(()).unwrap();
+
+    let mut second = connect(proxy).await;
+    let mut served = false;
+    for _ in 0..40 {
+        let (second_tx, second_rx) = mpsc::channel::<Envelope>(8);
+        let mut second_stream = second
+            .session(ReceiverStream::new(second_rx))
+            .await
+            .unwrap()
+            .into_inner();
+        second_tx.send(subscribe("blf:0")).await.unwrap();
+        if let Ok(Some(Ok(env))) = timeout(Duration::from_millis(100), second_stream.next()).await {
+            assert!(
+                !matches!(&env.body, Some(Body::Error(e)) if e.code == i32::from(Code::Busy)),
+                "the killed client's session was never released",
+            );
+            served = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(served, "no session was served after the client was killed");
+
+    drop((client, tx, stream));
+    tunnel_handle.abort();
+    proxy_handle.abort();
+    upstream_handle.abort();
+}
