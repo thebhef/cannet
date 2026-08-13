@@ -355,6 +355,19 @@ impl SignalCache {
         }
     }
 
+    /// Every live level-0 sample, in time order — the series entire,
+    /// with no window and no decimation. Used where the consumer is a
+    /// file rather than a viewport.
+    fn all_samples(&self) -> Vec<SamplePoint> {
+        let level = &self.levels[0];
+        (level.first_slot()..level.len())
+            .map(|k| {
+                let (t_seconds, value) = level.get(k);
+                SamplePoint { t_seconds, value }
+            })
+            .collect()
+    }
+
     /// Serve a `[from, to)` window decimated to about `max_points` points.
     /// Reads the coarsest pyramid level whose in-window point count still
     /// exceeds `max_points` (so the next coarser level would drop below
@@ -1478,6 +1491,27 @@ impl SignalCacheStore {
             })
             .collect();
         out.sort_by(|a, b| (a.info.group, &a.info.name).cmp(&(b.info.group, &b.info.name)));
+        out
+    }
+
+    /// Every file-backed series **with its samples** — what a save that
+    /// can carry them (MDF) writes out.
+    ///
+    /// Whole series, undecimated: a saved file is not a viewport, so the
+    /// decimating [`Self::slice`] serve path is the wrong one here. These
+    /// series are the short ones by construction (a signal channel group
+    /// is read once and is then complete), so materializing them costs
+    /// what the import that filled them already cost.
+    ///
+    /// Same `(group, name)` order as [`Self::file_signals`].
+    pub fn file_signal_series(&self) -> Vec<(FileSignalInfo, Vec<SamplePoint>)> {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut out: Vec<(FileSignalInfo, Vec<SamplePoint>)> = caches
+            .by_key
+            .values()
+            .filter_map(|cache| Some((cache.file.clone()?, cache.all_samples())))
+            .collect();
+        out.sort_by(|a, b| (a.0.group, &a.0.name).cmp(&(b.0.group, &b.0.name)));
         out
     }
 

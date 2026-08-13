@@ -1,13 +1,16 @@
-//! Capture-session commands: BLF/MDF open / scan, BLF save, the
+//! Capture-session commands: BLF/MDF open / scan, capture save, the
 //! raw↔core frame conversion, and the scratch-buffer lifecycle
 //! (clear / restore / restamp).
 //!
 //! Opening a BLF or an MDF spawns a pump thread (`crate::run_pump`,
 //! generic over `cannet_core::CanFrameSource`, so the same pipeline
-//! runs either source); saving writes the whole session buffer plus
-//! notes back out as a Vector BLF (ADR 0010 — no sidecar files);
-//! clearing/restoring manage the disk-spill scratch identity (ADR
-//! 0002 DS-7).
+//! runs either source). Saving is one command over two writers, the
+//! format an explicit argument rather than a guess at the path's
+//! extension: a Vector BLF carries frames and notes, an ASAM MDF also
+//! carries the capture's file-backed signals and the project's DBCs.
+//! Everything either format carries lives inside the capture file
+//! (ADR 0010 — no sidecar files). Clearing/restoring manage the
+//! disk-spill scratch identity (ADR 0002 DS-7).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -183,16 +186,46 @@ pub(crate) async fn open_log(
     Ok(result)
 }
 
-/// Write the entire session buffer to `blf_path` as a Vector BLF.
-/// Every frame on every bus, no per-trace slicing — the project
-/// file's bus bindings handle re-routing on import. Notes ride
-/// inside the BLF as `GLOBAL_MARKER` records (object type 96) —
-/// no sidecar file (ADR 0010). The write is atomic at the BLF
-/// level (temp file + rename in `cannet-blf`).
+/// The capture file format a save writes. Chosen in the save dialog and
+/// sent explicitly — never inferred from the path's extension, so what
+/// the user picked and what the host writes cannot drift apart.
+#[derive(serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SaveFormat {
+    /// Vector BLF: frames and notes.
+    Blf,
+    /// ASAM MDF 4.10: frames, notes, file-backed signals and the
+    /// project's DBCs — the full-fidelity save.
+    Mdf,
+}
+
+impl SaveFormat {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Blf => "BLF",
+            Self::Mdf => "MDF",
+        }
+    }
+}
+
+/// Write the entire session buffer to `path` in `format`. Every frame on
+/// every bus, no per-trace slicing — the project file's bus bindings
+/// handle re-routing on import. Both writers are atomic (temp file +
+/// rename) and put everything they carry **inside** the capture file, no
+/// sidecar (ADR 0010).
 ///
-/// **Frames only.** A capture can also hold file-backed signals
-/// (`docs/CONTEXT.md`), and BLF has nowhere to put them, so a save that
-/// is about to drop some says so ([`dropped_file_backed_warning`]).
+/// What each format carries:
+///
+/// | | BLF | MDF |
+/// | --- | --- | --- |
+/// | frames | yes | yes |
+/// | notes | `GLOBAL_MARKER` | `##EV` |
+/// | file-backed signals | **no** | signal channel groups |
+/// | project DBCs | no | `##AT` attachments |
+///
+/// A BLF save that is about to drop file-backed signals says so
+/// ([`dropped_file_backed_warning`]); an MDF save carries them, so it
+/// does not.
 ///
 /// Emits `capture`-tagged System Messages: `info` with the frame
 /// count + byte size + marker count on success, `warn` naming any
@@ -202,21 +235,27 @@ pub(crate) async fn open_log(
 pub(crate) fn save_capture(
     app: AppHandle,
     state: State<'_, AppState>,
-    blf_path: String,
+    path: String,
+    format: SaveFormat,
     buses: Vec<String>,
 ) -> Result<SaveCaptureResult, String> {
-    // Snapshot the trace store. `slice(0, len)` clones each
-    // RawTraceFrame out under the trace-store lock — that's the
-    // simplest correct read; for very long captures it's a single
-    // big allocation rather than streaming chunked reads, which
-    // we'll revisit when disk-spill lands.
-    let frames = state.trace_store.slice(0, state.trace_store.len());
     let notes = state.notes.snapshot();
-
-    let outcome = match write_capture(&blf_path, &frames, &notes, &buses) {
+    let outcome = match format {
+        // Snapshot the trace store. `slice(0, len)` clones each
+        // RawTraceFrame out under the trace-store lock — that's the
+        // simplest correct read; for very long captures it's a single
+        // big allocation rather than streaming chunked reads, which
+        // we'll revisit when disk-spill lands.
+        SaveFormat::Blf => {
+            let frames = state.trace_store.slice(0, state.trace_store.len());
+            write_blf_capture(&path, &frames, &notes, &buses)
+        }
+        SaveFormat::Mdf => write_mdf_capture(&path, &state, &notes, &buses),
+    };
+    let outcome = match outcome {
         Ok(o) => o,
         Err(e) => {
-            sys_error!(&app, "capture", "save to {blf_path} failed: {e}");
+            sys_error!(&app, "capture", "save to {path} failed: {e}");
             return Err(e);
         }
     };
@@ -224,7 +263,8 @@ pub(crate) fn save_capture(
     sys_info!(
         &app,
         "capture",
-        "saved capture to {blf_path}: {n} frame(s), {b} bytes, {m} note(s)",
+        "saved capture to {path} as {fmt}: {n} frame(s), {b} bytes, {m} note(s)",
+        fmt = format.label(),
         n = outcome.frame_count,
         b = outcome.byte_size,
         m = outcome.marker_count,
@@ -241,8 +281,11 @@ pub(crate) fn save_capture(
             d = outcome.max_timestamp_drift_ns,
         );
     }
-    if let Some(warning) = dropped_file_backed_warning(&state.signal_caches.file_signals()) {
-        sys_warn!(&app, "capture", "{warning}");
+    // Only BLF drops them; MDF is the save that carries them.
+    if format == SaveFormat::Blf {
+        if let Some(warning) = dropped_file_backed_warning(&state.signal_caches.file_signals()) {
+            sys_warn!(&app, "capture", "{warning}");
+        }
     }
 
     Ok(outcome)
@@ -288,7 +331,7 @@ pub(crate) fn dropped_file_backed_warning(signals: &[FileSignalEntry]) -> Option
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveCaptureResult {
-    pub blf_path: String,
+    pub path: String,
     pub frame_count: u64,
     pub byte_size: u64,
     pub marker_count: u64,
@@ -342,6 +385,30 @@ pub(crate) fn note_from_marker(
     }
 }
 
+/// Project one MDF `##EV` block onto a [`Note`] — the inverse of
+/// [`event_from_note`]. An event written by another tool carries no
+/// `cannet.id`, so it gets a synthetic `mdf-event-<index>` (mirroring
+/// what [`note_from_marker`] does for a third-party BLF marker), which
+/// keeps its `rename` / `remove` paths working; `synthetic_idx` is the
+/// caller's running counter of those.
+pub(crate) fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut u64) -> Note {
+    let id = event.property(EVENT_ID_PROPERTY).map_or_else(
+        || {
+            let id = format!("mdf-event-{synthetic_idx}");
+            *synthetic_idx += 1;
+            id
+        },
+        ToOwned::to_owned,
+    );
+    Note {
+        id,
+        timestamp_ns: event.timestamp_ns,
+        label: event.name.clone(),
+        kind: notes::EventKind::Note,
+        color: event.property(EVENT_COLOR_PROPERTY).map(ToOwned::to_owned),
+    }
+}
+
 /// Perform the actual BLF write. Frames go in as CAN events, notes
 /// go in as `GLOBAL_MARKER` (object type 96) records — both inside
 /// the BLF file itself, no sidecar (per [ADR 0010]).
@@ -358,7 +425,7 @@ pub(crate) fn note_from_marker(
 /// Markers carry the note's `label` as `marker_name` and the note's
 /// `id` as `description`, so a save → open round-trip preserves the
 /// frontend-stable id.
-pub(crate) fn write_capture(
+pub(crate) fn write_blf_capture(
     blf_path: &str,
     frames: &[trace_store::RawTraceFrame],
     notes: &[Note],
@@ -409,13 +476,186 @@ pub(crate) fn write_capture(
         .map_err(|e| format!("failed to finalise capture: {e}"))?;
 
     Ok(SaveCaptureResult {
-        blf_path: blf_path.to_string(),
+        path: blf_path.to_string(),
         frame_count: outcome.frame_count,
         byte_size: outcome.byte_size,
         marker_count: outcome.marker_count,
         max_timestamp_drift_ns: outcome.max_timestamp_drift_ns,
     })
 }
+
+/// How many frames one pass of [`write_mdf_capture`] pulls out of the
+/// trace store at a time. Big enough that the per-slice lock and the
+/// spilled-segment reads amortise, small enough that a multi-million-
+/// frame capture never sits in RAM twice (`CLAUDE.md` § GUI architecture
+/// — the store is paged, and a save is one more reader of those pages).
+const MDF_SAVE_CHUNK: usize = 65_536;
+
+/// Perform the MDF write: the full-fidelity save.
+///
+/// Everything the model holds that the format can carry goes in, and all
+/// of it inside the one file (ADR 0010): frames as bus-logging channel
+/// groups, file-backed signals as signal channel groups, notes as `##EV`
+/// blocks, and the project's DBCs as embedded `##AT` attachments. What
+/// deliberately does *not* go in is DBC-decoded signals — the frames plus
+/// the attached DBC already say everything they would.
+///
+/// `buses` re-channels frames exactly as the BLF save does: a frame's
+/// `bus_id` becomes its position in the project's ordered bus list, which
+/// is the `BusChannel` an import maps back (ADR 0023).
+///
+/// Two chunked passes over the trace store, never a whole-capture
+/// snapshot: MDF records are a fixed layout, so the first pass settles
+/// the capture's origin and its longest payload and the second writes the
+/// records.
+pub(crate) fn write_mdf_capture(
+    path: &str,
+    state: &AppState,
+    notes: &[Note],
+    buses: &[String],
+) -> Result<SaveCaptureResult, String> {
+    let signals = state.signal_caches.file_signal_series();
+    let events: Vec<cannet_mdf::MdfEvent> = notes.iter().map(event_from_note).collect();
+    let attachments = dbc_attachments(state);
+
+    // Pass one: the capture's origin and its widest payload. The origin
+    // is the earliest of everything on the timeline, not just the frames
+    // — a note or a signal sample before the first frame must still land
+    // at a non-negative offset from `hd_start_time_ns` (ADR 0024).
+    let len = state.trace_store.len();
+    let mut start_time_ns = u64::MAX;
+    let mut max_payload_len = 0usize;
+    for start in (0..len).step_by(MDF_SAVE_CHUNK) {
+        for frame in state.trace_store.slice(start, start + MDF_SAVE_CHUNK) {
+            start_time_ns = start_time_ns.min(frame.timestamp_ns);
+            max_payload_len = max_payload_len.max(frame.payload.data().len());
+        }
+    }
+    for note in notes {
+        start_time_ns = start_time_ns.min(note.timestamp_ns);
+    }
+    for (_, points) in &signals {
+        if let Some(first) = points.first() {
+            start_time_ns = start_time_ns.min(sample_ns(first.t_seconds));
+        }
+    }
+    // An empty capture with no events and no signals has no origin of its
+    // own; anchor it at the epoch rather than at `u64::MAX`.
+    let start_time_ns = if start_time_ns == u64::MAX {
+        0
+    } else {
+        start_time_ns
+    };
+
+    let mut writer = cannet_mdf::MdfCaptureWriter::create(
+        path,
+        cannet_mdf::MdfCaptureLayout {
+            start_time_ns,
+            max_payload_len,
+        },
+    )
+    .map_err(|e| format!("failed to open {path} for writing: {e}"))?;
+
+    // Pass two: the records themselves.
+    for start in (0..len).step_by(MDF_SAVE_CHUNK) {
+        for frame in state.trace_store.slice(start, start + MDF_SAVE_CHUNK) {
+            let core = raw_to_core_frame(&frame, buses)
+                .map_err(|e| format!("invalid frame in session buffer: {e}"))?;
+            writer
+                .append_frame(&core)
+                .map_err(|e| format!("failed to write frame: {e}"))?;
+        }
+    }
+    for (info, points) in &signals {
+        writer.add_signal(
+            info.group_name.clone(),
+            cannet_mdf::FileSignal {
+                name: info.name.clone(),
+                unit: (!info.unit.is_empty()).then(|| info.unit.clone()),
+                conversion: None,
+                timestamps_ns: points.iter().map(|p| sample_ns(p.t_seconds)).collect(),
+                values: points.iter().map(|p| p.value).collect(),
+            },
+        );
+    }
+    for event in events {
+        writer.add_event(event);
+    }
+    for attachment in attachments {
+        writer.add_attachment(attachment);
+    }
+
+    let outcome = writer
+        .finish()
+        .map_err(|e| format!("failed to finalise capture: {e}"))?;
+    Ok(SaveCaptureResult {
+        path: path.to_string(),
+        frame_count: outcome.frame_count,
+        byte_size: outcome.byte_size,
+        marker_count: outcome.event_count,
+        // The master axis is f64 seconds against the capture's own origin,
+        // so a frame's absolute nanoseconds come back exactly for any
+        // capture spanning less than ~26 days.
+        max_timestamp_drift_ns: 0,
+    })
+}
+
+/// A cached sample's `t_seconds` back as absolute nanoseconds. The cache
+/// stores seconds since the epoch as an `f64`, so this is the model's own
+/// resolution (~0.24 µs at present-day wall clocks), not the nanosecond
+/// the frame timeline keeps.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+pub(crate) fn sample_ns(t_seconds: f64) -> u64 {
+    if t_seconds <= 0.0 {
+        return 0;
+    }
+    (t_seconds * 1e9).round() as u64
+}
+
+/// One [`Note`] as an MDF event. The note's id and color ride in the
+/// event's `common_properties` under a `cannet.` prefix — MDF's own
+/// extension point for tool metadata — so a save → open round-trip
+/// preserves the frontend-stable id exactly as the BLF marker's
+/// `description` does.
+fn event_from_note(note: &Note) -> cannet_mdf::MdfEvent {
+    let mut properties = vec![(EVENT_ID_PROPERTY.to_owned(), note.id.clone())];
+    if let Some(color) = note.color.as_deref() {
+        properties.push((EVENT_COLOR_PROPERTY.to_owned(), color.to_owned()));
+    }
+    cannet_mdf::MdfEvent {
+        timestamp_ns: note.timestamp_ns,
+        name: note.label.clone(),
+        properties,
+    }
+}
+
+/// `common_properties` keys a cannet-written MDF event carries.
+pub(crate) const EVENT_ID_PROPERTY: &str = "cannet.id";
+pub(crate) const EVENT_COLOR_PROPERTY: &str = "cannet.color";
+
+/// The project's loaded DBCs as embedded attachments, read back off disk
+/// at save time. A DBC that has since moved or been deleted is skipped
+/// rather than failing the save — the capture is the thing being written.
+fn dbc_attachments(state: &AppState) -> Vec<cannet_mdf::MdfAttachment> {
+    state
+        .databases()
+        .iter()
+        .filter_map(|db| {
+            let data = std::fs::read(&db.path).ok()?;
+            Some(cannet_mdf::MdfAttachment {
+                file_name: std::path::Path::new(&db.path)
+                    .file_name()
+                    .map_or_else(|| db.path.clone(), |n| n.to_string_lossy().into_owned()),
+                mime_type: DBC_MIME_TYPE.to_owned(),
+                data,
+            })
+        })
+        .collect()
+}
+
+/// What an embedded DBC declares itself as. Vector's own registration for
+/// the format, and what other MDF tools look for on an attachment.
+const DBC_MIME_TYPE: &str = "application/vnd.vector.dbc";
 
 /// Convert a `RawTraceFrame` back into a `CanFrame` for the
 /// BLF writer. Errors only if the id mode disagrees with the
@@ -579,9 +819,10 @@ pub(crate) async fn scan_blf_channels(
 /// The MDF counterpart of [`open_log`]: same shape, same
 /// one-pass-over-the-source pipeline (`run_pump`, generic over
 /// [`cannet_core::CanFrameSource`]), same `WindowedSource` import-range
-/// filter (ADR 0046). `MdfCanFrameSource` carries no marker sink —
-/// `cannet-mdf` does not read MDF event (`EV`) blocks yet — so unlike
-/// `open_log` there is no notes collection here.
+/// filter (ADR 0046). The file's `##EV` blocks become session notes, the
+/// part `GLOBAL_MARKER` records play on the BLF path — read up front
+/// rather than through a sink, because MDF events hang off the header
+/// block rather than riding the record stream.
 ///
 /// `async` for the same reason as `open_log`: opening and finalizing an
 /// unsorted MDF parses the whole block graph, and that must not hold up
@@ -618,10 +859,22 @@ pub(crate) async fn import_mdf(
         mdf_path: mdf_path.clone(),
     };
 
-    // Read the file's signal channel groups before the source is handed
-    // to the pump: they are a one-time read that completes, unlike the
-    // frame stream, and `signal_groups` needs the open file.
+    // Read the file's signal channel groups and events before the source
+    // is handed to the pump: both are one-time reads that complete,
+    // unlike the frame stream, and both need the open file.
     let signal_groups = source.signal_groups();
+    let mut synthetic_idx = 0u64;
+    let notes: Vec<Note> = match source.events() {
+        Ok(events) => events
+            .iter()
+            .map(|e| note_from_event(e, &mut synthetic_idx))
+            .collect(),
+        Err(e) => {
+            // A bad event chain is not a reason to lose the frames.
+            sys_warn!(&app, "mdf-import", "could not read MDF events: {e}");
+            Vec::new()
+        }
+    };
 
     let channel_to_bus: Vec<(u8, Option<String>)> = channel_bus_mapping
         .unwrap_or_default()
@@ -667,6 +920,19 @@ pub(crate) async fn import_mdf(
                         "imported {signals} file-backed signal(s) \
                          ({samples} sample(s)) from {groups} signal channel group(s)",
                         groups = signal_groups.len(),
+                    );
+                }
+                // The file's events, applied after the pass — same point
+                // in the flow as `open_log`'s BLF markers, and after the
+                // capture identity that wipes the session store.
+                if !notes.is_empty() {
+                    let count = notes.len();
+                    let _ = state.notes.replace(notes.clone());
+                    let _ = app_for_thread.emit("notes-changed", notes);
+                    sys_info!(
+                        &app_for_thread,
+                        "mdf-import",
+                        "loaded {count} note(s) from MDF event blocks",
                     );
                 }
             }));
@@ -756,10 +1022,10 @@ impl From<&cannet_mdf::SkippedDecodedGroup> for SkippedDecodedGroupInfo {
 /// Everything the import dialog needs from one census walk of an MDF
 /// 4.x bus-logging file — the MDF counterpart of [`BlfScanResult`].
 ///
-/// `markers` is always empty: `cannet_mdf` does not read MDF event
-/// (`EV`) blocks yet. The field exists purely so the channel→bus
-/// mapping dialog (shared with BLF import) needs no per-format
-/// branching for its markers section.
+/// `markers` are the file's `##EV` blocks projected onto the same
+/// [`Note`] shape a BLF's `GLOBAL_MARKER` records take, so the
+/// channel→bus mapping dialog (shared with BLF import) needs no
+/// per-format branching for its markers section.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MdfScanResult {
     pub channels: Vec<u8>,
@@ -832,13 +1098,19 @@ pub(crate) async fn scan_mdf_channels(
                 n = scan.skipped_decoded_groups.len(),
             );
         }
+        let mut synthetic_idx = 0u64;
+        let markers = scan
+            .events
+            .iter()
+            .map(|e| note_from_event(e, &mut synthetic_idx))
+            .collect();
         Ok(MdfScanResult {
             channels: scan.channels,
             frame_count: scan.frame_count,
             first_timestamp_ns: scan.first_timestamp_ns,
             last_timestamp_ns: scan.last_timestamp_ns,
             start_unix_nanos: scan.start_unix_nanos,
-            markers: Vec::new(),
+            markers,
             unfinalized: scan.unfinalized,
             signal_group_count: scan.signal_group_names.len(),
             skipped_decoded_groups: scan.skipped_decoded_groups.iter().map(Into::into).collect(),

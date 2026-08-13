@@ -1711,12 +1711,12 @@ fn notes_via_import_walk(blf_path: &str) -> Vec<crate::notes::Note> {
 }
 
 /// Round-trip: write the trace-store contents + notes via
-/// `write_capture`, then read it back through the import's own
+/// `write_blf_capture`, then read it back through the import's own
 /// one-pass walk — frames from `BlfCanFrameSource`, markers from the
 /// sink riding the same pass. The frame ids and the marker count must
 /// match the input.
 #[test]
-fn write_capture_round_trips_frames_and_notes() {
+fn write_blf_capture_round_trips_frames_and_notes() {
     use cannet_blf::BlfCanFrameSource;
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("cap.blf");
@@ -1777,7 +1777,7 @@ fn write_capture_round_trips_frames_and_notes() {
         },
     ];
 
-    let outcome = write_capture(
+    let outcome = write_blf_capture(
         dest.to_str().unwrap(),
         &[f_classic, f_fd, f_err],
         &notes_in,
@@ -2057,6 +2057,191 @@ fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
     );
     assert!(warning.contains("Analog/EngineSpeed"), "{warning}");
     assert!(warning.contains("Analog/CoolantTemp"), "{warning}");
+}
+
+/// The full round-trip contract for an MDF save: import → export →
+/// re-import preserves frame content bit for bit (id + extended,
+/// payload, FD flags, remote and error frames), frame-accurate absolute
+/// timestamps (ADR 0024), the bus mapping via the ordered project bus
+/// list ↔ `BusChannel` rule (ADR 0023), the trace's event markers, and
+/// the file-backed signal series with their names and units.
+///
+/// Drives `write_mdf_capture` — the exact body `save_capture` runs for
+/// `SaveFormat::Mdf` — against a real `AppState`, and reads the result
+/// back through the same calls `import_mdf` makes. The Tauri command
+/// itself needs an `AppHandle` the suite has no harness for, so this
+/// tests one layer under it, as the BLF save tests do.
+#[test]
+#[allow(clippy::too_many_lines)] // one contract, asserted end to end
+fn an_mdf_save_round_trips_everything_the_model_holds() {
+    use cannet_core::CanFrameSource as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("capture.mf4");
+    let dbc_path = dir.path().join("modes.dbc");
+    std::fs::write(&dbc_path, MUX_SNAPSHOT_DBC).unwrap();
+
+    let state = file_backed_state();
+    state.databases.lock().unwrap().clear();
+    state
+        .databases
+        .lock()
+        .unwrap()
+        .push(loaded(dbc_path.to_str().unwrap(), MUX_SNAPSHOT_DBC));
+
+    // Two buses, both addressing modes, and every payload kind.
+    let ts = 1_700_000_000_000_000_000u64;
+    let buses = vec!["powertrain".to_string(), "chassis".to_string()];
+    let frames_in = vec![
+        trace_store::RawTraceFrame {
+            timestamp_ns: ts + 7,
+            channel: 0,
+            id: 0x100,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Classic(vec![1, 2, 3, 4, 5, 6, 7, 8]),
+            bus_id: Some("powertrain".into()),
+        },
+        trace_store::RawTraceFrame {
+            timestamp_ns: ts + 1_000_037,
+            channel: 0,
+            id: 0x01AB_CDEF,
+            extended: true,
+            direction: Direction::Tx,
+            payload: CanFramePayload::Fd {
+                data: vec![0xAA; 48],
+                flags: cannet_core::CanFdFlags {
+                    bitrate_switch: true,
+                    error_state_indicator: true,
+                },
+            },
+            bus_id: Some("chassis".into()),
+        },
+        trace_store::RawTraceFrame {
+            timestamp_ns: ts + 2_000_000_003,
+            channel: 0,
+            id: 0x10,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Error,
+            bus_id: Some("powertrain".into()),
+        },
+        trace_store::RawTraceFrame {
+            timestamp_ns: ts + 3_000_000_009,
+            channel: 0,
+            id: 0x7FF,
+            extended: false,
+            direction: Direction::Tx,
+            payload: CanFramePayload::Remote { dlc: 6 },
+            bus_id: Some("chassis".into()),
+        },
+    ];
+    for frame in &frames_in {
+        state.trace_store.append(frame.clone());
+    }
+
+    let notes_in = vec![
+        notes::Note {
+            id: "note-a".into(),
+            timestamp_ns: ts + 500_000,
+            label: "first".into(),
+            kind: notes::EventKind::Note,
+            color: Some("#FF8800".into()),
+        },
+        notes::Note {
+            id: "note-b".into(),
+            timestamp_ns: ts + 2_500_000_000,
+            label: "second & last".into(),
+            kind: notes::EventKind::Note,
+            color: None,
+        },
+    ];
+
+    let outcome =
+        capture::write_mdf_capture(dest.to_str().unwrap(), &state, &notes_in, &buses).unwrap();
+    assert_eq!(outcome.frame_count, 4);
+    assert_eq!(outcome.marker_count, 2);
+    assert_eq!(outcome.max_timestamp_drift_ns, 0);
+
+    // --- frames, bit for bit, on the buses the project list implies ---
+    let mut source = cannet_mdf::MdfCanFrameSource::open(&dest).unwrap();
+    let mut back = Vec::new();
+    while let Some(frame) = source.next_frame().unwrap() {
+        back.push(frame);
+    }
+    assert_eq!(back.len(), frames_in.len());
+    for (got, want) in back.iter().zip(&frames_in) {
+        assert_eq!(got.timestamp_ns, want.timestamp_ns, "{want:?}");
+        assert_eq!(got.id.raw(), want.id);
+        assert_eq!(got.id.is_extended(), want.extended);
+        assert_eq!(got.direction, want.direction);
+        assert_eq!(got.payload, want.payload);
+        // `BusChannel` carries the bus list position, so a re-import maps
+        // the frame back onto the same logical bus (ADR 0023).
+        assert_eq!(
+            buses[got.channel as usize],
+            want.bus_id.clone().unwrap(),
+            "{want:?}"
+        );
+    }
+
+    // --- markers ---
+    let mut synthetic_idx = 0u64;
+    let notes_back: Vec<notes::Note> = source
+        .events()
+        .unwrap()
+        .iter()
+        .map(|e| capture::note_from_event(e, &mut synthetic_idx))
+        .collect();
+    assert_eq!(notes_back, notes_in);
+
+    // --- file-backed signals ---
+    let groups = source.signal_groups();
+    let filled = state.signal_caches.file_signal_series();
+    assert_eq!(groups.len(), filled.len());
+    for (group, (info, points)) in groups.iter().zip(&filled) {
+        assert_eq!(group.name, info.group_name);
+        assert_eq!(group.signals.len(), 1);
+        let got = &group.signals[0];
+        assert_eq!(got.name, info.name);
+        assert_eq!(got.unit.clone().unwrap_or_default(), info.unit);
+        assert_eq!(
+            got.values,
+            points.iter().map(|p| p.value).collect::<Vec<_>>()
+        );
+        for (back, point) in got.timestamps_ns.iter().zip(points) {
+            // The signal cache stores sample times as f64 seconds since
+            // the epoch, so a file-backed series' resolution is the
+            // model's ~0.24 µs, not the frame timeline's nanosecond.
+            let want = capture::sample_ns(point.t_seconds);
+            assert!(back.abs_diff(want) <= 1_000, "{back} vs {want}");
+        }
+    }
+
+    // --- the project DBC, embedded (ADR 0010) ---
+    let attachments = source.attachments().unwrap();
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].file_name, "modes.dbc");
+    assert_eq!(attachments[0].data, MUX_SNAPSHOT_DBC.as_bytes());
+}
+
+/// An event another tool wrote carries no `cannet.id`, so the import
+/// mints a deterministic one — the same rule a third-party BLF marker
+/// gets, and what keeps its rename/remove paths working.
+#[test]
+fn an_mdf_event_without_a_cannet_id_gets_a_synthetic_one() {
+    let mut idx = 0u64;
+    let plain = cannet_mdf::MdfEvent {
+        timestamp_ns: 1_700_000_000_000_000_000,
+        name: "someone else's marker".into(),
+        properties: vec![],
+    };
+    let first = capture::note_from_event(&plain, &mut idx);
+    let second = capture::note_from_event(&plain, &mut idx);
+    assert_eq!(first.id, "mdf-event-0");
+    assert_eq!(second.id, "mdf-event-1");
+    assert_eq!(first.label, "someone else's marker");
+    assert_eq!(first.color, None);
 }
 
 /// And a capture with none is saved without a word about it — a warning
@@ -2393,14 +2578,14 @@ fn mdf_signal_file_scan_reports_a_clear_error_not_an_empty_capture() {
     }
 }
 
-/// `write_capture` re-channels each frame by its `bus_id`'s
+/// `write_blf_capture` re-channels each frame by its `bus_id`'s
 /// position in the project's ordered bus list. This is how the
 /// logical bus assignment round-trips through BLF — the channel
 /// number IS the bus index. A frame whose `bus_id` is missing or
 /// not in the project's bus list keeps its original wire channel
 /// (so we never silently lose data from a partly-mapped capture).
 #[test]
-fn write_capture_re_channels_frames_by_project_bus_order() {
+fn write_blf_capture_re_channels_frames_by_project_bus_order() {
     use cannet_blf::BlfCanFrameSource;
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("multi-bus.blf");
@@ -2425,7 +2610,7 @@ fn write_capture_re_channels_frames_by_project_bus_order() {
     ];
     let buses = vec!["p".to_string(), "c".to_string()];
 
-    let outcome = write_capture(dest.to_str().unwrap(), &frames, &[], &buses).unwrap();
+    let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &[], &buses).unwrap();
     assert_eq!(outcome.frame_count, 3);
 
     let mut src = BlfCanFrameSource::open(&dest).unwrap();
@@ -2442,7 +2627,7 @@ fn write_capture_re_channels_frames_by_project_bus_order() {
 /// can decide what to do with them on reload via the BLF
 /// channel-map modal.
 #[test]
-fn write_capture_keeps_wire_channel_when_bus_is_unmapped() {
+fn write_blf_capture_keeps_wire_channel_when_bus_is_unmapped() {
     use cannet_blf::BlfCanFrameSource;
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("partial-bus.blf");
@@ -2464,7 +2649,7 @@ fn write_capture_keeps_wire_channel_when_bus_is_unmapped() {
     ];
     let buses = vec!["p".to_string(), "c".to_string()];
 
-    write_capture(dest.to_str().unwrap(), &frames, &[], &buses).unwrap();
+    write_blf_capture(dest.to_str().unwrap(), &frames, &[], &buses).unwrap();
 
     let mut src = BlfCanFrameSource::open(&dest).unwrap();
     let read: Vec<u8> = std::iter::from_fn(|| src.next_frame().unwrap())

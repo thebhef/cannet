@@ -80,6 +80,11 @@ import { ShortcutsPanel } from "./ShortcutsPanel";
 import { KeybindingsContext } from "./keybindingsContext";
 import { recordRecentBlf, forgetRecentBlf } from "./recentBlfs";
 import {
+  DEFAULT_SAVE_CAPTURE_NAME,
+  SAVE_CAPTURE_FILTERS,
+  saveFormatFor,
+} from "./saveFormat";
+import {
   hostState,
   hydrateState,
   setRecentBlfs as persistRecentBlfs,
@@ -1857,30 +1862,39 @@ export function App() {
   const handleSaveAllRef = useRef(handleSaveAll);
   handleSaveAllRef.current = handleSaveAll;
 
-  // Save Capture: write the session buffer to a BLF.
+  // Save Capture: write the session buffer to a capture file.
   // System Messages handle the user-visible success / failure
   // feedback; this just routes through the host command.
   //
-  // The project's ordered `buses` list IS the BLF channel order
-  // (see CLAUDE.md § File formats). Frames get re-channeled by the
-  // host so that bus index N → BLF channel N; on reload the channel
-  // map modal seeds matching pairs.
+  // One gesture, two formats: the dialog's filter list offers Vector BLF
+  // and ASAM MDF, and the chosen filter travels to the host as an
+  // explicit `format` (see `saveFormat.ts` for why the mapping lives on
+  // this side). BLF carries frames and notes; MDF also carries the
+  // capture's file-backed signals and the project's DBCs.
+  //
+  // The project's ordered `buses` list IS the channel order in either
+  // format (see CLAUDE.md § File formats). Frames get re-channeled by
+  // the host so that bus index N → channel N; on reload the channel map
+  // modal seeds matching pairs.
   const handleSaveCapture = useCallback(async () => {
     if (count === 0) return;
     const path = await save({
-      defaultPath: "capture.blf",
-      filters: [{ name: "Vector BLF", extensions: ["blf"] }],
+      defaultPath: DEFAULT_SAVE_CAPTURE_NAME,
+      filters: SAVE_CAPTURE_FILTERS,
     });
     if (typeof path !== "string" || path.length === 0) return;
+    const format = saveFormatFor(path);
     try {
       await invoke("save_capture", {
-        blfPath: path,
+        path,
+        format,
         buses: buses.map((b) => b.id),
       });
-      // Newly-saved captures are reasonable Recent BLF candidates
-      // (the user just produced this file; re-opening it is the
-      // archetypal "what did I just save?" gesture).
-      rememberRecentBlf(path);
+      // Newly-saved BLFs are reasonable Recent BLF candidates (the user
+      // just produced this file; re-opening it is the archetypal "what
+      // did I just save?" gesture). There is no Recent MDFs list to add
+      // an `.mf4` to yet.
+      if (format === "blf") rememberRecentBlf(path);
     } catch {
       // Failure surfaces in the System Messages panel via the
       // host's `capture`-tagged error log; nothing more to do here.
