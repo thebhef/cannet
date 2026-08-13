@@ -499,11 +499,11 @@ dependencies = [
  "cannet-client",
  "cannet-core",
  "cannet-dbc",
+ "cannet-log",
  "cannet-mdf",
  "cannet-sidecar",
  "cannet-spill",
  "cannet-wire",
- "chrono",
  "mdns-sd",
  "notify",
  "regex",
@@ -520,6 +520,14 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "vergen",
+]
+
+[[package]]
+name = "cannet-log"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "tempfile",
 ]
 
 [[package]]

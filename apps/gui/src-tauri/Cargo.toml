@@ -79,11 +79,10 @@ notify = { version = "8", default-features = false, features = ["macos_kqueue"] 
 # `unsafe`, so a crate is required to wrap the per-OS process APIs. Only
 # the process module is needed.
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
-# ISO-8601 / RFC-3339 timestamps in the on-disk crash log (`crash.rs`).
-# Already in the dependency graph transitively; this just makes the
-# dependency direct. `std` (not `clock`) is all we need to format an
-# epoch-ms value — we don't read the wall clock through chrono.
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+# The rolling log file's write/rotate machinery and its ISO-8601
+# timestamps (`crash.rs`), shared with `cannet-server` so the two hosts'
+# logs cannot drift apart in their semantics.
+cannet-log = { path = "../../../crates/cannet-log" }
 
 [dev-dependencies]
 # Phase 9: round-trip the Save Capture writer through real files

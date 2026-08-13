@@ -79,6 +79,15 @@ crates/
                  stubs, conversion helpers between `cannet_core`
                  frames and the wire types, and a batching adapter
                  layer so application code stays in `Stream<CanFrame>`.
+  cannet-log/    The rolling log file both hosts write — the GUI's
+                 `cannet.log` and `cannet-server`'s
+                 `cannet-server.log`. Append + size-rotate to a single
+                 `.1` generation + flush on every write, and the
+                 ISO-8601 timestamp a line is stamped with. Stateless
+                 on purpose: the caller owns the directory, the file
+                 name, the cap and any write lock, so the two hosts
+                 share the semantics that must not drift without
+                 sharing the policy that differs.
   cannet-server/ Bare `cannet-server` is the production hardware proxy
                  (ADR 0040): it supervises the `cannet-python-can`
                  sidecar on loopback and relays all three RPCs to it
