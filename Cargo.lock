@@ -571,6 +571,7 @@ dependencies = [
  "blf_asc",
  "cannet-blf",
  "cannet-core",
+ "cannet-log",
  "cannet-sidecar",
  "cannet-wire",
  "clap",
