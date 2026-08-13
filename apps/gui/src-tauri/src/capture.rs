@@ -22,7 +22,7 @@ use crate::app_state::AppState;
 use crate::ipc::{ImportMdfResult, LogFinished, OpenLogResult};
 use crate::notes::{self, Note};
 use crate::sampling::off_async_workers;
-use crate::signal_cache::{FileSignalInfo, SignalCacheStore};
+use crate::signal_cache::{FileSignalEntry, FileSignalInfo, SignalCacheStore};
 use crate::trace_store;
 use crate::{sys_debug, sys_error, sys_info, sys_warn};
 // `run_pump` / `panic_message` live in `session` once it is split out;
@@ -190,9 +190,13 @@ pub(crate) async fn open_log(
 /// no sidecar file (ADR 0010). The write is atomic at the BLF
 /// level (temp file + rename in `cannet-blf`).
 ///
+/// **Frames only.** A capture can also hold file-backed signals
+/// (`docs/CONTEXT.md`), and BLF has nowhere to put them, so a save that
+/// is about to drop some says so ([`dropped_file_backed_warning`]).
+///
 /// Emits `capture`-tagged System Messages: `info` with the frame
-/// count + byte size + marker count on success, `error` on
-/// failure.
+/// count + byte size + marker count on success, `warn` naming any
+/// file-backed signals the format cannot carry, `error` on failure.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn save_capture(
@@ -237,8 +241,45 @@ pub(crate) fn save_capture(
             d = outcome.max_timestamp_drift_ns,
         );
     }
+    if let Some(warning) = dropped_file_backed_warning(&state.signal_caches.file_signals()) {
+        sys_warn!(&app, "capture", "{warning}");
+    }
 
     Ok(outcome)
+}
+
+/// What a BLF save is about to lose, or `None` when it loses nothing.
+///
+/// A BLF carries frames. File-backed signals (`docs/CONTEXT.md`) are not
+/// frames and nothing in the format can hold them, so saving a capture
+/// that has them to BLF silently drops them — the one thing this warning
+/// exists to stop being silent. It names them rather than counting them:
+/// which signals disappeared is what decides whether the user wanted a
+/// different format.
+///
+/// A warning, not a refusal. BLF is still the right save for a capture
+/// whose frames are the point, and the user is the one who knows.
+#[must_use]
+pub(crate) fn dropped_file_backed_warning(signals: &[FileSignalEntry]) -> Option<String> {
+    // Long captures can carry hundreds; the log line names enough to
+    // recognise what is going and says how many more there are.
+    const NAMED: usize = 8;
+    if signals.is_empty() {
+        return None;
+    }
+    let mut names: Vec<String> = signals
+        .iter()
+        .take(NAMED)
+        .map(|e| format!("{}/{}", e.info.group_label(), e.info.name))
+        .collect();
+    if signals.len() > NAMED {
+        names.push(format!("… and {} more", signals.len() - NAMED));
+    }
+    Some(format!(
+        "BLF carries frames only — {n} file-backed signal(s) will not be in the saved file: {list}",
+        n = signals.len(),
+        list = names.join(", "),
+    ))
 }
 
 /// Result of [`save_capture`]; mirrors the `cannet-blf` writer's

@@ -2042,6 +2042,31 @@ fn mdf_scan_reports_skipped_decoded_groups_for_the_dialog() {
     );
 }
 
+/// Saving to BLF drops file-backed signals — the format carries frames
+/// and nothing else can hold them — so the save path says so. A warning,
+/// not a refusal: BLF is still the right save for a capture whose frames
+/// are the point.
+#[test]
+fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
+    let state = file_backed_state();
+    let warning = capture::dropped_file_backed_warning(&state.signal_caches.file_signals())
+        .expect("a capture with file-backed signals warns");
+    assert!(
+        warning.contains("2 file-backed signal(s) will not be in the saved file"),
+        "{warning}"
+    );
+    assert!(warning.contains("Analog/EngineSpeed"), "{warning}");
+    assert!(warning.contains("Analog/CoolantTemp"), "{warning}");
+}
+
+/// And a capture with none is saved without a word about it — a warning
+/// every save emits is one nobody reads.
+#[test]
+fn a_blf_save_of_a_frames_only_capture_warns_about_nothing() {
+    let state = test_state();
+    assert!(capture::dropped_file_backed_warning(&state.signal_caches.file_signals()).is_none());
+}
+
 /// A capture holding two file-backed signals, one DBC loaded beside
 /// them so both provenances are in play at once.
 #[allow(clippy::cast_precision_loss)] // ten small integers
