@@ -6,10 +6,11 @@ server advertises `_cannet._tcp` via mDNS/DNS-SD; the GUI browses and
 offers a fuzzy-searchable server list beside the manual `host:port`
 field, which remains the path to servers beyond the local subnet.
 
-**Blocking prerequisite**: evaluate-dependency pass for the Rust
-mDNS/DNS-SD crate (candidates: `mdns-sd`, `libmdns`; must cover both
-register and browse, or pick one per side) → entry in
-`technology-inventory.md` before code.
+**Blocking prerequisite — cleared 2026-08-12.** The
+evaluate-dependency pass picked **`mdns-sd` 0.21** for both register
+and browse; `technology-inventory.md` carries the adoption and the
+four rejections. The grooming note and status log below record what
+the spike measured and what phase 2/3 must build against.
 
 ## Decisions
 
@@ -49,11 +50,44 @@ register and browse, or pick one per side) → entry in
 - **2026-08-12 — v4/v6 dedupe: key by instance name.** One list
   entry per DNS-SD instance name regardless of address family; the
   entry is live while any announcement for it is live.
-
-## Open
-
-- Crate choice (the evaluate-dependency pass); note `libmdns` is
-  register-only, so browse needs `mdns-sd` or a second crate.
+- **2026-08-12 — crate eval (phase 1): `mdns-sd` 0.21 on both
+  sides.** It is the only credible pure-Rust crate covering register
+  *and* browse, so the server's advertisement and the GUI's browse
+  share one implementation. `libmdns` (register-only), `zeroconf`
+  (FFI; needs Bonjour installed on Windows), `simple-mdns` (~90
+  downloads/month) and `agnostic-mdns` (17 months stale) are
+  rejected in `technology-inventory.md`. Facts the phase-2/3
+  implementers should build against, all measured in the spike
+  (numbers in the status log below):
+  - **Goodbye is ~1.0 s, and bare `shutdown()` is enough.**
+    `ServiceDaemon::shutdown()` unregisters everything and sends
+    goodbye packets, so the server's Ctrl-C path does not need an
+    explicit `unregister()`. The ~1 s floor is RFC 6762 §10.1 (a
+    TTL=0 goodbye is cached as TTL=1), not library lag — it cannot
+    be tuned away. The process must not `exit()` the instant
+    `shutdown()` returns; the goodbye still has to reach the wire.
+  - **Hard kill costs the full 120 s host TTL.** `mdns-sd` stamps
+    SRV/A records with 120 s and PTR/TXT with 4500 s
+    (RFC 6762 defaults); removal fires on SRV expiry, so a killed
+    server disappears ~120 s after its *last announcement*, not
+    after the kill. The "gone servers drop immediately" decision
+    above holds for the goodbye path only — a crashed server
+    lingers for up to two minutes, and the connect UI should not
+    imply otherwise.
+  - **`ServiceResolved` fires many times per instance.** The spike
+    saw 11 resolves for one registration as addresses accumulated
+    across 6 interfaces, and 2 `ServiceRemoved` events for one
+    expiry. The browse-list state machine must be idempotent and
+    keyed by fullname — which is what the v4/v6 dedupe decision
+    already requires; this is the mechanical reason it is
+    mandatory rather than tidy.
+  - **`enable_addr_auto()` announces on every interface**,
+    including VM and WSL virtual adapters. Whether the server
+    should instead bind the addresses it is actually serving on is
+    a phase-2 decision, not a settled one.
+  - **Windows: expect the firewall to bite cross-host.** See the
+    status log — the spike was same-host and did not prove
+    cross-machine reachability.
 
 ## Non-goals
 
@@ -74,3 +108,69 @@ register and browse, or pick one per side) → entry in
   the browse-list state machine regardless.
 - `plans/features.md` "Discoverable on the network" checked; README
   documents `--name` / `--no-mdns`.
+
+## Status log
+
+### 2026-08-12 — phase 1: mDNS/DNS-SD crate eval
+
+Landed on `task43a-mdns-eval`, off `task42d-gui-tofu` (`ecc1fa5`).
+No production code — the eval verdict gates it.
+
+**Verdict: `mdns-sd` 0.21 for both register and browse.** Rationale
+and the rejections (`libmdns`, `zeroconf`, `simple-mdns`,
+`agnostic-mdns`) are in `technology-inventory.md`.
+
+The spike was a throwaway cargo project outside the repo: a
+registrar and a browser as separate processes, plus a second
+registrar built on `libmdns` to check interop. Host: Windows 11 Pro
+26200, 6 interfaces (Ethernet, loopback, WSL/Hyper-V vSwitch, two
+VMware adapters), rustc 1.96.0. Service `_cannet._tcp` with a single
+`ver=0.0.0` TXT key, exactly the shape the Decisions call for.
+
+Measured, `mdns-sd` registrar → `mdns-sd` browser:
+
+| event | latency |
+| ----- | ------- |
+| register → first `ServiceResolved` | 0.80 s |
+| `unregister()` → `ServiceRemoved` | 1.01 s |
+| `shutdown()` (no `unregister`) → `ServiceRemoved` | 1.01 s |
+| re-register same name → `ServiceResolved` | 0.50 s |
+| hard kill (`SIGKILL`) → `ServiceRemoved` | 109.9 s after the kill; 121.9 s after registration |
+
+The hard-kill figure is the 120 s SRV/A TTL running from the
+registrar's announcement burst, so the kill landing 12 s in is why
+the two columns differ. The browser re-queried on its own backoff
+(+7/+15/+31/+63/+127 s) and got nothing; expiry, not a failed
+refresh, is what removed the entry.
+
+TXT survived intact — `get_property_val_str("ver")` returned
+`"0.0.0"` on every resolve. Instance identity is the fullname
+`spike-a._cannet._tcp.local.`, stable across the re-register and
+across address families: a single resolve reported 6 IPv4 and 17
+IPv6 addresses under one fullname. Both families were exercised;
+IPv6 was link-local only (`fe80::/10`) on this host.
+
+`libmdns` interop: its registration resolved through the `mdns-sd`
+browser in 8 ms with the `ver` TXT intact, and dropping its
+`Service` handle produced a `ServiceRemoved` 1.00 s later. It works;
+it just cannot browse.
+
+**Windows notes for phase 2/3:**
+
+- Windows already has processes bound to UDP 5353 (the OS resolver,
+  plus browsers' mDNS rules). `mdns-sd` shared the port without
+  complaint — no `SO_REUSEADDR` work needed on our side. No Apple
+  Bonjour / `mDNSResponder` is installed on this host, and none was
+  required.
+- **On first bind, Windows silently created inbound *Block* rules
+  (UDP and TCP, Public profile) for each spike binary.** No prompt
+  appeared. The active profile is Public with
+  `BlockInbound,AllowOutbound`. The spike still passed because both
+  processes were on one machine — **it did not exercise
+  cross-machine inbound filtering, and must not be read as proof of
+  cross-host reachability.** Packaging needs an explicit inbound
+  allow rule for UDP 5353, and the exit criterion "a running server
+  appears in the GUI's browse list" should be walked on two
+  machines, not one.
+- Those auto-created Block rules still name the spike's temp paths;
+  deleting them needs elevation, so they were left in place.

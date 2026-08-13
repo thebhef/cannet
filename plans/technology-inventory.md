@@ -193,13 +193,54 @@ without reshaping callers.
   crates were named as acceptable when the token was groomed; the
   remaining alternative is hand-rolling the XOR-fold, which is the
   kind of primitive we don't hand-roll.
-- **mDNS/DNS-SD crate** — `proposed` (Task 43); candidates
-  `mdns-sd`, `libmdns`. Server-side advertisement of `_cannet._tcp`
-  and GUI-side browse per
-  [ADR 0040](../docs/adr/0040-production-cannet-server.md).
-  Evaluate-dependency pass is the Task 43 blocking prerequisite —
-  must cover register + browse (or one crate per side; `libmdns` is
-  register-only); hand-rolled UDP beacon rejected in ADR 0040.
+- **`mdns-sd` 0.21** (Rust, Apache-2.0 OR MIT) — `adopted` (Task 43)
+  for **both** sides of discovery per
+  [ADR 0040](../docs/adr/0040-production-cannet-server.md): the
+  server's `_cannet._tcp` advertisement and the GUI host's browse.
+  It is the only credible pure-Rust crate covering register *and*
+  browse, so one dependency and one wire behaviour serve both
+  consumers instead of two mDNS stacks contending for UDP 5353.
+  Runs its own daemon thread and communicates over `flume` channels,
+  so the tokio server registers without blocking and the Tauri
+  host's browse task awaits `recv_async()` — no async runtime is
+  imposed on either side, and none is pulled in. Dep tree is seven
+  crates (`fastrand`, `flume`, `if-addrs`, `log`, `mio`,
+  `socket-pktinfo`, `socket2`); no tokio. Actively maintained —
+  0.21.0 landed 2026-08-10, two days before this eval — with ~157
+  direct dependents. Exercised in a two-process spike on Windows 11;
+  the Task 43 status log carries the measured latencies and the
+  event-shape notes the implementation has to honour.
+- **`libmdns` 0.10** (Rust, MIT) — `rejected` (Task 43).
+  Register-only: no querier surface at all, so adopting it would
+  still leave the GUI needing `mdns-sd`, and the GUI-plus-sidecar
+  case would run two mDNS implementations in one process tree. The
+  spike confirmed it advertises correctly and that dropping its
+  `Service` handle emits a goodbye (`mdns-sd`'s browser removed the
+  instance ~1.0 s later), so this is a scope rejection, not a
+  quality one. Last release 2025-09-06, ~11 months stale against
+  `mdns-sd`'s active cadence. It also always answers with the real
+  system hostname unless the `_and_hostname` constructor variant is
+  used, which is one more thing to get right for no gain.
+- **`zeroconf`** (Rust, FFI) — `rejected` (Task 43). Covers register
+  and browse, but binds native stacks: Avahi on Linux, Apple's
+  Bonjour / `mDNSResponder` on Windows and macOS. Windows does not
+  ship Bonjour, so adopting it would add a third-party runtime
+  install to cannet's prerequisites on its primary development
+  platform. The repo prefers permissive-license pure Rust, and a
+  pure-Rust option that works is on the table.
+- **`simple-mdns`** (Rust, MIT) — `rejected` (Task 43). Covers both
+  sides and is maintained (0.7.0, 2026-05-15), but has ~90
+  downloads/month and 3 direct dependents against `mdns-sd`'s ~684k
+  and 157. For a protocol whose failure modes are all in the field —
+  interface enumeration, cache expiry, goodbye handling — field
+  exposure is the evidence that matters, and there is no
+  differentiating capability to trade for it.
+- **`agnostic-mdns`** (Rust, Apache-2.0 OR MIT) — `rejected`
+  (Task 43). Covers both sides, but its last release is 0.4.2 on
+  2025-03-16, ~17 months stale, and it exists to abstract over async
+  runtimes — a generality cannet has no use for, since it needs mDNS
+  from exactly one tokio process and one Tauri process.
+- A **hand-rolled UDP beacon** remains `rejected` — see ADR 0040.
 - **MDF 4.x library** — `proposed` (Task 38); candidates `mdf4-rs`
   (pure Rust, young) and `mdflib` via FFI (mature C++, costs a C++
   toolchain); `mdfr` (GPL-3) and the abandoned `asammdf`-rs / `mdf4`
