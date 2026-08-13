@@ -23,6 +23,7 @@ A non-zero exit means asammdf disagrees with the writer.
 from __future__ import annotations
 
 import json
+import math
 import struct
 import sys
 from pathlib import Path
@@ -49,7 +50,15 @@ MEMBERS = {
 
 
 def abs_ns(start_ns: int, seconds: float) -> int:
-    return start_ns + round(float(seconds) * 1e9)
+    """Master seconds -> absolute nanoseconds, cannet's tie rule.
+
+    ``math.floor(x + 0.5)`` rather than ``round(x)``: Rust's ``f64::round``
+    breaks a tie away from zero and Python's ``round`` breaks it to even,
+    so a master sample whose nanoseconds land on exactly ``.5`` would
+    otherwise read one nanosecond apart in the two languages and make
+    this oracle disagree with the reader over nothing.
+    """
+    return start_ns + math.floor(float(seconds) * 1e9 + 0.5)
 
 
 def group_indices(mdf: MDF) -> dict[str, int]:
