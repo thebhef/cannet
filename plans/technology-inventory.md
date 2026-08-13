@@ -249,15 +249,72 @@ without reshaping callers.
   `GetComputerNameExW`) rather than hand-rolled per-OS FFI. Small
   dependency footprint: `cfg-if` plus `libc` on Unix or
   `windows-link` on Windows, both already common in the tree.
-- **MDF 4.x library** — `proposed` (Task 38); candidates `mdf4-rs`
-  (pure Rust, young) and `mdflib` via FFI (mature C++, costs a C++
-  toolchain); `mdfr` (GPL-3) and the abandoned `asammdf`-rs / `mdf4`
-  crates rejected up front. One evaluate-dependency pass covers
-  **read and write** (import + export are one task) against
-  CANedge / CANape / asammdf fixtures; outcome may be one library or
-  an explicit read/write split. Python **asammdf** serves as
-  dev/CI-time oracle and fixture generator only — never a runtime
-  dependency.
+- **MDF 4.x library** — evaluated 2026-08-12 for Task 38, covering
+  **read and write** in one pass. Outcome is an explicit split:
+  **`mdf4-rs` 0.6 `adopted` for reading; the writer is ours.** The
+  eval exercised a user-provided logger corpus (14 MF4 4.10 files)
+  and a synthetic asammdf-generated fixture matrix
+  (sorted/unsorted × finalized/unfinalized × classic/FD × DZ),
+  with Python **asammdf** as the oracle.
+  - **`mdf4-rs` 0.6** (MIT/Apache-2.0, pure Rust,
+    `#![forbid(unsafe_code)]`, ~19.5k LOC) — `adopted` for read.
+    Its block layer, record iteration, record-ID demultiplexing,
+    unfinalized-file recovery and conversion (CC) handling are
+    sound: over the user corpus its decode of plain signal channel
+    groups matched asammdf on every one of 3,731 channel rows.
+    Two gaps qualify the adoption:
+    - **It does not follow `cn_composition`** (the `##CN`
+      `component_addr` link), so its own `channels()` never exposes
+      `CAN_DataFrame.ID`/`.DLC`/`.DataBytes`/… and it yields no
+      frames from any conformant bus-logging file. It *does* parse
+      and expose that link, expose the parent structure channel's
+      whole record slice, and expose the mmap and block parsers —
+      so **cannet owns a thin bus-logging composition layer** on
+      top of it. A spike of that layer decoded frames
+      byte-identically to asammdf on all 14 corpus files and on 6
+      of 7 synthetic fixtures (classic, FD, error + remote frames,
+      unsorted, and unsorted-plus-unfinalized).
+    - **DZ-compressed data blocks fail to read.** `DzBlock` and its
+      `decompress()` exist behind the `compression` feature, but the
+      data-block resolver accepts only `##DT`/`##DV`/`##DL`/`##HL`
+      and errors on `##DZ`. CANedge writes DZ and the task requires
+      it, so this must be closed — by an upstream patch or by an
+      in-repo decompress pre-pass (the crate has no from-bytes
+      constructor, only `from_file`).
+    - Cost to note: mdf4-rs 0.6 declares MSRV **rustc 1.97.0**; the
+      repo's `rust-toolchain.toml` pins **1.96.0**. Adoption forces
+      a deliberate toolchain bump.
+  - **`mdf4-rs`'s writer** — `rejected`. Its bus-logging writer
+    emits a proprietary layout: one opaque `CAN_DataFrame` byte
+    array per record, no composition, groups split by IDE, and
+    `cg_flags` left at 0 with the bus-event bit unset. asammdf opens
+    the output but its bus-logging map comes back empty — it does
+    not recognise the file as CAN bus logging, so neither would
+    Vector or CANape. mdf4-rs's *block serializers* do write
+    `component_addr`, so the in-repo writer can build conformant
+    composition on top of them; only the high-level writer API is
+    unusable.
+  - **`mdflib` (ihedvall) via the `mdflib` / `mdflib-sys` crates** —
+    `rejected`. The C++ library is the mature reference and covers
+    everything the task needs (including `Edl`/`Brs`/`Esi`), but the
+    binding does not. Measured costs: `mdflib-sys` vendors ~13 MB of
+    C++ and its build script drives **cmake** plus a C++ compiler,
+    with **zlib and expat as external `find_package(REQUIRED)`
+    dependencies** — vcpkg on Windows, distro packages on
+    Linux/macOS — on every developer machine and CI runner across
+    three OSes. The Rust binding is ~4.6k LOC with ~326 `unsafe`
+    sites, three releases, and is described by its own author as a
+    proof of concept; it **does not expose the CAN FD flags at all**,
+    which the round-trip fidelity contract makes non-negotiable, so
+    adoption would begin by extending someone else's unsafe FFI.
+    This is the same shape of gap that
+    [ADR 0009](../docs/adr/0009-dbc-blf-readers.md) rejected
+    `vector_blf` for.
+  - Confirmed still dead on crates.io: `mdf4` 0.0.1 (2022, single
+    release) and `asammdf` 0.1.0 (2024, single release); `mdfr` is
+    not published on crates.io at all.
+  - Python **asammdf** remains a dev/CI-time oracle and fixture
+    generator only — never a runtime dependency.
 - **`async-stream`** crate (v0.3, MIT) — `adopted` in Phase 2 as a
   wire-crate stream-adapter helper; **removed 2026-07-26**: its last
   consumer (`cannet-wire`'s `batch.rs` stream adapters) was deleted as

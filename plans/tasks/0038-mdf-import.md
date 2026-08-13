@@ -85,26 +85,50 @@ Known wrinkles:
   numbers play; reuse the channel→bus mapping dialog and persistence
   ([ADR 0023](../../docs/adr/0023-logical-bus-vs-interface.md)).
 
-## Library decision (blocking prerequisite)
+## Library decision (resolved)
 
-No Rust MDF crate is battle-hardened yet. Run the evaluate-dependency
-process (per the [ADR 0009](../../docs/adr/0009-dbc-blf-readers.md)
-pattern) before writing code — covering **read and write** per the
-grooming note above — against real fixtures from CANedge,
-CANape/Vector, and asammdf:
+**2026-08-12 — eval verdict.** The evaluate-dependency pass
+(per the [ADR 0009](../../docs/adr/0009-dbc-blf-readers.md) pattern)
+ran against a user-provided logger corpus and a synthetic
+asammdf-generated fixture matrix, with Python asammdf as the oracle.
+Outcome is an **explicit read/write split**, recorded in
+`technology-inventory.md`:
 
-- **`mdf4-rs`** — MIT/Apache-2.0, pure Rust, bus-logging + DBC aware,
-  active; but young (0.x, small org).
-- **`mdflib` (ihedvall) via FFI** — MIT, the mature open C++ reference
-  (reads/writes 3.x–4.2 incl. bus logging); costs a C++ toolchain in
-  the build.
-- Rejected up front: `mdfr` (GPL-3), `asammdf`-rs / `mdf4` crates
-  (single-release / abandoned).
+- **Read: `mdf4-rs` 0.6, adopted** — for its block layer, record
+  iteration, record-ID demultiplexing, unfinalized-file recovery and
+  CC conversion handling, all of which matched the oracle exactly.
+- **Bus-logging composition: ours** — mdf4-rs never follows the
+  `##CN` `component_addr` link, so it exposes no
+  `CAN_DataFrame.ID`/`.DLC`/`.DataBytes` sub-channels and yields no
+  frames on its own. It exposes the link, the parent record slice,
+  the mmap and the block parsers, so the layer that walks the
+  composition and slices sub-fields is a thin piece of cannet code.
+  A spike of it decoded byte-identically to asammdf.
+- **Write: ours** — mdf4-rs's bus-logging writer emits a proprietary
+  opaque-byte-array layout that asammdf does not recognise as CAN bus
+  logging. Its *block serializers* do write `component_addr`, so the
+  cannet writer builds conformant composition on top of them.
+- **`mdflib` via FFI: rejected** — cmake + a C++ compiler + external
+  zlib/expat (vcpkg on Windows) on every machine and CI runner, for a
+  ~4.6k-LOC, ~326-`unsafe`-site binding its author calls a proof of
+  concept, which does not expose the CAN FD flags the round-trip
+  contract requires.
 
-Oracles for validation, whatever is chosen: Python **asammdf**
-(LGPL, the ecosystem reference — also generates fixtures), Vector's
-free MDF Validator, and the public spec + ASAM wiki. Record the
-outcome in `technology-inventory.md`.
+Two consequences the implementation must carry:
+
+- **DZ-compressed data blocks do not read.** mdf4-rs has `DzBlock`
+  and `decompress()` behind its `compression` feature, but its
+  data-block resolver accepts only `##DT`/`##DV`/`##DL`/`##HL` and
+  errors on `##DZ`. CANedge writes DZ and the exit criteria require
+  it. Close it upstream, or with an in-repo decompress pre-pass —
+  the crate offers only `from_file`, no from-bytes constructor.
+- **MSRV.** mdf4-rs 0.6 declares rustc 1.97.0; `rust-toolchain.toml`
+  pins 1.96.0. Adopting it means bumping the pin deliberately,
+  fixing any new clippy lints in the same change.
+
+Oracles for validation: Python **asammdf** (LGPL, the ecosystem
+reference — also generates the fixtures), Vector's free MDF
+Validator, and the public spec + ASAM wiki.
 
 - **2026-08-12 — message-independent signals: one model, provenance
   decides the fill (owner).** Every signal is a `SignalCache` entry
@@ -173,3 +197,103 @@ outcome in `technology-inventory.md`.
 - Message-independent signals exist in the model (shape per
   grooming) and survive the round-trip.
 - README + technology-inventory updated; rustdoc on the new crate root.
+
+## A third content shape: DBC-decoded per-message groups
+
+The two-shape table above (logger file vs signal file) turned out to
+be incomplete. The user-provided corpus holds **all three shapes in
+every file**:
+
+1. a raw `CAN_DataFrame` bus-logging group (plus empty
+   `CAN_ErrorFrame` / `CAN_RemoteFrame` groups),
+2. message-independent signal channel groups — the model gap above,
+3. **DBC-decoded per-message signal groups**: one channel group per
+   CAN message ID, carrying that message's decoded signals as plain
+   channels, with a bus source whose path reads
+   `CAN<n>.CAN_DataFrame.ID=0x<id> EXT=<bool>`.
+
+Shape 3 is what a tool writes when it decodes a capture with a DBC
+and saves the result — the thing "export by provenance" deliberately
+does *not* write. Import has to decide what to do with it: the frames
+in shape 1 already carry the same information, so decoding shape 3
+would double-count every signal. Treating it as file-backed signal
+data would also double-count. The cheap, honest answer is to
+recognise shape 3 by its source path and **skip it**, since shape 1
+plus the project DBC reproduces it — but that is a decision this task
+still owes an answer to.
+
+## Status log
+
+### 2026-08-12 — phase 1: library evaluation and fixture groundwork
+
+Evaluate-dependency pass covering read and write. Verdict and its
+rationale are in "Library decision (resolved)" above and in
+`technology-inventory.md`; the numbers behind it:
+
+- **Survey.** `mdf4-rs` is at 0.6.0 (2026-07-20, ~2.4k downloads,
+  MIT/Apache-2.0). A binding crate for ihedvall's `mdflib` now exists
+  (`mdflib` 0.2.1 / `mdflib-sys` 0.2.2, first published 2026-02) —
+  it did not when this task was written, so it was evaluated too.
+  `mdf4` and `asammdf` remain single-release and abandoned; `mdfr`
+  is not on crates.io.
+- **User corpus** (kept out of the repo): 14 MDF 4.10 files, all
+  finalized, all sorted, all uncompressed `##DT`, classic CAN only,
+  no EV or AT blocks. 7.6k–22k frames each.
+- **Read, signal channel groups.** mdf4-rs vs asammdf across all 14
+  files: 3,731 channel rows compared (name, unit, sample count,
+  series sum, leading samples), **0 discrepancies** — the only two
+  differing rows were a 1-ULP difference in the comparison harness's
+  own summation.
+- **Read, bus-logging groups.** mdf4-rs alone: **0 of 14** files
+  yielded frames — it reports the group as just `time` +
+  `CAN_DataFrame` because it never follows `cn_composition`. With
+  the in-repo composition layer spiked on top: **14 of 14** files
+  matched asammdf on frame count and on a SHA-256 over every frame's
+  id, extended flag, DLC, bus channel and payload bytes.
+- **Read, wrinkle matrix.** Against 7 synthetic fixtures, checked
+  against independently generated expected-decode JSON:
+  classic, CAN FD (DLC→64-byte payloads, EDL/BRS/ESI), error and
+  remote frames, mixed bus-plus-signal, unsorted
+  (`dg_rec_id_size`=1, two channel groups per data group), and
+  unsorted-plus-unfinalized (`"UnFinMF "`, `id_unfin_flags`=0x5) all
+  **matched exactly** — the unfinalized file produced hashes
+  identical to its finalized twin. **DZ failed**: `BlockIDError`,
+  actual `##DZ`, expected `##DT / ##DV / ##DL / ##HL`.
+- **Write.** mdf4-rs's raw CAN logger wrote a 25-frame file. asammdf
+  opens it but its bus-logging map is **empty**: the output is two
+  groups split by IDE, each record a single opaque 13-byte
+  `CAN_DataFrame` byte array with no composition, `cg_flags`=0x0
+  (bus-event bit unset). Not interoperable — hence the writer is
+  ours.
+- **`mdflib` cost, measured not assumed.** Neither cmake nor vcpkg is
+  present on the reference dev machine; `mdflib-sys`'s build script
+  requires both (plus zlib and expat via `find_package(REQUIRED)`).
+  The binding exposes id/dlc/data/bus-channel/timestamp but **no
+  `EDL`/`BRS`/`ESI`**, though the underlying C++ has them.
+
+Block-layout facts pinned for the reader implementation (verified
+against the fixtures, since two of them were initially recorded
+wrong): the ID block's `id_unfin_flags` is a `u16` at **file offset
+60** (not 24), and `hd_start_time_ns` is a `u64` at **block-relative
+offset 72** — 24 bytes of header plus six links. Unsorted records are
+a `dg_rec_id_size`-byte little-endian record ID followed by
+`cg_data_bytes + cg_inval_bytes` of payload. In a bus-logging group
+the parent `##CN` is a byte-array channel spanning the whole
+structure and the sub-channels **overlay** it at their own byte
+offsets — a reader must not count both.
+
+**Fixture generator** (built in scratch, lands in the repo next
+phase): ~600 lines of Python driven by `uv run --with asammdf`,
+emitting 7 fixtures of 3.6–8 KB each plus one expected-decode JSON
+per fixture. asammdf writes the sorted/finalized ones directly — the
+trick for canonical channel names is to name the numpy structured
+array's fields `CAN_DataFrame.ID` and so on, since asammdf writes one
+`##CN` per field using the field name verbatim; a bus `Source` is
+what sets `cg_flags`=0x6 and the bus-event channel flag. asammdf
+cannot write unsorted or unfinalized files, so the generator
+post-processes bytes for those. Expected JSON carries timestamps as
+integer nanoseconds plus the exact IEEE-754 bit pattern of each
+master sample, so no float formatting can drift.
+
+Nothing was committed to the repo but planning-document updates; no
+production code exists yet, and the spikes stayed in scratch.
