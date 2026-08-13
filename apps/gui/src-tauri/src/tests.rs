@@ -2042,6 +2042,116 @@ fn mdf_scan_reports_skipped_decoded_groups_for_the_dialog() {
     );
 }
 
+/// An MDF's message-independent signal channel groups land as
+/// **file-backed signals** (`docs/CONTEXT.md`): one signal-cache entry
+/// per channel, filled once and complete. `sorted_finalized_mixed.mf4`
+/// is the logger file that carries one such group — `Analog`, with
+/// `EngineSpeed` (rpm) and `CoolantTemp` (degC), 20 samples each,
+/// pinned against the fixture's `expected/sorted_finalized_mixed.json`.
+#[test]
+fn mdf_import_fills_file_backed_signals_from_the_signal_channel_groups() {
+    let path = mdf_fixture_path("sorted_finalized_mixed");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    let (signals, samples) = capture::fill_file_backed_signals(&caches, &groups, None, None);
+    assert_eq!((signals, samples), (2, 40));
+
+    let listed = caches.file_signals();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|e| (
+                e.info.name.as_str(),
+                e.info.unit.as_str(),
+                e.info.group_label(),
+                e.sample_count
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CoolantTemp", "degC", "Analog".to_string(), 20),
+            ("EngineSpeed", "rpm", "Analog".to_string(), 20),
+        ],
+        "both channels of the file's one signal group, with their metadata",
+    );
+    // Timestamps are absolute (ADR 0024): the group's master channel is
+    // seconds off `hd_start_time_ns`, re-absolutized by the reader.
+    let engine = listed
+        .iter()
+        .find(|e| e.info.name == "EngineSpeed")
+        .unwrap();
+    let latest = engine.latest.as_ref().unwrap();
+    assert!(
+        (latest.t_seconds - 1_709_294_400.228).abs() < 1e-6,
+        "last sample at hd_start + 228 ms, got {}",
+        latest.t_seconds
+    );
+    assert!((latest.value - 1037.5).abs() < 1e-9);
+
+    // A second import of the same file replaces the series rather than
+    // appending to it — a re-import is not a doubling.
+    capture::fill_file_backed_signals(&caches, &groups, None, None);
+    assert_eq!(
+        caches
+            .file_signals()
+            .iter()
+            .map(|e| e.sample_count)
+            .collect::<Vec<_>>(),
+        vec![20, 20],
+    );
+}
+
+/// The import range (ADR 0046) bounds the file-backed fill exactly as
+/// `WindowedSource` bounds the frames — otherwise a windowed import
+/// would put a whole-file series on the same plot as a sliced trace.
+/// The fixture's `Analog` group samples every 12 ms from
+/// `hd_start_time_ns`; `[+24 ms, +60 ms]` is four of them, boundaries
+/// inclusive.
+#[test]
+fn mdf_import_range_bounds_the_file_backed_fill_too() {
+    let path = mdf_fixture_path("sorted_finalized_mixed");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+    let base = 1_709_294_400_000_000_000u64;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    let (signals, samples) = capture::fill_file_backed_signals(
+        &caches,
+        &groups,
+        Some(base + 24_000_000),
+        Some(base + 60_000_000),
+    );
+    assert_eq!((signals, samples), (2, 8), "four samples per channel");
+
+    // A window the file has nothing in fills nothing at all, rather than
+    // leaving empty series claiming the capture has those signals.
+    let empty_dir = tempfile::TempDir::new().unwrap();
+    let empty = SignalCacheStore::new(empty_dir.path());
+    assert_eq!(
+        capture::fill_file_backed_signals(&empty, &groups, Some(base + 10_000_000_000), None),
+        (0, 0)
+    );
+    assert!(empty.file_signals().is_empty());
+}
+
+/// A pure logger file has no signal channel groups, so an import of one
+/// fills nothing — the file-backed path costs a capture that doesn't
+/// use it nothing at all.
+#[test]
+fn mdf_import_of_a_pure_logger_file_fills_no_file_backed_signals() {
+    let path = mdf_fixture_path("sorted_finalized_classic");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let dir = tempfile::TempDir::new().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    assert_eq!(
+        capture::fill_file_backed_signals(&caches, &source.signal_groups(), None, None),
+        (0, 0)
+    );
+}
+
 /// Signal-shape MF4 files (pre-decoded measurements, no bus-logging
 /// group) are detected and rejected with a clear, typed message — the
 /// same error both `scan_mdf_channels` and `import_mdf` surface as

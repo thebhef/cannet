@@ -833,6 +833,19 @@ fn wipe_dir(dir: &Path) {
     }
 }
 
+/// Remove one series' level files — every entry under `dir` whose name
+/// starts with its [`key_prefix`]. Call only after that series' mappings
+/// have been dropped. Best-effort, like [`wipe_dir`].
+fn wipe_prefix(dir: &Path, base: &str) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(base) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 /// [`wipe_dir`], but leaving the level files of `keep` (and the manifest
 /// itself) where they are. This is what lets a DBC-set change drop the
 /// live *decoded* state without touching either a staged set's files —
@@ -1422,6 +1435,14 @@ impl SignalCacheStore {
         let key = SignalKey::file(info.group, info.name.clone());
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let base = key_prefix(&key);
+        // Drop any incumbent *first*, so its level files are unmapped
+        // before the replacement opens files of the same names — Windows
+        // refuses to touch a file this process still maps. Its old levels
+        // go with it: a re-fill is a replacement, and a shallower pyramid
+        // must not inherit the tail of a taller one.
+        if caches.by_key.remove(&key).is_some() {
+            wipe_prefix(&caches.root, &base);
+        }
         let mut cache = SignalCache::new(&caches.root, &base, Some(info.clone()));
         #[allow(clippy::cast_precision_loss)]
         for &(ts_ns, value) in points {

@@ -57,8 +57,10 @@ export function BlfChannelMapModal(props: {
   /// because the file's own frames plus the project DBC already imply
   /// them. Omitted/empty renders nothing.
   skippedDecodedGroups?: SkippedDecodedGroup[];
-  /// MDF only: message-independent signal groups found. Not imported
-  /// yet (a later phase) — shown so the count isn't silently dropped.
+  /// MDF only: signal channel groups the file carries, imported as
+  /// file-backed signals (series-shaped views only — no frames carry
+  /// them). Shown so the import says what it is bringing in beyond the
+  /// frames.
   signalGroupCount?: number;
 }) {
   const {
@@ -292,8 +294,8 @@ export function BlfChannelMapModal(props: {
         )}
         {signalGroupCount != null && signalGroupCount > 0 && (
           <p className="blf-map-meta">
-            {signalGroupCount} message-independent signal group{signalGroupCount === 1 ? "" : "s"}{" "}
-            found; not imported yet.
+            {signalGroupCount} signal channel group{signalGroupCount === 1 ? "" : "s"} — imported
+            as file-backed signals, visible in the catalog, plots and the signal grid.
           </p>
         )}
         <div className="modal-buttons">
