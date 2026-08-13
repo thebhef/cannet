@@ -467,6 +467,64 @@ restart. `CANNET_SIDECAR_DIR` overrides where that source tree is. The
 sidecar dies with the server — it watches the stdin pipe it inherited —
 so Ctrl-C leaves nothing holding the hardware open.
 
+### Connecting the GUI to a protected server
+
+The GUI does the same thing, with the comparison put in front of you.
+Start the server on the bench machine and leave its console visible:
+
+```sh
+./cannet-server --bind 0.0.0.0:50051 --tls
+# → hardware proxy: certificate fingerprint SHA256:qF3…RmA
+# → hardware proxy: client token 8Jd…q1w
+```
+
+In the GUI, add the server's `host:port` to a bus binding and press
+*Discover* (or Connect). Because nothing has been accepted for that
+address yet, the connection is refused at the certificate and a dialog
+appears showing the fingerprint the server presented:
+
+1. **Compare the two strings.** The dialog shows the same
+   `SHA256:` line the server printed — character for character. If they
+   differ, something between you and the bench is answering; cancel.
+2. **Paste the token** into the dialog's *Access token* field, from the
+   `client token` line on the same console.
+3. **Accept and connect.** The fingerprint is pinned for that
+   `host:port` and the token stored with it, so subsequent launches
+   connect without asking.
+
+From then on, the server's identity is checked on every connection. If
+it ever changes — the certificate was replaced, the machine
+reinstalled, or something is impersonating it — the connection is
+refused and a warning shows both fingerprints, the accepted one and the
+presented one. There is no automatic retry and no fallback to
+plaintext: the only ways forward are *Accept the new identity*, which
+overwrites the pin, and cancel. A token the server refuses is treated
+the same way — asked about once, never retried in a loop.
+
+Both are stored per `host:port` in `servers.json` in the GUI's config
+directory ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)),
+never in the project file, so a project shared with a colleague carries
+no credential. **Settings → Connection → Trusted servers** lists what
+has been accepted, with the same fingerprint string, whether a token is
+stored, and a *Forget* button that makes the next connection ask again.
+Moving a server to a different address or port is a new entry, and
+prompts again.
+
+Loopback servers — the GUI's own sidecar, a `--bind 127.0.0.1` proxy,
+the in-process virtual bus — are unaffected: they stay plaintext and
+never prompt, exactly as before.
+
+**Connecting to a server run `--insecure`.** If the protected
+connection never reaches a certificate, the GUI does not quietly fall
+back. It reports the transport error and offers *Connect without
+protection* as an explicit, per-server choice. Take it only on a
+network you trust as much as the machine itself: the traffic is
+readable by anyone on the path, and so is control of the bus — anyone
+who can reach the port can transmit on your hardware. No token is
+collected for such a server, because a credential must never ride an
+unencrypted channel. The choice is remembered for that one address and
+can be revoked with *Forget*.
+
 ### Self-driving performance runs
 
 The shipping GUI can drive itself for a render-tier performance
