@@ -358,6 +358,18 @@ impl SidecarSupervisor {
                     format!("sidecar (pid {pid}) exited cleanly"),
                 );
             }
+            // A non-zero exit after the host asked for a stop is one we
+            // caused: `stop` kills the process tree when its grace
+            // period runs out, and has already said so at warn level.
+            // Reporting it as a failure — with the whole invocation
+            // summary attached — would read as a sidecar that could not
+            // be launched.
+            Ok(status) if suppress => {
+                host.log(
+                    LogLevel::Info,
+                    format!("sidecar (pid {pid}) exited with {status} after being stopped"),
+                );
+            }
             Ok(status) => {
                 // Bundle the invocation context into the error message
                 // itself so it's visible at the usual default filter
@@ -367,9 +379,7 @@ impl SidecarSupervisor {
                     LogLevel::Error,
                     format!("sidecar (pid {pid}) exited with {status}\n{invocation_summary}"),
                 );
-                if !suppress {
-                    self.maybe_restart(host);
-                }
+                self.maybe_restart(host);
             }
             Err(e) => {
                 host.log(
