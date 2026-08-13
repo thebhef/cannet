@@ -4,7 +4,8 @@
 // `list_signals` once, scoped to the project's bus list, and refetches
 // on the triggers the four panels it replaces relied on independently
 // — a bus-list change, the loaded DBC-path set changing, and the
-// host's `dbc-changed` filesystem-watch event.
+// host's `dbc-changed` filesystem-watch event — plus `log-finished`,
+// since an import can add file-backed signals to it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -16,6 +17,7 @@ let SIGNALS: SignalDescriptorRecord[] = [];
 let REJECT_NEXT = false;
 const calls: Array<{ cmd: string; args: unknown }> = [];
 let dbcChangedHandler: (() => void) | null = null;
+let logFinishedHandler: (() => void) | null = null;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
@@ -33,8 +35,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (event: string, handler: () => void) => {
     if (event === "dbc-changed") dbcChangedHandler = handler;
+    if (event === "log-finished") logFinishedHandler = handler;
     return () => {
       dbcChangedHandler = null;
+      logFinishedHandler = null;
     };
   }),
 }));
@@ -106,6 +110,7 @@ beforeEach(() => {
   REJECT_NEXT = false;
   calls.length = 0;
   dbcChangedHandler = null;
+  logFinishedHandler = null;
 });
 afterEach(() => {
   cleanup();
@@ -168,6 +173,30 @@ describe("SignalCatalogProvider / useSignalCatalog", () => {
     await waitFor(() => expect(dbcChangedHandler).not.toBeNull());
     dbcChangedHandler!();
     await waitFor(() => expect(screen.getByText("S4")).toBeInTheDocument());
+  });
+
+  it("refetches when a capture import finishes", async () => {
+    // The catalog is not purely a function of the DBC set: a capture
+    // file can carry file-backed signals (docs/CONTEXT.md), which only
+    // exist once the import that read them has run.
+    renderProvider(baseProjectCtx({ buses: [] }));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "list_signals")).toHaveLength(1));
+
+    SIGNALS = [
+      {
+        bus_id: null,
+        message_id: 1,
+        extended: false,
+        message_name: "Analog",
+        transmitter: null,
+        signal_name: "EngineSpeed",
+        unit: "rpm",
+        file_backed: true,
+      },
+    ];
+    await waitFor(() => expect(logFinishedHandler).not.toBeNull());
+    logFinishedHandler!();
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
   });
 
   it("falls back to an empty catalog on a failed fetch", async () => {

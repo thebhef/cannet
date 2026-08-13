@@ -2879,6 +2879,22 @@ button.trace-event-swatch {
   cursor: grab;
 }
 
+/* Provenance marking for a file-backed signal (docs/CONTEXT.md): it has
+   no message, so the message column carries its source channel group
+   plus this badge. Its own element rather than punctuation inside the
+   label, so the mark reads as a property of the row and not as part of
+   the group's name. */
+.signal-source-badge {
+  margin-left: 0.35rem;
+  padding: 0 0.25rem;
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 /* User-authored sections. A header is an ordinary row slot in the paged
    row space (the host emits it), so it is laid out like a trace row but
    spans the columns instead of gridding into them. */

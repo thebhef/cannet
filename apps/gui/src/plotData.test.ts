@@ -5,6 +5,7 @@ import {
   enumSegments,
   groupScaleRanges,
   mergeSeries,
+  recordSignalKey,
   signalKey,
 } from "./plotData";
 
@@ -62,6 +63,29 @@ describe("signalKey", () => {
     expect(signalKey(null, 256, false, "Speed")).not.toBe(
       signalKey("p", 256, false, "Speed"),
     );
+  });
+  it("keeps a file-backed signal out of the message-id namespace", () => {
+    // A file-backed signal (docs/CONTEXT.md) has no message: its
+    // `messageId` is a signal channel group index, so it must not
+    // collide with a message that happens to share the number.
+    expect(signalKey(null, 1, false, "EngineSpeed", true)).toBe("*|f:1:EngineSpeed");
+    expect(signalKey(null, 1, false, "EngineSpeed", true)).not.toBe(
+      signalKey(null, 1, false, "EngineSpeed"),
+    );
+  });
+  it("reads provenance off a record", () => {
+    expect(
+      recordSignalKey({
+        bus_id: null,
+        message_id: 1,
+        extended: false,
+        signal_name: "EngineSpeed",
+        file_backed: true,
+      }),
+    ).toBe(signalKey(null, 1, false, "EngineSpeed", true));
+    expect(
+      recordSignalKey({ bus_id: "p", message_id: 256, extended: false, signal_name: "Speed" }),
+    ).toBe(signalKey("p", 256, false, "Speed"));
   });
 });
 

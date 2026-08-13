@@ -557,6 +557,10 @@ pub enum LogFinished {
 /// wire — the response side is what the frontend's
 /// `types.ts::SignalDescriptorRecord` mirrors.
 #[derive(serde::Serialize, Clone)]
+// Each flag is an independent DBC (or provenance) fact read from a
+// different place; collapsing them into an enum would erase where each
+// came from — the same reasoning `cannet_dbc::SignalDescriptor` records.
+#[allow(clippy::struct_excessive_bools)]
 pub struct SignalDescriptorRecord {
     /// Logical bus this descriptor applies to. `None` only when no
     /// project bus is configured *and* the DBC is unscoped — a
@@ -594,6 +598,13 @@ pub struct SignalDescriptorRecord {
     /// frontend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decimals: Option<u8>,
+    /// A **file-backed** signal (`docs/CONTEXT.md`): a value series
+    /// imported from the capture file rather than decoded from frames.
+    /// `message_id` is then its source signal channel group index and
+    /// `message_name` that group's label; it has no transmitter and no
+    /// trace rows. Omitted from the wire when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub file_backed: bool,
 }
 
 /// One row of a signal's `VAL_` table — mirrors
@@ -763,6 +774,13 @@ pub struct SignalSnapshotRecord {
     /// Omitted from the wire when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
+    /// A **file-backed** signal (`docs/CONTEXT.md`) — see
+    /// [`SignalDescriptorRecord::file_backed`]. Its value/rate/count are
+    /// facts about its whole imported series rather than about the
+    /// trace window, since no frame in the window carries it. Omitted
+    /// from the wire when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub file_backed: bool,
 }
 
 /// The full content of one loaded DBC, shaped for the DBC

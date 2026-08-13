@@ -8,7 +8,7 @@
 /// imports so pure-logic tests run without uplot.
 
 import type { SignalDescriptorRecord } from "./types";
-import { signalKey } from "./plotData";
+import { recordSignalKey, signalKey } from "./plotData";
 import type { SignalRef } from "./plotPanelConfig";
 
 /// The canonical signal path (ADR 0038). Segments are the DBC names
@@ -81,7 +81,7 @@ export interface SelectableArea {
 }
 
 const refKey = (s: SignalRef) =>
-  signalKey(s.busId, s.messageId, s.extended, s.signalName);
+  signalKey(s.busId, s.messageId, s.extended, s.signalName, s.fileBacked);
 
 /// Resolve `patterns` to refs, deduped across patterns and against
 /// `exclude` (the area's manual picks — a manual pick wins, so its
@@ -99,7 +99,7 @@ export function signalsFromPatterns(
   const out: SignalRef[] = [];
   for (const res of resolvePatterns(patterns, catalog, busNames)) {
     for (const s of res.matches) {
-      const key = signalKey(s.bus_id, s.message_id, s.extended, s.signal_name);
+      const key = recordSignalKey(s);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({
@@ -109,6 +109,7 @@ export function signalsFromPatterns(
         signalName: s.signal_name,
         messageName: s.message_name,
         unit: s.unit,
+        ...(s.file_backed ? { fileBacked: true as const } : {}),
       });
     }
   }

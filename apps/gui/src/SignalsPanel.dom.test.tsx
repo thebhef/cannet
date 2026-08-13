@@ -250,6 +250,72 @@ describe("SignalsPanel", () => {
     });
   });
 
+  it("marks a file-backed row by source and labels it with its channel group", async () => {
+    // A file-backed signal (docs/CONTEXT.md) has no message and no ECU,
+    // so the message column carries its source channel group plus a
+    // badge saying the row is not decoded from frames. Trace views
+    // never show it; this grid does.
+    ROWS = [
+      {
+        bus_id: null,
+        transmitter: null,
+        message_id: 1,
+        extended: false,
+        message_name: "Analog",
+        signal_name: "EngineSpeed",
+        unit: "rpm",
+        is_enum: false,
+        value: 1037.5,
+        raw: null,
+        rate: 83.3,
+        count: 20,
+        time_seconds: 0.228,
+        file_backed: true,
+      },
+      DEFAULT_ROWS[0],
+    ];
+    renderPanel();
+    const badge = await waitFor(() => {
+      const el = document.querySelector(".signal-source-badge");
+      if (!el) throw new Error("badge not yet rendered");
+      return el as HTMLElement;
+    });
+    expect(badge.textContent).toBe("file");
+    expect(badge.getAttribute("title")).toMatch(/not decoded from frames/);
+    expect(screen.getByText(/Analog/)).toBeInTheDocument();
+    // The DBC-backed row beside it wears no badge.
+    expect(document.querySelectorAll(".signal-source-badge")).toHaveLength(1);
+  });
+
+  it("offers file-backed signals in the picker under their own source segment", async () => {
+    SIGNALS = [
+      {
+        bus_id: null,
+        message_id: 1,
+        extended: false,
+        message_name: "Analog",
+        transmitter: null,
+        signal_name: "EngineSpeed",
+        unit: "rpm",
+        is_enum: false,
+        file_backed: true,
+      },
+    ];
+    renderPanel();
+    openCombobox(screen.getByLabelText("add signal"));
+    const option = await waitFor(() => {
+      const el = document.querySelector('[role="option"]');
+      if (!el) throw new Error("option not yet rendered");
+      return el as HTMLElement;
+    });
+    expect(option.textContent).toBe("EngineSpeed [rpm]");
+    const headers = Array.from(document.querySelectorAll(".combobox-group")).map(
+      (h) => h.textContent,
+    );
+    expect(headers).toContain("(file-backed)");
+    expect(headers).toContain("Analog");
+  });
+
   it("renders one row per snapshot record, blanks included", async () => {
     renderPanel();
     await waitFor(() => {

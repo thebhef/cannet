@@ -37,7 +37,12 @@ import {
   resolvePatterns,
   scopeCatalog,
 } from "./signalSelection";
-import { signalKey } from "./plotData";
+import {
+  FILE_BACKED_BADGE,
+  FILE_BACKED_LABEL,
+  FILE_BACKED_TITLE,
+} from "./fileBackedSignal";
+import { recordSignalKey, signalKey } from "./plotData";
 import { buildSignalColorResolver } from "./signalColorResolver";
 import { useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { useThemeName } from "./theme";
@@ -92,8 +97,13 @@ function selectionFromParams(raw: unknown): { keys: SelectedKey[]; patterns: str
   return { keys, patterns };
 }
 
-const keyOf = (k: { busId: string | null; messageId: number; extended: boolean; signalName: string }) =>
-  signalKey(k.busId, k.messageId, k.extended, k.signalName);
+const keyOf = (k: {
+  busId: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  fileBacked?: boolean;
+}) => signalKey(k.busId, k.messageId, k.extended, k.signalName, k.fileBacked);
 
 /// Gridview row ids (ADR 0044) for the two kinds of page row. Prefixed
 /// so a section literally named like a signal key can't collide with
@@ -454,6 +464,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
             signalName: s.signal_name,
             messageName: s.message_name,
             unit: s.unit,
+            ...(s.file_backed ? { fileBacked: true as const } : {}),
           };
           if (have.has(keyOf(ref))) continue;
           have.add(keyOf(ref));
@@ -473,6 +484,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
         messageId: k.messageId,
         extended: k.extended,
         signalName: k.signalName,
+        ...(k.fileBacked ? { fileBacked: true as const } : {}),
       })),
       patterns: selection.patterns,
     }),
@@ -510,9 +522,12 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   const catalogOptions = useMemo(() => {
     const opts = scopedCatalog.map((s) => {
       const busLabel = s.bus_id == null ? null : lookup.get(s.bus_id) ?? s.bus_id;
-      const ecu = s.transmitter ?? "(no transmitter)";
+      // A file-backed signal (`docs/CONTEXT.md`) has no ECU because no
+      // node transmits it; its source stands in that segment so the
+      // picker says where the series came from.
+      const ecu = s.file_backed ? FILE_BACKED_LABEL : s.transmitter ?? "(no transmitter)";
       return {
-        value: signalKey(s.bus_id, s.message_id, s.extended, s.signal_name),
+        value: recordSignalKey(s),
         path: busLabel ? [busLabel, ecu, s.message_name] : [ecu, s.message_name],
         label: `${s.signal_name}${s.unit ? ` [${s.unit}]` : ""}`,
         desc: s,
@@ -536,6 +551,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           signalName: opt.desc.signal_name,
           messageName: opt.desc.message_name,
           unit: opt.desc.unit,
+          ...(opt.desc.file_backed ? { fileBacked: true as const } : {}),
         },
       ]);
     },
@@ -753,13 +769,14 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     for (let i = firstVisibleRow; i < Math.min(count, firstVisibleRow + rows); i++) {
       const s = signalOf(view.getRow(i));
       if (!s) continue;
-      m.set(signalKey(s.bus_id, s.message_id, s.extended, s.signal_name), {
+      m.set(recordSignalKey(s), {
         busId: s.bus_id,
         messageId: s.message_id,
         extended: s.extended,
         signalName: s.signal_name,
         messageName: s.message_name,
         unit: s.unit,
+        ...(s.file_backed ? { fileBacked: true as const } : {}),
       });
     }
     return m;
@@ -1440,7 +1457,19 @@ function SignalRow({
       case "ecu":
         return row.transmitter ?? "";
       case "msg":
-        return row.message_name;
+        // A file-backed signal (`docs/CONTEXT.md`) has no message, so
+        // this column carries its source channel group plus the badge
+        // that says the row is not decoded from frames.
+        return row.file_backed ? (
+          <>
+            {row.message_name}
+            <span className="signal-source-badge" title={FILE_BACKED_TITLE}>
+              {FILE_BACKED_BADGE}
+            </span>
+          </>
+        ) : (
+          row.message_name
+        );
       case "signal":
         return (
           <span

@@ -12,8 +12,10 @@ use std::sync::Arc;
 use cannet_dbc::{Database, SignalDescriptor};
 
 use crate::ipc::{
-    SignalPageRow, SignalSectionHeaderRecord, SignalSections, SignalSelection, SignalSnapshotRecord,
+    SignalDescriptorRecord, SignalPageRow, SignalSectionHeaderRecord, SignalSections,
+    SignalSelection, SignalSnapshotRecord,
 };
+use crate::signal_cache::FileSignalEntry;
 
 /// The bus-expanded descriptor universe: one entry per `(bus,
 /// descriptor)` pair, in descriptor-key order. What
@@ -174,6 +176,104 @@ pub fn select_descriptors(
     Ok(out)
 }
 
+/// One file-backed signal (`docs/CONTEXT.md`) as a catalog row — what
+/// `list_signals` appends to the DBC-derived descriptors so the picker
+/// and the plot can reach an imported series.
+///
+/// Its identity is the source signal channel group index in the message
+/// slot, no bus, never extended; `message_name` is the group's label,
+/// standing where a DBC-backed signal shows the message that carries
+/// it. It has no transmitter, no `VAL_` table and no DBC-implied
+/// precision, so those read as absent rather than as defaults.
+#[must_use]
+pub fn file_backed_descriptor(entry: FileSignalEntry) -> SignalDescriptorRecord {
+    SignalDescriptorRecord {
+        bus_id: None,
+        message_id: entry.info.group,
+        extended: false,
+        message_name: entry.info.group_label(),
+        transmitter: None,
+        signal_name: entry.info.name,
+        unit: entry.info.unit,
+        is_enum: false,
+        display_hex: false,
+        decimals: None,
+        file_backed: true,
+    }
+}
+
+/// The file-backed signals (`docs/CONTEXT.md`) `selection` admits, as
+/// snapshot rows — the file-backed half of what `fetch_signal_page`
+/// serves, alongside [`select_descriptors`]' DBC-backed half.
+///
+/// Selection works exactly as it does for a DBC-backed descriptor: a
+/// manual key matches on identity, and a pattern matches the canonical
+/// path (ADR 0038), whose bus and ECU segments are empty because a
+/// file-backed signal has neither — `//Analog/EngineSpeed`. A view
+/// **wired to specific buses** excludes them for the same reason it
+/// excludes an unassigned-bus descriptor: nothing puts them on a bus.
+///
+/// The window-dependent columns are not window-dependent here. No frame
+/// in the trace window carries a file-backed signal, so its value, time,
+/// count and rate are facts about its whole imported series — read off
+/// the pyramid by the model, never re-derived here.
+pub fn select_file_backed(
+    entries: &[FileSignalEntry],
+    selection: &SignalSelection,
+    source_buses: Option<&[String]>,
+) -> Result<Vec<SignalSnapshotRecord>, String> {
+    if entries.is_empty() || source_buses.is_some() {
+        return Ok(Vec::new());
+    }
+    let patterns: Vec<regex::Regex> = selection
+        .patterns
+        .iter()
+        .map(|p| regex::Regex::new(p).map_err(|e| format!("invalid pattern /{p}/: {e}")))
+        .collect::<Result<_, _>>()?;
+    let manual: HashSet<(u32, &str)> = selection
+        .keys
+        .iter()
+        .filter(|k| k.file_backed)
+        .map(|k| (k.message_id, k.signal_name.as_str()))
+        .collect();
+    let mut out = Vec::new();
+    for entry in entries {
+        let group = entry.info.group_label();
+        if !manual.contains(&(entry.info.group, entry.info.name.as_str())) {
+            let path = signal_path(None, None, &group, &entry.info.name);
+            if !patterns.iter().any(|re| re.is_match(&path)) {
+                continue;
+            }
+        }
+        let latest = entry.latest.as_ref();
+        out.push(SignalSnapshotRecord {
+            bus_id: None,
+            transmitter: None,
+            message_id: entry.info.group,
+            extended: false,
+            message_name: group,
+            signal_name: entry.info.name.clone(),
+            unit: entry.info.unit.clone(),
+            is_enum: false,
+            raw_field: false,
+            display_hex: false,
+            value: latest.map(|p| p.value),
+            // The file carries physical values with the conversion
+            // already applied; there is no raw field behind them and no
+            // `VAL_` table to label them with.
+            raw: None,
+            label: None,
+            rate: entry.rate,
+            count: Some(entry.sample_count),
+            time_seconds: latest.map(|p| p.t_seconds),
+            // Stamped by `arrange_sections`, which runs next.
+            section: None,
+            file_backed: true,
+        });
+    }
+    Ok(out)
+}
+
 /// Sort snapshot rows host-side by one column (the signal-view analog
 /// of `sort_by_id`): stable, `None` key keeps the input (descriptor)
 /// order, and rows blank on the sorted column sort last in *either*
@@ -246,7 +346,7 @@ fn row_cmp(
     }
 }
 
-/// The stable signal identity `bus|s|x:id:name` — the descriptor key
+/// The stable signal identity `bus|s|x|f:id:name` — the descriptor key
 /// `(bus, message id, extended, signal name)` ADR 0038 keeps as *the*
 /// identity for persistence and equality, rendered as one string.
 ///
@@ -255,17 +355,28 @@ fn row_cmp(
 /// colours on — so a section assignment keyed on it survives selection
 /// edits, DBC renames of ECUs/messages, and a pattern-matched signal
 /// becoming a manual pick.
+///
+/// The flag slot carries **provenance** as well as id width. A
+/// file-backed signal (`docs/CONTEXT.md`) has no message and no bus, so
+/// `message_id` is its source file's signal channel group index; `f`
+/// keeps that number out of the message-id namespace, which is
+/// otherwise free to hold the same value.
 #[must_use]
 pub fn signal_identity(
     bus_id: Option<&str>,
     message_id: u32,
     extended: bool,
     signal_name: &str,
+    file_backed: bool,
 ) -> String {
+    let flag = match (file_backed, extended) {
+        (true, _) => "f",
+        (false, true) => "x",
+        (false, false) => "s",
+    };
     format!(
-        "{}|{}:{message_id}:{signal_name}",
-        bus_id.unwrap_or("*"),
-        if extended { "x" } else { "s" },
+        "{}|{flag}:{message_id}:{signal_name}",
+        bus_id.unwrap_or("*")
     )
 }
 
@@ -364,6 +475,7 @@ pub fn arrange_sections(
             row.message_id,
             row.extended,
             &row.signal_name,
+            row.file_backed,
         );
         // An assignment naming a section that no longer exists reads as
         // unassigned — deleting a section returns its signals without
@@ -499,7 +611,7 @@ mod tests {
     }
 
     fn ident(signal: &str) -> String {
-        signal_identity(None, 0, false, signal)
+        signal_identity(None, 0, false, signal, false)
     }
 
     const TWO_ECU_DBC: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Bms Vcu\n\n\
@@ -545,6 +657,7 @@ mod tests {
             count: None,
             time_seconds: None,
             section: None,
+            file_backed: false,
         }
     }
 
@@ -680,10 +793,13 @@ mod tests {
         // Must match `signalKey` in `plotData.ts` byte for byte — it is
         // the assignment key the panel persists.
         assert_eq!(
-            signal_identity(Some("p"), 256, false, "EngineSpeed"),
+            signal_identity(Some("p"), 256, false, "EngineSpeed", false),
             "p|s:256:EngineSpeed",
         );
-        assert_eq!(signal_identity(None, 7, true, "S"), "*|x:7:S");
+        assert_eq!(signal_identity(None, 7, true, "S", false), "*|x:7:S");
+        // A file-backed signal takes the third flag: its `message_id` is
+        // a channel group index, which must not alias a message id.
+        assert_eq!(signal_identity(None, 7, false, "S", true), "*|f:7:S");
     }
 
     #[test]
@@ -828,7 +944,7 @@ mod tests {
         // The user moved this signal by hand; a pattern in another
         // section must not drag it back.
         let row = pathed_row("p", "Bms", "PackStatus", "PackVolts");
-        let id = signal_identity(Some("p"), 0, false, "PackVolts");
+        let id = signal_identity(Some("p"), 0, false, "PackVolts", false);
         let s = with_patterns(
             sections(&["Pack", "Debug"], &[(&id, "Debug")], &[]),
             &[("Pack", &["/Bms/"])],
@@ -895,7 +1011,7 @@ mod tests {
         // simply re-claim the row. The implicit section's own name (the
         // empty string) is that assignment.
         let row = pathed_row("p", "Bms", "PackStatus", "PackVolts");
-        let id = signal_identity(Some("p"), 0, false, "PackVolts");
+        let id = signal_identity(Some("p"), 0, false, "PackVolts", false);
         let s = with_patterns(
             sections(&["Pack"], &[(&id, "")], &[]),
             &[("Pack", &["/Bms/"])],

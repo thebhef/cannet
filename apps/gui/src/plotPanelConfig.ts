@@ -54,6 +54,11 @@ export interface SignalRef {
    * user asked for. A row placed by a *drop* carries no marker, because
    * a drop is a claim on position. Absent ⇒ a manual pick. */
   viaPattern?: boolean;
+  /** A **file-backed** signal (`docs/CONTEXT.md`): imported from the
+   * capture file as a value series, with no message carrying it. Its
+   * `messageId` is then a signal channel group index and `messageName`
+   * that group's label. Absent ⇒ DBC-backed. */
+  fileBacked?: boolean;
 }
 
 export interface PlotAreaConfig {
@@ -236,7 +241,7 @@ export const SIGNALS_WIDTH_MAX = 600;
 export const RESAMPLE_INTERVAL_MS = 67;
 
 export function signalRefKey(s: SignalRef): string {
-  return signalKey(s.busId, s.messageId, s.extended, s.signalName);
+  return signalKey(s.busId, s.messageId, s.extended, s.signalName, s.fileBacked);
 }
 
 export function isSignalRefCore(v: unknown): v is Omit<SignalRef, "colorPick"> {
@@ -277,6 +282,7 @@ export function signalRefFromRaw(
   };
   if (s.hidden) ref.hidden = true;
   if (s.viaPattern) ref.viaPattern = true;
+  if (s.fileBacked) ref.fileBacked = true;
   if (typeof s.colorPick === "string") ref.colorPick = s.colorPick;
   return ref;
 }

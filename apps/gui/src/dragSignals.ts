@@ -41,6 +41,10 @@ export interface DraggableSignalRef {
   signalName: string;
   messageName: string;
   unit: string;
+  /// A **file-backed** signal (`docs/CONTEXT.md`) — `messageId` is
+  /// then a signal channel group index and `messageName` that group's
+  /// label. Absent ⇒ DBC-backed.
+  fileBacked?: boolean;
 }
 
 /// Validator for one draggable signal ref. Mirrors the plot panel's

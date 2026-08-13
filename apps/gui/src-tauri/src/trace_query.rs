@@ -417,7 +417,17 @@ pub(crate) fn fetch_signal_page_inner(
     // typed into a section would have no rows to claim.
     let selection = signal_snapshot::selection_with_section_patterns(selection, sections);
     let selected = signal_snapshot::select_descriptors(&all, &selection, &names, source_buses)?;
-    let rows = collect_signal_rows(state, &dbs, &all, &selected, start, end);
+    let mut rows = collect_signal_rows(state, &dbs, &all, &selected, start, end);
+    // File-backed signals (`docs/CONTEXT.md`) are rows of this view too.
+    // They come from the capture rather than from a DBC, so they are not
+    // in the descriptor universe and their columns are read off the
+    // signal cache instead of joined to the trace window — no frame in
+    // the window carries one.
+    rows.extend(signal_snapshot::select_file_backed(
+        &state.signal_caches.file_signals(),
+        &selection,
+        source_buses,
+    )?);
     // Sectioning subsumes the sort: rows sort *within* a section, so the
     // two cannot be separate passes.
     let rows = signal_snapshot::arrange_sections(rows, sections, sort_key, sort_dir, &names);
@@ -631,6 +641,7 @@ fn collect_signal_rows(
                 time_seconds: cell.as_ref().map(|c| c.time_seconds),
                 // Stamped by `arrange_sections`, which runs next.
                 section: None,
+                file_backed: false,
             }
         })
         .collect()

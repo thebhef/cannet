@@ -140,14 +140,35 @@ export function mergeSeries(series: RawSeries[]): (number | null)[][] {
 /** Stable key for a `(bus, message, signal)` triple — what the plot
  * panel uses to dedupe a signal in its own state. `busId` may be
  * `null` for legacy plots that pre-date per-bus signal binding (the
- * "any bus" path). */
+ * "any bus" path). Byte-for-byte `signal_snapshot::signal_identity`
+ * host-side.
+ *
+ * The flag slot carries provenance as well as id width. A file-backed
+ * signal (`docs/CONTEXT.md`) has no message and no bus, so `messageId`
+ * is its source signal channel group index; `f` keeps that number out
+ * of the message-id namespace, which is free to hold the same value. */
 export function signalKey(
   busId: string | null,
   messageId: number,
   extended: boolean,
   signalName: string,
+  fileBacked = false,
 ): string {
-  return `${busId ?? "*"}|${extended ? "x" : "s"}:${messageId}:${signalName}`;
+  const flag = fileBacked ? "f" : extended ? "x" : "s";
+  return `${busId ?? "*"}|${flag}:${messageId}:${signalName}`;
+}
+
+/** `signalKey` for a catalog or snapshot record — the one place that
+ * reads a record's provenance, so a surface listing both kinds cannot
+ * key a file-backed signal as if it were a message's. */
+export function recordSignalKey(r: {
+  bus_id: string | null;
+  message_id: number;
+  extended: boolean;
+  signal_name: string;
+  file_backed?: boolean;
+}): string {
+  return signalKey(r.bus_id, r.message_id, r.extended, r.signal_name, r.file_backed);
 }
 
 /**

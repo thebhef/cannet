@@ -2042,6 +2042,202 @@ fn mdf_scan_reports_skipped_decoded_groups_for_the_dialog() {
     );
 }
 
+/// A capture holding two file-backed signals, one DBC loaded beside
+/// them so both provenances are in play at once.
+#[allow(clippy::cast_precision_loss)] // ten small integers
+fn file_backed_state() -> AppState {
+    let state = test_state();
+    state
+        .databases
+        .lock()
+        .unwrap()
+        .push(loaded("modes.dbc", MUX_SNAPSHOT_DBC));
+    invalidate_derived_caches(&state);
+    for (name, unit, base) in [("EngineSpeed", "rpm", 800.0), ("CoolantTemp", "degC", 70.0)] {
+        let info = signal_cache::FileSignalInfo {
+            group: 1,
+            group_name: Some("Analog".into()),
+            name: name.into(),
+            unit: unit.into(),
+        };
+        let points: Vec<(u64, f64)> = (0..10u64)
+            .map(|i| {
+                (
+                    1_700_000_000_000_000_000 + i * 1_000_000_000,
+                    base + i as f64,
+                )
+            })
+            .collect();
+        state.signal_caches.fill_file_backed(&info, &points);
+    }
+    state
+}
+
+/// Every file-backed signal the capture holds, as `fetch_signal_page`
+/// serves them to the signal grid for `selection`.
+fn file_backed_rows(state: &AppState, patterns: &[&str]) -> Vec<SignalSnapshotRecord> {
+    let sel = SignalSelection {
+        keys: vec![],
+        patterns: patterns.iter().map(|p| (*p).to_string()).collect(),
+    };
+    fetch_signal_page_inner(
+        state,
+        &sel,
+        None,
+        0,
+        u64::MAX,
+        None,
+        None,
+        vec![],
+        &[],
+        None,
+        0,
+        100,
+    )
+    .expect("valid pattern")
+    .rows
+    .iter()
+    .filter_map(ipc::SignalPageRow::signal)
+    .filter(|r| r.file_backed)
+    .cloned()
+    .collect()
+}
+
+/// The catalog lists file-backed signals beside DBC-backed ones,
+/// marked by source and labelled by their channel group. A picker that
+/// couldn't see them would leave imported signals unplottable.
+#[test]
+fn list_signals_offers_file_backed_signals_marked_by_source() {
+    let state = file_backed_state();
+    // `list_signals` itself needs a Tauri `State`, so exercise the
+    // projection it appends — the one place a file-backed catalog row
+    // is built.
+    let rows: Vec<ipc::SignalDescriptorRecord> = state
+        .signal_caches
+        .file_signals()
+        .into_iter()
+        .map(signal_snapshot::file_backed_descriptor)
+        .collect();
+    assert_eq!(
+        rows.iter()
+            .map(|r| (
+                r.signal_name.as_str(),
+                r.message_name.as_str(),
+                r.unit.as_str(),
+                r.file_backed
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CoolantTemp", "Analog", "degC", true),
+            ("EngineSpeed", "Analog", "rpm", true),
+        ],
+    );
+    // The catalog identity is the group index in the message slot,
+    // never a bus — nothing puts a file-backed signal on one.
+    assert!(rows.iter().all(|r| r.bus_id.is_none() && r.message_id == 1));
+}
+
+/// The signal grid serves file-backed rows through the same paged
+/// command as DBC-backed ones, selected by the same canonical-path
+/// patterns (ADR 0038) with empty bus and ECU segments, and marked by
+/// source. Their statistics describe the whole imported series, since
+/// no frame in the trace window carries them.
+#[test]
+#[allow(clippy::float_cmp)]
+fn fetch_signal_page_serves_file_backed_rows_marked_by_source() {
+    let state = file_backed_state();
+    let rows = file_backed_rows(&state, &["^//Analog/"]);
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r.signal_name.as_str(), r.unit.as_str(), r.count))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CoolantTemp", "degC", Some(10)),
+            ("EngineSpeed", "rpm", Some(10))
+        ],
+    );
+    let engine = rows
+        .iter()
+        .find(|r| r.signal_name == "EngineSpeed")
+        .unwrap();
+    assert_eq!(engine.value, Some(809.0), "the newest sample of the series");
+    assert_eq!(engine.rate, Some(1.0));
+    assert_eq!(engine.message_name, "Analog");
+    assert!(engine.bus_id.is_none() && engine.transmitter.is_none());
+    // A pattern that doesn't match their path leaves them out, exactly
+    // as it would a DBC-backed descriptor.
+    assert!(file_backed_rows(&state, &["^/powertrain/"]).is_empty());
+    // And a manual pick reaches one without any pattern at all.
+    let sel = SignalSelection {
+        keys: vec![ipc::SignalQuery {
+            bus_id: None,
+            message_id: 1,
+            extended: false,
+            signal_name: "EngineSpeed".into(),
+            file_backed: true,
+        }],
+        patterns: vec![],
+    };
+    let picked =
+        signal_snapshot::select_file_backed(&state.signal_caches.file_signals(), &sel, None)
+            .unwrap();
+    assert_eq!(picked.len(), 1);
+    assert_eq!(picked[0].signal_name, "EngineSpeed");
+}
+
+/// A view wired to specific buses excludes file-backed signals for the
+/// same reason it excludes an unassigned-bus descriptor: nothing puts
+/// them on a bus.
+#[test]
+fn a_bus_wired_view_has_no_file_backed_rows() {
+    let state = file_backed_state();
+    let sel = SignalSelection {
+        keys: vec![],
+        patterns: vec![".".to_string()],
+    };
+    let page = fetch_signal_page_inner(
+        &state,
+        &sel,
+        None,
+        0,
+        u64::MAX,
+        None,
+        None,
+        vec![],
+        &[],
+        Some(&["powertrain".to_string()]),
+        0,
+        100,
+    )
+    .unwrap();
+    assert_eq!(page.count, 0);
+}
+
+/// A DBC reload drops every decoded pyramid (ADR 0033) and must leave
+/// the file-backed rows exactly where they were — same signals, same
+/// samples, same statistics.
+#[test]
+fn a_dbc_reload_leaves_the_file_backed_rows_untouched() {
+    let state = file_backed_state();
+    let before = file_backed_rows(&state, &["^//Analog/"]);
+    assert_eq!(before.len(), 2);
+
+    state.databases.lock().unwrap().clear();
+    invalidate_derived_caches(&state);
+
+    let after = file_backed_rows(&state, &["^//Analog/"]);
+    assert_eq!(
+        after
+            .iter()
+            .map(|r| (r.signal_name.clone(), r.value, r.count))
+            .collect::<Vec<_>>(),
+        before
+            .iter()
+            .map(|r| (r.signal_name.clone(), r.value, r.count))
+            .collect::<Vec<_>>(),
+    );
+}
+
 /// An MDF's message-independent signal channel groups land as
 /// **file-backed signals** (`docs/CONTEXT.md`): one signal-cache entry
 /// per channel, filled once and complete. `sorted_finalized_mixed.mf4`
