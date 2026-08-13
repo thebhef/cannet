@@ -430,6 +430,16 @@ class _SharedInterface:
                 try:
                     frame = ch.recv(timeout_s=0.25)
                 except Exception as e:  # noqa: BLE001
+                    if self._stop.is_set():
+                        # The close we were told about (``_stop`` is set
+                        # before the channel is closed) landed while this
+                        # read was in flight — PCAN-Basic fails the
+                        # in-flight ``CAN_ReadFD`` with
+                        # PCAN_ERROR_INITIALIZE rather than returning
+                        # empty-handed. That is the close working, not a
+                        # fault, so it stays out of the operator's log.
+                        _log.debug("rx for %s ended at close: %s", cid, e)
+                        break
                     _log.warning("rx for %s failed: %s", cid, e)
                     if self._stop.wait(0.1):
                         break

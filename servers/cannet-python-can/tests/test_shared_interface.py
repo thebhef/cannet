@@ -20,12 +20,15 @@ pre-Phase-13 per-session ``_Subscription`` shape:
 
 from __future__ import annotations
 
+import logging
 import queue
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Optional
+
+import pytest
 
 
 def _ensure_on_path() -> None:
@@ -498,3 +501,107 @@ def test_reconfigure_failure_broadcasts_to_all_subscribers() -> None:
         assert "reconfigure" in env.log.message
     # Old channel kept open on a failed reopen.
     assert driver.first is not None and not driver.first.closed.is_set()
+
+
+# ---- close-race logging ---------------------------------------------------
+
+
+class _CloseRacingChannel(_FakeChannel):
+    """Fails an in-flight ``recv`` once the channel is closed.
+
+    PCAN-Basic does exactly this: closing the channel while the reader
+    thread sits inside ``CAN_ReadFD`` fails that read with
+    ``PCAN_ERROR_INITIALIZE`` rather than returning empty-handed.
+
+    ``in_recv`` lets the test close only once the reader is provably
+    inside a read, which is the whole point of the race.
+    """
+
+    def __init__(self, channel_id: str = "fake:0") -> None:
+        super().__init__(channel_id=channel_id)
+        self.in_recv = threading.Event()
+
+    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+        self.in_recv.set()
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self.closed.is_set():
+                raise OSError(
+                    "A PCAN Channel has not been initialized yet or the "
+                    "initialization process has failed"
+                )
+            frame = super().recv(0.01)
+            if frame is not None:
+                return frame
+        return None
+
+
+class _AlwaysFailingRecvChannel(_FakeChannel):
+    """A channel whose reads fail for a reason that is *not* the close —
+    a genuine driver fault the operator has to hear about."""
+
+    def recv(self, timeout_s: float) -> Optional[drv.Frame]:
+        time.sleep(0.01)
+        raise OSError("bus off, or the cable fell out")
+
+
+class _ChannelDriver(_FakeDriver):
+    """``_FakeDriver`` that hands out a caller-chosen channel class."""
+
+    def __init__(self, channel_cls, channel_id: str = "fake:0") -> None:
+        super().__init__(channel_id=channel_id)
+        self._channel_cls = channel_cls
+
+    def open(self, channel_id: str, config: drv.OpenConfig):
+        if channel_id != self._channel_id:
+            raise KeyError(channel_id)
+        ch = self._channel_cls(channel_id=channel_id)
+        self.opened.append(ch)
+        self.configs.append(config)
+        return ch
+
+
+def test_nominal_close_does_not_warn_about_the_read_it_interrupted(
+    caplog: "pytest.LogCaptureFixture",
+) -> None:
+    """The last unsubscribe closes the channel out from under a reader
+    that is already inside ``recv``. That read failing is the close doing
+    its job, not a fault — so it must not reach the operator's log at
+    WARNING."""
+    caplog.set_level(logging.DEBUG, logger="cannet_python_can")
+    driver = _ChannelDriver(_CloseRacingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    _drain(a, kind="interface_state")
+    _wait_for(lambda: driver.opened[0].in_recv.is_set())
+
+    reg.unsubscribe("fake:0", a)
+    _wait_for(lambda: driver.opened[0].closed.is_set())
+    # Long enough for the interrupted read to fail and be logged.
+    time.sleep(0.2)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings == [], f"nominal close warned: {[r.getMessage() for r in warnings]}"
+
+
+def test_a_read_failure_outside_a_close_still_warns(
+    caplog: "pytest.LogCaptureFixture",
+) -> None:
+    """The counterpart guard: silencing the close race must not silence a
+    real driver fault on an interface nobody asked to close."""
+    caplog.set_level(logging.DEBUG, logger="cannet_python_can")
+    driver = _ChannelDriver(_AlwaysFailingRecvChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    try:
+        _wait_for(
+            lambda: any(
+                r.levelno >= logging.WARNING
+                and "rx for fake:0 failed" in r.getMessage()
+                for r in caplog.records
+            )
+        )
+    finally:
+        reg.unsubscribe("fake:0", a)
