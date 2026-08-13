@@ -1509,7 +1509,11 @@ The toolbar's **Connect** button (or **Connect all** in the project
 panel) iterates every unique server in `interface_bindings`, opens one
 gRPC session per server, and subscribes only to the bound interfaces.
 The host's pump thread stamps every received frame with the chosen
-`bus_id`. **Disconnect** ends every session. Server addresses no
+`bus_id`. **Disconnect** ends every session, and so does quitting the
+app — the host hangs up on every server (briefly, so an unreachable
+one can't hold the exit up) before the process goes away, rather than
+leaving the server to notice a socket that stopped answering. Server
+addresses no
 longer live in the toolbar — they're per-binding configuration. A
 binding's `server` is either the literal `"local"` (sentinel meaning
 "the local sidecar at whatever address it's bound to this session" —

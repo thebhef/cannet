@@ -408,3 +408,60 @@ async fn dropping_source_disconnects_cleanly() {
     assert_eq!(frames.len(), 1);
     server.abort();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shutdown_timeout_returns_only_once_the_session_is_torn_down() {
+    // A caller about to exit the process needs the disconnect to have
+    // actually left the machine, not merely to have been signalled:
+    // dropping the handle and exiting a millisecond later is
+    // indistinguishable from the process dying mid-session. The bound
+    // is what keeps that wait from becoming a hang.
+    let (addr, server) = spawn_server().await;
+    let address = addr.to_string();
+
+    let (handle, mut receiver, _transmitter): (SessionHandle, FrameReceiver, _) =
+        tokio::task::spawn_blocking(move || {
+            let source =
+                connect_and_subscribe(&plaintext(&address), vec![Subscription::new("blf:0", 0)])
+                    .unwrap();
+            source.into_parts()
+        })
+        .await
+        .unwrap();
+
+    // One frame first, so the session is provably live when it is asked
+    // to close.
+    let mut receiver = tokio::task::spawn_blocking(move || {
+        receiver
+            .next_frame()
+            .unwrap()
+            .expect("expected at least one frame");
+        receiver
+    })
+    .await
+    .unwrap();
+
+    let closed =
+        tokio::task::spawn_blocking(move || handle.shutdown_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap();
+    assert!(closed, "the worker did not finish inside the budget");
+
+    // The worker is already gone, so the receive half is at
+    // end-of-stream without any further waiting — that is what
+    // distinguishes "the disconnect completed" from "the disconnect was
+    // signalled". Frames already buffered ahead of the shutdown drain
+    // first.
+    let ended = tokio::task::spawn_blocking(move || loop {
+        match receiver.next_frame() {
+            Ok(Some(_)) => {}
+            Ok(None) => return true,
+            Err(_) => return false,
+        }
+    })
+    .await
+    .unwrap();
+    assert!(ended, "the receive half was still live after shutdown");
+
+    server.abort();
+}
