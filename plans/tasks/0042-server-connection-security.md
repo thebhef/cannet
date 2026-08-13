@@ -319,3 +319,118 @@ One thing noticed and not touched, from phase 1: `main` returns
 `Error: UnprotectedBind { bind: 0.0.0.0:50051, missing: [...] }` — the
 `Display` impl written for it is never used. Informative, but not the
 sentence it was written to be.
+
+### 2026-08-12 — phase 3: the pinned, authenticated client
+
+Landed on `task42c-client-connect`, off `task42b-token-auth`
+(`f254f1b`):
+
+| commit | what |
+|--------|------|
+| `5b94dd9` | feat(client): pin a server certificate and carry a token on every RPC |
+
+`cannet-client` tests: 12 → 27 (lib 5 → 12, `tests/end_to_end.rs` 7
+unchanged, new `tests/protected.rs` 8). `cannet-server` (85),
+`cannet-gui` (503) and `cannet-perf-measurement` unchanged and green,
+clippy-clean across all four with the call-site changes.
+
+**Spike outcome (B2): a hand-written connector, not `hyper-rustls`.**
+`hyper-rustls` 0.27 is not in the lock; the tokio-rustls route needs
+`rustls`, `tokio-rustls`, `hyper-util` and `tower`, all four already
+there as tonic's own dependencies, and costs ~25 lines (connect a
+`TcpStream`, wrap it, hand tonic a `TokioIo`). So the tree does not
+grow at all, against one new crate for the alternative. Proven before
+anything was built on it by
+`tls::tests::a_pinned_client_completes_a_handshake_and_an_rpc`.
+
+Two things the spike found that the plan could not have known:
+
+- **The endpoint URI has to be `http://`, even though the connection
+  is TLS.** With tonic's `tls` feature compiled in — and it is, by
+  workspace feature unification with `cannet-server` — tonic wraps
+  every connector in one of its own that intercepts an `https://` URI
+  and fails with `HttpsUriWithoutTlsSupport` unless *tonic's* TLS
+  config is set, which is the config that cannot hold the pin
+  verifier. The scheme only reaches the wire as h2's `:scheme`
+  pseudo-header. The first four TLS tests all failed on this, and the
+  three negative ones were passing *vacuously* until the positive one
+  worked — worth remembering when a security test's assertion is "this
+  connection failed".
+- `alpn_protocols = [b"h2"]` really is nobody else's job on that path,
+  as the plan review said.
+
+What shipped:
+
+- `tls.rs` — `CertPin` (32 bytes; parses and displays the server's
+  `SHA256:` + unpadded standard-base64 form, so a pin round-trips
+  through a settings file as the same string the operator eyeballs),
+  `PinVerifier`, and the connector. The verifier compares the
+  end-entity DER's digest in constant time, ignores chain/validity/
+  server name, and **delegates both signature hooks to the ring
+  provider** with `supported_verify_schemes` from the same provider.
+  It fails closed: mismatch — or nothing pinned yet — refuses the
+  handshake and records a `PinObservation` (observed fingerprint plus
+  the unknown-vs-mismatch discriminator) into an `Arc<Mutex<..>>` the
+  dialer reads back, because by the time the failure surfaces there is
+  nothing certificate-shaped left in it.
+- `ConnectConfig` with four constructors — `plaintext`, `pinned`,
+  `pinned_with_token`, `unpinned` — threaded through all three entry
+  points and the session worker. S7's two rules are structural, not
+  conventions: only `pinned_with_token` carries a credential and it
+  always pins (so a token cannot be put on a plaintext channel at
+  all), and a pinned config whose address spells `http://` is
+  `InsecureScheme` before a socket is opened. The token rides a
+  `BearerCredential` interceptor built once per connection, so no call
+  site can forget it.
+- `ConnectionError::PinMismatch { expected, observed }` and
+  `::Unauthenticated` (S13), the latter from a `From<tonic::Status>`
+  that every RPC path now goes through, so a rejection on the watch
+  stream or mid-session is the same terminal variant. Plus
+  `InsecureScheme` and `InvalidToken` for the two configuration
+  errors. Retry-loop handling is phase 4, as planned.
+- N19's call sites: 4 in the GUI host
+  (`interfaces.rs` ×2, `session.rs` ×2, `local_buses.rs`), 4 in the
+  perf harness (`grpc.rs` ×2, `hardware_peak.rs` ×2, `upstream.rs`),
+  and `tests/end_to_end.rs` — all one-line `ConnectConfig::plaintext`,
+  behaviour unchanged. The GUI frontend is untouched.
+- `tests/protected.rs` — against a server in the production shape
+  (`ServerTlsConfig` + the gate as a server-wide layer): pinned + token
+  lists interfaces; all three RPCs carry the credential and frames
+  round-trip between two sessions over the pinned channel; missing and
+  wrong tokens are `Unauthenticated`; a stale pin is `PinMismatch`
+  naming both fingerprints; a first contact is `PinMismatch` with
+  `expected: None`; a pinned config on an `http://` address fails
+  without dialling (the address points at a port nobody listens on, so
+  a `Connect` error would prove it went to the network anyway).
+- The falsification test (exit criterion),
+  `tls::tests::a_certificate_presented_without_its_key_is_refused`:
+  `ServerIdentity::from_pem(cert_a.cert_pem(), key_b.key_pem())` —
+  rustls' `with_single_cert` does not check that a certificate and a
+  key belong together, so the server starts and serves certificate A's
+  chain while signing with B. The client pins A's fingerprint, the
+  digest matches exactly, and the handshake must still die — at the
+  `CertificateVerify` signature. The test asserts the verifier
+  published *no* observation, which is what distinguishes "the
+  signature failed" from "the pin failed".
+
+Two calls the plan did not settle:
+
+- **The plaintext constructor is `plaintext`, not
+  `plaintext_loopback` (N19).** Every current call site is a loopback
+  or in-process server, but `session.rs` and `local_buses.rs` pass
+  whatever address the project file holds, which need not be loopback
+  until phase 4 gives the GUI somewhere to put a pin and a token.
+  Naming it for loopback would have been a claim the call sites cannot
+  keep; the rustdoc says what it is — the unprotected path — and names
+  loopback as where it belongs.
+- **`ConnectConfig::unpinned` exists, and it always fails.** The plan
+  specifies the verifier's no-pin mode and the unknown-vs-mismatch
+  discriminator, which are only reachable if a config can ask for one.
+  It is the trust-on-first-use probe phase 4's dialog needs: it gets
+  as far as the server's certificate, refuses it, and returns the
+  fingerprint to accept. No RPC and no credential can ride it, because
+  the handshake never completes.
+
+Not in this phase, per the plan: the GUI's TOFU dialog, the per-server
+pin/token store (ADR 0032), and terminal handling in
+`interfaces.rs`'s watch-retry loop.
