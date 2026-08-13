@@ -18,6 +18,8 @@ cannet-wire = { path = "../cannet-wire" }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 futures-core = "0.3"
+hostname = "0.4"
+mdns-sd = "0.21"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
@@ -26,6 +28,13 @@ subtle = "2"
 tokio ={ version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 tokio-stream = { version = "0.1", features = ["net", "time"] }
 tonic = { version = "0.12", features = ["tls"] }
+
+[build-dependencies]
+# Stamps the binary with `git describe --tags` at build time so the
+# mDNS TXT record's `ver=` key reports the exact tag/commit it was
+# built from, mirroring `apps/gui/src-tauri/build.rs`. `gitcl` shells
+# out to the `git` already required to build.
+vergen = { version = "8", features = ["git", "gitcl"] }
 
 [dev-dependencies]
 blf_asc = "0.2"
