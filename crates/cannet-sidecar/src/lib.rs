@@ -85,17 +85,26 @@
 //! ## Lifecycle: the sidecar dies when its host dies
 //!
 //! The supervisor pipes the sidecar's stdin and writes nothing to it.
-//! The `Child` keeps the write end open for its own lifetime; when the
-//! host process exits (clean or not), the OS closes the pipe and the
+//! It keeps the write end open for the child's lifetime; when the host
+//! process exits (clean or not), the OS closes the pipe and the
 //! sidecar's stdin-EOF watcher
 //! (`cannet_python_can.__main__._install_stdin_eof_watcher`)
 //! gracefully stops the gRPC server. That cross-platform "your parent
 //! went away" contract is why a host crash never leaves an orphaned
 //! sidecar holding hardware open — no `prctl(PR_SET_PDEATHSIG)` /
 //! Windows job-object plumbing required.
+//!
+//! A host that means to outlive its sidecar — one shutting down in an
+//! orderly way rather than dying — closes that pipe itself, through
+//! [`SidecarSupervisor::stop`]: same graceful exit, but bounded, and
+//! with a whole-process-tree kill as the backstop. Waiting for the OS
+//! to do it instead is not an option for a host whose exit path is a
+//! runtime teardown that first waits for the supervisor's own wait
+//! loop, which waits for the child, which waits for the EOF.
 
 mod banner;
 mod launch;
+mod process_tree;
 mod supervise;
 
 pub use banner::{classify_stderr_line, classify_stdout_line, parse_listening_address, LogLevel};
@@ -103,7 +112,7 @@ pub use launch::{
     env_over_setting, frozen_launcher_name, resolve_command, Resolved, SidecarConfig,
     DRIVER_MODULE_ENV, SIDECAR_DIR_ENV,
 };
-pub use supervise::{SidecarPhase, SidecarStatus, SidecarSupervisor};
+pub use supervise::{SidecarPhase, SidecarStatus, SidecarSupervisor, StopOutcome};
 
 /// What a host supplies so this crate can run a sidecar for it: where
 /// its configuration comes from, where the sidecar's chatter goes, and
