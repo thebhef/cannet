@@ -39,6 +39,21 @@
 //! the next serve then rebuilds the pyramid on disk by re-decoding the raw
 //! frames, which remain the source of truth.
 //!
+//! **Decode provenance decides the fill, and only the fill.** A
+//! *DBC-backed* series is decoded from the frames of its `(message, bus)`,
+//! incrementally, for as long as frames keep arriving. A *file-backed*
+//! series (CONTEXT: "File-backed signal") was imported from a capture file
+//! as an already-decoded value series: no message carries it, no DBC
+//! produces it, and [`SignalCacheStore::fill_file_backed`] fills it once,
+//! completely, at import. Everything downstream is the same store, the
+//! same pyramid, the same paged serve and the same persistence — the
+//! differences all follow from the fill: a file-backed series is never
+//! caught up, is complete the moment it exists, survives a DBC-set change
+//! ([`SignalCacheStore::invalidate_dbcs`]) and the raw store's ring
+//! eviction ([`SignalCacheStore::evict_below`]), and comes back from disk
+//! on any relaunch over the same capture whatever the DBC set has become
+//! ([`SignalCacheStore::restore`]).
+//!
 //! A batch of queries ([`SignalCacheStore::slice_many`],
 //! [`SignalCacheStore::min_max_many`] — what a plot fetch sends) is
 //! caught up **one decode pass per message**: the queries sharing a
@@ -129,6 +144,54 @@ const CATCH_UP_CHUNK_FRAMES: usize = 16_384;
 /// signal) stays negligible against the decoding.
 const CATCH_UP_SERVE_BUDGET: Duration = Duration::from_millis(150);
 
+/// What a **file-backed** series is, beyond its samples: which signal
+/// channel group of the imported capture file it was read from and the
+/// metadata that group carried. Held beside the pyramid and persisted
+/// with it, so a restored session can list and label the signal without
+/// re-opening the source file.
+///
+/// DBC-backed series have no counterpart here — everything a view needs
+/// to label one is in the loaded DBCs.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FileSignalInfo {
+    /// Signal-channel-group index in the source file. Plays the part a
+    /// message id plays for a DBC-backed signal: it is what keeps two
+    /// groups' same-named signals apart.
+    pub group: u32,
+    /// The group's acquisition name, when it has one.
+    pub group_name: Option<String>,
+    /// Channel name, verbatim from the file.
+    pub name: String,
+    /// Engineering unit, verbatim from the file (empty when it has none).
+    pub unit: String,
+}
+
+impl FileSignalInfo {
+    /// The label a view shows where a DBC-backed signal shows its
+    /// message name: the group's own name, or its index when the file
+    /// left it unnamed.
+    #[must_use]
+    pub fn group_label(&self) -> String {
+        self.group_name
+            .clone()
+            .unwrap_or_else(|| format!("group {}", self.group))
+    }
+}
+
+/// One file-backed series as a view lists it: what it is, how many
+/// samples it holds, its newest sample, and the average sample rate over
+/// its span. Every number is read off the pyramid here rather than
+/// re-derived by a caller — statistics are the model's job.
+pub struct FileSignalEntry {
+    pub info: FileSignalInfo,
+    pub sample_count: u64,
+    /// Time and value of the newest sample, `None` for an empty series.
+    pub latest: Option<SamplePoint>,
+    /// Samples per second over the series' own span, `None` when fewer
+    /// than two samples (or a zero-length span) make it undefined.
+    pub rate: Option<f64>,
+}
+
 /// One signal's decoded samples as a min/max resolution pyramid, plus
 /// the next trace-store frame index to scan from on the next catch-up.
 struct SignalCache {
@@ -162,13 +225,20 @@ struct SignalCache {
     /// empty sentinel) means nothing has decoded yet.
     lo: f64,
     hi: f64,
+    /// Set for a **file-backed** series: what it was read from. `None`
+    /// is a DBC-backed series, whose samples come from decoding frames.
+    /// This is the decode provenance the ruling turns on — it decides
+    /// whether catch-up fills the series at all, whether a DBC-set
+    /// change discards it, and how views label it.
+    file: Option<FileSignalInfo>,
 }
 
 impl SignalCache {
     /// A fresh cache whose level-0 sequence is rooted at `dir` with file
     /// base `base` (`{base}.l0`, `{base}.l1`, … minted per level by
-    /// [`Self::fold`]).
-    fn new(dir: &Path, base: &str) -> Self {
+    /// [`Self::fold`]). `file` carries the source metadata of a
+    /// file-backed series; `None` makes it DBC-backed.
+    fn new(dir: &Path, base: &str, file: Option<FileSignalInfo>) -> Self {
         Self {
             dir: dir.to_path_buf(),
             base: base.to_string(),
@@ -177,7 +247,39 @@ impl SignalCache {
             next_index: 0,
             lo: f64::INFINITY,
             hi: f64::NEG_INFINITY,
+            file,
         }
+    }
+
+    /// How many samples the raw (level-0) series holds — its live slots,
+    /// so a front-trimmed series counts what it still has.
+    fn sample_count(&self) -> usize {
+        self.levels[0].live_len()
+    }
+
+    /// The newest level-0 sample, or `None` for an empty series.
+    fn latest(&self) -> Option<SamplePoint> {
+        let level = &self.levels[0];
+        (level.live_len() > 0).then(|| {
+            let (t_seconds, value) = level.get(level.len() - 1);
+            SamplePoint { t_seconds, value }
+        })
+    }
+
+    /// Average samples per second across the series' own span, or `None`
+    /// when fewer than two live samples (or a zero-length span) leave it
+    /// undefined.
+    #[allow(clippy::cast_precision_loss)]
+    fn rate(&self) -> Option<f64> {
+        let level = &self.levels[0];
+        let n = level.live_len();
+        if n < 2 {
+            return None;
+        }
+        let first = level.get(level.first_slot()).0;
+        let last = level.get(level.len() - 1).0;
+        let span = last - first;
+        (span > 0.0).then(|| (n - 1) as f64 / span)
     }
 
     /// All-time value extent, or `None` if nothing has decoded yet.
@@ -294,10 +396,11 @@ impl SignalCache {
     #[allow(clippy::cast_possible_truncation)]
     fn snapshot(&self, key: &SignalKey) -> PersistedSignal {
         PersistedSignal {
-            bus_id: key.0.clone(),
-            message_id: key.1,
-            extended: key.2,
-            signal: key.3.clone(),
+            bus_id: key.bus_id.clone(),
+            message_id: key.slot,
+            extended: key.extended,
+            signal: key.signal.clone(),
+            file: self.file.clone(),
             next_index: self.next_index as u64,
             extent: self.extent().map(|(lo, hi)| [lo, hi]),
             levels: self
@@ -374,6 +477,7 @@ impl SignalCache {
             next_index: usize::try_from(p.next_index).unwrap_or(usize::MAX),
             lo,
             hi,
+            file: p.file.clone(),
         }
     }
 
@@ -532,13 +636,61 @@ fn window_slice(level: &SampleSeq, from: f64, to: f64) -> Vec<SamplePoint> {
         .collect()
 }
 
-/// Cache key — one bucket per `(bus, message, signal)` triple, so
-/// the same arbitration id on two different buses (with different
-/// DBC scopes) decodes into two independent series. `bus_id = None`
-/// is the legacy "any bus" path: it matches every frame regardless
-/// of its bus tag, used by old plot panels that pre-date per-bus
-/// signal binding.
-type SignalKey = (Option<String>, u32, bool, String);
+/// Cache key — one bucket per cached series, and the place a series'
+/// **decode provenance** is recorded.
+///
+/// A *DBC-backed* series is one bucket per `(bus, message, signal)`
+/// triple, so the same arbitration id on two different buses (with
+/// different DBC scopes) decodes into two independent series.
+/// `bus_id = None` is the legacy "any bus" path: it matches every frame
+/// regardless of its bus tag, used by old plot panels that pre-date
+/// per-bus signal binding.
+///
+/// A *file-backed* series has no bus and no message — nothing on the
+/// wire carries it and no DBC decodes it — so `slot` carries the source
+/// file's signal-channel-group index instead of a message id and
+/// `extended` is meaningless. Provenance is part of the key rather than
+/// a field beside it because the two namespaces must not alias: a group
+/// index and a message id are unrelated numbers that would otherwise
+/// collide.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct SignalKey {
+    bus_id: Option<String>,
+    /// DBC-backed: the message id. File-backed: the source file's
+    /// signal-channel-group index.
+    slot: u32,
+    /// DBC-backed: whether `slot` is a 29-bit extended id. Always
+    /// `false` file-backed.
+    extended: bool,
+    signal: String,
+    /// `true` for a file-backed series — filled once from an imported
+    /// signal channel group, never from frames.
+    file_backed: bool,
+}
+
+impl SignalKey {
+    /// The key of a DBC-backed series.
+    fn dbc(bus_id: Option<String>, message_id: u32, extended: bool, signal: String) -> Self {
+        Self {
+            bus_id,
+            slot: message_id,
+            extended,
+            signal,
+            file_backed: false,
+        }
+    }
+
+    /// The key of a file-backed series in signal channel group `group`.
+    fn file(group: u32, signal: String) -> Self {
+        Self {
+            bus_id: None,
+            slot: group,
+            extended: false,
+            signal,
+            file_backed: true,
+        }
+    }
+}
 
 /// Segment files one periodic [`SignalCacheStore::persist`] may wait on
 /// the device for **while frames are arriving**. Sealing is bursty —
@@ -598,7 +750,6 @@ impl Harden {
 /// characters. Deterministic in the key, so the same signal always maps to
 /// the same files within a session.
 fn key_prefix(key: &SignalKey) -> String {
-    let (bus, id, extended, signal) = key;
     // FNV-1a over a canonical encoding of the whole key, separators
     // included so `(Some("a"), "b")` and `(Some("ab"), "")` can't alias.
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -608,13 +759,18 @@ fn key_prefix(key: &SignalKey) -> String {
             h = h.wrapping_mul(0x0000_0100_0000_01b3);
         }
     };
-    mix(bus.as_deref().unwrap_or("").as_bytes());
+    mix(key.bus_id.as_deref().unwrap_or("").as_bytes());
     mix(&[0]);
-    mix(&id.to_le_bytes());
-    mix(&[u8::from(*extended)]);
-    mix(signal.as_bytes());
-    let kind = if *extended { 'e' } else { 's' };
-    format!("sig.{kind}{id:08x}.{h:016x}")
+    mix(&key.slot.to_le_bytes());
+    mix(&[u8::from(key.extended), u8::from(key.file_backed)]);
+    mix(key.signal.as_bytes());
+    let kind = match (key.file_backed, key.extended) {
+        (true, _) => 'f',
+        (false, true) => 'e',
+        (false, false) => 's',
+    };
+    let slot = key.slot;
+    format!("sig.{kind}{slot:08x}.{h:016x}")
 }
 
 /// The scratch subdirectory the per-signal decimation pyramids spill into
@@ -677,16 +833,13 @@ fn wipe_dir(dir: &Path) {
     }
 }
 
-/// [`wipe_dir`], but leaving the files a staged manifest still vouches for
-/// (and the manifest itself). This is what lets a DBC-set change drop the
-/// live decode state without pre-empting the staged set's own validity
-/// check — see [`SignalCacheStore::invalidate_dbcs`].
-fn wipe_dir_except(dir: &Path, staged: &PyramidManifest) {
-    let keep: Vec<String> = staged
-        .signals
-        .iter()
-        .map(|s| key_prefix(&s.key()))
-        .collect();
+/// [`wipe_dir`], but leaving the level files of `keep` (and the manifest
+/// itself) where they are. This is what lets a DBC-set change drop the
+/// live *decoded* state without touching either a staged set's files —
+/// pre-empting its own validity check — or the file-backed series a DBC
+/// change has no bearing on. See [`SignalCacheStore::invalidate_dbcs`].
+fn wipe_dir_except(dir: &Path, keep: &[SignalKey]) {
+    let keep: Vec<String> = keep.iter().map(key_prefix).collect();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -749,9 +902,16 @@ struct PersistedLevel {
 #[derive(Serialize, Deserialize)]
 struct PersistedSignal {
     bus_id: Option<String>,
+    /// The message id of a DBC-backed series; the source file's signal
+    /// channel group index when `file` is set.
     message_id: u32,
     extended: bool,
     signal: String,
+    /// Present only for a file-backed series. `#[serde(default)]` so a
+    /// manifest written before file-backed signals existed still reads,
+    /// as the DBC-backed set it describes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    file: Option<FileSignalInfo>,
     next_index: u64,
     extent: Option<[f64; 2]>,
     levels: Vec<PersistedLevel>,
@@ -759,12 +919,15 @@ struct PersistedSignal {
 
 impl PersistedSignal {
     fn key(&self) -> SignalKey {
-        (
-            self.bus_id.clone(),
-            self.message_id,
-            self.extended,
-            self.signal.clone(),
-        )
+        match &self.file {
+            Some(f) => SignalKey::file(f.group, self.signal.clone()),
+            None => SignalKey::dbc(
+                self.bus_id.clone(),
+                self.message_id,
+                self.extended,
+                self.signal.clone(),
+            ),
+        }
     }
 }
 
@@ -774,9 +937,11 @@ impl PersistedSignal {
 /// pyramids — opening them a level at a time runs the parallel open at a
 /// width of about four and turns the restore into the slow half of a
 /// launch. `None` if any run doesn't answer to its manifest row.
-fn reopen_set(root: &Path, manifest: &PyramidManifest) -> Option<Vec<(SignalKey, SignalCache)>> {
-    let keys: Vec<(SignalKey, String)> = manifest
-        .signals
+fn reopen_set(root: &Path, signals: &[PersistedSignal]) -> Option<Vec<(SignalKey, SignalCache)>> {
+    if signals.is_empty() {
+        return Some(Vec::new());
+    }
+    let keys: Vec<(SignalKey, String)> = signals
         .iter()
         .map(|s| {
             let key = s.key();
@@ -785,8 +950,8 @@ fn reopen_set(root: &Path, manifest: &PyramidManifest) -> Option<Vec<(SignalKey,
         })
         .collect();
     let mut runs = Vec::new();
-    let mut per_signal = Vec::with_capacity(manifest.signals.len());
-    for (s, (_, base)) in manifest.signals.iter().zip(&keys) {
+    let mut per_signal = Vec::with_capacity(signals.len());
+    for (s, (_, base)) in signals.iter().zip(&keys) {
         let levels = SignalCache::reopen_runs(base, s)?;
         per_signal.push(levels.len());
         runs.extend(levels);
@@ -796,8 +961,7 @@ fn reopen_set(root: &Path, manifest: &PyramidManifest) -> Option<Vec<(SignalKey,
         .flatten()?
         .into_iter();
     Some(
-        manifest
-            .signals
+        signals
             .iter()
             .zip(keys)
             .zip(per_signal)
@@ -824,49 +988,74 @@ struct PyramidManifest {
 /// a `(message_id, extended)` are caught up in a single decode pass.
 pub struct CacheQuery<'a> {
     /// Bus the series is scoped to; `None` is the legacy "any bus" path.
+    /// Always `None` for a file-backed signal, which has no bus.
     pub bus_id: Option<&'a str>,
+    /// The message id, or — when `file_backed` — the source file's
+    /// signal channel group index.
     pub message_id: u32,
     pub extended: bool,
     pub signal_name: &'a str,
+    /// Names a **file-backed** signal rather than a DBC-backed one.
+    /// A file-backed query only ever serves an entry the import already
+    /// filled: nothing decodes such a signal, so there is no series to
+    /// create on demand.
+    pub file_backed: bool,
 }
 
 impl CacheQuery<'_> {
     fn key(&self) -> SignalKey {
-        (
-            self.bus_id.map(str::to_owned),
-            self.message_id,
-            self.extended,
-            self.signal_name.to_string(),
-        )
+        if self.file_backed {
+            SignalKey::file(self.message_id, self.signal_name.to_string())
+        } else {
+            SignalKey::dbc(
+                self.bus_id.map(str::to_owned),
+                self.message_id,
+                self.extended,
+                self.signal_name.to_string(),
+            )
+        }
     }
 }
 
-/// Create a cache for every query that doesn't have one yet, and return
-/// the queries' keys in request order (duplicates included — the result
-/// of a batch is index-parallel with it).
+/// Create a cache for every DBC-backed query that doesn't have one yet,
+/// and return the queries' keys in request order (duplicates included —
+/// the result of a batch is index-parallel with it).
+///
+/// A **file-backed** query creates nothing: its series is filled once by
+/// the import that read it ([`SignalCacheStore::fill_file_backed`]) and
+/// there is no decode that could fill an empty one, so minting a cache
+/// here would only leave an empty series in the store — and in the
+/// manifest — for a signal this capture does not have.
 fn ensure_caches(caches: &mut Caches, queries: &[CacheQuery<'_>]) -> Vec<SignalKey> {
     let Caches { root, by_key, .. } = caches;
     queries
         .iter()
         .map(|q| {
             let key = q.key();
-            by_key
-                .entry(key.clone())
-                .or_insert_with(|| SignalCache::new(root, &key_prefix(&key)));
+            if !key.file_backed {
+                by_key
+                    .entry(key.clone())
+                    .or_insert_with(|| SignalCache::new(root, &key_prefix(&key), None));
+            }
             key
         })
         .collect()
 }
 
-/// The batch's keys grouped by `(message_id, extended)` — the unit one
-/// decode pass covers — with repeats collapsed, since a query asked twice
-/// is one series and must be caught up once.
+/// The batch's DBC-backed keys grouped by `(message_id, extended)` — the
+/// unit one decode pass covers — with repeats collapsed, since a query
+/// asked twice is one series and must be caught up once. File-backed keys
+/// are left out: they have no message to scan and their series is already
+/// complete.
 fn group_keys(keys: &[SignalKey]) -> HashMap<(u32, bool), Vec<&SignalKey>> {
     let mut seen: std::collections::HashSet<&SignalKey> = std::collections::HashSet::new();
     let mut groups: HashMap<(u32, bool), Vec<&SignalKey>> = HashMap::new();
     for key in keys {
-        if seen.insert(key) {
-            groups.entry((key.1, key.2)).or_default().push(key);
+        if !key.file_backed && seen.insert(key) {
+            groups
+                .entry((key.slot, key.extended))
+                .or_default()
+                .push(key);
         }
     }
     groups
@@ -988,22 +1177,42 @@ impl SignalCacheStore {
     /// Drop the live decoded state after a DBC-set change (ADR 0033): the
     /// samples in it were decoded against a set that no longer applies.
     ///
-    /// A *staged* set is deliberately left where it is. It is not decoded
+    /// **File-backed series survive.** Their samples were read from a
+    /// capture file, not decoded from frames — no DBC produced them and
+    /// no DBC change can invalidate them — so they and their level files
+    /// stay exactly where they are.
+    ///
+    /// A *staged* set is likewise left where it is. It is not decoded
     /// state yet — it is a candidate whose own recorded DBC fingerprint is
     /// part of the check [`Self::restore`] is about to make — and the boot
     /// sequence loads a project's DBCs before it restores that project's
     /// capture, so wiping here would mean no persisted pyramid could ever
     /// be reused. Once a set has been adopted it is live like any other,
-    /// and the next DBC change wipes it.
+    /// and the next DBC change wipes its DBC-backed half.
     pub fn invalidate_dbcs(&self) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        caches.by_key = HashMap::new();
+        caches.by_key.retain(|key, _| key.file_backed);
         caches.generation += 1;
-        caches.dirty = false;
-        let Caches { root, staged, .. } = &*caches;
-        match staged {
-            Some(manifest) => wipe_dir_except(root, manifest),
-            None => wipe_dir(root),
+        // The surviving file-backed series still owe the manifest a
+        // rewrite: the rows it holds for the discarded DBC-backed ones
+        // no longer describe anything on disk.
+        caches.dirty = !caches.by_key.is_empty();
+        let Caches {
+            root,
+            staged,
+            by_key,
+            ..
+        } = &*caches;
+        let mut keep: Vec<SignalKey> = by_key.keys().cloned().collect();
+        if let Some(manifest) = staged {
+            keep.extend(manifest.signals.iter().map(PersistedSignal::key));
+        }
+        if keep.is_empty() {
+            // Nothing to preserve — take the manifest with the files, so
+            // the directory doesn't describe pyramids that are gone.
+            wipe_dir(root);
+        } else {
+            wipe_dir_except(root, &keep);
         }
     }
 
@@ -1112,33 +1321,60 @@ impl SignalCacheStore {
     /// ahead of the frames the store comes back with — and a cursor ahead
     /// of the tip never revisits the frames it skipped.
     ///
-    /// Rejection is all-or-nothing: a level file that doesn't answer to its
-    /// manifest row means the directory is not what the manifest says, and
-    /// trusting the rest of it on that evidence would be guessing.
+    /// Rejection is all-or-nothing **within a provenance**: a level file
+    /// that doesn't answer to its manifest row means the directory is not
+    /// what the manifest says, and trusting the rest of it on that
+    /// evidence would be guessing.
+    ///
+    /// The two provenances are judged separately, because they are valid
+    /// against different things. A DBC-backed row is only reusable when
+    /// the whole [`PyramidValidity`] matches — it holds *decoded* samples,
+    /// so a different DBC set or a different eviction mark makes it a
+    /// pyramid of something else. A file-backed row holds samples read
+    /// out of the capture file itself: nothing but the capture's own
+    /// identity bears on it, so it comes back whenever `capture_id`
+    /// matches, and a DBC change between sessions leaves it untouched
+    /// exactly as a DBC change within one does.
     pub fn restore(&self, validity: &PyramidValidity, store_len: usize) -> usize {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let Some(manifest) = caches.staged.take() else {
             return 0;
         };
-        let usable = manifest.validity == *validity
-            && manifest
-                .signals
-                .iter()
-                .all(|s| s.next_index <= store_len as u64);
-        let restored = usable
-            .then(|| reopen_set(&caches.root, &manifest))
+        let (file_rows, dbc_rows): (Vec<PersistedSignal>, Vec<PersistedSignal>) =
+            manifest.signals.into_iter().partition(|s| s.file.is_some());
+        // The pyramids are persisted on their own cadence, so a crash
+        // between the raw store's last flush and the pyramid's can leave a
+        // decode cursor ahead of the frames the store comes back with —
+        // and a cursor ahead of the tip never revisits the frames it
+        // skipped. File-backed rows have no cursor into the store.
+        let dbc_usable = manifest.validity == *validity
+            && dbc_rows.iter().all(|s| s.next_index <= store_len as u64);
+        let file_usable = manifest.validity.capture_id == validity.capture_id;
+        let restored_dbc = dbc_usable
+            .then(|| reopen_set(&caches.root, &dbc_rows))
+            .flatten();
+        let restored_file = file_usable
+            .then(|| reopen_set(&caches.root, &file_rows))
             .flatten();
         caches.generation += 1;
-        if let Some(caught_up) = restored {
-            let n = caught_up.len();
-            caches.by_key = caught_up.into_iter().collect();
-            n
-        } else {
-            caches.by_key = HashMap::new();
+        let offered = dbc_rows.len() + file_rows.len();
+        let mut by_key: HashMap<SignalKey, SignalCache> = HashMap::new();
+        by_key.extend(restored_dbc.into_iter().flatten());
+        by_key.extend(restored_file.into_iter().flatten());
+        let n = by_key.len();
+        let keep: Vec<SignalKey> = by_key.keys().cloned().collect();
+        caches.by_key = by_key;
+        if keep.is_empty() {
             caches.dirty = false;
             wipe_dir(&caches.root);
-            0
+        } else if n < offered {
+            // A rejected half leaves its files behind and makes the
+            // manifest describe pyramids that are no longer live, so it
+            // owes a rewrite. A clean restore owes nothing.
+            caches.dirty = true;
+            wipe_dir_except(&caches.root, &keep);
         }
+        n
     }
 
     /// Front-trim every cached pyramid to the truncation time `ts_seconds`
@@ -1146,12 +1382,82 @@ impl SignalCacheStore {
     /// store's windowed-ring eviction. The host calls this with the timestamp
     /// of the raw low-water mark whenever eviction advances it; signals with
     /// no points that old are unaffected.
+    ///
+    /// File-backed series are left alone. The mark is a fact about the
+    /// *raw store's* ring, and a file-backed series is not decoded from
+    /// it: front-trimming one would drop imported samples nothing can
+    /// re-derive, since the frames that rebuild a DBC-backed pyramid
+    /// never carried it.
     pub fn evict_below(&self, ts_seconds: f64) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        for cache in caches.by_key.values_mut() {
+        let mut touched = false;
+        for (key, cache) in &mut caches.by_key {
+            if key.file_backed {
+                continue;
+            }
             cache.evict_below(ts_seconds);
+            touched = true;
         }
-        caches.dirty |= !caches.by_key.is_empty();
+        caches.dirty |= touched;
+    }
+
+    /// Fill a **file-backed** series in one pass: an entry keyed by its
+    /// source channel group and channel name, holding `points` as its
+    /// level-0 series with the pyramid folded over it.
+    ///
+    /// This is the file-backed half of the provenance rule. A DBC-backed
+    /// series fills lazily and incrementally, because the frames behind
+    /// it keep arriving; a file-backed one is read out of a capture file
+    /// that has already ended, so it fills once and is then complete
+    /// forever. Everything downstream is identical — the same store, the
+    /// same pyramid, the same paged serve, the same persistence.
+    ///
+    /// `points` are `(absolute nanoseconds, physical value)` in
+    /// non-decreasing time order (ADR 0024 — a series' timestamps are
+    /// absolute), which is the order the reader yields them in and the
+    /// order every pyramid level is searched by. Re-filling a group and
+    /// name that already has a series replaces it, so a re-import is not
+    /// an append.
+    pub fn fill_file_backed(&self, info: &FileSignalInfo, points: &[(u64, f64)]) {
+        let key = SignalKey::file(info.group, info.name.clone());
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let base = key_prefix(&key);
+        let mut cache = SignalCache::new(&caches.root, &base, Some(info.clone()));
+        #[allow(clippy::cast_precision_loss)]
+        for &(ts_ns, value) in points {
+            cache.push_sample((ts_ns as f64) / 1e9, value);
+        }
+        cache.fold();
+        caches.by_key.insert(key, cache);
+        caches.generation += 1;
+        caches.dirty = true;
+    }
+
+    /// Every file-backed series this capture holds, with the statistics a
+    /// series-shaped view lists it by. The catalog, the signal grid and
+    /// the BLF-save warning all read this — file-backed signals are model
+    /// state, so what exists and how much of it there is are answered
+    /// here rather than re-derived per surface.
+    ///
+    /// Ordered by `(group, name)` so the listing is stable across calls
+    /// (the store itself is a hash map).
+    pub fn file_signals(&self) -> Vec<FileSignalEntry> {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut out: Vec<FileSignalEntry> = caches
+            .by_key
+            .values()
+            .filter_map(|cache| {
+                let info = cache.file.clone()?;
+                Some(FileSignalEntry {
+                    info,
+                    sample_count: cache.sample_count() as u64,
+                    latest: cache.latest(),
+                    rate: cache.rate(),
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| (a.info.group, &a.info.name).cmp(&(b.info.group, &b.info.name)));
+        out
     }
 
     /// Create a cache for every query that doesn't have one yet, and
@@ -1243,8 +1549,8 @@ impl SignalCacheStore {
                     return;
                 };
                 targets.push(GroupTarget {
-                    bus_id: key.0.as_deref(),
-                    signal_name: key.3.as_str(),
+                    bus_id: key.bus_id.as_deref(),
+                    signal_name: key.signal.as_str(),
                     next_index: cache.next_index,
                 });
             }
@@ -1340,6 +1646,7 @@ impl SignalCacheStore {
             message_id,
             extended,
             signal_name,
+            file_backed: false,
         };
         self.slice_many(
             std::slice::from_ref(&query),
@@ -1426,6 +1733,7 @@ impl SignalCacheStore {
             message_id,
             extended,
             signal_name,
+            file_backed: false,
         };
         self.min_max_many(std::slice::from_ref(&query), store, dbs)
             .pop()
@@ -1483,15 +1791,22 @@ pub struct ServedWindows {
 }
 
 /// Whether every cache named by `keys` has decoded through `store_len`.
-/// A key with no cache counts as not caught up — the only way it is
-/// missing is a clear between the catch-up and this read, and the caller
-/// asking again is right.
+/// A key with no cache counts as not caught up — the only way a
+/// DBC-backed one is missing is a clear between the catch-up and this
+/// read, and the caller asking again is right.
+///
+/// A **file-backed** key is complete as soon as its series exists: the
+/// import filled it in one pass that ran to the end of the channel
+/// group, so there is never a prefix to come back for. A file-backed key
+/// with no cache is a signal this capture doesn't have, which is also a
+/// settled answer.
 fn caught_up(caches: &Caches, keys: &[SignalKey], store_len: usize) -> bool {
     keys.iter().all(|key| {
-        caches
-            .by_key
-            .get(key)
-            .is_some_and(|c| c.next_index >= store_len)
+        key.file_backed
+            || caches
+                .by_key
+                .get(key)
+                .is_some_and(|c| c.next_index >= store_len)
     })
 }
 
@@ -2049,6 +2364,7 @@ mod tests {
                 message_id: 256,
                 extended: false,
                 signal_name: "X",
+                file_backed: false,
             }],
             store_len,
             dbs,
@@ -2159,6 +2475,7 @@ mod tests {
             message_id,
             extended: false,
             signal_name,
+            file_backed: false,
         }
     }
 
@@ -2407,7 +2724,7 @@ mod tests {
         // segment files; here we raise it directly to assert the read path
         // already tolerates it.)
         let dir = TempDir::new().unwrap();
-        let mut cache = SignalCache::new(dir.path(), "sig");
+        let mut cache = SignalCache::new(dir.path(), "sig", None);
         for i in 0..100u32 {
             cache.levels[0].push(f64::from(i), f64::from(i));
         }
@@ -2434,7 +2751,7 @@ mod tests {
         // level drops the points (and leading segment files) older than it,
         // keeping the serve aligned with the raw store's live window.
         let dir = TempDir::new().unwrap();
-        let mut cache = SignalCache::new(dir.path(), "0x100.sig");
+        let mut cache = SignalCache::new(dir.path(), "0x100.sig", None);
         for i in 0..200u32 {
             cache.levels[0].push(f64::from(i), f64::from(i)); // t = value = i seconds
         }
@@ -2557,54 +2874,63 @@ mod tests {
                 message_id: 256,
                 extended: false,
                 signal_name: "A",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: None,
                 message_id: 256,
                 extended: false,
                 signal_name: "B",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: Some("p"),
                 message_id: 256,
                 extended: false,
                 signal_name: "A",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: Some("c"),
                 message_id: 256,
                 extended: false,
                 signal_name: "B",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: None,
                 message_id: 512,
                 extended: false,
                 signal_name: "M0",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: None,
                 message_id: 512,
                 extended: false,
                 signal_name: "M1",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: None,
                 message_id: 512,
                 extended: false,
                 signal_name: "Sel",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: None,
                 message_id: 256,
                 extended: true,
                 signal_name: "X",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: None,
                 message_id: 777,
                 extended: false,
                 signal_name: "Nothing",
+                file_backed: false,
             },
         ]
     }
@@ -2729,18 +3055,21 @@ mod tests {
                 message_id: 256,
                 extended: false,
                 signal_name: "A",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: Some("p"),
                 message_id: 256,
                 extended: false,
                 signal_name: "A",
+                file_backed: false,
             },
             CacheQuery {
                 bus_id: None,
                 message_id: 256,
                 extended: false,
                 signal_name: "B",
+                file_backed: false,
             },
         ];
         let store_len = 2 * CATCH_UP_CHUNK_FRAMES + 7;
@@ -2793,12 +3122,14 @@ mod tests {
             message_id: 256,
             extended: false,
             signal_name: "A",
+            file_backed: false,
         };
         let b = CacheQuery {
             bus_id: None,
             message_id: 256,
             extended: false,
             signal_name: "B",
+            file_backed: false,
         };
         // `A` alone first, then more capture, then both together.
         assert_eq!(
@@ -2849,6 +3180,7 @@ mod tests {
             message_id: 256,
             extended: false,
             signal_name: "A",
+            file_backed: false,
         };
         queries.push(repeat);
         let out = cache
@@ -2897,11 +3229,12 @@ mod tests {
             message_id: 256,
             extended: false,
             signal_name: "X",
+            file_backed: false,
         }
     }
 
     fn key_x() -> SignalKey {
-        (None, 256, false, "X".to_string())
+        SignalKey::dbc(None, 256, false, "X".to_string())
     }
 
     /// Run `probe` while a cold catch-up of message 256 sits blocked
@@ -3340,6 +3673,318 @@ mod tests {
         assert!(served.iter().all(|p| p.t_seconds >= 1000.0));
     }
 
+    // ---- File-backed signals ----------------------------------------
+    //
+    // A file-backed series (CONTEXT: "File-backed signal") is imported
+    // from a capture file as an already-decoded value series. It is a
+    // cache entry like any other — same pyramid, same paged serve, same
+    // persistence — and differs only in **provenance**: it fills once
+    // from the file instead of incrementally from frames, and nothing a
+    // DBC does bears on it.
+
+    fn file_info(group: u32, name: &str) -> FileSignalInfo {
+        FileSignalInfo {
+            group,
+            group_name: Some("Analog".into()),
+            name: name.to_string(),
+            unit: "rpm".into(),
+        }
+    }
+
+    /// A query naming a file-backed signal, the way a plot or a grid row
+    /// addresses one.
+    fn file_query(group: u32, signal_name: &str) -> CacheQuery<'_> {
+        CacheQuery {
+            bus_id: None,
+            message_id: group,
+            extended: false,
+            signal_name,
+            file_backed: true,
+        }
+    }
+
+    /// `n` points of a slowly rising series, one per second from t = 0.
+    fn ramp(n: u64) -> Vec<(u64, f64)> {
+        (0..n)
+            .map(|i| (i * S, f64::from((i % 50) as u16)))
+            .collect()
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_file_backed_series_serves_exactly_like_a_decoded_one() {
+        // The ruling's core claim: provenance decides the *fill*, and
+        // nothing after it. So a file-backed series holding the same
+        // points a DBC-backed one decodes must serve identically —
+        // through the same paged, decimated path, at every budget.
+        let store = TraceStore::new();
+        for i in 0..1_000u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+
+        let decoded_dir = TempDir::new().unwrap();
+        let decoded = SignalCacheStore::new_unbounded(decoded_dir.path());
+        let file_dir = TempDir::new().unwrap();
+        let from_file = SignalCacheStore::new_unbounded(file_dir.path());
+        from_file.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(1_000));
+
+        for max_points in [0usize, 16, 200] {
+            let a = decoded.slice(
+                None,
+                256,
+                false,
+                "X",
+                f64::MIN,
+                f64::MAX,
+                max_points,
+                &store,
+                dbs,
+            );
+            let b = from_file
+                .slice_many(
+                    &[file_query(1, "EngineSpeed")],
+                    f64::MIN,
+                    f64::MAX,
+                    max_points,
+                    &store,
+                    dbs,
+                )
+                .series
+                .pop()
+                .unwrap();
+            assert_eq!(
+                a.iter().map(|p| (p.t_seconds, p.value)).collect::<Vec<_>>(),
+                b.iter().map(|p| (p.t_seconds, p.value)).collect::<Vec<_>>(),
+                "max_points = {max_points}",
+            );
+        }
+        // Including the scalar the plot's auto-normalisation reads.
+        assert_eq!(
+            from_file.min_max_many(&[file_query(1, "EngineSpeed")], &store, dbs),
+            vec![Some((0.0, 49.0))],
+        );
+    }
+
+    #[test]
+    fn a_file_backed_serve_is_complete_the_moment_it_exists() {
+        // A file-backed fill is a one-time read that *completed*: there
+        // is no prefix for the caller to come back for, however far the
+        // capture's own decode cursor is from the tip. A budget of zero
+        // (one chunk per serve) would leave any DBC-backed series
+        // partial over this capture.
+        let store = TraceStore::new();
+        for i in 0..(CATCH_UP_CHUNK_FRAMES as u64 * 3) {
+            store.append(val_frame(i * S, 1));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
+        cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
+
+        let served = cache.slice_many(
+            &[file_query(1, "EngineSpeed")],
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
+        assert_eq!(served.series[0].len(), 20);
+        assert!(served.complete, "a filled file-backed series is settled");
+        // The DBC-backed sibling over the same capture is not.
+        assert!(
+            !cache
+                .slice_many(&[query_on(256, "X")], f64::MIN, f64::MAX, 0, &store, dbs)
+                .complete
+        );
+    }
+
+    #[test]
+    fn a_file_backed_query_for_a_signal_this_capture_lacks_creates_nothing() {
+        // Nothing decodes a file-backed signal, so a query for one the
+        // import never filled must not mint an empty series — it would
+        // sit in the store, and in the manifest, claiming the capture has
+        // a signal it does not.
+        let store = TraceStore::new();
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let served = cache.slice_many(&[file_query(7, "Absent")], 0.0, 1.0, 0, &store, dbs);
+        assert!(served.series[0].is_empty());
+        assert!(served.complete);
+        assert!(cache.caches.lock().unwrap().by_key.is_empty());
+        assert!(cache.file_signals().is_empty());
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn file_signals_reports_what_the_import_filled() {
+        // The catalog, the signal grid and the BLF-save warning all read
+        // this one listing, so it carries the statistics rather than
+        // leaving each surface to re-derive them.
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        cache.fill_file_backed(&file_info(2, "CoolantTemp"), &ramp(20));
+        cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(5));
+        let listed = cache.file_signals();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|e| (e.info.group, e.info.name.as_str(), e.sample_count))
+                .collect::<Vec<_>>(),
+            vec![(1, "EngineSpeed", 5), (2, "CoolantTemp", 20)],
+            "ordered by (group, name)",
+        );
+        assert_eq!(listed[0].info.unit, "rpm");
+        assert_eq!(listed[0].info.group_label(), "Analog");
+        let latest = listed[0].latest.as_ref().unwrap();
+        assert_eq!((latest.t_seconds, latest.value), (4.0, 4.0));
+        // Five samples one second apart: four intervals over four seconds.
+        assert_eq!(listed[0].rate, Some(1.0));
+        // An unnamed group falls back to its index.
+        let unnamed = FileSignalInfo {
+            group_name: None,
+            ..file_info(9, "Solo")
+        };
+        assert_eq!(unnamed.group_label(), "group 9");
+    }
+
+    #[test]
+    fn a_dbc_change_does_not_touch_a_file_backed_series() {
+        // "DBC reload never touches them." No DBC produced these samples,
+        // so no DBC set can invalidate them — the series stays live and
+        // its level files stay on disk, while its DBC-backed neighbour is
+        // dropped as it always was.
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        assert_eq!(
+            cache
+                .slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs)
+                .len(),
+            200
+        );
+        cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
+
+        cache.invalidate_dbcs();
+
+        assert_eq!(
+            cache
+                .file_signals()
+                .iter()
+                .map(|e| e.sample_count)
+                .collect::<Vec<_>>(),
+            vec![20],
+            "the file-backed series survived the DBC change",
+        );
+        // Served from what is still in the store — over a capture nothing
+        // decodes, so a wiped-and-rebuilt series would come back empty.
+        let cold = undecodable_store(store.len());
+        let served = cache.slice_many(
+            &[file_query(1, "EngineSpeed")],
+            f64::MIN,
+            f64::MAX,
+            0,
+            &cold,
+            dbs,
+        );
+        assert_eq!(served.series[0].len(), 20);
+        // And exactly one series is live: the DBC-backed one went.
+        assert_eq!(cache.caches.lock().unwrap().by_key.len(), 1);
+    }
+
+    #[test]
+    fn eviction_leaves_a_file_backed_series_whole() {
+        // The raw store's windowed-ring mark is a fact about frames. A
+        // file-backed series is not decoded from them and nothing could
+        // re-derive it, so trimming it to that mark would destroy
+        // imported data outright.
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(100));
+        cache.evict_below(50.0);
+        assert_eq!(cache.file_signals()[0].sample_count, 100);
+    }
+
+    #[test]
+    fn a_file_backed_series_comes_back_after_a_dbc_change_across_sessions() {
+        // The same rule across a relaunch. The DBC-backed half of a
+        // persisted set is only reusable when the whole validity key
+        // matches; the file-backed half depends on nothing but the
+        // capture's identity, so a different DBC set brings it back
+        // anyway and rebuilds only what was decoded.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", "dbc-a", 0);
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        {
+            let cache = SignalCacheStore::new(root.path());
+            assert_eq!(
+                cache
+                    .slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs)
+                    .len(),
+                200
+            );
+            cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
+            assert!(cache.persist(&v, Harden::All));
+        }
+
+        let reopened = SignalCacheStore::new(root.path());
+        let changed = validity("capture-a", "dbc-b", 0);
+        assert_eq!(
+            reopened.restore(&changed, store.len()),
+            1,
+            "only the file-backed series is reusable",
+        );
+        let listed = reopened.file_signals();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].sample_count, 20);
+        assert_eq!(listed[0].info.unit, "rpm", "its metadata persisted too");
+        // Served without re-reading the source file: the samples are the
+        // ones the level-0 file under the spill dir holds.
+        let cold = undecodable_store(store.len());
+        let served = reopened.slice_many(
+            &[file_query(1, "EngineSpeed")],
+            f64::MIN,
+            f64::MAX,
+            0,
+            &cold,
+            dbs,
+        );
+        assert_eq!(served.series[0].len(), 20);
+        // A different capture takes both halves with it.
+        {
+            let cache = SignalCacheStore::new(root.path());
+            assert_eq!(cache.restore(&validity("capture-b", "dbc-a", 0), 200), 0);
+            assert!(cache.file_signals().is_empty());
+        }
+    }
+
+    #[test]
+    fn clearing_the_capture_drops_the_file_backed_series_too() {
+        // A new capture is a new set of file-backed signals — the ones
+        // the old capture's file carried describe nothing any more.
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
+        cache.clear();
+        assert!(cache.file_signals().is_empty());
+        assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+    }
+
     // ---- First-use rebuild benchmark --------------------------------
     //
     // Not part of the default suite (`#[ignore]`d; it writes a
@@ -3432,6 +4077,7 @@ mod tests {
                 message_id: 256 + n as u32,
                 extended: false,
                 signal_name: "X0",
+                file_backed: false,
             })
             .collect();
 
@@ -3562,6 +4208,7 @@ mod tests {
                 message_id: 256 + (n / per_message) as u32,
                 extended: false,
                 signal_name: &names[n % per_message],
+                file_backed: false,
             })
             .collect();
 

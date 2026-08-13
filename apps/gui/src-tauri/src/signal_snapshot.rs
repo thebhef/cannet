@@ -522,6 +522,7 @@ mod tests {
             message_id: id,
             extended: false,
             signal_name: name.into(),
+            file_backed: false,
         }
     }
 

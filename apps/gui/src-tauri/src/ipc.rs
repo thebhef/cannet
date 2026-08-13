@@ -986,9 +986,17 @@ pub struct SignalQuery {
     /// path — kept so a plot from a project that pre-dates per-bus
     /// signal binding still samples.
     pub bus_id: Option<String>,
+    /// The message id — or, when `file_backed`, the source file's signal
+    /// channel group index, which is what identifies a file-backed
+    /// signal in place of a message it doesn't have.
     pub message_id: u32,
     pub extended: bool,
     pub signal_name: String,
+    /// Names a **file-backed** signal (a value series imported from the
+    /// capture file rather than decoded from frames). Absent on the wire
+    /// means the DBC-backed signal every query used to be.
+    #[serde(default)]
+    pub file_backed: bool,
 }
 
 /// One signal's freshly-decoded points, parallel arrays (`t[i]` is the

@@ -301,6 +301,7 @@ fn cache_queries(signals: &[SignalQuery]) -> Vec<CacheQuery<'_>> {
             message_id: q.message_id,
             extended: q.extended,
             signal_name: &q.signal_name,
+            file_backed: q.file_backed,
         })
         .collect()
 }
