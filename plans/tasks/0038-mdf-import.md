@@ -707,3 +707,85 @@ export against asammdf in CI", `1a4ffd1` "feat(gui): route capture.save
 to the BLF or the MDF writer", `066796a` "feat(examples): ship the demo
 capture as MDF too", `11147c4` "test(mdf): match the reader's tie rule
 in the asammdf oracle".
+
+### 2026-08-12 — phase 6: close-out
+
+No feature code — verification only. Also carried one unrelated,
+already-pending docs edit that predated this phase: the roadmap's
+Task 64 (server installers) insertion, opened by owner ask, committed
+first (`609bc05` "docs(plans): open task 64 — server installers") so
+it isn't mixed into task 38's own history.
+
+**Perf gate** (ADR 0031, final gate for this task — phase 4 gated the
+signal-cache data path, phase 5 added the save/frontend surface
+ungated). Release GUI via `pnpm --dir apps/gui tauri build --no-bundle`,
+60 s ev-zonal capture with `--perf-interact scrub` against real PCAN
+hardware
+(`docs/performance-measurements/frontend/2026-08-12-609bc05-task38f-closeout.json`),
+then `cannet-perf-measurement check` (with `--expected-rx-fps 1608
+--expected-tx-fps 1608`) against the committed `baseline.json`:
+**passed, 33/33 metrics ok**, nothing promoted.
+
+| metric | baseline | current | limit | result |
+| --- | --- | --- | --- | --- |
+| tracebuffer ingest_fps_overall | 25000.114 | 25000.101 | 21250.097 | ok |
+| tracebuffer fps_retention | 1.000 | 1.000 | 0.800 | ok |
+| tracebuffer append_ms_max | 3.064 | 2.616 | 11.128 | ok |
+| tracebuffer scan_ms_max | 0.219 | 0.532 | 5.438 | ok |
+| grpc ingest_fps_overall | 2853.805 | 2839.974 | 2425.735 | ok |
+| grpc fps_retention | 0.998 | 0.986 | 0.800 | ok |
+| grpc append_ms_max | 0.833 | 0.808 | 6.665 | ok |
+| grpc scan_ms_max | 0.068 | 0.119 | 5.135 | ok |
+| hardware-peak ingest_fps_overall | 999.630 | 999.689 | 849.686 | ok |
+| hardware-peak fps_retention | 1.000 | 1.001 | 0.800 | ok |
+| hardware-peak append_ms_max | 0.563 | 0.470 | 6.126 | ok |
+| hardware-peak scan_ms_max | 0.032 | 0.216 | 5.064 | ok |
+| frontend longtask_ms_per_s_mean | 1.300 | 0.000 | 12.600 | ok |
+| frontend longtask_ms_per_s_p95 | 0.000 | 0.000 | 17.000 | ok |
+| frontend lag_ms_max | 27.100 | 1.400 | 74.200 | ok |
+| frontend jank_fraction | 0.017 | 0.000 | 0.083 | ok |
+| frontend jsheap_mb_peak | 71.600 | 93.200 | 207.200 | ok |
+| frontend jsheap_mb_drift_per_min | 5.693 | 14.827 | 16.386 | ok |
+| frontend renderer_mb_peak | 319.258 | 327.051 | 702.516 | ok |
+| frontend renderer_mb_drift_per_min | 50.802 | 58.535 | 106.605 | ok |
+| frontend host_mb_peak | 58.402 | 58.023 | 180.805 | ok |
+| frontend tree_mb_peak | 743.262 | 732.418 | 1550.523 | ok |
+| frontend tree_mb_drift_per_min | 80.117 | 88.240 | 165.233 | ok |
+| frontend flush_ms_mean | 25.000 | 4.197 | 25.000 | ok |
+| frontend tx_late_ms_mean | 18.000 | 4.757 | 18.000 | ok |
+| frontend flush_ms_max | 15.176 | 9.657 | 55.352 | ok |
+| frontend tx_late_ms_max | 75.947 | 22.929 | 176.894 | ok |
+| frontend rx_gap_p95_ratio_worst | 1.196 | 1.156 | 2.893 | ok |
+| frontend rx_gap_short_frac_worst | 0.006 | 0.002 | 0.041 | ok |
+| frontend rx_fps_retention | 0.999 | 1.001 | 0.800 | ok |
+| frontend tx_fps_retention | 0.999 | 1.000 | 0.800 | ok |
+| frontend rx_fps_expected | 1608.000 | 1608.152 | 1366.800 | ok |
+| frontend tx_fps_expected | 1608.000 | 1609.515 | 1366.800 | ok |
+
+`cannet.log` carries no errors for the run; the only warning is the
+pre-existing, expected "vxlapi not found" (no Vector XL hardware on
+this machine, unrelated to PCAN).
+
+**Doc-gap sweep.** No gaps found; nothing changed.
+
+- README's MDF sections (import mirroring BLF end to end, shape-3
+  skip-and-report, file-backed signals, the Save Capture BLF/MDF
+  comparison table, `##DT` uncompressed / sorted / finalized writer
+  behaviour) are all present and match what phases 3–5 shipped.
+- `examples/README.md`'s Files table and "What the MDF adds" section
+  already document `cannet-demo.mf4` (added phase 5); consistent with
+  the README and this task file — no drift across the three.
+- `crates/README.md`'s `cannet-mdf` entry names `MdfCaptureWriter` and
+  what it writes.
+- `plans/technology-inventory.md`'s MDF entry marks the in-repo-writer
+  decision settled, with the asammdf-validated numbers.
+- `RUSTDOCFLAGS="-D warnings" cargo doc -p cannet-mdf --no-deps`:
+  clean, zero warnings.
+- Vector's MDF Validator is still not run (a Windows GUI tool not
+  installed on the reference machine, per phase 5) — unchanged,
+  outstanding on that one exit-criterion clause alone.
+
+Branch `task38f-closeout` off `task38e-mdf-export` (tip `6cf3eaf`), two
+commits: `609bc05` "docs(plans): open task 64 — server installers" (the
+pre-existing, task-38-unrelated plans edit), and this status-log +
+perf-report commit.
