@@ -789,3 +789,33 @@ Branch `task38f-closeout` off `task38e-mdf-export` (tip `6cf3eaf`), two
 commits: `609bc05` "docs(plans): open task 64 — server installers" (the
 pre-existing, task-38-unrelated plans edit), and this status-log +
 perf-report commit.
+
+## Exit-criteria walk (2026-08-12, orchestrator)
+
+- **Dependency decision recorded** — met. `mdf4-rs` (read) +
+  in-repo composition/writer, `mdflib` FFI rejected on measured
+  cost; exercised against user-provided logger files and asammdf
+  synthetics. Caveat, recorded honestly: no CANape/Vector-written
+  sample file was available to the eval — the corpus + fixtures
+  covered the logger shape and all block wrinkles instead.
+- **Reader crate** — met. `cannet-mdf` implements `CanFrameSource`
+  over sorted/unsorted × finalized/unfinalized × classic/FD ×
+  remote/error × DZ (committed fixture per cell; 14/14 user files
+  byte-hash-equal to the asammdf oracle).
+- **`import_mdf` + channel scan/mapping** — met (mirrors
+  `import_blf`; mapping persistence shared unchanged).
+- **Signal-shape rejection** — met (typed error, user-facing
+  message, fixture-tested).
+- **Absolute timestamps (ADR 0024) + fixture round-trip vs
+  asammdf** — met (nanosecond-exact on frames; expected-decode JSON
+  pins IEEE-754 bit patterns).
+- **Export validated; round-trip preserves the fidelity list** —
+  met via asammdf (committed CI oracle + 14/14 local corpus
+  round-trips). **Vector MDF Validator clause open**: Windows GUI
+  tool not installed on the dev machine — owner runs it once
+  (e.g. against `examples/cannet-demo.mf4`) or waives the clause.
+- **Message-independent signals in the model, survive round-trip** —
+  met (file-backed `SignalCache` provenance; 452/452 series verbatim;
+  1 µs sample-time caveat recorded in phase 5's blockers).
+- **README + technology-inventory + rustdoc** — met (phase-6 sweep
+  found no gaps).
