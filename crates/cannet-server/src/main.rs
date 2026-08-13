@@ -408,6 +408,35 @@ fn frozen_launcher_in(dir: &Path) -> Option<PathBuf> {
     launcher.is_file().then_some(launcher)
 }
 
+/// Where to tell the sidecar to write its own rolling, always-debug
+/// logfile: beside the server's, in `dir`, which is created if it isn't
+/// there yet. `None` — and no `--log-file` argument — when there is no
+/// log directory at all, or when it can't be created, since a server
+/// that serves hardware without a sidecar logfile beats one that
+/// doesn't start.
+///
+/// It is a separate sink from everything the sidecar says on stderr:
+/// stderr stays at `--sidecar-log-level` and is what lands in the
+/// server's own log, while the file records every gRPC command with its
+/// arguments and outcome plus every driver traceback — the detail a
+/// per-channel connect failure needs after the fact, without making the
+/// server's log noisier for everyone.
+fn sidecar_log_file(dir: Option<PathBuf>) -> Option<PathBuf> {
+    let dir = dir?;
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        logging::warn(
+            SOURCE,
+            format!(
+                "could not create the log directory {}: {e}; the sidecar will not \
+                 write a logfile",
+                dir.display()
+            ),
+        );
+        return None;
+    }
+    Some(dir.join(cannet_sidecar::SIDECAR_LOG_FILE))
+}
+
 /// This CLI as the sidecar supervisor's host. A headless server has no
 /// settings file and no message ring, so the two halves the trait asks
 /// about are its own flags on the way in and its stderr on the way out.
@@ -434,9 +463,11 @@ impl SidecarHost for CliSidecarHost {
             prefer_source_tree: cfg!(debug_assertions),
             sidecar_dir: std::env::var_os(cannet_sidecar::SIDECAR_DIR_ENV),
             log_level: self.log_level.clone(),
-            // No `--log-file`: a headless server's log *is* its stderr,
-            // and everything the sidecar writes is already on it.
-            log_file: None,
+            // A sibling of the server's own rolling log, so one
+            // directory holds the whole picture. Resolved per spawn
+            // rather than captured once: a restart that follows a
+            // directory becoming writable should start writing.
+            log_file: sidecar_log_file(logging::dir()),
             // Nothing to forward: the child inherits this process's
             // environment, so a driver-module override set for the
             // server reaches the sidecar untouched.
@@ -892,6 +923,31 @@ mod tests {
         let cli = Cli::try_parse_from(["cannet-server", "--no-mdns"]).unwrap();
         assert!(cli.proxy.name.is_none());
         assert!(cli.proxy.no_mdns);
+    }
+
+    #[test]
+    fn the_sidecar_logfile_is_a_sibling_of_the_servers_own() {
+        // One directory holds the whole picture: the server's rolling
+        // log, the sidecar's always-debug one, and the identity the
+        // endpoint serves with. A bug report attaches the directory.
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("not-created-yet");
+        assert_eq!(
+            sidecar_log_file(Some(dir.clone())),
+            Some(dir.join(cannet_sidecar::SIDECAR_LOG_FILE)),
+        );
+        assert!(
+            dir.is_dir(),
+            "the directory has to exist before the sidecar is told to write into it"
+        );
+    }
+
+    #[test]
+    fn no_log_directory_means_no_sidecar_logfile() {
+        // Stderr-only is the pre-existing behaviour on a machine with
+        // no resolvable per-user directory, and `None` is also what the
+        // sidecar's own `--log-file` default means, so the two agree.
+        assert_eq!(sidecar_log_file(None), None);
     }
 
     #[test]

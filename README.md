@@ -495,8 +495,17 @@ use is bounded to ~10 MB and never needs pruning. Both sinks carry the
 same `<timestamp> <LEVEL> <source>: <message>` line. There is no
 minimum level and no flag to set one.
 
+The supervised sidecar writes its own `sidecar-python-can.log` beside
+it — always at debug level, whatever `--sidecar-log-level` says, since
+that flag governs the sidecar's *stderr*, which is the half that lands
+in the server's log. The file records every gRPC command with its
+arguments and outcome plus every driver traceback, which is where a
+per-channel connect failure is diagnosable after the fact. It is the
+same file the GUI's sidecar writes, in the same relationship to the
+host's log. Attach both.
+
 If the per-user directory cannot be resolved at all, the server logs to
-the console only and carries on.
+the console only, the sidecar writes no logfile, and both carry on.
 
 Neither protection exists on a plaintext endpoint: the token is
 enforced exactly when TLS is, because presenting it over an
