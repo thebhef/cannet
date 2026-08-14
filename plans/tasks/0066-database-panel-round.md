@@ -275,3 +275,33 @@ signals in the tree, the SignalsPanel picker sweep) is unstarted —
 this phase covers only the Import-trace/Recent-captures item. ADR
 0052 itself already landed ahead of this phase (commit `04a0f5b`);
 what remains is the code and doc surfacing it describes.
+
+## Exit-criteria walk (2026-08-14, orchestrator)
+
+1. **One Import-trace entry point (BLF+MDF), existing flows,
+   "Recent captures" both formats, key kept** — MET (phase 1;
+   per-project storage confirmed and pinned per the owner's
+   mid-phase ruling; pre-merge entries open unchanged).
+2. **Database panel renamed everywhere user-visible; per-file MDF
+   branches per ADR 0052 (file → group → signal, name + unit,
+   capture lifecycle); drag-out with the provenance key;
+   format-specific ops keep format naming** — MET (phase 2; drag
+   proven through the drop-side parser; "DBC panel" palette alias
+   finds it via the keywords mechanism).
+3. **SignalsPanel catalog picker gone; sweep verdict recorded (it
+   was the only remaining first-draft picker; SourcesPicker is a
+   different mechanism and stays); add-paths proven by test** —
+   MET (phase 3; DBC and file-backed drop-path tests; catalog
+   staleness on Clear fixed red-first with phase 2's
+   `file-signals-changed`).
+4. **ADR 0052 committed; CONTEXT.md + README reflect the rename,
+   the format-plural principle, and the surfacing** — MET.
+
+FYI recorded: the panel's live-value column covers DBC-backed rows
+only — file-backed rows show none (imported data isn't live); the
+serving path already supports those keys if ever wanted.
+
+Perf gate (ADR 0031): **passed 31/31** (release build `c399413`,
+ev-zonal 60 s scrub; report
+`docs/performance-measurements/frontend/2026-08-14-c399413-task66-closeout.json`,
+uncommitted). Baseline untouched.
