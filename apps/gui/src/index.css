@@ -3997,7 +3997,6 @@ button.trace-event-swatch {
   text-overflow: ellipsis;
   max-width: 12rem;
 }
-.tx-row-identity .tx-expand,
 .tx-row-identity .tx-remove {
   background: transparent;
   border: 1px solid transparent;
@@ -4007,6 +4006,14 @@ button.trace-event-swatch {
   padding: 0.1rem 0.35rem;
   border-radius: 3px;
   line-height: 1;
+}
+/* DisclosureToggle (compact variant) owns the hit area, ink and
+   rotation (task 63 item 1); this keeps only the reserved-border hover
+   reveal `.tx-remove` also uses, so hovering doesn't shift layout. */
+.tx-row-identity .tx-expand {
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--text-muted);
 }
 .tx-row-identity .tx-expand:hover {
   color: var(--text-primary);
