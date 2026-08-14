@@ -2180,10 +2180,13 @@ describe("PlotArea y-normalisation", () => {
     // work to do: union to [0, 1, 2], hold each value forward, and leave
     // `null` before a signal's first sample. A null must stay null —
     // normalising one would silently plot a bogus lane position.
+    // (Two samples on the late signal, not one: a one-sample series is
+    // deliberately drawn as a full-width hline instead — see
+    // `mergeSeries` — and would carry no leading gap to test.)
     mockValueTables.EngineSpeed = ENUM3;
     mockValueTables.EngineTemp = ENUM3;
     mockSampleSeries.EngineSpeed = { t: [0, 2], v: [0, 2] };
-    mockSampleSeries.EngineTemp = { t: [1], v: [1] };
+    mockSampleSeries.EngineTemp = { t: [1, 2], v: [1, 1] };
     const restore = stubSize();
     try {
       renderPanel();
@@ -6250,6 +6253,35 @@ describe("PlotPanel rehydration", () => {
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
     const cfg = (control.entries()[0].element as { config?: { areas?: unknown[] } }).config;
     expect(cfg?.areas?.length).toBe(2);
+  });
+});
+
+/// Sparse series: what the plot draws when a signal has so few samples
+/// that an ordinary line render says nothing.
+describe("PlotPanel sparse series", () => {
+  /// Every y value the newest instance in the area currently holds.
+  const drawnValues = (areaLabel: string) =>
+    ((liveInstanceIn(areaLabel).data as (number | null)[][])[1] ?? []);
+
+  it("draws a one-sample series as a horizontal line", async () => {
+    // One point is not a line, and a lone sample renders as nothing at
+    // all with markers off. The value it holds is the whole series, so
+    // it is held across the window.
+    mockSampleSeries.EngineSpeed = { t: [1], v: [12] };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => {
+        const xs = (liveInstanceIn("Area 1").data as (number | null)[][])[0] ?? [];
+        // Two ends to draw between…
+        expect(xs.length).toBeGreaterThan(1);
+        // …and the same value at every one of them (12 normalised by
+        // the host extent 10..20).
+        const ys = drawnValues("Area 1");
+        expect(ys.length).toBe(xs.length);
+        expect([...new Set(ys)]).toEqual([0.2]);
+      });
+    });
   });
 });
 

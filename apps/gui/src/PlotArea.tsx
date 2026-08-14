@@ -1664,7 +1664,18 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // without interpolating: holding a normalised value is the same
       // as normalising a held one. The `null` before a series' first
       // sample must be carried through untouched.
-      const mergedRaw = mergeSeries(seriesRel);
+      // The x-window the merge falls back on when a lone one-sample
+      // series leaves it a single column — the only case a span is
+      // consulted at all. The visible slice when there is one, else the
+      // window's own frame bounds.
+      const shown = xSyncRef.current;
+      const span =
+        shown.xMin != null && shown.xMax != null
+          ? { from: shown.xMin, to: shown.xMax }
+          : snapshot.firstT != null && snapshot.lastT != null
+            ? { from: snapshot.firstT, to: snapshot.lastT }
+            : null;
+      const mergedRaw = mergeSeries(seriesRel, span);
       const xs = mergedRaw[0] as number[];
       const rawRows = mergedRaw.slice(1);
       const displayRows: (number | null)[][] = laneActive

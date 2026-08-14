@@ -108,15 +108,43 @@ export interface RawSeries {
  * sample-and-hold value at `xs[i]`, or `null` before its first sample.
  *
  * With no series, returns `[[]]` — a valid empty uPlot data set.
+ *
+ * **A series holding exactly one sample is drawn as a horizontal line
+ * through that value**, held across every column rather than starting
+ * at its own timestamp. One point is not a line — there is nothing to
+ * draw between a sample and itself — and a series whose entire content
+ * is one value has no shape a leading gap could be hiding. `span` (the
+ * visible x-window) covers the case where such a series is the only
+ * thing on the axis: the union is then a single column, so the window's
+ * two ends are added to give the line somewhere to run. It is used for
+ * nothing else — a union that already spans two columns is left exactly
+ * as the samples made it, so no series is ever drawn past its data.
  */
-export function mergeSeries(series: RawSeries[]): (number | null)[][] {
+export function mergeSeries(
+  series: RawSeries[],
+  span?: { from: number; to: number } | null,
+): (number | null)[][] {
   const xsSet = new Set<number>();
   for (const s of series) {
     for (const t of s.t) xsSet.add(t);
   }
+  if (
+    xsSet.size === 1 &&
+    span &&
+    Number.isFinite(span.from) &&
+    Number.isFinite(span.to) &&
+    span.to > span.from
+  ) {
+    xsSet.add(span.from);
+    xsSet.add(span.to);
+  }
   const xs = [...xsSet].sort((a, b) => a - b);
   const out: (number | null)[][] = [xs];
   for (const s of series) {
+    if (s.t.length === 1) {
+      out.push(new Array<number | null>(xs.length).fill(s.v[0]));
+      continue;
+    }
     // The fill looks redundant — every index is assigned below — but it
     // is what keeps `ys` a *packed* array. `new Array(n)` alone is
     // holey, and holey arrays stay on a slower element kind even once
