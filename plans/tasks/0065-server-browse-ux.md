@@ -16,6 +16,15 @@ Owner feedback from first live use of the Task 42/43 surfaces
   carries it (the SRV record's target host, independent of the
   `--name` instance name) — surface it; only if it turns out not to
   be reliably available do we add a TXT key for it.
+- **The auto-generated token is "ridiculously long and difficult to
+  transcribe across machines"** (owner, 2026-08-13). Replace the
+  43-char base64url blob with an `xkpasswd`-style word passphrase —
+  "generated-password-like-this". Generation-side only: `--token`
+  stays free-form, the wire/trust store treat tokens as opaque
+  strings, constant-time compare unchanged. Entropy note: the only
+  attack is online guessing through the TLS endpoint (the stored
+  token is plaintext at rest either way, so there is no offline
+  crack surface); EFF-large-wordlist words carry ~12.9 bits each.
 
 ## Also folded in (2026-08-12 session findings)
 
@@ -33,6 +42,12 @@ Owner feedback from first live use of the Task 42/43 surfaces
   permission deny / browse task failed to bind).
 
 ## Grooming needed before implementation
+
+- Passphrase token: word count / wordlist (recommendation pending
+  owner: 5 EFF-large words, lowercase, hyphen-separated ≈ 64.6
+  bits — ample for an online-only guessing surface; wordlist
+  embedded in `cannet-server`, licensing noted in the technology
+  inventory).
 
 - Panel content and split: discovered (live, ephemeral) vs trusted
   (persisted `servers.json`) — one list with state, or two sections?
