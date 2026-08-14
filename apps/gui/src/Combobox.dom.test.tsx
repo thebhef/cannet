@@ -10,6 +10,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useRef } from "react";
 
 import { Combobox, type ComboboxOption } from "./Combobox";
 
@@ -285,5 +286,41 @@ describe("Combobox", () => {
     const { trigger } = renderFlat({ className: "tx-bus", title: "destination" });
     expect(trigger).toHaveClass("combobox-trigger", "tx-bus");
     expect(trigger).toHaveAttribute("title", "destination");
+  });
+
+  it("picks an option inside a host that claims focus on mousedown", () => {
+    // The dropdown is portalled to `document.body`, but a portal only
+    // escapes its host in the DOM — presses inside it still bubble
+    // through the *React* tree to whatever rendered the combobox. A
+    // host that answers mousedown by focusing something of its own
+    // therefore used to blur the filter input mid-gesture; the blur
+    // closed the dropdown and the row was gone before its `click`
+    // fired, so the menu vanished with no effect.
+    const onChange = vi.fn();
+    function Host() {
+      const rootRef = useRef<HTMLDivElement | null>(null);
+      return (
+        <div
+          ref={rootRef}
+          tabIndex={-1}
+          data-testid="host"
+          onMouseDown={(e) => {
+            const t = e.target as HTMLElement | null;
+            if (t?.closest("input, button, select, textarea, a[href]")) return;
+            rootRef.current?.focus();
+          }}
+        >
+          <Combobox options={FLAT} value="x" onChange={onChange} ariaLabel="cursor mode" />
+        </div>
+      );
+    }
+    render(<Host />);
+    fireEvent.click(screen.getByLabelText("cursor mode"));
+    const option = document.querySelector<HTMLElement>('[role="option"][data-value="y"]')!;
+    fireEvent.mouseDown(option);
+    // The press must not have torn the dropdown down under the pointer.
+    expect(option.isConnected).toBe(true);
+    fireEvent.click(option);
+    expect(onChange).toHaveBeenCalledWith("y");
   });
 });
