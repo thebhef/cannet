@@ -713,3 +713,38 @@ the sidecar suite was not either.
   (`process_group(0)` + `kill -KILL -<pgid>`). The unit tests cover it
   and CI runs them on Linux; the manual runs recorded above are Windows
   (`taskkill /T /F`).
+
+## Exit-criteria walk (2026-08-13, orchestrator)
+
+1. **Root causes recorded with experiment data** — MET. Both in
+   "Root causes": (A) the stdin wait cycle (E1/E3/E5), (B) the
+   benign close race (E4), written up as independent; (B)'s
+   `reconfigure` cousin recorded under Blockers / side effects.
+2. **Ctrl-C exits within the grace period; graceful path when
+   healthy** — MET. Phase 3 manual verification on real hardware:
+   0.41–0.51 s graceful (`reason=stdin-eof`, no kill), including
+   the owner's exact flags; suspended-tree backstop 5.87 s, tree
+   0/6 remaining; second Ctrl-C 0.13 s exit 130.
+3. **Dropped session → next session serves** — MET. Regression
+   test in `crates/cannet-server/tests/proxy.rs` (severable
+   tunnel, no GOAWAY/END_STREAM), deliberately falsified.
+4. **GUI nominal disconnect on exit** — MET (was missing;
+   implemented). Host-side `RunEvent::ExitRequested` →
+   `session::disconnect_on_exit`, bounded 500 ms, red-first test on
+   `SessionHandle::shutdown_timeout`.
+5. **Server logs: timestamps + levels, rolling file, sidecar hook
+   wired** — MET. `cannet-log` shared writer; `cannet-server.log`
+   + `sidecar-python-can.log` in the identity dir; both sinks
+   stamped; no new flags.
+6. **No credential in any log sink, recorded sweep** — MET. 21-row
+   sink × secret checklist in the phase 4 status log; empirical
+   run: token on console only; three Debug-leak hardenings landed
+   red-first (`Trust`, `Attempt`, `ProxyArgs`/`Cli`).
+7. **README documents the log location** — MET. Per-OS table in
+   the server section.
+
+Perf gate (ADR 0031): release build at `1463663`, ev-zonal 60 s
+scrub capture — **check passed, 31/31 metrics** vs the committed
+baseline (report:
+`docs/performance-measurements/frontend/2026-08-13-1463663-task67-closeout.json`,
+uncommitted). Baseline untouched.
