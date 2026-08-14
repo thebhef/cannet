@@ -2305,26 +2305,6 @@ button.trace-event-swatch {
   align-self: stretch;
 }
 
-/* A caret disclosure at the *start* of a row — the signal view's
-   section headers. Sized and coloured like a bare glyph so a dense row
-   reads unchanged. */
-.trace-disclosure {
-  background: none;
-  border: none;
-  padding: 0 0.35rem;
-  font: inherit;
-  line-height: inherit;
-  cursor: pointer;
-  /* ADR 0044: a disclosure is a real control whose hit area is the
-     full row height and comfortably wide — the caret glyph inside it
-     is decoration. A glyph-sized button is what shipped as a defect. */
-  align-self: stretch;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.3rem;
-}
-
 /* Expanded-row decoded signals: one indented sub-row per signal. Each
    `.signal` line's height is set inline from `SIGNAL_LINE_HEIGHT`
    (traceViewport.ts) so it can't drift from the row-placement math. */

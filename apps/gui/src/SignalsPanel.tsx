@@ -37,6 +37,7 @@ import {
   resolvePatterns,
   scopeCatalog,
 } from "./signalSelection";
+import { DisclosureToggle } from "./DisclosureToggle";
 import { FILE_BACKED_BADGE, FILE_BACKED_TITLE } from "./fileBackedSignal";
 import { recordSignalKey, signalKey } from "./plotData";
 import { buildSignalColorResolver } from "./signalColorResolver";
@@ -1186,17 +1187,13 @@ function SectionHeaderRow({
       onDrop={onDrop}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
     >
-      <button
-        type="button"
+      <DisclosureToggle
         className="trace-disclosure"
-        aria-expanded={!folded}
-        aria-label={`${label} section`}
-        onClick={onToggleFold}
-      >
-        <span className="hint" aria-hidden="true">
-          {folded ? "▸" : "▾"}
-        </span>
-      </button>
+        compact
+        expanded={!folded}
+        ariaLabel={`${label} section`}
+        onToggle={onToggleFold}
+      />
       {renaming ? (
         <SectionNameInput
           ariaLabel="section name"
