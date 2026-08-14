@@ -356,3 +356,60 @@ fn log_message_is_distinct_from_error_envelope() {
     assert!(matches!(err.body, Some(proto::envelope::Body::Error(_))));
     assert!(matches!(log.body, Some(proto::envelope::Body::Log(_))));
 }
+
+// ---------- clock probe (SNTP-over-Session) ----------
+
+#[test]
+fn clock_probe_and_reply_round_trip_their_epoch_stamps() {
+    // The four-timestamp exchange of RFC 4330 carried on our own
+    // Session stream: the client's t1 rides out on the probe and comes
+    // back on the reply alongside the server's receive (t2) and send
+    // (t3) stamps, so the client can pair them without correlation
+    // state of its own.
+    use prost::Message;
+    let probe = proto::Envelope {
+        body: Some(proto::envelope::Body::ClockProbe(proto::ClockProbe {
+            t1: 1_760_000_000_123_456_789,
+        })),
+    };
+    let decoded = proto::Envelope::decode(probe.encode_to_vec().as_slice()).unwrap();
+    let proto::envelope::Body::ClockProbe(p) = decoded.body.expect("body present") else {
+        panic!("expected ClockProbe");
+    };
+    assert_eq!(p.t1, 1_760_000_000_123_456_789);
+
+    let reply = proto::Envelope {
+        body: Some(proto::envelope::Body::ClockReply(proto::ClockReply {
+            t1: 1_760_000_000_123_456_789,
+            t2: 1_760_000_004_000_000_000,
+            t3: 1_760_000_004_000_050_000,
+        })),
+    };
+    let decoded = proto::Envelope::decode(reply.encode_to_vec().as_slice()).unwrap();
+    let proto::envelope::Body::ClockReply(r) = decoded.body.expect("body present") else {
+        panic!("expected ClockReply");
+    };
+    assert_eq!(r.t1, 1_760_000_000_123_456_789);
+    assert_eq!(r.t2, 1_760_000_004_000_000_000);
+    assert_eq!(r.t3, 1_760_000_004_000_050_000);
+}
+
+#[test]
+fn an_envelope_variant_this_build_does_not_know_decodes_as_no_body() {
+    // The compatibility claim the clock envelopes rest on: a peer built
+    // before a `oneof` variant existed still parses the message, it
+    // just sees no body. Hand-rolled bytes for a hypothetical future
+    // tag stand in for the older peer we cannot compile here.
+    use prost::Message;
+    let mut bytes = Vec::new();
+    // Field 99, wire type 2 (length-delimited), empty payload.
+    prost::encoding::encode_key(99, prost::encoding::WireType::LengthDelimited, &mut bytes);
+    prost::encoding::encode_varint(0, &mut bytes);
+
+    let decoded = proto::Envelope::decode(bytes.as_slice())
+        .expect("an unknown variant must not fail the decode");
+    assert!(
+        decoded.body.is_none(),
+        "an unknown variant is ignored, not misread as a known one"
+    );
+}

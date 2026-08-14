@@ -240,18 +240,26 @@ async fn run_session(
                     )))
                     .await;
             }
+            Body::ClockProbe(probe) => {
+                let t2 = crate::wall_clock_ns();
+                let _ = outgoing
+                    .send(Ok(crate::clock_reply_envelope(probe.t1, t2)))
+                    .await;
+            }
             // Client-side `Error` is informational on this server (the
             // BLF replay surface has nothing to do about it); wire
             // `Log` messages likewise have no log destination here.
             // `ConfigureBus` is a no-op on a read-only BLF replay
             // (ADR 0021); the server→client envelopes
-            // (`InterfaceAllocated`, `InterfaceState`) only flow the
-            // other way but the match must stay exhaustive.
+            // (`InterfaceAllocated`, `InterfaceState`, `ClockReply`)
+            // only flow the other way but the match must stay
+            // exhaustive.
             Body::Error(_)
             | Body::Log(_)
             | Body::ConfigureBus(_)
             | Body::InterfaceAllocated(_)
-            | Body::InterfaceState(_) => {}
+            | Body::InterfaceState(_)
+            | Body::ClockReply(_) => {}
             // Bridges are a virtual-bus server feature; the replay
             // server doesn't host them, so installing or detaching a
             // bridge through this session is rejected (ADR 0021).

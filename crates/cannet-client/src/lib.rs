@@ -1090,8 +1090,10 @@ async fn run_session(
                     // (`InterfaceState`, `ConfigureBus`,
                     // `AttachBridge`, `DetachBridge`) have no
                     // consumer in this crate; the GUI host bridges
-                    // them into its own surfaces. `None` is the
-                    // no-body case. All drop.
+                    // them into its own surfaces. A `ClockProbe` is
+                    // a client→server envelope, so one arriving here
+                    // is a peer echoing; `ClockReply` has no consumer
+                    // yet. `None` is the no-body case. All drop.
                     Some(
                         Body::Log(_)
                         | Body::Subscribe(_)
@@ -1099,7 +1101,9 @@ async fn run_session(
                         | Body::ConfigureBus(_)
                         | Body::InterfaceState(_)
                         | Body::AttachBridge(_)
-                        | Body::DetachBridge(_),
+                        | Body::DetachBridge(_)
+                        | Body::ClockProbe(_)
+                        | Body::ClockReply(_),
                     )
                     | None => {}
                 },

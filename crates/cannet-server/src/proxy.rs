@@ -13,7 +13,14 @@
 //! - `Session` opens **exactly one** upstream `Session` and relays
 //!   envelopes verbatim in both directions. `Subscribe`,
 //!   `ConfigureBus`, `FrameBatch`, `InterfaceAllocated`,
-//!   `InterfaceState`, `Log` and `Error` all cross untouched.
+//!   `InterfaceState`, `Log` and `Error` all cross untouched — and so
+//!   do `ClockProbe` / `ClockReply`, deliberately: the clock a client
+//!   probes for is the one that stamps the frames it will receive, and
+//!   that clock belongs to the upstream. Answering here would report a
+//!   neighbouring process's clock, correct only for as long as the two
+//!   happen to share a host. The extra hop inflates the measured delay,
+//!   which is exactly what the client's minimum-delay sampling
+//!   discards.
 //!
 //! What does *not* cross is the client's credential. Each upstream call
 //! is a fresh `Request`, so an `authorization` header presented to this

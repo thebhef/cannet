@@ -15,11 +15,11 @@
 //!   messages for the lifetime of the client session. The envelope
 //!   variants — `Subscribe`, `Unsubscribe`, `FrameBatch`, `Error`,
 //!   `LogMessage`, `ConfigureBus`, `InterfaceAllocated`,
-//!   `InterfaceState`, `AttachBridge`, `DetachBridge`, and
-//!   `Error::Code::NoAcknowledger` — flow on the same stream.
-//!   Direction conventions (client→server vs server→client) and the
-//!   virtual-bus / hardware-server responsibility split are
-//!   documented in [ADR 0021].
+//!   `InterfaceState`, `AttachBridge`, `DetachBridge`, `ClockProbe`,
+//!   `ClockReply`, and `Error::Code::NoAcknowledger` — flow on the
+//!   same stream. Direction conventions (client→server vs
+//!   server→client) and the virtual-bus / hardware-server
+//!   responsibility split are documented in [ADR 0021].
 //!
 //! [ADR 0021]: ../../../docs/adr/0021-virtual-bus-server.md
 //!
