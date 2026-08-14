@@ -594,6 +594,140 @@ document; their location travels only in phase prompts.
       honest for free.
     - Frontend: 157 test files / 2062 tests passed; build clean.
 
+- **2026-08-14, phase 5 (`task70-p5-filebacked-signals`, branched off
+  `task70-p4-plot-dropdowns`):**
+  - `2da09d6` fix(gui): the plot's window fetch keeps a signal's
+    provenance (item 10, plot half). **Verdict: the plot asked the host
+    for the wrong identity — one of the area's two per-tick queries
+    dropped the file-backed flag.**
+    - _Observation._ Owner: an imported file's signals list in the
+      Database view and read values in the Signals view, but adding one
+      to a plot draws nothing. Probe facts already recorded: the series
+      exist and are short (a handful of samples each).
+    - _Hypothesis._ The serve is fine — the Signals view reads it — so
+      the plot's *request* names a different signal than the one the
+      host holds. A file-backed series is keyed host-side by its
+      provenance (`SignalKey::file`), and `ensure_caches` deliberately
+      mints nothing for a file-backed query, so a query arriving without
+      the flag names a DBC identity nothing has ever decoded and can
+      only come back empty.
+    - _Experiment (a controlled pair inside one render)._ `PlotArea`
+      builds two signal lists on the same tick from the same array: the
+      `signal_min_max` sidecar and the `sample_signals` window fetch. A
+      DOM test drops a file-backed row onto an area and reads back both
+      payloads. Nothing else differs between them.
+    - _Data._ Sidecar: `{signalName: "AmbientTemp", fileBacked: true}`.
+      Window fetch: `{busId: null, extended: false, fileBacked: false,
+      messageId: 7, signalName: "AmbientTemp"}` — the assertion diff is
+      `- "fileBacked": true` / `+ "fileBacked": false`. The two lists
+      are built twenty lines apart and only one carried the flag.
+    - _Fix._ One line: the `sampleRange` mapping carries `fileBacked`
+      the way the sidecar's already did. `useDecimatedRange` had always
+      forwarded the field — it was never given a value to forward.
+    - _Test fixture honesty, same commit._ The panel suite's fake host
+      now models the real one: a signal it holds only as file-backed
+      serves an empty series (and a `null` extent) when queried as
+      DBC-backed. Without that, a caller dropping the flag is invisible
+      in what the plot draws.
+    - Frontend: 157 test files / 2063 tests passed; build clean.
+  - `852fec8` fix(gui): the Database panel's value column covers
+    file-backed rows (item 10, database half). **Verdict: a different
+    defect from the plot's — the panel never asked at all.** The
+    recorded lead (task 66 phase 2's follow-up: the live-value column
+    covers DBC-backed rows only) was right, and there were three gates,
+    not one.
+    - _Experiment._ A DOM test expands a file branch, turns the values
+      column on, and reads what the panel asks `fetch_signal_page` for,
+      against a host that answers only for the key it was given —
+      provenance included, exactly as `select_file_backed` matches.
+    - _Data._ `expected 0 to be greater than 0`: with only file-backed
+      rows on screen the panel issues **no `fetch_signal_page` at all**.
+      `visibleSignalKeys` filtered `tag === "signal"`, so the key set
+      was empty and the poll's `keys.length === 0` guard returned before
+      the round-trip. Two further gates sat behind it — the `value` prop
+      and the cell's render condition both required `tag === "signal"` —
+      and the reply map was keyed without the provenance flag, so a
+      served file-backed row would have collided with a DBC signal whose
+      message id equalled its group index.
+    - _Fix._ One rule per seam rather than a fourth inline branch:
+      `valueColumnKey` and `valueColorTarget` answer for both
+      provenances, the visible-key set carries file-backed rows with
+      their group index in the message slot, and the reply is mapped by
+      `recordSignalKey`. The colormap target matches the shape the
+      signal view already uses for the same row, so the two surfaces
+      tint alike.
+    - Frontend: 157 test files / 2064 tests passed; build clean.
+  - `c761298` feat(gui): a one-sample series draws as a horizontal line
+    (item 11 (a)). `mergeSeries` holds a one-sample series' value across
+    every column instead of opening with the pre-first-sample gap —
+    that gap exists to keep a series with a *shape* from being drawn
+    before it started, and a series whose entire content is one value
+    has no such shape. When it is the only thing on its axis the union
+    collapses to a single column, so the visible x-window supplies the
+    two ends to draw between; the span is consulted in that case alone
+    and never widens a union that already spans two, so no series is
+    drawn past its data. Five unit tests written first, two failing
+    (`expected [ null, 7, 7 ] to deeply equal [ 7, 7, 7 ]` and
+    `expected [ 5 ] to deeply equal [ +0, 5, 10 ]`), plus a panel-level
+    guard falsified by disabling the rule (`expected 1 to be greater
+    than 1` — one x column, nothing to draw between). The enum-lane
+    merge test used a one-sample signal to demonstrate the leading gap;
+    it now uses two, which is what that rule is still about.
+    Frontend: 157 / 2070 passed; build clean.
+  - `027b665` feat(gui): auto point markers get a minimum-sample-count
+    floor (item 11 (b)). **N = 32**, documented on
+    `AUTO_POINT_MARKER_FLOOR` in `apps/gui/src/plotPoints.ts`, and in
+    ADR 0026's implementation status. Why a floor is needed at all:
+    uPlot's automatic rule measures the density of the *axis* — the
+    merged x columns every series on it shares — so a series holding a
+    handful of samples of its own loses its markers the moment it is
+    plotted beside a fast one, which is exactly the sparse imported
+    signal's case. Why 32: small enough that the markers are still
+    countable at a glance and the line has not yet taken over carrying
+    the shape, and a rounding error against the existing
+    `MAX_POINT_MARKERS` cap of 500, so the floor can never be the reason
+    a redraw is expensive. `applyAutoPointFloor` **wraps the density
+    function uPlot installs during construction** rather than restating
+    uPlot's rule, so the above-floor half cannot drift from uPlot's own
+    definition; it reads the per-signal sample count per draw, since a
+    fetch changes it without rebuilding the instance. Four unit tests
+    plus a DOM guard (a sparse series marked while its dense neighbour
+    is not), the latter falsified by removing the call: `expected false
+    to be true`. Frontend: 157 / 2075 passed; build clean.
+  - `c00632b` docs(adr): record the sparse-series render rules in
+    ADR 0026 — both are render decisions, so they belong beside the rest
+    of the show-points and axis behaviour rather than only in the code.
+  - **Perf gate (ADR 0031, release build at `c00632b`), two runs, gated
+    with `--expected-rx-fps/--expected-tx-fps 1608`: both passed,
+    33 / 33 metrics, no baseline promoted.**
+    - Run 1 (`docs/performance-measurements/frontend/2026-08-14-c00632b-task70-p5-run1.json`):
+      rx 1606.6 fps, tx 1607.5 fps, 60 samples over 59.0 s, rx_gap
+      `ids_measured` 173. longtask_ms_per_s_mean 0.000 (limit 12.600),
+      lag_ms_max 4.400 (74.200), jank_fraction 0.000 (0.083),
+      jsheap_mb_peak 85.6 (207.2), jsheap_mb_drift_per_min 8.584
+      (16.386), renderer_mb_peak 363.2 (702.5),
+      renderer_mb_drift_per_min 92.6 (106.6), host_mb_peak 59.0
+      (180.8), tree_mb_peak 794.9 (1550.5), tree_mb_drift_per_min 120.9
+      (165.2), flush_ms_mean 3.250 (25.000), tx_late_ms_mean 4.315
+      (18.000), flush_ms_max 13.528 (55.352), tx_late_ms_max 16.075
+      (176.894), rx_gap_p95_ratio_worst 1.169 (2.893),
+      rx_gap_short_frac_worst 0.003 (0.041), rx/tx_fps_retention
+      0.995 / 1.000 (0.800), rx/tx_fps_expected 1606.6 / 1607.5 against
+      the two-sided band around 1608.
+    - Run 2 (`...-task70-p5-run2.json`): rx 1605.7 fps, tx 1610.8 fps,
+      `ids_measured` 173. longtask_ms_per_s_mean 0.000, lag_ms_max
+      4.700, jank_fraction 0.000, jsheap_mb_peak 83.5,
+      jsheap_mb_drift_per_min 8.666, renderer_mb_peak 358.0,
+      renderer_mb_drift_per_min 80.9, host_mb_peak 58.2, tree_mb_peak
+      788.5, tree_mb_drift_per_min 109.8, flush_ms_mean 3.116,
+      tx_late_ms_mean 3.972, flush_ms_max 8.198, tx_late_ms_max 11.188,
+      rx_gap_p95_ratio_worst 1.155, rx_gap_short_frac_worst 0.003.
+    - Worst-to-worst, the two memory-drift metrics sit closest to their
+      limits (renderer 92.6 of 106.6, tree 120.9 of 165.2) — the same
+      shape the batch's earlier close-out runs show, not something this
+      phase moved; every render-path timing metric is far under both the
+      limit and the recorded baseline.
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
@@ -626,6 +760,17 @@ document; their location travels only in phase prompts.
   `plans/backlog.md`, per this phase's hard rules) is the record.
   **Closed 2026-08-14 in phase 3** (`b7f3d65`), fed forward into the
   phase that was already in that dialog.
+
+- **The one-sample hline applies to enum lanes too** (phase 5 side
+  effect, recorded for the phase that owns item 3). The item-11 (a)
+  ruling says "a series with a single point" with no qualifier, and
+  `mergeSeries` is shared by the numeric and the lane render paths, so a
+  one-sample enum lane is now held across the window rather than
+  starting at its own sample. That is the closest faithful reading of
+  the ruling, but it does widen a lane's *drawn extent* in exactly that
+  degenerate case, and item 3's second observation is about lane extent
+  running ahead of served data. Narrow — it fires only at exactly one
+  sample — but item 3's investigation should know it is there.
 
 - **A blocked trace-open is silent, by design** (phase 3 side effect).
   With the guard in place, invoking Import trace from the palette or
