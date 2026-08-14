@@ -24,10 +24,12 @@ Prebuilt **alpha** bundles are published to
 |-------------------------------|-------------------------------|-------------------------------------|
 | macOS (Apple Silicon / arm64) | `.dmg` — drag to Applications | —                                   |
 | Windows (x64)                 | `.msi` or NSIS `-setup.exe`   | `cannet-server_X.Y.Z_x64-setup.exe` |
+| Linux (x64)                   | —                             | `cannet-server_X.Y.Z_amd64.deb`     |
 
-The server installer is for hosting hardware on a machine that does not
-need the GUI; § Running the production server describes what it does,
-and the plain archives stay available as the no-installer path.
+The server installers are for hosting hardware on a machine that does
+not need the GUI; § Running the production server describes what each
+one does, and the plain archives stay available as the no-installer
+path.
 
 These bundles are **unsigned**. On first launch:
 
@@ -391,6 +393,7 @@ explicit act.
 | Platform    | Installer                           | What it does                                                                                       |
 |-------------|-------------------------------------|----------------------------------------------------------------------------------------------------|
 | Windows x64 | `cannet-server_X.Y.Z_x64-setup.exe` | Installs to `%LOCALAPPDATA%\Programs\cannet-server` and appends that directory to your user `PATH` |
+| Linux x64   | `cannet-server_X.Y.Z_amd64.deb`     | Installs to `/usr/lib/cannet-server` with `/usr/bin/cannet-server` a symlink into it               |
 
 The Windows installer is per-user, so it needs no administrator rights,
 and it is **unsigned** — SmartScreen shows the same **More info → Run
@@ -398,6 +401,11 @@ anyway** warning the GUI installer does. It registers a normal
 Add/Remove Programs entry; uninstalling removes the files and takes its
 `PATH` entry back out. Open a new terminal afterwards — an existing one
 keeps the `PATH` it started with.
+
+The `.deb` is an ordinary unsigned package — `sudo apt install
+./cannet-server_X.Y.Z_amd64.deb`, `sudo apt remove cannet-server` to
+undo. It is not in any repository, so there is no signature to verify
+and `apt` will say so.
 
 On Windows, the first mDNS bind can trigger Defender Firewall to add
 inbound *Block* rules for the binary on the Public profile without

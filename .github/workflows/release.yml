@@ -15,16 +15,18 @@ name: Release
 #      (the same server binary + the same `cannet-python-can` onedir)
 #      beside the GUI bundle — plus, on Windows, a native server
 #      installer (NSIS `.exe`), and
-#   4. builds a Linux x64 `cannet-server` archive on its own runner —
-#      cargo build + sidecar freeze + tar, no Tauri bundling — since
-#      cannet's Linux support is server-only for now.
+#   4. builds a Linux x64 `cannet-server` archive and `.deb` on its own
+#      runner — cargo build + sidecar freeze + tar + cargo-deb, no
+#      Tauri bundling — since cannet's Linux support is server-only for
+#      now.
 #   All artifacts publish to one draft pre-release for review: 2 GUI
-#   bundles + 3 server archives + the Windows server installer.
+#   bundles + 3 server archives + 2 server installers.
 #
 # A server installer puts `cannet-server` where a terminal finds it —
-# the NSIS one appends its install directory to the user `PATH` — and
-# keeps the frozen sidecar onedir beside the binary, which is where the
-# server's own probe looks. It never starts anything.
+# the NSIS one appends its install directory to the user `PATH`, the
+# deb symlinks `/usr/bin/cannet-server` — and keeps the frozen sidecar
+# onedir beside the binary, which is where the server's own probe
+# looks. None of them starts anything.
 #
 # CI builds on every push to main are cheap (Linux); the expensive
 # cross-platform bundle build runs only here, when you actually release.
@@ -344,7 +346,35 @@ jobs:
           tar -czf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
           echo "SERVER_ARCHIVE_PATH=$RUNNER_TEMP/$NAME.tar.gz" >> "$GITHUB_ENV"
 
+      # A CI/dev tool, never a workspace dependency — same shape as
+      # cargo-packager on the Windows leg.
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked --version 3.7.0
+
+      # The layout lives in `[package.metadata.deb]`. `--no-build`
+      # reuses the binary the step above already produced (the config's
+      # `target/release` asset prefix is what cargo-deb rewrites for
+      # `--target`), and `--no-strip` keeps that binary byte-for-byte
+      # the one inside the tar.gz, so a panic backtrace from a .deb
+      # install says the same thing as one from the archive. The
+      # package's version is the release tag's; the crate's stays 0.0.0.
+      - name: Package server installer (Linux deb)
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.bundle.outputs.tag }}"
+          VERSION="${TAG#v}"
+          cargo deb -p cannet-server --no-build --no-strip \
+            --target "$RUST_TARGET" --deb-version "$VERSION"
+          DEB="target/debian/cannet-server_${VERSION}_amd64.deb"
+          [ -f "$DEB" ] || { echo "::error::cargo-deb did not produce $DEB"; ls -l target/debian || true; exit 1; }
+          echo "SERVER_INSTALLER_PATH=$DEB" >> "$GITHUB_ENV"
+
       - name: Upload server archive to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ needs.bundle.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
+
+      - name: Upload server installer to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.bundle.outputs.tag }}" "$SERVER_INSTALLER_PATH" --clobber --repo "${{ github.repository }}"

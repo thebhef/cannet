@@ -601,9 +601,19 @@ crate retained long-term).
   config lives with `cannet-server`, and `maintainer-scripts` are
   available if a `postinst` ever becomes necessary (none is planned).
   Single-maintainer project (bus factor 1) but nine years of releases,
-  ~2.1M downloads, 23 open issues, 3.7.0 released 2026-05-02. Verified
-  from documentation and source only — a `.deb` build needs a Linux
-  runner, so the leg is first exercised on CI.
+  ~2.1M downloads, 23 open issues, 3.7.0 released 2026-05-02.
+  - It is pure Rust, so it **built a real `.deb` on the Windows dev
+    box** (with a stand-in binary), which is how the layout was checked
+    without a Linux runner. Two things only Linux can do: read each
+    onedir file's mode (asset `mode` is therefore left off, so the
+    frozen launcher keeps its exec bit) and run `dpkg-shlibdeps` for
+    `$auto` dependency resolution.
+  - `target/release/…` is a magic asset prefix that cargo-deb rewrites
+    for whatever `--target` it was given — spelling a cross-compilation
+    triple into the config is rejected outright.
+  - `--no-strip` is passed so the packaged binary is byte-for-byte the
+    one in the tar.gz; the default would strip it, and on this repo's
+    profile that also means splitting out debug symbols.
 - **`pkgbuild`** (Apple, ships with macOS) — `adopted` in Task 64 to
   build the macOS server `.pkg`. Present on every macOS runner, so it
   adds no dependency; chosen because `cargo-packager` emits no flat

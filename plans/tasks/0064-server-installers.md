@@ -502,6 +502,64 @@ installer window was ever shown; `Start-Process … '/S' -Wait`).
 `actionlint` 1.7.7 (downloaded for the check, not committed) reports the
 edited `release.yml` clean.
 
+### 2026-08-13 — phase 4b: the Linux `.deb`
+
+`[package.metadata.deb]` in `crates/cannet-server/Cargo.toml`; the
+release workflow's server-only job installs `cargo-deb` pinned and runs
+`cargo deb -p cannet-server --no-build --no-strip --target
+"$RUST_TARGET" --deb-version <version>` after its existing build,
+freeze and tar steps, then uploads the `.deb` beside the tar.gz.
+
+- *No triple in the config.* cargo-deb **rejects** an asset source that
+  spells out a cross-compilation path; `target/release/…` is a magic
+  prefix it rewrites for whatever `--target` it is given. So the
+  binary asset is `target/release/cannet-server` and the config is
+  target-agnostic.
+- *No `mode` on the onedir asset.* Omitting it makes cargo-deb read each
+  file's own mode from disk, which is what keeps the frozen launcher
+  executable; forcing one mode over the whole tree would not.
+- *`--no-strip`* so the packaged binary is byte-for-byte the one in the
+  tar.gz — a panic backtrace from a `.deb` install says the same thing
+  as one from the archive.
+- *Version* comes from `--deb-version` on the command line, so unlike
+  the NSIS config there is no placeholder in the manifest to patch. The
+  crate version stays 0.0.0.
+- `[package] description` was added to the crate: a Debian
+  `Description:` field needs a first line, and cargo-deb takes it from
+  there.
+
+**Local verification.** cargo-deb is pure Rust, so it built a real
+`.deb` on this Windows box against a stand-in Linux binary and the real
+(Windows) onedir as a stand-in tree. Two things needed a temporary
+local edit that is **not** committed — a forced `mode` on the onedir
+asset, because file modes are unreadable on Windows — and one flag that
+is committed, `--no-strip`, because `strip` does not exist here either.
+The resulting `cannet-server_0.1.0_amd64.deb` was unpacked by parsing
+the `ar` container and the xz tarballs directly (no `dpkg` on this
+machine):
+
+- `control`: well-formed, `Package: cannet-server`, `Version: 0.1.0`,
+  `Architecture: amd64`, `Section: net`, `Priority: optional`,
+  maintainer set, `Description:` first line plus the wrapped extended
+  description, correctly UTF-8 encoded.
+- `data.tar.xz`, 167 entries, all `uid=0:0`:
+  `./usr/lib/cannet-server/cannet-server` (regular, `0o755`),
+  `./usr/lib/cannet-server/cannet-python-can/…` (the onedir tree, its
+  directory structure preserved by the `**/*` glob), and
+  `./usr/bin/cannet-server` as a **symlink** whose target cargo-deb
+  rewrote to the Debian-policy relative form
+  `../lib/cannet-server/cannet-server`. Plus
+  `./usr/share/doc/cannet-server/copyright`.
+
+**Still CI-only** (recorded for the next release run): `dpkg-shlibdeps`
+cannot run here, so the built `Depends:` was empty. On the Linux runner
+`$auto` will fill it — and it resolves over *every* ELF in the package,
+including the `.so` files PyInstaller already bundles, so the generated
+`Depends:` line is worth reading once. If it over-constrains the
+package (a dependency on a library the bundle carries itself), pin
+`depends` explicitly instead. Installing and running the `.deb` on a
+Debian/Ubuntu host is the other next-release check.
+
 - **New maintenance obligation (phase 1, accepted):** the Windows leg
   carries a vendored fork of `cargo-packager`'s `installer.nsi`. The
   fork is deletion-only and `cargo-packager` is version-pinned, so the
