@@ -41,6 +41,7 @@ import type {
 import { useProjectContext } from "./projectContext";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { Combobox } from "./Combobox";
+import { DisclosureToggle } from "./DisclosureToggle";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
 import {
   useValueTables,
@@ -511,19 +512,17 @@ function BusSection({
         {...rowProps(bId)}
         data-active={grid.cursor === bId || undefined}
       >
-        <button
-          type="button"
+        <DisclosureToggle
           className="rbs-caret"
+          compact
           tabIndex={-1}
-          onClick={(e) => {
+          expanded={visible.expanded}
+          ariaLabel={`toggle ${bus.key}`}
+          onToggle={(e) => {
             e.stopPropagation();
             onSetExpanded(bId, !visible.expanded);
           }}
-          aria-expanded={visible.expanded}
-          aria-label={`toggle ${bus.key}`}
-        >
-          {visible.expanded ? "▾" : "▸"}
-        </button>
+        />
         <input
           type="checkbox"
           checked={bus.enabled}
@@ -555,19 +554,17 @@ function BusSection({
                 {...rowProps(eId)}
         data-active={grid.cursor === eId || undefined}
               >
-                <button
-                  type="button"
+                <DisclosureToggle
                   className="rbs-caret"
+                  compact
                   tabIndex={-1}
-                  onClick={(e) => {
+                  expanded={expanded}
+                  ariaLabel={`toggle ${ecu.name}`}
+                  onToggle={(e) => {
                     e.stopPropagation();
                     onSetExpanded(eId, !expanded);
                   }}
-                  aria-expanded={expanded}
-                  aria-label={`toggle ${ecu.name}`}
-                >
-                  {expanded ? "▾" : "▸"}
-                </button>
+                />
                 <input
                   type="checkbox"
                   checked={ecu.enabled}
@@ -659,19 +656,17 @@ function MessageRow({
         {...rowProps(rowId)}
         data-active={grid.cursor === rowId || undefined}
       >
-        <button
-          type="button"
+        <DisclosureToggle
           className="rbs-caret"
+          compact
           tabIndex={-1}
-          onClick={(e) => {
+          expanded={expanded}
+          ariaLabel={`toggle ${m.key}`}
+          onToggle={(e) => {
             e.stopPropagation();
             onToggleExpand(!expanded);
           }}
-          aria-expanded={expanded}
-          aria-label={`toggle ${m.key}`}
-        >
-          {expanded ? "▾" : "▸"}
-        </button>
+        />
         <input
           type="checkbox"
           checked={m.enabled}

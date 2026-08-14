@@ -4729,21 +4729,6 @@ button.trace-event-swatch {
 .rbs-row-selected {
   background: var(--surface-row-selected);
 }
-.rbs-caret {
-  /* ADR 0044: a disclosure is a real control whose hit area is the full
-     row height and comfortably wide — the caret glyph inside it is
-     decoration. */
-  background: none;
-  border: none;
-  color: var(--text-faint);
-  cursor: pointer;
-  padding: 0;
-  align-self: stretch;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-}
 .rbs-dot {
   width: 8px;
   height: 8px;
