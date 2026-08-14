@@ -69,8 +69,9 @@ struct Cli {
 #[derive(Args)]
 struct ProxyArgs {
     /// Address to bind the gRPC service on. The default is loopback:
-    /// serving the network is an explicit choice, and an unprotected
-    /// non-loopback bind is refused (ADR 0041).
+    /// serving the network is an explicit choice, and a non-loopback
+    /// bind auto-enables TLS and a bearer token (ADR 0041), unless
+    /// `--no-tls` says otherwise.
     #[arg(long, default_value = "127.0.0.1:50051")]
     bind: SocketAddr,
     /// The supervised sidecar's own `--log-level`, which governs how
