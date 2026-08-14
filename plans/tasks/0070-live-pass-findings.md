@@ -369,8 +369,109 @@ document; their location travels only in phase prompts.
     `cargo clippy -p cannet-gui --all-targets` and `cargo clippy -p
     cannet-server --all-targets` both clean.
 
+- **2026-08-14, phase 2 (`task70-p2-state-persistence`, branched off
+  `task70-p1-quick-ui`):**
+  - `4231d4f` fix(gui): the go-to-view palette carries the Database
+    panel's old name (item 7). **Verdict: reproduces, and the recorded
+    suspicion was right.** Experiment: a DOM test drives the real
+    Ctrl+P against the real App, types `DBC`, and reads back what the
+    palette lists — zero matches, while `Database` matched the same
+    entry. Data: Ctrl+P (`goto.view`) builds `gotoPaletteItems` from
+    the _view catalogue_ (`gotoViews` in `useCommands.tsx`), a
+    different list from the command palette's; the singleton entry was
+    `{id, label}` only, and `gotoPaletteItems` mapped just those two
+    fields, so the `keywords: "DBC panel"` that landed on the
+    `panel.show.dbc` **command** was never on the **view**. (fzf
+    confirms the rest: `DBC` is not a subsequence of `Database`.) Fix:
+    an optional `keywords` on a singleton view entry, passed through to
+    the palette items, aliased with the old name. Frontend: 155 test
+    files / 2047 tests passed; build clean.
+  - `b6bc70c` fix(gui): a singleton panel's tab title comes from the
+    code, not the layout (item 6). **Mechanism confirmed** against real
+    dockview serialization in `dockLayout.dom.test.ts`: `fromJSON` of a
+    layout whose `panels.dbc.title` is `"DBC"` produces a panel titled
+    `"DBC"` — the saved layout is the carrier, and nothing downstream
+    re-titles it (the existing title-sync effect in `App.tsx` covers
+    element-backed panels only, keyed on `params.elementId`). The
+    controlled pair is the two tests: same layout, same dockview, the
+    only difference being the normalize call, and the titles differ.
+    Fix per the ruling: `SINGLETON_PANEL_TITLES` collects the nine
+    code-defined titles, `normalizeSingletonTitles` retitles them in a
+    serialized layout, and both restore paths (project open, boot
+    reopen) run the saved layout through it — existing workspaces heal
+    on their next open. Wiring guarded by a test in
+    `App.bootReopen.dom.test.tsx` (falsified first: with the two
+    normalize calls removed it fails, with them it passes). Frontend:
+    155/2051 passed; build clean.
+  - `bde1211` fix(gui): recent captures follow the project, in both
+    directions (item 8). **Two carriers, both upstream of storage; the
+    fix needed both.**
+    - _Observation._ Owner's sequence (project + BLF → New project +
+      MDFs → reopen the project + BLF) shows every capture from both
+      projects in one list. `recent_blfs` is `Scope::Workspace`
+      (`state.rs::SCOPES`) and `state.rs`'s scoped read/write tests
+      already prove per-directory routing.
+    - _Hypothesis (a)._ The frontend list is an MRU seeded once
+      (`useState(() => hostState().recent_blfs)`, `App.tsx`) and never
+      re-seeded, so it survives a project switch and is written back
+      merged.
+    - _Hypothesis (b)._ New project never re-roots the host, so the
+      unsaved session's workspace-scoped writes land in the project it
+      just left.
+    - _Experiment._ `App.recentsScope.dom.test.tsx` replays the owner's
+      sequence against a mocked host that routes reads and writes by
+      workspace key, with `open_project` / `close_project` moving the
+      key — the same routing the host performs by re-rooting.
+    - _Data._ Run 1, unfixed: fails at the New-project step, the list
+      still showing the previous project's two captures — (a)
+      confirmed, since the host state was never even consulted there.
+      (b) is confirmed by construction rather than by an isolating
+      run: the two were fixed together, and nothing but
+      `close_project` moves the workspace key, so re-reading alone
+      would have re-read the project just left. Run 2, with both
+      fixes but the handoff issued alongside the rest of the
+      new-project work: fails at the same step, which attributed a
+      third-order ordering hazard — `set_state` flushes the _whole_
+      cached struct, so a write issued after the host had moved but
+      before the cache was re-read (`rememberProject(null)`'s
+      `last_project` flush) deposited the old project's recents into
+      the new directory, and the re-read then read them back. Run 3,
+      with the handoff and re-read awaited before the rest of the
+      work: passes end to end.
+    - _Fix._ Host: `project::close_project` re-roots the session onto
+      the auto-located directory an unsaved project belongs in
+      (ADR 0042 §1/§7), with `Carry::Nothing` and the project identity
+      cleared. Frontend: one `rehydrateProjectState` helper (re-read
+      the host state, re-seed the list) at every project switch — open,
+      Save As promote, New, and the boot open (whose `--project` leg
+      can name a different project than the host resolved pre-WebView).
+    - _Verification._ Frontend 156 test files / 2052 tests passed,
+      build clean; `cargo test -p cannet-gui` 634 passed (the new
+      `leaving_a_project_lands_on_the_unsaved_directory_not_the_projects`
+      pins the directory pair `close_project` relies on); `cargo clippy
+      -p cannet-gui --all-targets` clean. README's project-directory
+      paragraph records the New-project behavior.
+
 ## Blockers / side effects
 
+- **The host command's re-root is exercised only through the
+  frontend's mocked host.** `close_project` takes an `AppHandle`, and
+  the GUI crate has no Tauri `App` test harness (`open_project` and
+  `save_project_as` are untested at command level for the same
+  reason). Its parts are covered — `project_dir::resolve(None, …)`,
+  `ActiveProjectDir::set`, and `state.rs`'s scoped write routing — and
+  the behavior is pinned by the two-project switch test, whose mock
+  reproduces the host's scope routing. A real end-to-end test needs a
+  command-level harness, which is its own piece of work.
+- **New project no longer stomps the previous project's layout
+  snapshot** — a side effect of item 8's ordering, recorded because it
+  changes behavior nobody asked about. `seedDefaultLayout`'s layout
+  change is persisted while `projectPathRef` still holds the previous
+  project's path (the ref updates an effect later), so it used to be
+  written into that project's `.cannet/state.json`. It now lands in
+  the unsaved project's, because the re-root happens first. The stale
+  `projectPathRef` read is still there; nothing depends on it beyond
+  this.
 - **Latent duplicate of item 4's bug, out of scope.** During item 4's
   investigation, `apps/gui/src/index.css`'s `.blf-map-markers-toggle`
   rule (BLF channel-map modal's "Markers (n)" disclosure) was found
