@@ -53,13 +53,19 @@ pub struct TrustEntry {
     /// from a failure — only a stored answer to the dialog.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub insecure: bool,
+    /// The operator added this address by hand in the Servers panel.
+    /// It carries no connection decision at all: it is what keeps a
+    /// server that nothing advertises, and that is reached without ever
+    /// being asked about — a loopback proxy — in the list.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub manual: bool,
 }
 
 impl TrustEntry {
     /// Whether this entry says nothing at all, and so should not be
     /// persisted.
     pub(crate) fn is_empty(&self) -> bool {
-        self.fingerprint.is_none() && self.token.is_none() && !self.insecure
+        self.fingerprint.is_none() && self.token.is_none() && !self.insecure && !self.manual
     }
 }
 
@@ -71,6 +77,7 @@ impl std::fmt::Debug for TrustEntry {
             .field("fingerprint", &self.fingerprint)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("insecure", &self.insecure)
+            .field("manual", &self.manual)
             .finish()
     }
 }
@@ -354,6 +361,23 @@ mod tests {
     }
 
     #[test]
+    fn an_address_added_by_hand_persists_with_nothing_accepted_for_it() {
+        // A loopback proxy that advertises nowhere is reached without a
+        // question, so no answer will ever be stored for it. The
+        // operator's act of adding it is the only thing that can keep it
+        // in the list — which means it is not a husk.
+        let d = dir();
+        update_server(d.path(), "127.0.0.1:50052", |e| e.manual = true).unwrap();
+        assert!(stored(d.path(), "127.0.0.1:50052").manual);
+
+        update_server(d.path(), "127.0.0.1:50052", |e| *e = TrustEntry::default()).unwrap();
+        assert!(
+            read_servers(d.path()).servers.is_empty(),
+            "and forgetting it still removes the entry",
+        );
+    }
+
+    #[test]
     fn a_missing_or_corrupt_file_trusts_nothing_rather_than_failing() {
         let d = dir();
         assert_eq!(read_servers(d.path()), ServersDoc::default());
@@ -371,6 +395,7 @@ mod tests {
             fingerprint: Some("SHA256:aaa".into()),
             token: Some("super-secret-token".into()),
             insecure: false,
+            manual: false,
         };
         let rendered = format!("{entry:?}");
         assert!(!rendered.contains("super-secret-token"), "{rendered}");

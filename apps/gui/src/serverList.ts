@@ -61,6 +61,9 @@ export interface ServerRow {
   fingerprint: string | null;
   hasToken: boolean;
   insecure: boolean;
+  /// The operator put this address in the list by hand. Not a trust
+  /// decision — only what keeps a server nothing advertises in the list.
+  manual: boolean;
   /// The question the host is waiting on for this server, if any.
   prompt: TrustPrompt | null;
 }

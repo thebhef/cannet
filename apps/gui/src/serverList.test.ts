@@ -19,6 +19,7 @@ const row = (over: Partial<ServerRow>): ServerRow => ({
   fingerprint: null,
   hasToken: false,
   insecure: false,
+  manual: false,
   prompt: null,
   ...over,
 });

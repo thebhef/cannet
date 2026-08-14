@@ -326,6 +326,14 @@ pub(crate) fn ask(app: &AppHandle, address: &str, prompt: TrustPrompt) {
     }
 }
 
+/// Whether the host is currently waiting on the user about `address` —
+/// what tells a refused attempt that raised a question apart from one
+/// that simply failed.
+pub(crate) fn waiting_on(app: &AppHandle, address: &str) -> bool {
+    app.try_state::<ServerPrompts>()
+        .is_some_and(|prompts| prompts.lock().contains_key(address))
+}
+
 /// Drop any pending question for `address` — the connection succeeded,
 /// or the user answered.
 pub(crate) fn resolved(app: &AppHandle, address: &str) {
@@ -391,6 +399,7 @@ mod tests {
             fingerprint: Some(fingerprint.into()),
             token: token.map(Into::into),
             insecure: false,
+            manual: false,
         }
     }
 
