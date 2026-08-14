@@ -2292,11 +2292,10 @@ button.trace-event-swatch {
   color: var(--text-dim);
 }
 
-/* The shared DisclosureToggle (task 63 item 1): hit area, ink and
-   rotation for every collapsible section, row and menu trigger. The
-   default box is a real 24x24 CSS px hit area (WCAG 2.5.8's floor)
-   with the ink smaller inside it, so a roomy header gets a
-   comfortably large target without the glyph itself growing. */
+/* The shared DisclosureToggle: hit area, ink and rotation for every
+   collapsible section, row and menu trigger. The default box is a
+   real 24x24 CSS px hit area (WCAG 2.5.8's floor); the ink
+   (`.disclosure-toggle-glyph`) is sized to fill it uniformly. */
 .disclosure-toggle {
   display: inline-flex;
   align-items: center;
@@ -2315,7 +2314,12 @@ button.trace-event-swatch {
   cursor: default;
 }
 .disclosure-toggle-glyph {
-  font-size: 0.75rem;
+  /* One shared size for every site (owner ruling, 2026-08-14): the
+     glyph fills the hit box rather than sitting small inside it.
+     1.1rem (17.6px at the default root size) reaches close to the
+     24px floor while still clearing the smallest compact row height
+     (`dbcPanelViewport.ts`'s 20px `ROW_HEIGHT`) without clipping. */
+  font-size: 1.1rem;
   line-height: 1;
 }
 /* The row-height-capped variant: several dense grids (the DBC, trace,
