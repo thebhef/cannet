@@ -62,6 +62,19 @@ _Avoid_: "trusted-servers list" for this — one merged list, not a
 separate pinned-only one. _Avoid_: "add a server to a bus" — a bus is
 bound to an interface on a server this machine already trusts.
 
+**Server section**:
+One trusted server's collapsible element in the project panel's
+*Connection* section, a sibling of **Local interfaces**: the server's
+name, host name, `host:port`, reachability, and the interfaces it
+offers, each annotated with the bus it feeds or `(unassigned)`. A
+section is open while one of its interfaces is bound to a bus and
+folded otherwise; the fold is view state, the contents are the host's.
+Only trusted servers get one — a discovered-but-unaccepted server
+lives in the Servers panel until it is trusted.
+_Avoid_: "remote server row" — the old bound-only listing, which
+showed a server because the project referenced it rather than because
+this machine trusts it.
+
 **Trust state**:
 What a server's row says about its standing with this machine, decided
 host-side: **trusted** (a stored decision reaches it without asking),

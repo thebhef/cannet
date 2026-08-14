@@ -115,6 +115,14 @@ export function useServerList(): ServerList {
   return list;
 }
 
+/// The identity the host files a server under: the address without a
+/// `scheme://`, lower-cased. Mirrors `server_trust::server_key`, so a
+/// binding's spelling of an address finds the row the host keyed by it.
+export function serverKey(address: string): string {
+  const i = address.indexOf("://");
+  return (i < 0 ? address : address.slice(i + 3)).toLowerCase();
+}
+
 /// How a server is named where it is picked from: the instance name it
 /// advertises, or its address when nothing has answered to name it.
 export function serverLabel(row: ServerRow): string {

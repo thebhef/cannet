@@ -1603,34 +1603,10 @@ header {
   border: 1px solid var(--border-soft);
   border-radius: 0.3rem;
 }
-.project-binding-form-source {
-  display: flex;
-  gap: 0.4rem;
-  align-items: center;
-  flex-wrap: wrap;
-}
-.project-binding-form-or {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-}
 .project-binding-form-row {
   display: flex;
   gap: 0.3rem;
   align-items: center;
-}
-.project-binding-server {
-  flex: 1 1 auto;
-  font: inherit;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: var(--surface-canvas);
-  color: var(--text-primary);
-  border: 1px solid var(--border-soft);
-  border-radius: 0.2rem;
-  padding: 0.15rem 0.35rem;
-}
-.project-binding-form-error {
-  color: var(--danger-text);
-  font-size: 0.72rem;
 }
 
 .project-bus-row {
@@ -1736,6 +1712,26 @@ header {
   margin-bottom: 0.4rem;
 }
 
+/* Trusted, but nothing is answering there right now — the same grey as
+   the Servers panel's offline rows. */
+.project-server.offline {
+  opacity: 0.55;
+}
+
+/* The server-section header: its caret button sits inline with the
+   host name, address, and state, so it must not take the whole row the
+   way a fold-away section header does. */
+.project-server .project-section-toggle {
+  width: auto;
+}
+
+.project-server-host,
+.project-server-address {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .project-server-bindings {
   list-style: none;
   margin: 0.1rem 0 0;
@@ -1774,29 +1770,6 @@ header {
   font-size: 0.75rem;
   color: var(--text-faint);
   font-style: italic;
-}
-
-/* A row in the browsed-server list. It is a button (picking it fills
-   the address field), but it reads as a list row like every other
-   entry under .project-server-bindings — the chrome would be louder
-   than the information. */
-.project-discovered-server {
-  display: flex;
-  gap: 0.2rem;
-  align-items: baseline;
-  width: 100%;
-  padding: 0.05rem 0.2rem;
-  border: none;
-  border-radius: 3px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.project-discovered-server:hover {
-  background: var(--surface-hover);
 }
 
 .project-dbc {

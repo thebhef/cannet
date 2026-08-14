@@ -29,15 +29,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 import type { IDockviewPanel } from "dockview";
 
 import { ElementRow } from "./ProjectPanel";
-import {
-  BusInterfaceCombo,
-  LocalInterfaceList,
-  uniqueRemoteServers,
-} from "./ConnectionManagement";
+import { BusInterfaceCombo, LocalInterfaceList } from "./ConnectionManagement";
 import { hydrateSettings } from "./hostSettings";
 import type { ServerRow } from "./serverList";
 import { LOCAL_SERVER } from "./types";
-import type { Bus, InterfaceBinding, InterfaceRecord, ProjectElement } from "./types";
+import type { Bus, InterfaceRecord, ProjectElement } from "./types";
 
 const BUS1: Bus = { id: "b1", name: "Bus 1" };
 // The live address the sidecar is bound to *this* session. Discovery
@@ -52,67 +48,6 @@ afterEach(async () => {
   // The settings cache is module-global, so a test that seeds one must
   // not leave it seeded for the next.
   await hydrateSettings();
-});
-
-describe("uniqueRemoteServers", () => {
-  it("returns first-seen distinct server addresses", () => {
-    const bindings: InterfaceBinding[] = [
-      { server: "10.0.0.1:50051", interface: "can0", bus_id: "b1" },
-      { server: "10.0.0.2:50051", interface: "can0", bus_id: "b2" },
-      { server: "10.0.0.1:50051", interface: "can1", bus_id: "b3" },
-    ];
-    expect(uniqueRemoteServers(bindings, null)).toEqual([
-      "10.0.0.1:50051",
-      "10.0.0.2:50051",
-    ]);
-  });
-
-  it("hides the local-sidecar binding (it has its own dedicated row)", () => {
-    const bindings: InterfaceBinding[] = [
-      { server: LOCAL_SERVER, interface: "vector:ch0", bus_id: "b1" },
-      { server: "10.0.0.1:50051", interface: "can0", bus_id: "b2" },
-    ];
-    expect(uniqueRemoteServers(bindings, LIVE_LOCAL)).toEqual([
-      "10.0.0.1:50051",
-    ]);
-  });
-
-  it("treats a 127.0.0.1:<port> binding as a stale remote, not local", () => {
-    // A binding that persisted a concrete sidecar `host:port` (rather
-    // than the `"local"` sentinel) renders under a stale remote-server
-    // row (showing as offline) until the user re-picks the interface
-    // from the live Local group.
-    const bindings: InterfaceBinding[] = [
-      { server: "127.0.0.1:43891", interface: "vector:ch0", bus_id: "b1" },
-    ];
-    expect(uniqueRemoteServers(bindings, LIVE_LOCAL)).toEqual([
-      "127.0.0.1:43891",
-    ]);
-  });
-
-  it("excludes local-virtual-bus bindings (URL scheme — in-process)", () => {
-    // Vbus bindings store `local-vbus://<id>` in `server`; that URL
-    // is the host's session-map index, not a remote address, so it
-    // mustn't surface in the Connection panel's remote-server list.
-    const bindings: InterfaceBinding[] = [
-      {
-        kind: "local-virtual-bus",
-        server: "local-vbus://vbus1",
-        interface: "bus",
-        bus_id: "b1",
-      },
-      {
-        kind: "local-virtual-bus",
-        server: "local-vbus://vbus1",
-        interface: "bus",
-        bus_id: "b2",
-      },
-      { server: "10.0.0.1:50051", interface: "can0", bus_id: "b3" },
-    ];
-    expect(uniqueRemoteServers(bindings, null)).toEqual([
-      "10.0.0.1:50051",
-    ]);
-  });
 });
 
 const REMOTE = "10.0.0.5:50051";

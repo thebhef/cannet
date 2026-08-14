@@ -1508,6 +1508,15 @@ add bridges to, or delete each virtual bus the project owns; the
 host applies bus_config edits via `SharedBus::reconfigure` and
 manages bridge teardown.
 
+The panel's *Connection* section mirrors that: **Local interfaces**,
+then one collapsible section per trusted server, headed by the name it
+advertises, the machine it runs on, its `host:port`, and what the last
+attempt to reach it saw. A section stands open while one of its
+interfaces is bound to a bus and is folded away otherwise — a manual
+fold or unfold holds until that answer changes. A trusted server that
+is switched off keeps its header, greyed, so a project never points at
+something invisible.
+
 *Manage servers…* opens the **Servers** panel, and that is the only
 server affordance a bus row has. Which servers this machine talks to
 is a decision it makes once, not part of wiring a bus: the panel

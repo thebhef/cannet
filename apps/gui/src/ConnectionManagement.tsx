@@ -10,14 +10,14 @@
 // (ADR 0041); a bus row only picks among the interfaces those servers
 // already offer, and its one server affordance is a jump to that panel.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { describeBusConnState } from "./connectionStates";
 import { hostSettings } from "./hostSettings";
-import { serverLabel, type ServerRow } from "./serverList";
+import { serverKey, serverLabel, type ServerRow } from "./serverList";
 import { describeSidecarStatus } from "./sidecarStatus";
 import type {
   Bus,
@@ -55,31 +55,6 @@ const COMBO_NONE = "";
 /// server affordance of its own: which servers this machine talks to is
 /// a decision it makes once, not a per-bus detail (ADR 0041).
 const COMBO_MANAGE_SERVERS = "__manage_servers__";
-
-/// Distinct **non-sidecar** server addresses referenced by any
-/// binding, in first-seen order. The local sidecar gets its own
-/// dedicated row in the Connection section (always present, with its
-/// own status text), so listing it again here would double-count it.
-/// `local-vbus://` URLs index an in-process virtual bus
-/// ([`LocalVirtualBusDef`]) and are surfaced under the *Virtual
-/// buses* section, so they're excluded here too. The
-/// `sidecarAddress` parameter is unused today (kept for callers
-/// passing it positionally).
-export function uniqueRemoteServers(
-  bindings: readonly InterfaceBinding[],
-  _sidecarAddress: string | null,
-): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const b of bindings) {
-    if (isLocalBinding(b)) continue;
-    if (localVbusId(b) !== null) continue;
-    if (seen.has(b.server)) continue;
-    seen.add(b.server);
-    out.push(b.server);
-  }
-  return out;
-}
 
 // ---- Discovery polling ----------------------------------------------------
 
@@ -669,13 +644,7 @@ export function LocalInterfacesRow({
   );
 }
 
-/// Per-interface listing under the Local interfaces row. Unlike the
-/// remote-row list — which only enumerates *bound* interfaces — this
-/// one always shows every interface the local driver advertises, with
-/// each row annotated either `→ <bus>` for a bound interface or
-/// `(unassigned)` when nothing on the project routes through it yet.
-/// The aim is for the row to read as "what hardware does this machine
-/// actually have," not "what hardware did the user already wire up."
+/// Per-interface listing under the Local interfaces row.
 export function LocalInterfaceList({
   bindings,
   buses,
@@ -689,7 +658,47 @@ export function LocalInterfaceList({
   connStates?: BusConnStates;
   sidecarAddress: string | null;
 }) {
-  const state = sidecarAddress ? discoveries[sidecarAddress] : undefined;
+  return (
+    <InterfaceList
+      address={sidecarAddress}
+      bindings={bindings}
+      buses={buses}
+      discoveries={discoveries}
+      connStates={connStates}
+      emptyText={
+        sidecarAddress === null ? "(local driver offline)" : "(no local interfaces)"
+      }
+    />
+  );
+}
+
+/// Every interface one server advertises, each annotated either
+/// `→ <bus>` for a bound one or `(unassigned)` when nothing on the
+/// project routes through it yet — so the listing reads as "what
+/// hardware is there," not "what hardware did the user already wire
+/// up." Bindings whose interface id is absent from the live
+/// enumeration follow as a tail, with the raw id, so a project can
+/// still show what it references.
+function InterfaceList({
+  address,
+  bindings,
+  buses,
+  discoveries,
+  connStates = {},
+  emptyText,
+}: {
+  /// The address the enumeration is keyed by — the live sidecar
+  /// address for the local row, the server's `host:port` for a server
+  /// section. `null` when there is nothing to key by yet.
+  address: string | null;
+  bindings: readonly InterfaceBinding[];
+  buses: readonly Bus[];
+  discoveries: Record<string, DiscoveryState>;
+  connStates?: BusConnStates;
+  /// What to say when the server answered but has nothing to offer.
+  emptyText: string;
+}) {
+  const state = address ? discoveries[address] : undefined;
   const discovered: readonly InterfaceRecord[] =
     state && state.status === "ok" ? state.interfaces : [];
 
@@ -704,11 +713,7 @@ export function LocalInterfaceList({
   if (discovered.length === 0 && orphanBindings.length === 0) {
     return (
       <div className="project-server-empty">
-        {state?.status === "err"
-          ? `(unreachable: ${state.error})`
-          : sidecarAddress === null
-            ? "(local driver offline)"
-            : "(no local interfaces)"}
+        {state?.status === "err" ? `(unreachable: ${state.error})` : emptyText}
       </div>
     );
   }
@@ -755,131 +760,201 @@ export function LocalInterfaceList({
   );
 }
 
-interface RemoteServerRowProps {
-  server: string;
-  connected: boolean;
-  bindings: readonly InterfaceBinding[];
-  buses: readonly Bus[];
-  state: DiscoveryState | undefined;
-  /// Full discovery map (across every known server) so the per-row
-  /// binding list can resolve each id to its display label. The same
-  /// `state` we pass separately is the entry keyed under this row's
-  /// `server`; the broader map is here so {@link SelectedInterfaceList}
-  /// can be shared with the local row, which keys differently.
-  discoveries: Record<string, DiscoveryState>;
-  connStates: BusConnStates;
-  onRefresh: () => void;
-}
-
-/// One remote-server row in the Connection section: address, last
-/// polled state, manual Discover, and the list of bindings that
-/// currently point at this server.
-export function RemoteServerRow({
+/// One trusted server in the Connection section: a collapsible sibling
+/// of the Local interfaces row, headed by the name it advertises, the
+/// machine it runs on, its `host:port`, and what the last attempt to
+/// reach it saw.
+///
+/// A server appears here because *this machine* trusts it (ADR 0041),
+/// not because the project references it — the project only says which
+/// interface a bus is bound to. Which sections stand open is the
+/// chosen-interface rule's answer ({@link useServerSections}); a server
+/// that is switched off keeps its header, greyed, so what a project
+/// points at is never invisible.
+export function ServerSection({
   server,
   connected,
   bindings,
   buses,
-  state,
   discoveries,
   connStates,
+  expanded,
+  onToggle,
   onRefresh,
-}: RemoteServerRowProps) {
-  const selected = bindings.filter((b) => b.server === server);
-  const stateText =
-    state?.status === "err"
+}: {
+  server: ServerRow;
+  /// Whether a session is live against this server right now — the
+  /// host's answer, not a guess from the enumeration.
+  connected: boolean;
+  /// Every binding in the project; the section picks its own.
+  bindings: readonly InterfaceBinding[];
+  buses: readonly Bus[];
+  discoveries: Record<string, DiscoveryState>;
+  connStates: BusConnStates;
+  expanded: boolean;
+  onToggle: () => void;
+  onRefresh: () => void;
+}) {
+  const state = discoveries[server.address];
+  const stateText = !server.online
+    ? "offline"
+    : state?.status === "err"
       ? `unreachable: ${state.error}`
       : connected
         ? "connected"
         : state?.status === "ok"
-          ? "offline"
+          ? "ready"
           : "discovering…";
   return (
-    <div className="project-server">
+    <div
+      className={`project-server${server.online ? "" : " offline"}`}
+      data-testid={`server-section-${server.address}`}
+    >
       <div className="project-bus">
-        <span className="project-bus-name" title={server}>
-          {server}
-        </span>
-        <span className={`project-bus-state ${connected ? "connected" : ""}`}>
+        <button
+          type="button"
+          className="project-section-toggle"
+          aria-expanded={expanded}
+          aria-label={`interfaces on ${server.address}`}
+          onClick={onToggle}
+        >
+          {/* Glyph swap rather than a rotate, matching the panel's
+              other carets. Hidden from the accessible name — the
+              button's own `aria-expanded` already says which way it
+              points. */}
+          <span className="project-section-caret" aria-hidden="true">
+            {expanded ? "▾" : "▸"}
+          </span>
+          <span className="project-bus-name">{serverLabel(server)}</span>
+        </button>
+        {server.host !== null && (
+          <span className="project-server-host">{server.host}</span>
+        )}
+        <span className="project-server-address">{server.address}</span>
+        <span
+          className={`project-bus-state ${
+            connected ? "connected" : server.online ? "" : "errored"
+          }`}
+        >
           {stateText}
         </span>
-        <button type="button" onClick={onRefresh}>
-          Discover
-        </button>
+        {server.online && (
+          <button
+            type="button"
+            aria-label={`discover interfaces on ${server.address}`}
+            onClick={onRefresh}
+          >
+            Discover
+          </button>
+        )}
       </div>
-      <SelectedInterfaceList
-        selected={selected}
-        buses={buses}
-        discoveries={discoveries}
-        connStates={connStates}
-        sidecarAddress={null}
-      />
+      {expanded &&
+        (server.online ? (
+          <InterfaceList
+            address={server.address}
+            bindings={bindingsForServer(bindings, server.address)}
+            buses={buses}
+            discoveries={discoveries}
+            connStates={connStates}
+            emptyText="(no interfaces)"
+          />
+        ) : (
+          <div className="project-server-empty">
+            (not advertising — switched off, or on a network this machine
+            cannot hear)
+          </div>
+        ))}
     </div>
   );
 }
 
-function SelectedInterfaceList({
-  selected,
-  buses,
-  discoveries,
-  connStates,
-  sidecarAddress,
-}: {
-  selected: readonly InterfaceBinding[];
-  buses: readonly Bus[];
-  connStates: BusConnStates;
-  /// Pass the discovery snapshot so each binding's interface id can
-  /// be resolved to its rich {@link InterfaceRecord.display_name} —
-  /// the same label the per-bus combo shows. When a binding's
-  /// interface isn't in any current snapshot (server unreachable,
-  /// sidecar still starting), the raw id is the fallback.
-  discoveries: Record<string, DiscoveryState>;
-  sidecarAddress: string | null;
-}) {
-  if (selected.length === 0) {
-    return (
-      <div className="project-server-empty">
-        (no interfaces selected)
-      </div>
-    );
-  }
-  return (
-    <ul className="project-server-bindings">
-      {selected.map((b) => {
-        const bus = buses.find((x) => x.id === b.bus_id);
-        return (
-          <li key={`${b.server}::${b.interface}`}>
-            <span className="project-server-iface">
-              {labelForBinding(b, discoveries, sidecarAddress)}
-            </span>
-            <span className="project-server-arrow"> → </span>
-            <span className="project-server-bus">
-              {bus ? bus.name : b.bus_id}
-            </span>
-            <BindingConnStateBadge busId={b.bus_id} connStates={connStates} />
-          </li>
-        );
-      })}
-    </ul>
+/// The bindings pointed at `address`, matched the way the host keys its
+/// trust store — so a project that spelled the address with a scheme or
+/// in another case still lands on that server's section.
+export function bindingsForServer(
+  bindings: readonly InterfaceBinding[],
+  address: string,
+): InterfaceBinding[] {
+  const key = serverKey(address);
+  return bindings.filter(
+    (b) =>
+      !isLocalBinding(b) &&
+      localVbusId(b) === null &&
+      serverKey(b.server) === key,
   );
 }
 
-/// `<Local|server> / <display_name>` — the same shape the per-bus
-/// combo renders, so the Connection-section bus list and the picker
-/// agree letter-for-letter. Falls back to the raw `interface` id when
-/// no discovery snapshot for the binding's server is available.
-function labelForBinding(
-  b: InterfaceBinding,
-  discoveries: Record<string, DiscoveryState>,
-  sidecarAddress: string | null,
-): string {
-  const head = isLocalBinding(b) ? "Local" : b.server;
-  const key = resolveServer(b.server, sidecarAddress);
-  const state = key ? discoveries[key] : undefined;
-  if (state && state.status === "ok") {
-    const rec = state.interfaces.find((r) => r.id === b.interface);
-    if (rec) return `${head} / ${rec.display_name || rec.id}`;
+/// Which server sections stand open. The rule: a section follows
+/// whether any of its interfaces is chosen by a bus, so a project shows
+/// the servers it is using without hiding the ones it is not. A manual
+/// expand or collapse is view-local state that overrides the rule — and
+/// holds only until the rule's own answer for that server moves, at
+/// which point the section goes back to following it.
+///
+/// `chosen` maps a server's address to whether a bus is bound to
+/// something on it.
+export function useServerSections(chosen: Readonly<Record<string, boolean>>): {
+  expanded: (address: string) => boolean;
+  toggle: (address: string) => void;
+} {
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  const previous = useRef(chosen);
+  // Stable shape of the rule's answer, so the reconcile effect runs
+  // when it moves rather than on every render.
+  const ruleKey = useMemo(
+    () =>
+      Object.keys(chosen)
+        .sort()
+        .map((address) => `${address}:${chosen[address] ? 1 : 0}`)
+        .join("|"),
+    [chosen],
+  );
+
+  useEffect(() => {
+    setOverrides((prev) => keptOverrides(prev, previous.current, chosen));
+    previous.current = chosen;
+    // `ruleKey` is the stable shape of `chosen`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ruleKey]);
+
+  const expanded = useCallback(
+    (address: string) => overrides[address] ?? chosen[address] ?? false,
+    [overrides, chosen],
+  );
+  const toggle = useCallback(
+    (address: string) =>
+      setOverrides((prev) => ({
+        ...prev,
+        [address]: !(prev[address] ?? chosen[address] ?? false),
+      })),
+    [chosen],
+  );
+  return { expanded, toggle };
+}
+
+/// The manual expand/collapse decisions that survive a move in the
+/// rule's answer: an override is kept while its own server's answer is
+/// unchanged, and dropped when that answer moves or the server leaves
+/// the list. Returns `overrides` itself when nothing is dropped, so a
+/// reconcile that changes nothing does not re-render.
+export function keptOverrides(
+  overrides: Readonly<Record<string, boolean>>,
+  previous: Readonly<Record<string, boolean>>,
+  current: Readonly<Record<string, boolean>>,
+): Record<string, boolean> {
+  let dropped = false;
+  const next: Record<string, boolean> = {};
+  for (const [address, value] of Object.entries(overrides)) {
+    if (
+      address in current &&
+      (previous[address] ?? false) === (current[address] ?? false)
+    ) {
+      next[address] = value;
+    } else {
+      dropped = true;
+    }
   }
-  return `${head} / ${b.interface}`;
+  return dropped ? next : (overrides as Record<string, boolean>);
 }
 
 interface VirtualBusRowProps {

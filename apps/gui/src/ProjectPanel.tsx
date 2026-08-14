@@ -33,11 +33,12 @@ import {
   BusHardwareConfig,
   BusInterfaceCombo,
   LocalInterfacesRow,
-  RemoteServerRow,
+  ServerSection,
   VirtualBusRow,
+  bindingsForServer,
   samePick,
-  uniqueRemoteServers,
   useInterfaceDiscovery,
+  useServerSections,
   type ComboPick,
 } from "./ConnectionManagement";
 
@@ -156,18 +157,6 @@ export function ProjectPanel(props: IDockviewPanelProps) {
   // would otherwise loop trying to connect to a non-existent server).
   const sidecarAddress =
     sidecar.phase === "ready" ? sidecar.address : null;
-  const knownServers = useMemo(() => {
-    const set = new Set<string>();
-    if (sidecarAddress) set.add(sidecarAddress);
-    for (const b of p.interfaceBindings) {
-      if (localVbusId(b) !== null) continue;
-      const resolved = resolveServer(b.server, sidecarAddress);
-      if (resolved) set.add(resolved);
-    }
-    return [...set];
-  }, [sidecarAddress, p.interfaceBindings]);
-
-  const discovery = useInterfaceDiscovery(knownServers);
   // The servers this machine talks to are the host's merged list, not
   // the project's: a bus binds to one, it does not configure it
   // (ADR 0041). Only the trusted ones are a source — the rest are
@@ -177,6 +166,35 @@ export function ProjectPanel(props: IDockviewPanelProps) {
     () => trustedServers(serverList.servers),
     [serverList.servers],
   );
+  const knownServers = useMemo(() => {
+    const set = new Set<string>();
+    if (sidecarAddress) set.add(sidecarAddress);
+    // A trusted server that is answering is watched whether or not the
+    // project uses it yet — its section and the bus combos are the
+    // offer, so they need its interfaces before anything is bound.
+    for (const row of trusted) {
+      if (row.online) set.add(row.address);
+    }
+    for (const b of p.interfaceBindings) {
+      if (localVbusId(b) !== null) continue;
+      const resolved = resolveServer(b.server, sidecarAddress);
+      if (resolved) set.add(resolved);
+    }
+    return [...set];
+  }, [sidecarAddress, trusted, p.interfaceBindings]);
+
+  const discovery = useInterfaceDiscovery(knownServers);
+  // A server's section stands open while one of its interfaces is
+  // chosen; the hook keeps a manual fold until that answer moves.
+  const chosenServers = useMemo(() => {
+    const chosen: Record<string, boolean> = {};
+    for (const row of trusted) {
+      chosen[row.address] =
+        bindingsForServer(p.interfaceBindings, row.address).length > 0;
+    }
+    return chosen;
+  }, [trusted, p.interfaceBindings]);
+  const sections = useServerSections(chosenServers);
   // Connection state is the host's model, not ours: we subscribe and
   // render, never derive.
   const connStates = useConnectionStates();
@@ -238,11 +256,6 @@ export function ProjectPanel(props: IDockviewPanelProps) {
       }
     },
     [p],
-  );
-
-  const remoteServers = uniqueRemoteServers(
-    p.interfaceBindings,
-    sidecarAddress,
   );
 
   return (
@@ -452,23 +465,20 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             if (sidecarAddress) void discovery.refresh(sidecarAddress);
           }}
         />
-        {remoteServers.map((server) => {
-          const state = discovery.entries[server];
-          const isConnected = p.connectedAddresses.includes(server);
-          return (
-            <RemoteServerRow
-              key={server}
-              server={server}
-              connected={isConnected}
-              bindings={p.interfaceBindings}
-              buses={p.buses}
-              state={state}
-              discoveries={discovery.entries}
-              connStates={connStates}
-              onRefresh={() => void discovery.refresh(server)}
-            />
-          );
-        })}
+        {trusted.map((server) => (
+          <ServerSection
+            key={server.address}
+            server={server}
+            connected={p.connectedAddresses.includes(server.address)}
+            bindings={p.interfaceBindings}
+            buses={p.buses}
+            discoveries={discovery.entries}
+            connStates={connStates}
+            expanded={sections.expanded(server.address)}
+            onToggle={() => sections.toggle(server.address)}
+            onRefresh={() => void discovery.refresh(server.address)}
+          />
+        ))}
         {p.interfaceBindings.length === 0 ? (
           <div className="project-empty">
             No interfaces selected. Pick one on a logical bus above to enable
