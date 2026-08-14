@@ -532,6 +532,23 @@ interface PlotAreaProps {
    * own isn't included (solo isn't why). The row renderer styles these
    * with a solo marker instead of the plain hidden treatment. */
   soloMaskedKeys?: ReadonlySet<string>;
+  /** Keys ({@link signalRefKey}) of this axis's rows that solo
+   * *matched* somewhere in the panel but the current page/subset
+   * doesn't include — off the page, not merely unmatched
+   * ({@link soloOffPageKeys}). These rows don't render at all: the
+   * page is the working set, and a match parked on another page has
+   * nothing to show here until the user steps to it. Empty (or
+   * `undefined`) whenever solo is off or the whole matched set is on
+   * show, so it never hides a row the plain mask wouldn't already
+   * explain. */
+  soloOffPageKeys?: ReadonlySet<string>;
+  /** A token identifying solo's current page/subset — `"all"`,
+   * `"page:N"`, or `"checked:…"` — that changes exactly when the
+   * *scope* solo shows changes (stepping, ticking, clearing). The
+   * side panel scrolls itself to the top on a change, so the page's
+   * first row lands in view instead of wherever the previous page
+   * happened to leave the scroll position. */
+  soloScope?: string;
   /** Solo's match count for this (parent) area — `3 of 12 match` in the
    * signal-panel heading — or `null` while solo isn't applying to it
    * (off, or a zero-match area, which is left untouched by design). Set
@@ -836,6 +853,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     collapsedBySolo,
     collapsedByAxis,
     soloMaskedKeys,
+    soloOffPageKeys,
+    soloScope,
     soloChip,
     collapsedRunHead,
     enumLanes,
@@ -940,6 +959,14 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The empty stand-in drawn in the canvas column while collapsed. */
   const placeholderRef = useRef<HTMLDivElement | null>(null);
+  /** The side panel's own scroll container. Solo's off-page rows drop
+   * out of the list entirely (item 5), so the useful "scroll into
+   * view" a page step needs reduces to scrolling this back to the top
+   * — the short on-show list then starts right at the head. */
+  const signalsScrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (signalsScrollRef.current) signalsScrollRef.current.scrollTop = 0;
+  }, [soloScope]);
   const uplotRef = useRef<uPlot | null>(null);
   const seriesRef = useRef<Map<string, Series>>(new Map());
   const presentRef = useRef<Map<string, number | null>>(new Map());
@@ -3030,7 +3057,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           window.addEventListener("mouseup", onUp);
         }}
       />
-      <div className="plot-area-signals" style={{ flexBasis: `${signalsWidth}px` }}>
+      <div
+        className="plot-area-signals"
+        style={{ flexBasis: `${signalsWidth}px` }}
+        ref={signalsScrollRef}
+      >
         <div className="plot-area-signals-head">
           {isParentHead && (
             // The grip alone is draggable, not the whole head: the head
@@ -3268,7 +3299,16 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         {headingOnly ? null : signals.length === 0 ? (
           <div className="plot-area-empty">drag a signal here, or add a pattern above</div>
         ) : (
-          signals.map((s) => {
+          // Off-page rows drop out of the list entirely — the page is
+          // the working set — so this filters ahead of the map rather
+          // than styling them invisible in place (`soloOffPageKeys`).
+          // `signals.length` above stays the *unfiltered* count: an
+          // area that only looks empty because its match is parked on
+          // another page still isn't "drag a signal here".
+          (soloOffPageKeys && soloOffPageKeys.size > 0
+            ? signals.filter((s) => !soloOffPageKeys.has(signalRefKey(s)))
+            : signals
+          ).map((s) => {
             const key = signalRefKey(s);
             const v = displayValueFor(key);
             const isPrimary = key === primaryKey;

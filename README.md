@@ -1270,7 +1270,9 @@ resample at the end.
   touching its own collapse toggle; a row solo is why you can't see it
   compacts to the single-line hidden treatment above, with its own
   marker instead of the plain dimmed/italic look, so it doesn't read as
-  something you hid yourself. An area solo
+  something you hid yourself — that's the whole matched set, or a
+  captureless pattern's flat filter, on show. Stepping to a page is
+  stricter still: see "Stepping by group" below. An area solo
   applies to also shows a small `3 of 12 match` chip beside its label —
   how many of that area's own series matched — and a zero-match area
   shows no chip at all. The pattern is saved with the panel in the
@@ -1303,7 +1305,14 @@ resample at the end.
   range, `1/2 · "0"–"4" (40 of 96)`). It says `no matches` when the
   pattern selected nothing. Typing or editing the pattern lands on page
   1; **Escape** (or clearing the box) drops the whole solo view at
-  once.
+  once. **A page is the working set**: a match on any other page has no
+  row in the side panel at all — not dimmed, not there — so the list
+  stays short and the page indicator carries the "there's more"
+  context. Stepping scrolls each area's signal panel back to the top,
+  so the new page's first row is always where you land. A signal both
+  hidden on its own and on the current page still shows, compact, same
+  as ever — solo only ever narrows what's visible, it never brings a
+  hidden signal back.
 - **Picking a subset by hand.** **Right-click the solo control, or left-
   or right-click the position read-out,** for the match list, and
   **tick any subset of it** to show exactly those — the groups for a
@@ -1313,7 +1322,9 @@ resample at the end.
   one visit; unticking the last item is the whole matched set again. The
   read-out names the subset — `2 groups · cell=03, cell=07 (12 of 96)`,
   counting instead of listing past two — and the subset is saved with
-  the panel in place of a page. Stepping **leaves** a subset: **›**
+  the panel in place of a page. A ticked subset is the same working set
+  as a page: what isn't in it has no row in the side panel either.
+  Stepping **leaves** a subset: **›**
   resumes at the page after the last ticked group's, **‹** at the page
   before the first ticked group's. Editing the pattern drops it.
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a

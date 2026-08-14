@@ -3784,14 +3784,17 @@ describe("PlotPanel solo", () => {
     expect(rowVisibility().every(([, visible]) => visible)).toBe(true);
     // Completing it makes it live again — and its capture group makes
     // two keys ("" for Cell1, "6" for Cell16), of which the fresh
-    // pattern lands on the first page.
+    // pattern lands on the first page. Cell16's match is on page 2, so
+    // it drops out of the side list entirely (item 5) rather than
+    // showing hidden; PackVoltage never matched at all, so it stays
+    // (item 3's ordinary compact-hidden row, not off-page).
     typeSolo("Cell1(6)?");
     expect(soloBox()).not.toHaveAttribute("aria-invalid");
     expect(rowVisibility()).toEqual([
       ["Cell1", true],
-      ["Cell16", false],
       ["PackVoltage", true],
     ]);
+    expect(screen.queryByText("Cell16")).not.toBeInTheDocument();
   });
 
   it("restores the full view on Escape, and on clearing the box", () => {
@@ -3921,6 +3924,72 @@ describe("PlotPanel solo", () => {
     expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
   });
 
+  it("drops off-page rows from the side list entirely, not just styled hidden", () => {
+    // The page is the working set (groomed 2026-08-14): a match parked
+    // on another page has no row here at all \u2014 no `.hidden` styling to
+    // find, because there is no row.
+    const registry = stepRegistry("el-solo-offpage-absent");
+    renderPanel({ params: { elementId: "el-solo-offpage-absent" }, registry });
+    typeSolo("(Cell\\d)");
+    expect(soloPosition()).toBe('1/3 \u00b7 "Cell1" (1 of 3)');
+    expect(screen.getByText("Cell1")).toBeInTheDocument();
+    expect(screen.queryByText("Cell2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cell3")).not.toBeInTheDocument();
+    // PackVoltage never matched at all \u2014 it's the *ordinary* masked row
+    // (item 3's compact-hidden treatment), not off-page, so it stays.
+    expect(screen.getByText("PackVoltage")).toBeInTheDocument();
+    expect(document.querySelectorAll(".plot-signal-row").length).toBe(2);
+  });
+
+  it("scrolls the side panel back to the top on a page step", () => {
+    const registry = stepRegistry("el-solo-scroll");
+    renderPanel({ params: { elementId: "el-solo-scroll" }, registry });
+    typeSolo("(Cell\\d)");
+    const panel = screen.getByText("Cell1").closest(".plot-area-signals") as HTMLElement;
+    panel.scrollTop = 40;
+    expect(panel.scrollTop).toBe(40);
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(soloPosition()).toBe('2/3 \u00b7 "Cell2" (1 of 3)');
+    expect(panel.scrollTop).toBe(0);
+  });
+
+  it("restores the off-page rows when solo clears", () => {
+    const registry = stepRegistry("el-solo-offpage-restore");
+    renderPanel({ params: { elementId: "el-solo-offpage-restore" }, registry });
+    typeSolo("(Cell\\d)");
+    expect(screen.queryByText("Cell2")).not.toBeInTheDocument();
+
+    typeSolo("");
+    expect(screen.getByText("Cell2")).toBeInTheDocument();
+    expect(document.querySelectorAll(".plot-signal-row").length).toBe(4);
+  });
+
+  it("renders a signal both individually hidden and on the current solo page compact, not suppressed", () => {
+    // The interplay case: `soloMaskSignals` never overrides a signal's
+    // own `hidden` flag for a member of the visible page \u2014 it only
+    // forces `hidden` on the ones *outside* it. So an on-page row that
+    // the user hid stays exactly a hidden row: compact (item 3), never
+    // dropped for being "off the page" (item 5), because it isn't.
+    const registry = makeRegistry({
+      id: "el-solo-hidden-onpage",
+      config: {
+        areas: [{ id: "a1", signals: [sig("Cell1", "V", true), sig("Cell2")] }],
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+    renderPanel({ params: { elementId: "el-solo-hidden-onpage" }, registry });
+    typeSolo("(Cell\\d)");
+    // Numeric-ascending group keys land "1" on page 1.
+    expect(soloPosition()).toBe('1/2 \u00b7 "Cell1" (1 of 2)');
+    const cell1 = screen.getByText("Cell1").closest(".plot-signal-row") as HTMLElement;
+    expect(cell1.classList.contains("hidden")).toBe(true);
+    // The user hid it, not solo \u2014 so no solo marker.
+    expect(cell1.classList.contains("solo-masked")).toBe(false);
+    expect(cell1.querySelector(".plot-signal-message")).toBeNull();
+    // Cell2's group is the other page \u2014 genuinely off it, suppressed.
+    expect(screen.queryByText("Cell2")).not.toBeInTheDocument();
+  });
+
   it("shows every captureless match at once, and leaves a zero-match area alone", () => {
     // A pattern that captures nothing has no index to page by, so it is
     // a flat filter: whatever matches, in every signal panel, all at
@@ -3979,13 +4048,16 @@ describe("PlotPanel solo", () => {
     });
     renderPanel({ params: { elementId: "el-solo-keyed" }, registry });
     typeSolo("Cell(?<cell>\\d+)$");
-    // Both Cell1 rows are the one group, and the read-out names its key.
+    // Both Cell1 rows are the one group on show, and the read-out names
+    // its key. Cell2 and Cell10 match too, just on other pages \u2014 off
+    // the page, not merely unmatched, so they drop out of the side
+    // list entirely (item 5) rather than showing hidden.
     expect(rowVisibility()).toEqual([
       ["Cell1", true],
-      ["Cell2", false],
       ["Cell1", true],
-      ["Cell10", false],
     ]);
+    expect(screen.queryByText("Cell2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cell10")).not.toBeInTheDocument();
     expect(soloPosition()).toBe("1/3 \u00b7 cell=1 (2 of 4)");
     // Keys order numerically: 2 before 10.
     fireEvent.click(screen.getByRole("button", { name: "next solo match" }));

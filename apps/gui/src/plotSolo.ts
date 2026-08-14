@@ -567,6 +567,35 @@ export function soloMaskedKeys(
   return out;
 }
 
+/// The {@link signalRefKey}s of an axis's rows that solo's pattern
+/// *matched* somewhere in the panel (any group, any page) but the
+/// current page/subset does not include — genuinely **off the
+/// page**, as opposed to a row solo never selected at all (which
+/// stays the ordinary masked-hidden row — item 3's compact
+/// treatment, unaffected by paging). This is what the side panel
+/// suppresses entirely rather than rendering compact: the page is the
+/// working set, so a match parked on another page has nothing to show
+/// here until the user steps to it. `matched` is every match's
+/// {@link soloMaskKey} ({@link soloMemberKeys} over the *full* group
+/// list, not the visible page); `visible` is the current
+/// page/subset's ({@link soloVisibleKeys} or the selection's
+/// {@link soloMemberKeys}). Naturally empty whenever the whole matched
+/// set is on show (`page` is `null`, nothing ticked): `visible` then
+/// already covers every match, so nothing matched is left outside it.
+export function soloOffPageKeys(
+  areaId: string,
+  signals: readonly SignalRef[],
+  matched: ReadonlySet<string>,
+  visible: ReadonlySet<string>,
+): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const s of signals) {
+    const key = soloMaskKey(areaId, signalRefKey(s));
+    if (matched.has(key) && !visible.has(key)) out.add(signalRefKey(s));
+  }
+  return out;
+}
+
 /// Parse the persisted `solo` blob. Anything unrecognised reads as solo
 /// off, and junk is dropped rather than rejecting the blob (same
 /// tolerance as the rest of the panel's parsers): a non-integer page, a
