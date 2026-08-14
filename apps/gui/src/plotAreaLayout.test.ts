@@ -3,12 +3,15 @@ import {
   AXIS_MIN_PX,
   AXIS_WEIGHT_DEFAULT,
   applySplitterDelta,
+  axisCollapsedFromRaw,
   axisWeightsFromRaw,
   collapsedRunHeads,
   equalizePair,
+  pruneAxisCollapsed,
   pruneAxisWeights,
   resolveAxisWeights,
   splitterPartnerAbove,
+  toggleAxisCollapsed,
 } from "./plotAreaLayout";
 
 describe("splitterPartnerAbove", () => {
@@ -166,5 +169,35 @@ describe("equalizePair", () => {
   it("returns the same reference when the pair is already equal", () => {
     const w = { a: 2, b: 2 };
     expect(equalizePair(w, "a", "b")).toBe(w);
+  });
+});
+
+describe("axis collapsed store", () => {
+  it("keeps only the ids a persisted blob marks collapsed", () => {
+    expect(axisCollapsedFromRaw({ a: true, b: false, c: "yes", d: true })).toEqual({
+      a: true,
+      d: true,
+    });
+  });
+
+  it("reads a missing or malformed blob as nothing collapsed", () => {
+    expect(axisCollapsedFromRaw(undefined)).toEqual({});
+    expect(axisCollapsedFromRaw(null)).toEqual({});
+    expect(axisCollapsedFromRaw(7)).toEqual({});
+  });
+
+  it("toggles an id on and off, staying sparse", () => {
+    const on = toggleAxisCollapsed({}, "a");
+    expect(on).toEqual({ a: true });
+    // Expanding deletes the entry rather than storing `false`, so an
+    // untouched panel persists nothing.
+    expect(toggleAxisCollapsed(on, "a")).toEqual({});
+  });
+
+  it("drops entries whose axis is gone, same reference when nothing is", () => {
+    const stored = { a: true, gone: true } as const;
+    expect(pruneAxisCollapsed(stored, ["a", "b"])).toEqual({ a: true });
+    const clean = { a: true } as const;
+    expect(pruneAxisCollapsed(clean, ["a", "b"])).toBe(clean);
   });
 });
