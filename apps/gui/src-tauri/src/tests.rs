@@ -2086,6 +2086,51 @@ fn mdf_import_fills_file_backed_signals_from_decoded_message_groups() {
     );
 }
 
+/// Importing signals without frames leaves nothing to anchor the session
+/// on — `run_pump`'s replay origin is the first frame it appends, and
+/// there are no frames. The signal content has to supply it, or a series
+/// recorded last year lands on a timeline that starts now.
+#[test]
+fn a_signals_only_import_takes_its_session_origin_from_the_signals() {
+    let path = mdf_fixture_path("sorted_finalized_dbcdecoded");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+
+    let earliest = groups
+        .iter()
+        .flat_map(|g| &g.signals)
+        .filter_map(|s| s.timestamps_ns.first().copied())
+        .min()
+        .unwrap();
+    assert_eq!(
+        capture::signal_origin_ns(&groups, None, None),
+        Some(earliest)
+    );
+
+    // The import range clips the origin the same way it clips the
+    // samples: an origin outside the window would put the session start
+    // before anything the capture holds.
+    let later = earliest + 20_000_000;
+    let first_in_window = groups
+        .iter()
+        .flat_map(|g| &g.signals)
+        .flat_map(|s| s.timestamps_ns.iter().copied())
+        .filter(|t| *t >= later)
+        .min();
+    assert!(first_in_window > Some(earliest));
+    assert_eq!(
+        capture::signal_origin_ns(&groups, Some(later), None),
+        first_in_window
+    );
+
+    // A file whose signals are all outside the window has no origin to
+    // offer, and the caller keeps the session start it already had.
+    assert_eq!(
+        capture::signal_origin_ns(&groups, Some(u64::MAX), None),
+        None
+    );
+}
+
 /// Saving to BLF drops file-backed signals — the format carries frames
 /// and nothing else can hold them — so the save path says so. A warning,
 /// not a refusal: BLF is still the right save for a capture whose frames

@@ -23,6 +23,17 @@ export interface ImportRange {
 
 const UNBOUNDED_RANGE: ImportRange = { startNs: null, endNs: null };
 
+/// Which of a capture file's contents to bring in. A BLF has one kind
+/// (frames); an MF4 has two independent ones, and the dialog offers a
+/// checkbox per available kind.
+export interface ImportContents {
+  /// The file's signal channel groups, as file-backed signals.
+  signals: boolean;
+  /// The file's CAN frames, onto the timeline, where the project's own
+  /// DBCs decode them.
+  messages: boolean;
+}
+
 /// Elapsed seconds from `originNs`, for the markers list and the range
 /// inputs — both read relative to the capture's first frame.
 function elapsedSeconds(timestampNs: number, originNs: number): number {
@@ -49,7 +60,11 @@ export function BlfChannelMapModal(props: {
   scan: BlfScanResult;
   buses: readonly Bus[];
   initial?: Record<number, ChannelChoice>;
-  onConfirm: (choices: Record<number, ChannelChoice>, range: ImportRange) => void;
+  onConfirm: (
+    choices: Record<number, ChannelChoice>,
+    range: ImportRange,
+    contents: ImportContents,
+  ) => void;
   onCancel: () => void;
   /// Display label only — everything else about the flow is
   /// format-agnostic. Defaults to "BLF".
@@ -61,7 +76,8 @@ export function BlfChannelMapModal(props: {
   decodedMessageGroups?: DecodedMessageGroup[];
   /// MDF only: signals the file carries, imported as file-backed signals
   /// (series-shaped views only — no frames carry them). Shown so the
-  /// import says what it is bringing in beyond the frames.
+  /// import says what it is bringing in beyond the frames, and it is
+  /// what makes the "Signals" content available.
   signalCount?: number;
 }) {
   const {
@@ -92,6 +108,23 @@ export function BlfChannelMapModal(props: {
 
   const set = (ch: number, value: ChannelChoice) =>
     setChoices((prev) => ({ ...prev, [ch]: value }));
+
+  // --- contents (MDF only; a BLF is frames and nothing else) ---
+  // A content is offered only when the file actually carries it.
+  // Signals are on by default, per the import design; messages are
+  // opt-in *when there is something to opt into instead* — with no
+  // signal content the frames are all the file has, and defaulting them
+  // off would make the dialog's default action import nothing.
+  const hasSignals = format === "MDF" && (signalCount ?? 0) > 0;
+  const hasMessages = format === "MDF" && channels.length > 0;
+  const [contents, setContents] = useState<ImportContents>(() => ({
+    signals: hasSignals,
+    messages: format !== "MDF" || !hasSignals,
+  }));
+  // The channel -> bus mapping only decides where frames land, so it is
+  // inert while the frames are not being imported.
+  const mappingActive = contents.messages;
+  const nothingSelected = !contents.signals && !contents.messages;
 
   const hasSpan = scan.first_timestamp_ns != null && scan.last_timestamp_ns != null;
   const originNs = scan.first_timestamp_ns ?? scan.start_unix_nanos;
@@ -181,6 +214,30 @@ export function BlfChannelMapModal(props: {
           {" · started "}
           {new Date(scan.start_unix_nanos / 1e6).toLocaleString()}
         </p>
+        {(hasSignals || hasMessages) && (
+          <div className="blf-map-contents">
+            {hasSignals && (
+              <label className="blf-map-content">
+                <input
+                  type="checkbox"
+                  checked={contents.signals}
+                  onChange={(e) => setContents((c) => ({ ...c, signals: e.target.checked }))}
+                />
+                Signals ({signalCount})
+              </label>
+            )}
+            {hasMessages && (
+              <label className="blf-map-content">
+                <input
+                  type="checkbox"
+                  checked={contents.messages}
+                  onChange={(e) => setContents((c) => ({ ...c, messages: e.target.checked }))}
+                />
+                CAN messages ({scan.frame_count.toLocaleString()})
+              </label>
+            )}
+          </div>
+        )}
         {buses.length === 0 && (
           <p className="modal-empty">
             No logical buses are defined yet. Add at least one bus in
@@ -199,6 +256,7 @@ export function BlfChannelMapModal(props: {
                 value={choices[ch] ?? ""}
                 onChange={(v) => set(ch, v)}
                 ariaLabel={`channel ${ch} bus`}
+                disabled={!mappingActive}
               />
             </div>
           ))}
@@ -299,7 +357,11 @@ export function BlfChannelMapModal(props: {
           <button type="button" onClick={onCancel}>
             Cancel
           </button>
-          <button type="button" onClick={() => onConfirm(choices, range)}>
+          <button
+            type="button"
+            onClick={() => onConfirm(choices, range, contents)}
+            disabled={nothingSelected}
+          >
             Open
           </button>
         </div>

@@ -833,6 +833,14 @@ pub(crate) async fn scan_blf_channels(
 /// rather than through a sink, because MDF events hang off the header
 /// block rather than riding the record stream.
 ///
+/// An MF4 holds two independent kinds of content and the caller says
+/// which it wants. `import_signals` brings in the file's signal channel
+/// groups as file-backed signals; `import_messages` runs the frames
+/// through the pump onto the timeline, where the project's own DBCs
+/// decode them. Neither implies the other, and with `import_messages`
+/// off there are no frames to anchor the session — the signal content
+/// supplies the origin instead (see [`signal_origin_ns`]).
+///
 /// `async` for the same reason as `open_log`: opening and finalizing an
 /// unsorted MDF parses the whole block graph, and that must not hold up
 /// the Tauri main thread.
@@ -845,7 +853,13 @@ pub(crate) async fn import_mdf(
     #[allow(non_snake_case)] channel_bus_mapping: Option<Vec<ChannelBusMapping>>,
     start_ns: Option<u64>,
     end_ns: Option<u64>,
+    #[allow(non_snake_case)] import_signals: Option<bool>,
+    #[allow(non_snake_case)] import_messages: Option<bool>,
 ) -> Result<ImportMdfResult, String> {
+    // Absent flags mean "everything the file has" — the shape the
+    // command had before the contents became selectable.
+    let import_signals = import_signals.unwrap_or(true);
+    let import_messages = import_messages.unwrap_or(true);
     // Open (and, for an unsorted/unfinalized CANedge file, finalize +
     // sort) before returning, so a bad path or a signal-shape file
     // fails immediately rather than behind a spawned thread.
@@ -871,7 +885,11 @@ pub(crate) async fn import_mdf(
     // Read the file's signal channel groups and events before the source
     // is handed to the pump: both are one-time reads that complete,
     // unlike the frame stream, and both need the open file.
-    let signal_groups = source.signal_groups();
+    let signal_groups = if import_signals {
+        source.signal_groups()
+    } else {
+        Vec::new()
+    };
     let mut synthetic_idx = 0u64;
     let notes: Vec<Note> = match source.events() {
         Ok(events) => events
@@ -904,18 +922,32 @@ pub(crate) async fn import_mdf(
             // path must end the load with a visible error, not a
             // silently dead thread the UI waits on forever.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_pump(
-                    &app_for_thread,
-                    source,
-                    Arc::new(AtomicBool::new(false)),
-                    channel_to_bus,
-                    true, // replay_origin: MDF anchors the session at the first frame's ts
-                );
+                let state: State<'_, AppState> = app_for_thread.state();
+                if import_messages {
+                    run_pump(
+                        &app_for_thread,
+                        source,
+                        Arc::new(AtomicBool::new(false)),
+                        channel_to_bus,
+                        true, // replay_origin: MDF anchors the session at the first frame's ts
+                    );
+                } else {
+                    // No frames means no replay origin, so the signals
+                    // are the capture's timeline (ADR 0024). Same wipe
+                    // the pump's first append performs, at the same
+                    // point in the flow.
+                    if let Some(origin) = signal_origin_ns(&signal_groups, start_ns, end_ns) {
+                        state.trace_store.start_session(origin);
+                        restamp_scratch_for_capture(&state);
+                    }
+                    // The frontend's load state ends on this event
+                    // whichever contents were asked for.
+                    let _ = app_for_thread.emit("log-finished", LogFinished::Ok { total: 0 });
+                }
                 // After the frames, not before: `run_pump` mints the
                 // capture identity on the first frame it appends, and
                 // that wipes the signal caches (`restamp_scratch_for_capture`).
                 // Filling ahead of it would have the wipe eat the fill.
-                let state: State<'_, AppState> = app_for_thread.state();
                 let (signals, samples) = fill_file_backed_signals(
                     &state.signal_caches,
                     &signal_groups,
@@ -1010,6 +1042,28 @@ pub(crate) fn fill_file_backed_signals(
         }
     }
     (signals, samples)
+}
+
+/// The earliest sample `groups` will land inside the import range — the
+/// session origin for an import that brings in signals but no frames.
+///
+/// A capture's timeline starts at its own first sample, not at the wall
+/// clock the import happened to run at (ADR 0024). With frames, the pump
+/// takes that origin off the first one it appends; with signals alone
+/// there is nothing else to take it from. `None` when the range excludes
+/// every sample: there is no capture, so the caller leaves the session
+/// start where it was.
+pub(crate) fn signal_origin_ns(
+    groups: &[cannet_mdf::SignalChannelGroup],
+    start_ns: Option<u64>,
+    end_ns: Option<u64>,
+) -> Option<u64> {
+    groups
+        .iter()
+        .flat_map(|g| &g.signals)
+        .flat_map(|s| s.timestamps_ns.iter().copied())
+        .filter(|ts| start_ns.is_none_or(|s| *ts >= s) && end_ns.is_none_or(|e| *ts <= e))
+        .min()
 }
 
 /// One per-message DBC-decoded channel group [`scan_mdf_channels`]

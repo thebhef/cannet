@@ -1868,7 +1868,19 @@ Both are imported as **file-backed signals**: the decoding tool's
 database is not this project's, so nothing here can re-derive the
 second shape from the raw frames. The dialog says how many signals
 arrive and names the messages the decoded groups came from, and the
-same list goes to System Messages. A signal-shape MF4 (a
+same list goes to System Messages.
+
+Because the two contents are independent, the dialog offers **a
+checkbox per content** — *Signals* and *CAN messages* — and imports
+what is ticked. Signals are on by default; CAN messages are opt-in,
+except on a file with no signal content at all, where the frames are
+all there is and defaulting them off would make the dialog's default
+import nothing. Ticking neither disables Open. The channel → bus
+mapping only decides where frames land, so it is inert while CAN
+messages is unticked. An import that brings in signals and no frames
+still gets a timeline: with no first frame to anchor it, the earliest
+sample the import lands becomes the session's start
+([ADR 0024](docs/adr/0024-trace-like-view-timing.md)). A signal-shape MF4 (a
 post-processed measurement with no bus-logging group at all) is
 detected and rejected with a message naming the mismatch, rather than
 opening as an empty capture.
