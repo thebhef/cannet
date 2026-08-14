@@ -404,6 +404,17 @@ export function App() {
       return next;
     });
   }, []);
+  // Re-read the host state after the session has moved to another
+  // project directory, and re-seed the view state hydrated from it.
+  // The project-scoped half of that state (ADR 0042 §3) is a different
+  // file's now, and the recents list above is a *window* onto one of
+  // its values — left alone it would keep showing the project we left
+  // and, on the next import, write that merged list into the project we
+  // just moved to.
+  const rehydrateProjectState = useCallback(async () => {
+    await hydrateState();
+    setRecentCaptures(hostState().recent_blfs);
+  }, []);
   // Session-start time (Unix epoch seconds) — every trace view renders
   // frame timestamps relative to this. Driven by the `trace-grew` event,
   // which is in turn driven by `start_session` on the host. Single zero
@@ -1739,31 +1750,45 @@ export function App() {
         void invoke("rbs_unload", { elementId: e.element.id }).catch(() => {});
       }
     }
-    seedDefaultLayout();
-    rememberProject(null);
-    void loadDbcSet([], {});
-    setDbcBuses({});
-    setBuses([]);
-    setInterfaceBindings([]);
-    setLocalVirtualBuses([]);
-    setSignalColors({});
-    void invoke("disconnect_remote_server", { address: null }).catch(() => {});
-    setRemoteSessions(new Map());
-    setBusConfigInFlight(new Map());
-    // Drop any host-side local virtual buses left from the
-    // previous project (ADR 0021).
-    void invoke("replay_local_virtual_buses", {
-      defs: [],
-    }).catch(() => {});
-    // Drop the host TX-message pool too, so a New
-    // project starts with no transmit frames.
-    void invoke("clear_transmit_frames").catch(() => {});
-    // Fire-and-forget the host clear + reset the session synchronously.
-    // `seedDefaultLayout` already reseeded the registry, so don't restart
-    // elements.
-    void resetSession({ fireAndForget: true, startElements: false });
-    setDirty(false);
-  }, [seedDefaultLayout, rememberProject, loadDbcSet, resetSession]);
+    void (async () => {
+      // An unsaved project is a project of its own (ADR 0042 §1/§7), in
+      // the directory cannet auto-locates for it — so hand the session
+      // back to the host and re-read the project-scoped state before
+      // anything below writes any. In between, the host has moved but
+      // the cached state is still the previous project's, and every
+      // write flushes the whole struct: a `set_state` issued in that
+      // window would deposit the project we just left into the one we
+      // just moved to.
+      await invoke("close_project").catch((err) => {
+        console.error("close_project failed", err);
+      });
+      await rehydrateProjectState();
+      seedDefaultLayout();
+      rememberProject(null);
+      void loadDbcSet([], {});
+      setDbcBuses({});
+      setBuses([]);
+      setInterfaceBindings([]);
+      setLocalVirtualBuses([]);
+      setSignalColors({});
+      void invoke("disconnect_remote_server", { address: null }).catch(() => {});
+      setRemoteSessions(new Map());
+      setBusConfigInFlight(new Map());
+      // Drop any host-side local virtual buses left from the
+      // previous project (ADR 0021).
+      void invoke("replay_local_virtual_buses", {
+        defs: [],
+      }).catch(() => {});
+      // Drop the host TX-message pool too, so a New
+      // project starts with no transmit frames.
+      void invoke("clear_transmit_frames").catch(() => {});
+      // Fire-and-forget the host clear + reset the session synchronously.
+      // `seedDefaultLayout` already reseeded the registry, so don't restart
+      // elements.
+      void resetSession({ fireAndForget: true, startElements: false });
+      setDirty(false);
+    })();
+  }, [seedDefaultLayout, rememberProject, loadDbcSet, resetSession, rehydrateProjectState]);
 
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
@@ -1780,14 +1805,14 @@ export function App() {
       // state — the layout, its recent BLFs, its channel maps — is a
       // different file's now. Re-read before anything writes the previous
       // project's values into it.
-      await hydrateState();
+      await rehydrateProjectState();
       void applyProject(project, selected);
       rememberProject(selected);
       setDirty(false);
     } catch (err) {
       setState({ kind: "error", message: String(err) });
     }
-  }, [applyProject, rememberProject]);
+  }, [applyProject, rememberProject, rehydrateProjectState]);
 
   // Returns true if the project was written, false if it wasn't (e.g.
   // the user cancelled the file picker, or the write failed).
@@ -1807,7 +1832,7 @@ export function App() {
         // The project directory may have moved, so the project-scoped
         // half of the host state now resolves somewhere else; re-read it
         // before anything writes the stale copy back.
-        if (promote) await hydrateState();
+        if (promote) await rehydrateProjectState();
         rememberProject(path);
         setDirty(false);
         return true;
@@ -1816,7 +1841,7 @@ export function App() {
         return false;
       }
     },
-    [gatherProject, rememberProject],
+    [gatherProject, rememberProject, rehydrateProjectState],
   );
 
   const handleSaveProjectAs = useCallback(async (): Promise<boolean> => {
@@ -2715,6 +2740,11 @@ export function App() {
         if (projectToOpen) {
           try {
             const p = await invoke<Project>("open_project", { path: projectToOpen });
+            // The host may have moved onto a directory other than the
+            // one it resolved before the WebView existed — automation's
+            // `--project` names its own — so the project-scoped state
+            // hydrated at load is re-read here too.
+            await rehydrateProjectState();
             // Awaited: the automation handoff below must not connect
             // while the project is still applying — a capture started
             // mid-apply flips views live and `applyProject`'s
@@ -2746,7 +2776,7 @@ export function App() {
         if (cfg) setAutomation(cfg);
       })();
     },
-    [seedDefaultLayout, applyProject, rememberProject, clearGesture],
+    [seedDefaultLayout, applyProject, rememberProject, clearGesture, rehydrateProjectState],
   );
 
   const { resting: restingStatus, transient: transientStatus } = useMemo(

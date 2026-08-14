@@ -1042,7 +1042,10 @@ never ends up on a network share. A `.gitignore` covering `cache/` is
 written with it, since a project directory is plausibly a repository.
 Settings resolve user-first, project-second: a value in
 `.cannet/settings.json` overrides your own for that project, and every
-other setting stays as you set it. See
+other setting stays as you set it. **New project** hands the session
+back to the auto-located directory an unsaved project gets, so what it
+records from there — its recent captures, its view state — belongs to
+it and not to the project you just left. See
 [`docs/adr/0042-project-directory-and-scopes.md`](docs/adr/0042-project-directory-and-scopes.md).
 
 **Settings.** The settings panel is a view over `settings.json`, not a

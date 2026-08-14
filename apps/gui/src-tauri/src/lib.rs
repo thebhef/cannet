@@ -487,6 +487,7 @@ pub fn run() -> ! {
             disconnect_remote_server,
             connection_state::get_connection_states,
             project::open_project,
+            project::close_project,
             project::save_project,
             project::save_project_as,
             project_dir::active_project_is_auto_located,

@@ -6,6 +6,8 @@
 //! (ADR 0042 §1), and [`save_project_as`] *creates* one at the
 //! destination the user picked and moves the session there with its data.
 //! Plain [`save_project`] writes the file and touches no directory.
+//! [`close_project`] is the way back out: the session returns to the
+//! auto-located directory an unsaved project belongs in.
 //!
 //! The host owns the project model. The two fields it *doesn't*
 //! interpret are `layout` (`dockview`'s serialized layout blob) and
@@ -325,6 +327,36 @@ pub fn open_project(
             Err(msg)
         }
     }
+}
+
+/// Leave the open project: the session goes back to the auto-located
+/// project directory an unsaved project belongs in (ADR 0042 §1 and §7
+/// — an unsaved project is a project, in a directory cannet chose, not
+/// an anonymous mode).
+///
+/// Without this the session would stay rooted where the project it just
+/// left is, and everything workspace-scoped — the layout snapshot, the
+/// channel maps, the recent captures — would keep resolving to *that*
+/// project's `.cannet/state.json`, which is precisely the cross-project
+/// bleed the two scopes exist to prevent.
+///
+/// The capture does not come along ([`crate::trace_store::Carry`]
+/// `Nothing`): a new project starts empty, and the project being left
+/// keeps its own capture where it belongs — the same rule as opening a
+/// different project.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_state::AppState>) {
+    let cache_root = app
+        .state::<crate::project_dir::ActiveProjectDir>()
+        .cache_root()
+        .to_path_buf();
+    let dir = crate::project_dir::resolve(None, &cache_root);
+    crate::remember_project_dir(&app, &dir, None);
+    crate::reroot_session(&app, &dir, crate::trace_store::Carry::Nothing);
+    // No project file, so no project identity to stamp a capture with.
+    *state.active_project_id() = None;
+    crate::sys_info!(&app, "project", "closed the open project");
 }
 
 /// Serialize `project` (pretty-printed) and write it to `path`. Returns
