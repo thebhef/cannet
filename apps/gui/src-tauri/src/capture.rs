@@ -912,6 +912,7 @@ pub(crate) async fn import_mdf(
                     &signal_groups,
                     start_ns,
                     end_ns,
+                    &mdf_path,
                 );
                 if signals > 0 {
                     sys_info!(
@@ -966,6 +967,7 @@ pub(crate) fn fill_file_backed_signals(
     groups: &[cannet_mdf::SignalChannelGroup],
     start_ns: Option<u64>,
     end_ns: Option<u64>,
+    source_path: &str,
 ) -> (usize, u64) {
     let (mut signals, mut samples) = (0usize, 0u64);
     for group in groups {
@@ -983,6 +985,7 @@ pub(crate) fn fill_file_backed_signals(
                 continue;
             }
             let info = FileSignalInfo {
+                source_path: source_path.to_string(),
                 group: u32::try_from(group.group_index).unwrap_or(u32::MAX),
                 group_name: group.name.clone(),
                 name: signal.name.clone(),

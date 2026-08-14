@@ -2274,6 +2274,7 @@ fn the_demo_mdf_imports_frames_signals_and_markers() {
         &source.signal_groups(),
         None,
         None,
+        "demo.mf4",
     );
     assert_eq!(signals, 3);
     assert!(samples > 0);
@@ -2339,6 +2340,7 @@ fn file_backed_state() -> AppState {
     invalidate_derived_caches(&state);
     for (name, unit, base) in [("EngineSpeed", "rpm", 800.0), ("CoolantTemp", "degC", 70.0)] {
         let info = signal_cache::FileSignalInfo {
+            source_path: "analog.mf4".into(),
             group: 1,
             group_name: Some("Analog".into()),
             name: name.into(),
@@ -2536,7 +2538,8 @@ fn mdf_import_fills_file_backed_signals_from_the_signal_channel_groups() {
 
     let dir = tempfile::TempDir::new().unwrap();
     let caches = SignalCacheStore::new(dir.path());
-    let (signals, samples) = capture::fill_file_backed_signals(&caches, &groups, None, None);
+    let (signals, samples) =
+        capture::fill_file_backed_signals(&caches, &groups, None, None, &path.to_string_lossy());
     assert_eq!((signals, samples), (2, 40));
 
     let listed = caches.file_signals();
@@ -2572,7 +2575,7 @@ fn mdf_import_fills_file_backed_signals_from_the_signal_channel_groups() {
 
     // A second import of the same file replaces the series rather than
     // appending to it — a re-import is not a doubling.
-    capture::fill_file_backed_signals(&caches, &groups, None, None);
+    capture::fill_file_backed_signals(&caches, &groups, None, None, &path.to_string_lossy());
     assert_eq!(
         caches
             .file_signals()
@@ -2581,6 +2584,41 @@ fn mdf_import_fills_file_backed_signals_from_the_signal_channel_groups() {
             .collect::<Vec<_>>(),
         vec![20, 20],
     );
+}
+
+/// The import records **which file** each series came from, and the
+/// Database view's catalog command arranges the capture's file-backed
+/// signals under it (ADR 0052): source file → channel group → signal.
+#[test]
+fn file_backed_catalog_branches_under_the_file_the_import_read() {
+    let path = mdf_fixture_path("sorted_finalized_mixed");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    let source_path = path.to_string_lossy().to_string();
+    capture::fill_file_backed_signals(&caches, &groups, None, None, &source_path);
+
+    let content = signal_snapshot::file_backed_content(caches.file_signals());
+    assert_eq!(content.len(), 1, "one branch, for the one imported file");
+    assert_eq!(content[0].source_path, source_path);
+    assert_eq!(content[0].groups.len(), 1);
+    assert_eq!(content[0].groups[0].label, "Analog");
+    assert_eq!(
+        content[0].groups[0]
+            .signals
+            .iter()
+            .map(|s| (s.name.as_str(), s.unit.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("CoolantTemp", "degC"), ("EngineSpeed", "rpm")],
+    );
+
+    // The catalog is the capture's, so discarding the capture empties
+    // it — the branches live and die with the capture, never with the
+    // project.
+    caches.clear();
+    assert!(signal_snapshot::file_backed_content(caches.file_signals()).is_empty());
 }
 
 /// The import range (ADR 0046) bounds the file-backed fill exactly as
@@ -2603,6 +2641,7 @@ fn mdf_import_range_bounds_the_file_backed_fill_too() {
         &groups,
         Some(base + 24_000_000),
         Some(base + 60_000_000),
+        &path.to_string_lossy(),
     );
     assert_eq!((signals, samples), (2, 8), "four samples per channel");
 
@@ -2611,7 +2650,7 @@ fn mdf_import_range_bounds_the_file_backed_fill_too() {
     let empty_dir = tempfile::TempDir::new().unwrap();
     let empty = SignalCacheStore::new(empty_dir.path());
     assert_eq!(
-        capture::fill_file_backed_signals(&empty, &groups, Some(base + 10_000_000_000), None),
+        capture::fill_file_backed_signals(&empty, &groups, Some(base + 10_000_000_000), None, ""),
         (0, 0)
     );
     assert!(empty.file_signals().is_empty());
@@ -2627,7 +2666,7 @@ fn mdf_import_of_a_pure_logger_file_fills_no_file_backed_signals() {
     let dir = tempfile::TempDir::new().unwrap();
     let caches = SignalCacheStore::new(dir.path());
     assert_eq!(
-        capture::fill_file_backed_signals(&caches, &source.signal_groups(), None, None),
+        capture::fill_file_backed_signals(&caches, &source.signal_groups(), None, None, ""),
         (0, 0)
     );
 }

@@ -12,8 +12,9 @@ use std::sync::Arc;
 use cannet_dbc::{Database, SignalDescriptor};
 
 use crate::ipc::{
-    SignalDescriptorRecord, SignalPageRow, SignalSectionHeaderRecord, SignalSections,
-    SignalSelection, SignalSnapshotRecord,
+    FileBackedContentRecord, FileBackedGroupRecord, FileBackedSignalRecord, SignalDescriptorRecord,
+    SignalPageRow, SignalSectionHeaderRecord, SignalSections, SignalSelection,
+    SignalSnapshotRecord,
 };
 use crate::signal_cache::FileSignalEntry;
 
@@ -272,6 +273,59 @@ pub fn select_file_backed(
         });
     }
     Ok(out)
+}
+
+/// The file-backed signals arranged the way the Database view lists
+/// them (ADR 0052): one branch per **source file**, each holding that
+/// file's signal channel groups, each holding its signals. This is the
+/// MDF format's own canonical structure — file → channel group →
+/// signal — not a normalisation of the DBC tree beside it.
+///
+/// The arrangement is the model's, so the view renders what comes back
+/// and derives nothing: files sort by path, groups by their index
+/// within a file, signals by name, and a group with no name of its own
+/// gets its index-derived label here
+/// ([`FileSignalInfo::group_label`]). A series restored from a
+/// manifest written before source paths were recorded has an empty
+/// path and lists as its own unnamed branch rather than disappearing.
+///
+/// Only name and unit ride along: what the tree shows about a signal.
+/// Sample counts and rates stay in [`FileSignalEntry`] for the surfaces
+/// that list series as series.
+#[must_use]
+pub fn file_backed_content(entries: Vec<FileSignalEntry>) -> Vec<FileBackedContentRecord> {
+    let mut by_file: HashMap<String, HashMap<u32, FileBackedGroupRecord>> = HashMap::new();
+    for entry in entries {
+        let groups = by_file.entry(entry.info.source_path.clone()).or_default();
+        groups
+            .entry(entry.info.group)
+            .or_insert_with(|| FileBackedGroupRecord {
+                group: entry.info.group,
+                label: entry.info.group_label(),
+                signals: Vec::new(),
+            })
+            .signals
+            .push(FileBackedSignalRecord {
+                name: entry.info.name,
+                unit: entry.info.unit,
+            });
+    }
+    let mut out: Vec<FileBackedContentRecord> = by_file
+        .into_iter()
+        .map(|(source_path, groups)| {
+            let mut groups: Vec<FileBackedGroupRecord> = groups.into_values().collect();
+            groups.sort_by_key(|g| g.group);
+            for g in &mut groups {
+                g.signals.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+            FileBackedContentRecord {
+                source_path,
+                groups,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| a.source_path.cmp(&b.source_path));
+    out
 }
 
 /// Sort snapshot rows host-side by one column (the signal-view analog
@@ -1083,6 +1137,74 @@ mod tests {
             vec!["^first$".to_string(), "/Bms/".to_string()]
         );
         assert!(wide.keys.is_empty());
+    }
+
+    fn file_entry(
+        source: &str,
+        group: u32,
+        group_name: Option<&str>,
+        name: &str,
+        unit: &str,
+    ) -> FileSignalEntry {
+        FileSignalEntry {
+            info: crate::signal_cache::FileSignalInfo {
+                source_path: source.into(),
+                group,
+                group_name: group_name.map(Into::into),
+                name: name.into(),
+                unit: unit.into(),
+            },
+            sample_count: 7,
+            latest: None,
+            rate: None,
+        }
+    }
+
+    /// The Database view's file-backed branches (ADR 0052): one per
+    /// source file, then that file's channel groups, then their signals
+    /// — the MDF's own structure, arranged by the model.
+    #[test]
+    fn file_backed_content_branches_per_source_file_then_group() {
+        let content = file_backed_content(vec![
+            file_entry("/logs/b.mf4", 2, None, "Ignition", ""),
+            file_entry("/logs/b.mf4", 1, Some("Analog"), "EngineSpeed", "rpm"),
+            file_entry("/logs/a.mf4", 0, Some("Bench"), "Vbat", "V"),
+            file_entry("/logs/b.mf4", 1, Some("Analog"), "CoolantTemp", "degC"),
+        ]);
+        let paths: Vec<&str> = content.iter().map(|c| c.source_path.as_str()).collect();
+        assert_eq!(paths, vec!["/logs/a.mf4", "/logs/b.mf4"]);
+
+        let b = &content[1];
+        let groups: Vec<(u32, &str)> = b
+            .groups
+            .iter()
+            .map(|g| (g.group, g.label.as_str()))
+            .collect();
+        // Groups in file order; an unnamed one takes its index-derived
+        // label rather than rendering blank.
+        assert_eq!(groups, vec![(1, "Analog"), (2, "group 2")]);
+        let analog: Vec<(&str, &str)> = b.groups[0]
+            .signals
+            .iter()
+            .map(|s| (s.name.as_str(), s.unit.as_str()))
+            .collect();
+        // Name + unit, in name order. No sample counts: this is a
+        // catalog of what exists, not a report on the series.
+        assert_eq!(
+            analog,
+            vec![("CoolantTemp", "degC"), ("EngineSpeed", "rpm")]
+        );
+    }
+
+    /// A series restored from a manifest written before source paths
+    /// were recorded still lists — under a branch with no name — rather
+    /// than vanishing from the catalog.
+    #[test]
+    fn file_backed_content_keeps_a_series_with_no_recorded_source() {
+        let content = file_backed_content(vec![file_entry("", 0, Some("Analog"), "Vbat", "V")]);
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0].source_path, "");
+        assert_eq!(content[0].groups[0].signals[0].name, "Vbat");
     }
 
     #[test]
