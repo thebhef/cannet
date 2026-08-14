@@ -3,10 +3,11 @@
 //! Bare invocation is the production hardware proxy (ADR 0040): it
 //! supervises the `cannet-python-can` sidecar on loopback and relays
 //! the sidecar's interfaces, under their real identities, to one
-//! network endpoint. That endpoint terminates TLS on request
-//! (ADR 0041), under the server's own generated certificate or
-//! operator-supplied material. Unless `--no-mdns` is given, it also
-//! advertises `_cannet._tcp` so the GUI's browse can find it.
+//! network endpoint. Leaving loopback auto-enables TLS and a bearer
+//! token (ADR 0041), under the server's own generated certificate or
+//! operator-supplied material; `--no-tls` serves the endpoint in the
+//! clear instead. Unless `--no-mdns` is given, it also advertises
+//! `_cannet._tcp` so the GUI's browse can find it.
 //!
 //! Everything it says goes to two sinks — the operator's stderr and a
 //! rolling `cannet-server.log` in the same per-user directory that holds
@@ -91,15 +92,10 @@ struct ProxyArgs {
     /// behavior when both are absent.
     #[arg(long, value_name = "PATH")]
     sidecar_dir: Option<PathBuf>,
-    /// Terminate TLS on the bound endpoint, using the server's own
-    /// certificate — generated and persisted in the per-user data
-    /// directory on first use, so its fingerprint survives restarts.
-    /// Implied by `--cert`.
-    #[arg(long)]
-    tls: bool,
     /// PEM certificate (or chain) to present instead of the generated
     /// one. Requires `--key`. Renewing this certificate changes the
     /// fingerprint, so every pinned client has to accept it again.
+    /// Serves TLS regardless of the bind address, even loopback.
     #[arg(long, value_name = "PATH", requires = "key")]
     cert: Option<PathBuf>,
     /// PEM private key for `--cert`.
@@ -112,11 +108,14 @@ struct ProxyArgs {
     /// same value without that exposure.
     #[arg(long, value_name = "VALUE")]
     token: Option<String>,
-    /// Allow an unprotected endpoint to be bound to a routable address.
-    /// Suppresses the startup refusal and nothing else — TLS that is
-    /// configured stays on.
+    /// Serve a routable bind in the clear: no TLS, no token (ADR 0041).
+    /// A routable bind auto-enables both by default; this is the
+    /// operator saying out loud they want neither. Ignored when
+    /// `--cert`/`--key` are given — operator-supplied material is
+    /// served, not discarded. Has no effect on a loopback bind, which
+    /// is plaintext by default already.
     #[arg(long)]
-    insecure: bool,
+    no_tls: bool,
     /// Instance name to advertise via mDNS/DNS-SD (`_cannet._tcp`).
     /// Defaults to this machine's hostname. Ignored with `--no-mdns`.
     #[arg(long, value_name = "NAME")]
@@ -130,17 +129,21 @@ struct ProxyArgs {
 
 impl ProxyArgs {
     /// The TLS identity this invocation serves with, or `None` when it
-    /// serves plaintext. Operator material wins over the generated
-    /// identity; `--tls` alone reaches for the generated one.
-    fn identity(&self) -> Result<Option<ServerIdentity>, IdentityError> {
+    /// serves plaintext.
+    ///
+    /// Operator material (`--cert`/`--key`) always wins, on any bind
+    /// address. Otherwise: a loopback bind stays plaintext, and a
+    /// routable bind auto-enables the generated identity (loaded from,
+    /// or minted into, `dir`) unless `--no-tls` says to serve it in the
+    /// clear (ADR 0041). There is no longer a way to ask for TLS on a
+    /// loopback bind short of supplying material with `--cert`/`--key`.
+    fn identity(&self, dir: &Path) -> Result<Option<ServerIdentity>, IdentityError> {
         match (&self.cert, &self.key) {
             (Some(cert), Some(key)) => ServerIdentity::from_files(cert, key).map(Some),
             // clap's `requires` rejects one without the other, so the
             // remaining cases are "neither".
-            _ if self.tls => {
-                ServerIdentity::load_or_generate(&identity::default_identity_dir()?).map(Some)
-            }
-            _ => Ok(None),
+            _ if self.no_tls || is_loopback(self.bind.ip()) => Ok(None),
+            _ => ServerIdentity::load_or_generate(dir).map(Some),
         }
     }
 
@@ -203,7 +206,7 @@ impl Protections {
     fn missing(self) -> Vec<&'static str> {
         let mut missing = Vec::new();
         if !self.tls {
-            missing.push("TLS (--tls, or --cert with --key)");
+            missing.push("TLS");
         }
         if !self.token {
             // In practice this travels with the line above: a token is
@@ -229,15 +232,16 @@ fn is_loopback(ip: IpAddr) -> bool {
     }
 }
 
-/// Refuse to bind an unprotected endpoint to anything but loopback
-/// (ADR 0041).
+/// Refuse to bind an unprotected endpoint to anything but loopback.
 ///
-/// A loopback bind is the operator's own machine and stays plaintext by
-/// default. Anything routable exposes control of physical CAN hardware
-/// to whoever can reach the port, so it has to be protected — or the
-/// operator has to say `--insecure` out loud. `--insecure` suppresses
-/// this error and nothing else: it never turns off protection that is
-/// configured.
+/// The production proxy (`run_proxy`) no longer calls this: a routable
+/// bind there auto-enables TLS and a token by construction
+/// ([`ProxyArgs::identity`]), so the only way it ever serves
+/// unprotected is `--no-tls`, an explicit choice rather than a refusal
+/// to override. What remains is `debug replay` and `debug vbus`,
+/// dev/test tooling that terminates no TLS at all — the same
+/// loopback-only default, with their own `--insecure` as the escape
+/// hatch.
 fn guard_bind(
     bind: SocketAddr,
     protections: Protections,
@@ -566,25 +570,22 @@ impl SidecarHost for CliSidecarHost {
 /// current address per RPC rather than capturing one at startup — a
 /// restart re-binds a different port.
 async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
-    let identity = args.identity()?;
+    let identity_dir = identity::default_identity_dir()?;
+    let identity = args.identity(&identity_dir)?;
     let from_env = std::env::var(TOKEN_ENV).ok();
     // The token is enforced exactly when TLS is (ADR 0041): presenting
     // a bearer token on a plaintext channel hands it to the path, so an
-    // endpoint that cannot protect it does not ask for it.
+    // endpoint that cannot protect it does not ask for it. There is no
+    // startup refusal to run here (item 12): `identity()` has already
+    // made a routable bind either TLS-protected or plaintext by the
+    // operator's explicit `--no-tls`, so this pair is never
+    // "unprotected by accident."
     let token = if identity.is_some() {
-        Some(args.access_token(&identity::default_identity_dir()?, from_env.as_deref())?)
+        Some(args.access_token(&identity_dir, from_env.as_deref())?)
     } else {
         None
     };
     let token_was_supplied = args.token_was_supplied(from_env.as_deref());
-    guard_bind(
-        args.bind,
-        Protections {
-            tls: identity.is_some(),
-            token: token.is_some(),
-        },
-        args.insecure,
-    )?;
 
     // Convenience only (ADR 0040): a failed advertisement is a
     // warning, not a startup refusal — the manual `host:port` field
@@ -649,8 +650,9 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
         logging::warn(
             PROXY,
             "the token given is not enforced on a plaintext endpoint, because a \
-             bearer token must not ride an unencrypted channel. Add --tls (or \
-             --cert with --key).",
+             bearer token must not ride an unencrypted channel. Serve this over \
+             TLS instead: drop --no-tls on a routable bind, or supply --cert \
+             with --key.",
         );
     }
     logging::info(
@@ -839,16 +841,20 @@ mod tests {
         assert_eq!(cli.proxy.sidecar_log_level, "info");
         assert_eq!(cli.proxy.sidecar_restart_budget, 3);
         // Plaintext by default: a loopback endpoint is the dev and
-        // local-GUI path (ADR 0041).
-        assert!(!cli.proxy.tls);
-        assert!(cli.proxy.identity().unwrap().is_none());
+        // local-GUI path (ADR 0041). An unused directory proves the
+        // generated-identity path is never even reached for it.
+        assert!(cli
+            .proxy
+            .identity(Path::new("/should-not-be-touched"))
+            .unwrap()
+            .is_none());
         assert!(cli.proxy.token.is_none());
     }
 
     #[test]
     fn a_token_on_the_command_line_is_used_and_persisted_nowhere() {
         let dir = tempfile::tempdir().unwrap();
-        let cli = Cli::try_parse_from(["cannet-server", "--tls", "--token", "operator-chosen"])
+        let cli = Cli::try_parse_from(["cannet-server", "--token", "operator-chosen"])
             .expect("--token should parse");
         let token = cli.proxy.access_token(dir.path(), None).unwrap();
         assert_eq!(token.as_str(), "operator-chosen");
@@ -864,7 +870,7 @@ mod tests {
         // The non-persisting path for operators who would rather not
         // put a secret in argv, where every process lister can read it.
         let dir = tempfile::tempdir().unwrap();
-        let cli = Cli::try_parse_from(["cannet-server", "--tls"]).unwrap();
+        let cli = Cli::try_parse_from(["cannet-server"]).unwrap();
         let token = cli
             .proxy
             .access_token(dir.path(), Some("from-the-environment"))
@@ -876,8 +882,7 @@ mod tests {
     #[test]
     fn the_flag_wins_over_the_environment() {
         let dir = tempfile::tempdir().unwrap();
-        let cli =
-            Cli::try_parse_from(["cannet-server", "--tls", "--token", "from-the-flag"]).unwrap();
+        let cli = Cli::try_parse_from(["cannet-server", "--token", "from-the-flag"]).unwrap();
         let token = cli
             .proxy
             .access_token(dir.path(), Some("from-the-environment"))
@@ -890,7 +895,7 @@ mod tests {
         // The default flow: the token is minted once and reprinted on
         // every later start, so a client that stored it keeps working.
         let dir = tempfile::tempdir().unwrap();
-        let cli = Cli::try_parse_from(["cannet-server", "--tls"]).unwrap();
+        let cli = Cli::try_parse_from(["cannet-server"]).unwrap();
         let first = cli.proxy.access_token(dir.path(), None).unwrap();
         let second = cli.proxy.access_token(dir.path(), None).unwrap();
         assert_eq!(first.as_str(), second.as_str());
@@ -940,10 +945,99 @@ mod tests {
         .expect("--cert/--key should parse");
         let identity = cli
             .proxy
-            .identity()
+            .identity(Path::new("/should-not-be-touched"))
             .unwrap()
-            .expect("operator material means TLS, with or without --tls");
+            .expect("operator material means TLS regardless of the bind address");
         assert_eq!(identity.fingerprint(), generated.fingerprint());
+    }
+
+    #[test]
+    fn a_loopback_bind_serves_plaintext_with_no_flags() {
+        // Guard-seam matrix, cell 1 of 4: loopback × no flags.
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["cannet-server", "--bind", "127.0.0.1:50051"]).unwrap();
+        assert!(cli.proxy.identity(dir.path()).unwrap().is_none());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "a loopback bind must never reach for the generated identity"
+        );
+    }
+
+    #[test]
+    fn a_loopback_bind_with_no_tls_still_serves_plaintext() {
+        // Guard-seam matrix, cell 2 of 4: loopback × --no-tls. `--no-tls`
+        // is a no-op here — loopback was already plaintext by default.
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["cannet-server", "--bind", "127.0.0.1:50051", "--no-tls"])
+            .unwrap();
+        assert!(cli.proxy.identity(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_routable_bind_auto_enables_tls_with_no_flags() {
+        // Guard-seam matrix, cell 3 of 4: routable × no flags. Item 12:
+        // the startup refusal is gone, replaced by auto-enabling TLS
+        // (and, downstream in `run_proxy`, the bearer token that always
+        // accompanies it) with nothing said on the command line.
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["cannet-server", "--bind", "0.0.0.0:50051"]).unwrap();
+        let identity = cli
+            .proxy
+            .identity(dir.path())
+            .unwrap()
+            .expect("a routable bind must auto-enable TLS with no flags");
+        assert_eq!(
+            identity.fingerprint(),
+            ServerIdentity::load_or_generate(dir.path())
+                .unwrap()
+                .fingerprint(),
+            "the auto-enabled identity is the same generated-and-persisted one \
+             a restart reloads"
+        );
+    }
+
+    #[test]
+    fn a_routable_bind_with_no_tls_serves_plaintext() {
+        // Guard-seam matrix, cell 4 of 4: routable × --no-tls, the one
+        // remaining escape hatch (ADR 0041).
+        let dir = tempfile::tempdir().unwrap();
+        let cli =
+            Cli::try_parse_from(["cannet-server", "--bind", "0.0.0.0:50051", "--no-tls"]).unwrap();
+        assert!(cli.proxy.identity(dir.path()).unwrap().is_none());
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "--no-tls must not reach for the generated identity either"
+        );
+    }
+
+    #[test]
+    fn top_level_tls_flag_no_longer_parses() {
+        // `--tls` has nothing left to opt into: a routable bind
+        // auto-enables it, and a loopback bind stays plaintext.
+        assert!(
+            Cli::try_parse_from(["cannet-server", "--tls"]).is_err(),
+            "--tls is removed from the production proxy"
+        );
+    }
+
+    #[test]
+    fn top_level_insecure_flag_no_longer_parses() {
+        // `--insecure` suppressed a refusal that no longer exists on
+        // this path; `--no-tls` replaces it.
+        assert!(
+            Cli::try_parse_from(["cannet-server", "--insecure"]).is_err(),
+            "--insecure is removed from the production proxy"
+        );
+    }
+
+    #[test]
+    fn no_tls_flag_parses_and_defaults_off() {
+        let cli = Cli::try_parse_from(["cannet-server"]).unwrap();
+        assert!(!cli.proxy.no_tls);
+        let cli = Cli::try_parse_from(["cannet-server", "--no-tls"]).unwrap();
+        assert!(cli.proxy.no_tls);
     }
 
     #[test]
@@ -1291,14 +1385,15 @@ mod tests {
     }
 
     #[test]
-    fn insecure_does_not_turn_off_configured_tls() {
-        // `--insecure` suppresses the refusal; it is not a way to
-        // disable TLS the operator asked for.
+    fn no_tls_does_not_turn_off_configured_tls() {
+        // `--no-tls` is the escape hatch for the *generated* identity;
+        // it is not a way to discard TLS material the operator asked
+        // for by name.
         let dir = tempfile::tempdir().unwrap();
         let generated = ServerIdentity::load_or_generate(dir.path()).unwrap();
         let cli = Cli::try_parse_from([
             "cannet-server",
-            "--insecure",
+            "--no-tls",
             "--bind",
             "0.0.0.0:50051",
             "--cert",
@@ -1306,12 +1401,12 @@ mod tests {
             "--key",
             dir.path().join("server-key.pem").to_str().unwrap(),
         ])
-        .expect("--insecure alongside --cert/--key should parse");
+        .expect("--no-tls alongside --cert/--key should parse");
         let identity = cli
             .proxy
-            .identity()
+            .identity(Path::new("/should-not-be-touched"))
             .unwrap()
-            .expect("--insecure must not discard configured TLS material");
+            .expect("--no-tls must not discard configured TLS material");
         assert_eq!(identity.fingerprint(), generated.fingerprint());
     }
 
