@@ -574,11 +574,19 @@ crate retained long-term).
   minimum-delay sample selection, carried by the `ClockProbe` /
   `ClockReply` envelopes on our existing authenticated `Session`
   stream.
-  - *NTP's own wire protocol (UDP 123, stratum, the discipline loop)
+  The exchange repeats on a cadence while the session is open, since
+  hosts may be disciplining their own clocks independently, and the
+  measured offset is applied to the frames the client delivers —
+  slewed at a bounded rate so the corrected timeline stays continuous,
+  stepped only for an error too large to work off honestly.
+  - *NTP's own wire protocol (UDP 123, stratum, its discipline loop)
     and PTP are rejected as transport*: either one is a second port, a
     second protocol and a second firewall surface next to a
     bidirectional stream we already have open, authenticated and
-    pinned. We need one number about one peer, not a time service.
+    pinned. We need one number about one peer, not a time service —
+    and the correction we apply is an offset on one stream of
+    timestamps, not a servo steering a system clock, so NTP's
+    PLL/FLL discipline is not the thing being reimplemented either.
   - *The Rust NTP client crates (`sntpc`, `rsntp`, both permissively
     licensed) are rejected* for the same reason at the code level:
     they implement that UDP client, and expose no seam for running
