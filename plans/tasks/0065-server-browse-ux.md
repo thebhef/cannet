@@ -94,7 +94,10 @@ Owner feedback from first live use of the Task 42/43 surfaces
   passphrases; `--token` stays free-form; wire/trust store
   unchanged.
 - Windows GUI browse produces no per-app firewall rules (native
-  DNS-SD backend), verified on this machine.
+  DNS-SD backend), verified on this machine. **Blocked on an owner
+  decision** — see the phase 4 status log: the native API delivers the
+  firewall property but no maintained crate feeds the reducer, and the
+  route that would is `unsafe` in our tree.
 - README covers the macOS permission and Windows firewall realities
   for both GUI and server.
 - Blocked discovery states are visible in the panel, not silent.
@@ -390,3 +393,127 @@ duplicate, and a manually added offline row; 3 `serverList.test.ts` over
   but it was not asked for.
 - Not verified against a running GUI (the phase forbade launching it);
   everything above is covered by unit and DOM tests only.
+
+### 2026-08-13 — phase 4: native Windows DNS-SD, evaluated
+
+**Eval only — no code landed** (branch `task65e-native-dnssd`, off
+`task65d-add-by-address` tip `edd3c1a`). The decision gate in the
+brief resolved to *stop and hand the owner a decision*: the only route
+that would satisfy the exit criterion needs `unsafe` in our own tree,
+and the workspace forbids it outside `crates/cannet-spill`.
+
+**The premise is correct.** Windows's `DnsServiceBrowse` /
+`DnsServiceResolve` (`dnsapi.dll`, Win10+) has the OS resolver own the
+mDNS socket, and it does exactly what the folded-in item hoped:
+
+- A throwaway probe was built at a scratchpad path that had **no**
+  firewall rule of any kind, and browsed a live `cannet-server`
+  advertisement (`--bind 127.0.0.1:50071 --name cannet-probe-target`,
+  the debug binary, which already carries allow rules) through the
+  native API.
+- `Get-NetFirewallRule -All` counted **899 rules before the probe and
+  899 after**, with no application-filter entry for the probe's path
+  and no prompt. For contrast, three binaries from the Task 43 mDNS
+  spike — which bound 5353 themselves — still sit in that table with
+  inbound *Block* rules on the Public profile, one TCP and one UDP
+  each, exactly the per-app pair the item set out to avoid.
+- `Get-NetUDPEndpoint -LocalPort 5353` showed the socket held by
+  `svchost` (`dnscache`), for which Windows ships built-in
+  `MDNS-In-UDP-{Domain,Private,Public}-Active` allow rules pinned to
+  that service. That is the mechanism: nothing in the app binds.
+
+**What the API delivered to the reducer.** Everything
+`server_browse::Resolved` wants except the address set: instance name
+`cannet-probe-target`, SRV target host `cannet-probe-target.local`,
+port `50071`, and TXT `ver = v0.8.1-142-ge1465dd-dirty`. Resolve
+latency when the server was up: 7–11 ms.
+
+**Two defects, both disqualifying as things stand.**
+
+1. *One address per resolve, chosen by a race.* `DNS_SERVICE_INSTANCE`
+   has a single `ip4Address` and a single `ip6Address` pointer, and the
+   resolve is answered by whichever interface replies first. Four runs
+   against the same advertisement: interface 25 (VMware VMnet1)
+   returning only `fe80::9:12b9:dcae:57f1` three times, interface 15
+   returning only `10.10.10.50` once. `dial_rank` treats link-local
+   IPv6 as undialable, so three of four runs would have produced **no
+   row at all** for a server that is plainly there. `mdns-sd` avoids
+   this by accumulating addresses across the burst of per-interface
+   resolves, which is the whole reason `BrowseList` is keyed by
+   fullname and merges rather than replaces.
+2. *No removal signal.* The server was hard-killed at t=6 s and the
+   browse ran to t=130 s: **no removal event in 124 s**. This is
+   structural, not a timing artefact — the crate's Windows backend
+   contains no construction of a `Removed` event at all, while its
+   Linux and macOS backends do. A one-shot resolve of the vanished
+   instance did fail (3 s timeout) at t=130 s, so liveness is
+   recoverable by polling; the reducer has no polling.
+
+The graceful-shutdown case (a goodbye packet, which `mdns-sd` turns
+into a removal in ~1 s) was **not** measured: `GenerateConsoleCtrlEvent`
+attached to the server's console and returned success but the process
+did not exit, and the alternative — a registrar binary of our own —
+would have bound 5353 from an unruled path, which this phase was
+forbidden to do. It does not change the verdict: the crash/vanish case
+alone leaves a dead server in the list forever.
+
+**Crate survey.** `mdns-sd-discovery` 0.3.0 is the only maintained
+crate that wraps the native *browse* API (it is what the probe used,
+and both defects above were observed through it — the address one is
+the Win32 struct's, the removal one is the crate's). `win-dns-sd`
+(WinRT, register-only, last touched 2021) and `dns-sd-native`
+(register-only) are the wrong half of DNS-SD; `astro-dnssd` wraps
+Apple's `dns_sd.h` and so wants Bonjour installed on Windows — the
+objection that rejected `zeroconf` in Task 43, and no help on the
+firewall either, since `mDNSResponder` is one more userland 5353
+socket. All four are recorded in `plans/technology-inventory.md`.
+
+**The unsafe policy, as enforced.** `[workspace.lints.rust]
+unsafe_code = "forbid"` in the root `Cargo.toml`; every member opts in
+with `[lints] workspace = true`, `apps/gui/src-tauri` included.
+`forbid` cannot be lifted by a local `#[allow]`, which is why
+`cannet-spill` does not inherit the workspace lint table at all and
+declares its own `unsafe_code = "deny"` — the one crate where `unsafe`
+is permitted, per-site and justified (ADR 0002). Relaxing this is the
+owner's call, not the orchestrator's.
+
+**The decision.**
+
+- **Option A — grant a scoped `unsafe` exception.** A contained module
+  (`apps/gui/src-tauri/src/dnssd_win.rs`, or a new small crate on the
+  `cannet-spill` pattern so `apps/gui/src-tauri` itself stays
+  `forbid`) calling `DnsServiceBrowse`/`DnsServiceResolve` directly.
+  Owning the FFI fixes defect 2 — the browse callback hands over the
+  whole current PTR record list, so diffing it against the previous
+  one yields removals — but **not** defect 1, which is the Win32
+  struct's shape: that still needs a per-interface resolve fan-out or
+  a switch to dialling the SRV host name (which would make the trust
+  store's `host:port` key differ by platform for one server). The
+  hand-written surface is raw callback plumbing with pointer lifetimes
+  and cancel handles — the shape CLAUDE.md's reviewability rule warns
+  is hard to spot-check even in a small diff. Gets the exit criterion.
+- **Option B — stay on `mdns-sd`, waive the criterion.** The GUI keeps
+  minting one inbound rule pair per binary path on first browse. The
+  deny-path legibility this task also asked for already shipped in
+  phase 2 (`BrowseStatus::Failed/Degraded`), so a blocked browse is
+  visible rather than silent, and phase 3b's *Add server…* reaches any
+  server by address without discovery at all. Cost: the README owes
+  the Windows firewall reality for the GUI (it already carries it for
+  the server) and the macOS local-network prompt. No code.
+- **Option C — pre-create the rule at install time** was considered
+  and does not work as shipped: the Tauri NSIS bundle installs
+  per-user with no administrator rights, and adding a firewall rule
+  needs elevation. It would take switching the installer to
+  per-machine, which buys an admin prompt in exchange for the
+  firewall one.
+
+**Recommendation: B.** A is a lot of hand-written `unsafe` for a
+property that is real but cosmetic-adjacent — the rules Windows mints
+are silent, same-host discovery works regardless, and the case they
+actually break (reaching another machine's advertisement) is already
+reachable by address — and it still would not restore the address set
+without a second design change to how a server is keyed. If the owner
+wants A anyway, the honest scope is: new crate with `unsafe_code =
+"deny"`, browse + resolve + cancel, PTR-set diffing for removal, a
+per-interface resolve fan-out for addresses, and a reducer-level test
+suite fed by a fake backend.
