@@ -93,10 +93,24 @@ offers, each annotated with the bus it feeds or `(unassigned)`. A
 section is open while one of its interfaces is bound to a bus and
 folded otherwise; the fold is view state, the contents are the host's.
 Only trusted servers get one — a discovered-but-unaccepted server
-lives in the Servers panel until it is trusted.
+lives in the Servers panel until it is trusted. While a session is
+live, the header also carries the **clock offset** — see below.
 _Avoid_: "remote server row" — the old bound-only listing, which
 showed a server because the project referenced it rather than because
 this machine trusts it.
+
+**Clock offset**:
+How far a connected server's wall clock is measured to be from this
+machine's, tracked for the life of the session and shown on its
+**Server section** header (e.g. `+4.2 s`). Every frame the session
+delivers is already corrected by this amount before it reaches the
+trace — the badge reports what was found, not an uncorrected error.
+Styled as a warning above 100 ms, absent (not zero, not an error) for
+a peer built before the measurement existed or a session whose first
+round hasn't settled.
+_Avoid_: implying the number is a fault — a clock a long way off is
+routine across independently-clocked hosts, and cannet corrects for it
+either way.
 
 **Trust state**:
 What a server's row says about its standing with this machine, decided

@@ -150,7 +150,7 @@ describe("a trusted server's section", () => {
   });
 });
 
-describe("the clock-offset badge (Task 68)", () => {
+describe("the clock-offset badge", () => {
   it("renders nothing when the server carries no clock record", () => {
     renderSection({ server: BENCH }); // BENCH's clock is null
     expect(screen.queryByTestId(`server-clock-${BENCH_ADDRESS}`)).not.toBeInTheDocument();

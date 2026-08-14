@@ -1,6 +1,6 @@
-//! Publishing a session's clock offset (Task 68) and the two log lines
-//! the owner's ruling allows: one at session start, and one per
-//! warn-state transition — never per probe round, never per frame.
+//! Publishing a session's clock offset and the two log lines the
+//! owner's ruling allows: one at session start, and one per warn-state
+//! transition — never per probe round, never per frame.
 //!
 //! The measurement itself lives on `cannet_client::clock::SessionClock`,
 //! updated by the session's own worker on its own schedule (a start-up

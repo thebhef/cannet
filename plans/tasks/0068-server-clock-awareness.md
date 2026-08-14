@@ -393,3 +393,99 @@ crate)
 - Nothing here exposes a disable switch, as ruled — correction is
   default-on and unconditional. The seam for one, if it is ever
   asked for, is `OffsetSlew::retarget` never being called.
+
+### Phase 3 — surfacing: the row, the log lines (2026-08-14)
+
+Branch `task68c-offset-surfacing` off `task68b-offset-application`
+(f4d8670). Scope as groomed: read `SessionClock::record()` host-side,
+publish it onto the server's row, and log exactly what the ruling
+allows. No change to measurement or correction.
+
+**State publication — a poll, not a push.** Nothing calls back out of
+`cannet-client` when a probe round settles (session-start measurement,
+or the 30 s re-probe), so there is no event to hang the publish on.
+`clock_status::spawn_clock_status_emitter` is a 1 s tick — the same
+shape as `spawn_trace_grew_emitter` / `crash::spawn_health_recorder` —
+that reads every active session's record, republishes the merged
+server list (`server_list::changed`) only when a row's summary
+actually moved, and folds each record through a log latch. 1 s is far
+above anything that matters here (the fastest thing that can move a
+record is the 30 s re-probe, and the start-up probe settles inside its
+own 2 s window); it just keeps a settled measurement or a warn
+transition off the log/row by more than a second.
+
+`RemoteSession` gained an `Option<SessionClock>` — `None` for the
+in-process `local-vbus://` backend, which opens no `Session` and has
+no peer clock to measure (per phase 1's local-session note). The
+remote backend clones `FrameReceiver::clock()` at connect, before the
+receiver moves into the pump thread.
+
+**Where the offset lives.** `server_list::ServerRow` gained `clock:
+Option<ServerClock>` — `{ offsetNs, warn, stale }`, the row's own
+reduction of `ClockRecord`: the *measured* offset (the slew's target),
+not the currently-applied one, per the phase's "recommend showing
+measured only" guidance — the two differ only while a correction is
+converging, and a viewer wants what was found. `None` covers three
+different true things — no session, `Unsupported`, first round still
+`Pending` — deliberately collapsed to one absent state: none of them
+is an error. `merge()` takes the live per-address map as a fourth
+input, alongside discovered/trusted/prompts, keeping it a pure,
+already-tested function; `server_list::build()` is the only place that
+reads `AppState::remote_sessions` for it.
+
+**The transition latch.** `ClockLatch::observe(&ClockRecord) ->
+Option<ClockLogEvent>` is a pure state machine (no `AppHandle`, no
+I/O), mirroring how phase 1's `ProbeRounds` kept the probe cadence
+testable the same way. It logs the session's first settled status
+once — `Measured` (info below 100 ms, warn above) or `Unsupported` (a
+note, not a warning) — and after that only a flip of the warn state,
+never a repeat while it holds and never anything while only
+`silent_rounds` (staleness) moves. An `Unsupported` peer latches once
+and is never revisited, matching `ProbeRounds` giving up on it for the
+rest of the session; a session that disconnects drops its latch, so a
+fresh connect to the same address gets its own start line rather than
+inheriting the old warn state.
+
+**Rendering.** The badge sits in `ServerSection`'s header (the primary
+surface per the ruling — "the connection section header") next to the
+existing state text: `formatClockOffset` renders sub-second offsets in
+milliseconds and second-or-more in seconds, signed (`+4.2 s`, `-42
+ms`). Warn styles like the panel's other health indicators
+(`--warn-text`); stale greys and italicises rather than hiding the
+number, since a stale reading is a real last-known value, not nothing.
+Nothing renders when `row.clock` is `null`. The Servers panel row
+(ADR 0041's separate, per-machine trust surface) was left alone — it
+has no live-session concept at all (a trusted-but-offline server has a
+row there), so there was nothing cheap to add; the connection section
+is where every other live session fact already lives.
+
+**Commits**
+
+| commit | what |
+|---|---|
+| `bcfe212` | host: `RemoteSession::clock`, `server_list::ServerClock` + merge, `clock_status`'s poll + latch + log lines |
+| `84e89d9` | frontend: the badge on `ServerSection`, `formatClockOffset`, DOM tests |
+
+**Tests** (all green; clippy `-D warnings` clean; `pnpm test` +
+`pnpm build` clean)
+
+| layer | new | suite total |
+|---|---|---|
+| `cannet-gui` (host) | 16 (`server_list`: 7 row/merge; `clock_status`: 9 latch/formatting) | 633 |
+| `cannet-gui` frontend | 7 (`ServerSections.dom`: 4 badge states; `serverList`: 3 `formatClockOffset`) | 2041 across 154 files |
+
+**Exit criteria (from the top of this file) — status:**
+
+- Wire pair, session-start measurement + application, the two stale
+  proto comments: done, phases 1–2.
+- Server row shows the measured offset; one system-log line at session
+  start (warn above 100 ms); nothing per frame: done this phase.
+- Skewed-clock test proving frames land correctly: done phase 2
+  (`cannet-client`'s `SkewedServer` end-to-end suite). The warning
+  firing above threshold is proven at the unit level this phase
+  (`ClockLatch` in `clock_status.rs`) rather than end-to-end — an
+  end-to-end assertion would need a live GUI session and a real
+  system-log read, which is out of proportion to what is genuinely a
+  pure function of `ClockRecord`.
+
+Task reads as ready for its exit-criteria walk.

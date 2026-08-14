@@ -1757,7 +1757,7 @@ header {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-/* The measured clock offset vs a connected server (Task 68) — a small,
+/* The measured clock offset vs a connected server — a small,
    unobtrusive health indicator on the section header, not an error. */
 .project-server-clock {
   font-size: 0.72rem;

@@ -749,6 +749,22 @@ Loopback servers — the GUI's own sidecar, a `--bind 127.0.0.1` proxy,
 the in-process virtual bus — are unaffected: they stay plaintext and
 never prompt, exactly as before.
 
+**Clock offset.** Once a session against a remote server is open,
+cannet measures how far that server's wall clock is from this
+machine's — a short probe exchange at connect, then a live re-probe
+every 30 s so the number tracks a host that is independently
+disciplining its own clock — and corrects every frame's timestamp by
+it before the frame reaches the trace, slewing the correction smoothly
+rather than jumping (a step of more than a second, or the session's
+first measurement, applies at once instead). The measured offset shows
+on the server's row in the Connection section, e.g. `+4.2 s`; above
+100 ms it reads as a warning rather than routine health. A peer built
+before this measurement existed shows nothing rather than an error.
+The GUI logs one system-message line when the session's first
+measurement settles (info below 100 ms, warn above) and one more each
+time the offset crosses that threshold in either direction — never
+once per probe round, and never per frame.
+
 **Connecting to a server run `--insecure`.** If the protected
 connection never reaches a certificate, the GUI does not quietly fall
 back. It reports the transport error and offers *Connect without

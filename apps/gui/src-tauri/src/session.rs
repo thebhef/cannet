@@ -63,8 +63,8 @@ pub(crate) struct RemoteSession {
     /// destinations.
     pub(crate) channel_to_bus: Vec<(u8, Option<String>)>,
     pub(crate) stop: Arc<AtomicBool>,
-    /// This session's live clock-offset tracking (Task 68), or `None`
-    /// for a session with no `Session` behind it — the in-process
+    /// This session's live clock-offset tracking, or `None` for a
+    /// session with no `Session` behind it — the in-process
     /// `local-vbus://` backend never opens one, so there is no peer
     /// clock to measure. Cheap to clone: [`crate::clock_status`] polls
     /// it from a separate task without touching the session map.

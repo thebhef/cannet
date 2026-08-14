@@ -40,8 +40,8 @@ use crate::server_browse::{BrowseStatus, DiscoveredServer, DiscoveredServers};
 use crate::server_trust::{server_key, TrustEntry};
 
 /// Above this measured offset the row and the session-start / transition
-/// log lines read as a warning rather than routine health (Task 68,
-/// owner-ruled 2026-08-13). Shared between the row's `warn` flag and
+/// log lines read as a warning rather than routine health (owner-ruled
+/// 2026-08-13). Shared between the row's `warn` flag and
 /// [`crate::clock_status`]'s log latch so the two can never disagree
 /// about where the line is.
 pub(crate) const CLOCK_WARN_THRESHOLD_NS: i64 = 100_000_000;
@@ -153,10 +153,10 @@ pub struct ServerRow {
     /// user without asking the connection to fail again.
     pub prompt: Option<TrustPrompt>,
     /// This server's measured clock offset for the live session against
-    /// it, if any (Task 68). `None` for an unconnected server, a peer
-    /// that doesn't support the probe, or a session whose first
-    /// measurement hasn't settled yet — all of which render as no badge
-    /// at all, never an error.
+    /// it, if any. `None` for an unconnected server, a peer that
+    /// doesn't support the probe, or a session whose first measurement
+    /// hasn't settled yet — all of which render as no badge at all,
+    /// never an error.
     pub clock: Option<ServerClock>,
 }
 
@@ -794,7 +794,7 @@ mod tests {
         }
     }
 
-    // ---------- clock offset (Task 68) ----------
+    // ---------- clock offset ----------
 
     fn measured(offset_ns: i64, silent_rounds: u32) -> ClockRecord {
         ClockRecord {

@@ -67,10 +67,9 @@ export interface ServerRow {
   /// The question the host is waiting on for this server, if any.
   prompt: TrustPrompt | null;
   /// This server's measured clock offset for the live session against
-  /// it (Task 68). `null` for an unconnected server, a peer that
-  /// doesn't support the probe, or a session whose first measurement
-  /// hasn't settled yet — all of which render as no badge, never an
-  /// error.
+  /// it. `null` for an unconnected server, a peer that doesn't support
+  /// the probe, or a session whose first measurement hasn't settled
+  /// yet — all of which render as no badge, never an error.
   clock: ServerClock | null;
 }
 
@@ -79,9 +78,9 @@ export interface ServerList {
   browse: BrowseStatus;
 }
 
-/// The measured clock offset for the live session against a server
-/// (Task 68). Mirrors the host's `server_list::ServerClock`. `warn` and
-/// `stale` are the host's own read of the record — not re-derived here.
+/// The measured clock offset for the live session against a server.
+/// Mirrors the host's `server_list::ServerClock`. `warn` and `stale`
+/// are the host's own read of the record — not re-derived here.
 export interface ServerClock {
   /// The server's clock minus ours, nanoseconds. Positive means the
   /// server is ahead.
