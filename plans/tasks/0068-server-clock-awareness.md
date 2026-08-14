@@ -489,3 +489,30 @@ is where every other live session fact already lives.
   pure function of `ClockRecord`.
 
 Task reads as ready for its exit-criteria walk.
+
+## Exit-criteria walk (2026-08-14, orchestrator)
+
+1. **`ClockProbe`/`ClockReply` additive in the Session oneof** — MET
+   (phase 1; unknown-tag decode test proves older-peer tolerance;
+   sidecar answers — the clock that stamps frames — with the relay
+   principle intact; both in-tree Rust servers answer too).
+2. **Session-start measurement, applied at the client seam,
+   per-session record, ADR 0046 intact** — MET (phases 1–2; evolved
+   per the owner's live-tracking revision: 30 s re-probe, slew
+   bounded at 5 ms per second of *frame timeline* (monotonicity
+   structural), step on first measurement and >1 s error; record
+   carries start/measured/applied/delay/staleness).
+3. **Server row shows the offset; one startup log line (warn above
+   100 ms, info below); nothing per frame** — MET (phase 3;
+   transition latch adds one line per warn-state crossing per the
+   revised ruling; stale greys; Unsupported renders nothing).
+4. **Skewed-clock test proves placement + warning** — MET (phase 2
+   e2e at +4 s / −4 s / +800 ms, falsified-before-believed —
+   uncorrected all frames sat at +3999 ms; warn threshold pinned in
+   the latch tests).
+5. **Stale proto comments fixed** — MET (phase 1).
+
+Perf gate (ADR 0031): **passed 31/31** (release build `30b8ab3`,
+ev-zonal 60 s scrub; report
+`docs/performance-measurements/frontend/2026-08-14-30b8ab3-task68-closeout.json`,
+uncommitted). Baseline untouched.
