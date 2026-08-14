@@ -22,7 +22,7 @@ Prebuilt **alpha** bundles are published to
 
 | Platform                      | GUI bundle                    | `cannet-server` installer           |
 |-------------------------------|-------------------------------|-------------------------------------|
-| macOS (Apple Silicon / arm64) | `.dmg` — drag to Applications | —                                   |
+| macOS (Apple Silicon / arm64) | `.dmg` — drag to Applications | `cannet-server-vX.Y.Z-<target>.pkg` |
 | Windows (x64)                 | `.msi` or NSIS `-setup.exe`   | `cannet-server_X.Y.Z_x64-setup.exe` |
 | Linux (x64)                   | —                             | `cannet-server_X.Y.Z_amd64.deb`     |
 
@@ -392,8 +392,17 @@ explicit act.
 
 | Platform    | Installer                           | What it does                                                                                       |
 |-------------|-------------------------------------|----------------------------------------------------------------------------------------------------|
+| macOS arm64 | `cannet-server-vX.Y.Z-<target>.pkg` | Installs to `/usr/local/cannet-server` and adds an `/etc/paths.d` entry pointing there             |
 | Windows x64 | `cannet-server_X.Y.Z_x64-setup.exe` | Installs to `%LOCALAPPDATA%\Programs\cannet-server` and appends that directory to your user `PATH` |
 | Linux x64   | `cannet-server_X.Y.Z_amd64.deb`     | Installs to `/usr/lib/cannet-server` with `/usr/bin/cannet-server` a symlink into it               |
+
+The macOS `.pkg` is **unsigned and un-notarized**, so Gatekeeper
+refuses it on a double-click — right-click the package → **Open**, then
+confirm, the same dance the `.dmg` needs. It installs system-wide (an
+administrator password), and a flat package has no uninstaller: undo it
+with `sudo rm -rf /usr/local/cannet-server /etc/paths.d/cannet-server`.
+The `/etc/paths.d` entry reaches a shell through `path_helper`, which
+runs from `/etc/profile`, so open a new terminal after installing.
 
 The Windows installer is per-user, so it needs no administrator rights,
 and it is **unsigned** — SmartScreen shows the same **More info → Run

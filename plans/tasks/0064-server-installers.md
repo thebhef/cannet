@@ -560,6 +560,61 @@ package (a dependency on a library the bundle carries itself), pin
 `depends` explicitly instead. Installing and running the `.deb` on a
 Debian/Ubuntu host is the other next-release check.
 
+### 2026-08-13 — phase 4c: the macOS `.pkg`
+
+No config file and no new dependency: a staging + `pkgbuild` step in the
+release workflow's macOS leg, after the Tauri bundle step that froze
+this runner's onedir. It stages `/usr/local/cannet-server/` (binary +
+`cannet-python-can/`) and a one-line `/etc/paths.d/cannet-server`
+naming that prefix, then
+`pkgbuild --root … --identifier co.hefnet.cannet-server --version
+<release version> --ownership recommended --install-location /`.
+
+`/etc/paths.d` rather than a dotfile edit: `path_helper`, run from
+`/etc/profile`, reads it for every login shell, so the package needs no
+per-user state and uninstalling is `rm` of the two paths (a flat
+package carries no uninstaller — the README says so).
+
+**Unverifiable from this machine**, so the step is written to fail
+loudly instead of silently shipping something wrong: both inputs are
+checked to exist before staging, both staged executables are checked
+for their exec bit after the copy (the `.pkg`'s whole value depends on
+`cp -R` having preserved it), and the output is checked to exist after
+`pkgbuild`. Version comes straight from the release input; nothing
+committed carries it.
+
+### 2026-08-13 — phase 4 close-out: what the next release run must check
+
+The three legs are wired and the workflow lints clean (`actionlint`
+1.7.7). One leg is verified end to end locally; the other two are
+first exercised on a real release.
+
+- **macOS `.pkg`** — install it on macOS, confirm
+  `/usr/local/cannet-server` holds the binary *and* the onedir with
+  their exec bits, that a new terminal resolves `cannet-server` through
+  the `/etc/paths.d` entry, that the server finds its sidecar from an
+  unrelated working directory, and that
+  `sudo rm -rf /usr/local/cannet-server /etc/paths.d/cannet-server`
+  undoes it. Gatekeeper will refuse the double-click; right-click →
+  **Open**.
+- **Linux `.deb`** — `apt install ./cannet-server_X.Y.Z_amd64.deb` on a
+  Debian/Ubuntu host, then `cannet-server` from any directory (through
+  the `/usr/bin` symlink), sidecar found, `apt remove` clean. Read the
+  generated `Depends:` line: `$auto` resolves over the bundled
+  PyInstaller `.so` files too, so it may over-constrain the package —
+  pin `depends` explicitly if it does.
+- **Windows NSIS** — already verified locally, but the *release* build
+  additionally proves the CI-only parts: the version substitution in
+  `packager.toml`, the `cargo install cargo-packager` step, and that
+  the installer built from the runner's own frozen onedir.
+- Also still open from phase 3: confirm `Contents/Resources/cannet-server`
+  is `+x` in the built `.app`.
+
+The task's remaining exit criterion — "one draft pre-release" carrying
+GUI bundles, three server archives and three server installers — is an
+**owner action**: the release workflow is `workflow_dispatch`-only, so
+someone has to run it.
+
 - **New maintenance obligation (phase 1, accepted):** the Windows leg
   carries a vendored fork of `cargo-packager`'s `installer.nsi`. The
   fork is deletion-only and `cargo-packager` is version-pinned, so the

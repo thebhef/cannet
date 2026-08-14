@@ -13,18 +13,19 @@ name: Release
 #      beside the frozen sidecar it supervises, and each leg
 #      additionally packs a `cannet-server-vX.Y.Z-<target>` archive
 #      (the same server binary + the same `cannet-python-can` onedir)
-#      beside the GUI bundle — plus, on Windows, a native server
-#      installer (NSIS `.exe`), and
+#      beside the GUI bundle — plus a native server installer (macOS
+#      `.pkg`, Windows NSIS `.exe`), and
 #   4. builds a Linux x64 `cannet-server` archive and `.deb` on its own
 #      runner — cargo build + sidecar freeze + tar + cargo-deb, no
 #      Tauri bundling — since cannet's Linux support is server-only for
 #      now.
 #   All artifacts publish to one draft pre-release for review: 2 GUI
-#   bundles + 3 server archives + 2 server installers.
+#   bundles + 3 server archives + 3 server installers.
 #
 # A server installer puts `cannet-server` where a terminal finds it —
 # the NSIS one appends its install directory to the user `PATH`, the
-# deb symlinks `/usr/bin/cannet-server` — and keeps the frozen sidecar
+# pkg drops an `/etc/paths.d` entry, the deb symlinks
+# `/usr/bin/cannet-server` — and keeps the frozen sidecar
 # onedir beside the binary, which is where the server's own probe
 # looks. None of them starts anything.
 #
@@ -236,6 +237,47 @@ jobs:
           tar -czf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
           echo "SERVER_ARCHIVE_PATH=$RUNNER_TEMP/$NAME.tar.gz" >> "$GITHUB_ENV"
 
+      # The macOS server installer is a flat package built with Apple's
+      # own `pkgbuild` (present on every macOS runner, so no dependency
+      # to install). Everything lands under one prefix so the binary
+      # keeps the frozen onedir beside it, and `/etc/paths.d` — read by
+      # `path_helper` from `/etc/profile` — is what puts that prefix on
+      # every login shell's PATH without editing anyone's dotfiles. A
+      # flat package has no uninstaller; removing the two paths is the
+      # documented undo (README § Running the production server).
+      #
+      # Unverifiable from a Windows dev box, so every input is checked
+      # before it is packaged and the output is checked after: a `.pkg`
+      # that silently shipped without its sidecar would look fine until
+      # someone installed it.
+      - name: Package server installer (macOS pkg)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.rust-target }}/release/cannet-server"
+          ONEDIR="apps/gui/src-tauri/sidecar-dist/cannet-python-can"
+          for input in "$BIN" "$ONEDIR"; do
+            [ -e "$input" ] || { echo "::error::$input is missing; the pkg would ship without it"; exit 1; }
+          done
+          PREFIX="$RUNNER_TEMP/pkgroot/usr/local/cannet-server"
+          mkdir -p "$PREFIX" "$RUNNER_TEMP/pkgroot/etc/paths.d"
+          cp "$BIN" "$PREFIX/"
+          cp -R "$ONEDIR" "$PREFIX/cannet-python-can"
+          echo "/usr/local/cannet-server" > "$RUNNER_TEMP/pkgroot/etc/paths.d/cannet-server"
+          [ -x "$PREFIX/cannet-server" ] || { echo "::error::the staged server lost its exec bit"; exit 1; }
+          [ -x "$PREFIX/cannet-python-can/cannet-python-can" ] || { echo "::error::the staged sidecar launcher lost its exec bit"; exit 1; }
+          PKG="$RUNNER_TEMP/cannet-server-${{ steps.ver.outputs.tag }}-${{ matrix.rust-target }}.pkg"
+          pkgbuild \
+            --root "$RUNNER_TEMP/pkgroot" \
+            --identifier co.hefnet.cannet-server \
+            --version "${{ steps.ver.outputs.version }}" \
+            --ownership recommended \
+            --install-location / \
+            "$PKG"
+          [ -f "$PKG" ] || { echo "::error::pkgbuild reported success but $PKG is missing"; exit 1; }
+          echo "SERVER_INSTALLER_PATH=$PKG" >> "$GITHUB_ENV"
+
       # Windows gets a .zip, not a .tar.gz: the platform's own bundle
       # formats in this workflow (.msi, NSIS .exe) are already
       # Windows-native installers, and zip is the Windows-native
@@ -283,7 +325,6 @@ jobs:
         run: gh release upload "${{ steps.ver.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
 
       - name: Upload server installer to the draft release
-        if: matrix.platform == 'windows-latest'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

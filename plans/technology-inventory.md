@@ -615,7 +615,12 @@ crate retained long-term).
     one in the tar.gz; the default would strip it, and on this repo's
     profile that also means splitting out debug symbols.
 - **`pkgbuild`** (Apple, ships with macOS) — `adopted` in Task 64 to
-  build the macOS server `.pkg`. Present on every macOS runner, so it
+  build the macOS server `.pkg`: a staged root plus one command in the
+  release workflow, no config file. `/etc/paths.d/cannet-server` is how
+  the install prefix reaches a login shell's `PATH` — `path_helper`,
+  run from `/etc/profile`, reads that directory — so no dotfile is
+  edited and uninstalling is `rm` of two paths (a flat package has no
+  uninstaller). Present on every macOS runner, so it
   adds no dependency; chosen because `cargo-packager` emits no flat
   package and `.pkg` is the canonical installer for a CLI tool.
 - **Code signing / notarization** — `proposed` (deferred). First alpha
