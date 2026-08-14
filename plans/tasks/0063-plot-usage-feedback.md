@@ -1102,3 +1102,44 @@ windowed serve's **reduction function** has no categorical mode.
    than the point budget, the served enum series contains every code
    and every transition the raw series holds* — currency alone would
    pass today.
+
+## Exit-criteria walk (2026-08-14, orchestrator)
+
+1. **Shared disclosure toggle, documented hit-area standard, sites
+   migrated, hit-area assertion** — MET (phase 3: `DisclosureToggle`,
+   24×24 floor with compact-height variant for fixed-height rows;
+   11 sites migrated; two documented exceptions are deliberate —
+   ByIdTable's whole-row control predates this task by tested
+   decision, traceTable's caret is decorative with shared ink;
+   "PlotMeasurements ×2" was a sweep overcount).
+2. **Collapsed area = heading row, round-trip restores exactly** —
+   MET (phase 4; plus the owner-extended axis collapse in both
+   modes, weight redistribution, per-axis-id persistence,
+   collapse-is-layout-not-visibility asserted).
+3. **Hidden row single-line, both directions dom-tested** — MET
+   (phase 5; solo-masked rows identical via the shared hidden
+   flag).
+4. **Solo paging: resolved behavior pinned** — MET (phase 5;
+   off-page rows absent from the DOM per the owner ruling,
+   scroll-to-top on scope change, solo-never-un-hides interplay).
+5. **Enum lag: cause written up with confirming data; fix preserves
+   codes/transitions above the decimation threshold; gate green
+   multi-run** — MET (phase 1 investigation: H1/H2 refuted,
+   category-error root cause with the 2·max_points+1 signature;
+   phase 2 categorical serve: matched A/B shows all 6 codes served
+   vs 2, longtask/jank to zero; host contrast test pins the
+   reducer contract).
+
+Beyond the original items: the F1 follow-window defect (phase 1
+finding) is fixed with a loop-closing panel test (pre-fix failure at
+the exact observed 0.10 s) — phase 6.
+
+Perf gate (ADR 0031): **multi-run at the final build — 3 vbus runs +
+1 PEAK hardware run; informational `check` on the PEAK run passed
+31/31.** The re-baseline the F1 finding threatened proved
+unnecessary: the gate scenario's own zoom warm-up lands at a sliver
+window regardless, so gated numbers never depended on the defect
+(gestureless A/B: 0.10 s pre-fix vs 9.41 s post-fix mean window).
+The scenario debt — the gate never measures a realistic follow
+window; fixing the warm-up = deliberate re-baseline — is recorded in
+plans/backlog.md's perf-harness entry. Baseline untouched.
