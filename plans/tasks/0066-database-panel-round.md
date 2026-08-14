@@ -74,6 +74,88 @@ Owner feedback from first live use of the Task 38 surfaces
 
 ## Status log
 
+### 2026-08-14 — phase 2: the Database panel (rename + file-backed branches)
+
+**Landed** (branch `task66b-database-panel`, off `task66a-import-trace`
+tip `a635547`), three commits:
+
+- `43466c6` **feat(gui)** — the rename. The panel is "Database"
+  everywhere a user sees it: dockview tab title and go-to-view label
+  (`useCommands.tsx`), toolbar button (`App.tsx`), palette command
+  (`Show Database panel`), and the search box's accessible label
+  ("search database content"). The palette command carries
+  `keywords: "DBC panel"` — phase 1's mechanism — so the old name still
+  finds it and shows the new label. Format-specific operations are
+  untouched ("Add DBC…", the DBC watcher messages). Code identifiers
+  moved only where cheap: `DbcPanel.tsx` → `DatabasePanel.tsx` (+ its
+  two test files) and the exported component; internal identifiers
+  (`DbcRow`, `dbcKey`, `dbcPanelViewport`), the `dbc-*` CSS class names
+  and `DBC_PANEL_ID` stay. Comments naming the component or the panel
+  were swept with it. Docs: CONTEXT.md gained the **Database view**
+  term; README names the new button.
+- `dd54989` **feat(gui-host)** — the catalog surface. `FileSignalInfo`
+  records the `source_path` it was imported from (`#[serde(default)]`,
+  so a pre-existing pyramid manifest restores as series with no named
+  source; not part of the series' identity, so a re-import still
+  replaces). New command `list_file_backed_content` →
+  `Vec<FileBackedContentRecord>` (file → group → `{name, unit}`),
+  arranged by `signal_snapshot::file_backed_content`: files by path,
+  groups by index, signals by name, unnamed groups labelled by
+  `group_label()`. No sample counts.
+- `be9a6cc` **feat(gui)** — the panel. One top-level branch per source
+  file beside the DBC branches, using the tree's existing machinery
+  (same flat row space, virtualizer, gridview cursor/selection, fzf
+  filter slot): file and group rows are unselectable branches, signal
+  rows draggable leaves. A drag carries the provenance-keyed reference
+  (`busId: null`, group index in the message slot, `fileBacked: true`),
+  proven in the DOM test through the *drop* side —
+  `parseDroppedSignals` + `signalRefKey` equalling
+  `signalKey(null, group, false, name, true)`. README documents the
+  branches and their lifecycle.
+
+**Verification**: `pnpm --dir apps/gui test` — 153 files, 1993 tests,
+all green (1987 before). `pnpm --dir apps/gui build` clean.
+`cargo test -p cannet-gui` — 612 passed, 0 failed, 6 ignored (609
+before). `cargo clippy -p cannet-gui --all-targets -- -D warnings`
+clean. New coverage: 5 DOM cases in `DatabasePanel.dom.test.tsx`
+(branch render + filename labelling, name+unit rows without sample
+counts, branches vanishing when the set empties, search participation,
+drag payload), 1 `dragSignals.test.ts` case, 1 `commands.test.ts` case
+(the rename + alias), 2 `signal_snapshot` shaping cases and 1
+end-to-end host case over the `sorted_finalized_mixed` MDF fixture.
+
+**Deviations / decisions**:
+
+- The brief expected an existing change signal from the file-backed
+  cache. There is none — the cache emits nothing, and `clear_trace_store`
+  was silent. Added `file-signals-changed` (payload-less, the
+  `dbc-changed` pattern), emitted from the three places the set moves:
+  after the MDF import fill, in `clear_trace_store`, and at the end of
+  `restore_scratch_capture`. The panel listens to it plus `log-finished`
+  (which covers an import of a format carrying no definitions).
+- `FileSignalInfo` had no source-file field, so the per-file branch
+  ruling required adding one. It rides in the persisted manifest.
+- The panel's auto-expand seeding moved behind one gated helper. The
+  two catalogs answer independently and the old "nothing is expanded
+  yet" gate let whichever landed first leave the other's branches shut;
+  the gate is now "the expand state is the user's" (a restored layout,
+  or their own toggle).
+- `dedupeSignalRefs` keyed on `(bus, messageId, extended, name)`, which
+  aliases a file-backed signal with a message whose id equals its group
+  index — one of the two vanished from a mixed drag. It now keys on
+  provenance too, matching `signalKey`.
+- The panel's live-value column still covers DBC-backed rows only; a
+  file-backed row renders no value cell. Out of this phase's scope
+  (`fetch_signal_page` already serves such keys, so it is a small
+  follow-up if wanted).
+- The empty state now reads "Nothing to browse yet…" and mentions both
+  ways content arrives; it shows only when neither catalog has content.
+- Not touched, as instructed: `SignalsPanel` and its picker (next
+  phase). Note for it: `SignalCatalogProvider` refetches on
+  `dbc-changed` / `log-finished` only, so its file-backed half goes
+  stale after a Clear — `file-signals-changed` is now available to fix
+  that when that code is next in scope.
+
 ### 2026-08-14 — owner ruling: Recent captures are per-project
 
 Recent captures are per-project — owner, 2026-08-14; storage already
