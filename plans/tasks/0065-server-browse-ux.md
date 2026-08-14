@@ -293,8 +293,9 @@ nothing stored). `pnpm build` and `cargo clippy -p cannet-gui
   loopback binding, since a `--bind 127.0.0.1` server is never asked
   about and so never stored), and `trust_state` consulting
   `connect_flow::plan`.
-- **Blocker for a later phase: a server that neither advertises nor is
-  trusted is now unreachable.** With the typed-address field gone, the
+- **~~Blocker for a later phase: a server that neither advertises nor is
+  trusted is now unreachable.~~** — closed by phase 3b (`b1c5c95`).
+  With the typed-address field gone, the
   only way a server becomes bindable is a trusted row, and the only way
   to get one is *Trust…* on a row the browse produced. Two gaps follow:
   a server on another subnet (or started `--no-mdns`) cannot be reached
@@ -311,5 +312,81 @@ nothing stored). `pnpm build` and `cargo clippy -p cannet-gui
   servers advertising the same instance name would share one group
   header; their options stay distinct (values are addresses) and the
   section headers carry the full detail.
+- Not verified against a running GUI (the phase forbade launching it);
+  everything above is covered by unit and DOM tests only.
+
+### 2026-08-13 — phase 3b: add by address
+
+**Landed** (branch `task65d-add-by-address`, off
+`task65c-connections-integration` tip `ae28c4e`), three commits, closing
+the blocker phase 3 recorded:
+
+- `7a11564` **a question the host is waiting on is a row.** `merge` took
+  its rows from the trust store and the browse only, so an address that
+  neither advertises nor has anything stored had nowhere to be answered
+  from. A pending prompt now puts a row in the list on its own account —
+  which is also what makes a bus's *Manage servers…* jump land on
+  something.
+- `9e7a7fc` **`add_server`.** The host checks the address shape
+  (`host:port`, brackets on an IPv6 literal, a port that parses), dials
+  it through the existing `refresh_interfaces`, and lets
+  `connect_flow` do exactly what it does for a browsed row's first
+  contact. It returns the normalized key so the panel knows which row to
+  open. **A refused attempt writes nothing**: the pin the operator
+  accepts is the store's first record of the server, and until then the
+  pending question holds the row. The one write is for a server reached
+  with no question asked — a loopback proxy — recorded as
+  `TrustEntry::manual`, since no answer will ever exist to keep it in the
+  list.
+- `b1c5c95` **the panel.** *Add server…* in the toolbar opens a
+  `host:port` field. The panel decides two things only — that the text
+  looks like an address (`addressShapeError`, a typo guard the host
+  re-checks) and that the list does not already hold it — and hands the
+  rest to `add_server`. README's Servers-panel section and CONTEXT gain
+  the affordance; the "nothing is advertising" empty state now points at
+  it instead of saying an off-subnet server is out of reach.
+
+**What was reused, and what was added.** The whole trust flow is the
+existing one: `refresh_interfaces` → `connect_flow::plan`/`classify` →
+the prompt map → `ServerTrustDialog` over the row's `prompt`, the same
+path the panel's *Trust…* has used since phase 2. Three additions, each
+because the panel could not drive the existing flow without it:
+`add_server` (nothing existed that took an address the list has no row
+for), rows from pending prompts (the dialog needs a row to hang on), and
+`TrustEntry::manual` (a server that is never asked about leaves no trace
+that would keep it listed). `connect_flow::waiting_on` is the internal
+helper that lets `add_server` tell "refused with a question" from
+"failed with nothing to ask".
+
+**How the rows read.** A just-added address that has not been answered
+yet is an offline row wearing *new*, carrying the question — the same
+`prompt?` mechanism phase 2 built, no new state. Accepting pins it and
+it becomes trusted, still greyed until something advertises it, and
+bindable in Connection Management like any other trusted server. An
+added address that was refused or unreachable never becomes a stored
+row; the panel says what the attempt hit. An address already in the list
+is not added twice — its row is outlined (`.server-row.highlight`) and
+the panel says so. *Forget* now appears on a manually added row too,
+titled for what it does there (nothing is stored for it).
+
+**Tests.** Host `cargo test -p cannet-gui`: 609 passed, 6 ignored (+4 —
+a prompt-only row, a manual row's trust state and removability, address
+checking both ways). Frontend `pnpm test`: 1972 in 151 files (+8 — 5
+`ServersPanel.dom.test.tsx` covering the happy path through to the
+dialog, an unreachable address, a shape that never leaves the window, a
+duplicate, and a manually added offline row; 3 `serverList.test.ts` over
+`addressShapeError`). `pnpm build` and `cargo clippy -p cannet-gui
+--all-targets -- -D warnings` clean on every commit.
+
+**Deviations / side effects.**
+
+- `ServerRow` needed `#[allow(clippy::struct_excessive_bools)]` once
+  `manual` made it four. It is the JSON the panel renders and each flag
+  is an independent fact; folding them into enums would invent states
+  the model does not have.
+- Rows from pending prompts are visible beyond the add flow: any address
+  the host is waiting on now appears in the panel, including one a bus
+  binding named. That is the surface the *Manage servers…* jump wanted,
+  but it was not asked for.
 - Not verified against a running GUI (the phase forbade launching it);
   everything above is covered by unit and DOM tests only.
