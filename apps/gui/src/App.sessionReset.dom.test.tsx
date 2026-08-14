@@ -283,7 +283,7 @@ describe("session-reset error policies", () => {
   it("BLF-map confirm aborts on a failed host clear (no import runs)", async () => {
     await mountAndSeed();
     await act(async () => {
-      fireEvent.click(findButton("Open BLF…"));
+      fireEvent.click(findButton("Import trace…"));
     });
     // The channel-map modal's confirm button.
     await waitFor(() => findButton("Open"));

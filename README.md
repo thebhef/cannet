@@ -12,7 +12,7 @@ a structured filter element, and a project graph panel showing the
 project's wiring; Phase 8 adds per-vendor hardware adapters; Phase 9
 makes captures persistable through Save Capture (notes ride inside
 the BLF as `GLOBAL_MARKER` records — no sidecar files per ADR 0010),
-and offers a Recent BLFs list in the toolbar. See
+and offers a Recent captures list in the toolbar. See
 [`plans/`](plans/) for the detailed roadmap.
 
 ## Downloads
@@ -338,8 +338,9 @@ unchanged server restages, in seconds. `tauri dev` does neither — a
 development build has no bundle to fill.
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
-cannet window. Use **Open BLF…** or **Open MDF…** to pick a log (a
-Vector `.blf` or an ASAM MDF 4.x bus-logging `.mf4`); **Add DBC…**
+cannet window. Use **Import trace…** to pick a log (a Vector `.blf`
+or an ASAM MDF 4.x bus-logging `.mf4` — the dialog's filter list
+offers both, plus "all supported"); **Add DBC…**
 loads a database for live decoding — load more than one and frames
 decode against each in order, first match wins (every loaded DBC
 applies to the one interface for now).
@@ -2120,7 +2121,7 @@ The wire-level code does not change. See
 [`servers/cannet-python-can/LICENSING.md`](servers/cannet-python-can/LICENSING.md)
 for the LGPL analysis that motivates this layout.
 
-### Phase-9 Save Capture, notes & Recent BLFs
+### Phase-9 Save Capture, notes & Recent captures
 
 Phase 9 makes captures persistable and re-loadable, with user-placed
 notes round-tripping alongside.
@@ -2151,18 +2152,20 @@ notes with it.
 
 Save Capture writes notes inside the BLF as `GLOBAL_MARKER`
 records (BLF object type 96 — Vector's native annotation type, so
-third-party tools like CANalyzer see them too). Open BLF reads
+third-party tools like CANalyzer see them too). Import trace reads
 those markers back into the session-scoped store. No sidecar
 file is written, per [ADR 0010](docs/adr/0010-no-sidecar-files.md).
 
-**Recent BLFs**. The toolbar grows a **Recent** dropdown next to
-**Open BLF…** that lists the last 8 opened BLF paths, persisted
-host-side ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)).
-Picking one fast-paths through the standard
-Open BLF flow (the channel-mapping modal still runs because each
-BLF can route differently onto the current project's buses); a
-successful Save Capture promotes the saved path too, so
-"what did I just save?" is a one-click re-open.
+**Recent captures**. The toolbar grows a **Recent** dropdown next to
+**Import trace…** that lists the last 8 opened BLF and MDF paths
+alike, persisted host-side
+([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)).
+Picking one fast-paths through the standard Import-trace flow,
+routed to the right format by the path's own extension (the
+channel-mapping modal still runs because each capture can route
+differently onto the current project's buses); a successful Save
+Capture promotes the saved path too, so "what did I just save?" is
+a one-click re-open.
 
 **Project schema v3 → v4**. `PROJECT_SCHEMA_VERSION` bumps to 4.
 Notes used to live in each plot panel's dockview `params`; the v4
@@ -2219,7 +2222,7 @@ in the project and starts streaming frames into the trace view.
 way it does for a local BLF — decoding runs against whichever frames
 are currently flowing.
 
-The `Open BLF…` and `Connect` flows share the same trace store,
+The `Import trace…` and `Connect` flows share the same trace store,
 so frames from either source render through the same view.
 
 ### Build artifacts

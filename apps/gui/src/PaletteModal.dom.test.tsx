@@ -76,4 +76,16 @@ describe("PaletteModal", () => {
     renderPalette();
     expect(screen.getByText("Connection")).toBeInTheDocument();
   });
+
+  it("matches on keywords a renamed/merged item doesn't display", () => {
+    const items: PaletteItem[] = [
+      { id: "trace.import", label: "Import trace…", keywords: "Open BLF Open MDF" },
+      { id: "connection.connect", label: "Connect" },
+    ];
+    const { input } = renderPalette({ items });
+    fireEvent.change(input, { target: { value: "Open BLF" } });
+    expect(screen.getByText("Import trace…")).toBeInTheDocument();
+    expect(screen.queryByText("Open BLF")).not.toBeInTheDocument();
+    expect(screen.queryByText("Connect")).not.toBeInTheDocument();
+  });
 });

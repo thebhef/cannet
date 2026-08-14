@@ -364,7 +364,10 @@ const DESCRIPTORS: &[Spec] = &[
     Spec {
         key: "recent_blfs_limit",
         backing: Backing::Field,
-        label: "Recent BLFs remembered",
+        // Label/help renamed to match the toolbar's "Recent captures"
+        // (the list now records BLF and MDF imports alike); the key
+        // itself is kept as-is — no migration for a rename.
+        label: "Recent captures remembered",
         help: "Zero remembers none.",
         surfaces: &[Surface::General],
         kind: Kind::Behaviour,

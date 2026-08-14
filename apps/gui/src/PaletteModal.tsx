@@ -18,6 +18,9 @@ export interface PaletteItem {
   label: string;
   /// Right-aligned secondary text: a category or a key-binding hint.
   hint?: string;
+  /// Extra terms folded into the fuzzy-match text but never shown —
+  /// lets a renamed or merged command still be found by its old name.
+  keywords?: string;
 }
 
 export function PaletteModal({
@@ -35,7 +38,10 @@ export function PaletteModal({
   const [selected, setSelected] = useState(0);
 
   const fzf = useMemo(
-    () => new Fzf<readonly PaletteItem[]>(items, { selector: (i) => i.label }),
+    () =>
+      new Fzf<readonly PaletteItem[]>(items, {
+        selector: (i) => (i.keywords ? `${i.label} ${i.keywords}` : i.label),
+      }),
     [items],
   );
   const filtered = useMemo(

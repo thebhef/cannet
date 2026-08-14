@@ -78,16 +78,17 @@ import type { Note } from "./notes";
 import { sortNotesChronologically } from "./notes";
 import { ShortcutsPanel } from "./ShortcutsPanel";
 import { KeybindingsContext } from "./keybindingsContext";
-import { recordRecentBlf, forgetRecentBlf } from "./recentBlfs";
+import { recordRecentCapture, forgetRecentCapture } from "./recentCaptures";
 import {
   DEFAULT_SAVE_CAPTURE_NAME,
   SAVE_CAPTURE_FILTERS,
   saveFormatFor,
 } from "./saveFormat";
+import { IMPORT_TRACE_FILTERS, importFormatFor } from "./importFormat";
 import {
   hostState,
   hydrateState,
-  setRecentBlfs as persistRecentBlfs,
+  setRecentCaptures as persistRecentCaptures,
   setLastProject as persistLastProject,
   setLayout as persistLayout,
   setBlfChannelMaps as persistBlfChannelMaps,
@@ -384,21 +385,21 @@ export function App() {
   // list at `src-tauri/src/notes.rs`). Bootstrapped by
   // `fetch_notes` and kept current by `notes-changed` events.
   const [notes, setNotes] = useState<Note[]>([]);
-  // Recent BLFs (the N most-recent opened BLF paths, persisted host-side
-  // per ADR 0032). Offered in the Open BLF flow and the project panel's
-  // BLF import affordance.
-  const [recentBlfs, setRecentBlfs] = useState<string[]>(() => hostState().recent_blfs);
-  const rememberRecentBlf = useCallback((path: string) => {
-    setRecentBlfs((current) => {
-      const next = recordRecentBlf(current, path);
-      persistRecentBlfs(next);
+  // Recent captures (the N most-recently-imported BLF/MDF paths,
+  // persisted host-side per ADR 0032). Offered in the Import-trace
+  // flow; format routing at open time is by extension (`importFormat.ts`).
+  const [recentCaptures, setRecentCaptures] = useState<string[]>(() => hostState().recent_blfs);
+  const rememberRecentCapture = useCallback((path: string) => {
+    setRecentCaptures((current) => {
+      const next = recordRecentCapture(current, path);
+      persistRecentCaptures(next);
       return next;
     });
   }, []);
-  const dropRecentBlf = useCallback((path: string) => {
-    setRecentBlfs((current) => {
-      const next = forgetRecentBlf(current, path);
-      persistRecentBlfs(next);
+  const dropRecentCapture = useCallback((path: string) => {
+    setRecentCaptures((current) => {
+      const next = forgetRecentCapture(current, path);
+      persistRecentCaptures(next);
       return next;
     });
   }, []);
@@ -1062,32 +1063,62 @@ export function App() {
     });
   }, [count]);
 
-  // BLF import has a channel → bus mapping step. The
-  // outer pending state holds the picked BLF path + its scan (channel
+  // Both formats import through a channel → bus mapping step. The
+  // outer pending state holds the picked path + its scan (channel
   // census, metadata, markers) while the modal is open; clicking
-  // "Open" in the modal commits and the host pump starts.
+  // "Open" in the modal commits and the host pump starts. Kept as two
+  // pending states (rather than one union) because the result types
+  // and mapping-confirm commands genuinely differ per format.
   const [pendingBlf, setPendingBlf] = useState<{
     blfPath: string;
     scan: BlfScanResult;
   } | null>(null);
-  // The BLF whose census is walking right now — the status line's
+  const [pendingMdf, setPendingMdf] = useState<{
+    mdfPath: string;
+    scan: MdfScanResult;
+  } | null>(null);
+  // The path whose census is walking right now — the status line's
   // only sign of life between picking a file and the dialog opening.
   const [scanningBlfPath, setScanningBlfPath] = useState<string | null>(null);
+  const [scanningMdfPath, setScanningMdfPath] = useState<string | null>(null);
 
-  const handleOpenLog = useCallback(
+  // "Import trace…": one file-open dialog for both formats,
+  // routed by the picked path's extension (`importFormatFor`) to the
+  // format's own scan command — the host still never sniffs the file,
+  // it just receives an explicit command choice made here. `presetPath`
+  // is how the Recent-captures list and a failed-save retry skip the
+  // dialog.
+  const handleImportTrace = useCallback(
     async (presetPath?: string) => {
       const selected =
         typeof presetPath === "string" && presetPath.length > 0
           ? presetPath
-          : await open({
-              multiple: false,
-              filters: [{ name: "Vector BLF", extensions: ["blf"] }],
-            });
+          : await open({ multiple: false, filters: IMPORT_TRACE_FILTERS });
       if (typeof selected !== "string") return;
 
       // The census walks the whole file, which is seconds on a large
-      // log and all of it before the mapping dialog exists. Say so, or
-      // the pick lands on an app that looks like it did nothing.
+      // capture and all of it before the mapping dialog exists. Say
+      // so, or the pick lands on an app that looks like it did
+      // nothing.
+      if (importFormatFor(selected) === "mdf") {
+        setScanningMdfPath(selected);
+        try {
+          const scan = await invoke<MdfScanResult>("scan_mdf_channels", {
+            mdfPath: selected,
+          });
+          setPendingMdf({ mdfPath: selected, scan });
+        } catch (err) {
+          setState({ kind: "error", message: String(err) });
+          // If we tried to open a recent file and it failed (path
+          // moved, file deleted), drop it from the recents list so
+          // it doesn't keep being offered.
+          if (presetPath) dropRecentCapture(presetPath);
+        } finally {
+          setScanningMdfPath(null);
+        }
+        return;
+      }
+
       setScanningBlfPath(selected);
       try {
         const scan = await invoke<BlfScanResult>("scan_blf_channels", {
@@ -1096,15 +1127,12 @@ export function App() {
         setPendingBlf({ blfPath: selected, scan });
       } catch (err) {
         setState({ kind: "error", message: String(err) });
-        // If we tried to open a recent file and it failed (path
-        // moved, file deleted), drop it from the recents list so
-        // it doesn't keep being offered.
-        if (presetPath) dropRecentBlf(presetPath);
+        if (presetPath) dropRecentCapture(presetPath);
       } finally {
         setScanningBlfPath(null);
       }
     },
-    [dropRecentBlf],
+    [dropRecentCapture],
   );
 
   // Confirm the BLF channel mapping and actually start the pump.
@@ -1128,7 +1156,7 @@ export function App() {
         !(await resetSession({
           onError: (err) => {
             setState({ kind: "error", message: String(err) });
-            dropRecentBlf(blfPath);
+            dropRecentCapture(blfPath);
           },
         }))
       ) {
@@ -1147,57 +1175,22 @@ export function App() {
         });
         setState({ kind: "loading", result });
         // Record on a successful open. Failures don't
-        // promote a path — `handleOpenLog` drops it on the
+        // promote a path — `handleImportTrace` drops it on the
         // recents-launch path.
-        rememberRecentBlf(blfPath);
+        rememberRecentCapture(blfPath);
       } catch (err) {
         setState({ kind: "error", message: String(err) });
-        dropRecentBlf(blfPath);
+        dropRecentCapture(blfPath);
       }
     },
-    [pendingBlf, resetSession, rememberRecentBlf, dropRecentBlf],
+    [pendingBlf, resetSession, rememberRecentCapture, dropRecentCapture],
   );
-
-  // MDF import has the same channel → bus mapping step as BLF import,
-  // over `scan_mdf_channels` / `import_mdf` instead of
-  // `scan_blf_channels` / `open_log`. There's no Recent-MDFs list yet
-  // (unlike `recentBlfs` above) — a deliberate scope trim recorded in
-  // the task's status log, not an oversight; the channel→bus mapping
-  // persistence (`blf_channel_maps`) is keyed by path + channel count
-  // alone, so it needs no MDF-specific counterpart and is reused as is.
-  const [pendingMdf, setPendingMdf] = useState<{
-    mdfPath: string;
-    scan: MdfScanResult;
-  } | null>(null);
-  // The MDF whose census is walking right now — same status-line role
-  // `scanningBlfPath` plays for BLF.
-  const [scanningMdfPath, setScanningMdfPath] = useState<string | null>(null);
-
-  const handleOpenMdf = useCallback(async () => {
-    const selected = await open({
-      multiple: false,
-      filters: [{ name: "ASAM MDF", extensions: ["mf4"] }],
-    });
-    if (typeof selected !== "string") return;
-
-    // Same reasoning as the BLF census notice: the walk covers the
-    // whole file before the mapping dialog has anything to show.
-    setScanningMdfPath(selected);
-    try {
-      const scan = await invoke<MdfScanResult>("scan_mdf_channels", {
-        mdfPath: selected,
-      });
-      setPendingMdf({ mdfPath: selected, scan });
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-    } finally {
-      setScanningMdfPath(null);
-    }
-  }, []);
 
   // Confirm the MDF channel mapping and actually start the pump.
   // Mirrors `handleBlfMapConfirm` exactly, modulo the command names and
-  // result shape.
+  // result shape; the channel→bus mapping persistence (`blf_channel_maps`)
+  // is keyed by path + channel count alone, so it needs no MDF-specific
+  // counterpart and is reused as is.
   const handleMdfMapConfirm = useCallback(
     async (choices: Record<number, string>, range: ImportRange) => {
       if (!pendingMdf) return;
@@ -1206,7 +1199,10 @@ export function App() {
       persistBlfChannelMaps(recordBlfChannelMap(hostState().blf_channel_maps, mdfPath, choices));
       if (
         !(await resetSession({
-          onError: (err) => setState({ kind: "error", message: String(err) }),
+          onError: (err) => {
+            setState({ kind: "error", message: String(err) });
+            dropRecentCapture(mdfPath);
+          },
         }))
       ) {
         return;
@@ -1223,11 +1219,13 @@ export function App() {
           endNs: range.endNs,
         });
         setState({ kind: "loading", result });
+        rememberRecentCapture(mdfPath);
       } catch (err) {
         setState({ kind: "error", message: String(err) });
+        dropRecentCapture(mdfPath);
       }
     },
-    [pendingMdf, resetSession],
+    [pendingMdf, resetSession, rememberRecentCapture, dropRecentCapture],
   );
 
   // Add one or more DBCs to the loaded set (each goes through the host's
@@ -1893,16 +1891,15 @@ export function App() {
         format,
         buses: buses.map((b) => b.id),
       });
-      // Newly-saved BLFs are reasonable Recent BLF candidates (the user
-      // just produced this file; re-opening it is the archetypal "what
-      // did I just save?" gesture). There is no Recent MDFs list to add
-      // an `.mf4` to yet.
-      if (format === "blf") rememberRecentBlf(path);
+      // A newly-saved capture is a reasonable Recent-captures candidate
+      // (the user just produced this file; re-opening it is the
+      // archetypal "what did I just save?" gesture) — either format.
+      rememberRecentCapture(path);
     } catch {
       // Failure surfaces in the System Messages panel via the
       // host's `capture`-tagged error log; nothing more to do here.
     }
-  }, [buses, count, rememberRecentBlf]);
+  }, [buses, count, rememberRecentCapture]);
 
   // The close-on-quit handler is registered once; give it refs to the
   // current values rather than re-registering on every change.
@@ -2542,8 +2539,7 @@ export function App() {
     // Close project = return to a fresh unsaved project (same reset
     // the New-project action performs).
     "project.close": handleNewProject,
-    "blf.open": () => void handleOpenLog(),
-    "mdf.open": () => void handleOpenMdf(),
+    "trace.import": () => void handleImportTrace(),
     "dbc.add": () => void handleAddDbc(),
     "connection.connect": () => void handleConnect(),
     "connection.disconnect": () => void handleDisconnect(),
@@ -2973,21 +2969,20 @@ export function App() {
   // every button dispatches through `runCommand`, so a click gets the same
   // recent-tracking and context gate as the palette and keyboard. The few
   // buttons that carry view-extras (the Connect/Disconnect toggle, the
-  // disabled-while-empty Clear/Save, the Recent-BLFs dropdown, the unread
-  // badge) stay bespoke, keyed by a sentinel and interleaved in order.
+  // disabled-while-empty Clear/Save, the Recent-captures dropdown, the
+  // unread badge) stay bespoke, keyed by a sentinel and interleaved in order.
   type ToolbarItem =
     | "sep"
     | "connection"
-    | "recentBlfs"
+    | "recentCaptures"
     | "systemMessages"
     | { id: string; label: string; disabled?: boolean };
   const toolbarItems: ToolbarItem[] = [
     { id: "project.open", label: "Open project…" },
     { id: "project.save", label: "Save project" },
     "sep",
-    { id: "blf.open", label: "Open BLF…" },
-    "recentBlfs",
-    { id: "mdf.open", label: "Open MDF…" },
+    { id: "trace.import", label: "Import trace…" },
+    "recentCaptures",
     { id: "dbc.add", label: "Add DBC…" },
     "sep",
     "connection",
@@ -3012,26 +3007,26 @@ export function App() {
     if (item === "sep") {
       return <span key={`sep-${i}`} className="toolbar-separator" aria-hidden="true" />;
     }
-    if (item === "recentBlfs") {
-      if (recentBlfs.length === 0) return null;
+    if (item === "recentCaptures") {
+      if (recentCaptures.length === 0) return null;
       return (
-        <details key="recent-blfs" className="recent-blfs">
+        <details key="recent-captures" className="recent-captures">
           <summary
             role="button"
-            aria-label={`Recent BLFs (${recentBlfs.length})`}
-            title="Recent BLFs"
+            aria-label={`Recent captures (${recentCaptures.length})`}
+            title="Recent captures"
           >
             Recent
           </summary>
-          <ul role="menu" className="recent-blfs-menu">
-            {recentBlfs.map((p) => (
+          <ul role="menu" className="recent-captures-menu">
+            {recentCaptures.map((p) => (
               <li key={p} role="menuitem">
                 <button
                   onClick={(e) => {
                     // Close the <details> panel; React state drives the rest.
                     const el = (e.currentTarget as HTMLElement).closest("details");
                     if (el instanceof HTMLDetailsElement) el.open = false;
-                    void handleOpenLog(p);
+                    void handleImportTrace(p);
                   }}
                   title={p}
                 >

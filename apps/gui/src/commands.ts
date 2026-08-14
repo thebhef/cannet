@@ -57,6 +57,12 @@ export interface CommandSpec {
   label: string;
   category?: string;
   context?: (ctx: CommandContext) => boolean;
+  /// Extra terms the palette matches against but never displays — a
+  /// renamed or merged command still wants to be found by muscle
+  /// memory (the old label, an old command's name) without cluttering
+  /// what's shown. Folded into the fuzzy-match text alongside `label`;
+  /// see `PaletteModal`.
+  keywords?: string;
 }
 
 /// One code-declared binding: chord syntax per `keybindings.ts`.
@@ -119,8 +125,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     category: "Project",
     context: (ctx) => ctx.hasProjectOpen,
   },
-  { id: "blf.open", label: "Open BLF…", category: "File" },
-  { id: "mdf.open", label: "Open MDF…", category: "File" },
+  {
+    id: "trace.import",
+    label: "Import trace…",
+    category: "File",
+    // Finds the action by the entry points it replaced (one BLF
+    // button, one MDF button).
+    keywords: "BLF MDF Open BLF Open MDF Vector ASAM",
+  },
   { id: "dbc.add", label: "Add DBC…", category: "File" },
   { id: "connection.connect", label: "Connect", category: "Connection" },
   { id: "connection.disconnect", label: "Disconnect", category: "Connection" },

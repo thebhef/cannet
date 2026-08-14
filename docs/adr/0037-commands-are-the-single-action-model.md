@@ -35,7 +35,7 @@ prevent.
    id to a button whose `onClick` is `runCommand(id)`. Buttons that
    carry view-extras — a conditional label (Connect ⇄ Disconnect), a
    disabled state (Clear/Save while the capture is empty), an unread
-   badge, an argument-bearing dropdown (Recent BLFs) — are escape
+   badge, an argument-bearing dropdown (Recent captures) — are escape
    hatches, rendered bespoke and interleaved in the same ordered list,
    but they still dispatch commands. The list is data, not a config
    language: the escape hatches are plain code, not declarative rules.

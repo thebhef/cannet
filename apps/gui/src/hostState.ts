@@ -1,7 +1,7 @@
 // Machine-local UI state, persisted host-side (ADR 0032, ADR 0034).
 //
 // These values (last-opened project, the open project's layout snapshot,
-// recent BLFs, recent commands) used to live in `localStorage`; they now
+// recent captures, recent commands) used to live in `localStorage`; they now
 // round-trip through the host's `get_state` / `set_state` commands. The
 // host is authoritative — and it also decides *where* each value lands:
 // `state.json` in the OS config dir for what follows the person, the
@@ -79,7 +79,11 @@ export function setLayout(layout: unknown): void {
   flush();
 }
 
-export function setRecentBlfs(list: readonly string[]): void {
+/// Persist the Recent-captures MRU. Named for the display name
+/// ("Recent captures" — the list records BLF and MDF imports alike),
+/// not the wire field it writes (`recent_blfs`, kept as-is; see
+/// `recentCaptures.ts`).
+export function setRecentCaptures(list: readonly string[]): void {
   cache = { ...cache, recent_blfs: [...list] };
   flush();
 }
