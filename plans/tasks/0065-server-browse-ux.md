@@ -93,8 +93,13 @@ Owner feedback from first live use of the Task 42/43 surfaces
 - Auto-generated tokens are 5-word EFF-large hyphenated
   passphrases; `--token` stays free-form; wire/trust store
   unchanged.
-- Windows GUI browse produces no per-app firewall rules (native
-  DNS-SD backend), verified on this machine. **Blocked on an owner
+- ~~Windows GUI browse produces no per-app firewall rules~~ —
+  **waived by owner ruling 2026-08-14** (phase-4 eval, option B):
+  stay on `mdns-sd`; the native backend's one-address race and
+  missing removal signal disqualify it even with an unsafe
+  exception. The minted rules are silent; deny-path visibility
+  (phase 2) and add-by-address (phase 3b) cover the blocked
+  cases. README documents the Windows firewall reality instead. **Blocked on an owner
   decision** — see the phase 4 status log: the native API delivers the
   firewall property but no maintained crate feeds the reducer, and the
   route that would is `unsafe` in our tree.
