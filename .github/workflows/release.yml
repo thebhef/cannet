@@ -13,12 +13,18 @@ name: Release
 #      beside the frozen sidecar it supervises, and each leg
 #      additionally packs a `cannet-server-vX.Y.Z-<target>` archive
 #      (the same server binary + the same `cannet-python-can` onedir)
-#      beside the GUI bundle, and
+#      beside the GUI bundle — plus, on Windows, a native server
+#      installer (NSIS `.exe`), and
 #   4. builds a Linux x64 `cannet-server` archive on its own runner —
 #      cargo build + sidecar freeze + tar, no Tauri bundling — since
 #      cannet's Linux support is server-only for now.
 #   All artifacts publish to one draft pre-release for review: 2 GUI
-#   bundles + 3 server archives.
+#   bundles + 3 server archives + the Windows server installer.
+#
+# A server installer puts `cannet-server` where a terminal finds it —
+# the NSIS one appends its install directory to the user `PATH` — and
+# keeps the frozen sidecar onedir beside the binary, which is where the
+# server's own probe looks. It never starts anything.
 #
 # CI builds on every push to main are cheap (Linux); the expensive
 # cross-platform bundle build runs only here, when you actually release.
@@ -115,11 +121,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # The installer/bundle version comes from the input; the committed
-      # tauri.conf.json stays 0.0.0.
+      # tauri.conf.json and packager.toml stay 0.0.0. cargo-packager has
+      # no version-override flag, so its config is patched the same way
+      # — both edits are committed below so the tree is clean when
+      # vergen reads it.
       - name: Set bundle version
         shell: bash
         run: |
           node -e "const fs=require('fs'),p='apps/gui/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version='${{ steps.ver.outputs.version }}';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+          PKG=crates/cannet-server/packaging/packager.toml
+          sed -i 's/^version = "0\.0\.0"$/version = "${{ steps.ver.outputs.version }}"/' "$PKG"
+          grep -q '^version = "${{ steps.ver.outputs.version }}"$' "$PKG" \
+            || { echo "::error::the version placeholder in $PKG did not substitute"; exit 1; }
 
       # vergen stamps the binary with `git describe --tags --dirty`, and
       # the step above modifies a *tracked* file — so tagging before it
@@ -135,7 +148,8 @@ jobs:
           git -c user.name='cannet release' \
               -c user.email='release@users.noreply.github.com' \
               commit -m "release: bundle version ${{ steps.ver.outputs.version }}" \
-              -- apps/gui/src-tauri/tauri.conf.json
+              -- apps/gui/src-tauri/tauri.conf.json \
+                 crates/cannet-server/packaging/packager.toml
           git tag "${{ steps.ver.outputs.tag }}"
 
       - run: pnpm --dir apps/gui install --frozen-lockfile
@@ -238,11 +252,40 @@ jobs:
           Compress-Archive -Path $Stage -DestinationPath $ArchivePath
           "SERVER_ARCHIVE_PATH=$ArchivePath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # A CI/dev tool, never a workspace dependency. It brings its own
+      # pinned NSIS toolchain, so the runner needs no NSIS install.
+      - name: Install cargo-packager
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: cargo install cargo-packager --locked --version 0.11.8
+
+      # The config reads the two directories the steps above already
+      # filled — `server-dist/` (the staged release server) and
+      # `sidecar-dist/` (this runner's frozen onedir) — so there is
+      # nothing further to stage. Its `version` was patched from the
+      # release input near the top of this job.
+      - name: Package server installer (Windows NSIS)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo packager -c crates/cannet-server/packaging/packager.toml
+          SETUP="target/packager/cannet-server_${{ steps.ver.outputs.version }}_x64-setup.exe"
+          [ -f "$SETUP" ] || { echo "::error::cargo-packager did not produce $SETUP"; ls -l target/packager || true; exit 1; }
+          echo "SERVER_INSTALLER_PATH=$SETUP" >> "$GITHUB_ENV"
+
       - name: Upload server archive to the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ steps.ver.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
+
+      - name: Upload server installer to the draft release
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.ver.outputs.tag }}" "$SERVER_INSTALLER_PATH" --clobber --repo "${{ github.repository }}"
 
   # cannet's Linux support is server-only for now: no Tauri bundle, no
   # WebView host libraries, no frontend build — just the server binary

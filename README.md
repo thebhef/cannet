@@ -20,10 +20,14 @@ and offers a Recent BLFs list in the toolbar. See
 Prebuilt **alpha** bundles are published to
 [GitHub Releases](https://github.com/thebhef/cannet/releases):
 
-| Platform                      | Artifact                      |
-|-------------------------------|-------------------------------|
-| macOS (Apple Silicon / arm64) | `.dmg` — drag to Applications |
-| Windows (x64)                 | `.msi` or NSIS `-setup.exe`   |
+| Platform                      | GUI bundle                    | `cannet-server` installer           |
+|-------------------------------|-------------------------------|-------------------------------------|
+| macOS (Apple Silicon / arm64) | `.dmg` — drag to Applications | —                                   |
+| Windows (x64)                 | `.msi` or NSIS `-setup.exe`   | `cannet-server_X.Y.Z_x64-setup.exe` |
+
+The server installer is for hosting hardware on a machine that does not
+need the GUI; § Running the production server describes what it does,
+and the plain archives stay available as the no-installer path.
 
 These bundles are **unsigned**. On first launch:
 
@@ -374,6 +378,26 @@ a downloaded, un-notarized binary (right-click → **Open** and confirm,
 or `xattr -dr com.apple.quarantine cannet-server`); Windows SmartScreen
 shows the same warning the GUI installer does (**More info → Run
 anyway**). Linux has no equivalent gate.
+
+#### Installers
+
+Beside the archives, one native server installer per platform. Each
+keeps the `cannet-python-can/` onedir beside the binary — the layout
+the server's own sidecar discovery expects — and puts `cannet-server`
+where a terminal finds it. None of them installs a service, a
+shortcut, or anything that starts a server: running one stays an
+explicit act.
+
+| Platform    | Installer                           | What it does                                                                                       |
+|-------------|-------------------------------------|----------------------------------------------------------------------------------------------------|
+| Windows x64 | `cannet-server_X.Y.Z_x64-setup.exe` | Installs to `%LOCALAPPDATA%\Programs\cannet-server` and appends that directory to your user `PATH` |
+
+The Windows installer is per-user, so it needs no administrator rights,
+and it is **unsigned** — SmartScreen shows the same **More info → Run
+anyway** warning the GUI installer does. It registers a normal
+Add/Remove Programs entry; uninstalling removes the files and takes its
+`PATH` entry back out. Open a new terminal afterwards — an existing one
+keeps the `PATH` it started with.
 
 On Windows, the first mDNS bind can trigger Defender Firewall to add
 inbound *Block* rules for the binary on the Public profile without

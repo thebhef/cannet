@@ -421,6 +421,87 @@ coverage), verbatim-entry replacement, replacement idempotency, and the
 `~/.zprofile` line was checked and already writes a plain absolute
 path — no `\\?\` equivalent there, no change needed.
 
+### 2026-08-13 — phase 4a: the Windows NSIS installer, shipped
+
+`crates/cannet-server/packaging/` carries `packager.toml` and the
+vendored `installer-cli.nsi`; the release workflow's Windows leg
+installs `cargo-packager` pinned, packages after the Tauri bundle step
+(which is what produced this runner's `sidecar-dist/` onedir), and
+uploads the installer beside the zip.
+
+**Config decisions beyond phase 1's trial.**
+
+- *Inputs need no staging.* `binariesDir` is
+  `apps/gui/src-tauri/server-dist` and the resource `src` is
+  `apps/gui/src-tauri/sidecar-dist/cannet-python-can` — both stable
+  paths that `scripts/stage-server.py` and the sidecar freeze already
+  fill, on every runner and locally, with no target triple or profile
+  directory in them. Only `version` is patched by CI, in the same step
+  that patches `tauri.conf.json` and into the same local commit, so the
+  vergen cleanliness assert still passes.
+- *Install directory* is `%LOCALAPPDATA%\Programs\cannet-server`, via an
+  `InstallDir` line in `preinstallSection` (NSIS takes that attribute at
+  top level). Setting it means `$INSTDIR` is already non-empty when the
+  template's `.onInit` runs, so `RestorePreviousInstallLocation` is
+  skipped — an upgrade takes the default rather than a previously chosen
+  directory, which is acceptable for a tool whose install location is
+  not a documented choice.
+- *The PATH scripts are phase 3's semantics, not phase 1's.* Phase 1
+  used `[Environment]::GetEnvironmentVariable/SetEnvironmentVariable`,
+  which expands `%VAR%` entries on read and can demote a
+  `REG_EXPAND_SZ` `PATH` to `REG_SZ` on write. The shipped scripts read
+  `HKCU\Environment` with `DoNotExpandEnvironmentNames`, write the value
+  back with its own registry kind, and append to the raw string rather
+  than a split-and-rejoined list — the same three rules
+  `apps/gui/src-tauri/src/server_path.rs` follows. Install and uninstall
+  are exact inverses: install appends `;<dir>`, uninstall splits on `;`,
+  drops only entries naming that directory, and rejoins, which
+  reproduces the original string including empty entries.
+- *Two residues phase 1 saw are fixed*, in a `Function un.onUninstSuccess`
+  (a callback the template does not define) rather than a section, so an
+  uninstall that aborts because the server is still running has not
+  already had its directory removed: `RMDir /r` on the onedir directory
+  tree the template only shallow-`RMDir`s, and `DeleteRegKey` on
+  `HKCU\Software\cannet\cannet-server`, which the template writes and
+  never removes.
+- *The fork is 48 lines of 671, all deletions* (623 remain); `diff`
+  against the pinned upstream copy shows no added line, which is the
+  check that it has not drifted. The inventory's "47" was off by one.
+
+**Local verification** (owner's Windows 11 box, silent throughout — no
+installer window was ever shown; `Start-Process … '/S' -Wait`).
+
+- Round trip, one run: install exit 0 → user `PATH` gained exactly one
+  entry, `C:\…\AppData\Local\Programs\cannet-server`, **plain, not
+  `\\?\`-verbatim**, appended at the end; value kind still `String`; the
+  owner's pre-existing empty entry and their `\\?\`-prefixed GUI entry
+  both untouched. Uninstall exit 0 → install directory gone entirely (0
+  files, 0 directories), both registry keys gone, and the user `PATH`
+  **byte-identical to the pre-install capture**: SHA-256 of the raw
+  (unexpanded) value `6FB8105D…BC6E24A0` before and after. The server's
+  own data directory `%LOCALAPPDATA%\cannet-server` (access token, TLS
+  key pair, logs) was untouched throughout — the reason for the
+  `Programs\` install path.
+- Installed layout: `cannet-server.exe`, `cannet-python-can\` (131
+  files), `uninstall.exe`. Add/Remove Programs entry present with
+  DisplayName / DisplayVersion / Publisher / InstallLocation /
+  UninstallString / EstimatedSize. **No Start-menu entry, no desktop
+  shortcut, no run-on-finish.**
+- End to end from a shell whose `PATH` was rebuilt from the machine +
+  user registry values (what a fresh logon gets), cwd `C:\`:
+  `cannet-server` resolved to
+  `…\Programs\cannet-server\cannet-server.exe`, and the running server
+  logged `exec:
+  …\Programs\cannet-server\cannet-python-can\cannet-python-can.exe` and
+  enumerated both PEAK PCAN-USB FD channels (`pcan:PCAN_USBBUS1`,
+  `pcan:PCAN_USBBUS2`). Killed by process tree afterwards; no
+  `cannet-server` or `cannet-python-can` process survived.
+- Idempotency: a second `/S` install over the first left the `PATH`
+  string unchanged (one entry naming the install directory, not two).
+
+`actionlint` 1.7.7 (downloaded for the check, not committed) reports the
+edited `release.yml` clean.
+
 - **New maintenance obligation (phase 1, accepted):** the Windows leg
   carries a vendored fork of `cargo-packager`'s `installer.nsi`. The
   fork is deletion-only and `cargo-packager` is version-pinned, so the

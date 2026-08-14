@@ -1,0 +1,133 @@
+# cargo-packager config for the Windows `cannet-server` installer.
+#
+# Build it with (from the repository root, after `scripts/stage-server.py`
+# has built and staged the server and the sidecar freeze has produced the
+# onedir):
+#
+#     cargo packager -c crates/cannet-server/packaging/packager.toml
+#
+# Every relative path below is resolved against *this file's* directory:
+# cargo-packager chdirs to the config's parent before packaging.
+#
+# `name` must be set. Without it the CLI tries to auto-detect one by
+# chdir-ing to the config *file* path, which fails ("The directory name
+# is invalid") for a standalone config.
+#
+# `version` is a placeholder. There is no version-override flag, so the
+# release workflow patches this line with the release tag's version
+# before it runs the packager — the same way it patches
+# `tauri.conf.json`. Keep the committed value at 0.0.0.
+name = "cannet-server"
+productName = "cannet-server"
+version = "0.0.0"
+identifier = "co.hefnet.cannet-server"
+publisher = "cannet"
+description = "cannet hardware proxy — CAN interfaces over the network"
+formats = ["nsis"]
+licenseFile = "../../../LICENSE"
+
+# Both inputs are produced by the build, at paths that do not depend on
+# the target triple or the profile directory layout:
+# `scripts/stage-server.py` puts the freshly built release server in
+# `server-dist/`, and the sidecar freeze (ADR 0036) puts the onedir in
+# `sidecar-dist/`. The GUI bundle reads the same two directories.
+binariesDir = "../../../apps/gui/src-tauri/server-dist"
+outDir = "../../../target/packager"
+
+[[binaries]]
+# No `.exe` suffix — the packager appends the platform's own.
+path = "cannet-server"
+main = true
+
+# Lands as `<installdir>\cannet-python-can\`, i.e. beside the installed
+# binary, which is where `cannet-server`'s own sidecar probe looks.
+[[resources]]
+src = "../../../apps/gui/src-tauri/sidecar-dist/cannet-python-can"
+target = "cannet-python-can"
+
+[nsis]
+installMode = "currentUser"
+
+# A vendored, deletion-only fork of the upstream 671-line
+# `installer.nsi` (48 lines removed, nothing added — `diff` against the
+# pinned cargo-packager's copy must show no `>` lines). The five blocks
+# removed are the Start-menu shortcut page, the finish page's
+# create-desktop-shortcut checkbox and run-on-finish button, the
+# shortcut creation in the install section (including the silent/passive
+# path that ignores `/NS`), the shortcut removal in the uninstall
+# section, and the two shortcut functions. None of that is expressible
+# in config, and a console tool must not ship a double-click launcher.
+# Re-diff this file whenever the pinned cargo-packager version moves.
+template = "installer-cli.nsi"
+
+# `preinstallSection` injects verbatim NSIS at *top level*, so it has
+# room for both an install section and an `un.` section — which is what
+# makes the PATH entry symmetric: added on install, removed on
+# uninstall, and no other hook in the template can do it.
+#
+# The edit runs through PowerShell rather than NSIS `ReadRegStr` /
+# `WriteRegExpandStr` because this NSIS toolchain reports
+# NSIS_MAX_STRLEN=1024: a user PATH longer than 1023 characters would be
+# silently truncated, and thus destroyed, by the NSIS string path.
+#
+# The two scripts are exact inverses. Install appends `;<dir>` to the
+# raw value (never splitting and rejoining it, so a legitimately empty
+# entry survives); uninstall splits, drops only entries naming that
+# directory, and rejoins — which reproduces the original string byte for
+# byte. Both preserve the value's registry kind, so a REG_EXPAND_SZ PATH
+# is not demoted to REG_SZ and its `%VAR%` entries keep expanding, and
+# both read it with DoNotExpandEnvironmentNames so those entries are not
+# baked into literals on the way through. The trailing
+# `SetEnvironmentVariable(...,'User')` deletes a variable that was never
+# set: a registry no-op whose side effect is the WM_SETTINGCHANGE
+# broadcast that makes a *new* terminal see the change before the next
+# logon.
+#
+# `$INSTDIR` reaches PowerShell through the environment, not the command
+# line, so an install directory containing quotes needs no escaping. The
+# interpreter is named by absolute path — this must not depend on the
+# very PATH it is editing.
+#
+# `InstallDir` overrides the template's `currentUser` default of
+# `$LOCALAPPDATA\<product name>`, which for this product is the
+# directory the *running server* already keeps its state in (access
+# token, TLS key pair, logs). Program files and state stay apart.
+# Setting it also means `$INSTDIR` is non-empty by the time the
+# template's `.onInit` runs, so an upgrade takes this default rather
+# than a previously chosen directory — acceptable for a tool whose
+# install location is not a documented choice.
+preinstallSection = '''
+InstallDir "$LOCALAPPDATA\Programs\${PRODUCTNAME}"
+
+Section "-AddToUserPath"
+  System::Call 'kernel32::SetEnvironmentVariable(t "CANNET_INSTALL_DIR", t "$INSTDIR")'
+  nsExec::ExecToLog "$\"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe$\" -NoProfile -NonInteractive -Command $\"$$ErrorActionPreference='Stop';$$e='HKCU:\Environment';$$k=Get-Item -LiteralPath $$e;$$t='ExpandString';$$p='';if($$k.GetValueNames() -contains 'Path'){$$t=$$k.GetValueKind('Path');$$p=$$k.GetValue('Path','','DoNotExpandEnvironmentNames')};$$d=$$env:CANNET_INSTALL_DIR;if(-not ((';'+$$p+';').ToLower().Contains((';'+$$d+';').ToLower()))){if($$p){$$p=$$p+';'+$$d}else{$$p=$$d};Set-ItemProperty -LiteralPath $$e -Name Path -Value $$p -Type $$t;[Environment]::SetEnvironmentVariable('CANNET_PATH_BROADCAST',$$null,'User')}$\""
+  Pop $0
+  ${If} $0 != 0
+    DetailPrint "warning: could not add $INSTDIR to the user PATH (exit $0)"
+  ${EndIf}
+SectionEnd
+
+Section "un.RemoveFromUserPath"
+  System::Call 'kernel32::SetEnvironmentVariable(t "CANNET_INSTALL_DIR", t "$INSTDIR")'
+  nsExec::ExecToLog "$\"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe$\" -NoProfile -NonInteractive -Command $\"$$ErrorActionPreference='Stop';$$e='HKCU:\Environment';$$k=Get-Item -LiteralPath $$e;if($$k.GetValueNames() -contains 'Path'){$$t=$$k.GetValueKind('Path');$$p=$$k.GetValue('Path','','DoNotExpandEnvironmentNames');$$d=$$env:CANNET_INSTALL_DIR;$$n=(($$p -split ';')|Where-Object{$$_.Trim().TrimEnd('\') -ne $$d}) -join ';';if($$n -ne $$p){Set-ItemProperty -LiteralPath $$e -Name Path -Value $$n -Type $$t;[Environment]::SetEnvironmentVariable('CANNET_PATH_BROADCAST',$$null,'User')}}$\""
+  Pop $0
+  ${If} $0 != 0
+    DetailPrint "warning: could not remove $INSTDIR from the user PATH (exit $0)"
+  ${EndIf}
+SectionEnd
+
+; The template deletes every file it installed but only `RMDir`s the
+; top level of each resource directory, so an uninstalled onedir leaves
+; its (empty) directory tree behind; and it never removes the key that
+; records the install location. Both are cleaned up here rather than in
+; a section, because this callback runs *after* the uninstall section
+; has succeeded — an uninstall that aborts (the app is still running)
+; must not have had the directory pulled out from under it first.
+Function un.onUninstSuccess
+  RMDir /r "$INSTDIR\cannet-python-can"
+  RMDir "$INSTDIR"
+  DeleteRegKey HKCU "${MANUPRODUCTKEY}"
+  DeleteRegKey /ifempty HKCU "Software\${MANUFACTURER}"
+FunctionEnd
+'''

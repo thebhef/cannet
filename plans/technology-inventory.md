@@ -544,13 +544,14 @@ crate retained long-term).
   as a CI/dev tool (`cargo install cargo-packager --locked --version
   0.11.8`), never a workspace dependency. It downloads and caches its own
   pinned NSIS 3.09 toolchain, so no runner needs a separate NSIS install.
-  Evaluated hands-on: a trial installer built from the real
-  `cannet-server.exe` plus the real frozen `cannet-python-can` onedir
-  installed to `%LOCALAPPDATA%\cannet-server` with the onedir
-  exe-adjacent, appended the install dir to the user `PATH`, wrote a
-  standard uninstall entry, and on uninstall restored the user `PATH`
-  byte-for-byte; the installed server, launched from an unrelated working
-  directory, found its sidecar and enumerated PCAN hardware.
+  Evaluated hands-on, then shipped: the committed config
+  (`crates/cannet-server/packaging/`) installs to
+  `%LOCALAPPDATA%\Programs\cannet-server` with the onedir exe-adjacent,
+  appends the install dir to the user `PATH`, writes a standard
+  uninstall entry, and on uninstall restores the user `PATH`
+  byte-for-byte and leaves nothing behind; the installed server,
+  launched from an unrelated working directory, found its sidecar and
+  enumerated PCAN hardware.
   - The user-`PATH` append has no config field. It rides in
     `nsis.preinstallSection`, which injects verbatim NSIS at top level —
     room for both an install section and an `un.` section, so the entry
@@ -560,9 +561,16 @@ crate retained long-term).
     rewriting `PATH` in NSIS strings would silently truncate a long one.
   - The "no Start-menu shortcut" ruling needs `nsis.template` — a
     vendored copy of the upstream 671-line `installer.nsi`. The fork is
-    deletion-only (47 lines), so it re-applies cleanly across version
-    bumps, but it does commit us to re-diffing the template whenever
+    deletion-only (48 lines removed, 623 remain, no line added), so it
+    re-applies cleanly across version bumps and a `diff` against the
+    pinned upstream copy showing any added line means the fork drifted —
+    but it does commit us to re-diffing the template whenever
     `cargo-packager` moves.
+  - The install directory has no config field either; `preinstallSection`
+    carries an `InstallDir` line, since NSIS accepts that attribute at
+    top level. The template's `currentUser` default,
+    `$LOCALAPPDATA\<product name>`, is the directory the running server
+    already keeps its state in.
   - `rejected` for the Linux `.deb` leg. Its deb writer copies
     `binaries` into `/usr/bin` as real files and `resources` into
     `/usr/lib/<binary>/`, exposes no maintainer-script hook, and its
