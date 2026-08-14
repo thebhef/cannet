@@ -8,6 +8,8 @@ apps/gui/tsconfig.tsbuildinfo
 
 # Frozen sidecar build output (scripts/build-sidecar.py)
 apps/gui/src-tauri/sidecar-dist/
+# Release cannet-server staged as a bundle resource (scripts/stage-server.py)
+apps/gui/src-tauri/server-dist/
 # Generated at build time from the frozen deps' dist-info (ADR 0036);
 # bundled as a resource, never committed.
 apps/gui/src-tauri/licenses.json

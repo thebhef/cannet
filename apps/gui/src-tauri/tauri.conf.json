@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "uv run --no-project ../../scripts/build-sidecar.py && pnpm build"
+    "beforeBuildCommand": "uv run --no-project ../../scripts/build-sidecar.py && uv run --no-project ../../scripts/stage-server.py && pnpm build"
   },
   "app": {
     "windows": [
@@ -34,6 +34,7 @@
     ],
     "resources": {
       "sidecar-dist/cannet-python-can": "cannet-python-can",
+      "server-dist": "",
       "licenses.json": "licenses.json"
     }
   }

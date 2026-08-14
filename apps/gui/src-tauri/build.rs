@@ -17,8 +17,14 @@ fn main() {
     // first, so hitting it means the freeze was bypassed (e.g. a direct
     // `cargo build --release`), and bundling an empty resource dir would
     // ship an installer with no sidecar.
+    // The same holds for `server-dist`, which carries the release
+    // `cannet-server` every install ships (staged by
+    // `scripts/stage-server.py` from `tauri build`'s
+    // beforeBuildCommand): a dev build has no reason to have built the
+    // release server, and nothing in the app launches it anyway.
     if std::env::var("PROFILE").as_deref() == Ok("debug") {
         let _ = std::fs::create_dir_all("sidecar-dist/cannet-python-can");
+        let _ = std::fs::create_dir_all("server-dist");
         if !std::path::Path::new("licenses.json").exists() {
             let _ = std::fs::write("licenses.json", "{\"components\":[]}\n");
         }

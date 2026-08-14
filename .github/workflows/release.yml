@@ -8,10 +8,12 @@ name: Release
 #      the binary's vergen `git describe` version matches and the tree it
 #      describes is clean — see "Commit + tag" below), and
 #   3. builds unsigned GUI bundles on native runners (Tauri cannot
-#      cross-compile) — macOS Apple Silicon (aarch64) and Windows x64 —
-#      each additionally packing a `cannet-server-vX.Y.Z-<target>`
-#      archive (server binary + the already-frozen `cannet-python-can`
-#      sidecar onedir) beside the GUI bundle, and
+#      cross-compile) — macOS Apple Silicon (aarch64) and Windows x64.
+#      Each bundle *contains* `cannet-server`, staged as a resource
+#      beside the frozen sidecar it supervises, and each leg
+#      additionally packs a `cannet-server-vX.Y.Z-<target>` archive
+#      (the same server binary + the same `cannet-python-can` onedir)
+#      beside the GUI bundle, and
 #   4. builds a Linux x64 `cannet-server` archive on its own runner —
 #      cargo build + sidecar freeze + tar, no Tauri bundling — since
 #      cannet's Linux support is server-only for now.
@@ -69,6 +71,12 @@ jobs:
             rust-target: x86_64-pc-windows-msvc
             args: ""
     runs-on: ${{ matrix.platform }}
+    # Job-wide so both this leg's explicit staging step and the bundle
+    # step's beforeBuildCommand (which runs the same script) build for —
+    # and stage from — one target directory. Without it the second run
+    # would build the server again for the host default target.
+    env:
+      CANNET_SERVER_TARGET: ${{ matrix.rust-target }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -166,12 +174,18 @@ jobs:
 
       # Independent of the GUI bundle — cannet-server has no frontend
       # and no vergen version stamp — so build it before the expensive
-      # Tauri step to fail fast on a server-only regression. `-p`
-      # restricts the build to this crate and its dependency graph,
-      # which does not reach the GUI crate.
-      - name: Build cannet-server (release)
+      # Tauri step to fail fast on a server-only regression. The staging
+      # script's `cargo build -p` restricts the build to this crate and
+      # its dependency graph, which does not reach the GUI crate, then
+      # copies the binary into `apps/gui/src-tauri/server-dist/` so the
+      # bundle step below picks it up as a resource (every GUI install
+      # ships the server). `CANNET_SERVER_TARGET` is set job-wide, so
+      # the bundle step's own beforeBuildCommand run of this script
+      # re-stages the *same* artifact instead of building a second one
+      # for the host default target.
+      - name: Build and stage cannet-server (release)
         shell: bash
-        run: cargo build --release -p cannet-server --target ${{ matrix.rust-target }}
+        run: uv run --no-project scripts/stage-server.py
 
       - name: Build and publish bundle
         uses: tauri-apps/tauri-action@v0
