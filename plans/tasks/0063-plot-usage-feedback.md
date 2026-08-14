@@ -109,6 +109,84 @@ on-show list.
 
 ## Status log
 
+### 2026-08-14 — items 3 and 5: hidden rows compact, solo paging drops off-page rows
+
+Branch `task63e-hidden-rows-solo-paging` off `task63d-collapse-reclaims-space`
+(`f3207ae`). Two commits, one per item.
+
+#### Item 3 — a hidden row drops to swatch + name
+
+`c356573`: a hidden signal's side-panel row (`PlotArea.tsx`'s `signals.map`)
+now branches on `compact = !!s.hidden` — full readout, or just the
+swatch and the name, nothing else. Solo-masked rows get this for free:
+solo's mask (`soloMaskSignals`, pre-existing) sets the same `hidden`
+flag on the derived signal a row draws from, so the compaction and the
+un-hide affordance (the swatch — no new control) apply to a
+solo-masked row without any special-casing. The all-hidden-axis
+invariant (ADR 0026: a swatch in one of the rows is the only way back,
+so that state keeps its rows rather than reducing to a heading) holds
+unchanged — every row in it is now individually compact via the same
+mechanism, so the axis-level CSS that used to hand-tighten the row
+layout for that one case (`.plot-area.collapsed .plot-signal-row` and
+its `-text`/`-name`/`-message`/`-swatch` siblings) is retired: a
+hidden row never renders that markup to style, whichever collapse
+reason put it there.
+
+#### Item 5 — a solo page is the working set
+
+`5ea405e`: while a solo page (or a ticked subset — the same slot) is
+narrower than the whole matched set, a match parked on another page
+has no row in the side panel at all — not styled hidden, not there.
+`plotSolo.ts` gained `soloOffPageKeys`, a stricter sibling of the
+existing `soloMaskedKeys`: it tests panel-wide match membership
+against the *current* visible set, so a signal solo never matched at
+all still gets item 3's ordinary compact-hidden row (unaffected by
+paging), and only a genuine match sitting on a page that isn't current
+disappears. It is naturally empty — a no-op — whenever the whole
+matched set is on show, since `visible` then already covers every
+match; no separate "is a page active" flag was needed.
+
+Stepping a page also scrolls each axis's own side-panel column
+(`.plot-area-signals`) back to the top, via a token (`soloScope`,
+`PlotPanel.tsx`) that changes exactly when the shown scope changes
+(page, subset, or off) and a `useEffect` on it in `PlotArea.tsx`. With
+the off-page rows gone, the on-show list is short enough that "top" is
+"first row visible" — no viewport math needed.
+
+**Interplay decision**, taken by reading what the existing mask logic
+already does rather than inventing a new rule: `soloMaskSignals` never
+overrides a signal's own `hidden` flag for a member of the current
+page — it only forces `hidden` on the ones *outside* it. So a signal
+both individually hidden and on the current page renders exactly like
+any other hidden row: compact, never suppressed for being "off the
+page" (because it isn't). Solo only ever narrows what's visible; it
+does not un-hide a signal the user hid. DOM-tested directly.
+
+One render-scoping fix rode along, found by the render-count tests
+going from 1 to 3: the per-area derive memo (`derivedAreaConfigs` in
+`PlotPanel.tsx`) had started keying on the raw panel-wide "every match"
+set, which is a fresh `Set` whenever the match list recomputes —
+including on an edit to an area solo doesn't even apply to — and so
+busted every area's cache on any areas edit, not just the touched
+one's. Fixed by scoping it the same way `soloMask` itself already is:
+the shared `EMPTY_KEY_SET` constant when solo isn't active for that
+area, so an untouched area's memo key doesn't move.
+
+#### Tests
+
+2032 frontend tests (`pnpm --dir apps/gui test`, +6: 2 for item 3 — the
+compact/full round-trip and the all-hidden invariant — and 4 for item
+5 — off-page rows absent, scroll-to-top on a page step, restore on
+clear, the hidden+on-page interplay) and `pnpm --dir apps/gui build`
+green. Two pre-existing solo tests updated for the new absence: a
+page's off-page match no longer renders at all, so `rowVisibility()`'s
+array shrinks instead of carrying a `false` entry for it. No host
+changes.
+
+#### Blockers / side effects
+
+None.
+
 ### 2026-08-14 — item 2: collapse reclaims space (area heading row + axis collapse)
 
 Branch `task63d-collapse-reclaims-space` off `task63c-disclosure-toggle`
