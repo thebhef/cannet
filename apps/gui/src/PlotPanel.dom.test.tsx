@@ -5354,6 +5354,83 @@ describe("PlotPanel follow-live slide cadence", () => {
   });
 });
 
+// The follow-live window's *width*. `followXWindow` is unit-tested with
+// the window injected, so the edge these tests own is the one no unit
+// can see: the panel feeds its own output back in. Every slide the panel
+// makes goes through `applyXAll`, which records the applied window as
+// the shared window — so a width read back out of that record is the
+// panel honouring its own last slide, not the user.
+describe("PlotPanel follow-live window width", () => {
+  /// The `follow_window_ms` default, in seconds.
+  const DEFAULT_WINDOW_S = 10;
+
+  /// Width of the last x window the panel pushed into `inst`.
+  function lastWidth(inst: FakeUPlotInst): number {
+    const last = inst.xCalls[inst.xCalls.length - 1];
+    if (!last) throw new Error("no x window was applied");
+    return last.max - last.min;
+  }
+
+  /// A running panel with one signal, past its post-mount uPlot rebuild,
+  /// with the capture starting `startExt` seconds long.
+  async function runningPanel(startExt: number): Promise<FakeUPlotInst> {
+    mockSampleBounds.last = startExt;
+    renderPanel();
+    addFocusedSignal("EngineSpeed");
+    await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 400));
+    return liveInstanceIn("Area 1");
+  }
+
+  it("grows to the default width instead of freezing at the width of its first slide", async () => {
+    // THE REGRESSION. The first slide happens a few hundred ms after
+    // connect, when the capture is far shorter than `follow_window_ms` —
+    // so `followXWindow` takes its "capture shorter than the window"
+    // branch and returns a sliver. `applyXAll` then records that sliver
+    // as the shared window, and every later slide read it back as "the
+    // width the user zoomed to". Measured in the app: a 0.02-0.1 s
+    // window against a 10 s setting, for the whole session.
+    await withSizedCanvas(async () => {
+      const inst = await runningPanel(0.4);
+      // Several slides while the capture is still shorter than the
+      // window — this is where the sliver used to get latched.
+      await outsideAct(() => new Promise((r) => setTimeout(r, 300)));
+      // The capture outgrows the window.
+      mockSampleBounds.last = 60;
+      inst.xCalls.length = 0;
+      await outsideAct(() => new Promise((r) => setTimeout(r, 500)));
+
+      // The documented contract: with no width of their own, the window
+      // grows until it is `follow_window_ms` wide, then slides.
+      expect(lastWidth(inst)).toBeCloseTo(DEFAULT_WINDOW_S, 1);
+    });
+  });
+
+  it("keeps a width the user zoomed to across later programmatic slides", async () => {
+    // The other half of the same edge: the fix must not throw the user's
+    // width away with the feedback. A real zoom sets it; the panel's own
+    // slides must neither overwrite nor erase it.
+    await withSizedCanvas(async () => {
+      const inst = await runningPanel(20);
+      await outsideAct(() => new Promise((r) => setTimeout(r, 200)));
+      // uPlot moves its own scale, then tells us — a user zoom to 3 s
+      // wide, over the t=0 half, so follow-live survives it.
+      inst.scales.x = { min: 4, max: 7 };
+      await act(async () => {
+        inst.fire("setScale", "x");
+      });
+      const follow = screen.getByRole("checkbox", { name: /follow live/i });
+      if (!(follow as HTMLInputElement).checked) fireEvent.click(follow);
+
+      mockSampleBounds.last = 80;
+      inst.xCalls.length = 0;
+      await outsideAct(() => new Promise((r) => setTimeout(r, 500)));
+
+      expect(lastWidth(inst)).toBeCloseTo(3, 1);
+    });
+  });
+});
+
 describe("PlotPanel diagnostic readouts", () => {
   const counter = (k: string) => diagCounts().get(k) ?? 0;
 

@@ -215,8 +215,11 @@ describe("followXWindow", () => {
   });
 
   it("keeps the user's zoom width while following a running trace", () => {
-    // Window was [100, 130] (width 30); live edge now 579.
-    expect(followXWindow(true, true, 100, 130, 579, DEFAULT, 0)).toEqual({ min: 549, max: 579 });
+    // The user zoomed to a 30 s wide window; live edge now 579. The
+    // width is passed in on its own — the panel keeps it in a ref only
+    // gestures write, so a programmatic slide can't become "the width
+    // the user chose" (`PlotPanel.userXWidthRef`).
+    expect(followXWindow(true, true, 30, 130, 579, DEFAULT, 0)).toEqual({ min: 549, max: 579 });
   });
 
   it("pins the left edge at the window start until the capture exceeds the window width", () => {
@@ -241,9 +244,9 @@ describe("followXWindow", () => {
     // look wrong — the width is only ever remembered as the current
     // window's span, so the user's zoom is destroyed rather than
     // restored once data catches up.
-    expect(followXWindow(true, true, 100, 130, 2, DEFAULT, 0)).toEqual({ min: 0, max: 30 });
+    expect(followXWindow(true, true, 30, 130, 2, DEFAULT, 0)).toEqual({ min: 0, max: 30 });
     // Once the capture outgrows the width, it slides normally.
-    expect(followXWindow(true, true, 100, 130, 90, DEFAULT, 0)).toEqual({ min: 60, max: 90 });
+    expect(followXWindow(true, true, 30, 130, 90, DEFAULT, 0)).toEqual({ min: 60, max: 90 });
   });
 
   it("refuses to produce an inverted or empty window", () => {
@@ -261,12 +264,12 @@ describe("followXWindow", () => {
     expect(followXWindow(true, true, null, null, 5, DEFAULT, 0.8)).toEqual({ min: 0.8, max: 5 });
     // With a chosen width the window can't invert at all: `max` comes
     // from `min + width`, never from a live edge that sits behind it.
-    expect(followXWindow(true, true, 100, 130, 0.5, DEFAULT, 0.8)).toEqual({ min: 0.8, max: 30.8 });
+    expect(followXWindow(true, true, 30, 130, 0.5, DEFAULT, 0.8)).toEqual({ min: 0.8, max: 30.8 });
   });
 
   it("leaves a zoomed stopped trace's window untouched", () => {
-    expect(followXWindow(true, false, 100, 130, 579, DEFAULT, 30)).toBeNull();
-    expect(followXWindow(false, false, 100, 130, 579, DEFAULT, 30)).toBeNull();
+    expect(followXWindow(true, false, 30, 130, 579, DEFAULT, 30)).toBeNull();
+    expect(followXWindow(false, false, 30, 130, 579, DEFAULT, 30)).toBeNull();
   });
 
   it("fits the full span from the window start when not following and no window is set", () => {

@@ -395,7 +395,7 @@ const DESCRIPTORS: &[Spec] = &[
         key: "follow_window_ms",
         backing: Backing::Field,
         label: "Default follow-live window",
-        help: "Applies until you set a width by zooming or panning.",
+        help: "Applies until you set a width by zooming, panning or fitting.",
         surfaces: &[Surface::Plot],
         kind: Kind::Developer,
         control: Control::Int {
