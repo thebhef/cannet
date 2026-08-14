@@ -32,7 +32,6 @@ export function cellContent(
   absoluteIndex: number,
   baseTimestamp: number | null,
   idFormat: CanIdFormat,
-  isExpanded: boolean,
   busLookup: BusLookup,
   rate?: number,
   count?: number,
@@ -62,23 +61,9 @@ export function cellContent(
     case "data":
       return formatData(frame);
     case "msg":
-      return (
-        <>
-          {frame.decoded ? frame.decoded.name : ""}
-          {frame.decoded ? (
-            // Decoration, not a control (unlike ByIdTable, this row
-            // carries no `aria-expanded`/tabIndex of its own to hang a
-            // no-glyph reading on — ADR 0044's "no separate expander
-            // control" applies to the *control*, not to this ink).
-            // Only the glyph rendering is shared with DisclosureToggle
-            // (task 63 item 1); the row's own click stays untouched.
-            <span className="hint disclosure-toggle-glyph" aria-hidden="true">
-              {" "}
-              {isExpanded ? "▾" : "▸"}
-            </span>
-          ) : null}
-        </>
-      );
+      // No caret: the row itself is the disclosure (ADR 0044's "no
+      // separate expander control"), matching ByIdTable's settled call.
+      return frame.decoded ? frame.decoded.name : "";
   }
 }
 

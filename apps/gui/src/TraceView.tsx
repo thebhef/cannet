@@ -713,12 +713,17 @@ const Row = memo(function Row({
     );
   }
   const rowId = frame ? frameRowId(frame) : null;
+  // The row is the disclosure control (matching ByIdTable's settled
+  // call): a row with no decode has nothing to open, so it reports no
+  // expanded state at all rather than a permanent `false`.
+  const expandable = frame?.decoded != null && rowId != null;
   return (
     <GridviewRow
       defs={COLUMN_DEFS}
       columns={columns}
       gridTemplate={gridTemplate}
       id={rowId == null ? undefined : rowDomId(rowId)}
+      aria-expanded={expandable ? isExpanded : undefined}
       aria-selected={rowId == null ? undefined : selected}
       draggable={rowId != null}
       onDragStart={rowId == null ? undefined : (e) => onDragStart(rowId, e)}
@@ -742,7 +747,6 @@ const Row = memo(function Row({
           absoluteIndex,
           baseTimestamp,
           idFormat,
-          isExpanded,
           busLookup,
         );
         return key === "time" ? (

@@ -194,3 +194,60 @@ describe("TraceView expanded-row signal sub-rows", () => {
     ]);
   });
 });
+
+describe("TraceView frame row disclosure", () => {
+  // The row is the disclosure control (matching ByIdTable's settled
+  // call): its expansion state belongs on the row itself, and there is
+  // no separate decorative glyph.
+  it("exposes aria-expanded on an expandable frame row, tracking open/closed", () => {
+    const { container } = render(
+      <TraceView
+        count={1}
+        version={0}
+        autoScroll={false}
+        baseTimestampSeconds={0}
+        columns={defaultColumns()}
+        onColumnResize={() => {}}
+        onColumnToggle={() => {}}
+        onColumnReorder={() => {}}
+        resolveColor={null}
+        busLookup={new Map([["b1", "Chassis"]])}
+        getRow={(i) => (i === 0 ? { row: "frame", frame: defaultFrame } : null)}
+        ensureVisible={() => {}}
+        onAutoScrollDisabled={() => {}}
+      />,
+    );
+    const row = container.querySelector(".trace-row") as HTMLElement;
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("carries no aria-expanded on a row with nothing to disclose (no decode)", () => {
+    const { container } = render(
+      <TraceView
+        count={1}
+        version={0}
+        autoScroll={false}
+        baseTimestampSeconds={0}
+        columns={defaultColumns()}
+        onColumnResize={() => {}}
+        onColumnToggle={() => {}}
+        onColumnReorder={() => {}}
+        resolveColor={null}
+        busLookup={new Map()}
+        getRow={(i) => (i === 0 ? { row: "frame", frame: { ...defaultFrame, decoded: null } } : null)}
+        ensureVisible={() => {}}
+        onAutoScrollDisabled={() => {}}
+      />,
+    );
+    const row = container.querySelector(".trace-row") as HTMLElement;
+    expect(row).not.toHaveAttribute("aria-expanded");
+  });
+
+  it("renders no decorative caret in the message cell", () => {
+    const { row } = renderExpandedRow();
+    expect(row.querySelector(".disclosure-toggle-glyph")).toBeNull();
+    expect(row.querySelector(".col-msg")).toHaveTextContent("GearBox");
+  });
+});

@@ -518,7 +518,6 @@ const ByIdRow = memo(function ByIdRow({
           frame?.index ?? 0,
           baseTimestamp,
           idFormat,
-          isExpanded,
           busLookup,
           row?.rate,
           row?.count,
