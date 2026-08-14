@@ -42,6 +42,24 @@
 //! −4 s offset into roughly +584 years. Every difference here is
 //! taken in `i128`, which cannot overflow for any pair of `u64`
 //! inputs, and only the final results are narrowed.
+//!
+//! ## Tracking, not a single reading
+//!
+//! One measurement at session start goes stale. Both hosts may be
+//! running NTP or PTP and disciplining their clocks independently while
+//! the session is open, so the distance between them moves. A session
+//! therefore re-probes on a cadence (see `CLOCK_REPROBE_INTERVAL` in the
+//! crate root) — each round is a fresh burst reduced by the same
+//! minimum-delay rule, so a round is never worse than the start-up
+//! measurement was.
+//!
+//! A peer that answers *nothing* on its first round is
+//! [`ClockProbeStatus::Unsupported`] and is not asked again: it does not
+//! know the envelopes exist, and that will not change inside one
+//! session. A peer that answered once and then goes quiet keeps its last
+//! measurement — silence is a lost round, not a retraction — and is
+//! re-probed on the next tick. [`ClockRecord::silent_rounds`] is how a
+//! consumer tells a fresh number from an old one.
 
 use std::sync::{Arc, Mutex};
 
@@ -87,30 +105,77 @@ pub enum ClockProbeStatus {
     Unsupported,
 }
 
+/// Everything one session ever learned about its peer's clock — the
+/// read surface a status display renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockRecord {
+    /// The newest round's conclusion.
+    pub status: ClockProbeStatus,
+    /// θ of the session's *first* successful round — what the peer's
+    /// clock was doing when the session opened. `None` if no round has
+    /// ever succeeded.
+    pub start_offset_ns: Option<i64>,
+    /// θ of the newest successful round.
+    pub measured_offset_ns: Option<i64>,
+    /// δ of the newest successful round — the error bound on
+    /// `measured_offset_ns`.
+    pub delay_ns: Option<i64>,
+    /// Exchanges that completed in the newest successful round.
+    pub samples: u32,
+    /// Probe rounds attempted, answered or not.
+    pub rounds: u32,
+    /// Consecutive rounds since the last answer. Non-zero means
+    /// `measured_offset_ns` is stale: the peer answered before and has
+    /// stopped, so the last good number is still the best available
+    /// one.
+    pub silent_rounds: u32,
+    /// Our wall clock when the newest successful round settled, for a
+    /// consumer that wants to show the measurement's age.
+    pub measured_at_ns: Option<u64>,
+}
+
+/// A [`SessionClock`]'s contents. Written once per probe round, so a
+/// mutex costs nothing that matters.
+#[derive(Debug)]
+struct ClockState {
+    status: ClockProbeStatus,
+    start: Option<ClockOffset>,
+    rounds: u32,
+    silent_rounds: u32,
+    measured_at_ns: Option<u64>,
+}
+
 /// A session's clock measurement, readable from anywhere that holds a
 /// piece of the session.
 ///
 /// Cheap to clone — every clone reads the same measurement. The
-/// session's worker publishes into it once, when the probe window
-/// closes.
+/// session's worker publishes into it at the end of each probe round.
 #[derive(Debug, Clone)]
-pub struct SessionClock(Arc<Mutex<ClockProbeStatus>>);
+pub struct SessionClock(Arc<Mutex<ClockState>>);
 
 impl SessionClock {
     pub(crate) fn pending() -> Self {
-        Self(Arc::new(Mutex::new(ClockProbeStatus::Pending)))
+        Self(Arc::new(Mutex::new(ClockState {
+            status: ClockProbeStatus::Pending,
+            start: None,
+            rounds: 0,
+            silent_rounds: 0,
+            measured_at_ns: None,
+        })))
     }
 
-    /// What the probe concluded, or [`ClockProbeStatus::Pending`] while
-    /// it is still running. Never blocks on the network.
+    /// What the newest probe round concluded, or
+    /// [`ClockProbeStatus::Pending`] while the first one is still
+    /// running. Never blocks on the network.
     #[must_use]
     pub fn status(&self) -> ClockProbeStatus {
-        self.0.lock().map_or(ClockProbeStatus::Unsupported, |s| *s)
+        self.0
+            .lock()
+            .map_or(ClockProbeStatus::Unsupported, |s| s.status)
     }
 
-    /// The measured offset, if the probe finished and the peer
-    /// answered. A convenience over [`Self::status`] for callers that
-    /// only want the number.
+    /// The measured offset, if a round has succeeded. A convenience
+    /// over [`Self::status`] for callers that only want the number.
     #[must_use]
     pub fn offset(&self) -> Option<ClockOffset> {
         match self.status() {
@@ -119,18 +184,147 @@ impl SessionClock {
         }
     }
 
-    /// Close the probe window: publish the best of `samples`, or
-    /// `Unsupported` when none arrived.
-    pub(crate) fn settle(&self, samples: &[ClockSample]) {
-        let status = best_sample(samples).map_or(ClockProbeStatus::Unsupported, |best| {
-            ClockProbeStatus::Measured(ClockOffset {
-                offset_ns: best.offset_ns,
-                delay_ns: best.delay_ns,
-                samples: u32::try_from(samples.len()).unwrap_or(u32::MAX),
-            })
+    /// The whole per-session record in one consistent read.
+    #[must_use]
+    pub fn record(&self) -> ClockRecord {
+        let Ok(state) = self.0.lock() else {
+            return ClockRecord {
+                status: ClockProbeStatus::Unsupported,
+                start_offset_ns: None,
+                measured_offset_ns: None,
+                delay_ns: None,
+                samples: 0,
+                rounds: 0,
+                silent_rounds: 0,
+                measured_at_ns: None,
+            };
+        };
+        let latest = match state.status {
+            ClockProbeStatus::Measured(offset) => Some(offset),
+            ClockProbeStatus::Pending | ClockProbeStatus::Unsupported => None,
+        };
+        ClockRecord {
+            status: state.status,
+            start_offset_ns: state.start.map(|o| o.offset_ns),
+            measured_offset_ns: latest.map(|o| o.offset_ns),
+            delay_ns: latest.map(|o| o.delay_ns),
+            samples: latest.map_or(0, |o| o.samples),
+            rounds: state.rounds,
+            silent_rounds: state.silent_rounds,
+            measured_at_ns: state.measured_at_ns,
+        }
+    }
+
+    /// Close a probe round: fold `samples` down to one measurement and
+    /// record it, or account for a round nobody answered.
+    ///
+    /// Returns the new measurement when there is one, for a caller that
+    /// has to act on it as well as record it.
+    ///
+    /// A silent round is only [`ClockProbeStatus::Unsupported`] when it
+    /// is also the *first* success-less state: a peer that has answered
+    /// before demonstrably speaks the protocol, so its silence keeps the
+    /// last measurement rather than discarding it.
+    pub(crate) fn settle_round(&self, samples: &[ClockSample], now_ns: u64) -> Option<ClockOffset> {
+        let best = best_sample(samples).map(|best| ClockOffset {
+            offset_ns: best.offset_ns,
+            delay_ns: best.delay_ns,
+            samples: u32::try_from(samples.len()).unwrap_or(u32::MAX),
         });
-        if let Ok(mut slot) = self.0.lock() {
-            *slot = status;
+        let Ok(mut state) = self.0.lock() else {
+            return best;
+        };
+        state.rounds = state.rounds.saturating_add(1);
+        if let Some(offset) = best {
+            state.status = ClockProbeStatus::Measured(offset);
+            state.measured_at_ns = Some(now_ns);
+            state.silent_rounds = 0;
+            if state.start.is_none() {
+                state.start = Some(offset);
+            }
+        } else {
+            state.silent_rounds = state.silent_rounds.saturating_add(1);
+            if state.start.is_none() {
+                state.status = ClockProbeStatus::Unsupported;
+            }
+        }
+        best
+    }
+
+    /// Whether any round has ever produced a measurement — the test for
+    /// "is this peer worth asking again". See [`should_reprobe`].
+    pub(crate) fn ever_measured(&self) -> bool {
+        self.0.lock().is_ok_and(|state| state.start.is_some())
+    }
+}
+
+/// What a session's probe timer means once it next fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProbeStep {
+    /// A round is open; the timer is its deadline for replies.
+    AwaitReplies,
+    /// No round is open; the timer is the wait until the next one.
+    WaitForNextRound,
+    /// Nothing more to time. This peer does not answer.
+    Stop,
+}
+
+/// The alternation between a session's probe rounds and the gaps
+/// between them, kept as a state machine so the one thing worth
+/// getting right — that it neither stops tracking a live peer nor
+/// questions a deaf one forever — is testable without a session.
+///
+/// A session drives it with a single timer whose meaning is whatever
+/// [`Self::advance`] last returned.
+#[derive(Debug)]
+pub(crate) struct ProbeRounds {
+    in_round: bool,
+    armed: bool,
+}
+
+impl ProbeRounds {
+    /// A session opens with a round already in flight.
+    pub(crate) fn new() -> Self {
+        Self {
+            in_round: true,
+            armed: true,
+        }
+    }
+
+    /// Whether probes should be going out and replies counted right
+    /// now. False in the gaps, so a straggling reply from a closed
+    /// round cannot join the next one's sample set.
+    pub(crate) fn in_round(&self) -> bool {
+        self.armed && self.in_round
+    }
+
+    /// Whether the timer is still worth polling at all.
+    pub(crate) fn armed(&self) -> bool {
+        self.armed
+    }
+
+    /// The timer fired: close the open round or open the next one, and
+    /// say what the timer should be set to now.
+    ///
+    /// `ever_measured` decides only the one irreversible transition. A
+    /// peer that has never answered is not asked again — it does not
+    /// recognise the envelopes, and no amount of waiting changes that
+    /// inside one session. Every other peer is re-probed for the
+    /// session's life, *including* one that has gone quiet: silence
+    /// from a peer that demonstrably speaks the protocol is far more
+    /// likely to be a busy link than a peer that forgot it.
+    pub(crate) fn advance(&mut self, ever_measured: bool) -> ProbeStep {
+        if self.in_round {
+            self.in_round = false;
+            if ever_measured {
+                ProbeStep::WaitForNextRound
+            } else {
+                self.armed = false;
+                ProbeStep::Stop
+            }
+        } else {
+            self.in_round = true;
+            ProbeStep::AwaitReplies
         }
     }
 }
@@ -306,7 +500,7 @@ mod tests {
     fn settling_with_no_samples_reports_the_peer_as_unsupported() {
         let clock = SessionClock::pending();
         assert_eq!(clock.status(), ClockProbeStatus::Pending);
-        clock.settle(&[]);
+        assert_eq!(clock.settle_round(&[], T1), None);
         assert_eq!(clock.status(), ClockProbeStatus::Unsupported);
         assert!(clock.offset().is_none());
     }
@@ -314,16 +508,19 @@ mod tests {
     #[test]
     fn settling_publishes_the_best_sample_and_the_count() {
         let clock = SessionClock::pending();
-        clock.settle(&[
-            ClockSample {
-                offset_ns: 900,
-                delay_ns: 90,
-            },
-            ClockSample {
-                offset_ns: 100,
-                delay_ns: 10,
-            },
-        ]);
+        clock.settle_round(
+            &[
+                ClockSample {
+                    offset_ns: 900,
+                    delay_ns: 90,
+                },
+                ClockSample {
+                    offset_ns: 100,
+                    delay_ns: 10,
+                },
+            ],
+            T1,
+        );
         assert_eq!(
             clock.offset(),
             Some(ClockOffset {
@@ -340,10 +537,130 @@ mod tests {
         // holds another and reads.
         let worker = SessionClock::pending();
         let caller = worker.clone();
-        worker.settle(&[ClockSample {
-            offset_ns: 42,
-            delay_ns: 1,
-        }]);
+        worker.settle_round(
+            &[ClockSample {
+                offset_ns: 42,
+                delay_ns: 1,
+            }],
+            T1,
+        );
         assert_eq!(caller.offset().unwrap().offset_ns, 42);
+    }
+
+    // ---------- the per-session record ----------
+
+    fn round(offset_ns: i64) -> [ClockSample; 1] {
+        [ClockSample {
+            offset_ns,
+            delay_ns: 10,
+        }]
+    }
+
+    #[test]
+    fn the_record_keeps_the_first_measurement_and_the_newest_one() {
+        // "Offset at start + current" is the per-session record: a
+        // server whose clock was fixed mid-session must still be able
+        // to say what it was doing when the session opened.
+        let clock = SessionClock::pending();
+        clock.settle_round(&round(4_000_000_000), T1);
+        clock.settle_round(&round(1_000_000), T1 + 30_000_000_000);
+        let record = clock.record();
+        assert_eq!(record.start_offset_ns, Some(4_000_000_000));
+        assert_eq!(record.measured_offset_ns, Some(1_000_000));
+        assert_eq!(record.rounds, 2);
+        assert_eq!(record.silent_rounds, 0);
+        assert_eq!(record.measured_at_ns, Some(T1 + 30_000_000_000));
+    }
+
+    #[test]
+    fn a_peer_that_answered_once_and_stops_keeps_its_last_measurement() {
+        // Silence after an answer is a lost round, not a retraction —
+        // the last good number stays the best available one, and the
+        // count of silent rounds is what says it is stale.
+        let clock = SessionClock::pending();
+        clock.settle_round(&round(250_000_000), T1);
+        clock.settle_round(&[], T1 + 30_000_000_000);
+        clock.settle_round(&[], T1 + 60_000_000_000);
+        let record = clock.record();
+        assert_eq!(record.measured_offset_ns, Some(250_000_000));
+        assert_eq!(record.silent_rounds, 2);
+        assert_eq!(record.rounds, 3);
+        assert_eq!(record.measured_at_ns, Some(T1));
+        assert!(
+            clock.ever_measured(),
+            "a peer that has answered stays worth asking"
+        );
+    }
+
+    #[test]
+    fn an_answer_after_silence_clears_the_staleness() {
+        let clock = SessionClock::pending();
+        clock.settle_round(&round(10), T1);
+        clock.settle_round(&[], T1 + 1);
+        clock.settle_round(&round(20), T1 + 2);
+        assert_eq!(clock.record().silent_rounds, 0);
+    }
+
+    #[test]
+    fn a_peer_that_never_answers_is_reported_unsupported() {
+        let clock = SessionClock::pending();
+        clock.settle_round(&[], T1);
+        assert!(!clock.ever_measured());
+        assert_eq!(clock.record().status, ClockProbeStatus::Unsupported);
+    }
+
+    // ---------- the round cadence ----------
+
+    #[test]
+    fn a_session_opens_with_a_round_in_flight() {
+        let rounds = ProbeRounds::new();
+        assert!(rounds.in_round());
+        assert!(rounds.armed());
+    }
+
+    #[test]
+    fn a_measured_round_is_followed_by_a_gap_and_then_another_round() {
+        let mut rounds = ProbeRounds::new();
+        assert_eq!(rounds.advance(true), ProbeStep::WaitForNextRound);
+        assert!(!rounds.in_round(), "no probes go out between rounds");
+        assert!(rounds.armed(), "the timer still has a job");
+        assert_eq!(rounds.advance(true), ProbeStep::AwaitReplies);
+        assert!(rounds.in_round());
+    }
+
+    #[test]
+    fn tracking_never_winds_down_on_its_own() {
+        // The failure this pins is a session that measures for a while
+        // and then quietly stops, leaving a number that looks live.
+        let mut rounds = ProbeRounds::new();
+        for _ in 0..1_000 {
+            assert_eq!(rounds.advance(true), ProbeStep::WaitForNextRound);
+            assert_eq!(rounds.advance(true), ProbeStep::AwaitReplies);
+        }
+        assert!(rounds.armed());
+    }
+
+    #[test]
+    fn a_peer_that_never_answers_is_never_asked_again() {
+        // The timer must not be re-armed forever against something that
+        // does not recognise the envelopes.
+        let mut rounds = ProbeRounds::new();
+        assert_eq!(rounds.advance(false), ProbeStep::Stop);
+        assert!(!rounds.armed());
+        assert!(!rounds.in_round());
+    }
+
+    #[test]
+    fn a_peer_that_goes_quiet_after_answering_keeps_being_asked() {
+        // Silence from a peer that has spoken is a busy link, not a
+        // peer that forgot the protocol — `ever_measured` stays true
+        // through any number of empty rounds.
+        let mut rounds = ProbeRounds::new();
+        rounds.advance(true);
+        for _ in 0..10 {
+            assert_eq!(rounds.advance(true), ProbeStep::AwaitReplies);
+            assert_eq!(rounds.advance(true), ProbeStep::WaitForNextRound);
+        }
+        assert!(rounds.armed());
     }
 }

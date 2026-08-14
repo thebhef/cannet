@@ -26,7 +26,8 @@
 //!   the gRPC stream itself fails.
 //!
 //! - [`clock`]: how far the server's wall clock is from ours. Every
-//!   session measures it once at start-up and publishes the result on
+//!   session measures it at start-up and tracks it on a cadence
+//!   thereafter, publishing the per-session record on
 //!   [`FrameReceiver::clock`]; frames are delivered uncorrected.
 //!
 //! Dropping the source aborts the worker thread's runtime, which cancels
@@ -105,6 +106,22 @@ const CLOCK_PROBE_SPACING: Duration = Duration::from_millis(20);
 /// thing this budget buys is a chance for a slow link to answer before
 /// its server is written off as not supporting the exchange.
 const CLOCK_PROBE_DEADLINE: Duration = Duration::from_secs(2);
+
+/// How long a session waits between probe rounds.
+///
+/// One measurement at session start would go stale: both hosts may be
+/// running NTP or PTP and disciplining their clocks independently while
+/// the session is open, so the distance between them moves. Re-probing
+/// tracks it.
+///
+/// 30 s is the fast end of a deliberately narrow range. Cost is not
+/// what bounds it — a round is four envelope pairs of two timestamps
+/// each, so under a tenth of a frame's worth of traffic per second —
+/// what bounds it is that a consumer of the measurement should never be
+/// reading a number that is minutes old. Two NTP-disciplined hosts pull
+/// apart by at most ~30 ms over 30 s, so a round that often keeps the
+/// published offset inside its own error bound.
+const CLOCK_REPROBE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Wall-clock nanoseconds since the Unix epoch — the clock the wire's
 /// timestamps are on, and therefore the one whose distance from the
@@ -710,16 +727,17 @@ impl FrameReceiver {
         &self.subscriptions
     }
 
-    /// How far this server's wall clock is from ours, as measured at
-    /// session start (see [`crate::clock`]).
+    /// How far this server's wall clock is from ours, tracked for the
+    /// life of the session (see [`crate::clock`]).
     ///
     /// The frames this receiver yields are **not** corrected by it —
     /// they carry the timestamps the server sent. This is the measured
-    /// number and its error bound, for a caller that wants to show it
-    /// or act on it.
+    /// number, its error bound, and what it was when the session
+    /// opened, for a caller that wants to show it or act on it;
+    /// [`SessionClock::record`] returns the lot in one read.
     ///
-    /// Reads never block: the answer is
-    /// [`clock::ClockProbeStatus::Pending`] until the probe window
+    /// Reads never block: the status is
+    /// [`clock::ClockProbeStatus::Pending`] until the first probe round
     /// closes, then either a measurement or
     /// [`clock::ClockProbeStatus::Unsupported`] for a peer that never
     /// answered.
@@ -1055,10 +1073,18 @@ async fn run_session(
     let clock = SessionClock::pending();
     let mut clock_samples: Vec<ClockSample> = Vec::with_capacity(CLOCK_PROBE_COUNT);
     let mut probes_sent = 0usize;
-    let mut probe_window_open = true;
+    let mut rounds = clock::ProbeRounds::new();
     let mut probe_spacing = tokio::time::interval(CLOCK_PROBE_SPACING);
-    let probe_deadline = tokio::time::sleep(CLOCK_PROBE_DEADLINE);
-    tokio::pin!(probe_deadline);
+    // Ticks accumulated while the branch is disabled between rounds
+    // must not fire the next round's burst all at once with no spacing
+    // to distinguish its exchanges.
+    probe_spacing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // One timer, two meanings: the current round's reply deadline while
+    // `probing`, and the wait until the next round otherwise. Keeping
+    // it single means every round is opened and closed in exactly one
+    // place.
+    let probe_timer = tokio::time::sleep(CLOCK_PROBE_DEADLINE);
+    tokio::pin!(probe_timer);
 
     let mut stream = response.into_inner();
     let mut ready_sent = false;
@@ -1085,7 +1111,7 @@ async fn run_session(
             // await: the probe is best-effort and must never be the
             // thing holding this loop up. A full queue just means the
             // next tick tries again, inside the deadline below.
-            _ = probe_spacing.tick(), if probe_window_open && probes_sent < CLOCK_PROBE_COUNT => {
+            _ = probe_spacing.tick(), if rounds.in_round() && probes_sent < CLOCK_PROBE_COUNT => {
                 let t1 = wall_clock_ns();
                 if req_tx_for_handle
                     .try_send(Envelope {
@@ -1096,12 +1122,29 @@ async fn run_session(
                     probes_sent += 1;
                 }
             }
-            // The window closed with fewer than the full set of
-            // replies. Whatever arrived is what the measurement rests
-            // on; nothing at all means the peer does not answer.
-            () = &mut probe_deadline, if probe_window_open => {
-                probe_window_open = false;
-                clock.settle(&clock_samples);
+            // Either the round's window closed — on its deadline, or
+            // early because every probe came back — or the wait between
+            // rounds is over and it is time to ask again.
+            () = &mut probe_timer, if rounds.armed() => {
+                if rounds.in_round() {
+                    // Whatever arrived is what the measurement rests
+                    // on; nothing at all is a silent round, which is
+                    // `Unsupported` only if the peer has never spoken.
+                    clock.settle_round(&clock_samples, wall_clock_ns());
+                } else {
+                    clock_samples.clear();
+                    probes_sent = 0;
+                }
+                let now = tokio::time::Instant::now();
+                match rounds.advance(clock.ever_measured()) {
+                    clock::ProbeStep::AwaitReplies => {
+                        probe_timer.as_mut().reset(now + CLOCK_PROBE_DEADLINE);
+                    }
+                    clock::ProbeStep::WaitForNextRound => {
+                        probe_timer.as_mut().reset(now + CLOCK_REPROBE_INTERVAL);
+                    }
+                    clock::ProbeStep::Stop => {}
+                }
             }
             message = stream.next() => match message {
                 Some(Ok(envelope)) => match envelope.body {
@@ -1194,13 +1237,18 @@ async fn run_session(
                         // t4 first: anything done before sampling it
                         // lands in the measured delay.
                         let t4 = wall_clock_ns();
-                        if probe_window_open {
+                        if rounds.in_round() {
                             clock_samples.push(clock::sample(
                                 reply.t1, reply.t2, reply.t3, t4,
                             ));
                             if clock_samples.len() >= CLOCK_PROBE_COUNT {
-                                probe_window_open = false;
-                                clock.settle(&clock_samples);
+                                // A complete round has no reason to
+                                // wait out its deadline. Firing the
+                                // timer rather than settling here keeps
+                                // one place that closes a round.
+                                probe_timer
+                                    .as_mut()
+                                    .reset(tokio::time::Instant::now());
                             }
                         }
                     }
