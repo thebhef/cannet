@@ -39,6 +39,7 @@
 
 mod app_state;
 mod capture;
+mod clock_status;
 mod connect_flow;
 mod connection_state;
 mod crash;
@@ -140,6 +141,7 @@ use capture::{
     clear_trace_store, import_mdf, open_log, restore_scratch_capture, save_capture,
     scan_blf_channels, scan_mdf_channels,
 };
+use clock_status::spawn_clock_status_emitter;
 #[cfg(test)]
 use dbc_commands::decode_against;
 use dbc_commands::{
@@ -642,6 +644,7 @@ pub fn run() -> ! {
             crash::spawn_health_recorder(app.handle().clone());
             spawn_trace_grew_emitter(app.handle().clone());
             spawn_trace_flusher(app.handle().clone());
+            spawn_clock_status_emitter(app.handle().clone());
             // Apply the persisted windowed-ring scratch cap (ADR 0002 DS-8)
             // so a flush honors it from the first tick.
             apply_scratch_cap(app.handle());

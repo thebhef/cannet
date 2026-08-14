@@ -33,9 +33,58 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use cannet_client::clock::{ClockProbeStatus, ClockRecord};
+
 use crate::connect_flow::{ServerPrompts, TrustPrompt};
 use crate::server_browse::{BrowseStatus, DiscoveredServer, DiscoveredServers};
 use crate::server_trust::{server_key, TrustEntry};
+
+/// Above this measured offset the row and the session-start / transition
+/// log lines read as a warning rather than routine health (Task 68,
+/// owner-ruled 2026-08-13). Shared between the row's `warn` flag and
+/// [`crate::clock_status`]'s log latch so the two can never disagree
+/// about where the line is.
+pub(crate) const CLOCK_WARN_THRESHOLD_NS: i64 = 100_000_000;
+
+/// The clock-offset summary one server row carries — the read side of a
+/// session's [`ClockRecord`], reduced to what a row renders.
+///
+/// Deliberately narrower than `ClockRecord`: the row shows the
+/// *measured* offset (the slew's target), not the currently applied one
+/// — the two differ only while a correction is converging, and a
+/// viewer comparing this machine's clock to the server's wants what was
+/// found, not where the correction has gotten to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerClock {
+    /// θ — the server's clock minus ours, nanoseconds. Positive means
+    /// the server is ahead.
+    pub offset_ns: i64,
+    /// `|offset_ns| > `[`CLOCK_WARN_THRESHOLD_NS`].
+    pub warn: bool,
+    /// The measurement is stale: the peer answered before but has gone
+    /// quiet on the current re-probe cadence, so this is the last good
+    /// number rather than a fresh one ([`ClockRecord::silent_rounds`]).
+    pub stale: bool,
+}
+
+/// Reduce a session's clock record to what a row shows, or `None` when
+/// there is nothing to show: no round has settled yet
+/// ([`ClockProbeStatus::Pending`]), or the peer never answered at all
+/// ([`ClockProbeStatus::Unsupported`]) — both render as an absent badge,
+/// never an error.
+#[must_use]
+pub(crate) fn server_clock_from_record(record: &ClockRecord) -> Option<ServerClock> {
+    if !matches!(record.status, ClockProbeStatus::Measured(_)) {
+        return None;
+    }
+    let offset_ns = record.measured_offset_ns?;
+    Some(ServerClock {
+        offset_ns,
+        warn: offset_ns.abs() > CLOCK_WARN_THRESHOLD_NS,
+        stale: record.silent_rounds > 0,
+    })
+}
 
 /// Tauri event emitted whenever the merged list moves — a browse
 /// change, a trust write, a new trust question, or the browse task's
@@ -103,6 +152,12 @@ pub struct ServerRow {
     /// if any — so the panel can put the same dialog in front of the
     /// user without asking the connection to fail again.
     pub prompt: Option<TrustPrompt>,
+    /// This server's measured clock offset for the live session against
+    /// it, if any (Task 68). `None` for an unconnected server, a peer
+    /// that doesn't support the probe, or a session whose first
+    /// measurement hasn't settled yet — all of which render as no badge
+    /// at all, never an error.
+    pub clock: Option<ServerClock>,
 }
 
 /// The panel's whole model: the merged rows and what the browse task
@@ -127,6 +182,7 @@ pub fn merge(
     discovered: &[DiscoveredServer],
     trusted: &BTreeMap<String, TrustEntry>,
     prompts: &BTreeMap<String, TrustPrompt>,
+    clocks: &BTreeMap<String, ServerClock>,
     browse: BrowseStatus,
 ) -> ServerList {
     let mut rows: BTreeMap<String, ServerRow> = BTreeMap::new();
@@ -162,11 +218,19 @@ pub fn merge(
         rows.entry(key.clone())
             .or_insert_with(|| offline_row(key, &TrustEntry::default()));
     }
+    // A live session's clock record is a fact about a server too, and —
+    // like a pending prompt — can be the only thing known about an
+    // address dialled by hand before its first `ListInterfaces` answers.
+    for key in clocks.keys() {
+        rows.entry(key.clone())
+            .or_insert_with(|| offline_row(key, &TrustEntry::default()));
+    }
     for (key, row) in &mut rows {
         row.prompt = by_key.get(key).map(|p| (*p).clone());
         if matches!(row.prompt, Some(TrustPrompt::IdentityChanged { .. })) {
             row.trust = TrustState::FingerprintChanged;
         }
+        row.clock = clocks.get(key).copied();
     }
 
     let mut servers: Vec<ServerRow> = rows.into_values().collect();
@@ -198,6 +262,7 @@ fn offline_row(address: &str, entry: &TrustEntry) -> ServerRow {
         insecure: entry.insecure,
         manual: entry.manual,
         prompt: None,
+        clock: None,
     }
 }
 
@@ -231,7 +296,29 @@ fn build(app: &AppHandle) -> ServerList {
     let trusted = crate::persisted_json::config_dir(app)
         .map(|dir| crate::server_trust::read_servers(&dir).servers)
         .unwrap_or_default();
-    merge(&discovered, &trusted, &prompts, browse)
+    merge(&discovered, &trusted, &prompts, &live_clocks(app), browse)
+}
+
+/// Every active session's clock summary, keyed by [`server_key`] —
+/// [`crate::clock_status`]'s poll is what notices a summary moved and
+/// calls [`changed`]; this is the read half, folding the live
+/// `AppState::remote_sessions` map into what [`merge`] needs. A session
+/// with no [`crate::session::RemoteSession::clock`] (the in-process vbus
+/// backend) and one whose first round hasn't settled both contribute
+/// nothing, same as a peer that never answers.
+fn live_clocks(app: &AppHandle) -> BTreeMap<String, ServerClock> {
+    let Some(state) = app.try_state::<crate::app_state::AppState>() else {
+        return BTreeMap::new();
+    };
+    let sessions = state.remote_sessions();
+    sessions
+        .iter()
+        .filter_map(|(address, session)| {
+            let clock = session.clock.as_ref()?;
+            let summary = server_clock_from_record(&clock.record())?;
+            Some((server_key(address), summary))
+        })
+        .collect()
 }
 
 /// Push the merged list at the frontend. Called from every write path
@@ -373,7 +460,14 @@ mod tests {
         trusted: &BTreeMap<String, TrustEntry>,
         prompts: &BTreeMap<String, TrustPrompt>,
     ) -> Vec<ServerRow> {
-        merge(discovered, trusted, prompts, BrowseStatus::Running).servers
+        merge(
+            discovered,
+            trusted,
+            prompts,
+            &BTreeMap::new(),
+            BrowseStatus::Running,
+        )
+        .servers
     }
 
     #[test]
@@ -649,7 +743,13 @@ mod tests {
                 detail: "sending on eth0 failed".into(),
             },
         ] {
-            let list = merge(&[], &BTreeMap::new(), &BTreeMap::new(), status.clone());
+            let list = merge(
+                &[],
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                status.clone(),
+            );
             assert!(list.servers.is_empty());
             assert_eq!(list.browse, status);
         }
@@ -660,6 +760,7 @@ mod tests {
         let list = merge(
             &[discovered("bench", "192.168.1.10:50051")],
             &store(&[("192.168.1.10:50051", pinned())]),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             BrowseStatus::Failed {
                 detail: "address in use".into(),
@@ -679,6 +780,7 @@ mod tests {
         assert_eq!(row["hasToken"], true);
         assert_eq!(row["insecure"], false);
         assert!(row["prompt"].is_null());
+        assert!(row["clock"].is_null(), "no session, nothing to show");
     }
 
     #[test]
@@ -690,5 +792,133 @@ mod tests {
         ] {
             assert_eq!(serde_json::to_value(state).unwrap(), wire);
         }
+    }
+
+    // ---------- clock offset (Task 68) ----------
+
+    fn measured(offset_ns: i64, silent_rounds: u32) -> ClockRecord {
+        ClockRecord {
+            status: ClockProbeStatus::Measured(cannet_client::clock::ClockOffset {
+                offset_ns,
+                delay_ns: 1_000_000,
+                samples: 4,
+            }),
+            start_offset_ns: Some(offset_ns),
+            measured_offset_ns: Some(offset_ns),
+            applied_offset_ns: offset_ns,
+            delay_ns: Some(1_000_000),
+            samples: 4,
+            rounds: silent_rounds + 1,
+            silent_rounds,
+            measured_at_ns: Some(0),
+        }
+    }
+
+    fn pending() -> ClockRecord {
+        ClockRecord {
+            status: ClockProbeStatus::Pending,
+            start_offset_ns: None,
+            measured_offset_ns: None,
+            applied_offset_ns: 0,
+            delay_ns: None,
+            samples: 0,
+            rounds: 0,
+            silent_rounds: 0,
+            measured_at_ns: None,
+        }
+    }
+
+    fn unsupported() -> ClockRecord {
+        ClockRecord {
+            status: ClockProbeStatus::Unsupported,
+            ..pending()
+        }
+    }
+
+    #[test]
+    fn a_measured_offset_under_threshold_shows_without_warning() {
+        let clock = server_clock_from_record(&measured(42_000_000, 0)).unwrap();
+        assert_eq!(clock.offset_ns, 42_000_000);
+        assert!(!clock.warn);
+        assert!(!clock.stale);
+    }
+
+    #[test]
+    fn a_measured_offset_over_threshold_warns() {
+        let clock = server_clock_from_record(&measured(150_000_000, 0)).unwrap();
+        assert!(clock.warn);
+        // A server *behind* by the same margin warns too — it's the
+        // magnitude that matters, not the sign.
+        let behind = server_clock_from_record(&measured(-150_000_000, 0)).unwrap();
+        assert!(behind.warn);
+    }
+
+    #[test]
+    fn a_stale_measurement_is_flagged_but_keeps_the_last_good_number() {
+        let clock = server_clock_from_record(&measured(5_000_000, 3)).unwrap();
+        assert_eq!(clock.offset_ns, 5_000_000, "stale is not absent");
+        assert!(clock.stale);
+    }
+
+    #[test]
+    fn pending_and_unsupported_render_nothing() {
+        assert!(server_clock_from_record(&pending()).is_none());
+        assert!(server_clock_from_record(&unsupported()).is_none());
+    }
+
+    #[test]
+    fn a_connected_servers_measured_offset_reaches_its_row() {
+        let clocks = BTreeMap::from([(
+            "192.168.1.10:50051".to_string(),
+            server_clock_from_record(&measured(4_200_000_000, 0)).unwrap(),
+        )]);
+        let rows = merge(
+            &[discovered("bench", "192.168.1.10:50051")],
+            &store(&[("192.168.1.10:50051", pinned())]),
+            &BTreeMap::new(),
+            &clocks,
+            BrowseStatus::Running,
+        )
+        .servers;
+        let clock = rows[0]
+            .clock
+            .expect("a live session's clock reaches the row");
+        assert_eq!(clock.offset_ns, 4_200_000_000);
+        assert!(clock.warn);
+    }
+
+    #[test]
+    fn a_session_against_an_address_dialled_by_hand_still_gets_a_row() {
+        // Same shape as a pending trust prompt: the clock record may be
+        // the only thing known about an address before anything else
+        // (discovery, the trust store) has a row for it.
+        let clocks = BTreeMap::from([(
+            "bench.example.com:50051".to_string(),
+            server_clock_from_record(&measured(10_000_000, 0)).unwrap(),
+        )]);
+        let rows = merge(
+            &[],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &clocks,
+            BrowseStatus::Running,
+        )
+        .servers;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].address, "bench.example.com:50051");
+        assert!(rows[0].clock.is_some());
+    }
+
+    #[test]
+    fn the_clock_wire_shape_carries_offset_warn_and_stale() {
+        let clock = ServerClock {
+            offset_ns: -150_000_000,
+            warn: true,
+            stale: true,
+        };
+        let json = serde_json::to_value(clock).unwrap();
+        assert_eq!(json["offsetNs"], -150_000_000_i64);
+        assert_eq!(json["warn"], true);
+        assert_eq!(json["stale"], true);
     }
 }
