@@ -537,7 +537,6 @@ pub fn run() -> ! {
             connect_flow::get_server_prompts,
             server_browse::get_discovered_servers,
             server_list::get_server_list,
-            server_trust::list_trusted_servers,
             server_trust::accept_server_fingerprint,
             server_trust::set_server_token,
             server_trust::accept_server_insecure,

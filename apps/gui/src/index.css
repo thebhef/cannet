@@ -774,44 +774,6 @@ header {
   color: var(--danger-text);
 }
 
-/* Settings › Connection › Trusted servers: the accepted-identity list. */
-.trusted-server-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  padding: 0.25rem 0;
-  border-bottom: 1px solid var(--border-subtle);
-}
-
-.trusted-server-address {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  min-width: 12rem;
-}
-
-.trusted-server-fingerprint {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85em;
-  color: var(--text-secondary);
-  word-break: break-all;
-  flex: 1;
-}
-
-.trusted-server-fingerprint.unprotected {
-  font-family: inherit;
-}
-
-.trusted-server-token {
-  font-size: 0.85em;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.trusted-servers-empty,
-.trusted-servers-error {
-  margin: 0;
-  color: var(--text-secondary);
-}
-
 /* The Servers panel (ADR 0041): one merged row per server, greyed when
    nothing is advertising at that address. Scrolling is the shared
    `.settings-panel` shell's. */

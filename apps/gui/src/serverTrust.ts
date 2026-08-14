@@ -75,20 +75,6 @@ export function useServerPrompts(): ServerPrompts {
   return prompts;
 }
 
-/// One server the host has accepted something for. The access token is
-/// deliberately not in this shape — the host presents it on the wire,
-/// so nothing in the WebView has a use for the value.
-export interface TrustedServer {
-  address: string;
-  fingerprint: string | null;
-  hasToken: boolean;
-  insecure: boolean;
-}
-
-export async function listTrustedServers(): Promise<TrustedServer[]> {
-  return invoke<TrustedServer[]>("list_trusted_servers");
-}
-
 /// Pin `fingerprint` for `address`, storing `token` alongside it when
 /// one was given. The write behind both first contact and the
 /// re-accept path out of a changed identity.

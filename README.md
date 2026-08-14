@@ -667,11 +667,15 @@ Start the server on the bench machine and leave its console visible:
 # → hardware proxy: client token chug-pruning-unclad-hazard-morphine
 ```
 
-In the GUI, add the server to a bus binding — type its `host:port`, or
-pick it from the browse list beside the field — and press
-*Discover* (or Connect). Because nothing has been accepted for that
-address yet, the connection is refused at the certificate and a dialog
-appears showing the fingerprint the server presented:
+In the GUI, open the **Servers** panel — *Go to view…* → *Servers*, or
+the command palette's *Show servers*. It lists every server
+advertising on this network beside every one this machine has already
+accepted, one row per `host:port`, carrying the instance name, the
+machine's host name, the address, the version, and a trust badge.
+Press *Trust…* on the bench server's row. The server is dialled;
+because nothing has been accepted for that address yet, the connection
+is refused at the certificate and a dialog appears showing the
+fingerprint the server presented:
 
 1. **Compare the two strings.** The dialog shows the same
    `SHA256:` line the server printed — character for character. If they
@@ -694,11 +698,19 @@ the same way — asked about once, never retried in a loop.
 Both are stored per `host:port` in `servers.json` in the GUI's config
 directory ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)),
 never in the project file, so a project shared with a colleague carries
-no credential. **Settings → Connection → Trusted servers** lists what
-has been accepted, with the same fingerprint string, whether a token is
-stored, and a *Forget* button that makes the next connection ask again.
-Moving a server to a different address or port is a new entry, and
-prompts again.
+no credential. The **Servers** panel is where that store is managed:
+each row shows the same fingerprint string, whether a token is stored,
+and a *Forget* button that makes the next connection ask again. A
+trusted server that is switched off stays in the list, greyed, so it
+can be forgotten without waiting for it to come back. Moving a server
+to a different address or port is a new entry, and prompts again.
+
+A server on another subnet never appears in the panel — discovery is
+multicast, and reaching one is still a matter of typing its address on
+a bus. The panel says which kind of empty it is looking at: it
+distinguishes a network with nothing on it from a browse that could
+not start at all, and reports the error when the mDNS browser itself
+complains, which is what a blocked UDP 5353 usually looks like.
 
 Loopback servers — the GUI's own sidecar, a `--bind 127.0.0.1` proxy,
 the in-process virtual bus — are unaffected: they stay plaintext and
