@@ -1339,6 +1339,78 @@ describe("DatabasePanel file-backed branches", () => {
     expect(screen.queryByText("powertrain.dbc")).not.toBeInTheDocument();
   });
 
+  it("shows a file-backed row's value in the live value column", async () => {
+    // The panel's value column covered DBC-backed rows only: a
+    // file-backed row was left out of the keys it asked for and out of
+    // the cell it renders, though `fetch_signal_page` serves such keys
+    // (the host's file-backed half is selected by the same manual key,
+    // with the provenance flag on it).
+    const core = await import("@tauri-apps/api/core");
+    (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(
+      async (cmd: string, args?: unknown) => {
+        if (cmd === "list_dbc_content") return DBC_CONTENT;
+        if (cmd === "list_file_backed_content") return fileContent;
+        if (cmd === "fetch_signal_page") {
+          const sel = (args as { selection: { keys: { signalName: string; fileBacked?: boolean }[] } })
+            .selection;
+          // The host only answers for what it was asked: a row appears
+          // when the key naming it — provenance included — is in the
+          // selection.
+          const asked = sel.keys.some((k) => k.signalName === "AmbientTemp" && k.fileBacked === true);
+          return {
+            count: asked ? 1 : 0,
+            start: 0,
+            rows: asked
+              ? [
+                  {
+                    bus_id: null,
+                    transmitter: null,
+                    message_id: 1,
+                    extended: false,
+                    message_name: "Analog",
+                    signal_name: "AmbientTemp",
+                    unit: "degC",
+                    is_enum: false,
+                    file_backed: true,
+                    value: 21.5,
+                    raw: null,
+                    rate: null,
+                    count: 26,
+                    time_seconds: 3,
+                  },
+                ]
+              : [],
+          };
+        }
+        return undefined;
+      },
+    );
+    renderPanel();
+    await screen.findByText("Analog");
+    expandRow("Analog");
+    await screen.findByText("AmbientTemp");
+    fireEvent.click(screen.getByLabelText(/values/i));
+
+    // The ask: the visible file-backed row is in the selection, keyed by
+    // its provenance (group index in the message slot, `fileBacked` set).
+    await waitFor(() => {
+      const calls = (core.invoke as ReturnType<typeof vi.fn>).mock.calls.filter(
+        (c) => c[0] === "fetch_signal_page",
+      );
+      expect(calls.length).toBeGreaterThan(0);
+      const sel = (calls[calls.length - 1][1] as {
+        selection: { keys: { messageId: number; signalName: string; fileBacked?: boolean }[] };
+      }).selection;
+      expect(sel.keys).toContainEqual(
+        expect.objectContaining({ messageId: 1, signalName: "AmbientTemp", fileBacked: true }),
+      );
+    });
+
+    // …and the answer reaches the row's cell.
+    const shown = await screen.findByText("21.5");
+    expect(shown.closest(".signal-value-cell")).toHaveTextContent(/^21\.5\s*degC$/);
+  });
+
   it("drag from a file-backed row carries the provenance-keyed reference", async () => {
     renderPanel();
     await screen.findByText("Analog");
