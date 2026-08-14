@@ -171,7 +171,10 @@ apps/
                      `traceTable.tsx`; the column model in
                      `traceColumns.ts` (the by-ID sort runs host-side).
                      `ProjectPanel.tsx` is the
-                     project / elements / bus / DBC panel; `PlotPanel.tsx`
+                     project / elements / bus / DBC-load panel;
+                     `DatabasePanel.tsx` the Database panel (ADR 0052),
+                     browsing loaded DBC and file-backed signals
+                     file → group → signal; `PlotPanel.tsx`
                      the Phase-4 signal plot (uPlot), with `plotData.ts`
                      merging independently-sampled series onto one
                      timeline; `SignalsPanel.tsx` the signal view — a
