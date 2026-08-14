@@ -99,10 +99,9 @@ Owner feedback from first live use of the Task 42/43 surfaces
   missing removal signal disqualify it even with an unsafe
   exception. The minted rules are silent; deny-path visibility
   (phase 2) and add-by-address (phase 3b) cover the blocked
-  cases. README documents the Windows firewall reality instead. **Blocked on an owner
-  decision** — see the phase 4 status log: the native API delivers the
-  firewall property but no maintained crate feeds the reducer, and the
-  route that would is `unsafe` in our tree.
+  cases. README documents the Windows firewall reality instead.
+  (The phase-4 status log carries the full eval data behind the
+  ruling.)
 - README covers the macOS permission and Windows firewall realities
   for both GUI and server.
 - Blocked discovery states are visible in the panel, not silent.
@@ -557,3 +556,38 @@ pending grooming-resolution edits carried since phases 1–3b.
 Task 65 is ready for its exit-criteria walk: every criterion is met
 except the Windows-firewall one, which carries the owner's option-B
 waiver recorded above.
+
+## Exit-criteria walk (2026-08-14, orchestrator)
+
+1. **Singleton panel, one merged list** (name, host name, host:port,
+   version, trust badge; offline greyed; fuzzy search; standalone
+   list retired) — MET (phase 2; host-side merge in
+   `server_list.rs`, 13 host + 24 frontend tests; settings-dialog
+   surface removed same phase).
+2. **Trust flows + Connection Management integration** (TOFU/token/
+   forget from the panel; collapsible server siblings expanded only
+   while chosen; AddServerInline removed → "Manage servers…";
+   unknown-server legibility) — MET (phases 3 + 3b; add-by-address
+   restored the non-advertising-server path and struck the recorded
+   regression).
+3. **5-word passphrase tokens** — MET (phase 1; real-run banner
+   verified; wire/store untouched).
+4. **No per-app firewall rules on Windows** — WAIVED (owner ruling
+   2026-08-14, option B; phase-4 eval data in the status log).
+5. **README covers macOS permission + Windows firewall realities**
+   — MET (phase 5).
+6. **Blocked-discovery states visible, not silent** — MET (phase 2
+   `BrowseStatus`: starting/running/failed/degraded/stopped;
+   macOS-permission blindspot documented in README per phase-2
+   status log).
+
+Caveat recorded: per the no-UI-automation rule, this task shipped on
+unit/DOM coverage only — the owner's next interactive session is the
+live pass over the new panel/connections UX.
+
+Perf gate (ADR 0031): **passed 31/31** (release build `13213cb`,
+ev-zonal 60 s scrub; report
+`docs/performance-measurements/frontend/2026-08-14-13213cb-task65-closeout.json`,
+uncommitted). `tx_late_ms_max` 89.8 vs 75.9 baseline noted as run
+variance (metric ranged 16–90 across this week's green runs); all
+limits comfortably held. Baseline untouched.
