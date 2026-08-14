@@ -524,6 +524,76 @@ document; their location travels only in phase prompts.
     - Verification: `cargo test -p cannet-gui` 634 passed / 6 ignored;
       `cargo clippy -p cannet-gui --all-targets` clean.
 
+- **2026-08-14, phase 4 (`task70-p4-plot-dropdowns`, branched off
+  `task70-p3-blf-dialog`):**
+  - `9ae99df` fix(gui): the combobox dropdown swallows its own presses
+    (item 15). **Verdict: the measurement line is not involved. The
+    carrier is the plot panel's focus-claiming `mousedown` handler
+    reaching the dropdown through React's portal event bubbling.**
+    - _How the broken menus differ from the working ones._ The
+      right-click context menus are `useDismissableMenu` menus: they
+      decide outside-ness with `ref.current.contains(e.target)` on
+      their own root, so nothing about focus can dismiss them. The
+      points and cursor-type selectors are not menus at all — they are
+      the shared `Combobox`, whose dropdown is portalled to
+      `document.body` and closes on the filter input's `onBlur`. That
+      is the whole difference, and it is why only these two (plus the
+      per-area y-axis-mode selector, same control) broke.
+    - _Observation._ Owner: once open, clicking a row makes the menu
+      "disappear with no effect."
+    - _Hypothesis._ The panel steals focus from the dropdown's filter
+      input during the press, and the resulting blur closes the
+      dropdown before the row's `click` fires.
+    - _Experiment (isolating pair, run in a scratch suite)._ Two
+      renders of the same `Combobox` with the same option list, driven
+      with a real `mousedown` then `click` on a row. **A**: bare, no
+      wrapper. **B**: wrapped in the plot panel's exact shape — a
+      `tabIndex={-1}` root whose `onMouseDown` calls `root.focus()`
+      unless the target `closest("input, button, select, textarea,
+      a[href]")`. Nothing else differs; no measurement, cursor or
+      uPlot machinery is present in either.
+    - _Data._ **A** → `onChange("on")`. **B** → after the `mousedown`
+      alone: `document.querySelectorAll('[role="option"]').length ===
+      0`, `option.isConnected === false`, `document.activeElement` is
+      the wrapper root; the ensuing `click` produces no `onChange` at
+      all. The dropdown is torn down _by the press_, one event before
+      the click.
+    - _Conclusion (chain)._ mousedown on the `<li role="option">` →
+      React dispatches it through the **React** tree (a portal escapes
+      the DOM, not the component tree), so it reaches `.plot-panel`'s
+      `onMouseDown` → the target is an `<li>`, matching none of the
+      focusable selectors, so the handler calls `panelRef.focus()` →
+      the combobox's filter input blurs → `onBlur`'s `relatedTarget`
+      is the panel root, neither inside the popup nor the trigger, so
+      it calls `close(false)` → the portal unmounts → the row is
+      detached and its `click` never fires. The popup's pre-existing
+      `preventDefault()` cannot help: it suppresses the browser's own
+      focus move, never a handler's explicit `focus()` call.
+    - _Corroboration across the codebase._ Making `pickCombobox` fire
+      the press ahead of the click — a faithful gesture — turns 15
+      existing tests red, **all of them in `PlotPanel.dom.test.tsx`**
+      (points mode and y-axis mode), and none anywhere else in the 157
+      frontend suites. The plot panel is the only host in the frontend
+      that claims focus on `mousedown`, which is exactly the
+      distribution the attribution predicts.
+    - _Fix, at the shared seam._ The popup's `onMouseDown` now calls
+      `stopPropagation()`: the dropdown is not inside its host,
+      visually or logically, so it swallows its own presses. One line
+      in `Combobox.tsx`, no per-menu patch, and every combobox in the
+      GUI is covered. `useDismissableMenu` is untouched — it was never
+      implicated, and the menus built on it stay green.
+    - _Regression tests, written first and confirmed failing._
+      `Combobox.dom.test.tsx` gains the seam's contract (an option
+      click commits inside a host that claims focus on mousedown;
+      falsified with `expected false to be true` on the
+      still-connected assertion), and `PlotPanel.dom.test.tsx` gains
+      the owner's two dropdowns driven with measurements enabled —
+      the state the report was made in, though the panel's focus claim
+      never consulted it (falsified with `expected 'auto' to be
+      'on'`). `pickCombobox`'s press upgrade keeps every other suite
+      honest for free.
+    - Frontend: 157 test files / 2062 tests passed; build clean.
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
