@@ -90,6 +90,11 @@ class _SharedInterface:
         self._lock = threading.Lock()
         self._config = initial_config
         self._channel: Optional[drv.OpenChannel] = None
+        # The channel most recently swapped away by `reconfigure` and
+        # not yet garbage-collected -- lets `_rx_pump` recognise a
+        # `recv()` failure on it as the close doing its job, not a
+        # fault. See `reconfigure` for why this can't reuse `_stop`.
+        self._reconfigure_closing_channel: Optional[drv.OpenChannel] = None
         # Ordered subscriber list; values are gRPC-Session outboxes.
         # We keep it as a list (not a set) so iteration order is
         # deterministic for tests.
@@ -315,6 +320,12 @@ class _SharedInterface:
                 return
             self._channel = new
             self._reset_state_baseline_locked()
+            # `old` is about to be closed out from under any in-flight
+            # `ch.recv()` the rx pump is blocked on -- the same race
+            # `_close_locked` has, but this is a swap, not a shutdown,
+            # so `_stop` stays clear (overloading it here would make a
+            # genuine shutdown mid-reconfigure look like a swap instead).
+            self._reconfigure_closing_channel = old
         try:
             old.close()
         except Exception:  # noqa: BLE001
@@ -440,6 +451,14 @@ class _SharedInterface:
                         # fault, so it stays out of the operator's log.
                         _log.debug("rx for %s ended at close: %s", cid, e)
                         break
+                    with self._lock:
+                        swapped_away = ch is self._reconfigure_closing_channel
+                    if swapped_away:
+                        # Same race as the close above, minus the
+                        # shutdown: the interface stays open on the new
+                        # channel, so keep pumping rather than breaking.
+                        _log.debug("rx for %s ended at reconfigure swap: %s", cid, e)
+                        continue
                     _log.warning("rx for %s failed: %s", cid, e)
                     if self._stop.wait(0.1):
                         break

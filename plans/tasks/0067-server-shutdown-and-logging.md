@@ -694,6 +694,45 @@ not just an absent key — red before the `env_remove` call existed.
 `cargo clippy -p cannet-sidecar -p cannet-server --all-targets -- -D
 warnings` clean.
 
+**Reconfigure's spurious close-race WARNING silenced.**
+`_SharedInterface.reconfigure` (`servers/cannet-python-can/
+cannet_python_can/server/shared_interface.py`) swaps the channel
+without setting `_stop` — it's a swap, not a shutdown — so a
+`ConfigureBus` on an open interface could still emit one `rx for …
+failed` WARNING per swap, the cousin of the close race the landed
+phase-2 fix silenced. Deliberately not reusing `_stop`, per the
+phase-2 note that overloading it would make a genuine shutdown
+mid-reconfigure look like a swap.
+
+Signal design: `reconfigure` now stashes the exact channel object it
+is about to close in `self._reconfigure_closing_channel`, set under
+`_lock` in the same critical section that swaps `self._channel` to the
+new one, before `old.close()` runs outside the lock. `_rx_pump`'s
+exception handler reads it back under `_lock` (matching
+`_current_channel`'s convention) and compares by identity: a failure
+on exactly that channel is logged at debug and the pump loop
+`continue`s (the interface stays open on the new channel, so it must
+not `break` the way a real shutdown does); any other failure still
+warns. The reference is never explicitly cleared — each reconfigure
+just overwrites it — which sidesteps a "cleared before the lagging
+exception surfaces" race a boolean flag reset immediately after
+`close()` would have.
+
+TDD: `test_reconfigure_swap_does_not_warn_about_the_read_it_interrupted`
+in `tests/test_shared_interface.py` reuses the landed close-race
+harness (`_CloseRacingChannel` + `in_recv` event) but drives
+`reg.reconfigure(...)` instead of `reg.unsubscribe(...)` — red before
+the fix, reproducing the owner's exact warning text. The existing
+`test_a_read_failure_outside_a_close_still_warns` stayed green
+throughout.
+
+| layer | command | result |
+| --- | --- | --- |
+| sidecar (pytest) | `uv run --extra dev pytest` | 106 passed |
+
+`ruff check`, `ruff format --check`, and `mypy` (project-scoped:
+`cannet_python_can`, per `pyproject.toml`'s `[tool.mypy] files`) clean.
+
 ## Blockers / side effects
 
 - **Console Ctrl-C is disabled by inheritance in the agent's shell
@@ -710,13 +749,17 @@ warnings` clean.
   cannot be correlated against it without external markers. This was a
   live cost during phase 1 and is first-hand motivation for phase 4.~~
   Fixed in phase 4: both sinks carry RFC-3339 timestamps.
-- **Same close race, other caller (noticed in phase 2, left alone):**
+- ~~**Same close race, other caller (noticed in phase 2, left alone):**
   `_SharedInterface.reconfigure` also closes the old channel out from
   under an in-flight `recv`, but without setting `_stop` — it is a swap,
   not a shutdown — so a `ConfigureBus` on an open interface can still
   produce one `rx for … failed` WARNING. Phase 2's scope was the nominal
   *close*, and suppressing it at the reconfigure site needs a different
-  signal than `_stop`. Cosmetic, same family as (B).
+  signal than `_stop`. Cosmetic, same family as (B).~~ Fixed in the
+  task67-followups branch: `reconfigure` now remembers the channel it is
+  swapping away (`_reconfigure_closing_channel`, set under `_lock`
+  before `old.close()`), and `_rx_pump` treats a failure on exactly that
+  channel as the close doing its job rather than a fault.
 - ~~**Latent, out of scope here:** `SidecarSupervisor::restart` kills
   only the direct child.~~ Fixed in phase 3 with the same tree-kill
   primitive as the shutdown path, under its own test.

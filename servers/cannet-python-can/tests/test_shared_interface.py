@@ -585,6 +585,34 @@ def test_nominal_close_does_not_warn_about_the_read_it_interrupted(
     assert warnings == [], f"nominal close warned: {[r.getMessage() for r in warnings]}"
 
 
+def test_reconfigure_swap_does_not_warn_about_the_read_it_interrupted(
+    caplog: "pytest.LogCaptureFixture",
+) -> None:
+    """A ``ConfigureBus`` on an open interface closes the old channel out
+    from under a reader already inside ``recv()`` -- the same race as a
+    nominal close, but ``reconfigure`` never sets ``_stop`` (it's a swap,
+    not a shutdown). That read failing is still the close doing its job,
+    not a fault, so it must not reach the operator's log at WARNING."""
+    caplog.set_level(logging.DEBUG, logger="cannet_python_can")
+    driver = _ChannelDriver(_CloseRacingChannel)
+    reg = srv._InterfaceRegistry(driver)
+    a: "queue.Queue" = queue.Queue()
+    reg.subscribe("fake:0", a)
+    _drain(a, kind="interface_state")
+    _wait_for(lambda: driver.opened[0].in_recv.is_set())
+
+    reg.reconfigure("fake:0", drv.OpenConfig(bitrate_bps=250_000))
+
+    _wait_for(lambda: driver.opened[0].closed.is_set())
+    # Long enough for the interrupted read to fail and be logged.
+    time.sleep(0.2)
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings == [], (
+        f"reconfigure swap warned: {[r.getMessage() for r in warnings]}"
+    )
+
+
 def test_a_read_failure_outside_a_close_still_warns(
     caplog: "pytest.LogCaptureFixture",
 ) -> None:
