@@ -136,13 +136,12 @@ export interface ImportMdfResult {
   mdf_path: string;
 }
 
-/// One per-message DBC-decoded channel group an MDF import is skipping
-/// (mirrors `capture.rs::SkippedDecodedGroupInfo`) — already implied by
-/// the file's own bus-logging frames plus the project DBC, so importing
-/// it too would double-count every signal. `name` is the group's
-/// `cg_acq_name` when the file carries one, else `null` and
+/// One per-message DBC-decoded channel group an MDF file carries
+/// (mirrors `capture.rs::DecodedMessageGroupInfo`) — one CAN message's
+/// signals, as the recording tool's own DBC decoded them. `name` is the
+/// group's `cg_acq_name` when the file carries one, else `null` and
 /// `source_path` is what a user would see instead.
-export interface SkippedDecodedGroup {
+export interface DecodedMessageGroup {
   source_path: string;
   name: string | null;
   signal_count: number;
@@ -150,15 +149,17 @@ export interface SkippedDecodedGroup {
 
 /// What one census walk of an MDF 4.x bus-logging file found
 /// (`scan_mdf_channels`, mirrors `capture.rs::MdfScanResult`) — the MDF
-/// counterpart of `BlfScanResult`, extending it with the file's other
-/// content shapes so the mapping dialog can say what it is leaving
-/// behind. `markers` is always empty: MDF event blocks aren't read yet.
+/// counterpart of `BlfScanResult`, extending it with the file's signal
+/// content so the import dialog can offer it.
 export interface MdfScanResult extends BlfScanResult {
   unfinalized: boolean;
-  /// Message-independent signal channel groups the file carries. Not
-  /// imported yet (a later phase).
+  /// Signal channel groups the file carries, per-message decoded ones
+  /// included.
   signal_group_count: number;
-  skipped_decoded_groups: SkippedDecodedGroup[];
+  /// Signals across those groups — what the "Signals" content brings in.
+  signal_count: number;
+  /// The per-message decoded subset of them.
+  decoded_message_groups: DecodedMessageGroup[];
 }
 
 export interface DbcInfo {

@@ -40,7 +40,8 @@ vi.mock("@tauri-apps/api/core", () => ({
           markers: [],
           unfinalized: false,
           signal_group_count: 0,
-          skipped_decoded_groups: [],
+          signal_count: 0,
+          decoded_message_groups: [],
         };
       case "fetch_filtered_trace":
       case "fetch_by_id_page":

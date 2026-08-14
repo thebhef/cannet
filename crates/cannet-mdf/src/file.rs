@@ -33,8 +33,6 @@ use crate::MdfSourceError;
 /// `cg_flags` bit 0 — the group stores variable-length signal data
 /// rather than fixed-size records.
 const CG_FLAG_VLSD: u16 = 0x1;
-/// `cg_flags` bit 1 — the group holds bus events.
-pub(crate) const CG_FLAG_BUS_EVENT: u16 = 0x2;
 /// `cg_flags` bit 2 — those bus events are *plain* bus events: raw
 /// frames rather than signals decoded out of them.
 pub(crate) const CG_FLAG_PLAIN_BUS_EVENT: u16 = 0x4;

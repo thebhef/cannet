@@ -255,7 +255,7 @@ describe("BlfChannelMapModal", () => {
     expect(screen.getByText("Map MDF channels to logical buses")).toBeInTheDocument();
   });
 
-  it("lists skipped per-message decoded groups when given any, and hides the section otherwise", () => {
+  it("lists per-message decoded groups when given any, and hides the section otherwise", () => {
     const { rerender } = render(
       <BlfChannelMapModal
         blfPath="/tmp/cap.mf4"
@@ -266,7 +266,7 @@ describe("BlfChannelMapModal", () => {
         format="MDF"
       />,
     );
-    expect(screen.queryByText(/already covered/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/decoded by the recording tool/)).not.toBeInTheDocument();
 
     rerender(
       <BlfChannelMapModal
@@ -276,20 +276,20 @@ describe("BlfChannelMapModal", () => {
         onConfirm={noop}
         onCancel={noop}
         format="MDF"
-        skippedDecodedGroups={[
+        decodedMessageGroups={[
           { source_path: "CAN1.CAN_DataFrame.ID=0x100 EXT=False", name: "Engine", signal_count: 2 },
           { source_path: "CAN1.CAN_DataFrame.ID=0x1a5 EXT=False", name: null, signal_count: 1 },
         ]}
       />,
     );
-    expect(screen.getByText(/2 per-message decoded groups/)).toBeInTheDocument();
+    expect(screen.getByText(/2 of those groups are a CAN message decoded by/)).toBeInTheDocument();
     expect(screen.getByText(/Engine \(2 signals\)/)).toBeInTheDocument();
     expect(
       screen.getByText(/CAN1\.CAN_DataFrame\.ID=0x1a5 EXT=False \(1 signal\)/),
     ).toBeInTheDocument();
   });
 
-  it("says signal channel groups arrive as file-backed signals", () => {
+  it("says how many signals arrive as file-backed signals", () => {
     render(
       <BlfChannelMapModal
         blfPath="/tmp/cap.mf4"
@@ -298,11 +298,11 @@ describe("BlfChannelMapModal", () => {
         onConfirm={noop}
         onCancel={noop}
         format="MDF"
-        signalGroupCount={3}
+        signalCount={3}
       />,
     );
     expect(
-      screen.getByText(/3 signal channel groups — imported as file-backed signals/),
+      screen.getByText(/3 signals — imported as file-backed signals/),
     ).toBeInTheDocument();
   });
 });

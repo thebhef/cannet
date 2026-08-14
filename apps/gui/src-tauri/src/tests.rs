@@ -2004,44 +2004,85 @@ fn mdf_windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_sto
         .all(|f| f.timestamp_ns >= start && f.timestamp_ns <= end));
 }
 
-/// `scan_mdf_channels` projects `cannet_mdf::scan_mdf`'s
-/// `skipped_decoded_groups` and signal-group count straight through
-/// (`MdfScanResult`), so the mapping dialog can say what it is leaving
-/// behind rather than importing it silently twice (the shape-3 rule
-/// from the task's grooming notes). `sorted_finalized_dbcdecoded.mf4`
-/// carries 18 bus frames plus two per-message decoded groups — message
-/// `0x100` with signals `VehSpeed`/`GearPos` (2) and message `0x1a5`
-/// with `TankLevel` (1), each group's master ("time") channel excluded
-/// from the count — that must be reported, not imported.
+/// `scan_mdf_channels` projects `cannet_mdf::scan_mdf`'s signal census
+/// straight through (`MdfScanResult`), so the mapping dialog can say what
+/// a file's signal content is before importing it.
+/// `sorted_finalized_dbcdecoded.mf4` carries 18 bus frames plus two
+/// per-message decoded groups — message `0x100` with signals
+/// `VehSpeed`/`GearPos` (2) and message `0x1a5` with `TankLevel` (1),
+/// each group's master ("time") channel excluded from the count.
 #[test]
-fn mdf_scan_reports_skipped_decoded_groups_for_the_dialog() {
+fn mdf_scan_reports_the_files_signal_content_for_the_dialog() {
     let path = mdf_fixture_path("sorted_finalized_dbcdecoded");
     let scan = cannet_mdf::scan_mdf(&path).unwrap();
     assert_eq!(scan.frame_count, 18);
-    assert_eq!(scan.skipped_decoded_groups.len(), 2);
+    assert_eq!(scan.decoded_message_groups.len(), 2);
     assert!(scan
-        .skipped_decoded_groups
+        .decoded_message_groups
         .iter()
         .any(|g| g.signal_count == 2));
     assert!(scan
-        .skipped_decoded_groups
+        .decoded_message_groups
         .iter()
         .any(|g| g.signal_count == 1));
 
-    // `capture::SkippedDecodedGroupInfo::from` is the exact projection
+    // Every decoded group is signal content the import brings in, so the
+    // census counts it alongside the message-independent ones.
+    assert_eq!(scan.signal_groups.len(), 2);
+    assert_eq!(
+        scan.signal_groups
+            .iter()
+            .map(|g| g.signal_count)
+            .sum::<usize>(),
+        3
+    );
+
+    // `capture::DecodedMessageGroupInfo::from` is the exact projection
     // `scan_mdf_channels` applies to build the wire response — pin the
     // field-for-field mapping here rather than only in the command
     // (which needs an `AppHandle` to call).
-    let projected: Vec<capture::SkippedDecodedGroupInfo> =
-        scan.skipped_decoded_groups.iter().map(Into::into).collect();
+    let projected: Vec<capture::DecodedMessageGroupInfo> =
+        scan.decoded_message_groups.iter().map(Into::into).collect();
     assert_eq!(projected.len(), 2);
     assert_eq!(
         projected[0].source_path,
-        scan.skipped_decoded_groups[0].source_path
+        scan.decoded_message_groups[0].source_path
     );
     assert_eq!(
         projected[0].signal_count,
-        scan.skipped_decoded_groups[0].signal_count
+        scan.decoded_message_groups[0].signal_count
+    );
+}
+
+/// The per-message decoded groups arrive as file-backed signals like any
+/// other signal content the file carries — one cache entry per channel,
+/// keyed by its group, with the message it was decoded from on the group
+/// name.
+#[test]
+fn mdf_import_fills_file_backed_signals_from_decoded_message_groups() {
+    let path = mdf_fixture_path("sorted_finalized_dbcdecoded");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+    assert_eq!(groups.len(), 2);
+
+    let dir = tempfile::tempdir().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    let (signals, samples) =
+        capture::fill_file_backed_signals(&caches, &groups, None, None, "capture.mf4");
+    assert_eq!(signals, 3, "VehSpeed, GearPos and TankLevel");
+    assert_eq!(samples, 45, "15 cycles each");
+
+    let held = caches.file_signals();
+    let mut names: Vec<&str> = held.iter().map(|s| s.info.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["GearPos", "TankLevel", "VehSpeed"]);
+    assert!(
+        held.iter().all(|s| s
+            .info
+            .group_name
+            .as_deref()
+            .is_some_and(|n| n.contains("message ID="))),
+        "each row names the message its group decoded"
     );
 }
 
@@ -2246,8 +2287,8 @@ fn the_demo_mdf_imports_frames_signals_and_markers() {
     assert_eq!(scan.channels, vec![0], "the demo trace is single-bus");
     assert_eq!(scan.frame_count, 1810);
     assert!(!scan.unfinalized);
-    assert_eq!(scan.signal_group_names.len(), 2);
-    assert!(scan.skipped_decoded_groups.is_empty());
+    assert_eq!(scan.signal_groups.len(), 2);
+    assert!(scan.decoded_message_groups.is_empty());
     assert_eq!(scan.events.len(), 4);
 
     // What the pump would ingest.

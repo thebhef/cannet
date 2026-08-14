@@ -3233,8 +3233,8 @@ export function App() {
           onConfirm={handleMdfMapConfirm}
           onCancel={() => setPendingMdf(null)}
           format="MDF"
-          skippedDecodedGroups={pendingMdf.scan.skipped_decoded_groups}
-          signalGroupCount={pendingMdf.scan.signal_group_count}
+          decodedMessageGroups={pendingMdf.scan.decoded_message_groups}
+          signalCount={pendingMdf.scan.signal_count}
         />
       )}
       <ServerTrustDialogs />

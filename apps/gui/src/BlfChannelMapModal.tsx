@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 
 import { Combobox } from "./Combobox";
 import { DisclosureToggle } from "./DisclosureToggle";
-import type { BlfScanResult, Bus, SkippedDecodedGroup } from "./types";
+import type { BlfScanResult, Bus, DecodedMessageGroup } from "./types";
 import { formatElapsed } from "./format";
 import { useGridview } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
@@ -42,7 +42,7 @@ function elapsedSeconds(timestampNs: number, originNs: number): number {
 /// consumes. `scan`'s shape and the mapping/persistence logic are
 /// identical for both formats (`BlfScanResult` and `MdfScanResult`
 /// share the same channel-census fields); `format`,
-/// `skippedDecodedGroups` and `signalGroupCount` are the only
+/// `decodedMessageGroups` and `signalCount` are the only
 /// MDF-specific additions, each optional so the BLF path is unaffected.
 export function BlfChannelMapModal(props: {
   blfPath: string;
@@ -54,15 +54,15 @@ export function BlfChannelMapModal(props: {
   /// Display label only — everything else about the flow is
   /// format-agnostic. Defaults to "BLF".
   format?: "BLF" | "MDF";
-  /// MDF only: per-message DBC-decoded groups import is skipping
-  /// because the file's own frames plus the project DBC already imply
-  /// them. Omitted/empty renders nothing.
-  skippedDecodedGroups?: SkippedDecodedGroup[];
-  /// MDF only: signal channel groups the file carries, imported as
-  /// file-backed signals (series-shaped views only — no frames carry
-  /// them). Shown so the import says what it is bringing in beyond the
-  /// frames.
-  signalGroupCount?: number;
+  /// MDF only: the per-message DBC-decoded groups the file carries —
+  /// one CAN message's signals each, as the recording tool's DBC decoded
+  /// them. Listed so the import says which messages its signal content
+  /// came from. Omitted/empty renders nothing.
+  decodedMessageGroups?: DecodedMessageGroup[];
+  /// MDF only: signals the file carries, imported as file-backed signals
+  /// (series-shaped views only — no frames carry them). Shown so the
+  /// import says what it is bringing in beyond the frames.
+  signalCount?: number;
 }) {
   const {
     blfPath,
@@ -72,8 +72,8 @@ export function BlfChannelMapModal(props: {
     onConfirm,
     onCancel,
     format = "BLF",
-    skippedDecodedGroups,
-    signalGroupCount,
+    decodedMessageGroups,
+    signalCount,
   } = props;
   const { channels, markers } = scan;
   const [choices, setChoices] = useState<Record<number, ChannelChoice>>(() => {
@@ -272,15 +272,21 @@ export function BlfChannelMapModal(props: {
             )}
           </div>
         )}
-        {skippedDecodedGroups != null && skippedDecodedGroups.length > 0 && (
+        {signalCount != null && signalCount > 0 && (
+          <p className="blf-map-meta">
+            {signalCount} signal{signalCount === 1 ? "" : "s"} — imported as file-backed
+            signals, visible in the catalog, plots and the signal grid.
+          </p>
+        )}
+        {decodedMessageGroups != null && decodedMessageGroups.length > 0 && (
           <div className="blf-map-skipped-section">
             <p className="blf-map-meta">
-              {skippedDecodedGroups.length} per-message decoded group
-              {skippedDecodedGroups.length === 1 ? "" : "s"} already covered by the frames
-              above plus the project DBC — not imported:
+              {decodedMessageGroups.length} of those group
+              {decodedMessageGroups.length === 1 ? " is" : "s are"} a CAN message decoded by
+              the recording tool:
             </p>
             <ul className="blf-map-skipped-list">
-              {skippedDecodedGroups.map((g) => (
+              {decodedMessageGroups.map((g) => (
                 <li key={g.source_path}>
                   {g.name ?? g.source_path} ({g.signal_count} signal
                   {g.signal_count === 1 ? "" : "s"})
@@ -288,12 +294,6 @@ export function BlfChannelMapModal(props: {
               ))}
             </ul>
           </div>
-        )}
-        {signalGroupCount != null && signalGroupCount > 0 && (
-          <p className="blf-map-meta">
-            {signalGroupCount} signal channel group{signalGroupCount === 1 ? "" : "s"} — imported
-            as file-backed signals, visible in the catalog, plots and the signal grid.
-          </p>
         )}
         <div className="modal-buttons">
           <button type="button" onClick={onCancel}>

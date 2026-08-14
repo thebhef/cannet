@@ -142,7 +142,7 @@ fn the_written_file_is_sorted_and_finalized() {
     let source = MdfCanFrameSource::open(&path).expect("opens");
     assert!(!source.is_unfinalized());
     assert_eq!(source.start_unix_nanos(), START_NS);
-    assert!(source.skipped_decoded_groups().is_empty());
+    assert!(source.decoded_message_groups().is_empty());
 
     let scan = cannet_mdf::scan_mdf(&path).expect("scans");
     assert_eq!(scan.frame_count, frames.len() as u64);

@@ -64,3 +64,68 @@ pub(crate) fn as_f64(
         .ok()?
         .as_f64()
 }
+
+/// A signal-channel sample as an `f64`, the channel's conversion applied
+/// where it yields a number and the stored code kept where it does not.
+///
+/// A coded signal — a DBC enumeration, and the shape most state channels
+/// in a decoded group take — carries a value-to-text conversion, so its
+/// converted sample is a *string*. The series is still a numeric one: the
+/// codes are the values, and the text is a label for them, which is
+/// exactly what a value table is elsewhere in this project. Dropping such
+/// a sample would silently lose the whole channel, so the raw code is
+/// kept instead.
+pub(crate) fn as_signal_f64(
+    file: &Mdf4File,
+    group: usize,
+    record: &[u8],
+    block: &ChannelBlock,
+) -> Option<f64> {
+    let raw = raw(file, group, record, block)?;
+    let converted = block.apply_conversion_value(raw.clone(), file.bytes()).ok();
+    numeric_sample(converted.as_ref(), &raw)
+}
+
+/// The numeric reading of one sample: the converted value when the
+/// conversion produced a number, and otherwise the stored code. `None`
+/// when neither is a number — a genuine text channel, which has no
+/// numeric series to offer.
+fn numeric_sample(converted: Option<&DecodedValue>, raw: &DecodedValue) -> Option<f64> {
+    converted
+        .and_then(DecodedValue::as_f64)
+        .or_else(|| raw.as_f64())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{numeric_sample, DecodedValue};
+
+    #[test]
+    fn a_numeric_conversion_wins_over_the_stored_code() {
+        let raw = DecodedValue::UnsignedInteger(7);
+        let converted = DecodedValue::Float(3.5);
+        assert_eq!(numeric_sample(Some(&converted), &raw), Some(3.5));
+    }
+
+    #[test]
+    fn a_text_conversion_falls_back_to_the_stored_code() {
+        // The `CurrentBMSState = 1 -> "Idle"` shape: the label is not a
+        // number, the code is, and the code is the series.
+        let raw = DecodedValue::UnsignedInteger(1);
+        let converted = DecodedValue::String("Idle".into());
+        assert_eq!(numeric_sample(Some(&converted), &raw), Some(1.0));
+    }
+
+    #[test]
+    fn an_unconverted_channel_reads_its_stored_value() {
+        let raw = DecodedValue::SignedInteger(-4);
+        assert_eq!(numeric_sample(None, &raw), Some(-4.0));
+    }
+
+    #[test]
+    fn a_text_channel_has_no_numeric_reading() {
+        let raw = DecodedValue::String("ready".into());
+        let converted = DecodedValue::String("ready".into());
+        assert_eq!(numeric_sample(Some(&converted), &raw), None);
+    }
+}

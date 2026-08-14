@@ -62,15 +62,15 @@ fn a_pure_logger_file_has_no_signal_groups() {
 }
 
 #[test]
-fn per_message_decoded_groups_are_skipped_and_reported() {
+fn per_message_decoded_groups_are_reported() {
     let doc = expected("sorted_finalized_dbcdecoded");
     let want = groups_of_kind(&doc, "dbc_decoded");
     assert_eq!(want.len(), 2, "the fixture carries two decoded groups");
 
     let source = MdfCanFrameSource::open(fixture_path("sorted_finalized_dbcdecoded")).unwrap();
-    let skipped = source.skipped_decoded_groups();
-    assert_eq!(skipped.len(), want.len(), "every decoded group is reported");
-    for (got, want) in skipped.iter().zip(&want) {
+    let decoded = source.decoded_message_groups();
+    assert_eq!(decoded.len(), want.len(), "every decoded group is reported");
+    for (got, want) in decoded.iter().zip(&want) {
         assert_eq!(
             got.group_index,
             usize::try_from(want["index"].as_u64().unwrap()).unwrap()
@@ -83,13 +83,49 @@ fn per_message_decoded_groups_are_skipped_and_reported() {
             "signal count excludes the master channel"
         );
     }
+}
 
-    // Skipped means skipped: their signals must not reappear as
-    // file-backed ones, or every signal would be counted twice.
-    assert!(
-        source.signal_groups().is_empty(),
-        "decoded groups must not be offered as message-independent signals"
+#[test]
+fn per_message_decoded_groups_are_offered_as_signals() {
+    let doc = expected("sorted_finalized_dbcdecoded");
+    let want = groups_of_kind(&doc, "dbc_decoded");
+
+    let source = MdfCanFrameSource::open(fixture_path("sorted_finalized_dbcdecoded")).unwrap();
+    let got = source.signal_groups();
+    assert_eq!(
+        got.len(),
+        want.len(),
+        "the fixture's only signal-shaped groups are its decoded ones"
     );
+    for (got, want) in got.iter().zip(&want) {
+        assert_eq!(
+            got.group_index,
+            usize::try_from(want["index"].as_u64().unwrap()).unwrap()
+        );
+        assert_eq!(got.name.as_deref(), want["acq_name"].as_str());
+        assert_eq!(
+            got.decoded_source.as_deref(),
+            want["source_path"].as_str(),
+            "a decoded group says which message it was decoded from"
+        );
+        // The master channel is the time axis, not a signal.
+        let channels = want["channels"].as_array().unwrap();
+        assert_eq!(got.signals.len(), channels.len() - 1);
+        let cycles = usize::try_from(want["cycles"].as_u64().unwrap()).unwrap();
+        for (signal, name) in got.signals.iter().zip(channels.iter().skip(1)) {
+            assert_eq!(signal.name, name.as_str().unwrap());
+            assert_eq!(signal.values.len(), cycles, "{} sample count", signal.name);
+            assert_eq!(signal.timestamps_ns.len(), signal.values.len());
+        }
+    }
+}
+
+#[test]
+fn a_message_independent_group_carries_no_decoded_source() {
+    let source = MdfCanFrameSource::open(fixture_path("sorted_finalized_mixed")).unwrap();
+    let groups = source.signal_groups();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].decoded_source, None);
 }
 
 #[test]

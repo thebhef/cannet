@@ -75,10 +75,11 @@ crates/
                  FD, error + remote frames, DZ-compressed data. Follows
                  the `cn_composition` link `mdf4-rs` does not, which is
                  what turns a channel group into frames. Also exposes the
-                 file's message-independent signal groups, its `##EV`
-                 timeline markers and its `##AT` attachments, skips
-                 per-message DBC-decoded ones, and rejects pre-decoded
-                 signal files outright. `MdfCaptureWriter` is the inverse
+                 file's signal groups — message-independent and
+                 per-message DBC-decoded alike, each tagged with which it
+                 is — its `##EV` timeline markers and its `##AT`
+                 attachments, and rejects pre-decoded signal files
+                 outright. `MdfCaptureWriter` is the inverse
                  for Save Capture: sorted, finalized MDF 4.10 with the
                  bus-logging composition written out by hand, plus signal
                  groups, events and embedded databases.
@@ -1858,19 +1859,25 @@ end.
 end to end, reusing the same channel-mapping modal (`BusChannel` plays
 the role a BLF channel number plays — [ADR
 0023](docs/adr/0023-logical-bus-vs-interface.md)) and the same shared
-ingest pump for the actual pass. Two things an MDF can carry that a
-BLF cannot: **per-message DBC-decoded groups** — what a tool writes
-when it decodes a capture with a DBC and saves the result — are
-recognised and skipped rather than imported, since the file's own raw
-frames plus the project's DBC already reproduce them; every skipped
-group (its name, source path, and signal count) is listed in the
-mapping dialog and logged to System Messages, never silently dropped.
-**Signal channel groups** (signals recorded with no bus message behind
-them) are imported as **file-backed signals**, and the dialog says how
-many groups it is bringing in. A
-signal-shape MF4 (a post-processed measurement with no bus-logging
-group at all) is detected and rejected with a message naming the
-mismatch, rather than opening as an empty capture.
+ingest pump for the actual pass. An MDF also carries signal content a BLF
+cannot, in two shapes: **signal channel groups** (signals recorded with
+no bus message behind them) and **per-message DBC-decoded groups**
+(what a tool writes when it decodes a capture with a DBC and saves the
+result — one group per CAN message, its signals as plain channels).
+Both are imported as **file-backed signals**: the decoding tool's
+database is not this project's, so nothing here can re-derive the
+second shape from the raw frames. The dialog says how many signals
+arrive and names the messages the decoded groups came from, and the
+same list goes to System Messages. A signal-shape MF4 (a
+post-processed measurement with no bus-logging group at all) is
+detected and rejected with a message naming the mismatch, rather than
+opening as an empty capture.
+
+A coded channel — a DBC enumeration, the shape most state signals in a
+decoded group take — stores its value-to-text table as the channel's
+own conversion. The **code** is what lands in the series, since that is
+the numeric part; the text is a label, which is what a value table is
+everywhere else in this project.
 
 **File-backed signals** are value series the capture file carries
 already decoded: no bus message holds them and no DBC produces them.

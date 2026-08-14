@@ -8,15 +8,19 @@
 //! | --- | --- | --- |
 //! | Raw bus-logging groups | `CAN_DataFrame` / `CAN_ErrorFrame` / `CAN_RemoteFrame` structure channels | decoded into frames |
 //! | Message-independent signal groups | signal channels with no frame behind them | offered through [`MdfCanFrameSource::signal_groups`] |
-//! | Per-message DBC-decoded groups | one group per CAN message, its signals as plain channels | **skipped**, and reported |
+//! | Per-message DBC-decoded groups | one group per CAN message, its signals as plain channels | offered the same way, tagged with the message they came from |
 //!
 //! The third is what a tool writes when it decodes a capture with a DBC
-//! and saves the result. Its signals are already implied by the raw
-//! frames plus the project's own DBC, so importing them would count every
-//! signal twice; they are recognised by the `CAN<n>.CAN_DataFrame.ID=…`
-//! bus source path their group carries and left alone. Which groups were
-//! skipped is available from [`MdfCanFrameSource::skipped_decoded_groups`]
-//! and from [`scan_mdf`], so the decision is reported rather than silent.
+//! and saves the result. They are recognised by the
+//! `CAN<n>.CAN_DataFrame.ID=…` bus source path their group carries, and
+//! that path rides along on
+//! [`SignalChannelGroup::decoded_source`] so a caller can tell the two
+//! signal kinds apart; [`MdfCanFrameSource::decoded_message_groups`] and
+//! [`scan_mdf`] list them on their own for a caller that wants to say
+//! what a file holds before reading it. They are *series a file carries*
+//! like any other: the database they were decoded against is the
+//! recording tool's, not this project's, so nothing here can re-derive
+//! them from the raw frames.
 //!
 //! A file with no bus-logging group at all is a *signal file* — a
 //! post-processed measurement, not a capture. Opening one fails with
@@ -74,7 +78,7 @@ mod write;
 pub use attachments::MdfAttachment;
 pub use events::MdfEvent;
 pub use scan::{scan_mdf, MdfScan};
-pub use signals::{FileSignal, SignalChannelGroup};
+pub use signals::{FileSignal, SignalChannelGroup, SignalGroupCensus};
 pub use write::{MdfCaptureLayout, MdfCaptureWriter, MdfWriteError, MdfWritten};
 
 use std::path::Path;
@@ -82,11 +86,12 @@ use std::path::Path;
 use cannet_core::{CanFrame, CanFrameSource, IdError};
 
 use bus::BusGroup;
-use file::{Mdf4File, RecordCursor, CG_FLAG_BUS_EVENT, CG_FLAG_PLAIN_BUS_EVENT};
+use file::{Mdf4File, RecordCursor, CG_FLAG_PLAIN_BUS_EVENT};
 
-/// A per-message DBC-decoded channel group that import stepped over.
+/// A per-message DBC-decoded channel group — one CAN message's signals,
+/// as some other tool's DBC decoded them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkippedDecodedGroup {
+pub struct DecodedMessageGroup {
     /// Index of the channel group in the file, in link order.
     pub group_index: usize,
     /// The `si_path` that identified it, e.g.
@@ -105,7 +110,7 @@ pub struct MdfCanFrameSource {
     /// One cursor per bus-logging group, each holding the next frame it
     /// will emit so the merge can pick the earliest.
     heads: Vec<Head>,
-    skipped: Vec<SkippedDecodedGroup>,
+    decoded: Vec<DecodedMessageGroup>,
 }
 
 struct Head {
@@ -122,7 +127,7 @@ impl std::fmt::Debug for MdfCanFrameSource {
             .field("start_unix_nanos", &self.file.start_time_ns)
             .field("unfinalized", &self.file.unfinalized)
             .field("bus_groups", &self.heads.len())
-            .field("skipped_decoded_groups", &self.skipped.len())
+            .field("decoded_message_groups", &self.decoded.len())
             .finish()
     }
 }
@@ -137,7 +142,7 @@ impl MdfCanFrameSource {
     /// Otherwise the block-parsing and I/O errors of a malformed file.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, MdfSourceError> {
         let file = Mdf4File::open(path.as_ref())?;
-        let skipped = collect_skipped(&file);
+        let decoded = collect_decoded(&file);
 
         let mut heads = Vec::new();
         for index in 0..file.groups.len() {
@@ -155,21 +160,23 @@ impl MdfCanFrameSource {
         if heads.is_empty() {
             return Err(MdfSourceError::SignalFile {
                 signal_groups: file.groups.len(),
-                decoded_groups: skipped.len(),
+                decoded_groups: decoded.len(),
             });
         }
 
         let mut source = Self {
             file,
             heads,
-            skipped,
+            decoded,
         };
         source.fill_heads()?;
         Ok(source)
     }
 
-    /// The message-independent signal channel groups the file carries —
-    /// signals recorded directly, with no frame behind them.
+    /// The signal channel groups the file carries — every group that is
+    /// series rather than frames, message-independent and per-message
+    /// DBC-decoded alike (each says which it is through
+    /// [`SignalChannelGroup::decoded_source`]).
     ///
     /// Reading them is a one-time pass that completes, so this materialises
     /// the series rather than streaming it. Everything that can fail has
@@ -178,10 +185,12 @@ impl MdfCanFrameSource {
         signals::signal_groups(&self.file)
     }
 
-    /// The per-message DBC-decoded groups this file carries and import
-    /// stepped over. Empty for a file that has none.
-    pub fn skipped_decoded_groups(&self) -> &[SkippedDecodedGroup] {
-        &self.skipped
+    /// The per-message DBC-decoded groups this file carries, listed on
+    /// their own so a caller can say what the file holds. Their series
+    /// come back from [`Self::signal_groups`] with the rest. Empty for a
+    /// file that has none.
+    pub fn decoded_message_groups(&self) -> &[DecodedMessageGroup] {
+        &self.decoded
     }
 
     /// The file's timeline markers — its `##EV` blocks, with absolute
@@ -261,13 +270,13 @@ impl CanFrameSource for MdfCanFrameSource {
 /// Recognise the per-message DBC-decoded groups: a bus source whose path
 /// names the frame the signals were decoded from, on a group flagged as a
 /// bus event but *not* as a plain (raw-frame) one.
-fn collect_skipped(file: &Mdf4File) -> Vec<SkippedDecodedGroup> {
+fn collect_decoded(file: &Mdf4File) -> Vec<DecodedMessageGroup> {
     file.groups
         .iter()
         .enumerate()
         .filter_map(|(index, g)| {
             let path = decoded_message_source(g)?;
-            Some(SkippedDecodedGroup {
+            Some(DecodedMessageGroup {
                 group_index: index,
                 source_path: path.to_owned(),
                 name: g.acq_name.clone(),
@@ -282,8 +291,8 @@ fn collect_skipped(file: &Mdf4File) -> Vec<SkippedDecodedGroup> {
 }
 
 /// The bus source path of a per-message DBC-decoded group, or `None` if
-/// this group is something else. One definition, so the groups import
-/// skips and the groups it offers as file-backed signals cannot disagree.
+/// this group is something else. One definition, so the groups listed as
+/// decoded and the signal groups tagged as decoded cannot disagree.
 pub(crate) fn decoded_message_source(group: &file::Group) -> Option<&str> {
     if group.flags & CG_FLAG_PLAIN_BUS_EVENT != 0 || bus::frame_structure(group).is_some() {
         return None;
@@ -298,12 +307,6 @@ pub(crate) fn decoded_message_source(group: &file::Group) -> Option<&str> {
 /// the signal group it produced from a frame.
 fn is_decoded_message_path(path: &str) -> bool {
     path.starts_with("CAN") && path.contains(".CAN_") && path.contains(".ID=")
-}
-
-/// Whether a group is one of the file's own bus-event groups, by its
-/// `cg_flags` alone. Used where the channel names are not to hand.
-pub(crate) fn is_bus_event(flags: u16) -> bool {
-    flags & CG_FLAG_BUS_EVENT != 0
 }
 
 #[derive(Debug)]

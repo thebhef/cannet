@@ -143,8 +143,9 @@ truth.
 
 **File-backed signal**:
 A signal imported from a capture file as an already-decoded value
-series (MDF's "message-independent" signal channels) — no bus message
-carries it and no DBC decodes it. It lives in the capture model with
+series (MDF's "message-independent" signal channels, and its
+per-message DBC-decoded groups) — no bus message in *this* model
+carries it and no loaded DBC decodes it. It lives in the capture model with
 the same series shape as a DBC-decoded signal, differing only in
 **provenance**: DBC-backed signals derive from frames and keep their
 message relationship; file-backed signals have none, and a DBC reload

@@ -1013,20 +1013,19 @@ pub(crate) fn fill_file_backed_signals(
 }
 
 /// One per-message DBC-decoded channel group [`scan_mdf_channels`]
-/// found and import is skipping — already implied by the file's own
-/// bus-logging frames plus the project's DBC (see `cannet_mdf`'s
-/// module docs for why importing it too would double-count every
-/// signal). Surfaced here, never silent, so the mapping dialog can say
-/// what it is leaving behind.
+/// found — one CAN message's signals, as the recording tool's own DBC
+/// decoded them. Its series arrive as file-backed signals with the rest
+/// of the file's signal content; this is the per-message breakdown, so
+/// the import dialog can say what that content is.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SkippedDecodedGroupInfo {
+pub struct DecodedMessageGroupInfo {
     pub source_path: String,
     pub name: Option<String>,
     pub signal_count: usize,
 }
 
-impl From<&cannet_mdf::SkippedDecodedGroup> for SkippedDecodedGroupInfo {
-    fn from(g: &cannet_mdf::SkippedDecodedGroup) -> Self {
+impl From<&cannet_mdf::DecodedMessageGroup> for DecodedMessageGroupInfo {
+    fn from(g: &cannet_mdf::DecodedMessageGroup) -> Self {
         Self {
             source_path: g.source_path.clone(),
             name: g.name.clone(),
@@ -1055,9 +1054,11 @@ pub struct MdfScanResult {
     /// brings in as file-backed signals (`docs/CONTEXT.md`), so the
     /// mapping dialog can say what arrives beyond the frames.
     pub signal_group_count: usize,
-    /// Per-message DBC-decoded groups import is skipping. See
-    /// [`SkippedDecodedGroupInfo`].
-    pub skipped_decoded_groups: Vec<SkippedDecodedGroupInfo>,
+    /// Signals across those groups — the number that actually lands.
+    pub signal_count: usize,
+    /// The per-message DBC-decoded subset of them. See
+    /// [`DecodedMessageGroupInfo`].
+    pub decoded_message_groups: Vec<DecodedMessageGroupInfo>,
 }
 
 /// Pre-scan an MDF file and return its distinct `BusChannel` census,
@@ -1089,19 +1090,18 @@ pub(crate) async fn scan_mdf_channels(
             &app,
             "mdf-import",
             "scanned {mdf_path} in {ms:.0} ms: {frames} frame(s) on {channels} channel(s), \
-             {skipped} decoded group(s) skipped, {signals} signal group(s)",
+             {signals} signal group(s), {decoded} of them per-message decoded",
             ms = started.elapsed().as_secs_f64() * 1000.0,
             frames = scan.frame_count,
             channels = scan.channels.len(),
-            skipped = scan.skipped_decoded_groups.len(),
-            signals = scan.signal_group_names.len(),
+            signals = scan.signal_groups.len(),
+            decoded = scan.decoded_message_groups.len(),
         );
-        // Never silent (per the crate's own design): every group import
-        // is leaving behind is named in the System Messages, not just
-        // counted.
-        if !scan.skipped_decoded_groups.is_empty() {
+        // Never silent (per the crate's own design): every per-message
+        // group is named in the System Messages, not just counted.
+        if !scan.decoded_message_groups.is_empty() {
             let names = scan
-                .skipped_decoded_groups
+                .decoded_message_groups
                 .iter()
                 .map(|g| g.name.clone().unwrap_or_else(|| g.source_path.clone()))
                 .collect::<Vec<_>>()
@@ -1109,9 +1109,8 @@ pub(crate) async fn scan_mdf_channels(
             sys_info!(
                 &app,
                 "mdf-import",
-                "skipping {n} per-message decoded group(s) already covered by frames + the \
-                 project DBC: {names}",
-                n = scan.skipped_decoded_groups.len(),
+                "{n} per-message decoded group(s) carry signals of their own: {names}",
+                n = scan.decoded_message_groups.len(),
             );
         }
         let mut synthetic_idx = 0u64;
@@ -1128,8 +1127,9 @@ pub(crate) async fn scan_mdf_channels(
             start_unix_nanos: scan.start_unix_nanos,
             markers,
             unfinalized: scan.unfinalized,
-            signal_group_count: scan.signal_group_names.len(),
-            skipped_decoded_groups: scan.skipped_decoded_groups.iter().map(Into::into).collect(),
+            signal_group_count: scan.signal_groups.len(),
+            signal_count: scan.signal_groups.iter().map(|g| g.signal_count).sum(),
+            decoded_message_groups: scan.decoded_message_groups.iter().map(Into::into).collect(),
         })
     })
     .await
