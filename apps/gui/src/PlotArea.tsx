@@ -52,6 +52,7 @@ import { parsePlotAreaDragData, type PlotAreaDragPayload } from "./plotAreaTrans
 import { showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { nextResampleDelayMs } from "./plotPacing";
 import { Combobox, type ComboboxOption } from "./Combobox";
+import { DisclosureToggle } from "./DisclosureToggle";
 import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
 import { SIGNAL_DND_MIME, setSignalDragData } from "./dragSignals";
 import { type Series, valueAt } from "./plotCursors";
@@ -3020,10 +3021,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // all hidden collapses on its own and has no expanded form
             // to go to (there is nothing to draw), so the toggle is
             // inert there and says why.
-            <button
+            <DisclosureToggle
               className="plot-area-collapse"
-              aria-label={collapsed ? "expand plot area" : "collapse plot area"}
-              aria-expanded={!collapsed}
+              expanded={!collapsed}
+              ariaLabel={collapsed ? "expand plot area" : "collapse plot area"}
               disabled={!!collapsed && area.collapsed !== true}
               title={
                 !!collapsed && area.collapsed !== true
@@ -3034,13 +3035,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                     ? "expand this plot area"
                     : "collapse this plot area — it gives up its plot height, its rows stay listed"
               }
-              onClick={(e) => {
+              onToggle={(e) => {
                 e.stopPropagation();
                 onToggleCollapsed();
               }}
-            >
-              {collapsed ? "▸" : "▾"}
-            </button>
+            />
           )}
           <span
             className="plot-area-label"

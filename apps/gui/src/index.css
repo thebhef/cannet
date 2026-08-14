@@ -2293,7 +2293,7 @@ button.trace-event-swatch {
   padding: 0;
   border: none;
   background: none;
-  color: inherit;
+  color: var(--text-faint);
   font: inherit;
   cursor: pointer;
 }
@@ -2303,7 +2303,6 @@ button.trace-event-swatch {
 .disclosure-toggle-glyph {
   font-size: 0.75rem;
   line-height: 1;
-  color: var(--text-faint);
 }
 /* The row-height-capped variant: several dense grids (the DBC, trace,
    signal, RBS and transmit rows) share a fixed row height with a
@@ -2854,24 +2853,16 @@ button.trace-event-swatch {
 }
 
 /* Collapse / expand the whole plot area (ADR 0026). Sits on the parent
-   head beside the grip, so it stays reachable in the collapsed strip. */
+   head beside the grip, so it stays reachable in the collapsed strip.
+   Hit area, ink and rotation are DisclosureToggle's (task 63 item 1);
+   this keeps only the site's own spacing and hover color. */
 .plot-area-collapse {
-  background: none;
-  border: none;
   color: var(--text-dim);
-  cursor: pointer;
-  font-size: 0.7rem;
-  line-height: 1;
   padding: 0 0.2rem 0 0;
 }
 
 .plot-area-collapse:hover:not(:disabled) {
   color: var(--text-muted);
-}
-
-.plot-area-collapse:disabled {
-  color: var(--text-faint);
-  cursor: default;
 }
 
 .plot-area-remove,
