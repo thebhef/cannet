@@ -438,8 +438,8 @@ export function groupByBus(
 /// (`ancestorsOfMatches`); a message renders when it matched or a
 /// signal under it matched; a signal renders when it matched or its
 /// message matched (so expanding a matched message still reveals its
-/// children). This bounds a filtered render by the match set — the
-/// task-33 responsiveness rule.
+/// children). This bounds a filtered render by the match set, the
+/// responsiveness rule a large DBC (thousands of messages) depends on.
 ///
 /// Deliberately **not** a function of the selection: the gridview's
 /// selection follows the cursor, so folding it in here would rebuild
@@ -820,7 +820,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   const [showDetails, setShowDetails] = useState<boolean>(() =>
     showDetailsFromParams(params?.showDetails),
   );
-  /// Live value column (Task 20): when on, every rendered signal row
+  /// Live value column: when on, every rendered signal row
   /// shows its live-latest decoded value via the shared value renderer
   /// (`SignalValueCell`) — the same `fetch_signal_page` rows the signal
   /// view reads, so the two surfaces cannot drift. Live-only: the DBC
@@ -1038,7 +1038,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     setScrollTop(e.currentTarget.scrollTop);
   }, []);
 
-  // --- live value column (Task 20) ---
+  // --- live value column ---
   const registry = useElementRegistry();
   const resolveColor = useMemo(
     () => buildColorResolver(registry.entries.map((e) => e.element)),

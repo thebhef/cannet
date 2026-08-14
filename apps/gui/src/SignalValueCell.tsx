@@ -1,4 +1,4 @@
-/// The one signal-value renderer (Task-20 shared cell): physical value
+/// The one signal-value renderer (the shared cell): physical value
 /// + optional enum label, tinted by the project's colormaps
 /// (ADR 0029). The signal view's value column and the Database panel's live
 /// value column both render through this, so the two surfaces cannot

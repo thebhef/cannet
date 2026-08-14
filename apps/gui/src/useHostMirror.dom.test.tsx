@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// Canonical coverage for the shared host-mirror pattern (task 0030
-// item #17): initial snapshot fetch, change-event refetch (with an
+// Canonical coverage for the shared host-mirror pattern: initial
+// snapshot fetch, change-event refetch (with an
 // optional payload filter), the post-listener refetch that closes the
 // `listen`-is-async launch race, and poll-while-condition. Each
 // panel's own DOM test (TransmitPanel.dom.test.tsx,

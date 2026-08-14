@@ -6,7 +6,7 @@
 //! large wordlist — `word-word-word-word-word`, lowercase,
 //! hyphen-separated — chosen over the previous 256-bit base64url blob
 //! because that blob was "ridiculously long and difficult to
-//! transcribe across machines" (owner feedback, Task 65). Clients
+//! transcribe across machines" (owner feedback). Clients
 //! present it as an RFC 6750 `authorization: Bearer <token>` gRPC
 //! metadata entry; generation is the only thing that changed —
 //! `--token` / `CANNET_TOKEN` still accept any string the operator
@@ -129,7 +129,7 @@ impl AccessToken {
     /// already rate-limit. ~65 bits puts online brute force completely
     /// out of reach while being five words a person can read off one
     /// console and type into another — the transcription problem this
-    /// format exists to solve (owner feedback, Task 65).
+    /// format exists to solve (owner feedback).
     pub fn generate() -> Result<Self, TokenError> {
         Ok(Self(generate_words()?.join("-")))
     }

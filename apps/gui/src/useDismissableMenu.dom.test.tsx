@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
 // Canonical coverage for the shared dismiss-on-outside-click +
-// Escape hook (task 0030 item #18): a mousedown outside the menu's
-// own root, or an Escape keypress, closes it; a mousedown inside
+// Escape hook: a mousedown outside the menu's own root, or an
+// Escape keypress, closes it; a mousedown inside
 // (e.g. a checkbox) does not. Each call site's own DOM test still
 // covers its integration; this is the hook's contract.
 

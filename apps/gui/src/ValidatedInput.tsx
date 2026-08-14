@@ -1,4 +1,4 @@
-// The shared validated text input (ADR 0027 / task 14): draft-while-
+// The shared validated text input (ADR 0027): draft-while-
 // typing, commit on blur or Enter, revert on Escape or when the
 // committed text fails `parse`. The pattern originated in
 // `TransmitPanel.tsx`'s value / period cells; this is the one shared

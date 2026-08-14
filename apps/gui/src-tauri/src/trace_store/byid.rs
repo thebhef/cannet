@@ -465,7 +465,7 @@ mod tests {
         assert!(store.latest_in_window(5, 3).is_empty());
     }
 
-    // --- mux-group latest index (Task-20 signal snapshot backing) ---
+    // --- mux-group latest index (signal snapshot backing) ---
 
     /// A classic frame whose first payload byte doubles as the mux
     /// selector under [`byte0_extractor`].

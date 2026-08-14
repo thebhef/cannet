@@ -333,10 +333,10 @@ fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
 
 #[test]
 fn descriptor_snapshot_is_reused_across_calls_and_dropped_on_dbc_change() {
-    // Task 41: `fetch_signal_page` must not rebuild the descriptor
-    // universe per call — the DBC panel's value column and every signal
-    // view poll it a few times a second, and the rebuild is O(signals ×
-    // buses) with a sort on top.
+    // `fetch_signal_page` must not rebuild the descriptor universe per
+    // call — the DBC panel's value column and every signal view poll
+    // it a few times a second, and the rebuild is O(signals × buses)
+    // with a sort on top.
     let state = mux_snapshot_state();
     let buses = ["powertrain".to_string()];
     let first = state.scoped_descriptor_snapshot(&buses);
@@ -404,7 +404,7 @@ fn fetch_signal_page_scopes_to_source_buses() {
 
 #[test]
 fn fetch_signal_page_holds_every_mux_group_simultaneously() {
-    // The Task-20 stress case: decoding only the message's latest
+    // The mux-group stress case: decoding only the message's latest
     // frame would blank every mux group but the last one seen. Each
     // group must hold its own latest value at the same time.
     let state = mux_snapshot_state();

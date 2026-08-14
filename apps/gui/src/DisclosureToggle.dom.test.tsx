@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
 // The one disclosure-toggle implementation every collapsible section,
-// row, and menu trigger in the GUI shares (task 63 item 1) — owns hit
-// area, ink, rotation, and `aria-expanded`. jsdom does no layout, so the
+// row, and menu trigger in the GUI shares — owns hit area, ink,
+// rotation, and `aria-expanded`. jsdom does no layout, so the
 // hit-area assertion reads the declared CSS as text rather than a
 // rendered box (the established idiom in this repo — see
 // `dockPanelScrolling.test.ts`), and the "click in the padding toggles"

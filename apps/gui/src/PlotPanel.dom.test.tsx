@@ -5502,8 +5502,8 @@ describe("PlotPanel diagnostic readouts", () => {
   });
 
   it("paces the fetch loop from the plot fetch interval setting", async () => {
-    // Task 44's Tier 4: the plot's fetch cadence is a `settings.json`
-    // field, not the per-panel toolbar control that was removed. The
+    // The plot's fetch cadence is a `settings.json` field, not the
+    // per-panel toolbar control that was removed. The
     // test above measures the default (67 ms, so >= 10 fetches in a
     // second); this one raises the interval and the round-trips have
     // to actually thin out. The redraw path is untouched — it stays on

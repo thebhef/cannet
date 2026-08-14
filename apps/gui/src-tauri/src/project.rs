@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn parses_the_checked_in_ev_zonal_example_project() {
-        // The ev-zonal fixture project (the task-33 large-DBC
+        // The ev-zonal fixture project (the large-DBC scaling
         // workload) must stay openable: two buses, one relative-path
         // DBC ref scoped to each (ADR 0030 resolves the relative
         // paths frontend-side).

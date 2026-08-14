@@ -819,7 +819,7 @@ def main() -> None:
     pack = pack_messages()
     zonal = zonal_messages()
 
-    # The scale properties the task 33 fixture promises.
+    # The scale properties this fixture promises.
     assert len(pack) >= 150, f"pack.dbc has {len(pack)} messages"
     assert len(zonal) >= 150, f"zonal.dbc has {len(zonal)} messages"
     cell_detail = next(m for m in pack if m.name == "BmsCellDetail")

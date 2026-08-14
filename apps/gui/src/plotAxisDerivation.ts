@@ -1,5 +1,5 @@
 /**
- * Plot-area → axis derivation (ADR 0026 task 15).
+ * Plot-area → axis derivation (ADR 0026).
  *
  * A plot area carries a **y-axis mode** that decides how its signals
  * lay out across one or more axes:
