@@ -1422,12 +1422,18 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               // re-anchoring it on a reorder would throw away a window
               // every sample of which is still valid.
               descriptor: signalMembershipKey,
+              // Provenance rides along, exactly as it does on the
+              // extent sidecar above: a file-backed series is keyed by
+              // it host-side, so a query that dropped the flag would
+              // name a message identity nothing decodes and come back
+              // empty.
               signals: signals.map((s) => ({
                 key: signalRefKey(s),
                 busId: s.busId,
                 messageId: s.messageId,
                 extended: s.extended,
                 signalName: s.signalName,
+                fileBacked: s.fileBacked ?? false,
               })),
               winStart: lr.winStart,
               winEnd: lr.winEnd,

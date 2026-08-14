@@ -185,6 +185,14 @@ const mockSampleStall = { on: false, pending: [] as ((buf: ArrayBuffer) => void)
 /// serve that has decoded nothing yet. Prefixed `mock` for the hoisted
 /// factory.
 const mockSampleRebuild = { on: false, served: 0, of: 0 };
+/// Signal names the fake host holds **only** as file-backed series
+/// (`docs/CONTEXT.md`). The host keys such a series by its provenance,
+/// so a query that asks for it as a DBC-backed signal names an identity
+/// nothing has ever decoded — and gets an empty serve, not the series.
+/// Modelled here so a caller that drops the provenance flag is visible
+/// in what the plot draws rather than only in the request. Prefixed
+/// `mock` for the hoisted factory.
+const mockFileBackedSignals = new Set<string>();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
@@ -202,21 +210,23 @@ vi.mock("@tauri-apps/api/core", () => ({
         );
       }
       return encodeSample(
-        (args?.signals ?? []).map(
-          (s) =>
-            mockSampleSeries[(s as { signalName?: string }).signalName ?? ""] ?? {
-              t: [0, 1, 2],
-              v: [10, 20, 15],
-            },
-        ),
+        (args?.signals ?? []).map((s) => {
+          const q = s as { signalName?: string; fileBacked?: boolean };
+          const name = q.signalName ?? "";
+          if (mockFileBackedSignals.has(name) && !q.fileBacked) return { t: [], v: [] };
+          return mockSampleSeries[name] ?? { t: [0, 1, 2], v: [10, 20, 15] };
+        }),
       );
     }
     if (cmd === "signal_min_max")
       // Host-owned all-time per-signal extent (ADR 0025) — matches the
       // sampled values' min/max so follow-live auto-norm has a range.
-      return (args?.signals ?? []).map(
-        (s) => mockSignalExtents[(s as { signalName?: string }).signalName ?? ""] ?? { lo: 10, hi: 20 },
-      );
+      return (args?.signals ?? []).map((s) => {
+        const q = s as { signalName?: string; fileBacked?: boolean };
+        const name = q.signalName ?? "";
+        if (mockFileBackedSignals.has(name) && !q.fileBacked) return null;
+        return mockSignalExtents[name] ?? { lo: 10, hi: 20 };
+      });
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     if (cmd === "get_settings") return { ...mockSettings };
     return undefined;
@@ -568,6 +578,7 @@ afterEach(async () => {
   mockSampleRebuild.of = 0;
   mockRenderCost.perTickMs = 0;
   mockRenderCost.accMs = 0;
+  mockFileBackedSignals.clear();
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
   // Awaited: an un-awaited publish here can resolve inside a later
   // test's own `hydrateSettings()` call and clobber settings that
@@ -6239,5 +6250,69 @@ describe("PlotPanel rehydration", () => {
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
     const cfg = (control.entries()[0].element as { config?: { areas?: unknown[] } }).config;
     expect(cfg?.areas?.length).toBe(2);
+  });
+});
+
+/// A **file-backed** signal (`docs/CONTEXT.md`) on the plot: imported
+/// from the capture file, carried by no message and decoded by no DBC.
+/// The host keys its series by that provenance, so every query the plot
+/// issues for it has to say so — a fetch that drops the flag names a
+/// DBC identity nothing decodes and comes back empty.
+describe("PlotPanel file-backed signals", () => {
+  /// Drop a **file-backed** row onto the first area, exactly as the
+  /// Database view's file branch does: no bus, the source signal channel
+  /// group index in the message slot, and the provenance flag that keeps
+  /// that number out of the message-id namespace.
+  function dropFileSignal(signalName: string, unit: string) {
+    const MIME = "application/x-cannet-plot-signal";
+    const payload = JSON.stringify({
+      busId: null,
+      messageId: 7,
+      extended: false,
+      signalName,
+      messageName: "Analog",
+      unit,
+      fileBacked: true,
+    });
+    const dt = { types: [MIME], getData: (t: string) => (t === MIME ? payload : ""), dropEffect: "" };
+    const area = screen.getByText("Area 1").closest(".plot-area")!;
+    fireEvent.dragOver(area, { dataTransfer: dt });
+    fireEvent.drop(area, { dataTransfer: dt });
+  }
+
+  /// The `signals` list of the newest `sample_signals` round-trip.
+  const lastSampleQuery = () => {
+    const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === "sample_signals");
+    const args = calls[calls.length - 1]?.[1] as { signals?: Record<string, unknown>[] };
+    return args?.signals ?? [];
+  };
+  /// …and of the newest `signal_min_max` one — the sidecar built from
+  /// the same signal list on the same tick, so the two make a controlled
+  /// pair over one render.
+  const lastExtentQuery = () => {
+    const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === "signal_min_max");
+    const args = calls[calls.length - 1]?.[1] as { signals?: Record<string, unknown>[] };
+    return args?.signals ?? [];
+  };
+
+  it("samples one by its provenance, so its points draw", async () => {
+    mockFileBackedSignals.add("AmbientTemp");
+    mockSampleSeries.AmbientTemp = { t: [0, 1, 2], v: [10, 20, 15] };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      dropFileSignal("AmbientTemp", "degC");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+
+      // The window fetch carries the flag…
+      expect(lastSampleQuery()).toEqual([
+        expect.objectContaining({ signalName: "AmbientTemp", fileBacked: true }),
+      ]);
+      // …as the extent sidecar built from the same list already did.
+      expect(lastExtentQuery()).toEqual([
+        expect.objectContaining({ signalName: "AmbientTemp", fileBacked: true }),
+      ]);
+      // And therefore the series reaches the canvas.
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3));
+    });
   });
 });
