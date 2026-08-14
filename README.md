@@ -719,6 +719,31 @@ distinguishes a network with nothing on it from a browse that could
 not start at all, and reports the error when the mDNS browser itself
 complains, which is what a blocked UDP 5353 usually looks like.
 
+**Windows firewall prompts.** The first time a binary opens the
+socket its side of DNS-SD needs — the GUI's browse, the server's
+advertisement (§ Installers above) — Windows prompts once for that
+binary's install location: an Allow/Cancel dialog on the Private and
+Domain profiles, or a silent Block on the Public profile. Allowing is
+correct. The resulting rule is scoped to that exact path and network
+profile, so a new install location, or switching onto a network
+profile you have not answered for yet, prompts again. None of this
+fails silently on the GUI side: a browse blocked by a Windows deny
+shows as `degraded` or `failed` in the Servers panel rather than a
+quiet empty list, and either way — blocked discovery, a server on
+another subnet, or one that simply isn't advertising — **Add
+server…** reaches it by `host:port` without depending on browse at
+all.
+
+**macOS local-network permission.** A macOS GUI build triggers the
+OS's "find devices on your local network" prompt the first time it
+browses. Denying it empties the browse list with no distinguishing
+signal — the mDNS library exposes no "permission denied" event, so a
+denied prompt reads as an ordinary `running` browse that happens to
+see nothing, not a `degraded` or `failed` one. **Add server…** is the
+workaround, reaching a server directly without depending on browse.
+The permission can be re-granted at **System Settings → Privacy &
+Security → Local Network**.
+
 Loopback servers — the GUI's own sidecar, a `--bind 127.0.0.1` proxy,
 the in-process virtual bus — are unaffected: they stay plaintext and
 never prompt, exactly as before.
@@ -1543,11 +1568,12 @@ a source on a bus once it is trusted there
 ([ADR 0041](docs/adr/0041-remote-connection-security.md)). Discovery
 is convenience and never a trust signal
 ([ADR 0040](docs/adr/0040-production-cannet-server.md)): a browsed
-server is checked exactly as a typed one would be. A server started
-with `--no-mdns` never appears in the list, and one that was killed
-rather than shut down can linger in it until its DNS-SD record expires
-(up to two minutes); an orderly shutdown drops out of it within about
-a second.
+server is checked exactly as one added by address is. A server started
+with `--no-mdns`, or on another subnet, never appears from discovery —
+**Add server…** reaches it directly. One that was killed rather than
+shut down can linger in the discovered list until its DNS-SD record
+expires (up to two minutes); an orderly shutdown drops out of it
+within about a second.
 
 ### Rest-of-bus simulation + calculated fields
 
