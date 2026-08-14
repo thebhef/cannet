@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type Band,
   laneBands,
   laneBandsForVisible,
+  laneLabels,
   laneTileBand,
   laneValueRange,
+  measureTileLabel,
   normalizeIntoLane,
   tileLabelX,
 } from "./plotEnumLanes";
@@ -216,5 +218,59 @@ describe("laneTileBand", () => {
     const t = laneTileBand(band, 200, 5, 10);
     expect(t.lo).toBeCloseTo(band.lo);
     expect(t.hi).toBeCloseTo(band.hi);
+  });
+});
+
+describe("laneLabels", () => {
+  const table = [
+    { raw: 0, label: "Sleep" },
+    { raw: 3, label: "Drive" },
+  ];
+
+  it("resolves a code to its label, and an unlisted code to its number", () => {
+    const labels = laneLabels(table);
+    expect(labels(0)).toBe("Sleep");
+    expect(labels(3)).toBe("Drive");
+    expect(labels(7)).toBe("7");
+  });
+
+  it("first raw wins on a duplicate, matching a linear scan of the table", () => {
+    const labels = laneLabels([
+      { raw: 1, label: "first" },
+      { raw: 1, label: "second" },
+    ]);
+    expect(labels(1)).toBe("first");
+  });
+
+  it("reuses one lookup per table, so a draw does not rebuild it per segment", () => {
+    // The tile draw walks every visible segment; a per-segment linear
+    // `table.find` is what made a long capture's lane expensive.
+    expect(laneLabels(table)).toBe(laneLabels(table));
+  });
+});
+
+describe("measureTileLabel", () => {
+  /// A 2d context stand-in that counts real measurements.
+  function ctx(width = 12) {
+    const measureText = vi.fn((s: string) => ({ width: width * s.length }));
+    return { font: "10px mono", measureText } as unknown as CanvasRenderingContext2D & {
+      measureText: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  it("measures a (label, font) pair once and serves the rest from the memo", () => {
+    const c = ctx();
+    expect(measureTileLabel(c, "Drive")).toBe(60);
+    expect(measureTileLabel(c, "Drive")).toBe(60);
+    expect(measureTileLabel(c, "Drive")).toBe(60);
+    expect(c.measureText).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-measures when the font changes — a memo keyed on the label alone would lie", () => {
+    const c = ctx();
+    measureTileLabel(c, "Fault");
+    c.font = "bold 14px mono";
+    measureTileLabel(c, "Fault");
+    expect(c.measureText).toHaveBeenCalledTimes(2);
   });
 });

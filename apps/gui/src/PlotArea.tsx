@@ -62,7 +62,15 @@ import { messageEcuKey, signalRowLabel } from "./plotSignalLabel";
 import { useUndoGesture } from "./undoGesture";
 import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
-import { laneBandsForVisible, laneTileBand, laneValueRange, normalizeIntoLane, tileLabelX } from "./plotEnumLanes";
+import {
+  laneBandsForVisible,
+  laneLabels,
+  laneTileBand,
+  laneValueRange,
+  measureTileLabel,
+  normalizeIntoLane,
+  tileLabelX,
+} from "./plotEnumLanes";
 import {
   useDecimatedRange,
   type DecimatedOutcome,
@@ -714,6 +722,11 @@ interface PlotAreaProps {
   onSortArea: () => void;
 }
 
+/** The lookup's stand-in for a signal whose value table hasn't resolved
+ * (or that has none) — one shared array, so the per-table label cache
+ * keys on a stable identity instead of a fresh literal per draw. */
+const NO_VALUE_TABLE: readonly ValueTableEntryRecord[] = [];
+
 /** Draw the logic-analyzer value tiles for one enum series into a
  * pixel band (ADR 0026). Each constant-value segment of the (stepped)
  * line gets an opaque-ish box carrying its label, centred on the
@@ -750,10 +763,7 @@ function drawEnumTiles(
   const ts = u.data[0] as number[] | undefined;
   const vs = o.rawValues ?? (u.data[o.seriesIdx] as (number | null)[] | undefined);
   if (!ts || !vs || seriesOpt?.show === false) return;
-  const labelFor = (raw: number): string => {
-    const found = o.table.find((r) => r.raw === raw);
-    return found ? found.label : String(raw);
-  };
+  const labelFor = laneLabels(o.table);
   const bandH = o.bandBot - o.bandTop;
   const padX = 4 * o.ratio;
   for (const seg of enumSegments(ts, vs)) {
@@ -771,7 +781,7 @@ function drawEnumTiles(
     // Enum codes are integers, but arrive as f64 from the host.
     const raw = Math.round(seg.v);
     const lbl = labelFor(raw);
-    const tw = ctx.measureText(lbl).width;
+    const tw = measureTileLabel(ctx, lbl);
     const labelX = tileLabelX({ lo: x0, hi: x1 }, { lo: o.left, hi: o.left + o.width }, tw, padX);
     const mapColor = o.target ? o.resolveColor(o.target, raw) : null;
     // ~65-85% fills keep the stepped line faintly visible underneath.
@@ -2146,7 +2156,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 const laneTopPx = u.valToPos(laneNorm.hi, "y", true);
                 const laneBotPx = u.valToPos(laneNorm.lo, "y", true);
                 const tileNorm = laneTileBand(laneNorm, laneBotPx - laneTopPx);
-                const table = valueTablesRef.current.get(signalRefKey(s)) ?? [];
+                // A shared empty table, not a fresh `[]`: the label
+                // lookup is cached against the table's identity, and a
+                // new array every draw would miss it every draw.
+                const table = valueTablesRef.current.get(signalRefKey(s)) ?? NO_VALUE_TABLE;
                 drawEnumTiles(ctx, u, {
                   seriesIdx: i + 1,
                   table,
