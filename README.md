@@ -433,6 +433,12 @@ Flags:
 - `--sidecar-restart-budget <n>` — how many times a crashing sidecar is
   restarted automatically before the server gives up and says so
   (default 3). Restarting the server hands the budget back.
+- `--sidecar-dir <path>` — where to look for the sidecar's *source
+  tree*, overriding the walk-up search from the server binary. This is
+  the developer/field-engineer escape hatch, matching the GUI's
+  **Sidecar directory** setting — not a way to pick a different frozen
+  `cannet-python-can` onedir, which stays inexpressible on either host.
+  `CANNET_SIDECAR_DIR` still wins when both are set.
 - `--insecure` — bind a routable address with no protection at all.
   Without it, `--bind` on anything but loopback and no TLS is a startup
   refusal, because a routable cannet endpoint hands control of physical
@@ -543,7 +549,8 @@ The sidecar is found the same way the GUI finds it
 build prefers the frozen `cannet-python-can/` onedir unpacked beside
 the server binary and falls back to the source tree; a `cargo run`
 build prefers the source tree, so sidecar edits take effect on its next
-restart. `CANNET_SIDECAR_DIR` overrides where that source tree is.
+restart. `--sidecar-dir <path>` overrides where that source tree is;
+`CANNET_SIDECAR_DIR` overrides the flag.
 
 The sidecar dies with the server — it watches the stdin pipe it
 inherited, so an EOF on that pipe, however it arrives, is its cue to
