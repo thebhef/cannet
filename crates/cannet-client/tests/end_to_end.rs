@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use blf_asc::{ArbitrationId, BlfWriter, DataBytes, Message};
+use cannet_client::clock::ClockProbeStatus;
 use cannet_client::{
     connect_and_subscribe, list_interfaces, watch_interfaces, ConnectConfig, ConnectionError,
     FrameReceiver, RemoteCanFrameSource, SessionHandle, Subscription,
@@ -463,5 +464,148 @@ async fn shutdown_timeout_returns_only_once_the_session_is_torn_down() {
     .unwrap();
     assert!(ended, "the receive half was still live after shutdown");
 
+    server.abort();
+}
+
+// ---------- clock probe ----------
+
+/// Poll the session's clock until the probe window closes. Bounded so
+/// a regression that leaves the status `Pending` forever fails the test
+/// rather than hanging the suite.
+async fn settled_status(clock: &cannet_client::clock::SessionClock) -> ClockProbeStatus {
+    for _ in 0..300 {
+        let status = clock.status();
+        if status != ClockProbeStatus::Pending {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the clock probe never settled");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_measures_the_servers_clock_offset() {
+    // Client and server are the same process here, so the honest
+    // expectation is "small", not "zero": the two stamps are taken
+    // microseconds apart on one clock, and the measurement must come
+    // out near zero rather than at some epoch-scale nonsense — which is
+    // exactly what an unsigned subtraction of these ~1.76e18 stamps
+    // would produce.
+    let (addr, server) = spawn_server().await;
+    let source = tokio::task::spawn_blocking(move || {
+        connect_and_subscribe(
+            &ConnectConfig::plaintext(addr.to_string()),
+            vec![Subscription::new("blf:0", 0)],
+        )
+        .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let status = settled_status(source.clock()).await;
+    let ClockProbeStatus::Measured(offset) = status else {
+        panic!("an in-tree server answers clock probes; got {status:?}");
+    };
+    assert_eq!(
+        offset.samples, 4,
+        "every probe of the start-up burst should have been answered"
+    );
+    assert!(
+        offset.offset_ns.abs() < 1_000_000_000,
+        "one process cannot be a second away from itself: {offset:?}"
+    );
+    assert!(
+        offset.delay_ns >= 0 && offset.delay_ns < 1_000_000_000,
+        "a loopback round trip is not a second long: {offset:?}"
+    );
+
+    drop(source);
+    server.abort();
+}
+
+/// A server that accepts a `Session` and answers nothing at all —
+/// stands in for a peer built before the clock envelopes existed, which
+/// parses the probe, recognises no body, and stays silent.
+struct SilentServer;
+
+#[tonic::async_trait]
+impl cannet_wire::proto::cannet_server_server::CannetServer for SilentServer {
+    async fn list_interfaces(
+        &self,
+        _request: tonic::Request<cannet_wire::proto::ListInterfacesRequest>,
+    ) -> Result<tonic::Response<cannet_wire::proto::InterfaceList>, tonic::Status> {
+        Ok(tonic::Response::new(
+            cannet_wire::proto::InterfaceList::default(),
+        ))
+    }
+
+    type WatchInterfacesStream = tokio_stream::wrappers::ReceiverStream<
+        Result<cannet_wire::proto::InterfaceList, tonic::Status>,
+    >;
+
+    async fn watch_interfaces(
+        &self,
+        _request: tonic::Request<cannet_wire::proto::WatchInterfacesRequest>,
+    ) -> Result<tonic::Response<Self::WatchInterfacesStream>, tonic::Status> {
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+    }
+
+    type SessionStream =
+        tokio_stream::wrappers::ReceiverStream<Result<cannet_wire::proto::Envelope, tonic::Status>>;
+
+    async fn session(
+        &self,
+        request: tonic::Request<tonic::Streaming<cannet_wire::proto::Envelope>>,
+    ) -> Result<tonic::Response<Self::SessionStream>, tonic::Status> {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            // Drain the client's envelopes and answer none of them,
+            // holding the response stream open the whole time.
+            let mut incoming = request.into_inner();
+            let _hold = tx;
+            while let Ok(Some(_)) = incoming.message().await {}
+        });
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_peer_that_never_answers_is_reported_unsupported_rather_than_waited_on() {
+    // The failure this pins is a hang: an older server is a normal
+    // thing to meet, and the session has to come up, carry frames and
+    // give a definite answer about the clock without one.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stream = TcpListenerStream::new(listener);
+    let server = tokio::spawn(async move {
+        let _ = Server::builder()
+            .add_service(
+                cannet_wire::proto::cannet_server_server::CannetServerServer::new(SilentServer),
+            )
+            .serve_with_incoming(stream)
+            .await;
+    });
+
+    let source = tokio::task::spawn_blocking(move || {
+        connect_and_subscribe(
+            &ConnectConfig::plaintext(addr.to_string()),
+            vec![Subscription::new("blf:0", 0)],
+        )
+        .expect("the session comes up even though the peer says nothing")
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        settled_status(source.clock()).await,
+        ClockProbeStatus::Unsupported
+    );
+
+    drop(source);
     server.abort();
 }
