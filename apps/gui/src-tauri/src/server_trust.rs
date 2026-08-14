@@ -198,6 +198,9 @@ fn answered(
 ) -> Result<(), String> {
     write.map_err(|e| format!("failed to store the trust decision for {address}: {e}"))?;
     crate::connect_flow::resolved(app, address);
+    // The store just moved, whether or not a question went with it, so
+    // the merged server list has to be pushed on its own account.
+    crate::server_list::changed(app);
     crate::interfaces::rewatch(app, address);
     Ok(())
 }
