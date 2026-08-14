@@ -43,29 +43,56 @@ Owner feedback from first live use of the Task 42/43 surfaces
 
 ## Grooming needed before implementation
 
-- Passphrase token: word count / wordlist (recommendation pending
-  owner: 5 EFF-large words, lowercase, hyphen-separated ≈ 64.6
-  bits — ample for an online-only guessing surface; wordlist
-  embedded in `cannet-server`, licensing noted in the technology
-  inventory).
+- ~~Passphrase token word count~~ — resolved 2026-08-13 (owner):
+  **5 EFF-large words** (≈ 64.6 bits), lowercase, hyphen-separated;
+  wordlist embedded in `cannet-server`, licensing noted in the
+  technology inventory. The owner allowed adding special characters
+  for extra entropy; recommendation recorded against it — the whole
+  point is transcription ease, entropy is already ample, and
+  symbols reintroduce the transcription pain. Plain hyphens only
+  unless grooming reopens it.
 
-- Panel content and split: discovered (live, ephemeral) vs trusted
-  (persisted `servers.json`) — one list with state, or two sections?
-  (The trusted-servers list from Task 42 phase 4 presumably merges
-  into this panel.)
-- What "present in project view" renders as, and how a project
-  references a user-level server entry (by host:port key?).
-- Whether the per-bus AddServerInline discovery list stays as a
-  shortcut or is removed in favor of the panel.
+- ~~Panel content and split~~ — resolved 2026-08-13 (owner):
+  **one merged list** keyed by host:port, trust state as a per-row
+  badge (trusted / new / fingerprint-changed), offline trusted
+  servers greyed rather than hidden; fuzzy search filters the one
+  list. The Task 42 trusted-servers list merges into this panel
+  and its standalone surface retires.
+- ~~What "present in project view" renders as~~ — resolved
+  2026-08-13 (owner): in Connection Management, each trusted
+  server becomes a **sibling of "Local interfaces"** — one
+  collapsible element per server, **expanded only when an
+  interface from that server is chosen**, collapsed otherwise.
+  The project file stores only per-bus binding references
+  (bus → host:port + remote interface id); no server config,
+  token, or fingerprint is duplicated into the project — a
+  project opened on a machine that hasn't trusted the server
+  shows "unknown server — trust it in the server panel" on the
+  affected buses. `servers.json` stays the single trust
+  authority (ADR 0032).
+- ~~Whether the per-bus AddServerInline stays~~ — resolved
+  2026-08-13 (owner): **removed**. The binding combo offers
+  interfaces from local + trusted-server sections; its only
+  server affordance is a "Manage servers…" jump to the new
+  server panel.
 
-## Exit criteria (draft — firm up at grooming)
+## Exit criteria (groomed 2026-08-13)
 
-- A singleton server panel lists discovered + trusted servers with
-  instance name, host name, `host:port`, version, and trust state;
-  fuzzy search retained.
-- TOFU accept / token entry / forget flow from the panel;
-  selected+auth'd servers visible in the project view and bindable
-  from the per-bus flow.
+- A singleton server panel shows **one merged list** (discovered +
+  trusted, keyed by host:port) with instance name, host name,
+  `host:port`, version, and a trust-state badge; offline trusted
+  servers greyed; fuzzy search retained; the Task 42 standalone
+  trusted-servers list is retired into it.
+- TOFU accept / token entry / forget flow from the panel; trusted
+  servers appear in Connection Management as collapsible siblings
+  of "Local interfaces" (expanded only while one of their
+  interfaces is chosen) and are bindable from the per-bus flow;
+  AddServerInline is removed, replaced by a "Manage servers…"
+  jump to the panel; a project referencing an untrusted server
+  says so legibly on the affected buses.
+- Auto-generated tokens are 5-word EFF-large hyphenated
+  passphrases; `--token` stays free-form; wire/trust store
+  unchanged.
 - Windows GUI browse produces no per-app firewall rules (native
   DNS-SD backend), verified on this machine.
 - README covers the macOS permission and Windows firewall realities
