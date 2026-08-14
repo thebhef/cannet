@@ -8,6 +8,8 @@ import type {
   DbcMessageContentRecord,
   DbcSignalContentRecord,
   DbcSignalMux,
+  FileBackedContentRecord,
+  FileBackedSignalRecord,
 } from "./types";
 import type { SignalSnapshotRecord } from "./types";
 import { useProjectContext } from "./projectContext";
@@ -170,6 +172,27 @@ function signalNodeId(
   return `sig:${busId}::${key}::${extended ? "x" : "s"}${messageId}::${signalName}`;
 }
 
+/// Stable identity for one source file's file-backed branch, built the
+/// same way [`dbcKey`] is and for the same reason: node ids are
+/// persisted into the layout's `expanded` set, so they carry the
+/// basename (plus the list index, to separate two files that share
+/// one) and never the machine-local path.
+export function fileKey(index: number, sourcePath: string): string {
+  return `${index}:${basename(sourcePath)}`;
+}
+/// Node ids for the file-backed half of the tree (ADR 0052): source
+/// file → signal channel group → signal. Distinct prefixes from the
+/// DBC half, so the two never share an expand-state key.
+export function fileNodeId(key: string): string {
+  return `file:${key}`;
+}
+export function fileGroupNodeId(key: string, group: number): string {
+  return `fgrp:${key}::${group}`;
+}
+export function fileSignalNodeId(key: string, group: number, signalName: string): string {
+  return `fsig:${key}::${group}::${signalName}`;
+}
+
 /// Sentinel bus ids. Real project bus ids are UUIDs, so the `:::`
 /// prefix can't collide.
 const UNASSIGNED_BUS_ID = ":::unassigned";
@@ -321,6 +344,20 @@ interface RenderRow {
         extended: boolean;
         messageName: string;
         signal: DbcSignalContentRecord;
+      }
+    /// A capture file that carried signal definitions (ADR 0052) — the
+    /// root of its own branch, beside the bus groups.
+    | { tag: "file"; path: string }
+    /// One signal channel group inside that file.
+    | { tag: "filegroup"; label: string }
+    /// One file-backed signal. `group` is its source group's index —
+    /// the message-id slot of its provenance-keyed identity — and
+    /// `groupLabel` stands where a DBC-backed signal names its message.
+    | {
+        tag: "filesignal";
+        group: number;
+        groupLabel: string;
+        signal: FileBackedSignalRecord;
       };
 }
 
@@ -409,6 +446,7 @@ export function groupByBus(
 /// The highlight is a per-row prop instead.
 function buildRows(
   groups: readonly BusGroup[],
+  files: readonly FileBackedContentRecord[],
   effectiveExpanded: ReadonlySet<string>,
   matchSet: ReadonlySet<string>,
   ancestorsOfMatches: ReadonlySet<string>,
@@ -513,6 +551,52 @@ function buildRows(
       }
     }
   }
+  // The file-backed branches sit after the bus groups, each organised
+  // per the MDF's own canon — file → channel group → signal (ADR
+  // 0052) — rather than folded into the DBC hierarchy above.
+  for (const [i, file] of files.entries()) {
+    const key = fileKey(i, file.sourcePath);
+    const fId = fileNodeId(key);
+    if (filterActive && !ancestorsOfMatches.has(fId)) continue;
+    const fExpanded = effectiveExpanded.has(fId);
+    out.push({
+      id: fId,
+      depth: 0,
+      expanded: fExpanded,
+      hasChildren: file.groups.length > 0,
+      kind: { tag: "file", path: file.sourcePath },
+    });
+    if (!fExpanded) continue;
+    for (const group of file.groups) {
+      const gId = fileGroupNodeId(key, group.group);
+      if (filterActive && !ancestorsOfMatches.has(gId)) continue;
+      const gExpanded = effectiveExpanded.has(gId);
+      out.push({
+        id: gId,
+        depth: 1,
+        expanded: gExpanded,
+        hasChildren: group.signals.length > 0,
+        kind: { tag: "filegroup", label: group.label },
+      });
+      if (!gExpanded) continue;
+      for (const s of group.signals) {
+        const sId = fileSignalNodeId(key, group.group, s.name);
+        if (filterActive && !matchSet.has(sId)) continue;
+        out.push({
+          id: sId,
+          depth: 2,
+          expanded: false,
+          hasChildren: false,
+          kind: {
+            tag: "filesignal",
+            group: group.group,
+            groupLabel: group.label,
+            signal: s,
+          },
+        });
+      }
+    }
+  }
   return out;
 }
 
@@ -551,13 +635,52 @@ export function buildSearchIndex(groups: readonly BusGroup[]): GridviewFilterEnt
   return out;
 }
 
+/// The file-backed half of the search index: one entry per signal
+/// channel group and per signal under it. The haystack is the same
+/// dotted-ancestry shape the DBC half uses — `file.group.signal` — so
+/// one query ranks both formats' nodes in a single list and a match
+/// under either lands with its path expanded.
+export function buildFileSearchIndex(
+  files: readonly FileBackedContentRecord[],
+): GridviewFilterEntry[] {
+  const out: GridviewFilterEntry[] = [];
+  for (const [i, file] of files.entries()) {
+    const key = fileKey(i, file.sourcePath);
+    const fId = fileNodeId(key);
+    const name = basename(file.sourcePath);
+    for (const group of file.groups) {
+      const gId = fileGroupNodeId(key, group.group);
+      out.push({
+        id: gId,
+        ancestors: [fId],
+        haystack: `${name}.${group.label}`,
+      });
+      for (const s of group.signals) {
+        out.push({
+          id: fileSignalNodeId(key, group.group, s.name),
+          ancestors: [fId, gId],
+          haystack: `${name}.${group.label}.${s.name} ${s.unit}`.trim(),
+        });
+      }
+    }
+  }
+  return out;
+}
+
 /// Auto-expand every bus group, its DBC children, and their ECU
 /// groups when the panel first loads content, so the user sees the
 /// messages without an extra click (messages themselves stay
 /// collapsed — the rendered row count is bounded by the message
 /// count, not the signal count). Used once on mount /
 /// content-arrival; subsequent toggle clicks override.
-function initialExpandedRoots(groups: readonly BusGroup[]): Set<string> {
+///
+/// The file-backed branches follow the same rule one level shallower:
+/// a source file opens to show its channel groups, and the groups —
+/// the last container above the signals — stay closed.
+function initialExpandedRoots(
+  groups: readonly BusGroup[],
+  files: readonly FileBackedContentRecord[],
+): Set<string> {
   const out = new Set<string>();
   for (const g of groups) {
     out.add(busNodeId(g.busId));
@@ -567,6 +690,9 @@ function initialExpandedRoots(groups: readonly BusGroup[]): Set<string> {
         out.add(ecuNodeId(g.busId, key, ecu.key));
       }
     }
+  }
+  for (const [i, file] of files.entries()) {
+    out.add(fileNodeId(fileKey(i, file.sourcePath)));
   }
   return out;
 }
@@ -591,8 +717,33 @@ function rowToSignalRefs(
   row: RenderRow,
   content: readonly DbcContentRecord[],
 ): DraggableSignalRef[] {
-  if (row.kind.tag === "bus" || row.kind.tag === "dbc" || row.kind.tag === "ecu") {
+  if (
+    row.kind.tag === "bus" ||
+    row.kind.tag === "dbc" ||
+    row.kind.tag === "ecu" ||
+    row.kind.tag === "file" ||
+    row.kind.tag === "filegroup"
+  ) {
     return [];
+  }
+  if (row.kind.tag === "filesignal") {
+    // A file-backed signal's provenance-keyed reference (ADR 0052): no
+    // bus and no message carry it, so its source group's index rides in
+    // the message slot and `fileBacked` keeps that number out of the
+    // message-id namespace. Every drop target already reads this shape,
+    // so nothing downstream has to know which branch the drag left.
+    const { group, groupLabel, signal } = row.kind;
+    return [
+      {
+        busId: null,
+        messageId: group,
+        extended: false,
+        signalName: signal.name,
+        messageName: groupLabel,
+        unit: signal.unit,
+        fileBacked: true,
+      },
+    ];
   }
   const busId = row.kind.busId;
   if (row.kind.tag === "signal") {
@@ -629,12 +780,19 @@ function rowToSignalRefs(
   }));
 }
 
-/// Bus / DBC / ECU nodes structure the tree and nothing else; message
-/// and signal nodes are the things a user picks and drags. The gridview
-/// asks per row rather than per kind for exactly this shape — a message
-/// is a *selectable branch* (ADR 0044).
+/// Bus / DBC / ECU / source-file / channel-group nodes structure the
+/// tree and nothing else; message and signal nodes (of either format)
+/// are the things a user picks and drags. The gridview asks per row
+/// rather than per kind for exactly this shape — a message is a
+/// *selectable branch* (ADR 0044).
 function isSelectableRow(row: RenderRow): boolean {
-  return row.kind.tag === "message" || row.kind.tag === "signal";
+  return isSignalRow(row) || row.kind.tag === "message";
+}
+
+/// A row that stands for one signal, of either provenance — a leaf in
+/// the gridview's row space and a drag source.
+function isSignalRow(row: RenderRow): boolean {
+  return row.kind.tag === "signal" || row.kind.tag === "filesignal";
 }
 
 /// The tree's rows as the gridview's row space: everything above a
@@ -644,7 +802,7 @@ function isSelectableRow(row: RenderRow): boolean {
 function gridviewRowsOf(rows: readonly RenderRow[]): GridviewRowModel[] {
   return rows.map((r) => ({
     id: r.id,
-    kind: r.kind.tag === "signal" ? "leaf" : "branch",
+    kind: isSignalRow(r) ? "leaf" : "branch",
     expandable: r.hasChildren,
     depth: r.depth,
   }));
@@ -671,6 +829,12 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     () => params?.showValues === true,
   );
   const [content, setContent] = useState<DbcContentRecord[]>([]);
+  /// The capture's file-backed signals, per source file (ADR 0052).
+  /// Capture-scoped, not project-scoped: it arrives with an import that
+  /// carried signal definitions and empties when the capture does, so
+  /// it is refetched off the capture's own change signals below rather
+  /// than off the project's DBC set.
+  const [fileContent, setFileContent] = useState<FileBackedContentRecord[]>([]);
   /// Whether the panel is on screen — false while it sits in a
   /// background tab of its dockview group. The value poll below is a
   /// standing host round-trip that decodes and joins one row per
@@ -696,7 +860,10 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   // layer's fzf: query → matching messages / signals plus the path to
   // each, with those ancestors treated as expanded so a deep match is
   // visible without the user unfolding to it.
-  const buildFilterEntries = useCallback(() => buildSearchIndex(busGroups), [busGroups]);
+  const buildFilterEntries = useCallback(
+    () => [...buildSearchIndex(busGroups), ...buildFileSearchIndex(fileContent)],
+    [busGroups, fileContent],
+  );
   const filter = useGridviewFilter(buildFilterEntries, filterFromParams(params?.filter));
   /// The search box, so `panel.find` (Mod+F, ADR 0018) can focus and
   /// select it. Registered under the panel's fixed dockview id — the
@@ -715,6 +882,24 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     [mergeExpanded, expanded],
   );
 
+  /// Whether the expand state is the *user's* — restored from a saved
+  /// layout, or their own clicks. Until it is, each format's content
+  /// opens its own roots as it arrives.
+  const userExpandedRef = useRef(expanded.size > 0);
+  /// Fold one format's auto-expand roots in. A union rather than a
+  /// replacement, and gated on the flag above rather than on "nothing
+  /// is expanded yet": the two catalogs answer independently, and
+  /// whichever lands first must not leave the other's branches shut.
+  const seedExpanded = useCallback((seed: ReadonlySet<string>) => {
+    if (seed.size === 0) return;
+    setExpanded((prev) => {
+      if (userExpandedRef.current) return prev;
+      const next = new Set(prev);
+      for (const id of seed) next.add(id);
+      return next.size === prev.size ? prev : next;
+    });
+  }, []);
+
   /// Pull a fresh `list_dbc_content` snapshot and slot it in. Used
   /// both for the dependency-driven refresh (project's DBC set
   /// changed) and the event-driven refresh (host's filesystem
@@ -728,15 +913,50 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       // if the user has no expand-state of their own. Compute the
       // groups locally — the memoised `busGroups` reflects state
       // from a previous render.
-      setExpanded((prev) => {
-        if (prev.size > 0) return prev;
-        return initialExpandedRoots(groupByBus(next, buses, dbcBuses));
-      });
+      seedExpanded(initialExpandedRoots(groupByBus(next, buses, dbcBuses), []));
     });
     return () => {
       cancelled = true;
     };
-  }, [buses, dbcBuses]);
+  }, [buses, dbcBuses, seedExpanded]);
+
+  /// Pull a fresh `list_file_backed_content` snapshot — the capture's
+  /// file-backed branches. Runs on mount and on each of the capture's
+  /// change signals below; an empty answer is how the branches vanish
+  /// with the capture that carried them.
+  const refreshFileContent = useCallback(() => {
+    let cancelled = false;
+    void invoke<FileBackedContentRecord[]>("list_file_backed_content")
+      .then((next) => {
+        if (cancelled) return;
+        setFileContent(next);
+        seedExpanded(initialExpandedRoots([], next));
+      })
+      .catch(() => {
+        /* best effort — the DBC branches render regardless */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [seedExpanded]);
+
+  // The capture's own change signals. `file-signals-changed` is the
+  // host saying the file-backed set moved (an import filled it, a
+  // cleared or restored capture replaced it); `log-finished` covers an
+  // import of a format that carries none, which empties the set by
+  // starting a new capture.
+  useEffect(() => refreshFileContent(), [refreshFileContent]);
+  useEffect(() => {
+    const unlisten = Promise.all([
+      listen("file-signals-changed", () => refreshFileContent()),
+      listen("log-finished", () => refreshFileContent()),
+    ]);
+    return () => {
+      void unlisten.then((fns) => {
+        for (const fn of fns) fn();
+      });
+    };
+  }, [refreshFileContent]);
 
   // Re-fetch on mount and whenever the loaded-DBC set changes. The
   // project context's `dbcPaths` mirrors the host's set so it's the
@@ -774,12 +994,20 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     () =>
       buildRows(
         busGroups,
+        fileContent,
         effectiveExpanded,
         filter.matchSet,
         filter.ancestorsOfMatches,
         filter.active,
       ),
-    [busGroups, effectiveExpanded, filter.matchSet, filter.ancestorsOfMatches, filter.active],
+    [
+      busGroups,
+      fileContent,
+      effectiveExpanded,
+      filter.matchSet,
+      filter.ancestorsOfMatches,
+      filter.active,
+    ],
   );
 
   // --- row-list virtualization ---
@@ -940,6 +1168,9 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     setScrollTop(next);
   }, []);
   const setRowExpanded = useCallback((id: string, want: boolean) => {
+    // From here on the expand state is the user's, so arriving content
+    // stops opening its own roots under them.
+    userExpandedRef.current = true;
     setExpanded((prev) => {
       if (prev.has(id) === want) return prev;
       return toggleInSet(prev, id);
@@ -1036,9 +1267,11 @@ export function DatabasePanel(props: IDockviewPanelProps) {
         {...grid.containerProps}
         onScroll={onTreeScroll}
       >
-        {content.length === 0 && (
+        {content.length === 0 && fileContent.length === 0 && (
           <div className="dbc-panel-empty">
-            No DBC attached. Add one from the toolbar's <em>Add DBC…</em>.
+            Nothing to browse yet. Add a database from the toolbar's{" "}
+            <em>Add DBC…</em>, or import a trace whose file carries signal
+            definitions.
           </div>
         )}
         {/* Spacer at the full list height carries the scrollbar; the
@@ -1146,12 +1379,16 @@ const DbcRow = memo(function DbcRow({
 }: DbcRowProps) {
   diagCount("dbcpanel.rowRender"); // DIAG
   const indent = `${row.depth * 14}px`;
-  // Bus / DBC / ECU rows: clicking anywhere toggles expand (they
-  // aren't selectable). Message / signal rows: row body selects,
-  // chevron toggles expand separately. A draggable row carries the
-  // drag-source handlers.
+  // Container rows (bus / DBC / ECU, source file / channel group):
+  // clicking anywhere toggles expand (they aren't selectable). Message
+  // / signal rows: row body selects, chevron toggles expand separately.
+  // A draggable row carries the drag-source handlers.
   const isContainerRow =
-    row.kind.tag === "bus" || row.kind.tag === "dbc" || row.kind.tag === "ecu";
+    row.kind.tag === "bus" ||
+    row.kind.tag === "dbc" ||
+    row.kind.tag === "ecu" ||
+    row.kind.tag === "file" ||
+    row.kind.tag === "filegroup";
   const selectable = !isContainerRow;
   const draggable = !isContainerRow;
   const baseClass = [
@@ -1431,6 +1668,28 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
         <span className="dbc-row-label">{m.name}</span>
         <span className="dbc-row-meta">{idLabel}</span>
         {m.comment && <span className="dbc-row-comment">{m.comment}</span>}
+      </>
+    );
+  }
+  if (kind.tag === "file") {
+    // Labelled by the capture file's name, like a DBC branch is by its
+    // file's — the file plays the same structural role (ADR 0052).
+    return (
+      <span className="dbc-row-label" title={kind.path}>
+        {basename(kind.path) || "(imported signals)"}
+      </span>
+    );
+  }
+  if (kind.tag === "filegroup") {
+    return <span className="dbc-row-label">{kind.label}</span>;
+  }
+  if (kind.tag === "filesignal") {
+    // Name + unit, and nothing else: a file-backed signal has no
+    // comment, no value table and no bit layout to show.
+    return (
+      <>
+        <span className="dbc-row-label">{kind.signal.name}</span>
+        {kind.signal.unit && <span className="dbc-row-meta">[{kind.signal.unit}]</span>}
       </>
     );
   }

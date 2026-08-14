@@ -32,6 +32,14 @@ use crate::{sys_debug, sys_error, sys_info, sys_warn};
 // they resolve at the crate root until then.
 use crate::session::{panic_message, run_pump};
 
+/// Event announcing that the capture's **file-backed signal** set has
+/// changed — an import filled it, a clear emptied it, a restore
+/// adopted one. Carries no payload: a listener re-reads the catalog
+/// (`list_file_backed_content`), the way `dbc-changed` works for the
+/// DBC set. It is what lets the Database view's per-file branches (ADR
+/// 0052) come and go with the capture instead of being polled for.
+pub(crate) const FILE_SIGNALS_CHANGED: &str = "file-signals-changed";
+
 /// Per-channel BLF bus mapping. One entry per channel the
 /// caller wants to route: `Some(bus_id)` to route it onto that logical
 /// bus, `None` to drop frames on that channel. Channels not listed
@@ -914,6 +922,10 @@ pub(crate) async fn import_mdf(
                     end_ns,
                     &mdf_path,
                 );
+                // The capture's file-backed set just changed — say so, so a
+                // catalog over it (the Database view's per-file branches,
+                // ADR 0052) refreshes without polling.
+                let _ = app_for_thread.emit(FILE_SIGNALS_CHANGED, ());
                 if signals > 0 {
                     sys_info!(
                         &app_for_thread,
@@ -1168,6 +1180,10 @@ pub(crate) fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     // counter continuity) holds frame indices too and goes the same way.
     restamp_scratch_for_capture(&state);
     state.verifier.clear_runtime();
+    // `restamp_scratch_for_capture` dropped the file-backed series with
+    // the rest of the capture-scoped state; the catalog over them is
+    // now empty and its readers need to hear it.
+    let _ = app.emit(FILE_SIGNALS_CHANGED, ());
     if let Some(applied) = state.notes.clear() {
         let _ = app.emit("notes-changed", applied.notes);
     }
@@ -1263,6 +1279,9 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         "restore: {breakdown} notes {notes_ms:.0} \
          pyramids {pyramids_ms:.0} ({pyramids} signals) command {total_ms:.0}"
     );
+    // Whatever the restore adopted (or rejected) is the file-backed set
+    // this session now has.
+    let _ = app.emit(FILE_SIGNALS_CHANGED, ());
     #[allow(clippy::cast_precision_loss)]
     RestoredCapture {
         count: u64::try_from(count).unwrap_or(u64::MAX),

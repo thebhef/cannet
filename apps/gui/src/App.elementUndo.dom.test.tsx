@@ -28,6 +28,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "list_transmit_frames":
       case "list_signals":
       case "list_dbc_content":
+      case "list_file_backed_content":
       case "rbs_dirty":
         return [];
       case "fetch_filtered_trace":

@@ -825,6 +825,36 @@ export function isEnumValueTable(
   return (rows?.length ?? 0) >= 2;
 }
 
+/// One source file's **file-backed signals** as the Database panel's
+/// branch for that file (ADR 0052), from the
+/// `list_file_backed_content` Tauri command. Mirrors
+/// `ipc::FileBackedContentRecord`; the host arranges it (files by path,
+/// groups by index, signals by name) and the panel renders it.
+///
+/// These branches share the **capture's** lifecycle: they arrive with
+/// an import that carries signal definitions and go when the capture
+/// does. Nothing about them is persisted into the project.
+export interface FileBackedContentRecord {
+  sourcePath: string;
+  groups: FileBackedGroupRecord[];
+}
+
+/// One signal channel group inside a [`FileBackedContentRecord`].
+/// `group` is the group's index in its source file — the message-id
+/// slot of a file-backed signal's provenance-keyed identity.
+export interface FileBackedGroupRecord {
+  group: number;
+  label: string;
+  signals: FileBackedSignalRecord[];
+}
+
+/// One file-backed signal row: name + unit, which is all the tree
+/// shows. Deliberately no sample count — the catalog says what exists.
+export interface FileBackedSignalRecord {
+  name: string;
+  unit: string;
+}
+
 /// One loaded DBC's full discovery-shaped content, as returned by the
 /// `list_dbc_content` Tauri command. The Database panel groups
 /// the tree by file using `dbcPath` as the React key. `messages` is

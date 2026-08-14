@@ -22,12 +22,13 @@ export const PROJECT_GRAPH_PANEL_COMPONENT = "project-graph";
 /// Host-side log bus surface. Multiple are allowed (each
 /// carries its own source / min-level filter in `params`).
 export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
-/// Database panel (tree-with-fuzzy-search over every
-/// loaded DBC's messages → signals). Singleton (same pattern as the
-/// project, graph, and system-messages panels) — the loaded-DBC set
-/// lives on the host and there's no per-panel differentiation worth
-/// having. Search query + expand state still live in panel `params`
-/// so a layout save / restore preserves them.
+/// Database panel: tree-with-fuzzy-search over every signal-defining
+/// artifact the session holds — each loaded DBC's messages → signals,
+/// and each capture file's own signal channel groups (ADR 0052).
+/// Singleton (same pattern as the project, graph, and system-messages
+/// panels) — both catalogs live on the host and there's no per-panel
+/// differentiation worth having. Search query + expand state still
+/// live in panel `params` so a layout save / restore preserves them.
 export const DBC_PANEL_COMPONENT = "dbc";
 /// Rest-of-bus-simulation panel (ADR 0028). Element-backed —
 /// multiple named RBS elements per project are allowed, each

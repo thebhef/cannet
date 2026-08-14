@@ -230,13 +230,19 @@ export function fanOutByBus(
 /// signalName)` identity — used when a multi-select drag mixes
 /// message-row drags (every signal in that message) with signal-row
 /// drags that happen to overlap.
+///
+/// Provenance is part of that identity: a file-backed ref's
+/// `messageId` is a channel-group index, an unrelated number that may
+/// equal some message's id, so the flag slot keeps the two namespaces
+/// apart exactly as `signalKey` does.
 export function dedupeSignalRefs(
   refs: readonly DraggableSignalRef[],
 ): DraggableSignalRef[] {
   const seen = new Set<string>();
   const out: DraggableSignalRef[] = [];
   for (const r of refs) {
-    const k = `${r.busId ?? ""}|${r.messageId}|${r.extended ? "x" : "s"}|${r.signalName}`;
+    const flag = r.fileBacked ? "f" : r.extended ? "x" : "s";
+    const k = `${r.busId ?? ""}|${r.messageId}|${flag}|${r.signalName}`;
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(r);
