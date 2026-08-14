@@ -666,6 +666,34 @@ pre-commit gate ran it on every commit). No frontend file was touched,
 so the pnpm suites were not in scope; no Python file was touched, so
 the sidecar suite was not either.
 
+### 2026-08-13 — follow-ups (owner-ruled, `task67-followups`)
+
+Two independent closeouts of items left open in the Blockers section
+above; each its own commit off `plotpanel-flake-fix` (`4f9b0ba`).
+
+**`CANNET_TOKEN` scrubbed from the sidecar's spawn environment.**
+`apply_settings` (`crates/cannet-sidecar/src/launch.rs`) now calls
+`cmd.env_remove(TOKEN_ENV)` unconditionally, after the existing
+`DRIVER_MODULE_ENV` handling. Both hosts route every command flavour
+through `apply_settings` via `resolve_command`'s `configure` closure,
+so the scrub applies by construction rather than per-host. `TOKEN_ENV`
+is a crate-local literal (`cannet-sidecar` must not depend on
+`cannet-server`), documented as duplicating the server's own constant.
+
+TDD: `the_server_token_is_scrubbed_from_the_child_environment` sets
+`CANNET_TOKEN` on each of the three command flavours (standing in for
+what a real invocation would inherit from the parent process) and
+asserts `get_envs()` shows an explicit removal (`(TOKEN_ENV, None)`),
+not just an absent key — red before the `env_remove` call existed.
+
+| layer | command | result |
+| --- | --- | --- |
+| sidecar | `cargo test -p cannet-sidecar` | 40 passed |
+| server | `cargo test -p cannet-server` | 12 passed (+ 1 doctest) |
+
+`cargo clippy -p cannet-sidecar -p cannet-server --all-targets -- -D
+warnings` clean.
+
 ## Blockers / side effects
 
 - **Console Ctrl-C is disabled by inheritance in the agent's shell
@@ -698,7 +726,7 @@ the sidecar suite was not either.
   `stop()` is now the only thing that ends it. Deliberate — it makes
   every OS take the same shutdown path — and noted here because it
   changes what a `kill -INT` on the server's group does.
-- **New in phase 4, not a log leak but noticed by the sweep:**
+- ~~**New in phase 4, not a log leak but noticed by the sweep:**
   `CANNET_TOKEN` is inherited by the sidecar child. The child inherits
   the server's whole environment on purpose (so a driver-module
   override set for the server reaches it), and the sidecar never reads
@@ -708,7 +736,10 @@ the sidecar suite was not either.
   one enforcing it, readable via `/proc/<pid>/environ` by the same
   user on Linux. Clearing that one variable on the child would close
   it; out of scope here because it changes what the child is spawned
-  with, not what any sink records.
+  with, not what any sink records.~~ Fixed in the task67-followups
+  branch: `apply_settings` (`crates/cannet-sidecar/src/launch.rs`) now
+  calls `cmd.env_remove(TOKEN_ENV)` unconditionally, so both hosts get
+  the scrub by construction.
 - **Unverified on this machine:** the Unix half of the tree kill
   (`process_group(0)` + `kill -KILL -<pgid>`). The unit tests cover it
   and CI runs them on Linux; the manual runs recorded above are Windows
