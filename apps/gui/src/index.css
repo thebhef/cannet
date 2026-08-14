@@ -1218,6 +1218,12 @@ header {
   width: 100%;
   color: var(--text-secondary);
   text-align: left;
+  /* `.disclosure-toggle`'s base rule centers its flex content, right
+     for an icon-only glyph but wrong once the button is stretched to
+     `width: 100%` for a full header row — `text-align: left` has no
+     effect on a flex container's item placement, so the main axis
+     needs its own override. */
+  justify-content: flex-start;
 }
 
 .blf-map-markers-toggle:hover {
