@@ -36,9 +36,11 @@ from .enumeration import (
     watch_interfaces,
 )
 from .helpers import (
+    _clock_reply_envelope,
     _configure_to_open_config,
     _error_envelope,
     _log_envelope,
+    _now_ns,
     _proto_to_frame,
     load_driver,
 )
@@ -142,6 +144,14 @@ class CannetServerService(pb_grpc.CannetServerServicer):
                         self._handle_tx(env.frame_batch, subscribed, outbox)
                     elif body == "configure_bus":
                         self._handle_configure(env.configure_bus, outbox)
+                    elif body == "clock_probe":
+                        # Stamp the receive time before anything else,
+                        # and deliberately do not log: probes recur for
+                        # the life of a session, so a record here would
+                        # rotate the log budget away for something that
+                        # says nothing about the hardware — the same
+                        # boundary `_handle_tx` documents.
+                        outbox.put(_clock_reply_envelope(env.clock_probe.t1, _now_ns()))
                     elif body == "error":
                         _log.info("client error envelope: %s", env.error.message)
                     elif body == "log":

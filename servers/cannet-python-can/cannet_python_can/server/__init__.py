@@ -24,6 +24,7 @@ from .helpers import (
     WIRE_SOURCE,
     load_driver,
 )
+from .helpers import _clock_reply_envelope as _clock_reply_envelope
 from .helpers import _configure_to_open_config as _configure_to_open_config
 from .helpers import _frame_to_proto as _frame_to_proto
 from .helpers import _log_envelope as _log_envelope

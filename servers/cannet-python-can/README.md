@@ -121,6 +121,13 @@ The sidecar implements the **hardware-server wire model** described in
   the controller's fault-confinement state or its TEC / REC
   counters change. python-can's `Bus.state` is polled at ~2 Hz;
   TEC / REC are reported as 0 on backends that don't expose them.
+- `Body::ClockProbe { t1 }` is answered with
+  `Body::ClockReply { t1, t2, t3 }` — the sidecar's own wall-clock
+  receive and send stamps, from the same `time.time_ns()` clock that
+  goes onto every hardware frame. That is why the *sidecar* answers
+  and a proxy in front of it relays: the clock worth measuring is the
+  one that stamps the frames. Neither the probe nor the reply is
+  logged (they recur for the life of a session).
 
 ## Swap the driver library
 
