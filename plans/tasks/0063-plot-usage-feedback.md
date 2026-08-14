@@ -96,11 +96,145 @@ on-show list.
   (dom-tested); the masked-row visibility question is resolved in
   grooming and the resolved behavior pinned.
 - The enum-lag cause is written up with the confirming experiment's
-  data; after the fix, enum overlays stay current with the numeric
-  series at the reproduction's trace length, and the ADR-0031 gate is
-  green (multi-run).
+  data; after the fix, **at a window wider than the point budget the
+  served enum series contains every code and every transition the raw
+  series holds** (host test, and observed on the reproduction), enum
+  overlays stay current with the numeric series at the reproduction's
+  trace length, and the ADR-0031 gate is green (multi-run).
+  Restated 2026-08-14 from the phase-1 conclusion: currency alone
+  would pass today. The confirmed cause is a *fidelity* loss — above
+  the decimation threshold the min/max envelope kept each bucket's two
+  extreme codes and discarded the states held in between — and a lane
+  can be perfectly current while showing none of them.
 
 ## Status log
+
+### 2026-08-14 — item 4 phase 2: the categorical serve (fix)
+
+Branch `task63b-categorical-serve` off `task63a-enum-lag-investigation`
+(`dd452a7`). Three commits:
+
+| commit | what |
+| --- | --- |
+| `feat(gui): serve categorical signals by runs, not by extremes` | host: `signal_sampler::reduce_transitions`, `SignalCache::window_categorical` + `level_points`, the `Reduction` mode on `slice_many`, the `categorical` arg on `sample_signals` |
+| `feat(gui): request the categorical reduction from the enum-lane axes` | frontend: `DecimatedRequest.categorical`, in the fetch memo, set by `PlotArea` on the lanes / single-enum axes |
+| `perf(gui): stop paying per tile segment in the enum lane draw` | `laneLabels` (per-table code→label map) and `measureTileLabel` (width memo per `(label, font)`) in `plotEnumLanes.ts`, used by `drawEnumTiles` |
+
+F1 (the follow-window freeze) is **not** touched here — it has its own
+leg, and the measurements below use the same temporary scaffold phase 1
+used to see past it.
+
+#### Design decision — the host does not infer "categorical"
+
+The serve's reduction is chosen by an explicit `categorical` flag on the
+request, not by the host noticing a DBC value table. Render mode is view
+state: the same signal is a line on a numeric axis and a lane of held
+states on an enum-lanes axis, and a value table is present in both cases
+(a labelled-but-plotted-as-a-line signal is normal). Inferring would also
+make the reduction depend on which databases happen to be loaded.
+
+It is a property of the **request**, not of each signal in it, because a
+plot fetch batches exactly one derived axis (`deriveAxesForArea` splits an
+area into `numeric` / `enum-lanes` axes and `PlotArea` renders one), and
+an axis has exactly one render mode. It rides the fetch memo — the same
+window under the other reducer is different bytes.
+
+#### Degradation shape — coarsest-run merging, never truncate-and-continue
+
+Above the read budget (`PYRAMID_BRANCH × max_points`, the same order the
+numeric serve reads) the serve answers off a coarser pyramid level, and if
+the runs *still* exceed `max_points` it steps up another level and
+re-reduces. Short runs merge into their neighbours; long ones keep their
+code and land within a fraction of a pixel column. A window that fits at
+level 0 is exact.
+
+ADR 0049's other partial-answer shape — answer part of it, say so, let the
+view re-request — is **not** available here. That contract converges
+because each serve has decoded more than the last; an identical request
+over an unchanged window returns the identical prefix forever, and the ADR
+forbids the caller accumulating across responses. Coarsening keeps the
+answer whole and bounded, and costs resolution only where the transitions
+are already sub-pixel.
+
+One second-order fix rides along: `fold` only promotes *complete* buckets,
+so any pyramid level stops short of the newest samples. Read off a coarse
+level that is a lane visibly trailing the capture — the reported symptom.
+`level_points` therefore splices each finer level's un-folded tail (fewer
+than `PYRAMID_BRANCH` points each, so still `O(max_points)`), and the
+newest samples are served at full resolution. **The numeric serve has the
+same tip lag and does not do this** — noted under side effects.
+
+#### Validation — the phase-1 V2 scenario, matched A/B
+
+Same rig as phase 1 (temporary vbus-bound copy of `examples/ev-zonal`,
+kept outside the repo this time; PEAK dongles untouched), same
+transitioning-enum RBS counters (`PackState` 0..5 on 0x100 at 100 Hz,
+`MainPositiveState` 0..3 on 0x103 at 10 Hz, `MaxCellVoltage` the numeric
+control on 0x102), `follow_window_ms` raised in the copy's workspace
+settings so the follow window grows to the whole capture. 300 s runs,
+`tx_fps` 1610.0 / 1610.8, `winw` 301.3 / 301.4 s, `max_points` 2248.
+
+Two runs off **one build**, differing only in whether the lane axis asks
+for the categorical reduction — so the numbers isolate the serve (both
+carry the tile-draw memos). Temporary probes, removed afterwards: served
+point count and distinct-code count per signal, tile segments walked and
+tile-draw wall clock.
+
+| gauge | phase-1 V2 (before) | control: same build, envelope | **after** |
+| --- | --- | --- | --- |
+| `p63.n` PackState | mean 3440, max **4497** | mean 3443, max **4497** | mean 1278, max **2247** |
+| distinct codes served, PackState (of 6) | — | mean 2.95, **last 2** | mean 5.87, **last 6** |
+| distinct codes served, MainPositiveState (of 4) | — | 4 | 4 |
+| `p63.segs` | mean 4400, max 6789, slope +536/min | mean 4404, max 6787, slope +535/min | mean 2294, max 3672, slope +265/min |
+| `p63.tilems` | mean 6.24, max 13.8, slope +0.51/min | mean 10.31, max 18.8, slope +1.01/min | mean 5.28, max 9.5, slope +0.53/min |
+| `longtask_ms_per_s` mean / p95 / max | 72.9 / 384.5 / 543 | 43.0 / 329.3 / 588 | **0.0 / 0.0 / 0.0** |
+| `jank_fraction` | 0.267 | 0.163 | **0.0** |
+| draws/s vs resamples/s | 24.1 vs 41.8 | 24.2 vs 41.0 | 41.8 vs 48.2 |
+
+**Reading.** The control reproduces phase-1 V2's signature to within
+noise (`4497 = 2·max_points + 1`, segs 4404 vs 4400, slope +535 vs +536),
+so the rig is the same experiment. Under the categorical serve the point
+count is no longer envelope-shaped — it is bounded by `max_points`, which
+is the coarsening branch doing its job, because `PackState` genuinely
+transitions 30 000 times in this window against a 2248-point budget. The
+fidelity criterion is met where it matters: **all six codes are in the
+served series at the end of a 300 s wide-window run, against two under
+the envelope.** The lane's own draw cost halves with its segment count,
+its slope with capture length halves, and the UI thread stops hitching
+altogether (`longtask` and `jank_fraction` to zero from a p95 of 329 ms
+and 16 % of seconds hitching).
+
+The per-segment µs is **not** comparable across phases — this phase's
+`p63.tilems` probe brackets more of the lanes pass than phase 1's did
+(lane bands and `valToPos` per lane). The `table.find`/`measureText`
+removal is pinned by unit tests that count the calls, not by this run.
+
+`p63.n` for the numeric control signals is unchanged (StateOfCharge mean
+1735 → 1733), confirming the numeric path was not touched.
+
+#### Tests
+
+617 host tests (`cargo test -p cannet-gui`, +4: the reducer contrast, the
+reducer edges, and three serve tests), clippy `-D warnings` clean;
+2001 frontend tests (`pnpm --dir apps/gui test`, +5) and `pnpm build`
+green. `cargo test -p cannet-perf-measurement` green (37) — its
+`signal_bench` calls `decimate_min_max` directly and is unaffected.
+
+#### Blockers / side effects
+
+- **The numeric serve has the same tip lag** the categorical one now
+  splices away: `window()` reads a coarse level and stops at its last
+  folded bucket, so a wide-window *line* also ends short of the live
+  edge. Not fixed here (it is not this item's defect and the fix belongs
+  with a measurement of its own), but it is now a known asymmetry
+  between the two reductions.
+- **The wide-window regime is still unreachable in a shipped build**
+  because of F1 — every number above needed the phase-1 scaffold. Item 4
+  cannot be signed off from a normal run until F1's leg lands.
+- **`follow_window_ms` reached the run through the project's
+  `.cannet/settings.json`**; a first attempt without the F1 scaffold sat
+  at `winw` 0.1 s regardless, which is F1 in isolation and independent
+  confirmation of its mechanism.
 
 ### 2026-08-14 — item 4 phase 1: enum-lag investigation (no fix)
 
