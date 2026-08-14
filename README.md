@@ -516,6 +516,16 @@ launches it: starting a server stays an explicit terminal act.
 Its flags, logs, certificate and token are the ones documented above —
 it is the same binary the archives ship.
 
+To type `cannet-server` instead of that path, run **Add cannet-server
+to PATH** from the command palette (`Ctrl/Cmd+Shift+P`). It edits your
+*user* environment only — no elevation, nothing machine-wide — and says
+what it did in the System Messages panel; running it twice reports that
+the directory is already there and changes nothing. On Windows it
+appends the install directory to the `Path` value under
+`HKCU\Environment`; on macOS it appends an `export` line to
+`~/.zprofile`. Either way, open a new terminal for it to take effect.
+Nothing about it starts a server.
+
 ### Logs
 
 Everything the server says goes to two places: the console you started

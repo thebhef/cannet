@@ -163,6 +163,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     category: "Panels",
     context: findablePanelFocused,
   },
+  // Puts the *bundled* server on the user PATH so a terminal can find
+  // it. Not a launch affordance: starting a server stays a terminal act.
+  { id: "server.addToPath", label: "Add cannet-server to PATH", category: "App" },
   { id: "app.exit", label: "Exit", category: "App" },
   { id: "palette.show", label: "Show command palette", category: "Palette" },
   { id: "goto.view", label: "Go to view…", category: "Palette" },
