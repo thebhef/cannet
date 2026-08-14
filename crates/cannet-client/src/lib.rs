@@ -26,9 +26,11 @@
 //!   the gRPC stream itself fails.
 //!
 //! - [`clock`]: how far the server's wall clock is from ours. Every
-//!   session measures it at start-up and tracks it on a cadence
-//!   thereafter, publishing the per-session record on
-//!   [`FrameReceiver::clock`]; frames are delivered uncorrected.
+//!   session measures it at start-up, tracks it on a cadence, and
+//!   **corrects the frames it delivers by it** — so a `CanFrame` that
+//!   leaves this crate is stamped on the local host's clock whatever
+//!   the server's was doing. The measurement, and the correction
+//!   actually in force, are published on [`FrameReceiver::clock`].
 //!
 //! Dropping the source aborts the worker thread's runtime, which cancels
 //! the gRPC stream and closes the connection.
@@ -80,7 +82,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::transport::{Channel, Endpoint};
 
-use crate::clock::{ClockSample, SessionClock};
+use crate::clock::{ClockSample, OffsetSlew, SessionClock};
 use crate::tls::{CertPin, ObservedPin};
 
 /// Outgoing-envelope channel depth for the per-session request stream.
@@ -117,10 +119,12 @@ const CLOCK_PROBE_DEADLINE: Duration = Duration::from_secs(2);
 /// 30 s is the fast end of a deliberately narrow range. Cost is not
 /// what bounds it — a round is four envelope pairs of two timestamps
 /// each, so under a tenth of a frame's worth of traffic per second —
-/// what bounds it is that a consumer of the measurement should never be
-/// reading a number that is minutes old. Two NTP-disciplined hosts pull
-/// apart by at most ~30 ms over 30 s, so a round that often keeps the
-/// published offset inside its own error bound.
+/// what bounds it is that the correction only moves at
+/// `clock::SLEW_RATE_NS_PER_S`. A round every 30 s gives the slew 150 ms
+/// of authority between measurements, against a worst case of ~30 ms of
+/// genuine drift over that interval; the applied offset therefore
+/// converges between rounds rather than permanently trailing the
+/// measurement.
 const CLOCK_REPROBE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Wall-clock nanoseconds since the Unix epoch — the clock the wire's
@@ -730,10 +734,16 @@ impl FrameReceiver {
     /// How far this server's wall clock is from ours, tracked for the
     /// life of the session (see [`crate::clock`]).
     ///
-    /// The frames this receiver yields are **not** corrected by it —
-    /// they carry the timestamps the server sent. This is the measured
-    /// number, its error bound, and what it was when the session
-    /// opened, for a caller that wants to show it or act on it;
+    /// The frames this receiver yields **have already been corrected**
+    /// by [`SessionClock::applied_offset_ns`]: their `timestamp_ns` is
+    /// on the local host's clock, not the server's. That is the whole
+    /// point of measuring, and doing it here — rather than anywhere
+    /// downstream — is what keeps a corrected source just a source
+    /// (ADR 0046).
+    ///
+    /// What this accessor is for is *reporting*: the measured offset,
+    /// its error bound, what it was when the session opened, and how
+    /// much of it is currently applied.
     /// [`SessionClock::record`] returns the lot in one read.
     ///
     /// Reads never block: the status is
@@ -1071,6 +1081,7 @@ async fn run_session(
     // subscribes, and a server that never answers must cost nothing
     // but a status of `Unsupported` once the window closes.
     let clock = SessionClock::pending();
+    let mut slew = OffsetSlew::default();
     let mut clock_samples: Vec<ClockSample> = Vec::with_capacity(CLOCK_PROBE_COUNT);
     let mut probes_sent = 0usize;
     let mut rounds = clock::ProbeRounds::new();
@@ -1130,7 +1141,12 @@ async fn run_session(
                     // Whatever arrived is what the measurement rests
                     // on; nothing at all is a silent round, which is
                     // `Unsupported` only if the peer has never spoken.
-                    clock.settle_round(&clock_samples, wall_clock_ns());
+                    if let Some(measured) =
+                        clock.settle_round(&clock_samples, wall_clock_ns())
+                    {
+                        slew.retarget(measured.offset_ns);
+                        clock.publish_applied(slew.applied_ns());
+                    }
                 } else {
                     clock_samples.clear();
                     probes_sent = 0;
@@ -1164,7 +1180,18 @@ async fn run_session(
                         };
                         for proto_frame in batch.frames {
                             match proto_to_frame(&proto_frame, channel) {
-                                Ok(frame) => {
+                                Ok(mut frame) => {
+                                    // The one place the peer's clock is
+                                    // corrected for. Everything
+                                    // downstream — the pump, the store,
+                                    // every view — sees a frame like
+                                    // any other from any other source,
+                                    // which is what keeps a
+                                    // pre-corrected source just a
+                                    // source (ADR 0046).
+                                    frame.timestamp_ns =
+                                        slew.correct(frame.timestamp_ns);
+                                    clock.publish_applied(slew.applied_ns());
                                     if frame_tx.send(Ok(frame)).is_err() {
                                         return;
                                     }
