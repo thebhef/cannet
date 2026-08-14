@@ -498,14 +498,14 @@ so the server's own sidecar lookup finds it there with no extra
 configuration, exactly as in a distribution archive. Nothing in the app
 launches it: starting a server stays an explicit terminal act.
 
-| OS      | Bundled server                                              |
-|---------|-------------------------------------------------------------|
-| Windows | `<install dir>\cannet-server.exe` (beside `cannet.exe`)     |
-| macOS   | `/Applications/cannet.app/Contents/Resources/cannet-server` |
+| OS      | Bundled server                                                |
+|---------|---------------------------------------------------------------|
+| Windows | `<install dir>\cannet-server.exe` (beside `cannet-gui.exe`)   |
+| macOS   | `/Applications/cannet.app/Contents/Resources/cannet-server`   |
 
 ```powershell
 # Windows, default per-user install location
-& "$env:LOCALAPPDATA\Programs\cannet\cannet-server.exe" --bind 0.0.0.0:50051 --tls
+& "$env:LOCALAPPDATA\cannet\cannet-server.exe" --bind 0.0.0.0:50051 --tls
 ```
 
 ```sh
