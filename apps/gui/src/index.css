@@ -2544,6 +2544,14 @@ button.trace-event-swatch {
 .plot-area.collapsed .plot-area-signals {
   max-height: 8rem;
 }
+/* A *deliberate* collapse — the area's own toggle, or one axis's — is
+   one row: the heading, and nothing under it. There is no row list to
+   bound, so drop the scroll cap and let the strip be exactly as tall as
+   its head (ADR 0026). */
+.plot-area.heading-only .plot-area-signals {
+  max-height: none;
+  overflow-y: hidden;
+}
 /* Nothing on this axis is drawn, so its rows only have to stay
    identifiable and clickable. Fold the message line up beside the
    signal name and tighten the padding, so a fully-hidden axis costs a
@@ -2792,7 +2800,12 @@ button.trace-event-swatch {
  * label — appears only on an area solo applies to (PlotArea.tsx's
  * `soloChip` prop, sourced from `plotSolo.ts`). Not uppercase like the
  * rest of the head, so "match" reads as a word, not an acronym. */
-.plot-solo-chip {
+/* What a collapsed row says instead of its rows: how many series it
+ * stands for, and (on a pattern-defined area) how many its rules match —
+ * the filter status line's count, folded into the heading that replaced
+ * it. Shares the solo chip's ink so a head reads as one row of chips. */
+.plot-solo-chip,
+.plot-area-count-chip {
   color: var(--text-muted);
   border: 1px solid var(--border-soft);
   border-radius: 3px;
@@ -2832,6 +2845,37 @@ button.trace-event-swatch {
 
 .plot-area-collapse:hover:not(:disabled) {
   color: var(--text-muted);
+}
+
+/* Collapse / expand one derived axis (ADR 0026). It sits with the
+   axis's own label rather than with the area's grip, because that is the
+   thing it collapses — the area's toggle is the one beside the grip. */
+.plot-axis-collapse {
+  color: var(--text-dim);
+  padding: 0 0.1rem 0 0.2rem;
+}
+
+.plot-axis-collapse:hover:not(:disabled) {
+  color: var(--text-muted);
+}
+
+/* Separates the area's name from the axis's own label. Decorative — the
+   axis disclosure sits between the two, so this is only the visual join
+   the concatenated label used to carry. */
+.plot-area-label-sep {
+  color: var(--text-faint);
+  padding-left: 0.25rem;
+}
+
+/* The axis's own label (unit group / signal), next to its disclosure.
+   Shrinks before the area name does — the area name is the identity, the
+   axis label is the qualifier. */
+.plot-area-axis-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .plot-area-remove,

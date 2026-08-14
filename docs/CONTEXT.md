@@ -315,6 +315,19 @@ flex-grow weight (default 1, persisted per axis id). A draggable
 **splitter** between two adjacent axes trades weight between that pair
 (conserving their sum); double-click equalizes them.
 
+**Collapse** (plot area / axis):
+Giving up drawing space without giving up the thing that occupied it.
+A collapsed **plot area** is one heading row (name, signal count,
+pattern match count); a collapsed **axis** is one label strip. Either
+takes no **axis weight**, so its share redistributes to the axes still
+drawing and the splitter that would trade with it is suppressed.
+Collapse is *layout*: the series stay, keep ingesting, and keep their
+visibility — distinct from **hiding** a signal, which takes it out of
+what is drawn. Persisted per area (the area flag) and per axis id
+(beside the weights, same lifecycle).
+_Avoid_: "hide" for a collapse, and "collapse" for a hidden signal's
+row treatment.
+
 ### Extensions
 
 **Extension**:
