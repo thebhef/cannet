@@ -27,6 +27,9 @@ export interface DiscoveredServer {
   fullname: string;
   /// The instance name the server was started with.
   name: string;
+  /// The machine the server runs on, from the SRV record's target host
+  /// (`bench.local`). `null` when the responder published none.
+  host: string | null;
   /// `host:port`, handed to the connect path verbatim.
   address: string;
   /// The server's release version, from its `ver` TXT key.

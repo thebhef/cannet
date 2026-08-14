@@ -25,12 +25,14 @@ import type { InterfaceRecord } from "./types";
 const BENCH: DiscoveredServer = {
   fullname: "bench-rig._cannet._tcp.local.",
   name: "bench-rig",
+  host: "bench-rig.local",
   address: "192.168.1.10:50051",
   version: "v0.8.1",
 };
 const DYNO: DiscoveredServer = {
   fullname: "dyno-cell._cannet._tcp.local.",
   name: "dyno-cell",
+  host: "dyno-cell.local",
   address: "192.168.1.44:50051",
   version: "v0.8.0",
 };

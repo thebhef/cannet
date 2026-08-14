@@ -52,6 +52,10 @@ pub const DISCOVERED_SERVERS_CHANGED_EVENT: &str = "discovered-servers-changed";
 pub struct Resolved {
     /// `<instance>._cannet._tcp.local.` — the entry's key.
     pub fullname: String,
+    /// The SRV record's target host — the machine's own name, as it
+    /// arrives on the wire (`bench.local.`, root dot and all). Empty
+    /// when the responder published none.
+    pub host: String,
     /// Port from the SRV record.
     pub port: u16,
     /// Every address this resolve reported, scope dropped.
@@ -68,6 +72,11 @@ pub struct DiscoveredServer {
     /// The instance name the server was started with (`--name`, or its
     /// hostname).
     pub name: String,
+    /// The machine the server runs on, from the SRV record's target
+    /// host, with the root dot dropped (`bench.local`). Independent of
+    /// the instance name — two servers named alike are told apart by
+    /// this. `None` when the responder published no host name.
+    pub host: Option<String>,
     /// `host:port`, ready to hand to the connect path verbatim.
     pub address: String,
     /// The server's release version, from the `ver` TXT key.
@@ -78,6 +87,8 @@ pub struct DiscoveredServer {
 /// it seen so far.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Instance {
+    /// Last host name reported, verbatim from the wire.
+    host: String,
     port: u16,
     /// Accumulated across resolves: a responder reports the addresses
     /// it has answered on *so far*, so a later resolve is a superset,
@@ -103,6 +114,7 @@ impl BrowseList {
     pub fn resolved(&mut self, resolved: &Resolved) -> bool {
         self.changing(|entries| {
             let entry = entries.entry(resolved.fullname.clone()).or_default();
+            entry.host.clone_from(&resolved.host);
             entry.port = resolved.port;
             entry.addresses.extend(resolved.addresses.iter().copied());
             if resolved.version.is_some() {
@@ -139,6 +151,7 @@ impl BrowseList {
                 Some(DiscoveredServer {
                     fullname: fullname.clone(),
                     name: instance_name(fullname).to_string(),
+                    host: host_name(&entry.host),
                     address: dial_address(&entry.addresses, entry.port)?,
                     version: entry.version.clone(),
                 })
@@ -168,6 +181,14 @@ fn instance_name(fullname: &str) -> &str {
         .strip_suffix(SERVICE_TYPE)
         .and_then(|head| head.strip_suffix('.'))
         .unwrap_or(fullname)
+}
+
+/// The SRV target host as the list renders it: the root dot is wire
+/// encoding, and a responder that published no host name has none to
+/// show rather than an empty cell.
+fn host_name(host: &str) -> Option<String> {
+    let trimmed = host.trim_end_matches('.');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// The `host:port` to dial for an instance, or `None` when none of its
@@ -307,6 +328,7 @@ fn apply(app: &AppHandle, edit: impl FnOnce(&mut BrowseList) -> bool) {
 fn from_resolved_service(service: &ResolvedService) -> Resolved {
     Resolved {
         fullname: service.get_fullname().to_string(),
+        host: service.get_hostname().to_string(),
         port: service.get_port(),
         addresses: service
             .get_addresses()
@@ -338,10 +360,43 @@ mod tests {
     fn resolve(name: &str, port: u16, addresses: &[&str], version: Option<&str>) -> Resolved {
         Resolved {
             fullname: format!("{name}.{SERVICE_TYPE}"),
+            host: format!("{name}.local."),
             port,
             addresses: addresses.iter().map(|a| ip(a)).collect(),
             version: version.map(ToString::to_string),
         }
+    }
+
+    #[test]
+    fn the_advertised_host_name_reaches_the_list_without_its_root_dot() {
+        // The SRV target is the machine's own name, independent of the
+        // `--name` instance name — the fact the owner asked to see. The
+        // trailing root dot is wire encoding, not something to render.
+        let mut list = BrowseList::default();
+        list.resolved(&resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1")));
+        assert_eq!(list.snapshot()[0].host.as_deref(), Some("bench.local"));
+    }
+
+    #[test]
+    fn a_resolve_with_no_host_name_is_listed_without_one() {
+        let mut list = BrowseList::default();
+        let mut r = resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1"));
+        r.host = String::new();
+        list.resolved(&r);
+        assert_eq!(list.snapshot()[0].host, None);
+    }
+
+    #[test]
+    fn a_server_that_moves_to_a_new_machine_reports_the_new_host_name() {
+        let mut list = BrowseList::default();
+        list.resolved(&resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1")));
+        let mut moved = resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1"));
+        moved.host = "spare.local.".into();
+        assert!(
+            list.resolved(&moved),
+            "the host name is on screen, so a change to it moves the list",
+        );
+        assert_eq!(list.snapshot()[0].host.as_deref(), Some("spare.local"));
     }
 
     #[test]
@@ -353,6 +408,7 @@ mod tests {
             vec![DiscoveredServer {
                 fullname: "bench._cannet._tcp.local.".into(),
                 name: "bench".into(),
+                host: Some("bench.local".into()),
                 address: "192.168.1.10:50051".into(),
                 version: Some("v0.8.1".into()),
             }],
@@ -595,6 +651,11 @@ mod tests {
             .find(|s| s.fullname == fullname)
             .expect("our own advertisement should be browsed within 5s");
         assert_eq!(found.name, name);
+        assert_eq!(
+            found.host.as_deref(),
+            Some(format!("{name}.local").as_str()),
+            "the SRV target host survives a real resolve, so it needs no TXT key",
+        );
         assert_eq!(found.version.as_deref(), Some("v0.0.0-test"));
         assert!(
             found.address.ends_with(":50071"),
@@ -630,12 +691,14 @@ mod tests {
         let json = serde_json::to_value(DiscoveredServer {
             fullname: "bench._cannet._tcp.local.".into(),
             name: "bench".into(),
+            host: Some("bench.local".into()),
             address: "192.168.1.10:50051".into(),
             version: Some("v0.8.1".into()),
         })
         .unwrap();
         assert_eq!(json["fullname"], "bench._cannet._tcp.local.");
         assert_eq!(json["name"], "bench");
+        assert_eq!(json["host"], "bench.local");
         assert_eq!(json["address"], "192.168.1.10:50051");
         assert_eq!(json["version"], "v0.8.1");
     }
