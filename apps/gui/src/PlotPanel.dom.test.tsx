@@ -2085,6 +2085,36 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
+  it("enum lanes: the fetch asks the host for the categorical reduction", async () => {
+    // The host reduces an over-budget window either by per-bucket
+    // extremes (right for a line, a category error for codes — the
+    // states held between the bucket's lowest and highest code vanish)
+    // or by run boundaries. Only the view knows which it draws, so a
+    // lane axis must say so on its own fetch, and a numeric one must
+    // not.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
+    mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [10, 11, 12] };
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(2));
+      await waitFor(() => {
+        const modes = vi
+          .mocked(invoke)
+          .mock.calls.filter((c) => c[0] === "sample_signals")
+          .map((c) => (c[1] as { categorical?: boolean; signals: { signalName: string }[] }))
+          .filter((a) => a.signals.length > 0)
+          .map((a) => [a.signals[0].signalName, a.categorical === true] as const);
+        expect(modes).toContainEqual(["EngineSpeed", true]);
+        expect(modes).toContainEqual(["EngineTemp", false]);
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it("enum lanes: a late value-table resolution re-normalises the data", async () => {
     // Regression: tables are fetched after the area first renders, and
     // the lane normalisation runs *through* them, so a resolution has

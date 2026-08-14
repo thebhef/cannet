@@ -1376,6 +1376,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               xMax: fetchMax,
               origin: lr.originSeconds,
               maxPoints: maxPts,
+              // This axis draws held states (lanes, or the single-enum
+              // ribbon), so the host must reduce an over-budget window
+              // by its transitions. A min/max envelope over enum codes
+              // keeps each bucket's lowest and highest code and drops
+              // every state held in between — at a window wider than the
+              // point budget the lane stops showing what was held.
+              categorical: laneModeRef.current || enumActivePre,
             },
             sidecar,
           );

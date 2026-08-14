@@ -76,8 +76,17 @@ export interface DecimatedRequest {
   /// pre-session transient, before a session start is known.
   origin?: number | null;
   /// Pixel budget — the host returns at most `2 * maxPoints` min/max
-  /// points (one bucket per pixel column).
+  /// points (one bucket per pixel column), or `maxPoints` runs under
+  /// `categorical`.
   maxPoints: number;
+  /// Render mode: `true` when this view draws the series as **held
+  /// states** (an enum lane) rather than as a line. It picks the host's
+  /// reduction for an over-budget window — run boundaries instead of
+  /// per-bucket extremes, since an envelope over a code series keeps
+  /// only each bucket's lowest and highest code and drops every state
+  /// held in between. It is a property of the *request*, not of the
+  /// signals: one fetch batches one axis, and an axis has one mode.
+  categorical?: boolean;
 }
 
 /// The current decimated window, times relative to `base`.
@@ -146,7 +155,7 @@ interface Cache {
   firstT: number | null;
   lastT: number | null;
   byKey: Map<string, Series>;
-  /// `${winStart}:${windowKey}:${fromSeconds}:${toSeconds}:${maxPoints}` —
+  /// `${winStart}:${windowKey}:${fromSeconds}:${toSeconds}:${maxPoints}:${categorical}` —
   /// skip the fetch when it matches the last successful one. `windowKey`
   /// is `winEnd`, or the constant `"parked"` when the requested slice
   /// ends behind the last frame already seen and a longer window
@@ -234,7 +243,10 @@ export function useDecimatedRange(): DecimatedRange {
       const sliceEndsBehindTheLiveEdge =
         toSeconds != null && cache.base != null && cache.lastT != null && toSeconds < cache.base + cache.lastT;
       const windowKey = sliceEndsBehindTheLiveEdge ? "parked" : String(req.winEnd);
-      const fetchKey = `${req.winStart}:${windowKey}:${fromSeconds}:${toSeconds}:${req.maxPoints}`;
+      // The render mode is part of the key: the same window reduced by
+      // runs is different bytes from the same window reduced by extremes.
+      const categorical = req.categorical === true;
+      const fetchKey = `${req.winStart}:${windowKey}:${fromSeconds}:${toSeconds}:${req.maxPoints}:${categorical}`;
 
       // `complete` is the host's own token, not a guess made here: a
       // bounded serve answers with the prefix it decoded, and the next
@@ -267,6 +279,7 @@ export function useDecimatedRange(): DecimatedRange {
             fileBacked: s.fileBacked ?? false,
           })),
           maxPoints: req.maxPoints,
+          categorical,
         }),
         sidecar ? sidecar() : Promise.resolve(null),
       ]);
