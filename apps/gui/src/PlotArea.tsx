@@ -49,7 +49,7 @@ import {
   type XSync,
 } from "./plotPanelConfig";
 import { parsePlotAreaDragData, type PlotAreaDragPayload } from "./plotAreaTransfer";
-import { showPointsToUplot, type ShowPointsMode } from "./plotPoints";
+import { applyAutoPointFloor, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
 import { nextResampleDelayMs } from "./plotPacing";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { DisclosureToggle } from "./DisclosureToggle";
@@ -2518,6 +2518,17 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       if (xMin != null && xMax != null) u.setScale("x", { min: xMin, max: xMax });
     });
     uplotRef.current = u;
+    // The minimum-count floor under `auto` (see `plotPoints.ts`). It
+    // wraps the density rule uPlot just installed, so it has to run on
+    // the constructed instance rather than on `opts` — and it reads the
+    // per-signal sample count per draw, since a fetch changes it without
+    // rebuilding the instance.
+    if (showPoints === "auto") {
+      applyAutoPointFloor(u.series, (seriesIdx) => {
+        const s = signalsRef.current[seriesIdx - 1];
+        return s ? (seriesRef.current.get(signalRefKey(s))?.t.length ?? 0) : 0;
+      });
+    }
     registerInstance(areaId, u);
     // Only a changed signal *membership* makes the cached window stale
     // (it is anchored to the old set) — drop it, and the host extents

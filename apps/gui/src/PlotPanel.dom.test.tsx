@@ -22,6 +22,12 @@ import { comboboxValue, pickCombobox } from "./comboboxTestKit";
 /// Prefixed `mock` so the hoisted `vi.mock` factory may reference it.
 const mockRenderCost = { perTickMs: 0, accMs: 0 };
 
+/// What the stand-in for uPlot's own density-aware `points.show`
+/// answers. `false` is the dense case — the axis has more columns in
+/// view than there is room for markers — which is what the automatic
+/// minimum-count floor has to override for a sparse *series*.
+const mockUplotPointsShow = { answer: false };
+
 vi.mock("uplot", () => {
   class FakeUPlot {
     // `uPlot.paths.stepped(...)` is consulted at construction to give
@@ -46,6 +52,15 @@ vi.mock("uplot", () => {
     constructor(opts: FakeUPlot["opts"], data: unknown, el: HTMLElement) {
       this.opts = opts;
       this.series = opts.series ?? [];
+      // Real uPlot fills in its density-aware `points.show` during
+      // construction when the caller left it unset. Stand that in with
+      // a constant a test can set, so the auto marker floor's "defer to
+      // uPlot above the floor" half is observable at all.
+      for (let i = 1; i < this.series.length; i++) {
+        const s = this.series[i] as { points?: { show?: unknown } };
+        s.points = { ...(s.points ?? {}) };
+        if (s.points.show === undefined) s.points.show = () => mockUplotPointsShow.answer;
+      }
       this.root = el;
       this.data = data;
       el.appendChild(document.createElement("canvas"));
@@ -274,6 +289,7 @@ import { freshTrace } from "./trace";
 import { makeLiveRegistry } from "./registryTestKit";
 import type { ProjectElement } from "./types";
 import { diagCounts } from "./diag";
+import { AUTO_POINT_MARKER_FLOOR } from "./plotPoints";
 import { FIRST_SAMPLE_INDICATOR_MS } from "./useFirstSampleWait";
 import { hydrateSettings, updateSettings } from "./hostSettings";
 import { THEMES, activeTheme, setActiveTheme } from "./theme";
@@ -579,6 +595,7 @@ afterEach(async () => {
   mockRenderCost.perTickMs = 0;
   mockRenderCost.accMs = 0;
   mockFileBackedSignals.clear();
+  mockUplotPointsShow.answer = false;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
   // Awaited: an un-awaited publish here can resolve inside a later
   // test's own `hydrateSettings()` call and clobber settings that
@@ -6280,6 +6297,42 @@ describe("PlotPanel sparse series", () => {
         const ys = drawnValues("Area 1");
         expect(ys.length).toBe(xs.length);
         expect([...new Set(ys)]).toEqual([0.2]);
+      });
+    });
+  });
+
+  it("keeps markers on a sparse series in auto mode, however dense the axis", async () => {
+    // The merged x axis is shared, so uPlot's density rule answers for
+    // the *axis*, not the series: a handful-of-samples series plotted
+    // beside a fast one loses its markers and reads as a bare line
+    // through held values. Below the floor the samples are the
+    // information, so they stay marked.
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [10, 20, 15] };
+    mockSampleSeries.EngineTemp = {
+      t: Array.from({ length: AUTO_POINT_MARKER_FLOOR + 40 }, (_, i) => i / 100),
+      v: Array.from({ length: AUTO_POINT_MARKER_FLOOR + 40 }, () => 15),
+    };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      addFocusedSignal("EngineTemp");
+      await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+      await waitFor(() => {
+        const inst = liveInstanceIn("Area 1");
+        expect(((inst.data as (number | null)[][])[0] ?? []).length).toBeGreaterThan(1);
+        const show = (i: number) =>
+          (inst.series[i] as { points?: { show?: (...a: unknown[]) => boolean } }).points?.show?.(
+            inst,
+            i,
+            0,
+            5000,
+          );
+        // Three samples of its own → marked, even though uPlot's own
+        // answer for this axis is "too dense".
+        expect(show(1)).toBe(true);
+        // Above the floor → uPlot's answer stands.
+        expect(show(2)).toBe(false);
       });
     });
   });
