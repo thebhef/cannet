@@ -2278,6 +2278,45 @@ button.trace-event-swatch {
   color: var(--text-dim);
 }
 
+/* The shared DisclosureToggle (task 63 item 1): hit area, ink and
+   rotation for every collapsible section, row and menu trigger. The
+   default box is a real 24x24 CSS px hit area (WCAG 2.5.8's floor)
+   with the ink smaller inside it, so a roomy header gets a
+   comfortably large target without the glyph itself growing. */
+.disclosure-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.disclosure-toggle:disabled {
+  cursor: default;
+}
+.disclosure-toggle-glyph {
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--text-faint);
+}
+/* The row-height-capped variant: several dense grids (the DBC, trace,
+   signal, RBS and transmit rows) share a fixed row height with a
+   virtualizer or a toolbar line, and growing it to 24px would bloat
+   every row. Width still reaches the 24px floor — only height gives
+   it up, stretching to match the row it sits in instead (ADR 0044's
+   "hit area is the full row height" idiom, generalized here). */
+.disclosure-toggle-compact {
+  min-height: 0;
+  height: 100%;
+  align-self: stretch;
+}
+
 /* A caret disclosure at the *start* of a row — the signal view's
    section headers. Sized and coloured like a bare glyph so a dense row
    reads unchanged. */
