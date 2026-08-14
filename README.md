@@ -1885,6 +1885,16 @@ post-processed measurement with no bus-logging group at all) is
 detected and rejected with a message naming the mismatch, rather than
 opening as an empty capture.
 
+**Databases the capture carries** (`##AT` attachments — what every
+Save Capture to MDF embeds) are streamed straight into the loaded DBC
+set at import, through the same machinery a DBC picked off disk goes
+through. Nothing is extracted: the definitions are usable where they
+lie ([ADR 0010](docs/adr/0010-no-sidecar-files.md)). Each is loaded
+under `<capture>#<attachment name>`, which is deliberately not a path —
+nothing reloads it from disk, re-importing the same capture replaces it
+in place, and it is a session load rather than a project file, so it is
+not added to the project's DBC list.
+
 A coded channel — a DBC enumeration, the shape most state signals in a
 decoded group take — stores its value-to-text table as the channel's
 own conversion. The **code** is what lands in the series, since that is

@@ -2131,6 +2131,94 @@ fn a_signals_only_import_takes_its_session_origin_from_the_signals() {
     );
 }
 
+/// An MDF can carry the databases its capture was recorded against as
+/// `##AT` attachments — ours does, on every Save Capture. Import streams
+/// them straight into the loaded set, so the definitions are usable
+/// without extracting anything to disk (ADR 0010).
+#[test]
+fn an_embedded_database_loads_from_the_capture_without_touching_the_disk() {
+    let state = test_state();
+    let dbc = cannet_mdf::MdfAttachment {
+        file_name: "powertrain.dbc".into(),
+        mime_type: "application/vnd.vector.dbc".into(),
+        data: tiny_dbc(0x1a5, "EngineData", "EngineSpeed").into_bytes(),
+    };
+    // Not a database: an image rides along in the same chain.
+    let other = cannet_mdf::MdfAttachment {
+        file_name: "dashboard.png".into(),
+        mime_type: "image/png".into(),
+        data: vec![0x89, b'P', b'N', b'G'],
+    };
+    // An *external* attachment names a file instead of carrying one, so
+    // there is nothing here to parse — chasing the reference would be
+    // the sidecar this project does not do.
+    let external = cannet_mdf::MdfAttachment {
+        file_name: "elsewhere.dbc".into(),
+        mime_type: "application/vnd.vector.dbc".into(),
+        data: Vec::new(),
+    };
+
+    let loaded = capture::install_embedded_databases(
+        &state,
+        r"C:\captures\run.mf4",
+        &[dbc, other, external],
+    );
+    assert_eq!(loaded.len(), 1, "one database, and only the database");
+    assert_eq!(loaded[0].message_count, 1);
+    assert!(loaded[0].warnings.is_empty());
+
+    // The identity is the capture plus the attachment's own name: it is
+    // not a path, and it must not read as one.
+    let list = state.databases();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].path, r"C:\captures\run.mf4#powertrain.dbc");
+    assert_eq!(list[0].db.message_count(), 1);
+    assert!(
+        list[0].buses.is_empty(),
+        "an embedded database is unscoped, like any freshly added one"
+    );
+}
+
+/// Re-importing the same capture replaces the database it carries rather
+/// than stacking a second copy of it — the same reload-in-place rule
+/// `add_dbc` applies to a path it already holds.
+#[test]
+fn re_importing_a_capture_replaces_its_embedded_database() {
+    let state = test_state();
+    let attachment = |sig: &str| cannet_mdf::MdfAttachment {
+        file_name: "powertrain.dbc".into(),
+        mime_type: "application/vnd.vector.dbc".into(),
+        data: tiny_dbc(0x1a5, "EngineData", sig).into_bytes(),
+    };
+    capture::install_embedded_databases(&state, "run.mf4", &[attachment("EngineSpeed")]);
+    capture::install_embedded_databases(&state, "run.mf4", &[attachment("EngineTorque")]);
+    let list = state.databases();
+    assert_eq!(list.len(), 1);
+    assert_eq!(
+        list[0].db.signals().first().map(|s| s.signal_name.clone()),
+        Some("EngineTorque".to_owned())
+    );
+}
+
+/// A DBC that will not parse is reported, not installed — the capture's
+/// frames and signals are still worth importing.
+#[test]
+fn an_unparseable_embedded_database_is_reported_and_left_out() {
+    let state = test_state();
+    let loaded = capture::install_embedded_databases(
+        &state,
+        "run.mf4",
+        &[cannet_mdf::MdfAttachment {
+            file_name: "broken.dbc".into(),
+            mime_type: "application/vnd.vector.dbc".into(),
+            data: b"this is not a DBC".to_vec(),
+        }],
+    );
+    assert_eq!(loaded.len(), 1);
+    assert!(loaded[0].error.is_some());
+    assert!(state.databases().is_empty());
+}
+
 /// Saving to BLF drops file-backed signals — the format carries frames
 /// and nothing else can hold them — so the save path says so. A warning,
 /// not a refusal: BLF is still the right save for a capture whose frames

@@ -39,6 +39,62 @@ fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
         .collect()
 }
 
+/// What [`install_dbc`] did with one DBC source.
+pub(crate) struct InstalledDbc {
+    /// Whether a DBC of the same identity was already loaded, and this
+    /// replaced it in place.
+    pub reloaded: bool,
+    /// Messages the parsed database defines.
+    pub message_count: usize,
+    /// Non-fatal attribute problems (malformed `CannetCounter` /
+    /// `CannetCrc` values). The DBC still loaded.
+    pub warnings: Vec<String>,
+}
+
+/// Parse `text` and put it in the loaded set under `path`, replacing any
+/// DBC already loaded under that identity. The set is left untouched on
+/// a parse error.
+///
+/// `path` is an *identity*, not necessarily a file: a database embedded
+/// in a capture is loaded through here too, under an identity naming the
+/// capture it came from ([ADR 0010](../../../docs/adr/0010-no-sidecar-files.md)
+/// — the definitions are usable without extracting anything to disk).
+/// Watching the filesystem is therefore the caller's business, not this
+/// function's.
+pub(crate) fn install_dbc(
+    state: &AppState,
+    path: &str,
+    text: &str,
+) -> Result<InstalledDbc, String> {
+    let db = Database::parse(text).map_err(|e| format!("failed to parse DBC at {path}: {e}"))?;
+    let warnings: Vec<String> = db
+        .parse_warnings()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let message_count = db.message_count();
+    let db = Arc::new(db);
+    let mut list = state.databases();
+    let reloaded = if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
+        slot.db = db;
+        true
+    } else {
+        list.push(LoadedDbc {
+            path: path.to_owned(),
+            db,
+            buses: Vec::new(),
+        });
+        false
+    };
+    drop(list);
+    invalidate_derived_caches(state);
+    Ok(InstalledDbc {
+        reloaded,
+        message_count,
+        warnings,
+    })
+}
+
 /// Load a DBC file and add it to the set (or, if a DBC with the same
 /// path is already loaded, reload it in place — same effect as a
 /// "reload from disk"). Returns the full loaded list on success; on a
@@ -62,35 +118,17 @@ pub(crate) fn add_dbc(
             return Err(msg);
         }
     };
-    let db = match Database::parse(&text) {
-        Ok(db) => db,
-        Err(e) => {
-            let msg = format!("failed to parse DBC at {path}: {e}");
+    let installed = match install_dbc(state.inner(), &path, &text) {
+        Ok(i) => i,
+        Err(msg) => {
             sys_error!(&app, "dbc", "{msg}");
             return Err(msg);
         }
     };
-    // Non-fatal attribute problems (malformed CannetCounter /
-    // CannetCrc values) surface as warnings; the DBC still loads.
-    for w in db.parse_warnings() {
+    for w in &installed.warnings {
         sys_warn!(&app, "dbc", "{path}: {w}");
     }
-    let db = Arc::new(db);
-    let reloaded = {
-        let mut list = state.databases();
-        if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
-            slot.db = db;
-            true
-        } else {
-            list.push(LoadedDbc {
-                path: path.clone(),
-                db,
-                buses: Vec::new(),
-            });
-            false
-        }
-    };
-    if reloaded {
+    if installed.reloaded {
         sys_info!(&app, "dbc", "reloaded DBC {path}");
     } else {
         sys_info!(&app, "dbc", "loaded DBC {path}");
@@ -100,7 +138,6 @@ pub(crate) fn add_dbc(
             w.watch_dbc(std::path::Path::new(&path));
         }
     }
-    invalidate_derived_caches(state.inner());
     rbs::refresh_all_elements(&app);
     Ok(dbc_list(state.inner()))
 }

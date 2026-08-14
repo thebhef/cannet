@@ -878,6 +878,8 @@ pub(crate) async fn import_mdf(
         unfinalized = source.is_unfinalized(),
     );
 
+    adopt_embedded_databases(&app, &mdf_path, &source);
+
     let result = ImportMdfResult {
         mdf_path: mdf_path.clone(),
     };
@@ -890,18 +892,7 @@ pub(crate) async fn import_mdf(
     } else {
         Vec::new()
     };
-    let mut synthetic_idx = 0u64;
-    let notes: Vec<Note> = match source.events() {
-        Ok(events) => events
-            .iter()
-            .map(|e| note_from_event(e, &mut synthetic_idx))
-            .collect(),
-        Err(e) => {
-            // A bad event chain is not a reason to lose the frames.
-            sys_warn!(&app, "mdf-import", "could not read MDF events: {e}");
-            Vec::new()
-        }
-    };
+    let notes = notes_from_events(&app, &source);
 
     let channel_to_bus: Vec<(u8, Option<String>)> = channel_bus_mapping
         .unwrap_or_default()
@@ -1042,6 +1033,127 @@ pub(crate) fn fill_file_backed_signals(
         }
     }
     (signals, samples)
+}
+
+/// The capture's `##EV` blocks as session notes — the part
+/// `GLOBAL_MARKER` records play on the BLF path. A bad event chain is
+/// reported, not fatal: it is no reason to lose the frames.
+fn notes_from_events(app: &AppHandle, source: &MdfCanFrameSource) -> Vec<Note> {
+    let mut synthetic_idx = 0u64;
+    match source.events() {
+        Ok(events) => events
+            .iter()
+            .map(|e| note_from_event(e, &mut synthetic_idx))
+            .collect(),
+        Err(e) => {
+            sys_warn!(app, "mdf-import", "could not read MDF events: {e}");
+            Vec::new()
+        }
+    }
+}
+
+/// Put the capture's own databases into the loaded set, and say so.
+/// Called before the frames flow: the embedded definitions are what
+/// decodes them, and they are usable without being written anywhere
+/// (ADR 0010).
+fn adopt_embedded_databases(app: &AppHandle, mdf_path: &str, source: &MdfCanFrameSource) {
+    let attachments = match source.attachments() {
+        Ok(a) => a,
+        Err(e) => {
+            // A bad attachment chain is not a reason to lose the capture.
+            sys_warn!(app, "mdf-import", "could not read MDF attachments: {e}");
+            return;
+        }
+    };
+    let state: State<'_, AppState> = app.state();
+    let loaded = install_embedded_databases(state.inner(), mdf_path, &attachments);
+    for db in &loaded {
+        for w in &db.warnings {
+            sys_warn!(app, "dbc", "{identity}: {w}", identity = db.identity);
+        }
+        if let Some(error) = &db.error {
+            sys_error!(app, "mdf-import", "embedded database not loaded: {error}");
+        } else {
+            sys_info!(
+                app,
+                "mdf-import",
+                "loaded embedded database {identity} ({messages} message(s)) from the capture",
+                identity = db.identity,
+                messages = db.message_count,
+            );
+        }
+    }
+    if loaded.iter().any(|d| d.error.is_none()) {
+        crate::rbs::refresh_all_elements(app);
+        // Same event the filesystem watcher fires: the catalog and the
+        // database panel rebuild off the loaded set, and it just changed.
+        let _ = app.emit("dbc-changed", mdf_path.to_owned());
+    }
+}
+
+/// What one embedded database did on its way into the loaded set.
+#[derive(Debug, Clone)]
+pub(crate) struct EmbeddedDbc {
+    /// The identity it was loaded under — the capture, then the
+    /// attachment's own name.
+    pub identity: String,
+    /// Messages it defines, `0` if it did not parse.
+    pub message_count: usize,
+    /// Non-fatal attribute problems.
+    pub warnings: Vec<String>,
+    /// Why it did not load, if it did not.
+    pub error: Option<String>,
+}
+
+/// Whether an `##AT` attachment is a database this project can read: the
+/// MIME type Vector registered for the format, or failing that a `.dbc`
+/// name. An external attachment carries no bytes (it names a file on
+/// disk instead), and chasing that reference would be the sidecar
+/// [ADR 0010](../../../docs/adr/0010-no-sidecar-files.md) rules out.
+fn is_embedded_dbc(attachment: &cannet_mdf::MdfAttachment) -> bool {
+    !attachment.data.is_empty()
+        && (attachment.mime_type.eq_ignore_ascii_case(DBC_MIME_TYPE)
+            || std::path::Path::new(&attachment.file_name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("dbc")))
+}
+
+/// Stream the capture's embedded databases into the loaded DBC set —
+/// the same machinery a DBC picked off disk goes through
+/// ([`crate::dbc_commands::install_dbc`]), given the bytes instead of a
+/// path. Nothing is written anywhere: an embedded database is usable
+/// where it lies (ADR 0010).
+///
+/// The identity is `<capture>#<attachment name>`, which is deliberately
+/// not a path: nothing reloads it from disk, and re-importing the same
+/// capture replaces it in place rather than stacking a second copy.
+pub(crate) fn install_embedded_databases(
+    state: &AppState,
+    capture_path: &str,
+    attachments: &[cannet_mdf::MdfAttachment],
+) -> Vec<EmbeddedDbc> {
+    attachments
+        .iter()
+        .filter(|a| is_embedded_dbc(a))
+        .map(|a| {
+            let identity = format!("{capture_path}#{}", a.file_name);
+            let text = String::from_utf8_lossy(&a.data);
+            match crate::dbc_commands::install_dbc(state, &identity, &text) {
+                Ok(installed) => EmbeddedDbc {
+                    identity,
+                    message_count: installed.message_count,
+                    warnings: installed.warnings,
+                    error: None,
+                },
+                Err(message) => EmbeddedDbc {
+                    identity,
+                    message_count: 0,
+                    warnings: Vec::new(),
+                    error: Some(message),
+                },
+            }
+        })
+        .collect()
 }
 
 /// The earliest sample `groups` will land inside the import range — the
