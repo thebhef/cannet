@@ -105,7 +105,9 @@ pub struct ServerList {
     pub browse: BrowseStatus,
 }
 
-/// Merge the three sources into the rows the panel renders.
+/// Merge the three sources into the rows the panel renders. Each of
+/// them can put a row in the list on its own: something stored, something
+/// advertising, or a question the host is waiting on.
 ///
 /// Keyed by [`server_key`] throughout, because that is what the trust
 /// store files entries under: a browsed `192.168.1.10:50051` and an
@@ -143,6 +145,14 @@ pub fn merge(
         .iter()
         .map(|(address, prompt)| (server_key(address), prompt))
         .collect();
+    // A question the host is waiting on is a fact about a server too,
+    // and for an address that was dialled by hand it is the only one:
+    // nothing is stored for it yet and nothing is advertising it, so
+    // without a row of its own the question could not be answered.
+    for key in by_key.keys() {
+        rows.entry(key.clone())
+            .or_insert_with(|| offline_row(key, &TrustEntry::default()));
+    }
     for (key, row) in &mut rows {
         row.prompt = by_key.get(key).map(|p| (*p).clone());
         if matches!(row.prompt, Some(TrustPrompt::IdentityChanged { .. })) {
@@ -394,6 +404,33 @@ mod tests {
             }),
             "the row carries the question, so the panel need not re-fail the connection",
         );
+    }
+
+    #[test]
+    fn an_address_the_host_is_waiting_on_gets_a_row_of_its_own() {
+        // How a server that advertises nowhere reaches the panel: it is
+        // dialled by hand, the attempt is refused at the certificate, and
+        // the question that leaves is the only thing anyone knows about
+        // the address. Without a row there is nothing to answer it from.
+        let prompts = BTreeMap::from([(
+            "bench.example.com:50051".to_string(),
+            TrustPrompt::AcceptIdentity {
+                observed: "SHA256:bbb".into(),
+            },
+        )]);
+        let rows = merged(&[], &BTreeMap::new(), &prompts);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].address, "bench.example.com:50051");
+        assert_eq!(rows[0].trust, TrustState::New);
+        assert!(!rows[0].online, "nothing is advertising it");
+        assert_eq!(rows[0].name, None);
+        assert_eq!(
+            rows[0].prompt,
+            Some(TrustPrompt::AcceptIdentity {
+                observed: "SHA256:bbb".into(),
+            }),
+        );
+        assert_eq!(rows[0].fingerprint, None, "nothing has been stored for it");
     }
 
     #[test]
