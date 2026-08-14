@@ -262,6 +262,22 @@ below:
 
 - **Show-points control** (`auto` / `off` / `on`) is on the plot
   toolbar and applies to every series in every axis of the panel.
+  `on` is capped at a flat maximum of drawn markers across the visible
+  range, and `auto` carries a **minimum-sample-count floor**: uPlot's
+  automatic rule reads the density of the *axis* — the merged x columns
+  every series on it shares — so a series holding a handful of samples
+  of its own loses its markers as soon as it is plotted beside a fast
+  one. Below the floor the samples are the information, so they stay
+  marked; above it uPlot's own answer stands. Both constants live in
+  `plotPoints.ts`.
+- **A one-sample series draws as a horizontal line** through its value,
+  held across the window rather than starting at its own timestamp.
+  One point is not a line — there is nothing to draw between a sample
+  and itself — and a series whose entire content is one value has no
+  shape that the usual pre-first-sample gap could be protecting. The
+  gap rule is otherwise unchanged: a series with two or more samples
+  still begins where its first one does, and no series is drawn past
+  its data.
 - **Y-axis-mode selector** (`unified` / `per-unit` / `individual`)
   sits in each plot area's signal-panel head. Switching modes
   re-stacks the area's canvases. The per-axis derivation is the pure
