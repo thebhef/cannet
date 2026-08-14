@@ -200,8 +200,8 @@ impl ConnectConfig {
     ///
     /// This is what a loopback server — the GUI's own sidecar, a
     /// `--bind 127.0.0.1` proxy, an in-process test server — is reached
-    /// with. A server that is not on loopback refuses to start this way
-    /// without `--insecure`.
+    /// with. A server that is not on loopback auto-enables TLS and a
+    /// token instead, unless it was started with `--no-tls`.
     #[must_use]
     pub fn plaintext(address: impl Into<String>) -> Self {
         Self {
@@ -211,8 +211,8 @@ impl ConnectConfig {
     }
 
     /// TLS against a server whose certificate fingerprint is already
-    /// known, with no credential. Useful for a server started with
-    /// `--tls` and no token.
+    /// known, with no credential. Useful for a client that has pinned
+    /// the fingerprint but has not been given a token yet.
     #[must_use]
     pub fn pinned(address: impl Into<String>, pin: CertPin) -> Self {
         Self {
