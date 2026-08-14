@@ -273,6 +273,46 @@ Other dispositions, recorded so the deletions lose nothing:
   no-remove-×-exception on collapsed headings was ratified by the
   owner 2026-08-14 (expand first, then remove).
 
+## Phases (groomed 2026-08-14)
+
+One branch per phase, chained linearly off `batch-docs-closeout`;
+phases run strictly sequentially in the main working tree.
+
+1. **Quick UI fixes** — items 4 (label alignment + guard test),
+   5 (disclosure glyph fills the hit box), 14 (`aria-expanded` +
+   caret removal), 16 (task-number comment sweep).
+2. **State/persistence correctness** — items 6 (dock-tab title
+   normalization on restore), 7 (palette "DBC" alias verify), 8
+   (recents cross-project bleed, two-project switch test).
+3. **BLF open dialog** — item 2: reentrancy guard (hard
+   requirement), stronger busy feedback, release-build latency
+   measurement before latency is treated as a defect.
+4. **Plot dropdowns** — item 15: points-mode and cursor-type menus
+   vs the measurement line; investigation, then test-first fix.
+5. **File-backed signal values** — item 10 (serve defect,
+   investigation-first) then item 11 (single-point hline, auto
+   marker minimum-count floor).
+6. **Enum leading-edge currency** — item 3: mixed-composition
+   reproduction at 5400 s, marker-rendering vs extent-overdraw
+   distinguished, per-axis-kind currency measured.
+7. **MDF message ingestion** — item 9: end-to-end investigation on
+   the owner's example files, then the groomed checkbox dialog and
+   DBC-attachment streaming.
+8. **Server secure-by-default** — item 12: routable binds
+   auto-enable TLS+token; `--tls` and `--insecure` removed;
+   `--no-tls` is the single escape.
+9. **Servers panel identity** — item 13 (same-name disambiguation)
+   plus the ratified pending-prompt drop.
+10. **Closeout** — exit-criteria walk, docs pass, final perf gate.
+
+The ADR-0031 perf gate runs after phases 5, 6, and 7 (they touch
+render/data-path hot spots) and again at closeout; multiple runs
+per build, worst-to-worst comparison.
+
+The owner's example capture files stay out of the repository — in
+whole or in part — and are never named or referenced in any repo
+document; their location travels only in phase prompts.
+
 ## Exit criteria (draft — firm at grooming)
 
 - Item-0 verdict recorded (done: tauri dev at stack tip — all
