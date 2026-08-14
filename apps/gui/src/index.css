@@ -4514,23 +4514,18 @@ button.trace-event-swatch {
   outline: 1px solid var(--select-outline);
   outline-offset: -1px;
 }
+/* DisclosureToggle (compact variant) owns the expandable row's hit
+   area, ink and rotation (task 63 item 1). This rule survives for the
+   *placeholder* `<span>` a childless row carries under the same class
+   so its indent lines up with an expandable sibling's 24px-wide
+   toggle — hence the width matches `.disclosure-toggle`'s floor
+   rather than retiring outright. */
 .dbc-row-chevron {
-  /* ADR 0044: a disclosure is a real control whose hit area is the full
-     row height and comfortably wide — the caret glyph inside it is
-     decoration. A glyph-sized target is what shipped as a defect. The
-     placeholder span on a childless row carries the same class so the
-     indents line up. */
-  background: none;
-  border: none;
-  padding: 0;
-  font: inherit;
-  color: var(--text-faint);
-  cursor: pointer;
   align-self: stretch;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.1rem;
+  min-width: 24px;
 }
 .dbc-row-bus .dbc-row-label {
   color: var(--warn-text);
