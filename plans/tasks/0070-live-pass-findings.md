@@ -982,6 +982,167 @@ document; their location travels only in phase prompts.
       here because the gated scenario's follow window keeps the read at
       level 0, where the splice is a no-op.
 
+- **2026-08-14, phase 7 (`task70-p7-mdf-ingestion`, branched off
+  `task70-p6-enum-leading-edge`):** item 9, investigation-first, then the
+  groomed checkbox design.
+
+  **Stage 1 — what import did with each content shape.** Measured with a
+  throwaway `cannet-mdf` example run against the owner's example corpus
+  (kept out of this repository, and removed before anything landed).
+  Fourteen files, all one CAN channel, 7 645–21 982 frames each over
+  20–120 s spans.
+
+  | content shape | per file | what import did |
+  | --- | --- | --- |
+  | bus-logging frame groups | 1 group, 7.6 k–22 k frames | pumped onto the timeline |
+  | message-independent signal groups | 32–35 groups, 1 signal each | filled as file-backed signals |
+  | per-message DBC-decoded groups | 28–29 groups, **139–144 signals** | recognised, reported, **skipped** |
+  | `##AT` attachments | **0** | nothing to load |
+
+  - _What the decoded groups actually carry._ One group per CAN message,
+    `cg_flags` bit 1 set and bit 2 clear, `si_path` =
+    `CAN1.CAN_DataFrame.ID=0x310 EXT=False`, `cg_acq_name` = `CAN1
+    message ID=0x310 EXT=False`. Their channels are the DBC's own signal
+    names (`SOC`, `CurrentBMSState`, `Contactor1AuxState`, …), each with
+    a master time channel, a unit where the DBC gave one, and 322 cycles
+    over the file's span in the sampled file. The message-independent
+    groups are the other shape entirely: one unnamed group per signal,
+    names like `cell1.voltage.set`, no unit, no conversion, 5–19 samples
+    across the run — the sparse series item 10 was about.
+  - _The reason they cannot be re-derived._ The skip was justified as
+    "the file's own frames plus the project's DBC already imply them."
+    They do not: the DBC those signals were decoded against is the
+    recording tool's, and the project may not hold it — these files
+    embed no attachment at all. Skipping them dropped 139 of the 172
+    signals each file carries.
+  - _A second defect the census turned up, before any of it was
+    implemented._ Reading a decoded group naively loses a third of it
+    again. In the sampled file, of its 139 decoded channels **39
+    decode to zero samples**:
+    they carry a value-to-**text** conversion (a DBC enumeration —
+    `CurrentBMSState = 1 -> "Idle"`, `PosContactorClosed = 0 -> "Open"`),
+    `apply_conversion_value` returns a `String`, and `as_f64` returned
+    `None` for every sample, so the channel arrived empty and
+    `fill_file_backed_signals` skipped it entirely. Tally over that
+    file (decoded / numeric-reading / conversion type): 71 `Linear` ok, 29
+    range-conversion ok, **39 range-to-text empty**; on the
+    message-independent side 33 ok and 18 genuine string channels
+    (`DecodedValue::String` raw), which have no numeric series and are
+    correctly left out.
+  - _Where the frames land._ Unchanged and already correct:
+    `MdfCanFrameSource` merges the bus groups in timestamp order and
+    `import_mdf` runs them through the shared `run_pump` with a
+    `WindowedSource` range filter (ADR 0046), exactly as BLF import
+    does. `BusChannel - 1` is the wire channel.
+  - _What a DBC attachment looks like._ None of the owner's files carry
+    one, so this is from our own writer, which every Save Capture to MDF
+    exercises: one `##AT` per loaded DBC, `at_tx_filename` = the DBC's
+    base name, `at_tx_mimetype` = `application/vnd.vector.dbc`, the
+    file's bytes embedded (the crate's
+    `an_embedded_attachment_comes_back_byte_for_byte` round-trips it
+    field for field). An *external* attachment names a file instead of
+    carrying one and comes back with empty `data`.
+
+  **Stage 2 — what landed.**
+
+  - `830293a` feat(mdf): per-message DBC-decoded groups arrive as
+    file-backed signals. `signal_groups()` returns every group that is
+    signals rather than frames, each tagged with `decoded_source` (the
+    `si_path`, `None` for a message-independent group);
+    `SkippedDecodedGroup` becomes `DecodedMessageGroup` and still lists
+    the per-message subset for a caller that wants to say what a file
+    holds. `decode::as_signal_f64` keeps the stored code where the
+    conversion yields text — four unit tests over the pure rule, plus
+    three integration tests written first against
+    `sorted_finalized_dbcdecoded.mf4` (decoded groups offered as signals
+    with their samples and their source path; a message-independent
+    group carrying no source path) and one host test that the fill
+    produces one cache entry per decoded channel. `scan_mdf` grew a
+    census (`SignalGroupCensus`) that counts groups and channels off the
+    block graph instead of materialising every series to read the group
+    names. cannet-mdf 40 tests passed; `cargo test -p cannet-gui` 636
+    passed / 6 ignored; frontend 154 files / 2075 tests; build and both
+    clippy runs clean.
+  - `aa7aaff` feat(gui): the MDF import dialog offers a checkbox per
+    content. `import_mdf` takes `import_signals` / `import_messages`;
+    the dialog renders a checkbox per content the file actually carries.
+    Signals default on. CAN messages are opt-in **except** on a file
+    with no signal content, where the frames are all there is and
+    defaulting them off would make the dialog's default action import
+    nothing — recorded as an implementation reading of "CAN messages
+    opt-in", since the ruling does not cover that case. Ticking neither
+    disables Open; the channel → bus mapping is disabled while the
+    frames are not being imported. Frames were also the only thing
+    anchoring the session timeline, so `signal_origin_ns` supplies one
+    from the earliest in-range sample and the pump-less path emits
+    `log-finished` itself. Nine tests written first, all failing (five
+    in `BlfChannelMapModal.dom.test.tsx`, two in the new
+    `App.mdfContents.dom.test.tsx` falsified by removing the two wire
+    arguments — `expected undefined to be true` — and two in
+    `tests.rs`). Host 637 passed; frontend 158 files / 2082 tests.
+  - `01155ff` feat(gui): an MDF's embedded databases load with the
+    capture. `dbc_commands::install_dbc` is `add_dbc`'s
+    parse-and-install core, split out and taking an *identity* rather
+    than a file, so the filesystem watch stays with the caller that has
+    a file to watch. `capture::install_embedded_databases` streams each
+    `##AT` DBC through it under `<capture>#<attachment name>` —
+    deliberately not a path, so nothing reloads it from disk and
+    re-importing the same capture replaces it in place. Attachments are
+    picked by Vector's registered MIME type or a `.dbc` name; an
+    external attachment carries no bytes and is left alone (chasing the
+    reference would be the sidecar ADR 0010 rules out). A database that
+    will not parse is reported and left out. Three tests written first,
+    all failing against the missing function. Host 640 passed / 6
+    ignored; clippy clean.
+
+  **Verification of the whole against the owner's files** (same
+  throwaway example, after the three commits, corpus still out of the
+  repository): every file's census signal count now lands, with no empty
+  series at all — the sampled file's 172 census signals → **172
+  filled** (33
+  message-independent + 139 decoded), 44 214 samples; across the
+  fourteen files 171–176 signals each and 10 945–64 104 samples, and
+  `empty = 0` everywhere. Before this phase the same files delivered the
+  32–35 message-independent signals alone. Scan cost after the census
+  change: 2–4 ms per file for the whole walk.
+
+  - **Perf gate (ADR 0031, release build at `01155ff`), two runs, gated
+    with `--expected-rx-fps/--expected-tx-fps 1608`: both passed,
+    33 / 33 metrics, no baseline promoted.** No cannet instance held the
+    dongles before either run, and the process tree was killed after
+    each; `cannet.log` carries no error from either capture window.
+    - Run 1 (`docs/performance-measurements/frontend/2026-08-14-01155ff-task70-p7-run1.json`):
+      rx 1606.2 fps, tx 1609.8 fps, 60 samples over 59.0 s, rx_gap
+      `ids_measured` 173. longtask_ms_per_s_mean 0.000 (limit 12.600),
+      longtask_ms_per_s_p95 0.000 (17.000), lag_ms_max 5.300 (74.200),
+      jank_fraction 0.000 (0.083), jsheap_mb_peak 90.700 (207.200),
+      jsheap_mb_drift_per_min 12.914 (16.386), renderer_mb_peak 371.871
+      (702.516), renderer_mb_drift_per_min 97.609 (106.605), host_mb_peak
+      58.281 (180.805), tree_mb_peak 798.426 (1550.523),
+      tree_mb_drift_per_min 126.221 (165.233), flush_ms_mean 3.286
+      (25.000), tx_late_ms_mean 4.472 (18.000), flush_ms_max 14.720
+      (55.352), tx_late_ms_max 15.767 (176.894), rx_gap_p95_ratio_worst
+      1.181 (2.893), rx_gap_short_frac_worst 0.004 (0.041),
+      rx/tx_fps_retention 0.995 / 1.000 (0.800). Host tiers: tracebuffer
+      25000.1 fps, grpc 2889.7, hardware-peak 999.8, all ok.
+    - Run 2 (`...-task70-p7-run2.json`): rx 1601.5 fps, tx 1604.5 fps,
+      60 samples over 59.0 s, `ids_measured` 173. longtask_ms_per_s_mean
+      0.000, lag_ms_max 2.100, jank_fraction 0.000, jsheap_mb_peak
+      84.400, jsheap_mb_drift_per_min 6.998, renderer_mb_peak 344.766,
+      renderer_mb_drift_per_min 81.769, host_mb_peak 58.238, tree_mb_peak
+      772.590, tree_mb_drift_per_min 110.554, flush_ms_mean 3.323,
+      tx_late_ms_mean 3.790, flush_ms_max 12.060, tx_late_ms_max 8.779,
+      rx_gap_p95_ratio_worst 1.130, rx_gap_short_frac_worst 0.001. Host
+      tiers: tracebuffer 25000.1, grpc 2855.6, hardware-peak 999.9, all
+      ok.
+    - Worst-to-worst the two memory-drift metrics again sit closest to
+      their limits (renderer 97.6 of 106.6, tree 126.2 of 165.2) — the
+      same shape phases 5 and 6 and the batch's close-out runs record,
+      not something this phase moved. The gated scenario is a live
+      hardware capture with no MDF in it, so nothing this phase changed
+      is on its hot path; the run is a guard against collateral damage,
+      and there is none.
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
@@ -1105,6 +1266,50 @@ document; their location travels only in phase prompts.
   all — no error, no queued open. The busy launcher and the status
   line are what say why, which is the point of strengthening them; but
   it is a behavior change nobody asked about, so it is recorded here.
+
+- **A signal-only MF4 still cannot be imported** (phase 7, item 9,
+  deliberately out of scope). A file with no bus-logging group at all is
+  still rejected with `MdfSourceError::SignalFile`, from both
+  `scan_mdf` and `MdfCanFrameSource::open`, so the dialog never opens
+  for one and the Signals checkbox never gets a chance. The owner's
+  example files all carry frames, and the ruling scopes the messages
+  checkbox to "offered when frame groups exist" — which only says the
+  checkbox hides, not that a frameless file imports. Lifting it means
+  removing the `SignalFile` rejection (a documented deliberate
+  behaviour, README and crate docs included) and giving the frames-less
+  path a source-free open; that is its own change, and nothing in the
+  live pass asked for it. **Owner decision**: should a post-processed
+  measurement MF4 be importable for its signals?
+
+- **An embedded database is a session load, not a project file**
+  (phase 7 side effect). A DBC streamed out of a capture's `##AT` chain
+  goes into the host's loaded set — so it decodes frames, and it shows
+  up in the Database view and the signal catalog — but it is *not*
+  added to the frontend's `dbcPaths`, and therefore not to the
+  project's DBC list and not persisted with the project. That is
+  deliberate: `dbcPaths` is persisted as project-relative file
+  references (ADR 0030) and re-added through `add_dbc` on the next
+  project open, which reads from disk; an identity like
+  `<capture>#<name>.dbc` has no disk to read, so persisting it would
+  guarantee an error on every reopen. The consequence is that the
+  project panel's DBC list and the loaded set can differ after an MDF
+  import, and closing/reopening the project drops the embedded
+  definitions until the capture is imported again.
+
+- **A per-message decoded signal arrives as raw codes with no labels**
+  (phase 7, recorded because it is the visible half of a decision made
+  during implementation). In the sampled file 39 of its 139 decoded
+  channels are
+  enumerations whose value-to-text table lives in the MDF's own
+  conversion block. The import keeps the **code** — the alternative was
+  dropping the sample, which lost the whole channel — but a file-backed
+  signal has nowhere to carry a value table, so those lanes render as
+  numbers where a DBC-backed enum would render its label. The
+  information is in the file and is being thrown away at the seam. Two
+  ways out if the owner wants the labels: give `FileSignal` a value
+  table and teach the file-backed cache to carry one, or (narrower)
+  match a file-backed signal against a loaded DBC by name. Neither is
+  started — no ruling, and the ruling that exists is satisfied.
 
 ## Exit criteria (draft — firm at grooming)
 

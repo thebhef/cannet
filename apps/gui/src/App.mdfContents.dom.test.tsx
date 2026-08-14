@@ -49,7 +49,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           ],
         };
       case "import_mdf":
-        return { mdf_path: "/logs/merged.mf4" };
+        return { mdf_path: "/logs/capture.mf4" };
       case "fetch_filtered_trace":
       case "fetch_by_id_page":
         return { count: 0, start: 0, rows: [] };
@@ -90,7 +90,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(async () => "/logs/merged.mf4"),
+  open: vi.fn(async () => "/logs/capture.mf4"),
   save: vi.fn(async () => null),
 }));
 
