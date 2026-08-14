@@ -18,7 +18,7 @@ import { Combobox, type ComboboxOption } from "./Combobox";
 import { describeBusConnState } from "./connectionStates";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { hostSettings } from "./hostSettings";
-import { serverKey, serverLabel, type ServerRow } from "./serverList";
+import { formatClockOffset, serverKey, serverLabel, type ServerRow } from "./serverList";
 import { describeSidecarStatus } from "./sidecarStatus";
 import type {
   Bus,
@@ -917,6 +917,19 @@ export function ServerSection({
         >
           {stateText}
         </span>
+        {server.clock !== null && (
+          <span
+            className={`project-server-clock${server.clock.warn ? " warn" : ""}${
+              server.clock.stale ? " stale" : ""
+            }`}
+            title={`measured clock offset vs ${server.address}${
+              server.clock.stale ? " (stale — no recent reply)" : ""
+            }`}
+            data-testid={`server-clock-${server.address}`}
+          >
+            {formatClockOffset(server.clock.offsetNs)}
+          </span>
+        )}
         {server.online && (
           <button
             type="button"

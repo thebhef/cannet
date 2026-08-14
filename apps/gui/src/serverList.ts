@@ -66,11 +66,42 @@ export interface ServerRow {
   manual: boolean;
   /// The question the host is waiting on for this server, if any.
   prompt: TrustPrompt | null;
+  /// This server's measured clock offset for the live session against
+  /// it (Task 68). `null` for an unconnected server, a peer that
+  /// doesn't support the probe, or a session whose first measurement
+  /// hasn't settled yet — all of which render as no badge, never an
+  /// error.
+  clock: ServerClock | null;
 }
 
 export interface ServerList {
   servers: ServerRow[];
   browse: BrowseStatus;
+}
+
+/// The measured clock offset for the live session against a server
+/// (Task 68). Mirrors the host's `server_list::ServerClock`. `warn` and
+/// `stale` are the host's own read of the record — not re-derived here.
+export interface ServerClock {
+  /// The server's clock minus ours, nanoseconds. Positive means the
+  /// server is ahead.
+  offsetNs: number;
+  /// Set when the offset's magnitude exceeds the host's warn threshold.
+  warn: boolean;
+  /// Set when the measurement is stale: the peer answered before but
+  /// has gone quiet on the re-probe cadence, so this is the last good
+  /// number rather than a fresh one.
+  stale: boolean;
+}
+
+/// `offsetNs` as the short figure a row shows: sub-second in
+/// milliseconds, a second or more in seconds — signed, so "ahead" and
+/// "behind" read at a glance (e.g. `"+4.2 s"`, `"-42 ms"`).
+export function formatClockOffset(offsetNs: number): string {
+  const ms = offsetNs / 1_000_000;
+  const sign = ms >= 0 ? "+" : "-";
+  const abs = Math.abs(ms);
+  return abs >= 1000 ? `${sign}${(abs / 1000).toFixed(1)} s` : `${sign}${abs.toFixed(0)} ms`;
 }
 
 /// The starting snapshot, before the host has answered: no servers, and

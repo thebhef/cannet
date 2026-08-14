@@ -36,6 +36,7 @@ function serverRow(patch: Partial<ServerRow> & { address: string }): ServerRow {
     insecure: false,
     manual: false,
     prompt: null,
+    clock: null,
     ...patch,
   };
 }
@@ -146,6 +147,54 @@ describe("a trusted server's section", () => {
     // In the header, and again where the interfaces would have been.
     expect(screen.getByText("unreachable: connection refused")).toBeInTheDocument();
     expect(screen.getByText("(unreachable: connection refused)")).toBeInTheDocument();
+  });
+});
+
+describe("the clock-offset badge (Task 68)", () => {
+  it("renders nothing when the server carries no clock record", () => {
+    renderSection({ server: BENCH }); // BENCH's clock is null
+    expect(screen.queryByTestId(`server-clock-${BENCH_ADDRESS}`)).not.toBeInTheDocument();
+  });
+
+  it("shows the measured offset without a warning under threshold", () => {
+    renderSection({
+      server: serverRow({
+        address: BENCH_ADDRESS,
+        name: "bench-rig",
+        clock: { offsetNs: 42_000_000, warn: false, stale: false },
+      }),
+    });
+    const badge = screen.getByTestId(`server-clock-${BENCH_ADDRESS}`);
+    expect(badge).toHaveTextContent("+42 ms");
+    expect(badge.className).not.toMatch(/warn/);
+    expect(badge.className).not.toMatch(/stale/);
+  });
+
+  it("styles the badge as a warning above the threshold", () => {
+    renderSection({
+      server: serverRow({
+        address: BENCH_ADDRESS,
+        name: "bench-rig",
+        clock: { offsetNs: 4_200_000_000, warn: true, stale: false },
+      }),
+    });
+    const badge = screen.getByTestId(`server-clock-${BENCH_ADDRESS}`);
+    expect(badge).toHaveTextContent("+4.2 s");
+    expect(badge.className).toMatch(/warn/);
+  });
+
+  it("greys a stale measurement while still showing the last good number", () => {
+    renderSection({
+      server: serverRow({
+        address: BENCH_ADDRESS,
+        name: "bench-rig",
+        clock: { offsetNs: -150_000_000, warn: true, stale: true },
+      }),
+    });
+    const badge = screen.getByTestId(`server-clock-${BENCH_ADDRESS}`);
+    expect(badge).toHaveTextContent("-150 ms");
+    expect(badge.className).toMatch(/stale/);
+    expect(badge.title).toMatch(/stale/);
   });
 });
 

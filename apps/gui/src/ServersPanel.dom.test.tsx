@@ -46,6 +46,7 @@ const row = (over: Partial<ServerRow>): ServerRow => ({
   insecure: false,
   manual: false,
   prompt: null,
+  clock: null,
   ...over,
 });
 
