@@ -109,6 +109,112 @@ on-show list.
 
 ## Status log
 
+### 2026-08-14 — item 2: collapse reclaims space (area heading row + axis collapse)
+
+Branch `task63d-collapse-reclaims-space` off `task63c-disclosure-toggle`
+(`15e69f8`). Two commits: the pure per-axis collapsed store
+(`af9a84b`), then the panel/area wiring, docs and tests (`92df21a`).
+
+#### The collapsed area — what goes, and what is deliberately kept
+
+A collapsed area renders exactly one heading row: **grip · area
+disclosure · name · signal-count chip · pattern match chip**. The
+chips reuse the solo chip's ink (`.plot-area-count-chip` joins
+`.plot-solo-chip`'s rule) rather than a new look. Everything else is
+gone from that row — fit y, the y-axis-mode selector, the patterns
+button, the remove ×, the filter status line, the y-cursor readout,
+and the signal rows.
+
+Two things go further than "hide the body":
+
+- **The derived axes after the first are not rendered at all.** One
+  collapsed area is one row, however many axes its mode stacks — a
+  per-unit area with three unit groups used to leave three strips.
+  `renderedAxes` filters them out of the render pass only; they stay in
+  `derivedAreaConfigs` and so in `derivedAxisIds`, which is what keeps
+  `pruneAxisWeights` / `pruneAxisScales` from retiring their entries
+  while the area is collapsed. That is the whole mechanism behind
+  "expanding restores the prior layout exactly": the collapse writes one
+  boolean and touches no weight. Splitter pairing and collapsed-run
+  heads are computed over `renderedAxes`, not the full list, so they
+  describe what is actually in the DOM.
+- **Unmount, not zero-height.** The dropped axes leave the tree
+  entirely. They hold no state that has to survive: a collapsed axis
+  already constructs no uPlot, and everything persisted about it
+  (weight, manual range, y-cursors, sampled series for the measurement
+  strip) is panel-level and keyed by axis id. The one thing lost is the
+  axis's `useDecimatedRange` cache, so re-expanding refetches instead of
+  repainting from cache — one round trip against a warm host cache,
+  which is cheaper than keeping N mounted components running.
+
+**Kept: the all-hidden collapse still shows its compact rows.** ADR
+0026's original rationale for keeping rows was the un-hide path — a
+swatch in one of those rows is the only way back — and that is still
+true. So the row-suppression keys on a *deliberate* collapse
+(`headingOnly` = the area's own flag, or this axis's own), never on the
+all-hidden / solo-masked rule. Reducing an all-hidden area to a heading
+would strand its signals.
+
+#### Axis collapse
+
+`axisCollapsed: Record<string, true>` on the panel, keyed by
+derived-axis id, sparse, pruned to the live axis set — deliberately the
+same store shape and the same lifecycle as `axisWeights`, since both
+describe the layout the user is looking at (a y-axis-mode change
+retires them together, unlike the manual ranges which survive it). It
+folds into the per-axis `collapsed` flag `deriveAreaConfigs` already
+computes, so an axis collapse inherits the entire existing treatment
+for free: `flexGrow: 0` (the share redistributes, the stack still
+fits), `splitterPartnerAbove` reach-over, `collapsedRunHeads`, and the
+gesture-replaying placeholder.
+
+Decisions taken with the code:
+
+| question | ruling |
+| --- | --- |
+| which axes get a toggle | those with a subtitle — a per-unit unit group, an individual-mode series. In unified mode the area *is* the axis, so its toggle is the only one; a second one on that row would say nothing. |
+| splitter between a collapsed axis and its neighbour | **hidden**, and the neighbours pair *across* it. Already `splitterPartnerAbove`'s contract for the all-hidden collapse — a zero-weight axis has nothing to trade, and severing the stack would remove the only handle for resizing either side. |
+| last axis uncollapsible? | **no rule.** An area with every axis collapsed is exactly the shape the all-hidden rule already reaches, each strip keeps its own (enabled) toggle, and the panel's flex column simply leaves blank space below. Nothing wedges, so nothing needs forbidding. |
+| does it travel with an area drag? | **no** — same as the axis weights, which the drag payload deliberately leaves behind (the manual ranges do travel). Collapse is layout state of *this* stack. |
+
+**"Collapse does not stop ingest."** There is no host-side subscription
+to change: the phase-1 investigation established that the plot pulls
+`sample_signals` per axis and the host decodes on demand, so there is
+nothing a collapsed axis could unsubscribe from. What the requirement
+reduces to at this layer is that the *signals* are untouched — the test
+asserts the persisted `areas` blob is byte-identical across a collapse
+round-trip (no `hidden` written, no membership change) and that the
+rows and their series come straight back on expand. A collapsed axis
+does stop *fetching pixels*, exactly as an area collapsed by the flag
+already did, because it has no canvas to draw them on.
+
+#### Label split
+
+The head used to render one concatenated `Area 1 · [V]` string. It is
+now the area name, a decorative `·`, the axis disclosure and the axis's
+own label as separate spans — the toggle has to sit *on the thing it
+collapses*. Two existing tests queried the concatenated text and now
+read the two spans.
+
+#### Tests
+
+2026 frontend tests (`pnpm --dir apps/gui test`, +14: 4 in
+`plotAreaLayout.test.ts` for the collapsed store, 10 DOM tests across
+the two collapse suites — heading-row reduction, the one-row multi-axis
+collapse, the pattern chip, the area round-trip, and the axis suite's
+collapse/redistribute, round-trip, persisted read-back, layout-not-
+visibility, all-axes-collapsed, unified-mode absence and pruning).
+`pnpm --dir apps/gui build` green. No host changes.
+
+#### Blockers / side effects
+
+- **Removing a collapsed area now needs an expand first** — the remove
+  × is one of the controls the heading row drops ("nothing else"). Noted
+  rather than carved out; say so if the × should be the exception.
+- A collapse toggle re-derives every area's axes (`axisCollapsed` is a
+  panel-wide dependency of the derivation memo) rather than just the
+  touched one. One click, so the scoping was not worth a per-area slice.
+
 ### 2026-08-14 — item 1: the DisclosureToggle component and its 12-site migration
 
 Branch `task63c-disclosure-toggle` off `task63b-categorical-serve`
