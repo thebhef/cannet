@@ -168,8 +168,10 @@ function ServerRowView({
 }: ServerRowViewProps) {
   const [token, setToken] = useState("");
   // Everything stored for a server is dropped together, so the button
-  // appears whenever there is anything to drop.
-  const stored = row.trust !== "new" || row.hasToken;
+  // appears whenever there is anything to drop — which is not the same
+  // as the row being trusted: a loopback server is reached in the clear
+  // and has nothing stored behind it.
+  const stored = row.fingerprint !== null || row.hasToken || row.insecure;
   return (
     <div className={`server-row${row.online ? "" : " offline"}`}>
       <span className={`server-badge ${row.trust}`}>{trustLabel(row)}</span>
@@ -193,7 +195,7 @@ function ServerRowView({
             {row.trust === "fingerprintChanged" ? "Review identity…" : "Trust…"}
           </button>
         )}
-        {row.trust === "trusted" && !row.insecure && (
+        {row.fingerprint !== null && (
           <button
             type="button"
             disabled={busy}

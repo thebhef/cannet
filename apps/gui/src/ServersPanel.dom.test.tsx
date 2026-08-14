@@ -175,6 +175,22 @@ describe("the merged server list", () => {
     expect(open).toHaveTextContent("connects without protection");
   });
 
+  it("offers no trust actions on a server that is reached without asking", async () => {
+    // The host reaches loopback in the clear and never asks about it,
+    // so its row is trusted with nothing stored: there is no identity
+    // to accept, no token that would ever be presented, and nothing to
+    // forget.
+    snapshot = list([row({ address: "127.0.0.1:50051", trust: "trusted" })]);
+    renderPanel();
+    await screen.findByText("127.0.0.1:50051");
+    const local = within(rowFor("127.0.0.1:50051"));
+    expect(local.queryByRole("button", { name: /^trust/ })).not.toBeInTheDocument();
+    expect(
+      local.queryByRole("button", { name: /^set token/ }),
+    ).not.toBeInTheDocument();
+    expect(local.queryByRole("button", { name: /^forget/ })).not.toBeInTheDocument();
+  });
+
   it("filters with a fuzzy search over names, host names, and addresses", async () => {
     renderPanel();
     await screen.findByText("192.168.1.10:50051");
