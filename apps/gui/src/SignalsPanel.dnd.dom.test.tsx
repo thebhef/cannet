@@ -418,3 +418,71 @@ describe("dropping inside the panel", () => {
     expect(lastKeys()).toEqual(["EngineSpeed", "Coolant"]);
   });
 });
+
+describe("add-path proof: the picker is gone, drop is the only manual add", () => {
+  // The catalog "add signal" combobox (a first-draft picker) is removed;
+  // the Database panel drag/drop path is what remains. These pin that a
+  // signal — DBC-backed or file-backed — still reaches the manual
+  // selection, and thus a rendered row, with nothing but a drop: payload
+  // → `parseSignalDragData` → `addKeys` → the wire selection sent to
+  // `fetch_signal_page`.
+  function lastSelectionKeys(): {
+    signalName: string;
+    busId: string | null;
+    messageId: number;
+    extended: boolean;
+    fileBacked?: boolean;
+  }[] {
+    const last = [...invokeCalls].reverse().find((c) => c.cmd === "fetch_signal_page");
+    const sel = last?.args?.selection as
+      | {
+          keys: {
+            signalName: string;
+            busId: string | null;
+            messageId: number;
+            extended: boolean;
+            fileBacked?: boolean;
+          }[];
+        }
+      | undefined;
+    return sel?.keys ?? [];
+  }
+
+  it("adds a DBC signal dropped from the Database panel, no picker involved", async () => {
+    renderPanel();
+    await screen.findByText(/EngineSpeed/);
+    const dt = externalTransfer({ signals: [{ ...ENGINE, messageId: 999, signalName: "Brake" }] });
+    fireEvent.drop(document.querySelector(".signals-panel")!, { dataTransfer: dt });
+    await waitFor(() => {
+      expect(lastSelectionKeys()).toEqual([
+        { signalName: "Brake", busId: "p", messageId: 999, extended: false },
+      ]);
+    });
+    expect(screen.getByRole("button", { name: /selection \(1\)/ })).toBeInTheDocument();
+  });
+
+  it("adds a file-backed signal dropped from the Database panel, no picker involved", async () => {
+    renderPanel();
+    await screen.findByText(/EngineSpeed/);
+    const dt = externalTransfer({
+      signals: [
+        {
+          busId: null,
+          messageId: 3,
+          extended: false,
+          signalName: "TankLevel",
+          messageName: "Analog",
+          unit: "L",
+          fileBacked: true,
+        },
+      ],
+    });
+    fireEvent.drop(document.querySelector(".signals-panel")!, { dataTransfer: dt });
+    await waitFor(() => {
+      expect(lastSelectionKeys()).toEqual([
+        { signalName: "TankLevel", busId: null, messageId: 3, extended: false, fileBacked: true },
+      ]);
+    });
+    expect(screen.getByRole("button", { name: /selection \(1\)/ })).toBeInTheDocument();
+  });
+});

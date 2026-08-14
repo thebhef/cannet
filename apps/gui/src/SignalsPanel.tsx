@@ -37,18 +37,13 @@ import {
   resolvePatterns,
   scopeCatalog,
 } from "./signalSelection";
-import {
-  FILE_BACKED_BADGE,
-  FILE_BACKED_LABEL,
-  FILE_BACKED_TITLE,
-} from "./fileBackedSignal";
+import { FILE_BACKED_BADGE, FILE_BACKED_TITLE } from "./fileBackedSignal";
 import { recordSignalKey, signalKey } from "./plotData";
 import { buildSignalColorResolver } from "./signalColorResolver";
 import { useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { useThemeName } from "./theme";
 import { elementLabel } from "./elementLabel";
 import { SourcesContextMenu } from "./SourcesPicker";
-import { Combobox } from "./Combobox";
 import {
   SIGNAL_DND_MIME,
   dedupeSignalRefs,
@@ -518,46 +513,6 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     trace.status === "running",
   );
 
-  // Manual add via the catalog picker (same option shape as the plot).
-  const catalogOptions = useMemo(() => {
-    const opts = scopedCatalog.map((s) => {
-      const busLabel = s.bus_id == null ? null : lookup.get(s.bus_id) ?? s.bus_id;
-      // A file-backed signal (`docs/CONTEXT.md`) has no ECU because no
-      // node transmits it; its source stands in that segment so the
-      // picker says where the series came from.
-      const ecu = s.file_backed ? FILE_BACKED_LABEL : s.transmitter ?? "(no transmitter)";
-      return {
-        value: recordSignalKey(s),
-        path: busLabel ? [busLabel, ecu, s.message_name] : [ecu, s.message_name],
-        label: `${s.signal_name}${s.unit ? ` [${s.unit}]` : ""}`,
-        desc: s,
-      };
-    });
-    return opts.sort((a, b) => {
-      const pa = a.path.join(" ");
-      const pb = b.path.join(" ");
-      return pa < pb ? -1 : pa > pb ? 1 : 0;
-    });
-  }, [scopedCatalog, lookup]);
-  const handlePick = useCallback(
-    (value: string) => {
-      const opt = catalogOptions.find((o) => o.value === value);
-      if (!opt) return;
-      addKeys([
-        {
-          busId: opt.desc.bus_id,
-          messageId: opt.desc.message_id,
-          extended: opt.desc.extended,
-          signalName: opt.desc.signal_name,
-          messageName: opt.desc.message_name,
-          unit: opt.desc.unit,
-          ...(opt.desc.file_backed ? { fileBacked: true as const } : {}),
-        },
-      ]);
-    },
-    [catalogOptions, addKeys],
-  );
-
   // Drop target: Database panel / trace / plot signals land in the manual list.
   const onDragOver = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
@@ -966,14 +921,6 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           onPause={trace.pause}
           onResume={trace.resume}
           onClear={trace.clear}
-        />
-        <Combobox
-          className="signals-add"
-          options={catalogOptions}
-          value=""
-          placeholder="add signal…"
-          ariaLabel="add signal"
-          onChange={handlePick}
         />
         <button
           type="button"
