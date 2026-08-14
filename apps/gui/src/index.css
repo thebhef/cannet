@@ -1683,6 +1683,19 @@ header {
   padding: 0 0.35rem;
 }
 
+/* A bus bound to a server this machine cannot reach without an answer
+   from the user. A warning rather than an error: the binding is fine,
+   the machine simply has not accepted the server yet. */
+.project-bus-untrusted {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: baseline;
+  font-size: 0.72rem;
+  color: var(--warn-text);
+  padding-left: 1.4rem;
+}
+
 /* What the host actually put on the wire for a connected bus. Sits
    under the bus name, above the (request-side) hardware fields, so the
    two read as "live" vs "asked for". */

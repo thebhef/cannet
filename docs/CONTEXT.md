@@ -62,6 +62,17 @@ _Avoid_: "trusted-servers list" for this — one merged list, not a
 separate pinned-only one. _Avoid_: "add a server to a bus" — a bus is
 bound to an interface on a server this machine already trusts.
 
+**Unknown server** (on a bus):
+What a bus row says when its binding names a server this machine
+cannot reach without an answer from the user: *unknown server
+`host:port`* when nothing is known about the address, *not trusted on
+this machine* when it is in the Servers panel unaccepted, and a
+changed-identity line when the certificate stopped matching the pin.
+The host decides which addresses those are — a loopback proxy is
+reached in the clear and is never flagged.
+_Avoid_: calling it an error; the binding is intact and the fix is one
+decision in the Servers panel.
+
 **Server section**:
 One trusted server's collapsible element in the project panel's
 *Connection* section, a sibling of **Local interfaces**: the server's

@@ -19,23 +19,34 @@ import { useSidecarStatus } from "./sidecarStatus";
 import { useUndoGesture } from "./undoGesture";
 import type { Bus, ProjectElement, ProjectElementKind } from "./types";
 import { elementKindLabel, elementLabel } from "./elementLabel";
-import { localVbusBinding, localVbusId, resolveServer } from "./types";
+import {
+  isLocalBinding,
+  localVbusBinding,
+  localVbusId,
+  resolveServer,
+} from "./types";
 import {
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_ID,
   elementPanelComponent,
   showServersPanel,
 } from "./dockLayout";
-import { trustedServers, useServerList } from "./serverList";
+import {
+  trustedServers,
+  useAddressesNeedingTrust,
+  useServerList,
+} from "./serverList";
 import { defaultBusColor } from "./busColor";
 import { useThemeName } from "./theme";
 import {
   BusHardwareConfig,
   BusInterfaceCombo,
+  BusServerTrustNotice,
   LocalInterfacesRow,
   ServerSection,
   VirtualBusRow,
   bindingsForServer,
+  busServerTrust,
   samePick,
   useInterfaceDiscovery,
   useServerSections,
@@ -184,6 +195,20 @@ export function ProjectPanel(props: IDockviewPanelProps) {
   }, [sidecarAddress, trusted, p.interfaceBindings]);
 
   const discovery = useInterfaceDiscovery(knownServers);
+  // Which of the servers this project names cannot be reached without
+  // an answer from the user. The host decides — a bus row only renders
+  // what it is told (ADR 0041).
+  const boundServers = useMemo(
+    () => [
+      ...new Set(
+        p.interfaceBindings
+          .filter((b) => !isLocalBinding(b) && localVbusId(b) === null)
+          .map((b) => b.server),
+      ),
+    ],
+    [p.interfaceBindings],
+  );
+  const needingTrust = useAddressesNeedingTrust(boundServers);
   // A server's section stands open while one of its interfaces is
   // chosen; the hook keeps a manual fold until that answer moves.
   const chosenServers = useMemo(() => {
@@ -388,6 +413,15 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   }}
                 />
               </div>
+              <BusServerTrustNotice
+                bus={bus}
+                state={busServerTrust(
+                  binding ?? null,
+                  serverList.servers,
+                  needingTrust,
+                )}
+                onManageServers={() => showServersPanel(containerApi)}
+              />
               {!isLocalVbus && (
                 <BusHardwareConfig
                   bus={bus}

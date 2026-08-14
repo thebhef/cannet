@@ -539,6 +539,92 @@ function optionInDiscoveries(
   return state.interfaces.some((r) => r.id === binding.interface);
 }
 
+// ---- What a bus's binding says about its server ---------------------------
+
+/// Where a bus's binding stands with the server it names. `ok` covers
+/// everything that connects without a question — the local driver, a
+/// virtual bus, a trusted server, and an address the host reaches in
+/// the clear anyway.
+export type BusServerTrust =
+  | { kind: "ok" }
+  /// The machine has no record of this address at all, and a
+  /// connection to it would stop and ask.
+  | { kind: "unknown"; address: string }
+  /// The server is in the list — advertising, or half-configured — but
+  /// nothing accepted here carries a connection through yet.
+  | { kind: "untrusted"; address: string }
+  /// It presented a certificate that is not the pinned one, and the
+  /// connection was refused.
+  | { kind: "changed"; address: string };
+
+/// What a bus row has to say about its binding's server.
+///
+/// Both inputs are the host's: `servers` is the merged list, and
+/// `needingTrust` is `connect_flow`'s own answer for the addresses this
+/// project names. Nothing here re-derives whether an address is
+/// reachable without asking — the loopback rules alone make that a
+/// question only the host can answer.
+export function busServerTrust(
+  binding: InterfaceBinding | null,
+  servers: readonly ServerRow[],
+  needingTrust: ReadonlySet<string>,
+): BusServerTrust {
+  if (!binding || isLocalBinding(binding) || localVbusId(binding) !== null) {
+    return { kind: "ok" };
+  }
+  const address = binding.server;
+  const key = serverKey(address);
+  const row = servers.find((r) => serverKey(r.address) === key);
+  if (row?.trust === "fingerprintChanged") return { kind: "changed", address };
+  if (!needingTrust.has(address)) return { kind: "ok" };
+  return row ? { kind: "untrusted", address } : { kind: "unknown", address };
+}
+
+/// The notice's wording. Each says what is wrong and where it is fixed;
+/// the Servers panel is the only place any of them is answered.
+export function busServerTrustMessage(state: BusServerTrust): string | null {
+  switch (state.kind) {
+    case "ok":
+      return null;
+    case "unknown":
+      return `unknown server ${state.address} — trust it in the Servers panel`;
+    case "untrusted":
+      return `${state.address} is not trusted on this machine — trust it in the Servers panel`;
+    case "changed":
+      return `${state.address} presented a different identity — review it in the Servers panel`;
+  }
+}
+
+/// The line under a bus row whose binding names a server this machine
+/// cannot reach without an answer from the user. Without it, such a
+/// project looks wired up and fails only at Connect — the project file
+/// carries `host:port` references and no credentials (ADR 0032), so
+/// opening one on another machine is the ordinary case, not an error.
+export function BusServerTrustNotice({
+  bus,
+  state,
+  onManageServers,
+}: {
+  bus: Bus;
+  state: BusServerTrust;
+  onManageServers: () => void;
+}) {
+  const message = busServerTrustMessage(state);
+  if (message === null) return null;
+  return (
+    <div
+      className="project-bus-untrusted"
+      data-testid={`bus-server-trust-${bus.id}`}
+      role="status"
+    >
+      <span>{message}</span>
+      <button type="button" onClick={onManageServers}>
+        Manage servers…
+      </button>
+    </div>
+  );
+}
+
 // ---- Connection-section rows ---------------------------------------------
 
 /// The connection indicator at the end of a binding row. A project bus

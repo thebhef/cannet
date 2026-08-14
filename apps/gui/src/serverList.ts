@@ -9,7 +9,7 @@
 // one — those are model facts, and re-deriving any of them here would
 // be a second authority.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Fzf } from "fzf";
@@ -135,6 +135,64 @@ export function serverLabel(row: ServerRow): string {
 /// where that decision belongs.
 export function trustedServers(rows: readonly ServerRow[]): ServerRow[] {
   return rows.filter((r) => r.trust === "trusted");
+}
+
+/// Which of `addresses` the host cannot reach without an answer from
+/// the user. The host decides — the trust store and the address rules
+/// that make a loopback proxy plaintext are both its, and a view that
+/// guessed at either would be a second authority.
+///
+/// Re-asked whenever the address set changes and whenever the merged
+/// list moves, which is what a trust write does.
+export function useAddressesNeedingTrust(
+  addresses: readonly string[],
+): ReadonlySet<string> {
+  const [needing, setNeeding] = useState<ReadonlySet<string>>(() => new Set());
+  // Stable shape of the address set, so the subscription effect doesn't
+  // tear down on every render.
+  const key = useMemo(() => [...addresses].sort().join("|"), [addresses]);
+  const latest = useRef(addresses);
+  latest.current = addresses;
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: UnlistenFn | undefined;
+
+    const ask = async () => {
+      const list = [...latest.current];
+      if (list.length === 0) {
+        setNeeding(new Set());
+        return;
+      }
+      try {
+        const answer = await invoke<string[]>("addresses_needing_trust", {
+          addresses: list,
+        });
+        if (!cancelled && Array.isArray(answer)) setNeeding(new Set(answer));
+      } catch {
+        // Host without the command (older build, dev shell): nothing is
+        // flagged, which is the pre-existing behaviour.
+      }
+    };
+
+    void (async () => {
+      await ask();
+      try {
+        unlisten = await listen(SERVER_LIST_CHANGED_EVENT, () => {
+          void ask();
+        });
+      } catch {
+        // Same fallback: stay on the answer we have.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, [key]);
+
+  return needing;
 }
 
 /// What a query is matched against: everything that identifies the

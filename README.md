@@ -1517,6 +1517,17 @@ fold or unfold holds until that answer changes. A trusted server that
 is switched off keeps its header, greyed, so a project never points at
 something invisible.
 
+A project carries only the `host:port` a bus is bound to — never a
+fingerprint or a token — so opening one on a machine that has not
+accepted that server is the ordinary case, not an error. The bus row
+says so in as many words: *unknown server `host:port` — trust it in
+the Servers panel* for an address this machine has no record of, and a
+matching line for a server it can see but has not accepted, or one
+whose identity has changed since it was pinned. Each carries the same
+*Manage servers…* jump. Whether an address needs an answer at all is
+the host's call, so a loopback proxy — reached in the clear and never
+asked about — is not flagged.
+
 *Manage servers…* opens the **Servers** panel, and that is the only
 server affordance a bus row has. Which servers this machine talks to
 is a decision it makes once, not part of wiring a bus: the panel
