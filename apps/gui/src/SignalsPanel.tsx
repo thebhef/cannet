@@ -558,7 +558,7 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     [catalogOptions, addKeys],
   );
 
-  // Drop target: DBC panel / trace / plot signals land in the manual list.
+  // Drop target: Database panel / trace / plot signals land in the manual list.
   const onDragOver = useCallback((e: React.DragEvent) => {
     if (e.dataTransfer.types.includes(SIGNAL_DND_MIME)) {
       e.preventDefault();

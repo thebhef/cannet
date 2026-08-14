@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// DOM tests for the DBC discovery panel: tree render from a
+// DOM tests for the Database panel: tree render from a
 // `list_dbc_content` payload, expand-collapse, per-ECU grouping,
 // fuzzy-search behavior (matched set, auto-expand of ancestors,
 // hiding of non-matches), and keyboard navigation.
@@ -120,7 +120,7 @@ function emitHostEvent(event: string, payload: unknown = null) {
   for (const h of mockListeners.get(event) ?? []) h({ payload });
 }
 
-import { DbcPanel } from "./DbcPanel";
+import { DatabasePanel } from "./DatabasePanel";
 import {
   ASSUMED_VIEWPORT_HEIGHT,
   OVERSCAN,
@@ -171,7 +171,7 @@ const projectCtx: ProjectContextValue = {
   onSetSignalColor: () => {},
 };
 
-/// The slice of dockview's panel API the DBC panel touches:
+/// The slice of dockview's panel API the Database panel touches:
 /// `updateParameters` for the persisted layout params, plus the
 /// visibility signal the live-value poll is gated on. `setVisible`
 /// drives the registered listener so a test can hide the panel.
@@ -192,11 +192,11 @@ function fakePanelApi() {
 
 function renderPanel() {
   const api = fakePanelApi();
-  const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+  const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
   render(
     <ProjectContext.Provider value={projectCtx}>
       <ElementRegistryContext.Provider value={emptyRegistry}>
-        <DbcPanel {...props} />
+        <DatabasePanel {...props} />
       </ElementRegistryContext.Provider>
     </ProjectContext.Provider>,
   );
@@ -262,7 +262,7 @@ function expectRowNotSelected(text: string) {
   expect(row).not.toHaveClass("dbc-row-selected");
 }
 
-describe("DbcPanel", () => {
+describe("DatabasePanel", () => {
   it("renders one root per loaded DBC with the file's basename", async () => {
     renderPanel();
     await waitFor(() => expect(screen.getByText("powertrain.dbc")).toBeInTheDocument());
@@ -290,7 +290,7 @@ describe("DbcPanel", () => {
   it("auto-expands ancestors of a matched signal when typing", async () => {
     renderPanel();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "EngineSpeed" } });
     // EngineSpeed is a child of the collapsed EngineData; the search
     // must force-expand the ancestor so the match is visible.
@@ -300,7 +300,7 @@ describe("DbcPanel", () => {
   it("hides rows outside the match set when the search is active", async () => {
     renderPanel();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "EngineSpeed" } });
     await screen.findByText("EngineSpeed");
     // GearState has no match anywhere under it — the row is removed
@@ -317,7 +317,7 @@ describe("DbcPanel", () => {
   it("collapses non-matching siblings of a matched message", async () => {
     renderPanel();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     // Match the message via its comment ("Periodic engine state.") —
     // a text its signals don't carry (a message-*name* query would
     // legitimately match the signals too, through the dotted
@@ -339,7 +339,7 @@ describe("DbcPanel", () => {
   it("matches on hex message id", async () => {
     renderPanel();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     // 0x100 = 256 = EngineData. The filter settles after a debounce, so
     // wait on the *hiding* — the visible change this query makes.
     fireEvent.change(search, { target: { value: "0x100" } });
@@ -353,7 +353,7 @@ describe("DbcPanel", () => {
   it("matches on value-table labels", async () => {
     renderPanel();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "Park" } });
     // Mode has a `Park` value-table label — its ancestor GearState
     // must auto-expand so the signal is visible.
@@ -363,7 +363,7 @@ describe("DbcPanel", () => {
   it("shows match count when filter is active", async () => {
     renderPanel();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "EngineSpeed" } });
     await screen.findByText(/match/i);
   });
@@ -602,11 +602,11 @@ describe("DbcPanel", () => {
       dbcBuses: { "/tmp/powertrain.dbc": ["bus-a", "bus-b"] },
     };
     const api = fakePanelApi();
-    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
     render(
       <ProjectContext.Provider value={scopedCtx}>
         <ElementRegistryContext.Provider value={emptyRegistry}>
-          <DbcPanel {...props} />
+          <DatabasePanel {...props} />
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
@@ -643,11 +643,11 @@ describe("DbcPanel", () => {
       dbcBuses: {},
     };
     const api = fakePanelApi();
-    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
         <ElementRegistryContext.Provider value={emptyRegistry}>
-          <DbcPanel {...props} />
+          <DatabasePanel {...props} />
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
@@ -725,16 +725,16 @@ describe("DbcPanel", () => {
       dbcBuses: { "/tmp/powertrain.dbc": ["bus-a"] },
     };
     const api = fakePanelApi();
-    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
         <ElementRegistryContext.Provider value={emptyRegistry}>
-          <DbcPanel {...props} />
+          <DatabasePanel {...props} />
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
     await screen.findByText("powertrain");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     // 'powertrain.engine' → EngineData under bus-a matches.
     fireEvent.change(search, { target: { value: "powertrain.engine" } });
     await waitFor(() =>
@@ -760,11 +760,11 @@ describe("DbcPanel", () => {
       dbcBuses: {},
     };
     const api = fakePanelApi();
-    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
     render(
       <ProjectContext.Provider value={ctx}>
         <ElementRegistryContext.Provider value={emptyRegistry}>
-          <DbcPanel {...props} />
+          <DatabasePanel {...props} />
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
@@ -801,7 +801,7 @@ describe("DbcPanel", () => {
   it("search by ECU name reveals that ECU's messages and hides the rest", async () => {
     renderPanel();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "EngineEcu" } });
     await waitFor(() =>
       expect(screen.queryByText("GearState")).not.toBeInTheDocument(),
@@ -929,7 +929,7 @@ describe("DbcPanel", () => {
     expect(screen.queryByText("CellVoltage001")).not.toBeInTheDocument();
     // A narrow filter: one signal match -> exactly the path to it
     // (bus, dbc, ecu, message) + the signal row.
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "CellVoltage600" } });
     await screen.findByText("CellVoltage600");
     expect(document.querySelectorAll(".dbc-row").length).toBe(5);
@@ -969,7 +969,7 @@ describe("DbcPanel", () => {
     await mockContent(bigTree(150));
     renderPanel();
     await screen.findByText("PackMessage001");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     const before = diagCounts().get("dbcpanel.rowRender") ?? 0;
     // Type a query one character at a time. The tree is unchanged
     // through the burst — only the input re-renders.
@@ -993,7 +993,7 @@ describe("DbcPanel", () => {
     renderPanel();
     await screen.findByText("PackMessage001");
     expect(builds()).toBe(before); // nothing typed yet — nothing built
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "PackMessage007" } });
     await screen.findByText(/match/i);
     expect(builds()).toBe(before + 1);
@@ -1031,7 +1031,7 @@ describe("DbcPanel", () => {
     // message name, for the subsequence to line up.
     renderPanel();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "engineecu.engine" } });
     await waitFor(() =>
       expect(screen.queryByText("GearState")).not.toBeInTheDocument(),
@@ -1090,7 +1090,7 @@ describe("DbcPanel", () => {
     });
     renderPanel();
     await screen.findByText("BrakeStatus");
-    const search = screen.getByLabelText("search DBC content");
+    const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "pressure" } });
     await screen.findByText("CaliperPressure");
     expect(screen.queryByText("Module01Summary")).not.toBeInTheDocument();
@@ -1098,7 +1098,7 @@ describe("DbcPanel", () => {
 
   it("renders an empty-state message when no DBCs are loaded", async () => {
     const api = fakePanelApi();
-    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
     const noDbcCtx: ProjectContextValue = { ...projectCtx, dbcPaths: [] };
     // Override the mock to return an empty list this time.
     const core = await import("@tauri-apps/api/core");
@@ -1106,7 +1106,7 @@ describe("DbcPanel", () => {
     render(
       <ProjectContext.Provider value={noDbcCtx}>
         <ElementRegistryContext.Provider value={emptyRegistry}>
-          <DbcPanel {...props} />
+          <DatabasePanel {...props} />
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
     );
@@ -1228,16 +1228,16 @@ describe("DbcPanel", () => {
   });
 });
 
-describe("DbcPanel command registration (panel.find)", () => {
+describe("DatabasePanel command registration (panel.find)", () => {
   function renderWithCommands() {
     const api = fakePanelApi();
     const commands = createPanelCommandRegistry();
-    const props = { params: {}, api } as unknown as Parameters<typeof DbcPanel>[0];
+    const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
     render(
       <ProjectContext.Provider value={projectCtx}>
         <ElementRegistryContext.Provider value={emptyRegistry}>
           <PanelCommandsContext.Provider value={commands}>
-            <DbcPanel {...props} />
+            <DatabasePanel {...props} />
           </PanelCommandsContext.Provider>
         </ElementRegistryContext.Provider>
       </ProjectContext.Provider>,
@@ -1248,7 +1248,7 @@ describe("DbcPanel command registration (panel.find)", () => {
   it("focuses and selects the search box", async () => {
     const commands = renderWithCommands();
     await screen.findByText("EngineData");
-    const search = screen.getByLabelText("search DBC content") as HTMLInputElement;
+    const search = screen.getByLabelText("search database content") as HTMLInputElement;
     fireEvent.change(search, { target: { value: "EngineSpeed" } });
     expect(document.activeElement).not.toBe(search);
     act(() => {

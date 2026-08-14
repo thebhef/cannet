@@ -207,7 +207,7 @@ export interface AxisHandlers {
    * A no-op if the parent area's selection is empty. */
   onSetSelectionHidden: (hidden: boolean) => void;
   /** A selected row started a drag: fan the whole selection into the
-   * drag payload instead of just the grabbed row (DbcPanel precedent,
+   * drag payload instead of just the grabbed row (DatabasePanel precedent,
    * ADR 0045). A no-op if the parent area's selection is empty. */
   onDragSelection: (dataTransfer: DataTransfer) => void;
   /** The one-shot "sort area" action: sort the *parent*
@@ -293,7 +293,7 @@ export function signalRefFromRaw(
  *
  * - `sourcePanelId === this panel's elementId` → drag started inside
  *   this panel → **move** semantics (reorder / shift between areas).
- * - Otherwise (DBC panel, trace cell, by-id cell, a different plot
+ * - Otherwise (Database panel, trace cell, by-id cell, a different plot
  *   panel) → **add** semantics: drop a fresh copy without disturbing
  *   the source. */
 export function parseDroppedSignals(s: string): {
@@ -415,7 +415,7 @@ export function reorderAreas(
  * signal (a key present in `generatorIndexes`) sorts by `(index, name)`
  * ahead of every unclaimed one, which sorts by name alone. Name
  * collation is case-insensitive (`localeCompare` at `"base"`
- * sensitivity, the same rule `DbcPanel`'s ECU grouping uses) — how
+ * sensitivity, the same rule `DatabasePanel`'s ECU grouping uses) — how
  * names are browsed everywhere else in the panel.
  *
  * `Array.prototype.sort` is a stable sort (guaranteed since ES2019), so

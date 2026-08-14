@@ -159,7 +159,14 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.show.project", label: "Show project panel", category: "Panels" },
   { id: "panel.show.systemMessages", label: "Show system messages", category: "Panels" },
   { id: "panel.show.projectGraph", label: "Show project graph", category: "Panels" },
-  { id: "panel.show.dbc", label: "Show DBC panel", category: "Panels" },
+  {
+    id: "panel.show.dbc",
+    label: "Show Database panel",
+    category: "Panels",
+    // It was the "DBC panel" before it grew every other
+    // signal-defining format (ADR 0052) — keep the old name findable.
+    keywords: "DBC panel",
+  },
   { id: "panel.show.settings", label: "Show settings", category: "Panels" },
   { id: "panel.show.about", label: "Show about", category: "Panels" },
   { id: "panel.show.events", label: "Show events", category: "Panels" },

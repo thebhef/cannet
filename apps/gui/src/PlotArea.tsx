@@ -638,7 +638,7 @@ interface PlotAreaProps {
    * is true when the drag started inside this same plot panel
    * (sourcePanelId in the drag payload matched the panel's elementId);
    * in that case the parent runs move semantics (strip from origin,
-   * insert at target). Otherwise drop is an add (DBC panel, trace
+   * insert at target). Otherwise drop is an add (Database panel, trace
    * cell, by-id cell, another plot panel). */
   onDropSignal: (ref: SignalRef, beforeKey: string | null, isInternalMove: boolean) => void;
   onToggleHidden: (ref: SignalRef) => void;
@@ -699,14 +699,14 @@ interface PlotAreaProps {
    * internal signal-row drags via `setSignalDragData(..., elementId)`
    * and compared against the dropped payload's `sourcePanelId` so
    * drops originating inside this same panel are treated as moves;
-   * everything else (DBC panel, trace cell, another plot panel) is
+   * everything else (Database panel, trace cell, another plot panel) is
    * an add. */
   panelElementId: string;
   /** Bulk-set the parent area's current selection hidden/shown — the
    * selection's context menu Hide / Show. */
   onSetSelectionHidden: (hidden: boolean) => void;
   /** A selected row started a drag: fan the whole selection into the
-   * drag payload instead of just the grabbed row (DbcPanel
+   * drag payload instead of just the grabbed row (DatabasePanel
    * precedent, ADR 0045). */
   onDragSelection: (dataTransfer: DataTransfer) => void;
   /** The row context menu's one-shot "Sort area" action: reorders
@@ -3191,7 +3191,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   // VS Code); right-click on a row already in the
                   // selection acts on the whole thing. A drag has no
                   // such moment to visibly repoint the selection to
-                  // (DbcPanel's precedent leaves it alone, see the
+                  // (DatabasePanel's precedent leaves it alone, see the
                   // drag handler below), but a context menu inherently
                   // asks "what does this apply to" and needs an
                   // unambiguous, on-screen answer.
@@ -3201,13 +3201,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 draggable
                 onDragStart={(e) => {
                   // A grab that lands on a row already in the
-                  // selection drags the whole selection (DbcPanel
+                  // selection drags the whole selection (DatabasePanel
                   // precedent, ADR 0045); the panel resolves it from
                   // the parent area's full effective signal list, since
                   // this axis may hold only part of it (per-unit /
                   // individual mode). Otherwise, drag just this row —
                   // and leave the selection exactly as it is, matching
-                  // DbcPanel: "the panel's visible selection is
+                  // DatabasePanel: "the panel's visible selection is
                   // unchanged so the user can keep it".
                   if (isSelected) {
                     onDragSelection(e.dataTransfer);

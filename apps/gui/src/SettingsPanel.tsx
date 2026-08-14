@@ -27,7 +27,7 @@ import {
 } from "./hostSettings";
 
 /// How long the search box settles before the list re-filters — the same
-/// rule and the same number the DBC panel's tree filter uses, so a burst
+/// rule and the same number the Database panel's tree filter uses, so a burst
 /// of keystrokes costs one match instead of one per character.
 const FILTER_DEBOUNCE_MS = 150;
 

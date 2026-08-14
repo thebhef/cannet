@@ -1,5 +1,5 @@
 /// Drag-and-drop plumbing for signals across the GUI. Every panel
-/// that produces a draggable signal (the DBC discovery panel, the
+/// that produces a draggable signal (the Database panel, the
 /// trace expanded-row decoded signal lines, the by-id panel signal row, and
 /// the plot panel's own side-panel signal rows) sets
 /// the same mime type with the same payload shape, so any drop target
@@ -198,7 +198,7 @@ export function messageDragRefs(frame: TraceFrameRecord | null): DraggableSignal
 }
 
 /// Fan one signal out across the buses a given DBC applies to. The
-/// DBC panel calls this when producing drag payloads.
+/// Database panel calls this when producing drag payloads.
 ///
 /// - Scoped DBC (`scopedBuses.length > 0`): emit one ref per scope
 ///   bus. The user explicitly bound the DBC to these buses, so each

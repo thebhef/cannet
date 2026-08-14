@@ -1080,7 +1080,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   //   ref from whichever area it was in and re-insert it at the new
   //   position (preserving color). Re-orders within a single area,
   //   or moves between areas of this panel.
-  // - **External add** (drag from DBC panel, trace cell, by-id
+  // - **External add** (drag from Database panel, trace cell, by-id
   //   cell, or another plot panel): insert into the target area
   //   without touching other areas — the same signal can live in
   //   multiple areas and the source is left alone. If the target
@@ -1720,7 +1720,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   );
 
   /// A selected row started a drag: fan the whole selection into the
-  /// drag payload (DbcPanel precedent, ADR 0045) instead of just the
+  /// drag payload (DatabasePanel precedent, ADR 0045) instead of just the
   /// grabbed row. A no-op when the parent area's selection is empty or
   /// belongs to a different area — the row's own single-ref drag covers
   /// that case (`PlotArea`).

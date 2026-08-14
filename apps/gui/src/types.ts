@@ -826,7 +826,7 @@ export function isEnumValueTable(
 }
 
 /// One loaded DBC's full discovery-shaped content, as returned by the
-/// `list_dbc_content` Tauri command. The DBC panel groups
+/// `list_dbc_content` Tauri command. The Database panel groups
 /// the tree by file using `dbcPath` as the React key. `messages` is
 /// sorted by `(extended, messageId)`; signals within a message stay
 /// in `SG_` declared order. Mirrors `ipc::DbcContentRecord`.
@@ -857,7 +857,7 @@ export interface DbcMessageContentRecord {
   usesExtendedMux: boolean;
   attributes: DbcAttributeRecord[];
   /// The `BO_` transmitting node, or `null` for the `Vector__XXX`
-  /// "no sender" placeholder. The DBC panel's per-ECU tree level
+  /// "no sender" placeholder. The Database panel's per-ECU tree level
   /// groups messages by this.
   transmitter: string | null;
   signals: DbcSignalContentRecord[];

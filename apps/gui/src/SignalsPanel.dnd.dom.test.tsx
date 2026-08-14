@@ -178,7 +178,7 @@ function fakeTransfer() {
 }
 
 /// Seed a transfer with a payload from *outside* the panel, the way the
-/// DBC panel or a trace row does.
+/// Database panel or a trace row does.
 function externalTransfer(payload: { signals?: unknown[]; patterns?: string[] }) {
   const dt = fakeTransfer();
   dt.setData(SIGNAL_DND_MIME, JSON.stringify({ signals: [], patterns: [], ...payload }));

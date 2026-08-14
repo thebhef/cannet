@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // The value and its unit are separate elements on every signal-value
-// surface: `SignalValueCell` (signal view + DBC panel live value) and
+// surface: `SignalValueCell` (signal view + Database panel live value) and
 // `DecodedSignalCell` (expanded trace rows). Glued into one string the
 // row reads as a single token; a query for the value text must not also
 // pick up the unit.

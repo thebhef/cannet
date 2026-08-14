@@ -3,13 +3,13 @@
 // these). Closed, it renders like a `<select>`: a button showing the
 // current option's label, carrying the submitted value on `value`.
 // Open, it is a text input that filters the option list through `fzf`
-// (the matcher the DBC panel / palette adopted), with arrow-key
+// (the matcher the Database panel / palette adopted), with arrow-key
 // navigation, Enter to pick, Escape / blur to close, and
 // type-to-filter straight from the closed state.
 //
 // Options may be hierarchical: an option's `path` lists its ancestor
 // labels (bus → message, server address, …) and renders as indented
-// group headers above the leaf rows — the same shape the DBC panel
+// group headers above the leaf rows — the same shape the Database panel
 // tree presents. Fzf matches against the full path text, so filtering
 // by an ancestor keeps its leaves visible under their ancestry. Flat
 // options (no `path`) render as a plain list — the degenerate case

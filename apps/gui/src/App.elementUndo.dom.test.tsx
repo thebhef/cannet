@@ -801,15 +801,15 @@ describe("element undo", () => {
   }, 30_000);
 
   it("typing in a find box is not a step", async () => {
-    // Params-only view state (a find box, the DBC panel's expanded set)
+    // Params-only view state (a find box, the Database panel's expanded set)
     // stays out of undo: it never reaches the element, and the layout
     // history scrubs `params`.
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("DBC panel"));
+      fireEvent.click(findButton("Database panel"));
     });
     await waitFor(() => {
-      if (!document.querySelector(".dbc-panel")) throw new Error("no DBC panel yet");
+      if (!document.querySelector(".dbc-panel")) throw new Error("no Database panel yet");
     });
     await act(async () => {
       clickMode("trace");

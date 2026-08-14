@@ -51,7 +51,7 @@ import { RbsPanel } from "./RbsPanel";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { GeneratorPanel } from "./GeneratorPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
-import { DbcPanel } from "./DbcPanel";
+import { DatabasePanel } from "./DatabasePanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { AboutPanel } from "./AboutPanel";
 import { EventsPanel } from "./EventsPanel";
@@ -238,7 +238,7 @@ const DOCK_COMPONENTS = {
   [GENERATOR_PANEL_COMPONENT]: GeneratorPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
-  [DBC_PANEL_COMPONENT]: DbcPanel,
+  [DBC_PANEL_COMPONENT]: DatabasePanel,
   [SETTINGS_PANEL_COMPONENT]: SettingsPanel,
   [ABOUT_PANEL_COMPONENT]: AboutPanel,
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
@@ -2997,7 +2997,7 @@ export function App() {
     { id: "panel.add.rbs", label: "Add RBS panel" },
     { id: "panel.add.colormap", label: "Add color map" },
     { id: "panel.add.generator", label: "Add generator" },
-    { id: "panel.show.dbc", label: "DBC panel" },
+    { id: "panel.show.dbc", label: "Database panel" },
     { id: "panel.show.projectGraph", label: "Graph panel" },
     { id: "panel.show.events", label: "Events panel" },
     { id: "panel.show.project", label: "Project panel" },

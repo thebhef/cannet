@@ -847,9 +847,11 @@ panel for it (in by-ID mode — toggle it anytime); the new trace starts
 what's already in the session buffer. The project panel
 lists the elements — closing a panel doesn't destroy its element,
 reopen or remove it from there. **Project panel** toggles the project
-panel itself (it's a show/hide singleton). **DBC panel** opens (or
-focuses, if it's already open) the discovery panel — a
-tree-with-fuzzy-search over every loaded DBC, grouped by bus
+panel itself (it's a show/hide singleton). **Database panel** opens
+(or focuses, if it's already open) the catalog of every
+signal-defining artifact the session holds — one surface, each format
+organised the way that format organises signals (ADR 0052). Loaded
+DBCs form a tree-with-fuzzy-search grouped by bus
 (`bus → DBC → ECU → message → signal`, per-transmitter grouping
 like the RBS panel; messages with no `BO_` transmitter fall under
 "(no transmitter)"; unscoped DBCs appear under each bus group
@@ -1188,7 +1190,7 @@ resample at the end.
   the H1/H2 Y-cursor values + ΔH when those are placed; y scales are
   always auto-derived (per ADR 0026) and **fit y** refits the
   auto-norm latch to the visible window. Signals are added by **drag**
-  — from the DBC panel, the signal view, the trace, or another plot
+  — from the Database panel, the signal view, the trace, or another plot
   area or panel — or by an area's **patterns…** regex editor; there is
   no separate add-signal picker. **Drag a signal row** to re-order it,
   onto another plot area, or onto another plot panel (cross-panel drops
@@ -1225,7 +1227,7 @@ resample at the end.
   that row first, then opens its menu. **Dragging** a row already in
   the selection carries every selected row in the drag payload — drop
   it on another area or panel to move or copy the whole selection at
-  once, the same convention the DBC panel's multi-select drag uses;
+  once, the same convention the Database panel's multi-select drag uses;
   dragging a row that isn't selected drags only that row and leaves the
   selection as it was. The same context menu carries **Sort area**, a
   one-shot reorder of the whole area's signal list by generator index,

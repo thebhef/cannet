@@ -459,7 +459,7 @@ function liveInstanceIn(areaLabel: string): FakeUPlotInst {
 /// constructed (or cleared) chart.
 const drawnPoints = (inst: FakeUPlotInst) => ((inst.data as unknown[][])[0] ?? []).length;
 
-/// Drop a signal onto an area, the way the DBC panel / another area
+/// Drop a signal onto an area, the way the Database panel / another area
 /// does — the only way to give a *non-focused* area a signal.
 function dropSignal(areaLabel: string, signalName: string, unit: string) {
   const MIME = "application/x-cannet-plot-signal";
@@ -744,7 +744,7 @@ describe("PlotPanel", () => {
     // Drop-on-different-area
     // is a *copy*, not a move. The user wanted the same signal in
     // multiple areas, and prior move semantics surprised drag-from-
-    // DBC-panel users who expected each drop to add a fresh series.
+    // Database-panel users who expected each drop to add a fresh series.
     // Within-area reorder still works (covered by a separate test
     // below if one exists; the helper logic is tested via the
     // dragSignals + signalSelection unit suites).
@@ -4637,7 +4637,7 @@ describe("PlotPanel signal-row selection", () => {
   });
 
   it("drags the whole selection when a selected row starts the drag", async () => {
-    // DbcPanel precedent (ADR 0045): a grab that lands on a row already
+    // DatabasePanel precedent (ADR 0045): a grab that lands on a row already
     // in the selection carries every selected row's signal.
     renderPanel();
     await addToFocused(["EngineSpeed", "EngineTemp", "LimitNominal"]);
@@ -4667,7 +4667,7 @@ describe("PlotPanel signal-row selection", () => {
   });
 
   it("dragging an unselected row drags just that row, leaving the selection untouched", async () => {
-    // DbcPanel precedent: "the panel's visible selection is unchanged
+    // DatabasePanel precedent: "the panel's visible selection is unchanged
     // so the user can keep it" — a drag has no on-screen moment that
     // needs the selection to visibly repoint the way a context menu
     // does.

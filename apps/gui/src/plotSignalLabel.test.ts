@@ -16,7 +16,7 @@ const desc = (o: Partial<SignalDescriptorRecord>): SignalDescriptorRecord => ({
 
 describe("signalRowLabel", () => {
   it("names the message by its full DBC ancestry", () => {
-    // The same bus · ecu · message the DBC panel's tree shows, so a
+    // The same bus · ecu · message the Database panel's tree shows, so a
     // signal row and the tree it came from read the same.
     expect(signalRowLabel("Powertrain", "EngineEcu", "EngineData")).toBe(
       "Powertrain · EngineEcu · EngineData",

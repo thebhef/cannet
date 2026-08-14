@@ -4,7 +4,7 @@
 // grouped by element type with the type groups folding the same way.
 // Collapse state rides the dockview panel params, so it lands in the
 // layout blob the workspace scope persists (ADR 0042 §3) — the same
-// channel the DBC panel's expanded-node set uses.
+// channel the Database panel's expanded-node set uses.
 //
 // This is the first test to render the whole `ProjectPanel`, so it
 // stubs the two things that kept the existing file to leaf components:

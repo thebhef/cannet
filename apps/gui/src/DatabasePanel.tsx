@@ -38,10 +38,14 @@ import { usePanelCommands } from "./panelCommands";
 import { DBC_PANEL_ID } from "./dockLayout";
 
 /**
- * DBC discovery panel. Tree-with-fuzzy-search over every
- * loaded DBC's messages and signals — the spatial / search counterpart
- * to the project panel's DBC inventory (ADR 0012 keeps the inventory
- * role on the project panel; this is the discovery role).
+ * The **Database** panel: the one catalog surface over every
+ * signal-defining artifact the session holds (ADR 0052). Today that is
+ * the loaded DBCs' messages and signals — the spatial / search
+ * counterpart to the project panel's DBC inventory (ADR 0012 keeps the
+ * inventory role on the project panel; this is the discovery role).
+ * Each format is organised per its own canon, so a DBC branch is
+ * bus → DBC → ECU → message → signal and a future format lands as its
+ * own branch shape rather than being normalised into this one.
  *
  * **Singleton** — same pattern as the project, graph, and
  * system-messages panels. The DBC set lives on the host, so a second
@@ -646,7 +650,7 @@ function gridviewRowsOf(rows: readonly RenderRow[]): GridviewRowModel[] {
   }));
 }
 
-export function DbcPanel(props: IDockviewPanelProps) {
+export function DatabasePanel(props: IDockviewPanelProps) {
   const { api } = props;
   const params = props.params as PanelParams | undefined;
   const { dbcPaths, dbcBuses, buses } = useProjectContext();
@@ -696,7 +700,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
   const filter = useGridviewFilter(buildFilterEntries, filterFromParams(params?.filter));
   /// The search box, so `panel.find` (Mod+F, ADR 0018) can focus and
   /// select it. Registered under the panel's fixed dockview id — the
-  /// DBC panel is a singleton with no element id of its own
+  /// Database panel is a singleton with no element id of its own
   /// (`runFocusedPanelCommand` in `useCommands.tsx` falls back to it).
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   usePanelCommands(DBC_PANEL_ID, {
@@ -1001,7 +1005,7 @@ export function DbcPanel(props: IDockviewPanelProps) {
           filter={filter}
           className="dbc-panel-search"
           placeholder="search messages, signals, comments, attributes…"
-          ariaLabel="search DBC content"
+          ariaLabel="search database content"
           matchCountClassName="dbc-panel-match-count"
           inputRef={searchInputRef}
         />

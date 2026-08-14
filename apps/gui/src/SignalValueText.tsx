@@ -12,7 +12,7 @@
 /// can see "this raw value happens to be 3" while reading "Drive".
 ///
 /// Both signal-value renderers go through this — `SignalValueCell` (the
-/// signal view and the DBC panel's live value column) and
+/// signal view and the Database panel's live value column) and
 /// `DecodedSignalCell` (expanded trace rows) — so the surfaces cannot
 /// drift.
 

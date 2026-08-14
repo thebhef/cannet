@@ -1,7 +1,7 @@
 // The shared palette modal (ADR 0018): one component, two palettes —
 // the command palette (Mod+Shift+P) and go-to-view (Mod+P) differ
 // only in the items they pass. Types-to-filter through `fzf` (the
-// matcher Task 12 adopted for the DBC panel), arrow keys + Enter to
+// matcher Task 12 adopted for the Database panel), arrow keys + Enter to
 // pick, Esc / backdrop click to close.
 //
 // `PalettePrompt` below is the palette's *second stage*: a command that

@@ -1,6 +1,6 @@
 /// The shared 16-color signal wheel (ADR 0026): every surface that
 /// colors a signal — plot series seeds, signal-view name text, the
-/// DBC panel's value renderer — draws from this one module, so the
+/// Database panel's value renderer — draws from this one module, so the
 /// palettes can't drift apart. The values live in `theme.ts` (one wheel
 /// per theme, slot-matched); `palette.test.ts` holds them to WCAG-AA
 /// contrast (≥ 4.5:1) against the theme's background.
