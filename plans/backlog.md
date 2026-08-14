@@ -834,11 +834,6 @@ next planning pass.
   chrono-visible variant exists from the task-51 heap work).
   Changing the gate scenario is a baseline decision — take it
   deliberately.
-- `[fix]` **`PlotPanel.dom.test.tsx` render-counter flake.** The
-  suite's reset calls `void hydrateSettings()` un-awaited, so a
-  settings publish can land inside a later test
-  (`plot_fetch_interval_ms` case). Reproduced across several
-  full-suite runs during tasks 52–53; passes isolated.
 - `[feat]` **DBC-carried generator rules (`Cannet*` database-level
   `BA_`).** The shipped regex generators store their rules
   project-side; the
