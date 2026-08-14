@@ -539,6 +539,67 @@ crate retained long-term).
   frontend typecheck and vitest suite concurrently. Installed per-clone via
   `pre-commit install`; the tool itself is a dev-only dependency
   (`uv tool install pre-commit` / `pipx`).
+- **`cargo-packager` 0.11.8** (CrabNebula; Rust CLI, MIT / Apache-2.0)
+  — `adopted` in Task 64 for the **Windows NSIS server installer only**,
+  as a CI/dev tool (`cargo install cargo-packager --locked --version
+  0.11.8`), never a workspace dependency. It downloads and caches its own
+  pinned NSIS 3.09 toolchain, so no runner needs a separate NSIS install.
+  Evaluated hands-on: a trial installer built from the real
+  `cannet-server.exe` plus the real frozen `cannet-python-can` onedir
+  installed to `%LOCALAPPDATA%\cannet-server` with the onedir
+  exe-adjacent, appended the install dir to the user `PATH`, wrote a
+  standard uninstall entry, and on uninstall restored the user `PATH`
+  byte-for-byte; the installed server, launched from an unrelated working
+  directory, found its sidecar and enumerated PCAN hardware.
+  - The user-`PATH` append has no config field. It rides in
+    `nsis.preinstallSection`, which injects verbatim NSIS at top level —
+    room for both an install section and an `un.` section, so the entry
+    is added and removed symmetrically. The edit itself goes through
+    PowerShell's `[Environment]::SetEnvironmentVariable(…, 'User')`: the
+    bundled NSIS is built with `NSIS_MAX_STRLEN=1024`, so reading and
+    rewriting `PATH` in NSIS strings would silently truncate a long one.
+  - The "no Start-menu shortcut" ruling needs `nsis.template` — a
+    vendored copy of the upstream 671-line `installer.nsi`. The fork is
+    deletion-only (47 lines), so it re-applies cleanly across version
+    bumps, but it does commit us to re-diffing the template whenever
+    `cargo-packager` moves.
+  - `rejected` for the Linux `.deb` leg. Its deb writer copies
+    `binaries` into `/usr/bin` as real files and `resources` into
+    `/usr/lib/<binary>/`, exposes no maintainer-script hook, and its
+    `deb.files` map copies through `fs::copy` — so the agreed layout
+    (everything under `/usr/lib/cannet-server/`, `/usr/bin/cannet-server`
+    a symlink so `current_exe` still resolves beside the onedir) is not
+    expressible. The module is `cfg`-gated to Linux/BSD besides, so it
+    cannot be exercised on a Windows dev box at all.
+  - No macOS flat-package output (formats are `app`, `dmg`, `wix`,
+    `nsis`, `deb`, `appimage`, `pacman`), which is why the `.pkg` leg
+    uses Apple's `pkgbuild`.
+  - Maintenance: 468 stars, repo actively tended (dependency bumps land
+    weekly), but the last crates.io release is 0.11.8 from 2025-11-27 and
+    62 issues are open. Company-backed (CrabNebula, the Tauri bundler
+    extracted for arbitrary binaries), so no single-person bus factor.
+  - Rough edges worth knowing: auto-discovery of a standalone
+    `packager.toml` fails with an I/O error unless the config sets
+    `name`, and the CLI has no version override — the release version
+    gets patched into the config (or passed as raw JSON to `-c`) the way
+    `tauri.conf.json`'s already is.
+- **`cargo-deb` 3.7.0** (Rust CLI, MIT) — `adopted` in Task 64 for the
+  Linux `.deb` server package, after `cargo-packager`'s deb writer proved
+  unable to express the agreed layout (above). `assets` entries carry an
+  explicit target path and octal mode, and a symlink is an asset table of
+  `dest` + `link_name` — exactly the shape needed (binary + onedir under
+  `/usr/lib/cannet-server/`, `/usr/bin/cannet-server` a symlink). It
+  reads `[package.metadata.deb]` from the crate it packages, so the
+  config lives with `cannet-server`, and `maintainer-scripts` are
+  available if a `postinst` ever becomes necessary (none is planned).
+  Single-maintainer project (bus factor 1) but nine years of releases,
+  ~2.1M downloads, 23 open issues, 3.7.0 released 2026-05-02. Verified
+  from documentation and source only — a `.deb` build needs a Linux
+  runner, so the leg is first exercised on CI.
+- **`pkgbuild`** (Apple, ships with macOS) — `adopted` in Task 64 to
+  build the macOS server `.pkg`. Present on every macOS runner, so it
+  adds no dependency; chosen because `cargo-packager` emits no flat
+  package and `.pkg` is the canonical installer for a CLI tool.
 - **Code signing / notarization** — `proposed` (deferred). First alpha
   bundles ship **unsigned**; macOS Gatekeeper / Windows SmartScreen warn
   on first run. Signing needs external accounts (Apple Developer Program;
