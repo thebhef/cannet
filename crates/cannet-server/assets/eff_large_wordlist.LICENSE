@@ -1,0 +1,11 @@
+EFF Large Wordlist
+
+Source: https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt
+Copyright Electronic Frontier Foundation (EFF), licensed under
+Creative Commons Attribution 3.0 Unported (CC BY 3.0):
+https://creativecommons.org/licenses/by/3.0/us/
+
+Committed verbatim (7776 tab-separated `dice-index<TAB>word` lines,
+unmodified) and embedded into `cannet-server` at build time via
+`include_str!` to generate 5-word passphrase access tokens
+(`src/auth.rs`).

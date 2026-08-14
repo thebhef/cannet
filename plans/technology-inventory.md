@@ -177,11 +177,33 @@ without reshaping callers.
   token's base64url). Pinned to the version already in the lock so the
   build does not carry two `base64` majors.
 - **Token-auth support crates** — resolved (Task 42). `ring`'s
-  `SystemRandom` mints the 256-bit token and `base64` (above) renders
-  it, so neither is a new dependency. `getrandom`/`rand`/`sha2` —
-  `rejected` as direct deps (redundant with ring). No
-  structured-token library (JWT/PASETO) — there are no claims to
-  carry (ADR 0041 rejected accounts/tiers).
+  `SystemRandom` supplies the token's CSPRNG bytes and `base64`
+  (above) renders the certificate fingerprint, so neither is a new
+  dependency. `getrandom`/`rand`/`sha2` — `rejected` as direct deps
+  (redundant with ring). No structured-token library (JWT/PASETO) —
+  there are no claims to carry (ADR 0041 rejected accounts/tiers).
+  **Updated Task 65**: the generated token itself moved from a
+  base64url rendering of 256 random bits to a 5-word passphrase (see
+  the EFF large wordlist entry below); `ring::SystemRandom` still
+  supplies the randomness, now consumed via rejection-sampled word
+  indices instead of a byte buffer handed to `base64`.
+- **EFF large wordlist** (public data, CC BY 3.0, Electronic Frontier
+  Foundation) — `adopted` (Task 65) for `cannet-server`'s generated
+  access token: `--token`/`CANNET_TOKEN` stay free-form, but
+  `AccessToken::generate()` now produces a 5-word hyphenated
+  passphrase (`crates/cannet-server/src/auth.rs`) instead of a 256-bit
+  base64url blob, because the operator found the blob "ridiculously
+  long and difficult to transcribe across machines" (owner feedback,
+  Task 65 grooming). 7776 words × 5 gives ≈64.6 bits of entropy
+  (5 × log2(7776)) — ample against the only realistic attack (online
+  guessing through the TLS endpoint; the token is stored in plaintext
+  on disk either way, so there is no offline crack target to size
+  against). The wordlist is committed verbatim as
+  `crates/cannet-server/assets/eff_large_wordlist.txt` (EFF's own
+  `dice-index<TAB>word` distribution format, 7776 lines,
+  `include_str!`-embedded, no new crate dependency) with attribution
+  in the sibling `eff_large_wordlist.LICENSE` file. Source:
+  <https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt>.
 - **`subtle` 2.6** (Rust, BSD-3-Clause) — `adopted` (Task 42), direct
   dep of `cannet-server`; already in the lock as rustls' own
   constant-time primitive. Compares a presented bearer token against

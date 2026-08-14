@@ -98,3 +98,43 @@ Owner feedback from first live use of the Task 42/43 surfaces
 - README covers the macOS permission and Windows firewall realities
   for both GUI and server.
 - Blocked discovery states are visible in the panel, not silent.
+
+## Status log
+
+### 2026-08-13 — phase 1: passphrase tokens
+
+**Landed** (branch `task65a-passphrase-tokens`, off `task64d-ci-installers`
+tip `e1465dd`): `AccessToken::generate()` now produces a 5-word
+hyphenated passphrase from the embedded EFF large wordlist instead of
+a 256-bit base64url blob. Generation-side only — `--token` /
+`CANNET_TOKEN`, the wire, the trust store, and the constant-time
+compare are all unchanged; they still treat every token as an opaque
+string.
+
+- Wordlist embedded verbatim as
+  `crates/cannet-server/assets/eff_large_wordlist.txt`
+  (`include_str!`, no new crate dependency), attribution in the
+  sibling `eff_large_wordlist.LICENSE` (CC BY 3.0, EFF); adoption
+  recorded in `plans/technology-inventory.md`.
+- Word selection is rejection-sampled off `ring::rand::SystemRandom`
+  (no modulo bias); entropy is 5 × log2(7776) ≈ 64.6 bits, discussed
+  on `AccessToken::generate`'s rustdoc.
+- Printed shape observed from a real `--bind 127.0.0.1:50051 --tls`
+  run of the release binary: `hardware proxy: client token
+  chug-pruning-unclad-hazard-morphine` — five lowercase words,
+  hyphen-separated.
+- Tests: 107 passed (0 failed, 1 ignored — the sidecar-spawning test
+  gated behind the real `python-can` process), plus 1 doc-test.
+  `cargo clippy -p cannet-server --all-targets -- -D warnings` clean.
+  New/updated coverage: wordlist has exactly 7776 unique lowercase
+  entries; `generate_words` draws 5 wordlist members; a generated
+  token is lowercase words hyphen-joined; `uniform_index` stays in
+  bounds and does not panic at boundary bounds (1, 2, 7776, 65536);
+  the two-tokens-differ and full persistence/rotation/CLI-precedence
+  suites stay green with the new format.
+- README's server section (both printed-banner examples and the
+  "client token" prose) updated to the new shape and entropy note.
+
+Remaining Task 65 scope (server browse panel, host-name surfacing,
+Windows native-DNS-SD browse, etc.) is unstarted — this phase covers
+only the token-format grooming item.

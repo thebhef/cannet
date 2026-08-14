@@ -211,8 +211,8 @@ mod tests {
         );
         let body = std::fs::read_to_string(dir.path().join(LOG_FILE)).unwrap();
         assert!(body.contains("client token"), "{body}");
-        // Nothing token-shaped: the generated token is 43 base64url
-        // characters, an operator's is arbitrary. The note has no field
+        // Nothing token-shaped: the generated token is five hyphenated
+        // words, an operator's is arbitrary. The note has no field
         // either could occupy.
         assert!(!body.contains('='), "{body}");
         assert_eq!(body.lines().count(), 1);
