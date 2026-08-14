@@ -92,14 +92,14 @@ export function useServerList(): ServerList {
     void (async () => {
       try {
         const initial = await invoke<ServerList>("get_server_list");
-        if (!cancelled && initial) setList(initial);
+        if (!cancelled && Array.isArray(initial?.servers)) setList(initial);
       } catch {
         // Host without the command (older build, dev shell): fall
         // through to the listener and stay empty if none comes.
       }
       try {
         unlisten = await listen<ServerList>(SERVER_LIST_CHANGED_EVENT, (e) => {
-          if (!cancelled && e.payload) setList(e.payload);
+          if (!cancelled && Array.isArray(e.payload?.servers)) setList(e.payload);
         });
       } catch {
         // Same fallback: stay on whatever snapshot we have.
@@ -113,6 +113,20 @@ export function useServerList(): ServerList {
   }, []);
 
   return list;
+}
+
+/// How a server is named where it is picked from: the instance name it
+/// advertises, or its address when nothing has answered to name it.
+export function serverLabel(row: ServerRow): string {
+  return row.name ?? row.address;
+}
+
+/// The servers a bus can be bound to: the ones the host reaches without
+/// stopping to ask (ADR 0041). A server that is only *discovered* is
+/// not one of them — it is trusted in the Servers panel first, which is
+/// where that decision belongs.
+export function trustedServers(rows: readonly ServerRow[]): ServerRow[] {
+  return rows.filter((r) => r.trust === "trusted");
 }
 
 /// What a query is matched against: everything that identifies the
@@ -163,7 +177,7 @@ export function browseNotice(browse: BrowseStatus): string | null {
     case "running":
       return null;
     case "failed":
-      return `Discovery is not running — the mDNS browser could not start (${browse.detail}). Servers can still be reached by typing their address.`;
+      return `Discovery is not running — the mDNS browser could not start (${browse.detail}). Only servers already accepted on this machine are listed.`;
     case "degraded":
       return `Discovery may be blocked — the mDNS browser reported an error (${browse.detail}). Check that UDP 5353 is allowed inbound, and on macOS that cannet is permitted to find devices on the local network.`;
     case "stopped":
@@ -172,7 +186,7 @@ export function browseNotice(browse: BrowseStatus): string | null {
 }
 
 /// What an empty list means under a browse that is running normally:
-/// genuinely nothing on this subnet, which a typed address still
-/// reaches.
+/// genuinely nothing on this subnet — and nothing accepted here
+/// either, so no bus has a server to bind to yet.
 export const NOTHING_ADVERTISING =
-  "No servers are advertising on this network, and none have been accepted on this machine. A server on another subnet won't appear here — reach it by typing its address on a bus.";
+  "No servers are advertising on this network, and none have been accepted on this machine. A server on another subnet won't appear here — discovery is multicast, so it has to advertise somewhere this machine can hear it.";

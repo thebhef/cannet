@@ -706,8 +706,9 @@ can be forgotten without waiting for it to come back. Moving a server
 to a different address or port is a new entry, and prompts again.
 
 A server on another subnet never appears in the panel — discovery is
-multicast, and reaching one is still a matter of typing its address on
-a bus. The panel says which kind of empty it is looking at: it
+multicast, and the panel can only offer what it can hear, so a server
+that advertises nowhere this machine listens is out of reach for now.
+The panel says which kind of empty it is looking at: it
 distinguishes a network with nothing on it from a browse that could
 not start at all, and reports the error when the mDNS browser itself
 complains, which is what a blocked UDP 5353 usually looks like.
@@ -1038,8 +1039,8 @@ writes, so the panel teaches the file.
   view**, **Default auto-scroll**, and **Default events overlay**, the
   plot's **Default y-axis layout**, **Default trace columns** /
   **Default signal columns** (which columns a new table shows, in what
-  order, how wide), the **Default server address** an Add server form
-  opens filled with, and the **Default bus bitrate** a bus you add
+  order, how wide), the **Default server address** a new bridge
+  form opens filled with, and the **Default bus bitrate** a bus you add
   starts at (blank — what ships — adds it with no bitrate at all, so
   the adapter's own applies, exactly as **Add bus** has always done).
   They are read once, when the view is created, and the view's own
@@ -1496,9 +1497,10 @@ schema (v6) carries three source kinds on each binding:
   project open; many bindings may target the same virtual bus.
 
 Each logical bus has a single combo on its row that lists every
-source the project knows about — sidecar interfaces, remote
-interfaces, and the project's virtual buses — plus *+ Add server…*
-and *+ Add virtual bus*. Picking from the combo writes the binding.
+source available to it — the local driver's interfaces, the
+interfaces of each server this machine trusts (grouped under that
+server), and the project's virtual buses — plus *+ Add virtual bus*
+and *Manage servers…*. Picking from the combo writes the binding.
 Step 6's multi-client fan-out means the same source may be picked
 for many logical buses; the GUI no longer hides "in use" options.
 A dedicated *Virtual buses* section lets the user rename, configure,
@@ -1506,20 +1508,20 @@ add bridges to, or delete each virtual bus the project owns; the
 host applies bus_config edits via `SharedBus::reconfigure` and
 manages bridge teardown.
 
-*+ Add server…* opens a small form with two ways to name a server: a
-`host:port` field, and — under *on this network* — the servers
-advertising themselves via mDNS/DNS-SD (`_cannet._tcp`), each with its
-instance name, address, and version, fuzzy-searchable by name or
-address. They are one path: picking a discovered server fills the same
-field and runs the same interface pull, and the connection's own
-identity and token checks are unchanged either way, because discovery
+*Manage servers…* opens the **Servers** panel, and that is the only
+server affordance a bus row has. Which servers this machine talks to
+is a decision it makes once, not part of wiring a bus: the panel
+lists what is advertising itself via mDNS/DNS-SD (`_cannet._tcp`)
+merged with what has already been accepted here, and a server becomes
+a source on a bus once it is trusted there
+([ADR 0041](docs/adr/0041-remote-connection-security.md)). Discovery
 is convenience and never a trust signal
-([ADR 0040](docs/adr/0040-production-cannet-server.md)). A server on
-another subnet, or one started with `--no-mdns`, never appears in the
-list — typing its address is the way to it. In the other direction, a
-server that was killed rather than shut down can linger in the list
-until its DNS-SD record expires (up to two minutes); an orderly
-shutdown drops out of it within about a second.
+([ADR 0040](docs/adr/0040-production-cannet-server.md)): a browsed
+server is checked exactly as a typed one would be. A server started
+with `--no-mdns` never appears in the list, and one that was killed
+rather than shut down can linger in it until its DNS-SD record expires
+(up to two minutes); an orderly shutdown drops out of it within about
+a second.
 
 ### Rest-of-bus simulation + calculated fields
 

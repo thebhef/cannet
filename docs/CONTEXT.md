@@ -56,9 +56,11 @@ what is advertising on the network merged with what has been accepted
 here, one row per `host:port` — and the one place an identity is
 trusted, a token entered, or a server forgotten (ADR 0041). Trusting
 a server is a decision the machine makes once, not a project's; a
-project only references the `host:port` a bus is bound to.
+project only references the `host:port` a bus is bound to. A bus row
+has no server affordance beyond *Manage servers…*, which jumps here.
 _Avoid_: "trusted-servers list" for this — one merged list, not a
-separate pinned-only one.
+separate pinned-only one. _Avoid_: "add a server to a bus" — a bus is
+bound to an interface on a server this machine already trusts.
 
 **Trust state**:
 What a server's row says about its standing with this machine, decided

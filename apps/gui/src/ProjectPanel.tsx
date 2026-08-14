@@ -24,11 +24,12 @@ import {
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_ID,
   elementPanelComponent,
+  showServersPanel,
 } from "./dockLayout";
+import { trustedServers, useServerList } from "./serverList";
 import { defaultBusColor } from "./busColor";
 import { useThemeName } from "./theme";
 import {
-  AddServerInline,
   BusHardwareConfig,
   BusInterfaceCombo,
   LocalInterfacesRow,
@@ -167,14 +168,18 @@ export function ProjectPanel(props: IDockviewPanelProps) {
   }, [sidecarAddress, p.interfaceBindings]);
 
   const discovery = useInterfaceDiscovery(knownServers);
+  // The servers this machine talks to are the host's merged list, not
+  // the project's: a bus binds to one, it does not configure it
+  // (ADR 0041). Only the trusted ones are a source — the rest are
+  // managed in the Servers panel.
+  const serverList = useServerList();
+  const trusted = useMemo(
+    () => trustedServers(serverList.servers),
+    [serverList.servers],
+  );
   // Connection state is the host's model, not ours: we subscribe and
   // render, never derive.
   const connStates = useConnectionStates();
-
-  // Inline "Add server…" form per bus: `addingForBus === bus.id` means
-  // the bus row shows the new-server form. `null` = no row is in the
-  // adding state.
-  const [addingForBus, setAddingForBus] = useState<string | null>(null);
 
   const panelFor = (id: string): IDockviewPanel | undefined =>
     containerApi.panels.find(
@@ -290,7 +295,6 @@ export function ProjectPanel(props: IDockviewPanelProps) {
         {p.buses.length === 0 && <div className="project-empty">No buses.</div>}
         {p.buses.map((bus, i) => {
           const binding = p.interfaceBindings.find((b) => b.bus_id === bus.id);
-          const adding = addingForBus === bus.id;
           const pendingHwConfig = p.busesWithPendingHwConfig.includes(bus.id);
           // Local virtual buses have no controller behind them (the
           // host owns their arbitration timing). Hide the hardware
@@ -358,9 +362,10 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   binding={binding ?? null}
                   sidecarAddress={sidecarAddress}
                   discoveries={discovery.entries}
+                  servers={trusted}
                   localVirtualBuses={p.localVirtualBuses}
                   onPick={(pick) => setBusInterface(bus, pick)}
-                  onAddServer={() => setAddingForBus(bus.id)}
+                  onManageServers={() => showServersPanel(containerApi)}
                   onAddVirtualBus={() => {
                     const id = newVbusId(p.localVirtualBuses.map((v) => v.id));
                     const name = `Virtual ${p.localVirtualBuses.length + 1}`;
@@ -376,20 +381,6 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   onSetSpeed={(v) => p.onUpdateBus(bus.id, { speed_bps: v })}
                   onSetFd={(v) => p.onUpdateBus(bus.id, { fd: v })}
                   onSetFdDataSpeed={(v) => p.onUpdateBus(bus.id, { fd_data_speed_bps: v })}
-                />
-              )}
-              {adding && (
-                <AddServerInline
-                  busLabel={bus.name}
-                  onCancel={() => setAddingForBus(null)}
-                  onPick={(pick) => {
-                    setBusInterface(bus, {
-                      kind: "remote",
-                      server: pick.server,
-                      iface: pick.iface,
-                    });
-                    setAddingForBus(null);
-                  }}
                 />
               )}
             </div>
