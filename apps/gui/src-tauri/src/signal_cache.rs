@@ -386,6 +386,16 @@ impl SignalCache {
     /// the window, so this is `O(max_points)` regardless of capture
     /// length. `max_points == 0` disables decimation and returns the raw
     /// level-0 window slice.
+    ///
+    /// The slice comes through [`Self::level_points`], so a read off a
+    /// coarse level still reaches the series' newest sample rather than
+    /// stopping at the last bucket that has folded upward — the tail a
+    /// level is always missing is worth seconds once the capture is long
+    /// enough to push the read several folds up, and a live plot that
+    /// ends seconds short of the live edge is the symptom. The splice
+    /// costs fewer than [`PYRAMID_BRANCH`] points per level below the one
+    /// read, and [`signal_sampler::decimate_min_max`] keeps its last
+    /// bucket's final sample, so the live edge survives the decimation.
     fn window(&self, from: f64, to: f64, max_points: usize) -> Vec<SamplePoint> {
         if self.levels[0].live_len() == 0 {
             return Vec::new();
@@ -403,7 +413,7 @@ impl SignalCache {
                 }
             }
         }
-        let slice = window_slice(&self.levels[chosen], from, to);
+        let slice = self.level_points(chosen, from, to);
         if max_points == 0 {
             slice
         } else {
@@ -481,10 +491,13 @@ impl SignalCache {
     ///
     /// [`Self::fold`] only promotes *complete* buckets, so a level stops
     /// short of the newest samples — by up to [`PYRAMID_BRANCH`] of its
-    /// own points per level below it. For a line renderer that is a few
-    /// pixels of missing tail; for a lane of held states it is the lane
-    /// visibly falling behind the capture, which is the whole complaint
-    /// this serve exists to answer. Each level `j < level` therefore
+    /// own points per level below it. In wall-clock that is the level's
+    /// bucket span, which grows with capture length: measured on 90
+    /// minutes of a 100 Hz series it is 20 s of missing tail at the
+    /// narrowest point budget the plot asks for. A lane of held states
+    /// reads that as the signal having stopped; a line ends short of the
+    /// live edge. Both reductions therefore read through here. Each
+    /// level `j < level`
     /// contributes its own points newer than everything emitted so far —
     /// fewer than [`PYRAMID_BRANCH`] each, because anything older has
     /// already folded upward — so the splice is bounded however deep the
@@ -2664,6 +2677,68 @@ mod tests {
         #[allow(clippy::cast_precision_loss)]
         let last_sample = ((n - 1) * S) as f64 / 1e9;
         assert_eq!(served.last().unwrap().0, last_sample);
+    }
+
+    /// **Both** reductions answer to the series' newest sample, at any
+    /// point budget and at the length a long live session reaches.
+    ///
+    /// [`SignalCache::fold`] only promotes *complete* buckets, so a read
+    /// off a coarse level stops short of the capture by up to that
+    /// level's bucket span — a quantity that grows with capture length.
+    /// A view drawing held states reads the gap as the signal having
+    /// stopped; a line renderer draws a live plot that ends short of the
+    /// live edge. [`SignalCache::level_points`] is what closes it, and it
+    /// has to apply to both reductions: the leading edges of a lane and
+    /// of a line over the same capture must agree.
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    fn a_served_window_reaches_the_newest_sample_at_long_capture_length() {
+        // 90 minutes of capture — deep enough that the whole-capture
+        // window is read off a level several folds up (ten levels for the
+        // 100 Hz series), which is where the un-folded tail is worth
+        // seconds rather than milliseconds.
+        const SPAN_SECONDS: f64 = 5400.0;
+        let dir = TempDir::new().unwrap();
+        let build = |base: &str, hz: f64, value: &dyn Fn(usize) -> f64| {
+            let mut cache = SignalCache::new(dir.path(), base, None);
+            for i in 0..(SPAN_SECONDS * hz) as usize {
+                cache.push_sample(i as f64 / hz, value(i));
+                cache.fold();
+            }
+            cache
+        };
+        // A fast varying series (two points per folded bucket, so the
+        // pyramid is at its shallowest per sample) and a slow one held in
+        // long runs (one point per bucket) — the two shapes a mixed plot
+        // puts on its axes.
+        let varying = build("varying", 100.0, &|i| (i as f64 / 500.0).sin());
+        let held = build("held", 10.0, &|i| ((i / 4_000) % 4) as f64);
+
+        for (name, cache) in [("varying", &varying), ("held", &held)] {
+            let tip = cache.latest().expect("series has samples").t_seconds;
+            // From the narrowest budget the plot ever asks for to a
+            // full-width canvas: the coarser the read, the longer the
+            // tail that has not folded yet.
+            for max_points in [200usize, 720, 2248] {
+                let runs = cache.window_categorical(0.0, tip + 1.0, max_points);
+                assert_eq!(
+                    runs.last().expect("non-empty").t_seconds,
+                    tip,
+                    "{name}: categorical serve stopped short at max_points {max_points}",
+                );
+                let envelope = cache.window(0.0, tip + 1.0, max_points);
+                assert_eq!(
+                    envelope.last().expect("non-empty").t_seconds,
+                    tip,
+                    "{name}: min/max serve stopped short at max_points {max_points}",
+                );
+            }
+        }
     }
 
     #[test]
