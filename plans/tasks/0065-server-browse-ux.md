@@ -215,3 +215,101 @@ clean on every commit.
   "Manage servers…" jump to this panel.
 - Not verified against a running GUI (the phase forbade launching it);
   everything above is covered by unit and DOM tests only.
+
+### 2026-08-13 — phase 3: Connection Management over the server model
+
+**Landed** (branch `task65c-connections-integration`, off
+`task65b-server-panel` tip `be75010`), five commits:
+
+- `0a1d5af` **the host says which addresses need a decision.**
+  `connect_flow::needs_trust` names the probe case and the
+  `addresses_needing_trust` command answers it for a set of addresses,
+  so the frontend flags buses without re-deriving `is_local` or
+  re-reading `servers.json`. `server_list::trust_state` now goes
+  through the same function instead of reading the entry alone — which
+  is what its own rustdoc already claimed — so a **loopback server
+  reads *trusted***: nothing is stored for it and nothing ever will be,
+  because it is never asked about.
+- `b517938` **the combo binds from the trusted servers.** Local
+  interfaces, then each trusted server's interfaces under a group named
+  for the server (`selectedLabel` keeps the server's name in the closed
+  state), then the virtual buses, then *Manage servers…*.
+  `AddServerInline`, its `DiscoveredServerList`, the `serverDiscovery`
+  module, and their tests are gone; `dockLayout::showServersPanel` is
+  the one show-or-focus, shared by the palette command and the combo.
+- `33f9fa1` **server sections.** One collapsible sibling of *Local
+  interfaces* per trusted server — name, host name, address,
+  reachability, and every interface it offers annotated `→ <bus>` or
+  `(unassigned)`. `RemoteServerRow` (which appeared only because a
+  binding named an address, and listed only bound interfaces) and
+  `uniqueRemoteServers` retire; the local row's listing is now the
+  shared `InterfaceList`, keyed by address.
+- `fd9f373` **unknown-server legibility.** A bus bound to a server this
+  machine cannot reach without an answer says so under its combo, with
+  the same *Manage servers…* jump.
+- `75b154b` **panel actions follow what is stored.** Fallout from the
+  trust-state change: *Token…* now needs a pin and *Forget* needs
+  something stored, so a loopback row does not offer to store a
+  credential that would never be presented.
+
+**Where the rules live.**
+
+- *Sections come from the trust store, not the project.* The project
+  panel renders one section per row of `trustedServers(serverList)`;
+  the project only says which interface a bus is bound to. A trusted
+  server that is answering is watched for interfaces whether or not the
+  project uses it — the section and the combo are an offer.
+- *The chosen-interface rule* is `useServerSections(chosen)` in
+  `ConnectionManagement.tsx`, driven by a `Record<address, boolean>`
+  the project panel computes from `bindingsForServer`. A manual fold is
+  an override that survives until the rule's own answer for that server
+  moves; `keptOverrides` is that reconcile (pure, and returns its input
+  untouched when nothing is dropped, so a no-op does not re-render).
+- *The unknown-server state* is `busServerTrust(binding, servers,
+  needingTrust)`: `changed` when the row's badge says the identity
+  moved, otherwise `unknown` / `untrusted` when the **host** put the
+  address in `addresses_needing_trust` — split by whether the merged
+  list has a row for it. Absence alone is deliberately not the test: a
+  `--bind 127.0.0.1` proxy is absent too and needs no decision.
+  Addresses are matched through `serverKey`, mirroring the host's
+  normalisation, so a binding that spelled the address with a scheme or
+  in another case still finds its row.
+
+**Tests.** Frontend `pnpm test`: 1964 in 151 files (+17 net: 14
+`BusServerTrust.dom.test.tsx`, 14 `ServerSections.dom.test.tsx`, 4
+`serverList.test.ts`, 1 `ServersPanel.dom.test.tsx`; −5 combo/inline
+form, −5 `AddServerInline.discovery`, −6 `serverDiscovery`).
+Host `cargo test -p cannet-gui`: 604 passed, 6 ignored (+2 —
+`needs_trust` is exactly the probe case, a loopback row is trusted with
+nothing stored). `pnpm build` and `cargo clippy -p cannet-gui
+--all-targets -- -D warnings` clean on every commit.
+
+**Deviations / side effects.**
+
+- **Two host changes the brief did not ask for**, both in service of
+  its own instruction that the unknown-server state come from host
+  data: the `addresses_needing_trust` command (the alternative — using
+  the merged list's silence about an address — would flag every
+  loopback binding, since a `--bind 127.0.0.1` server is never asked
+  about and so never stored), and `trust_state` consulting
+  `connect_flow::plan`.
+- **Blocker for a later phase: a server that neither advertises nor is
+  trusted is now unreachable.** With the typed-address field gone, the
+  only way a server becomes bindable is a trusted row, and the only way
+  to get one is *Trust…* on a row the browse produced. Two gaps follow:
+  a server on another subnet (or started `--no-mdns`) cannot be reached
+  at all, and — before `0a1d5af` — a loopback proxy could not either,
+  because *Trust…* against it succeeds without a prompt, so nothing is
+  ever stored and the row would have stayed *new* forever. The
+  trust-state change fixes the loopback case **only while the proxy is
+  advertising**, which is how it reaches the list. What is still owed:
+  an *add by address* affordance in the Servers panel, which is where
+  the owner's ruling puts server selection anyway. README's
+  Servers-panel section and the panel's empty states no longer claim an
+  off-subnet server is reached by typing its address on a bus.
+- The combo's per-server groups are labelled `name ?? address`. Two
+  servers advertising the same instance name would share one group
+  header; their options stay distinct (values are addresses) and the
+  section headers carry the full detail.
+- Not verified against a running GUI (the phase forbade launching it);
+  everything above is covered by unit and DOM tests only.
