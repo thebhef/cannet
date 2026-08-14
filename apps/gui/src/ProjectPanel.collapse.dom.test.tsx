@@ -14,6 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
+import css from "./index.css?raw";
+
 const { invokeMock, listenMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(async () => [] as unknown[]),
   listenMock: vi.fn(async () => () => {}),
@@ -108,6 +110,17 @@ function header(name: string): HTMLElement {
   return screen.getByRole("button", { name: new RegExp(`^${name}$`) });
 }
 
+/// The declarations of the first top-level rule for `selector` (the
+/// `index.css?raw` idiom `DisclosureToggle.dom.test.tsx` establishes —
+/// jsdom does no layout, so alignment is asserted against the declared
+/// CSS text rather than a rendered box).
+function declarations(selector: string): string {
+  const start = css.indexOf(`\n${selector} {`);
+  expect(start, `no \`${selector}\` rule in index.css`).toBeGreaterThan(-1);
+  const open = css.indexOf("{", start);
+  return css.slice(open + 1, css.indexOf("}", open));
+}
+
 beforeEach(async () => {
   invokeMock.mockReset();
   invokeMock.mockResolvedValue([]);
@@ -127,6 +140,16 @@ describe("collapsible sections", () => {
     for (const name of SECTIONS) {
       expect(header(name), name).toHaveAttribute("aria-expanded", "true");
     }
+  });
+
+  it("left-aligns the section header label instead of centering it in the full-width button", () => {
+    // Regression guard: `.disclosure-toggle`'s base rule centers its
+    // flex content (right for an icon-only glyph), and a full-width
+    // header must override that main-axis position explicitly — its
+    // own `text-align: left` has no effect on a flex container's item
+    // placement.
+    const box = declarations(".project-panel .project-section-toggle");
+    expect(box).toMatch(/\bjustify-content:\s*flex-start\b/);
   });
 
   it("folds a section's body away when its header is clicked", () => {
