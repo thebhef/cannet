@@ -313,6 +313,75 @@ The owner's example capture files stay out of the repository — in
 whole or in part — and are never named or referenced in any repo
 document; their location travels only in phase prompts.
 
+## Status log
+
+- **2026-08-14, phase 1 (`task70-p1-quick-ui`, branched off
+  `batch-docs-closeout`):**
+  - `556480e` docs(task70): record the phase plan — the phase-plan
+    edit landed as the branch's first commit, per the git contract.
+  - `23576db` fix(gui): left-align the project panel's full-width
+    section headers (item 4). Root cause: `.disclosure-toggle`'s base
+    rule sets `justify-content: center` (correct for an icon-only
+    glyph); `.project-panel .project-section-toggle` stretches the
+    button to `width: 100%` for the section header row and sets
+    `text-align: left`, but `text-align` has no effect on a flex
+    container's item placement — the missing `justify-content:
+    flex-start` override left the label centered in the full-width
+    button. Added a failing declared-CSS guard test first
+    (`ProjectPanel.collapse.dom.test.tsx`), confirmed it failed
+    against the current rule, then added the override. Frontend: 154
+    test files / 2042 tests passed; build clean.
+  - `7e43d1a` fix(gui): size the disclosure glyph to fill its hit box
+    (item 5). Owner ruling: one shared `.disclosure-toggle-glyph`
+    font-size, not per-site overrides. Bumped 0.75rem (12px) → 1.1rem
+    (17.6px) — close to the 24px default hit-box floor while still
+    clearing the smallest compact row height (`dbcPanelViewport.ts`'s
+    20px `ROW_HEIGHT`) without clipping. Updated the existing
+    `DisclosureToggle.dom.test.tsx` assertion (it encoded the old
+    "ink smaller than the box" design) and the stale doc comments
+    that described the old sizing. Frontend: 154/2042 passed; build
+    clean.
+  - `545c91c` fix(gui): chronological frame rows expose aria-expanded,
+    drop the caret (item 14). Added `expandable`/`aria-expanded` to
+    `TraceView.tsx`'s `Row` (mirroring `ByIdTable.tsx`'s existing
+    check), and removed the decorative glyph from `cellContent`'s
+    shared `"msg"` case in `traceTable.tsx` — the row is the
+    disclosure now on both trace surfaces. `isExpanded` became
+    unused inside `cellContent` as a result; dropped from its
+    signature and both call sites (`ByIdTable.tsx`, `TraceView.tsx`).
+    Three new tests added to `TraceView.signals.dom.test.tsx`
+    (aria-expanded present + tracks state, absent on an undecoded
+    row, no caret in the message cell), written first and confirmed
+    failing before the fix. Frontend: 154/2045 passed; build clean.
+  - `cb88094` docs: drop task-number citations from source comments
+    (item 16). The ten sites named in the task file plus every other
+    task-number reference found by a full sweep of `apps/`, `crates/`
+    and `examples/` (30 files, comment text only, no behavior
+    changes) — `plans/` and `docs/` were left untouched per the
+    task's scope. Where a comment already carried an ADR citation
+    alongside the task number (ADR 0026, ADR 0027, ADR 0041), the ADR
+    stays and only the task number is dropped; sites with no
+    applicable ADR got an inline reason instead. Verification:
+    frontend 154 test files / 2045 tests passed, build clean;
+    `cargo test -p cannet-gui` 633 passed; `cargo test -p
+    cannet-server` 111 passed; `cargo test -p cannet-perf-measurement`
+    6 passed (touched by the fps_flat.rs / runner.rs comment edits);
+    `cargo clippy -p cannet-gui --all-targets` and `cargo clippy -p
+    cannet-server --all-targets` both clean.
+
+## Blockers / side effects
+
+- **Latent duplicate of item 4's bug, out of scope.** During item 4's
+  investigation, `apps/gui/src/index.css`'s `.blf-map-markers-toggle`
+  rule (BLF channel-map modal's "Markers (n)" disclosure) was found
+  to have the identical defect: `width: 100%; text-align: left;`
+  with no `justify-content: flex-start` override, so it inherits
+  `.disclosure-toggle`'s `justify-content: center` the same way the
+  project panel did. Not fixed here — item 4 is scoped to the project
+  view — but it will visibly mis-center the same way if exercised.
+  Left as a candidate for a future pass; the task file (not
+  `plans/backlog.md`, per this phase's hard rules) is the record.
+
 ## Exit criteria (draft — firm at grooming)
 
 - Item-0 verdict recorded (done: tauri dev at stack tip — all
