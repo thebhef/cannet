@@ -143,6 +143,7 @@ import {
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
   elementPanelComponent,
+  normalizeSingletonTitles,
   stripMaximizedNode,
   validateLayout,
 } from "./dockLayout";
@@ -1669,7 +1670,7 @@ export function App() {
         // histories (same as `seedDefaultLayout`).
         applyingLayoutRef.current = true;
         try {
-          api.fromJSON(layout);
+          api.fromJSON(normalizeSingletonTitles(layout));
         } catch {
           /* keep the current layout if the saved one won't load */
         } finally {
@@ -2628,7 +2629,7 @@ export function App() {
       const saved = reopenComing ? validateLayout(hostState().layout) : null;
       if (saved) {
         try {
-          api.fromJSON(saved);
+          api.fromJSON(normalizeSingletonTitles(saved));
           restored = api.panels.length > 0;
         } catch {
           restored = false;
