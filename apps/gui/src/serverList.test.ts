@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  addressShapeError,
   browseNotice,
   matchServerRows,
   serverLabel,
@@ -134,5 +135,28 @@ describe("which servers a bus can be bound to", () => {
   it("names a server by what it advertises, falling back to its address", () => {
     expect(serverLabel(row({ name: "bench-rig" }))).toBe("bench-rig");
     expect(serverLabel(row({ name: null, address: "dead:50051" }))).toBe("dead:50051");
+  });
+});
+
+describe("the shape of a typed server address", () => {
+  it("passes what the host can dial, in every spelling it files", () => {
+    for (const input of [
+      "bench.example.com:50051",
+      " https://Bench.Example.com:50051 ",
+      "192.168.1.10:50051",
+      "[2001:db8::1]:50051",
+    ]) {
+      expect(addressShapeError(input)).toBeNull();
+    }
+  });
+
+  it("catches the typos worth catching before a round trip", () => {
+    for (const input of ["", "   ", "bench.example.com", "bench:", ":50051", "bench:fifty", "bench:0", "bench:70000", "2001:db8::1:50051"]) {
+      expect(addressShapeError(input)).not.toBeNull();
+    }
+  });
+
+  it("names host:port in the complaint, because that is the fix", () => {
+    expect(addressShapeError("bench.example.com")).toContain("host:port");
   });
 });

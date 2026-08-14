@@ -54,13 +54,25 @@ companion-file pattern (ADR 0010).
 The singleton panel listing every server this machine knows about —
 what is advertising on the network merged with what has been accepted
 here, one row per `host:port` — and the one place an identity is
-trusted, a token entered, or a server forgotten (ADR 0041). Trusting
-a server is a decision the machine makes once, not a project's; a
-project only references the `host:port` a bus is bound to. A bus row
-has no server affordance beyond *Manage servers…*, which jumps here.
+trusted, a token entered, a server forgotten, or an address **added by
+hand** (ADR 0041). Trusting a server is a decision the machine makes
+once, not a project's; a project only references the `host:port` a bus
+is bound to. A bus row has no server affordance beyond *Manage
+servers…*, which jumps here.
 _Avoid_: "trusted-servers list" for this — one merged list, not a
 separate pinned-only one. _Avoid_: "add a server to a bus" — a bus is
 bound to an interface on a server this machine already trusts.
+
+**Add server…**:
+The panel's affordance for a server discovery cannot produce — one on
+another subnet, one started `--no-mdns`. Typing its `host:port` dials
+it exactly as a browsed row's *Trust…* does, and the question that
+comes back is answered in the same dialog; an address that was refused
+leaves nothing stored. A server reached with nothing to ask — a
+loopback proxy — is kept in the list by the entry recording that the
+operator added it, and *Forget* takes it back out.
+_Avoid_: "typed address" as a bus-level idea — the old per-bus address
+field is gone, and an address is added once, for the machine.
 
 **Unknown server** (on a bus):
 What a bus row says when its binding names a server this machine

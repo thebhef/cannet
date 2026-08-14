@@ -126,6 +126,26 @@ export function serverKey(address: string): string {
   return (i < 0 ? address : address.slice(i + 3)).toLowerCase();
 }
 
+/// Whether `input` looks like a server address, as the complaint when it
+/// does not.
+///
+/// A typo guard in front of the field and nothing more. The host checks
+/// the address again in `add_server` and its answer is the one that
+/// decides — this only spares a round trip on an empty box, a missing
+/// port, or an IPv6 literal written without its brackets.
+export function addressShapeError(input: string): string | null {
+  const trimmed = input.trim();
+  const shape = "A server address is host:port, for example bench.local:50051.";
+  if (trimmed === "") return `Enter the server's address. ${shape}`;
+  const match = /^(\[[^\]]+\]|[^:[\]\s]+):(\d+)$/.exec(serverKey(trimmed));
+  if (match === null) return `"${trimmed}" is not an address. ${shape}`;
+  const port = Number(match[2]);
+  if (port < 1 || port > 65535) {
+    return `"${match[2]}" is not a port number. ${shape}`;
+  }
+  return null;
+}
+
 /// How a server is named where it is picked from: the instance name it
 /// advertises, or its address when nothing has answered to name it.
 export function serverLabel(row: ServerRow): string {
@@ -258,4 +278,4 @@ export function browseNotice(browse: BrowseStatus): string | null {
 /// genuinely nothing on this subnet — and nothing accepted here
 /// either, so no bus has a server to bind to yet.
 export const NOTHING_ADVERTISING =
-  "No servers are advertising on this network, and none have been accepted on this machine. A server on another subnet won't appear here — discovery is multicast, so it has to advertise somewhere this machine can hear it.";
+  "No servers are advertising on this network, and none have been accepted on this machine. Discovery is multicast, so a server on another subnet — or one started --no-mdns — never advertises anywhere this machine can hear: add it by address.";
