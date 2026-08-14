@@ -193,6 +193,45 @@ describe("the merged server list", () => {
     expect(local.queryByRole("button", { name: /^forget/ })).not.toBeInTheDocument();
   });
 
+  it("keeps two servers of the same name apart on their own rows", async () => {
+    // Ambiguity is not acceptable: DNS name, address and fingerprint
+    // are all on the row, so two servers advertising one name are still
+    // two rows saying which is which.
+    snapshot = list([
+      row({
+        address: "10.0.0.1:50051",
+        name: "bench-rig",
+        host: "bench-a.local",
+        trust: "trusted",
+        fingerprint: "SHA256:aaa",
+      }),
+      row({
+        address: "10.0.0.2:50051",
+        name: "bench-rig",
+        host: "bench-b.local",
+        trust: "trusted",
+        fingerprint: "SHA256:bbb",
+      }),
+    ]);
+    renderPanel();
+    await screen.findByText("10.0.0.1:50051");
+    expect(screen.getAllByText("bench-rig")).toHaveLength(2);
+    const first = rowFor("10.0.0.1:50051");
+    const second = rowFor("10.0.0.2:50051");
+    expect(first).not.toBe(second);
+    expect(first).toHaveTextContent("bench-a.local");
+    expect(first).toHaveTextContent("SHA256:aaa");
+    expect(second).toHaveTextContent("bench-b.local");
+    expect(second).toHaveTextContent("SHA256:bbb");
+    // …and every action on a row is addressed by that row's server.
+    expect(
+      within(first).getByRole("button", { name: "forget 10.0.0.1:50051" }),
+    ).toBeInTheDocument();
+    expect(
+      within(second).getByRole("button", { name: "forget 10.0.0.2:50051" }),
+    ).toBeInTheDocument();
+  });
+
   it("filters with a fuzzy search over names, host names, and addresses", async () => {
     renderPanel();
     await screen.findByText("192.168.1.10:50051");

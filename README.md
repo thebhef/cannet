@@ -1590,7 +1590,9 @@ schema (v6) carries three source kinds on each binding:
 Each logical bus has a single combo on its row that lists every
 source available to it — the local driver's interfaces, the
 interfaces of each server this machine trusts (grouped under that
-server), and the project's virtual buses — plus *+ Add virtual bus*
+server; when two servers advertise the same name, each group header
+carries what tells them apart — the machine it runs on, or its
+address), and the project's virtual buses — plus *+ Add virtual bus*
 and *Manage servers…*. Picking from the combo writes the binding.
 Step 6's multi-client fan-out means the same source may be picked
 for many logical buses; the GUI no longer hides "in use" options.
