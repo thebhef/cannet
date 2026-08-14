@@ -18,6 +18,7 @@ let REJECT_NEXT = false;
 const calls: Array<{ cmd: string; args: unknown }> = [];
 let dbcChangedHandler: (() => void) | null = null;
 let logFinishedHandler: (() => void) | null = null;
+let fileSignalsChangedHandler: (() => void) | null = null;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: unknown) => {
@@ -36,9 +37,11 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async (event: string, handler: () => void) => {
     if (event === "dbc-changed") dbcChangedHandler = handler;
     if (event === "log-finished") logFinishedHandler = handler;
+    if (event === "file-signals-changed") fileSignalsChangedHandler = handler;
     return () => {
       dbcChangedHandler = null;
       logFinishedHandler = null;
+      fileSignalsChangedHandler = null;
     };
   }),
 }));
@@ -111,6 +114,7 @@ beforeEach(() => {
   calls.length = 0;
   dbcChangedHandler = null;
   logFinishedHandler = null;
+  fileSignalsChangedHandler = null;
 });
 afterEach(() => {
   cleanup();
@@ -197,6 +201,33 @@ describe("SignalCatalogProvider / useSignalCatalog", () => {
     await waitFor(() => expect(logFinishedHandler).not.toBeNull());
     logFinishedHandler!();
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+  });
+
+  it("refetches on file-signals-changed", async () => {
+    // The file-backed half of the catalog is not driven by DBC/import
+    // events alone: `clear_trace_store` and `restore_scratch_capture`
+    // move the file-backed set too (a Clear, or restoring a scratch
+    // capture) without a `dbc-changed` or `log-finished` firing, so this
+    // provider would otherwise go stale until an unrelated refetch
+    // trigger happened to fire.
+    renderProvider(baseProjectCtx({ buses: [] }));
+    await waitFor(() => expect(calls.filter((c) => c.cmd === "list_signals")).toHaveLength(1));
+
+    SIGNALS = [
+      {
+        bus_id: null,
+        message_id: 1,
+        extended: false,
+        message_name: "Analog",
+        transmitter: null,
+        signal_name: "TankLevel",
+        unit: "L",
+        file_backed: true,
+      },
+    ];
+    await waitFor(() => expect(fileSignalsChangedHandler).not.toBeNull());
+    fileSignalsChangedHandler!();
+    await waitFor(() => expect(screen.getByText("TankLevel")).toBeInTheDocument());
   });
 
   it("falls back to an empty catalog on a failed fetch", async () => {

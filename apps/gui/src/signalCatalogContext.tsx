@@ -1,7 +1,7 @@
 // Signal catalog shared across every panel that lists (bus, message,
 // signal) triples the attached DBCs define — the plot picker, the
 // transmit row's DBC-name lookup, the color-map target picker, the
-// signal view's manual-add picker. Each used to run its own
+// signal view's regex-pattern matching. Each used to run its own
 // `list_signals` fetch + refetch-on-change; this fetches once and
 // every consumer reads it through `useSignalCatalog()`.
 
@@ -82,6 +82,18 @@ export function SignalCatalogProvider({ children }: { children: ReactNode }): Re
   // import that read them has run.
   useEffect(() => {
     const unlisten = listen("log-finished", () => {
+      refreshCatalog();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [refreshCatalog]);
+
+  // Re-fetch on `file-signals-changed` — the host emits this whenever
+  // the file-backed signal set moves outside an import (a Clear, or
+  // restoring a scratch capture), which `log-finished` doesn't cover.
+  useEffect(() => {
+    const unlisten = listen("file-signals-changed", () => {
       refreshCatalog();
     });
     return () => {
