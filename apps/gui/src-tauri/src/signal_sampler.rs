@@ -26,6 +26,13 @@
 //! max-value point so spikes survive — what the plot panel applies
 //! before handing the data to uPlot, since a window can hold far more
 //! frames than the canvas has pixels.
+//!
+//! [`reduce_transitions`] is the same reduction for a **categorical**
+//! series (one rendered as held states rather than as a line): it keeps
+//! the run boundaries, which is the whole of what such a renderer draws.
+//! Which reducer a serve applies is the caller's declared render mode,
+//! not a property of the signal — see
+//! [`SignalCacheStore::slice_many`](crate::signal_cache::SignalCacheStore::slice_many).
 
 use cannet_core::CanId;
 use cannet_dbc::Database;
@@ -224,6 +231,48 @@ pub fn decimate_min_max(points: &[SamplePoint], max_buckets: usize) -> Vec<Sampl
             }
         }
         start = end;
+    }
+    out
+}
+
+/// Reduce `points` to its **runs**: the first point of every maximal run
+/// of equal values, plus the series' own last point.
+///
+/// This is the categorical counterpart of [`decimate_min_max`], and the
+/// two are not interchangeable. A min/max envelope keeps each bucket's
+/// argmin and argmax *by value*, which is the right summary for a
+/// measurement (a spike survives) and a category error for a code: once a
+/// bucket spans more than one held state, the two extreme codes in it are
+/// kept and every intermediate one is discarded, so the series stops
+/// showing the state that was held and shows a per-bucket envelope
+/// instead. Runs discard nothing a categorical renderer draws — a step
+/// series is exactly its transitions — and cost `O(transitions)` rather
+/// than `O(2 · buckets)`.
+///
+/// Equality is exact: the values are decoded codes, so two samples of the
+/// same state are bit-identical f64s and a tolerance would merge
+/// neighbouring codes.
+///
+/// The last point is always emitted (deduplicated when the final run is a
+/// single sample) because a stepped renderer holds a value forward to the
+/// *next* sample's time: without it the final tile has no end.
+#[must_use]
+#[allow(clippy::float_cmp)]
+pub fn reduce_transitions(points: &[SamplePoint]) -> Vec<SamplePoint> {
+    let Some(first) = points.first() else {
+        return Vec::new();
+    };
+    let mut out = vec![*first];
+    let mut held = first.value;
+    for p in &points[1..] {
+        if p.value != held {
+            out.push(*p);
+            held = p.value;
+        }
+    }
+    let last = points[points.len() - 1];
+    if out[out.len() - 1].t_seconds != last.t_seconds {
+        out.push(last);
     }
     out
 }
@@ -445,6 +494,83 @@ BO_ 256 EngineData: 2 ECU
             decimate_min_max(&pts, 2),
             vec![pt(0.0, 7.0), pt(2.0, 7.0), pt(3.0, 7.0)],
         );
+    }
+
+    /// The categorical reducer's reason to exist, stated as a contrast.
+    ///
+    /// A series cycling `0..=5`, each code held for many samples, over a
+    /// point budget far below the sample count. `reduce_transitions`
+    /// must still carry **every code** and **every transition time**;
+    /// `decimate_min_max` cannot, by construction — once a bucket spans
+    /// more than one hold it keeps that bucket's argmin and argmax by
+    /// value and discards every intermediate code.
+    #[test]
+    #[allow(clippy::float_cmp, clippy::cast_precision_loss)]
+    fn runs_survive_a_budget_that_min_max_decimation_would_flatten() {
+        const CODES: usize = 6;
+        const HOLD: usize = 50;
+        let mut pts = Vec::new();
+        for _cycle in 0..4 {
+            for code in 0..CODES {
+                for _ in 0..HOLD {
+                    let i = pts.len();
+                    pts.push(pt(i as f64, code as f64));
+                }
+            }
+        }
+        // Where each held run starts — the transitions the lane draws.
+        let starts: Vec<f64> = (0..pts.len())
+            .step_by(HOLD)
+            .map(|i| pts[i].t_seconds)
+            .collect();
+
+        let runs = reduce_transitions(&pts);
+        // Every run start, in order, plus the series' last point so the
+        // final tile has an end.
+        assert_eq!(
+            runs.iter().map(|p| p.t_seconds).collect::<Vec<_>>(),
+            starts
+                .iter()
+                .copied()
+                .chain(std::iter::once(pts.last().unwrap().t_seconds))
+                .collect::<Vec<_>>(),
+        );
+        for code in 0..CODES {
+            assert!(
+                runs.iter().any(|p| p.value == code as f64),
+                "code {code} missing from the run reduction",
+            );
+        }
+
+        // The envelope reducer at a budget of 4 buckets — each bucket
+        // spans a whole 0..=5 cycle, so its argmin is code 0 and its
+        // argmax code 5 and the four codes in between are gone. This is
+        // the reported symptom in miniature: not a late lane, a lane
+        // showing an alternating stripe of the two extreme codes.
+        let envelope = decimate_min_max(&pts, 4);
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let kept: std::collections::BTreeSet<u64> =
+            envelope.iter().map(|p| p.value as u64).collect();
+        assert_eq!(
+            kept,
+            [0, 5].into_iter().collect(),
+            "min/max decimation keeps only each bucket's extreme codes",
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn reduce_transitions_edges() {
+        assert_eq!(reduce_transitions(&[]), Vec::<SamplePoint>::new());
+        // One point is its own run and its own end.
+        assert_eq!(reduce_transitions(&[pt(1.0, 3.0)]), vec![pt(1.0, 3.0)]);
+        // A held series collapses to its first and last point — the tile
+        // needs both to know where it starts and where it ends.
+        let flat = vec![pt(0.0, 7.0), pt(1.0, 7.0), pt(2.0, 7.0)];
+        assert_eq!(reduce_transitions(&flat), vec![pt(0.0, 7.0), pt(2.0, 7.0)]);
+        // A transition on the very last sample is emitted once, not twice.
+        let late = vec![pt(0.0, 1.0), pt(1.0, 1.0), pt(2.0, 2.0)];
+        assert_eq!(reduce_transitions(&late), vec![pt(0.0, 1.0), pt(2.0, 2.0)]);
     }
 
     #[test]
