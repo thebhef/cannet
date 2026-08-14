@@ -3274,6 +3274,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             const isPrimary = key === primaryKey;
             const isSelected = selectedKeys.has(key);
             const isSoloMasked = !!soloMaskedKeys?.has(key);
+            // A hidden row — including one solo's mask hid, which
+            // renders identically (ADR 0026) — has nothing to draw, so
+            // it drops to swatch + name: no message, value, or remove
+            // control to read. The un-hide affordance stays the
+            // swatch, exactly as a full row's hide toggle.
+            const compact = !!s.hidden;
             return (
               <div
                 className={`plot-signal-row${s.hidden ? " hidden" : ""}${isSoloMasked ? " solo-masked" : ""}${isPrimary ? " primary" : ""}${isSelected ? " selected" : ""}`}
@@ -3367,91 +3373,102 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   onToggleHidden={() => onToggleHidden(s)}
                   onPickColor={(c) => onSetSignalColor(s, c)}
                 />
-                <div className="plot-signal-text">
+                {compact ? (
                   <span
                     className="plot-signal-name"
                     title={`${s.messageName}.${s.signalName} — drag to another plot area`}
                   >
                     {s.signalName}
                   </span>
-                  <span className="plot-signal-message" title={messageLabelFor(s)}>
-                    {s.busId ? (
-                      <>
-                        <span
-                          className="plot-bus-swatch"
-                          style={{ background: busColorLookup.get(s.busId) ?? theme().busUnknown }}
-                          aria-hidden="true"
-                        />
-                        {messageLabelFor(s)}
-                      </>
-                    ) : (
-                      messageLabelFor(s)
-                    )}
-                  </span>
-                </div>
-                <div className="plot-signal-readout">
-                  <span className="plot-signal-value" title={valueTitle}>
-                    {formatValueFor(key, v)}
-                    {/* Unit suffix is only meaningful for numeric
-                     * readouts — an enum row already self-labels via
-                     * `<label> (<raw>)` and tacking on a unit string
-                     * (often the empty string anyway) reads as noise.
-                     * A single-member table is not an enum
-                     * (`isEnumValueTable`), so its signal keeps the
-                     * unit. */}
-                    {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
-                  </span>
-                  {showAbDelta && (
-                    <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
-                      {/* A difference, not a reading — the plain float
-                        * rule, as in the measurement strip. */}
-                      Δ {fmtVal(deltaAbFor(key))}
-                      {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
-                    </small>
-                  )}
-                </div>
-                {manualKeys.has(key) ? (
-                  <button
-                    className="plot-signal-remove"
-                    title="remove this signal"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRemoveSignal(key);
-                    }}
-                  >
-                    ×
-                  </button>
                 ) : (
-                  <span
-                    className="plot-signal-pattern-badge"
-                    title="added by a pattern — edit the area's patterns to remove, or drag/recolor to pin it as a manual pick"
-                  >
-                    ◇
-                  </span>
+                  <>
+                    <div className="plot-signal-text">
+                      <span
+                        className="plot-signal-name"
+                        title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                      >
+                        {s.signalName}
+                      </span>
+                      <span className="plot-signal-message" title={messageLabelFor(s)}>
+                        {s.busId ? (
+                          <>
+                            <span
+                              className="plot-bus-swatch"
+                              style={{ background: busColorLookup.get(s.busId) ?? theme().busUnknown }}
+                              aria-hidden="true"
+                            />
+                            {messageLabelFor(s)}
+                          </>
+                        ) : (
+                          messageLabelFor(s)
+                        )}
+                      </span>
+                    </div>
+                    <div className="plot-signal-readout">
+                      <span className="plot-signal-value" title={valueTitle}>
+                        {formatValueFor(key, v)}
+                        {/* Unit suffix is only meaningful for numeric
+                         * readouts — an enum row already self-labels via
+                         * `<label> (<raw>)` and tacking on a unit string
+                         * (often the empty string anyway) reads as noise.
+                         * A single-member table is not an enum
+                         * (`isEnumValueTable`), so its signal keeps the
+                         * unit. */}
+                        {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
+                      </span>
+                      {showAbDelta && (
+                        <small className="plot-signal-delta" title="Δ value (cursor A − cursor B)">
+                          {/* A difference, not a reading — the plain float
+                            * rule, as in the measurement strip. */}
+                          Δ {fmtVal(deltaAbFor(key))}
+                          {!isEnumValueTable(valueTables.get(key)) && s.unit ? ` ${s.unit}` : ""}
+                        </small>
+                      )}
+                    </div>
+                    {manualKeys.has(key) ? (
+                      <button
+                        className="plot-signal-remove"
+                        title="remove this signal"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemoveSignal(key);
+                        }}
+                      >
+                        ×
+                      </button>
+                    ) : (
+                      <span
+                        className="plot-signal-pattern-badge"
+                        title="added by a pattern — edit the area's patterns to remove, or drag/recolor to pin it as a manual pick"
+                      >
+                        ◇
+                      </span>
+                    )}
+                    {showDiag && (() => {
+                      const r = rangeFor(key);
+                      const t = cacheTRangeFor(key);
+                      if (r == null && t == null) return null;
+                      return (
+                        <small
+                          className="plot-signal-range"
+                          title="y-range: auto-normalisation latch (lo … hi). t-range: leftmost / rightmost cached sample's relative time (seconds). Useful for diagnosing a line that doesn't reach the canvas edges — if t doesn't span the visible x range, the cache is missing data there."
+                        >
+                          {r != null ? (
+                            <>
+                              y[{fmtVal(r.lo)} … {fmtVal(r.hi)}]
+                            </>
+                          ) : null}
+                          {t != null ? (
+                            <>
+                              {" "}
+                              t[{t.first.toFixed(2)} … {t.last.toFixed(2)}]
+                            </>
+                          ) : null}
+                        </small>
+                      );
+                    })()}
+                  </>
                 )}
-                {showDiag && (() => {
-                  const r = rangeFor(key);
-                  const t = cacheTRangeFor(key);
-                  if (r == null && t == null) return null;
-                  return (
-                    <small
-                      className="plot-signal-range"
-                      title="y-range: auto-normalisation latch (lo … hi). t-range: leftmost / rightmost cached sample's relative time (seconds). Useful for diagnosing a line that doesn't reach the canvas edges — if t doesn't span the visible x range, the cache is missing data there."
-                    >
-                      {r != null ? (
-                        <>
-                          y[{fmtVal(r.lo)} … {fmtVal(r.hi)}]
-                        </>
-                      ) : null}
-                      {t != null ? (
-                        <>
-                          {" "}
-                          t[{t.first.toFixed(2)} … {t.last.toFixed(2)}]
-                        </>
-                      ) : null}
-                    </small>
-                  );
-                })()}
               </div>
             );
           })

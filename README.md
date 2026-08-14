@@ -1192,7 +1192,10 @@ resample at the end.
   to hide / show the line — the value keeps updating, the swatch dims;
   **right-click** the swatch to pick the series' color from the
   browser's color picker), the name, and the value — at cursor A when one is placed, else at the
-  mouse crosshair, else the latest sample. While the pointer is over the
+  mouse crosshair, else the latest sample. A hidden row drops to a
+  single line — swatch and name only, nothing else to read while
+  nothing draws — and returns to the full row when shown again; the
+  swatch stays the way back either way. While the pointer is over the
   panel, the bottom-most area's **`time (s)` axis label** also carries
   the crosshair's own time — the instant those readouts are taken at —
   as elapsed time on the shared timeline (ADR 0024); it reverts to the
@@ -1265,8 +1268,9 @@ resample at the end.
   label. Inside an area it does apply to, being left with no visible
   series gives up the plot height like any all-hidden area, without
   touching its own collapse toggle; a row solo is why you can't see it
-  carries its own marker instead of the plain dimmed/italic hidden
-  look, so it doesn't read as something you hid yourself. An area solo
+  compacts to the single-line hidden treatment above, with its own
+  marker instead of the plain dimmed/italic look, so it doesn't read as
+  something you hid yourself. An area solo
   applies to also shows a small `3 of 12 match` chip beside its label —
   how many of that area's own series matched — and a zero-match area
   shows no chip at all. The pattern is saved with the panel in the

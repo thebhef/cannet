@@ -3421,6 +3421,98 @@ describe("PlotPanel axis collapse", () => {
   });
 });
 
+describe("PlotPanel hidden signal rows", () => {
+  const twoSignalRegistry = (id: string) =>
+    makeRegistry({
+      id,
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [
+              { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#abc" },
+              { busId: null, messageId: 256, extended: false, signalName: "EngineTemp", messageName: "EngineData", unit: "degC", color: "#def" },
+            ],
+          },
+        ],
+      },
+    });
+
+  const row = (name: string) => screen.getByText(name).closest(".plot-signal-row") as HTMLElement;
+
+  it("drops a hidden row to swatch + name, and restores it on show", () => {
+    const registry = twoSignalRegistry("el-hide-compact");
+    renderPanel({ params: { elementId: "el-hide-compact" }, registry });
+
+    // Shown: the full readout — message, value, remove/badge affordance.
+    const shown = row("EngineSpeed");
+    expect(shown.querySelector(".plot-signal-message")).not.toBeNull();
+    expect(shown.querySelector(".plot-signal-readout")).not.toBeNull();
+    expect(
+      shown.querySelector(".plot-signal-remove") ?? shown.querySelector(".plot-signal-pattern-badge"),
+    ).not.toBeNull();
+
+    // The swatch is the only un-hide affordance phase 4 relies on — same
+    // gesture, no new control.
+    fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
+    const hidden = row("EngineSpeed");
+    expect(hidden.classList.contains("hidden")).toBe(true);
+    expect(hidden.querySelector(".plot-signal-message")).toBeNull();
+    expect(hidden.querySelector(".plot-signal-readout")).toBeNull();
+    expect(hidden.querySelector(".plot-signal-remove")).toBeNull();
+    expect(hidden.querySelector(".plot-signal-pattern-badge")).toBeNull();
+    // Swatch and name survive — the un-hide path and the row's identity.
+    expect(hidden.querySelector(".plot-signal-swatch")).not.toBeNull();
+    expect(hidden.querySelector(".plot-signal-name")).not.toBeNull();
+    // The other row is untouched.
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(false);
+    expect(row("EngineTemp").querySelector(".plot-signal-message")).not.toBeNull();
+
+    // Showing it again restores the full row.
+    fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
+    const shownAgain = row("EngineSpeed");
+    expect(shownAgain.classList.contains("hidden")).toBe(false);
+    expect(shownAgain.querySelector(".plot-signal-message")).not.toBeNull();
+    expect(shownAgain.querySelector(".plot-signal-readout")).not.toBeNull();
+  });
+
+  it("still shows compact rows when every signal on the axis is hidden", () => {
+    // ADR 0026 / phase 4: an all-hidden axis keeps its rows rather than
+    // reducing to a heading — a swatch in one of them is the only way
+    // back. They compact exactly like any other hidden row.
+    const bothHidden = makeRegistry({
+      id: "el-all-hidden",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [
+              { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#abc", hidden: true },
+              { busId: null, messageId: 256, extended: false, signalName: "EngineTemp", messageName: "EngineData", unit: "degC", color: "#def", hidden: true },
+            ],
+          },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-all-hidden" }, registry: bothHidden });
+
+    expect(document.querySelector(".plot-area")!.classList.contains("collapsed")).toBe(true);
+    // Not a deliberate collapse — the row list still renders, compact.
+    expect(document.querySelector(".plot-area")!.classList.contains("heading-only")).toBe(false);
+    const rows = Array.from(document.querySelectorAll(".plot-signal-row"));
+    expect(rows.length).toBe(2);
+    for (const r of rows) {
+      expect(r.classList.contains("hidden")).toBe(true);
+      expect(r.querySelector(".plot-signal-message")).toBeNull();
+      expect(r.querySelector(".plot-signal-swatch")).not.toBeNull();
+    }
+    // The swatch still un-hides from here.
+    fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
+    expect(row("EngineSpeed").classList.contains("hidden")).toBe(false);
+    expect(row("EngineSpeed").querySelector(".plot-signal-message")).not.toBeNull();
+  });
+});
+
 describe("PlotPanel solo", () => {
   const sig = (signalName: string, unit = "V", hidden?: boolean) => ({
     busId: null,
@@ -4846,9 +4938,14 @@ describe("PlotPanel signal-row selection", () => {
 
     expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
     expect(order()).toEqual(before);
-    // And it is still the pattern's row, not a pick: the badge stays and
-    // there is no per-row × to remove something the pattern would put
-    // straight back.
+    // A hidden row compacts to swatch + name (item 3), so neither the
+    // badge nor a remove control renders while it's hidden — the
+    // persistence check has to happen on the way back. Showing it
+    // again still reads as the pattern's row, not a pick: the badge
+    // returns and there is no per-row × to remove something the
+    // pattern would put straight back.
+    fireEvent.click(row("EngineTemp").querySelector("button.plot-signal-swatch")!);
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(false);
     expect(row("EngineTemp").querySelector(".plot-signal-remove")).toBeNull();
     expect(row("EngineTemp").querySelector(".plot-signal-pattern-badge")).not.toBeNull();
   });
