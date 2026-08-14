@@ -398,7 +398,28 @@ clean.
   (who ran it by hand), while everything reachable from a terminal
   (the bundled server's process, the registry) was verified directly.
 
-## Blockers / side effects
+### 2026-08-13 — defect: verbatim `\\?\` path written into PATH
+
+The registry read-only check above recorded the owner's live entry as
+`\\?\%LOCALAPPDATA%\cannet` — `resource_dir()` returns a `\\?\`-prefixed
+verbatim path on Windows, and the palette command wrote it into
+`HKCU\Environment\Path` unnormalized. It resolves, but a verbatim entry
+in PATH confuses some tools and reads as broken.
+
+Fix: `bundled_server_dir` now strips the `\\?\` (and `\\?\UNC\` → `\\`)
+prefix via a new hand-rolled `strip_verbatim_prefix` helper before the
+directory is compared against or written into PATH — no new dependency
+(the workspace only carries `dunce` transitively, not as a direct
+dependency, so it wasn't pulled in for this). `user_path_with` also
+now recognizes a pre-existing verbatim entry as the same directory and
+*replaces* it with the plain form instead of appending a duplicate;
+re-running the palette command against the owner's current PATH will
+fix that entry in place. Re-running once more reports already-present.
+Four new tests in `server_path` cover this: plain-append (pre-existing
+coverage), verbatim-entry replacement, replacement idempotency, and the
+`\\?\UNC\` share form, plus a direct test of the helper. macOS's
+`~/.zprofile` line was checked and already writes a plain absolute
+path — no `\\?\` equivalent there, no change needed.
 
 - **New maintenance obligation (phase 1, accepted):** the Windows leg
   carries a vendored fork of `cargo-packager`'s `installer.nsi`. The

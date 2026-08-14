@@ -50,6 +50,24 @@ enum PathEdit {
     Write(String),
 }
 
+/// Strip a Windows extended-length ("verbatim") prefix from `path`,
+/// turning `\\?\C:\foo` into `C:\foo` and `\\?\UNC\server\share` into
+/// `\\server\share`. A path without the prefix is returned unchanged.
+///
+/// `resource_dir()` returns a verbatim path on Windows; writing one into
+/// `PATH` verbatim resolves but reads as broken and confuses some tools,
+/// so every path this module compares or writes is normalized through
+/// here first.
+fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 /// The directory holding the bundled server — the bundle's resource
 /// root, which is also where the frozen sidecar onedir lives.
 ///
@@ -62,6 +80,7 @@ fn bundled_server_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .path()
         .resource_dir()
         .map_err(|e| format!("cannot locate this install's resources: {e}"))?;
+    let dir = PathBuf::from(strip_verbatim_prefix(&dir.to_string_lossy()));
     let server = dir.join(SERVER_FILE_NAME);
     if !server.is_file() {
         return Err(format!(
@@ -109,7 +128,20 @@ pub fn add_server_to_path(app: tauri::AppHandle) -> Result<String, String> {
 /// checked only on the one platform that executes them.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn user_path_with(current: &str, dir: &str) -> PathEdit {
-    if current.split(';').any(|entry| same_directory(entry, dir)) {
+    let entries: Vec<&str> = current.split(';').collect();
+    // A pre-existing verbatim spelling of `dir` names the same
+    // directory but is not byte-for-byte `dir`, so it needs an actual
+    // rewrite rather than being left as "already present" — otherwise
+    // the owner's PATH would keep the `\\?\` form forever.
+    if let Some(index) = entries
+        .iter()
+        .position(|entry| is_verbatim_form(entry, dir))
+    {
+        let mut fixed = entries;
+        fixed[index] = dir;
+        return PathEdit::Write(fixed.join(";"));
+    }
+    if entries.iter().any(|entry| same_directory(entry, dir)) {
         return PathEdit::AlreadyPresent;
     }
     PathEdit::Write(if current.is_empty() || current.ends_with(';') {
@@ -125,6 +157,17 @@ fn user_path_with(current: &str, dir: &str) -> PathEdit {
 fn same_directory(entry: &str, dir: &str) -> bool {
     let entry = entry.trim().trim_end_matches(['\\', '/']);
     !entry.is_empty() && entry.eq_ignore_ascii_case(dir.trim_end_matches(['\\', '/']))
+}
+
+/// Whether `entry` is a verbatim (`\\?\`-prefixed) spelling of `dir`,
+/// e.g. `\\?\C:\foo` for `C:\foo` or `\\?\UNC\srv\share` for
+/// `\\srv\share`. Only the verbatim prefix is special-cased here — a
+/// merely different case or trailing separator is `same_directory`'s
+/// business, and is left alone rather than rewritten.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_verbatim_form(entry: &str, dir: &str) -> bool {
+    let trimmed = entry.trim();
+    trimmed.starts_with(r"\\?\") && same_directory(&strip_verbatim_prefix(trimmed), dir)
 }
 
 /// Read `HKCU\Environment\Path` without expanding it, and set it back
@@ -373,6 +416,53 @@ mod tests {
         assert_eq!(
             user_path_with(";;", DIR),
             PathEdit::Write(format!(";;{DIR}"))
+        );
+    }
+
+    #[test]
+    fn strip_verbatim_prefix_normalizes_both_verbatim_forms() {
+        assert_eq!(strip_verbatim_prefix(&format!(r"\\?\{DIR}")), DIR);
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\server\share\cannet"),
+            r"\\server\share\cannet"
+        );
+        // A plain path, the common case, passes through untouched.
+        assert_eq!(strip_verbatim_prefix(DIR), DIR);
+    }
+
+    #[test]
+    fn a_verbatim_entry_is_replaced_by_the_plain_form() {
+        // `resource_dir()` used to be written into PATH un-normalized;
+        // an owner's registry may still carry the `\\?\`-prefixed form.
+        // Re-running the command must fix that entry in place rather
+        // than add a second, plain one beside it.
+        let verbatim = format!(r"\\?\{DIR}");
+        assert_eq!(
+            user_path_with(&format!("C:\\bin;{verbatim};C:\\other"), DIR),
+            PathEdit::Write(format!("C:\\bin;{DIR};C:\\other"))
+        );
+    }
+
+    #[test]
+    fn replacing_a_verbatim_entry_is_idempotent() {
+        // Applying the edit a second time, against the now-plain PATH,
+        // must report AlreadyPresent rather than writing again.
+        let verbatim = format!(r"\\?\{DIR}");
+        let PathEdit::Write(fixed) = user_path_with(&verbatim, DIR) else {
+            panic!("a verbatim entry needs rewriting");
+        };
+        assert_eq!(user_path_with(&fixed, DIR), PathEdit::AlreadyPresent);
+    }
+
+    #[test]
+    fn a_verbatim_unc_entry_is_replaced_by_its_plain_share_form() {
+        // `\\?\UNC\server\share\...` is the verbatim spelling of the UNC
+        // path `\\server\share\...`, not of a `\\?\`-prefixed one.
+        let dir = r"\\server\share\cannet";
+        let verbatim = r"\\?\UNC\server\share\cannet";
+        assert_eq!(
+            user_path_with(verbatim, dir),
+            PathEdit::Write(dir.to_string())
         );
     }
 
