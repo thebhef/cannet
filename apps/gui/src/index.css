@@ -1173,27 +1173,17 @@ header {
   margin-bottom: 0.8rem;
 }
 
+/* DisclosureToggle owns the hit area, ink and rotation (task 63 item
+   1); this keeps only the site's full-width, left-aligned header
+   shape and its hover color. */
 .blf-map-markers-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
   width: 100%;
-  padding: 0;
-  border: none;
-  background: none;
-  font: inherit;
   color: var(--text-secondary);
   text-align: left;
-  cursor: pointer;
 }
 
 .blf-map-markers-toggle:hover {
   color: var(--text-muted);
-}
-
-.blf-map-markers-caret {
-  flex: 0 0 auto;
-  width: 0.7rem;
 }
 
 .blf-map-markers-list {
@@ -1387,7 +1377,6 @@ header {
 .graph-node.expanded {
   height: auto;
 }
-.graph-node-expand,
 .graph-node-insert-filter {
   margin-left: auto;
   appearance: none;
@@ -1398,8 +1387,13 @@ header {
   cursor: pointer;
   padding: 0 0.25rem;
 }
-.graph-node-expand:hover,
-.graph-node-insert-filter:hover {
+/* DisclosureToggle owns the hit area, ink and rotation (task 63 item
+   1); this keeps only its position among the node label's controls. */
+.graph-node-expand {
+  margin-left: auto;
+}
+.graph-node-insert-filter:hover,
+.graph-node-expand:hover {
   color: var(--text-on-solid);
 }
 .graph-node-insert-filter {
@@ -1519,11 +1513,6 @@ header {
 .project-panel .project-section-toggle:hover:not(:disabled) {
   background: none;
   color: var(--text-muted);
-}
-
-.project-section-caret {
-  flex: 0 0 auto;
-  width: 0.7rem;
 }
 
 /* One Elements type group: a section within the Elements section, so

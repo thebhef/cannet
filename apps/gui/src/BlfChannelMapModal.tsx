@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 
 import { Combobox } from "./Combobox";
+import { DisclosureToggle } from "./DisclosureToggle";
 import type { BlfScanResult, Bus, SkippedDecodedGroup } from "./types";
 import { formatElapsed } from "./format";
 import { useGridview } from "./useGridview";
@@ -232,17 +233,13 @@ export function BlfChannelMapModal(props: {
         )}
         {markers.length > 0 && (
           <div className="blf-map-markers-section">
-            <button
-              type="button"
+            <DisclosureToggle
               className="blf-map-markers-toggle"
-              aria-expanded={markersOpen}
-              onClick={() => setMarkersOpen((v) => !v)}
+              expanded={markersOpen}
+              onToggle={() => setMarkersOpen((v) => !v)}
             >
-              <span className="blf-map-markers-caret" aria-hidden="true">
-                {markersOpen ? "▾" : "▸"}
-              </span>
               Markers ({markers.length})
-            </button>
+            </DisclosureToggle>
             {markersOpen && (
               <div
                 className="blf-map-markers-list"

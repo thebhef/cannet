@@ -13,6 +13,7 @@ import {
   describeBusConnState,
   useConnectionStates,
 } from "./connectionStates";
+import { DisclosureToggle } from "./DisclosureToggle";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry, type RegistryEntry } from "./projectElements";
 import { useSidecarStatus } from "./sidecarStatus";
@@ -614,21 +615,9 @@ function CollapsibleSection({
   return (
     <section className={group ? "project-group" : "project-section"}>
       <Heading>
-        <button
-          type="button"
-          className="project-section-toggle"
-          aria-expanded={!collapsed}
-          onClick={onToggle}
-        >
-          {/* Glyph swap rather than a rotate, matching the RBS and
-              transmit carets. Hidden from the accessible name — the
-              button's own `aria-expanded` already says which way it
-              points. */}
-          <span className="project-section-caret" aria-hidden="true">
-            {collapsed ? "▸" : "▾"}
-          </span>
+        <DisclosureToggle className="project-section-toggle" expanded={!collapsed} onToggle={onToggle}>
           {title}
-        </button>
+        </DisclosureToggle>
       </Heading>
       {!collapsed && children}
     </section>
