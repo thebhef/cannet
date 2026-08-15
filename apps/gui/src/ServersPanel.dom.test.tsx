@@ -27,6 +27,9 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
 import { ServersPanel } from "./ServersPanel";
+import { ServerTrustDialogs } from "./ServerTrustDialog";
+import { clearServerTrust } from "./serverTrust";
+import type { ServerPrompts, TrustPrompt } from "./serverTrust";
 import {
   SERVER_LIST_CHANGED_EVENT,
   type BrowseStatus,
@@ -111,10 +114,24 @@ beforeEach(() => {
   );
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  clearServerTrust();
+  cleanup();
+});
 
 function renderPanel() {
   render(<ServersPanel {...({} as IDockviewPanelProps)} />);
+}
+
+/// The panel beside the app-wide trust dialog, which is where every
+/// question the panel raises is answered — the shape `App.tsx` mounts.
+function renderWithDialog() {
+  render(
+    <>
+      <ServersPanel {...({} as IDockviewPanelProps)} />
+      <ServerTrustDialogs />
+    </>,
+  );
 }
 
 /// The row element for `address`, found through the button that always
@@ -316,6 +333,33 @@ describe("adding a server by address", () => {
     expect(await screen.findByLabelText("server address")).toHaveValue("");
   });
 
+  it("puts the question the typed address raised in the app-wide dialog", async () => {
+    // Typing an address and pressing Add is direct user input, so the
+    // question it raises is one the user is waiting on — the one case a
+    // modal is for.
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "add_server") return "bench.example.com:50051";
+        if (cmd === "get_server_prompts")
+          return {
+            "bench.example.com:50051": {
+              kind: "acceptIdentity",
+              observed: "SHA256:ddd",
+            },
+          } satisfies ServerPrompts;
+        return undefined;
+      },
+    );
+    renderWithDialog();
+    await screen.findByText("192.168.1.10:50051");
+    await add("bench.example.com:50051");
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("SHA256:ddd");
+    expect(dialog).toHaveTextContent("bench.example.com:50051");
+  });
+
   it("shows the server once its identity has been accepted", async () => {
     // Accepting the question the dial raised is what stores anything,
     // and the store is what the row is made of.
@@ -408,53 +452,106 @@ describe("adding a server by address", () => {
 describe("the trust lifecycle from a row", () => {
   it("trusting dials the server first, then shows what it presented", async () => {
     // The fingerprint pinned has to be the one this attempt observed —
-    // never something remembered from an earlier look.
-    renderPanel();
+    // never something remembered from an earlier look. The host is
+    // waiting on nothing until the dial is refused, so the panel dials
+    // and then asks what that raised.
+    let prompts: ServerPrompts = {};
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "get_server_prompts") return prompts;
+        if (cmd === "refresh_interfaces") {
+          prompts = {
+            "192.168.1.10:50051": {
+              kind: "acceptIdentity",
+              observed: "SHA256:bbb",
+            },
+          };
+          throw "the server's identity has not been accepted";
+        }
+        return undefined;
+      },
+    );
+    renderWithDialog();
     await screen.findByText("192.168.1.10:50051");
     fireEvent.click(screen.getByLabelText("trust 192.168.1.10:50051"));
-    await waitFor(() =>
-      expect(
-        calls.some(
-          (c) =>
-            c.cmd === "refresh_interfaces" &&
-            c.args.address === "192.168.1.10:50051",
-        ),
-      ).toBe(true),
-    );
-    // The refused attempt left a question on the row; the panel raises
-    // the same dialog the connect flow would have.
-    emit(
-      SERVER_LIST_CHANGED_EVENT,
-      list([
-        row({ prompt: { kind: "acceptIdentity", observed: "SHA256:bbb" } }),
-        DYNO,
-      ]),
-    );
     const dialog = await screen.findByRole("dialog");
+    expect(
+      calls.some(
+        (c) =>
+          c.cmd === "refresh_interfaces" &&
+          c.args.address === "192.168.1.10:50051",
+      ),
+    ).toBe(true);
     expect(dialog).toHaveTextContent("SHA256:bbb");
     expect(dialog).toHaveTextContent("192.168.1.10:50051");
   });
 
-  it("offers to review a row whose identity changed, with both fingerprints", async () => {
+  it("reviews a row's question in the one app-wide dialog, without re-dialling", async () => {
+    // The re-raise path. The question the host is already waiting on is
+    // a real observation from the attempt that made it, so reviewing it
+    // must not depend on the server still being reachable — and there
+    // is exactly one dialog on screen, because there is one mount.
+    const prompt: TrustPrompt = {
+      kind: "identityChanged",
+      expected: "SHA256:aaa",
+      observed: "SHA256:bbb",
+    };
     snapshot = list([
       row({
         address: "rippy:50051",
         trust: "fingerprintChanged",
         fingerprint: "SHA256:aaa",
-        prompt: {
-          kind: "identityChanged",
-          expected: "SHA256:aaa",
-          observed: "SHA256:bbb",
-        },
+        prompt,
       }),
     ]);
-    renderPanel();
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "get_server_prompts") return { "rippy:50051": prompt };
+        return undefined;
+      },
+    );
+    renderWithDialog();
     await screen.findByText("rippy:50051");
     expect(rowFor("rippy:50051")).toHaveTextContent("identity changed");
-    fireEvent.click(screen.getByLabelText("trust rippy:50051"));
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("SHA256:aaa");
-    expect(dialog).toHaveTextContent("SHA256:bbb");
+    fireEvent.click(screen.getByLabelText("review rippy:50051"));
+    const dialogs = await screen.findAllByRole("dialog");
+    expect(dialogs).toHaveLength(1);
+    expect(dialogs[0]).toHaveTextContent("SHA256:aaa");
+    expect(dialogs[0]).toHaveTextContent("SHA256:bbb");
+    expect(calls.some((c) => c.cmd === "refresh_interfaces")).toBe(false);
+  });
+
+  it("mounts no dialog of its own", async () => {
+    // One dialog implementation, one mount: the panel raises the
+    // app-wide one, so two modals over the same question are impossible
+    // by construction rather than by care.
+    const prompt: TrustPrompt = {
+      kind: "identityChanged",
+      expected: "SHA256:aaa",
+      observed: "SHA256:bbb",
+    };
+    snapshot = list([
+      row({ address: "rippy:50051", trust: "fingerprintChanged", prompt }),
+    ]);
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "get_server_prompts") return { "rippy:50051": prompt };
+        return undefined;
+      },
+    );
+    renderPanel();
+    await screen.findByText("rippy:50051");
+    fireEvent.click(screen.getByLabelText("review rippy:50051"));
+    await waitFor(() =>
+      expect(calls.some((c) => c.cmd === "get_server_prompts")).toBe(true),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("stores a replacement token for a trusted server", async () => {

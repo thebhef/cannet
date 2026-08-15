@@ -2,20 +2,21 @@
 //
 // The host decides how each server is reached (`connect_flow.rs`) and
 // remembers what the user accepted (`server_trust.rs`, ADR 0032). This
-// module only subscribes to the questions it raises and passes the
-// answers back. Nothing here holds a token, decides whether a
-// connection is safe, or keeps an authoritative copy of what is pinned:
-// the fingerprint strings that arrive are for the user to read, and the
+// module reads the questions it is waiting on and passes the answers
+// back. Nothing here holds a token, decides whether a connection is
+// safe, or keeps an authoritative copy of what is pinned: the
+// fingerprint strings that arrive are for the user to read, and the
 // list below is re-read from the host after every change.
+//
+// The one decision that *is* this side's: **which question becomes a
+// modal.** A question the host raised on its own is an indicator on the
+// rows that carry it; only a user action puts one on screen, through
+// the single raise below.
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-/// Tauri event the host fires whenever the set of pending trust
-/// questions moves. Must match
-/// `connect_flow::SERVER_PROMPTS_CHANGED_EVENT` host-side.
-export const SERVER_PROMPTS_CHANGED_EVENT = "server-prompts-changed";
+import { serverKey } from "./serverList";
 
 /// A question about one server that only the user can answer. Mirrors
 /// the host's `connect_flow::TrustPrompt`.
@@ -35,44 +36,90 @@ export type TrustPrompt =
 /// Pending questions, keyed by the server address they are about.
 export type ServerPrompts = Record<string, TrustPrompt>;
 
-/// Subscribe to the host's pending trust questions. Same
-/// pull-then-follow shape as the connection states and the interface
-/// cache (ADR 0016): one snapshot on mount, then the change event. The
-/// payload is the whole map, bounded by the servers a project names.
-export function useServerPrompts(): ServerPrompts {
-  const [prompts, setPrompts] = useState<ServerPrompts>({});
+/// The host's pending question about `address`, or `null` when it is
+/// waiting on nothing for that server.
+///
+/// The host keys a question by whatever address the connection was made
+/// with, and a row is keyed the way the trust store files it, so the
+/// two are matched through {@link serverKey} rather than by string
+/// equality. The address that comes back is the host's own spelling —
+/// the answer is written back against the question that was asked.
+export function promptFor(
+  prompts: ServerPrompts,
+  address: string,
+): RaisedPrompt | null {
+  const key = serverKey(address);
+  for (const [at, prompt] of Object.entries(prompts)) {
+    if (serverKey(at) === key) return { address: at, prompt };
+  }
+  return null;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: UnlistenFn | undefined;
+/// One question, put in front of the user because they asked to see it.
+export interface RaisedPrompt {
+  address: string;
+  prompt: TrustPrompt;
+}
 
-    void (async () => {
-      try {
-        const initial = await invoke<ServerPrompts>("get_server_prompts");
-        if (!cancelled && initial) setPrompts(initial);
-      } catch {
-        // Host without the command (older build, dev shell): fall
-        // through to the listener and stay empty if none comes.
-      }
-      try {
-        unlisten = await listen<ServerPrompts>(
-          SERVER_PROMPTS_CHANGED_EVENT,
-          (e) => {
-            if (!cancelled) setPrompts(e.payload ?? {});
-          },
-        );
-      } catch {
-        // Same fallback: stay on whatever snapshot we have.
-      }
-    })();
+// ---- The one raised question ----------------------------------------------
+//
+// **A trust question becomes a modal only when a user action asks for
+// it.** The host raises questions on its own schedule — a background
+// interface watch against a known server finds its certificate changed
+// while nobody was trying to connect — and interrupting the user with a
+// modal for that is a nuisance. Such a question surfaces as an
+// indicator on the server's row and on the bus rows bound to it; this
+// is what the *user's* own act of connecting, trusting, or reviewing
+// puts on screen, and there is exactly one of them.
 
-    return () => {
-      cancelled = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
+let raised: RaisedPrompt | null = null;
+const raiseListeners = new Set<() => void>();
 
-  return prompts;
+function publishRaise() {
+  for (const listener of [...raiseListeners]) listener();
+}
+
+/// Put the host's pending question about `address` in front of the
+/// user, and say whether there was one to put there.
+///
+/// **The host is asked at the moment of raising**, which is what keeps
+/// a raise from outliving the attempt that made it: an attempt that
+/// raised no question leaves nothing armed, so a later question the
+/// host asks on its own cannot be caught by a stale request and turned
+/// into the modal ruling this out.
+export async function raiseServerTrust(address: string): Promise<boolean> {
+  let prompts: ServerPrompts = {};
+  try {
+    prompts = (await invoke<ServerPrompts>("get_server_prompts")) ?? {};
+  } catch {
+    // Host without the command (older build, dev shell): nothing to
+    // ask about, so nothing is raised.
+  }
+  raised = promptFor(prompts, address);
+  publishRaise();
+  return raised !== null;
+}
+
+/// Close whatever is raised. The host keeps the question — it is still
+/// true, and the indicators still say so — but the user is done with
+/// this dialog.
+export function clearServerTrust(): void {
+  raised = null;
+  publishRaise();
+}
+
+function subscribeRaise(onChange: () => void): () => void {
+  raiseListeners.add(onChange);
+  return () => raiseListeners.delete(onChange);
+}
+
+/// The question the user asked to see, if any.
+export function useRaisedServerTrust(): RaisedPrompt | null {
+  return useSyncExternalStore(
+    subscribeRaise,
+    () => raised,
+    () => raised,
+  );
 }
 
 /// Pin `fingerprint` for `address`, storing `token` alongside it when
@@ -118,8 +165,9 @@ export async function forgetServer(address: string): Promise<void> {
 /// fields together.
 const KEY_SEPARATOR = "\n";
 
-/// A stable identity for one question, so dismissing it dismisses that
-/// question and not the next, different one about the same server.
+/// A stable identity for one question, so the dialog showing it is a
+/// different element from the one showing the next, different question
+/// about the same server — a half-typed token never carries across.
 export function promptKey(address: string, prompt: TrustPrompt): string {
   const fields = (...rest: string[]) =>
     [address, prompt.kind, ...rest].join(KEY_SEPARATOR);
@@ -133,18 +181,4 @@ export function promptKey(address: string, prompt: TrustPrompt): string {
     case "noProtection":
       return fields(prompt.detail);
   }
-}
-
-/// The question to put in front of the user next: the first pending one
-/// the user has not dismissed, in address order so the choice is stable
-/// across re-renders.
-export function nextPrompt(
-  prompts: ServerPrompts,
-  dismissed: ReadonlySet<string>,
-): { address: string; prompt: TrustPrompt } | null {
-  for (const address of Object.keys(prompts).sort()) {
-    const prompt = prompts[address];
-    if (!dismissed.has(promptKey(address, prompt))) return { address, prompt };
-  }
-  return null;
 }

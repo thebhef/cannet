@@ -692,11 +692,23 @@ fingerprint the server presented:
 From then on, the server's identity is checked on every connection. If
 it ever changes — the certificate was replaced, the machine
 reinstalled, or something is impersonating it — the connection is
-refused and a warning shows both fingerprints, the accepted one and the
-presented one. There is no automatic retry and no fallback to
-plaintext: the only ways forward are *Accept the new identity*, which
-overwrites the pin, and cancel. A token the server refuses is treated
-the same way — asked about once, never retried in a loop.
+refused. There is no automatic retry and no fallback to plaintext: the
+only ways forward are *Accept the new identity*, which overwrites the
+pin, and cancel. A token the server refuses is treated the same way —
+asked about once, never retried in a loop.
+
+**A dialog appears only when you asked for the connection.** cannet
+keeps watching servers it already knows, so it can find a changed
+identity with nobody trying to connect; interrupting the window for
+that would be a nuisance. Such a question shows up as an *indicator*
+instead — the badge on the server's row reads `identity changed`, and
+every bus bound to it says so on the bus row — and the row's *Review…*
+puts the same dialog up whenever you are ready, showing both
+fingerprints, the accepted one and the presented one. Connecting,
+*Trust…*, and *Add server…* are the acts that open it directly, because
+each is a connection you asked for and the question is what blocked it.
+Waving the dialog away leaves the indicator: the question is still
+true, and the row still says so.
 
 Both are stored per `host:port` in `servers.json` in the GUI's config
 directory ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)),
