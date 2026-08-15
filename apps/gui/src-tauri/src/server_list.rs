@@ -899,6 +899,45 @@ mod tests {
     }
 
     #[test]
+    fn a_live_session_against_a_loopback_sidecar_mints_a_trusted_row_storing_nothing() {
+        // The row a user never asked for. The GUI spawns its own
+        // python-can sidecar, which binds `127.0.0.1:<ephemeral>`, and
+        // connecting a bus to local hardware dials it — so the session's
+        // clock record is the only source that knows the address. What
+        // comes out is trusted (loopback is reached in the clear, so no
+        // question will ever be asked about it), unnamed (nothing
+        // advertises a sidecar), and empty of everything the trust store
+        // would put on a row. The address changes on every launch,
+        // because the port does.
+        let clocks = BTreeMap::from([(
+            "127.0.0.1:65476".to_string(),
+            server_clock_from_record(&measured(739_200_000, 0)).unwrap(),
+        )]);
+        let rows = merge(
+            &[],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &clocks,
+            BrowseStatus::Running,
+        )
+        .servers;
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.address, "127.0.0.1:65476");
+        assert_eq!(row.trust, TrustState::Trusted);
+        assert_eq!(row.name, None, "a sidecar advertises nowhere");
+        assert!(!row.online);
+        assert_eq!(row.fingerprint, None);
+        assert!(!row.has_token);
+        assert!(!row.insecure);
+        assert!(!row.manual, "nobody typed this address in");
+        assert!(
+            row.clock.is_some(),
+            "the session is the only thing holding it"
+        );
+    }
+
+    #[test]
     fn the_clock_wire_shape_carries_offset_warn_and_stale() {
         let clock = ServerClock {
             offset_ns: -150_000_000,

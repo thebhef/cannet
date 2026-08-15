@@ -407,6 +407,93 @@ Commits: `983068d7` (host cancellation path), `d21f969c` (frontend
 persistence + cancel + wording). Host: 645 passed / 6 ignored, clippy
 clean. Frontend: 160 files / 2095 tests, `pnpm build` clean.
 
+### 2026-08-14 — item 3 leg (a): the mystery row is the GUI's own sidecar
+
+Branch `task75-p3-trust-row`, off `task75-p2-trace-open-feedback`.
+
+**Observation (raw).** Owner's Servers panel carries
+`trusted | not advertising | 127.0.0.1:65476`, an address never typed
+in. Two leads were on file: an ADR-0031 perf-gate run writing a pin into
+the real trust store, and the owner's own reading that 65476 smells like
+a _client_-side ephemeral port — a peer address recorded as if it were a
+server identity.
+
+**Evidence read (read-only) from the owner's real state.**
+
+- `%APPDATA%\dev.cannet.app\servers.json` holds **exactly one entry**,
+  `10.10.10.50:50051` (a routable LAN server, pinned with a token). No
+  loopback key of any kind. File mtime `2026-08-14 09:07:03 -0700`.
+- `%LOCALAPPDATA%\dev.cannet.app\logs\cannet.log` contains 14 lines
+  naming 65476. The first is
+  `2026-08-15T01:45:35.215Z INFO sidecar:python-can: listening on
+  127.0.0.1:65476`, eleven lines after
+  `01:45:33.815 … starting sidecar via frozen binary`. The rest are
+  `connection: connecting to / connected to / clock offset vs /
+  disconnected from 127.0.0.1:65476` between 02:17:59Z and 02:24:26Z.
+- The same log carries **104 distinct** `listening on 127.0.0.1:<port>`
+  lines — one per launch, all in the Windows ephemeral range.
+- Machine local time is UTC-7, so the launch that bound 65476 was
+  **2026-08-14 18:45:33 local** — the ~18:40 build of the owner's
+  verification pass.
+
+**Hypothesis.** The row is the GUI's own python-can sidecar: it binds
+`127.0.0.1:<OS-assigned port>`, a bus bound to local hardware dials it,
+and the resulting session is what puts the address in the panel — with
+nothing stored behind it.
+
+**Experiment.** Read the three sources `server_list::build` merges and
+test the one that can hold a loopback address with an empty store. New
+unit test
+`a_live_session_against_a_loopback_sidecar_mints_a_trusted_row_storing_nothing`
+feeds `merge` a clock summary for `127.0.0.1:65476` and _nothing else_
+— no discovery, no trust entry, no prompt — and asserts the whole row.
+Falsifiable: if a session could not mint a row, or if such a row were
+`new` rather than `trusted`, the assertion fails and the hypothesis
+dies.
+
+**Data.** The row comes out `address 127.0.0.1:65476`, `trust trusted`,
+`name None` (which the panel renders as the literal string
+"not advertising"), `online false`, `fingerprint None`,
+`has_token false`, `insecure false`, `manual false` — character for
+character what the owner is looking at. The mechanism is `merge`'s third
+source: `for key in clocks.keys() { rows.entry(key).or_insert_with(||
+offline_row(key, &TrustEntry::default())) }`, and `trust_state` returns
+`Trusted` for it because `connect_flow::needs_trust` is false on a
+loopback address (`plan` → `Attempt::Plaintext`, ADR 0041's local path).
+
+**Conclusion (attributed).** The row is the app's own sidecar, held in
+the list by a live capture session against it, storing nothing. It is
+**transient**: `session.rs` unregisters the session when the pump exits
+or the user disconnects, and `clock_status`'s 1 Hz poll republishes the
+list the moment the summary map changes, so the row leaves with the
+session and comes back — at a _different_ port — on the next local
+capture.
+
+**Both recorded leads are refuted, with the data that kills each.**
+
+1. _Harness pin._ `servers.json` has no loopback entry at all, and its
+   mtime (09:07 local) predates the 18:45 launch that bound 65476 by
+   nine hours — nothing was written for it. Nor could it have been: the
+   only writers are the trust dialog's commands and `add_server`'s
+   `manual` flag, and a loopback connect reaches neither (no question is
+   raised, and the harness never calls `add_server`). A
+   `--connect-on-start` run mints the same _transient_ row an operator's
+   click does, and persists nothing. **Harness connects do not write
+   pins, and no code change is needed to keep it that way.**
+2. _Client-side ephemeral port._ `sidecar:python-can: listening on
+   127.0.0.1:65476` is the sidecar announcing its own **listen** socket
+   (it binds port 0, hence the ephemeral range), and the host then dials
+   that address. No socket's local end is being mistaken for a peer's.
+
+**What the owner should do about their row: nothing.** There is nothing
+stored to delete, and the address is dead the moment that session ended.
+It reappears on every local-hardware capture, at whatever port the OS
+hands the sidecar that launch.
+
+**What is left as this item's defect** is leg (b): the panel offers no
+action at all on a row like this, which is what made an ordinary
+transient row read as an unremovable mystery.
+
 ## Blockers / side effects
 
 - **Latent, out of scope for item 1: the by-id / signal window scan on
