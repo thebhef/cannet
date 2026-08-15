@@ -40,11 +40,18 @@ struct Cli {
     /// snapshot over it to promote).
     #[arg(long, global = true)]
     baseline: Option<PathBuf>,
-    /// Render report (`RenderReport` JSON) from a self-driving GUI run.
-    /// `baseline` stores its gated metrics; `check` compares a fresh one
-    /// against them. Omit to leave the frontend tier out of the run.
-    #[arg(long, global = true)]
-    frontend_report: Option<PathBuf>,
+    /// Render report(s) (`RenderReport` JSON) from a self-driving GUI run.
+    /// `baseline` stores the (first) one's gated metrics; `check` compares
+    /// a fresh set against them. Repeat the flag for a gate of more than
+    /// one run (`--frontend-report a.json --frontend-report b.json …`).
+    /// With exactly one report `check` judges every metric per-run, as
+    /// before; with more than one, the three memory-drift metrics
+    /// (`{jsheap,renderer,tree}_mb_drift_per_min`) gate on the **median**
+    /// across the given reports instead of each report's own worst value
+    /// (owner ruling, task 71) — every other metric stays per-run. Omit to
+    /// leave the frontend tier out of the run.
+    #[arg(long = "frontend-report", global = true)]
+    frontend_report: Vec<PathBuf>,
     /// Expected receive rate (frames/s) for the live sim, gated by `check`
     /// on the frontend tier as a two-sided ±15 % band around this value,
     /// independent of the baseline — the sim's schedule is deterministic,
@@ -350,11 +357,11 @@ fn main() -> ExitCode {
         Command::SignalBench(args) => run_signal_bench(&dir, args),
         Command::Grpc(args) => run_grpc(&dir, args),
         Command::HardwarePeak(args) => run_hardware_peak(&dir, args),
-        Command::Baseline => run_baseline(&dir, cli.baseline, cli.frontend_report),
+        Command::Baseline => run_baseline(&dir, cli.baseline, &cli.frontend_report),
         Command::Check => run_check(
             &dir,
             cli.baseline,
-            cli.frontend_report,
+            &cli.frontend_report,
             Expected {
                 rx_fps: cli.expected_rx_fps,
                 tx_fps: cli.expected_tx_fps,
@@ -375,7 +382,7 @@ fn main() -> ExitCode {
 fn run_baseline(
     dir: &std::path::Path,
     out: Option<PathBuf>,
-    frontend_report: Option<PathBuf>,
+    frontend_reports: &[PathBuf],
 ) -> Result<ExitCode, String> {
     let baseline_path = if let Some(p) = out {
         p
@@ -406,9 +413,16 @@ fn run_baseline(
         eprintln!("  hardware-peak skipped: {e}");
     }
 
-    let frontend = if let Some(p) = frontend_report {
+    if frontend_reports.len() > 1 {
+        eprintln!(
+            "note: baseline captures a single snapshot — using the first of {} \
+             --frontend-report values given",
+            frontend_reports.len()
+        );
+    }
+    let frontend = if let Some(p) = frontend_reports.first() {
         eprintln!("capturing frontend from {}…", p.display());
-        let report = frontend::load_report(&p)?;
+        let report = frontend::load_report(p)?;
         Some(FrontendBaseline {
             label: report.label.clone(),
             metrics: FrontendMetrics::from(&report),
@@ -443,7 +457,7 @@ fn run_baseline(
 fn run_check(
     dir: &std::path::Path,
     explicit: Option<PathBuf>,
-    frontend_report: Option<PathBuf>,
+    frontend_reports: &[PathBuf],
     expected: Expected,
 ) -> Result<ExitCode, String> {
     let baseline_path = explicit.unwrap_or_else(default_baseline_path);
@@ -492,16 +506,26 @@ fn run_check(
         }
     }
     if let Some(fb) = &baseline.frontend {
-        // The harness can't re-run the frontend; a fresh report must be
-        // supplied. Without one, the tier is skipped, not failed.
-        match frontend_report {
-            Some(p) => {
-                let current = FrontendMetrics::from(&frontend::load_report(&p)?);
-                verdicts.extend(frontend::check_frontend(&fb.metrics, &current, expected));
+        // The harness can't re-run the frontend; fresh report(s) must be
+        // supplied. Without one, the tier is skipped, not failed. With more
+        // than one, the drift family gates on their median rather than
+        // each report's own worst run (owner ruling, task 71) —
+        // `check_frontend_gate` is exactly `check_frontend` for a single
+        // report.
+        if frontend_reports.is_empty() {
+            skipped.push(("frontend", "no --frontend-report supplied".to_string()));
+        } else {
+            let mut currents = Vec::with_capacity(frontend_reports.len());
+            for p in frontend_reports {
+                currents.push(FrontendMetrics::from(&frontend::load_report(p)?));
             }
-            None => skipped.push(("frontend", "no --frontend-report supplied".to_string())),
+            verdicts.extend(frontend::check_frontend_gate(
+                &fb.metrics,
+                &currents,
+                expected,
+            ));
         }
-    } else if frontend_report.is_some() {
+    } else if !frontend_reports.is_empty() {
         eprintln!("note: --frontend-report ignored (baseline has no frontend block)");
     }
 
