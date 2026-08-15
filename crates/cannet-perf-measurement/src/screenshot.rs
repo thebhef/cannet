@@ -120,23 +120,6 @@ window.__shot = {
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     await window.__shot.sleep(400);
   },
-  /* Activate the dock tab with this exact title, in whichever group
-     holds it. Dockview switches tabs on pointerdown, not click, so a
-     bare .click() leaves the group untouched — and a step that silently
-     changes nothing photographs the previous picture. Hence the pointer
-     events, and the throw when the title isn't open. */
-  tab: async (title) => {
-    const el = [...document.querySelectorAll(".dv-default-tab-content")].find(
-      (e) => e.textContent.trim() === title,
-    );
-    if (!el) throw new Error("no dock tab " + JSON.stringify(title));
-    const opts = { bubbles: true, cancelable: true, composed: true, button: 0,
-                   pointerId: 1, isPrimary: true };
-    el.dispatchEvent(new PointerEvent("pointerdown", opts));
-    el.dispatchEvent(new PointerEvent("pointerup", opts));
-    el.click();
-    await window.__shot.settle();
-  },
   /* Click a toolbar button by its exact label. */
   toolbar: async (label) => {
     const b = [...document.querySelectorAll(".toolbar button")].find(
@@ -188,7 +171,9 @@ pub struct Step {
 ///
 /// Written against `examples/ev-demo`, whose saved layout already carries
 /// nine of the fourteen components; the rest are opened the way a user
-/// opens them.
+/// opens them. Only step 01 reads the project's saved layout — every
+/// later step opens what it photographs — so a project with a different
+/// set of saved tabs (`examples/ev-zonal`) walks the same scenario.
 pub const SCENARIO: &[Step] = &[
     Step {
         // The layout as saved: project, RBS, events, two traces, the
@@ -197,17 +182,26 @@ pub const SCENARIO: &[Step] = &[
         script: "(async () => { await window.__shot.settle(); })()",
         shows: &["project", "rbs", "events", "trace", "signals", "plot"],
     },
+    // Singleton panels are brought forward by their own commands rather
+    // than by clicking a dock tab. A singleton's title is a constant of
+    // the build (`SINGLETON_PANEL_TITLES`), so a saved layout's tab text
+    // is whatever the project was saved under until the app normalizes
+    // it — driving by title made the step a function of both the rename
+    // history and the project (the Database panel is in `ev-demo`'s saved
+    // layout and not in `ev-zonal`'s). The show-or-focus command is the
+    // same picture either way: it activates the panel when it is open and
+    // adds it when it isn't.
     Step {
         name: "02-dbc-system-messages",
         script: "(async () => { \
-            await window.__shot.tab('DBC'); \
-            await window.__shot.tab('System messages'); \
+            await window.__shot.command('Show Database panel'); \
+            await window.__shot.command('Show system messages'); \
         })()",
         shows: &["dbc", "system-messages"],
     },
     Step {
         name: "03-settings",
-        script: "(async () => { await window.__shot.tab('Settings'); })()",
+        script: "(async () => { await window.__shot.command('Show settings'); })()",
         shows: &["settings"],
     },
     // One added panel per step: each lands as the active tab of its
@@ -891,6 +885,55 @@ mod tests {
             .filter(|c| !covered.contains(*c))
             .collect();
         assert!(missing.is_empty(), "panels never photographed: {missing:?}");
+    }
+
+    /// Every `'label'` the scenario passes to one of the `__shot`
+    /// helpers, e.g. `scenario_labels("command")`.
+    fn scenario_labels(helper: &str) -> Vec<String> {
+        let needle = format!("window.__shot.{helper}('");
+        let mut out = Vec::new();
+        for step in SCENARIO {
+            let mut rest = step.script;
+            while let Some(i) = rest.find(&needle) {
+                rest = &rest[i + needle.len()..];
+                let end = rest
+                    .find('\'')
+                    .expect("unterminated label in a scenario step");
+                out.push(rest[..end].to_string());
+                rest = &rest[end..];
+            }
+        }
+        out
+    }
+
+    /// The scenario drives the app by the labels the app renders, and
+    /// those labels live in the frontend — so a rename there silently
+    /// turns a step into a run-aborting "no such button" (it did: the
+    /// Database panel was called "DBC" when this scenario was written).
+    /// Nothing else in the build ties the two together, so the check is
+    /// this: every label the scenario clicks must exist in the source
+    /// that defines it.
+    #[test]
+    fn the_scenario_drives_labels_the_frontend_still_defines() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |rel: &str| {
+            std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"))
+        };
+        let commands = read("apps/gui/src/commands.ts");
+        let app = read("apps/gui/src/App.tsx");
+        for (helper, source, file) in [
+            ("command", &commands, "commands.ts"),
+            ("toolbar", &app, "App.tsx"),
+        ] {
+            let labels = scenario_labels(helper);
+            assert!(!labels.is_empty(), "no {helper} labels found to check");
+            for label in labels {
+                assert!(
+                    source.contains(&format!("label: \"{label}\"")),
+                    "the scenario clicks {label:?}, which {file} no longer defines",
+                );
+            }
+        }
     }
 
     #[test]
