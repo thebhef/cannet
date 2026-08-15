@@ -491,7 +491,8 @@ Start the server on the bench machine and leave its console visible:
 # → hardware proxy: client token 8Jd…q1w
 ```
 
-In the GUI, add the server's `host:port` to a bus binding and press
+In the GUI, add the server to a bus binding — type its `host:port`, or
+pick it from the browse list beside the field — and press
 *Discover* (or Connect). Because nothing has been accepted for that
 address yet, the connection is refused at the certificate and a dialog
 appears showing the fingerprint the server presented:
@@ -1316,6 +1317,21 @@ A dedicated *Virtual buses* section lets the user rename, configure,
 add bridges to, or delete each virtual bus the project owns; the
 host applies bus_config edits via `SharedBus::reconfigure` and
 manages bridge teardown.
+
+*+ Add server…* opens a small form with two ways to name a server: a
+`host:port` field, and — under *on this network* — the servers
+advertising themselves via mDNS/DNS-SD (`_cannet._tcp`), each with its
+instance name, address, and version, fuzzy-searchable by name or
+address. They are one path: picking a discovered server fills the same
+field and runs the same interface pull, and the connection's own
+identity and token checks are unchanged either way, because discovery
+is convenience and never a trust signal
+([ADR 0040](docs/adr/0040-production-cannet-server.md)). A server on
+another subnet, or one started with `--no-mdns`, never appears in the
+list — typing its address is the way to it. In the other direction, a
+server that was killed rather than shut down can linger in the list
+until its DNS-SD record expires (up to two minutes); an orderly
+shutdown drops out of it within about a second.
 
 ### Rest-of-bus simulation + calculated fields
 

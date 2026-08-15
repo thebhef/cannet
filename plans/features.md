@@ -36,7 +36,7 @@ High-performance CAN traffic analyzer.
   - [x] Addressable by host:port
   - [ ] Production cannet server: operator-launched CLI that supervises vendor sidecars and exposes their interfaces at one endpoint
   - [ ] Protected stream: TLS with pinned server identity, token-authenticated clients
-  - [ ] Discoverable on the network (mDNS; fuzzy-searchable server list in the GUI)
+  - [x] Discoverable on the network (mDNS; fuzzy-searchable server list in the GUI)
 - [x] Rest-of-bus simulation: gridview of ids with live signal values, transmitted on a cadence
   - [ ] External value-source binding: an out-of-repo process streams sparse signal values that RBS applies as overrides
 - [x] CRC and sequence-count calculation in arbitrary message fields

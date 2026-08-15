@@ -503,6 +503,7 @@ dependencies = [
  "cannet-spill",
  "cannet-wire",
  "chrono",
+ "mdns-sd",
  "notify",
  "regex",
  "serde",

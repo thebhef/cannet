@@ -41,6 +41,10 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 # Filter-predicate `name_regex` evaluation; small surface, transitively
 # present already via several Phase 1-5 crates.
 regex = "1"
+# Browses `_cannet._tcp` so the connect surface can list the servers
+# advertising themselves on this subnet (ADR 0040). Same crate, same
+# version as the server's registration side.
+mdns-sd = "0.21"
 
 cannet-core = { path = "../../../crates/cannet-core" }
 cannet-blf = { path = "../../../crates/cannet-blf" }

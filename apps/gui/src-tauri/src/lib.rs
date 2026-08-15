@@ -68,6 +68,7 @@ mod project_dir;
 mod project_registry;
 mod rbs;
 mod sampling;
+mod server_browse;
 mod server_trust;
 mod session;
 mod settings;
@@ -457,6 +458,7 @@ pub fn run() -> ! {
         .manage(interfaces::InterfacesState::default())
         .manage(connection_state::ConnectionStates::default())
         .manage(connect_flow::ServerPrompts::default())
+        .manage(server_browse::DiscoveredServers::default())
         .manage(diag::DiagState::default())
         .manage(diag::AutomationState(autostart))
         .invoke_handler(tauri::generate_handler![
@@ -525,6 +527,7 @@ pub fn run() -> ! {
             interfaces::unwatch_interfaces,
             interfaces::refresh_interfaces,
             connect_flow::get_server_prompts,
+            server_browse::get_discovered_servers,
             server_trust::list_trusted_servers,
             server_trust::accept_server_fingerprint,
             server_trust::set_server_token,
@@ -643,6 +646,10 @@ pub fn run() -> ! {
                 std::thread::spawn(move || run_transmit_scheduler(&handle, &rx));
             }
             sidecar::spawn_sidecar(app.handle());
+            // Browse `_cannet._tcp` for the app's lifetime so the
+            // connect surface always has a current list of the servers
+            // advertising on this subnet (ADR 0040).
+            server_browse::spawn(app.handle().clone());
             // Build the DBC filesystem watcher. Construction
             // is the only step that needs the `AppHandle` (the
             // watcher's event callback emits events / pushes system
