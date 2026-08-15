@@ -28,6 +28,44 @@ const mockRenderCost = { perTickMs: 0, accMs: 0 };
 /// minimum-count floor has to override for a sparse *series*.
 const mockUplotPointsShow = { answer: false };
 
+/** A 2D context that records the calls that put ink on the canvas.
+ * Style state is deliberately not recorded — `PlotArea.draw.test.ts`
+ * owns *how* each mark is styled; what this tier is for is **which
+ * instance** drew one. */
+function drawRecorder(ops: { op: string; args: number[] }[]) {
+  const rec =
+    (op: string) =>
+    (...args: unknown[]) => {
+      ops.push({ op, args: args as number[] });
+    };
+  return {
+    canvas: { width: 600 },
+    font: "",
+    lineWidth: 1,
+    strokeStyle: "",
+    fillStyle: "",
+    textAlign: "left",
+    textBaseline: "middle",
+    shadowColor: "",
+    shadowBlur: 0,
+    save: () => {},
+    restore: () => {},
+    setLineDash: () => {},
+    beginPath: rec("beginPath"),
+    arc: rec("arc"),
+    fill: rec("fill"),
+    stroke: rec("stroke"),
+    moveTo: rec("moveTo"),
+    lineTo: rec("lineTo"),
+    rect: rec("rect"),
+    clip: rec("clip"),
+    fillRect: rec("fillRect"),
+    strokeRect: rec("strokeRect"),
+    fillText: rec("fillText"),
+    measureText: (t: string) => ({ width: t.length * 6 }),
+  } as unknown as CanvasRenderingContext2D;
+}
+
 vi.mock("uplot", () => {
   class FakeUPlot {
     // `uPlot.paths.stepped(...)` is consulted at construction to give
@@ -39,6 +77,15 @@ vi.mock("uplot", () => {
     data: unknown = [[]];
     width = 600;
     cursor = { left: -10 };
+    /** The plot box the draw hook paints inside. */
+    bbox = { left: 0, top: 0, width: 600, height: 400 };
+    /** Every ink call the draw hook made on this instance, in order.
+     * jsdom has no canvas, so a recorder stands in — without one, the
+     * overlay (the shared crosshair, the hover markers) is unreachable
+     * from the panel tier, and the overlay is the only place a claim
+     * about *another* area's drawing can be checked. */
+    drawOps: { op: string; args: number[] }[] = [];
+    ctx = drawRecorder(this.drawOps);
     opts: {
       hooks?: Record<string, ((u: FakeUPlot) => void)[]>;
       series?: { width?: number }[];
@@ -97,8 +144,11 @@ vi.mock("uplot", () => {
     posToVal(px: number) {
       return px / 100;
     }
-    valToPos() {
-      return 0;
+    /** x value → px, the inverse of `posToVal` above, so a mark the draw
+     * hook paints reads back as the time it was painted at; y inverted
+     * over the 400 px box. */
+    valToPos(v: number, axis: string) {
+      return axis === "x" ? v * 100 : 400 - v;
     }
     /** Fire a registered hook as the real uPlot would. Extra args are
      * passed through after `u` (uPlot's `setScale` hook takes the scale
@@ -314,6 +364,7 @@ type FakeUPlotInst = {
   scales: Record<string, { min?: number; max?: number }>;
   xCalls: { min: number; max: number }[];
   redraws: number;
+  drawOps: { op: string; args: number[] }[];
   fire: (hook: string, ...args: unknown[]) => void;
 };
 const uplotInstances = (uplotModule as unknown as { __instances: FakeUPlotInst[] }).__instances;
@@ -1398,6 +1449,120 @@ describe("PlotPanel", () => {
         u2.fire("setCursor");
       });
       expect(readout().title).toBe("latest value");
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
+  /** Hover at `x` (panel units) by reporting it from `hovered`'s uPlot,
+   * then redraw `drawn`'s and hand back the hover markers it painted, as
+   * the x values they landed on. `-10` px is uPlot's pointer-is-gone
+   * cursor, i.e. an un-hover. */
+  async function hoverMarkersOn(
+    hovered: FakeUPlotInst,
+    drawn: FakeUPlotInst,
+    left: number,
+  ): Promise<number[]> {
+    await act(async () => {
+      hovered.cursor.left = left;
+      hovered.fire("setCursor");
+    });
+    drawn.drawOps.length = 0;
+    await act(async () => {
+      drawn.fire("draw");
+    });
+    // The marker is the only disc the overlay draws; `valToPos` is the
+    // inverse of the `posToVal` the hover came in through, so the centre
+    // reads back as the time it was drawn at.
+    return drawn.drawOps.filter((o) => o.op === "arc").map((o) => o.args[0] / 100);
+  }
+
+  it("a hover in one area reveals the markers in the areas the pointer is not in", async () => {
+    // The owner's report, at the panel tier: the hover markers appeared
+    // only on the area under the pointer, while the crosshair they
+    // belong with already spanned the whole stack. Both now come off the
+    // one shared hover x, so the area being measured here is the one the
+    // pointer was never in.
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      queueMicrotask(() => cb(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      const area1 = screen.getByText("Area 1").closest(".plot-area")!;
+      const area2 = screen.getByText("Area 2").closest(".plot-area")!;
+      const instFor = (areaEl: Element) => {
+        const list = uplotInstances.filter((i) => areaEl.contains(i.root));
+        return list[list.length - 1];
+      };
+      await waitFor(() => expect(instFor(area2)).toBeTruthy());
+      const u1 = instFor(area1)!;
+      const u2 = instFor(area2)!;
+      await waitFor(() => expect((u1.data as number[][])[0]?.length).toBeGreaterThan(0));
+      // Pointer in area 2, which holds no signal at all. Area 1 marks
+      // the sample nearest 1.9 s — its own, at 2 s.
+      expect(await hoverMarkersOn(u2, u1, 190)).toEqual([2]);
+      // And the pointer leaving takes them with it.
+      expect(await hoverMarkersOn(u2, u1, -10)).toEqual([]);
+    } finally {
+      cw.mockRestore();
+      ch.mockRestore();
+    }
+  });
+
+  it("an enum lane takes the hover the same way a numeric axis does", async () => {
+    // The second half of the report: a lane showed no hover marker even
+    // with the pointer inside it. It draws its own now, from the same
+    // shared x — measured from the *other* area's hover, so the two
+    // halves of the parity are one assertion.
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      queueMicrotask(() => cb(0));
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    mockValueTables.EngineSpeed = [
+      { raw: 0, label: "Idle" },
+      { raw: 1, label: "Run" },
+      { raw: 2, label: "Fault" },
+    ];
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
+    mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [10, 11, 12] };
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    try {
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      addFocusedSignal("EngineTemp");
+      await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+      // Per-unit: the enum goes onto its own shared lanes axis, the
+      // numeric onto a unit axis — two areas, one panel.
+      await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(2));
+      const areas = [...document.querySelectorAll(".plot-area")];
+      const lanes = areas.find((a) => a.getAttribute("data-area-id")?.endsWith("/u:enum"))!;
+      const numeric = areas.find((a) => a !== lanes)!;
+      const instFor = (areaEl: Element) => {
+        const list = uplotInstances.filter((i) => areaEl.contains(i.root));
+        return list[list.length - 1];
+      };
+      await waitFor(() => expect(instFor(lanes)).toBeTruthy());
+      const uLane = instFor(lanes)!;
+      const uNum = instFor(numeric)!;
+      await waitFor(() => expect((uLane.data as number[][])[0]?.length).toBeGreaterThan(0));
+      expect(await hoverMarkersOn(uNum, uLane, 190)).toEqual([2]);
+      expect(await hoverMarkersOn(uNum, uLane, -10)).toEqual([]);
+      // The mode still means what it meant: `off` is off, hover or not.
+      await pickCombobox(screen.getByLabelText("show points"), "off");
+      await waitFor(() => expect(instFor(lanes)).toBeTruthy());
+      expect(await hoverMarkersOn(instFor(numeric)!, instFor(lanes)!, 190)).toEqual([]);
     } finally {
       cw.mockRestore();
       ch.mockRestore();
