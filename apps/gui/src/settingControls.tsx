@@ -14,7 +14,6 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { ColumnDefaultsEditor } from "./ColumnDefaultsEditor";
 import { ProjectCachesList } from "./ProjectCachesList";
-import { TrustedServersList } from "./TrustedServersList";
 import type { SettingDescriptor } from "./settingDescriptors";
 
 export interface CustomRendererProps {
@@ -31,10 +30,6 @@ export interface CustomRendererProps {
 /// `project-caches` is a management surface with no other home, whose
 /// descriptor is a `view` row rather than a field (ADR 0042 §5).
 ///
-/// `trusted-servers` is the other management surface with no other
-/// home: the certificate fingerprints this machine has accepted
-/// (ADR 0041), and the button that takes one back.
-///
 /// `column-defaults` is a real editor, because a table header adjusts
 /// the panel in front of you and there is nowhere else to say what the
 /// *next* one should open as. Two settings share it — the trace/by-ID
@@ -48,7 +43,6 @@ export const CUSTOM_SETTING_RENDERERS: Record<
   (props: CustomRendererProps) => ReactNode
 > = {
   "project-caches": () => <ProjectCachesList />,
-  "trusted-servers": () => <TrustedServersList />,
   "column-defaults": ({ descriptor, value, onCommit }) => (
     <ColumnDefaultsEditor descriptor={descriptor} value={value} onCommit={onCommit} />
   ),

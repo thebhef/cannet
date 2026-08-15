@@ -138,3 +138,80 @@ string.
 Remaining Task 65 scope (server browse panel, host-name surfacing,
 Windows native-DNS-SD browse, etc.) is unstarted — this phase covers
 only the token-format grooming item.
+
+### 2026-08-13 — phase 2: the Servers panel
+
+**Landed** (branch `task65b-server-panel`, off `task65a-passphrase-tokens`
+tip `32c2a06`), four commits:
+
+- `bc72930` **host name through the browse list.** The reducer was
+  dropping `ResolvedService::get_hostname()`; it now keeps it per
+  instance and renders it with the root dot trimmed (`bench.local`),
+  `None` when the responder published none. No TXT key needed — the
+  ignored live-advertisement test asserts the SRV target survives a
+  real resolve.
+- `20a8665` **`server_list.rs` — the merged host-side model.** One
+  command `get_server_list`, one event `server-list-changed`.
+  Snapshot shape: `{ servers: ServerRow[], browse: BrowseStatus }`,
+  where a row is `{ address, name?, host?, version?, online, trust,
+  fingerprint?, hasToken, insecure, prompt? }` keyed by the trust
+  store's normalized `host:port`. `trust` is `trusted` exactly when
+  `connect_flow::plan` would not probe (a pin, or an explicit
+  unprotected choice) — a stored token alone is *not* trust —
+  `fingerprintChanged` when a pending `IdentityChanged` question
+  exists for the address, `new` otherwise. The row carries the pending
+  question so the panel can re-raise the dialog without re-failing the
+  connection. Trusted-but-not-advertising rows stay, `online: false`,
+  sorted below the reachable ones. Emitted from all four write paths:
+  the browse reducer, the browse status, `server_trust::answered`, and
+  `connect_flow`'s prompt map.
+- `d7e758b` **the panel.** Singleton `ServersPanel` on the
+  keyboard-shortcuts pattern: `SERVERS_PANEL_COMPONENT`/`_ID` in
+  `dockLayout.ts`, `DOCK_COMPONENTS` entry, `panel.show.servers`
+  command, palette + go-to-view entries, no default chord. One merged
+  list, fuzzy search (fzf, over name + host name + address; not the
+  version), offline rows greyed via `.server-row.offline`. Row actions
+  are the trust lifecycle only — *Trust…* dials first via
+  `refresh_interfaces` so the fingerprint shown is the one this attempt
+  observed, then opens `ServerTrustDialog` from the row's prompt;
+  *Token…* is an inline field over `set_server_token`; *Forget* is the
+  repo's danger-button-plus-title pattern (the same one
+  `ProjectCachesList` uses).
+- `5e20691` **retirement + docs.** `TrustedServersList` and its
+  settings descriptor removed, README's connect walkthrough starts at
+  the panel, CONTEXT gains **Servers panel** and **Trust state**.
+
+**Browse status — what could honestly be surfaced.** `BrowseStatus` is
+`starting | running | failed{detail} | degraded{detail} | stopped`,
+every variant something the browse task observed: `failed` from
+`ServiceDaemon::new()` / `browse()` refusing (the socket case),
+`degraded` from `mdns-sd`'s `ServiceDaemon::monitor()` channel yielding
+`DaemonEvent::Error` (a running browse that is complaining — what a
+blocked multicast path looks like), cleared back to `running` by the
+next resolve, and `stopped` when the daemon's event stream ends. No
+detection was invented: there is no "macOS permission denied" signal in
+the crate's API, so that case shows as a quiet `running` for now and is
+covered by the README note the phase-3/4 work still owes.
+
+**Tests.** Host `cargo test -p cannet-gui`: 602 passed, 6 ignored
+(+16 — 3 browse-reducer, 13 `server_list` merge/badge/sort/wire-shape).
+Frontend `pnpm test`: 1947 in 151 files (+24 new: 11 `serverList.test.ts`,
+13 `ServersPanel.dom.test.tsx`; −5 with `TrustedServersList.dom.test.tsx`).
+`pnpm build` and `cargo clippy -p cannet-gui --all-targets -- -D warnings`
+clean on every commit.
+
+**Deviations / side effects.**
+
+- `list_trusted_servers` (host command, plus `listTrustedServers` and
+  the `TrustedServer` type frontend-side) was removed along with the
+  settings list, rather than kept. The phase brief said to keep the
+  underlying commands; the merged snapshot is now the one read path
+  over `servers.json`, and a second command answering the same
+  question is a second authority to keep in step. Every *write*
+  command and the trust dialog are untouched.
+- `AddServerInline` and its `DiscoveredServerList` are untouched, as
+  the brief directed — they retire in phase 3, which also owes
+  Connection Management its per-server collapsible sections and the
+  "Manage servers…" jump to this panel.
+- Not verified against a running GUI (the phase forbade launching it);
+  everything above is covered by unit and DOM tests only.

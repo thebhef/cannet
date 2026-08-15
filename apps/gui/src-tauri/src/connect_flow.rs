@@ -310,6 +310,10 @@ pub(crate) fn resolved(app: &AppHandle, address: &str) {
 
 fn emit(app: &AppHandle, prompts: &ServerPrompts) {
     let _ = app.emit(SERVER_PROMPTS_CHANGED_EVENT, prompts.snapshot());
+    // A pending question is also a fact about the server's row — a
+    // refused certificate is what the changed-identity badge is made
+    // of — so the merged list moves with it.
+    crate::server_list::changed(app);
 }
 
 /// Initial-state read for a frontend that just mounted; the event

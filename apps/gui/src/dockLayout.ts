@@ -51,6 +51,9 @@ export const EVENTS_PANEL_COMPONENT = "events";
 /// The keyboard-shortcuts editor (ADR 0018) — a singleton panel that
 /// lists and rebinds every command.
 export const SHORTCUTS_PANEL_COMPONENT = "shortcuts";
+/// The server list (ADR 0041) — a singleton panel holding this
+/// machine's trust decisions and what is advertising on the network.
+export const SERVERS_PANEL_COMPONENT = "servers";
 /// Singleton id — toolbar's "DBC panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
@@ -80,6 +83,11 @@ export const EVENTS_PANEL_ID = "events";
 /// The keyboard-shortcuts editor (ADR 0018) is a singleton — one
 /// app-global instance, opened from the command palette.
 export const SHORTCUTS_PANEL_ID = "shortcuts";
+
+/// The server list is a singleton too: trusting a server is a decision
+/// this machine makes once (ADR 0041), not a per-project one, so there
+/// is one instance and it is opened from the command palette.
+export const SERVERS_PANEL_ID = "servers";
 
 /// What `CommandContext.focusedPanelKind` should report for the
 /// active dockview panel: element-backed panels report their element
@@ -120,6 +128,8 @@ export function panelKindForFocus(
       return "events";
     case SHORTCUTS_PANEL_ID:
       return "shortcuts";
+    case SERVERS_PANEL_ID:
+      return "servers";
     default:
       return null;
   }

@@ -32,6 +32,8 @@ import {
   PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
   PROJECT_PANEL_ID,
+  SERVERS_PANEL_COMPONENT,
+  SERVERS_PANEL_ID,
   SETTINGS_PANEL_COMPONENT,
   SETTINGS_PANEL_ID,
   SHORTCUTS_PANEL_COMPONENT,
@@ -323,6 +325,15 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       }),
     [showSingletonPanel],
   );
+  const showServersPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: SERVERS_PANEL_ID,
+        component: SERVERS_PANEL_COMPONENT,
+        title: "Servers",
+      }),
+    [showSingletonPanel],
+  );
 
   // --- command handlers + key dispatch (ADR 0018) ---
   const activePanelRef = useRef(activePanel);
@@ -460,6 +471,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "panel.show.about": showAboutPanel,
     "panel.show.events": showEventsPanel,
     "panel.show.shortcuts": showShortcutsPanel,
+    "panel.show.servers": showServersPanel,
     // Rename in place: the palette stays open and becomes a text field
     // seeded with the focused panel's name, so the user never leaves
     // the view they are renaming. The name is the model-owned one
@@ -703,6 +715,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     singleton(ABOUT_PANEL_ID, "About", showAboutPanel);
     singleton(EVENTS_PANEL_ID, "Events", showEventsPanel);
     singleton(SHORTCUTS_PANEL_ID, "Keyboard shortcuts", showShortcutsPanel);
+    singleton(SERVERS_PANEL_ID, "Servers", showServersPanel);
     return views;
   }, [
     registry,
@@ -715,6 +728,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     showAboutPanel,
     showEventsPanel,
     showShortcutsPanel,
+    showServersPanel,
   ]);
   const gotoPaletteItems: PaletteItem[] = useMemo(() => {
     if (openPalette !== "goto") return [];

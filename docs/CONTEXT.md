@@ -50,6 +50,24 @@ directly.
 _Avoid_: "sidecar file" — that unrelated term names the forbidden
 companion-file pattern (ADR 0010).
 
+**Servers panel**:
+The singleton panel listing every server this machine knows about —
+what is advertising on the network merged with what has been accepted
+here, one row per `host:port` — and the one place an identity is
+trusted, a token entered, or a server forgotten (ADR 0041). Trusting
+a server is a decision the machine makes once, not a project's; a
+project only references the `host:port` a bus is bound to.
+_Avoid_: "trusted-servers list" for this — one merged list, not a
+separate pinned-only one.
+
+**Trust state**:
+What a server's row says about its standing with this machine, decided
+host-side: **trusted** (a stored decision reaches it without asking),
+**new** (nothing stored yet), or **identity changed** (it presented a
+certificate that is not the pinned one, and the connection was
+refused). A trusted server that is not advertising is greyed, not
+hidden.
+
 ### Data and model
 
 **Capture**:

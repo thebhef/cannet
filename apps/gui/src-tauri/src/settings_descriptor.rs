@@ -318,20 +318,6 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
-        key: "trusted_servers",
-        // Not a field of `settings.json`: the accepted-identity list is
-        // a management surface, and it sits here because "what has this
-        // install agreed to trust" is a settings question (ADR 0041).
-        backing: Backing::View,
-        label: "Trusted servers",
-        help: "Certificate fingerprints this machine has accepted, and which                servers carry an access token. Forgetting one makes the next                connection to it ask again.",
-        surfaces: &[Surface::Connection],
-        kind: Kind::Behaviour,
-        control: Control::Custom {
-            renderer: "trusted-servers",
-        },
-    },
-    Spec {
         key: "system_log_min_level",
         backing: Backing::Field,
         label: "System log minimum level",

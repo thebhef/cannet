@@ -10,6 +10,7 @@ const server = (
 ): DiscoveredServer => ({
   fullname: `${name}._cannet._tcp.local.`,
   name,
+  host: `${name}.local`,
   address,
   version,
 });

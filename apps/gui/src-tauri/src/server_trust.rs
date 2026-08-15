@@ -147,26 +147,6 @@ pub(crate) fn update_server(
     write_servers(dir, &doc)
 }
 
-/// One trusted server as the frontend sees it.
-///
-/// **The token is not in this shape.** A pinned-servers list needs to
-/// say *that* a credential is stored, never what it is; the host
-/// presents it on the wire itself, so nothing in the `WebView` has a use
-/// for the value.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TrustedServer {
-    /// The `host:port` key, as filed.
-    pub address: String,
-    /// The accepted fingerprint — the same `SHA256:` string the server
-    /// printed and the user compared.
-    pub fingerprint: Option<String>,
-    /// Whether a bearer token is stored for this server.
-    pub has_token: bool,
-    /// Whether the operator accepted an unprotected connection here.
-    pub insecure: bool,
-}
-
 /// The config directory this store lives in.
 fn store_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     crate::persisted_json::config_dir(app)
@@ -198,29 +178,11 @@ fn answered(
 ) -> Result<(), String> {
     write.map_err(|e| format!("failed to store the trust decision for {address}: {e}"))?;
     crate::connect_flow::resolved(app, address);
+    // The store just moved, whether or not a question went with it, so
+    // the merged server list has to be pushed on its own account.
+    crate::server_list::changed(app);
     crate::interfaces::rewatch(app, address);
     Ok(())
-}
-
-/// Tauri command — every server the host has accepted something for, so
-/// the settings surface can list pins, show which carry a token, and
-/// offer to forget them.
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn list_trusted_servers(app: tauri::AppHandle) -> Vec<TrustedServer> {
-    let Ok(dir) = store_dir(&app) else {
-        return Vec::new();
-    };
-    read_servers(&dir)
-        .servers
-        .into_iter()
-        .map(|(address, entry)| TrustedServer {
-            address,
-            fingerprint: entry.fingerprint,
-            has_token: entry.token.is_some(),
-            insecure: entry.insecure,
-        })
-        .collect()
 }
 
 /// Tauri command — accept `fingerprint` for `address` and store

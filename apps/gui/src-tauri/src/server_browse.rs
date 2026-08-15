@@ -29,7 +29,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::sync::Mutex;
 
-use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent};
+use mdns_sd::{DaemonEvent, ResolvedService, ServiceDaemon, ServiceEvent};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -52,6 +52,10 @@ pub const DISCOVERED_SERVERS_CHANGED_EVENT: &str = "discovered-servers-changed";
 pub struct Resolved {
     /// `<instance>._cannet._tcp.local.` — the entry's key.
     pub fullname: String,
+    /// The SRV record's target host — the machine's own name, as it
+    /// arrives on the wire (`bench.local.`, root dot and all). Empty
+    /// when the responder published none.
+    pub host: String,
     /// Port from the SRV record.
     pub port: u16,
     /// Every address this resolve reported, scope dropped.
@@ -68,6 +72,11 @@ pub struct DiscoveredServer {
     /// The instance name the server was started with (`--name`, or its
     /// hostname).
     pub name: String,
+    /// The machine the server runs on, from the SRV record's target
+    /// host, with the root dot dropped (`bench.local`). Independent of
+    /// the instance name — two servers named alike are told apart by
+    /// this. `None` when the responder published no host name.
+    pub host: Option<String>,
     /// `host:port`, ready to hand to the connect path verbatim.
     pub address: String,
     /// The server's release version, from the `ver` TXT key.
@@ -78,6 +87,8 @@ pub struct DiscoveredServer {
 /// it seen so far.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Instance {
+    /// Last host name reported, verbatim from the wire.
+    host: String,
     port: u16,
     /// Accumulated across resolves: a responder reports the addresses
     /// it has answered on *so far*, so a later resolve is a superset,
@@ -103,6 +114,7 @@ impl BrowseList {
     pub fn resolved(&mut self, resolved: &Resolved) -> bool {
         self.changing(|entries| {
             let entry = entries.entry(resolved.fullname.clone()).or_default();
+            entry.host.clone_from(&resolved.host);
             entry.port = resolved.port;
             entry.addresses.extend(resolved.addresses.iter().copied());
             if resolved.version.is_some() {
@@ -139,6 +151,7 @@ impl BrowseList {
                 Some(DiscoveredServer {
                     fullname: fullname.clone(),
                     name: instance_name(fullname).to_string(),
+                    host: host_name(&entry.host),
                     address: dial_address(&entry.addresses, entry.port)?,
                     version: entry.version.clone(),
                 })
@@ -168,6 +181,14 @@ fn instance_name(fullname: &str) -> &str {
         .strip_suffix(SERVICE_TYPE)
         .and_then(|head| head.strip_suffix('.'))
         .unwrap_or(fullname)
+}
+
+/// The SRV target host as the list renders it: the root dot is wire
+/// encoding, and a responder that published no host name has none to
+/// show rather than an empty cell.
+fn host_name(host: &str) -> Option<String> {
+    let trimmed = host.trim_end_matches('.');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// The `host:port` to dial for an instance, or `None` when none of its
@@ -218,11 +239,44 @@ fn dial_rank(addr: IpAddr) -> Option<u8> {
     }
 }
 
+/// What the browse task itself reports about its own health — the
+/// difference between "nothing is advertising" and "nothing is
+/// listening for advertisements".
+///
+/// An empty list means one of these depending on the status, and the
+/// panel must be able to say which: a subnet with no servers looks
+/// exactly like a blocked multicast socket otherwise. Every variant is
+/// something the task observed; nothing here is inferred from the list
+/// being empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum BrowseStatus {
+    /// Spawned, but the daemon has not answered yet. The first
+    /// fraction of a second after launch.
+    #[default]
+    Starting,
+    /// The browse is running. An empty list under this status means the
+    /// subnet has nothing on it.
+    Running,
+    /// The mDNS daemon or the browse itself refused to start — a socket
+    /// that could not be bound. Discovery will not happen at all until
+    /// the app is restarted.
+    Failed { detail: String },
+    /// Running, but the daemon reported an error while it ran. The
+    /// usual cause is a blocked or unusable multicast path, so a list
+    /// that stays empty under this status is suspect rather than
+    /// informative. Cleared by the next resolve that arrives.
+    Degraded { detail: String },
+    /// The daemon's event stream ended. Nothing is browsing any more.
+    Stopped,
+}
+
 /// Tauri-managed singleton holding the browse list. A mutex is enough:
 /// every hot path is a map edit or a snapshot of a handful of entries.
 #[derive(Default)]
 pub struct DiscoveredServers {
     inner: Mutex<BrowseList>,
+    status: Mutex<BrowseStatus>,
 }
 
 impl DiscoveredServers {
@@ -232,10 +286,32 @@ impl DiscoveredServers {
         self.lock().snapshot()
     }
 
+    /// What the browse task last reported about itself.
+    #[must_use]
+    pub fn status(&self) -> BrowseStatus {
+        self.status_lock().clone()
+    }
+
+    /// Record a new status, reporting whether it moved — so a resolve
+    /// arriving every few seconds under an unchanged `Running` costs no
+    /// event.
+    fn set_status(&self, status: BrowseStatus) -> bool {
+        let mut guard = self.status_lock();
+        if *guard == status {
+            return false;
+        }
+        *guard = status;
+        true
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, BrowseList> {
         self.inner
             .lock()
             .expect("discovered servers mutex poisoned")
+    }
+
+    fn status_lock(&self) -> std::sync::MutexGuard<'_, BrowseStatus> {
+        self.status.lock().expect("browse status mutex poisoned")
     }
 }
 
@@ -261,6 +337,12 @@ async fn run_browse(app: &AppHandle) {
         Ok(daemon) => daemon,
         Err(e) => {
             sys_warn!(app, SOURCE, "couldn't start the mDNS browser: {e}");
+            set_status(
+                app,
+                BrowseStatus::Failed {
+                    detail: e.to_string(),
+                },
+            );
             return;
         }
     };
@@ -268,12 +350,23 @@ async fn run_browse(app: &AppHandle) {
         Ok(events) => events,
         Err(e) => {
             sys_warn!(app, SOURCE, "couldn't browse for {SERVICE_TYPE}: {e}");
+            set_status(
+                app,
+                BrowseStatus::Failed {
+                    detail: e.to_string(),
+                },
+            );
             return;
         }
     };
+    set_status(app, BrowseStatus::Running);
+    watch_daemon(app, &daemon);
     while let Ok(event) = events.recv_async().await {
         match event {
             ServiceEvent::ServiceResolved(service) => {
+                // A resolve is proof the multicast path works, so it
+                // also clears any earlier daemon complaint.
+                set_status(app, BrowseStatus::Running);
                 let resolved = from_resolved_service(&service);
                 apply(app, |list| list.resolved(&resolved));
             }
@@ -286,6 +379,41 @@ async fn run_browse(app: &AppHandle) {
             _ => {}
         }
     }
+    set_status(app, BrowseStatus::Stopped);
+}
+
+/// Follow the daemon's own error channel, so a browse that started but
+/// cannot actually hear anything says so instead of looking like an
+/// empty subnet. Failing to subscribe is not worth a warning: the
+/// browse still runs, it just reports less.
+fn watch_daemon(app: &AppHandle, daemon: &ServiceDaemon) {
+    let Ok(monitor) = daemon.monitor() else {
+        return;
+    };
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Ok(event) = monitor.recv_async().await {
+            if let DaemonEvent::Error(e) = event {
+                set_status(
+                    &app,
+                    BrowseStatus::Degraded {
+                        detail: e.to_string(),
+                    },
+                );
+            }
+        }
+    });
+}
+
+/// Record the browse task's health and push the panel's snapshot if it
+/// moved.
+fn set_status(app: &AppHandle, status: BrowseStatus) {
+    let Some(servers) = app.try_state::<DiscoveredServers>() else {
+        return;
+    };
+    if servers.set_status(status) {
+        crate::server_list::changed(app);
+    }
 }
 
 /// Apply `edit` to the managed list and push the new snapshot at the
@@ -297,6 +425,7 @@ fn apply(app: &AppHandle, edit: impl FnOnce(&mut BrowseList) -> bool) {
     };
     if edit(&mut servers.lock()) {
         let _ = app.emit(DISCOVERED_SERVERS_CHANGED_EVENT, servers.snapshot());
+        crate::server_list::changed(app);
     }
 }
 
@@ -307,6 +436,7 @@ fn apply(app: &AppHandle, edit: impl FnOnce(&mut BrowseList) -> bool) {
 fn from_resolved_service(service: &ResolvedService) -> Resolved {
     Resolved {
         fullname: service.get_fullname().to_string(),
+        host: service.get_hostname().to_string(),
         port: service.get_port(),
         addresses: service
             .get_addresses()
@@ -338,10 +468,43 @@ mod tests {
     fn resolve(name: &str, port: u16, addresses: &[&str], version: Option<&str>) -> Resolved {
         Resolved {
             fullname: format!("{name}.{SERVICE_TYPE}"),
+            host: format!("{name}.local."),
             port,
             addresses: addresses.iter().map(|a| ip(a)).collect(),
             version: version.map(ToString::to_string),
         }
+    }
+
+    #[test]
+    fn the_advertised_host_name_reaches_the_list_without_its_root_dot() {
+        // The SRV target is the machine's own name, independent of the
+        // `--name` instance name — the fact the owner asked to see. The
+        // trailing root dot is wire encoding, not something to render.
+        let mut list = BrowseList::default();
+        list.resolved(&resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1")));
+        assert_eq!(list.snapshot()[0].host.as_deref(), Some("bench.local"));
+    }
+
+    #[test]
+    fn a_resolve_with_no_host_name_is_listed_without_one() {
+        let mut list = BrowseList::default();
+        let mut r = resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1"));
+        r.host = String::new();
+        list.resolved(&r);
+        assert_eq!(list.snapshot()[0].host, None);
+    }
+
+    #[test]
+    fn a_server_that_moves_to_a_new_machine_reports_the_new_host_name() {
+        let mut list = BrowseList::default();
+        list.resolved(&resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1")));
+        let mut moved = resolve("bench", 50051, &["192.168.1.10"], Some("v0.8.1"));
+        moved.host = "spare.local.".into();
+        assert!(
+            list.resolved(&moved),
+            "the host name is on screen, so a change to it moves the list",
+        );
+        assert_eq!(list.snapshot()[0].host.as_deref(), Some("spare.local"));
     }
 
     #[test]
@@ -353,6 +516,7 @@ mod tests {
             vec![DiscoveredServer {
                 fullname: "bench._cannet._tcp.local.".into(),
                 name: "bench".into(),
+                host: Some("bench.local".into()),
                 address: "192.168.1.10:50051".into(),
                 version: Some("v0.8.1".into()),
             }],
@@ -595,6 +759,11 @@ mod tests {
             .find(|s| s.fullname == fullname)
             .expect("our own advertisement should be browsed within 5s");
         assert_eq!(found.name, name);
+        assert_eq!(
+            found.host.as_deref(),
+            Some(format!("{name}.local").as_str()),
+            "the SRV target host survives a real resolve, so it needs no TXT key",
+        );
         assert_eq!(found.version.as_deref(), Some("v0.0.0-test"));
         assert!(
             found.address.ends_with(":50071"),
@@ -630,12 +799,14 @@ mod tests {
         let json = serde_json::to_value(DiscoveredServer {
             fullname: "bench._cannet._tcp.local.".into(),
             name: "bench".into(),
+            host: Some("bench.local".into()),
             address: "192.168.1.10:50051".into(),
             version: Some("v0.8.1".into()),
         })
         .unwrap();
         assert_eq!(json["fullname"], "bench._cannet._tcp.local.");
         assert_eq!(json["name"], "bench");
+        assert_eq!(json["host"], "bench.local");
         assert_eq!(json["address"], "192.168.1.10:50051");
         assert_eq!(json["version"], "v0.8.1");
     }

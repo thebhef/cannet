@@ -99,6 +99,7 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { SignalGeneratorProvider } from "./signalGeneratorContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
+import { ServersPanel } from "./ServersPanel";
 import { ServerTrustDialogs } from "./ServerTrustDialog";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
 import { useThemeName } from "./theme";
@@ -134,6 +135,7 @@ import {
   SETTINGS_PANEL_COMPONENT,
   ABOUT_PANEL_COMPONENT,
   EVENTS_PANEL_COMPONENT,
+  SERVERS_PANEL_COMPONENT,
   SHORTCUTS_PANEL_COMPONENT,
   SIGNALS_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
@@ -240,6 +242,7 @@ const DOCK_COMPONENTS = {
   [ABOUT_PANEL_COMPONENT]: AboutPanel,
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
   [SHORTCUTS_PANEL_COMPONENT]: ShortcutsPanel,
+  [SERVERS_PANEL_COMPONENT]: ServersPanel,
 };
 
 /// Rewrite a project's file references into the form it should be
