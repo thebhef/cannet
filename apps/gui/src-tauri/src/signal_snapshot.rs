@@ -177,6 +177,24 @@ pub fn select_descriptors(
     Ok(out)
 }
 
+/// Whether a file-backed series reads as an enumeration — the same
+/// two-entry rule [`cannet_dbc::is_enum`] applies to a `VAL_` table,
+/// asked of the value table the channel's own conversion carried.
+fn is_coded(info: &crate::signal_cache::FileSignalInfo) -> bool {
+    info.value_table.len() >= 2
+}
+
+/// The label a coded channel's table gives `value`, or `None` when the
+/// series carries no table or the sample is not one of its codes.
+fn coded_label(info: &crate::signal_cache::FileSignalInfo, value: f64) -> Option<String> {
+    #[allow(clippy::cast_possible_truncation)]
+    let code = (value.fract() == 0.0 && value.abs() < 9.0e15).then_some(value as i64)?;
+    info.value_table
+        .iter()
+        .find(|e| e.raw == code)
+        .map(|e| e.label.clone())
+}
+
 /// One file-backed signal (`docs/CONTEXT.md`) as a catalog row — what
 /// `list_signals` appends to the DBC-derived descriptors so the picker
 /// and the plot can reach an imported series.
@@ -184,8 +202,10 @@ pub fn select_descriptors(
 /// Its identity is the source signal channel group index in the message
 /// slot, no bus, never extended; `message_name` is the group's label,
 /// standing where a DBC-backed signal shows the message that carries
-/// it. It has no transmitter, no `VAL_` table and no DBC-implied
-/// precision, so those read as absent rather than as defaults.
+/// it. It has no transmitter and no DBC-implied precision, so those read
+/// as absent rather than as defaults — but a **coded** channel does have
+/// a value table, read from its own conversion, and reads as an enum
+/// here exactly as a DBC-backed one would.
 #[must_use]
 pub fn file_backed_descriptor(entry: FileSignalEntry) -> SignalDescriptorRecord {
     SignalDescriptorRecord {
@@ -194,9 +214,9 @@ pub fn file_backed_descriptor(entry: FileSignalEntry) -> SignalDescriptorRecord 
         extended: false,
         message_name: entry.info.group_label(),
         transmitter: None,
+        is_enum: is_coded(&entry.info),
         signal_name: entry.info.name,
         unit: entry.info.unit,
-        is_enum: false,
         display_hex: false,
         decimals: None,
         file_backed: true,
@@ -255,15 +275,19 @@ pub fn select_file_backed(
             message_name: group,
             signal_name: entry.info.name.clone(),
             unit: entry.info.unit.clone(),
-            is_enum: false,
+            is_enum: is_coded(&entry.info),
             raw_field: false,
             display_hex: false,
             value: latest.map(|p| p.value),
             // The file carries physical values with the conversion
-            // already applied; there is no raw field behind them and no
-            // `VAL_` table to label them with.
+            // already applied, so there is no raw field behind them.
+            // A coded channel is the one shape where the value is a
+            // code: its conversion maps to text rather than to a
+            // number, and the table that does the mapping came in with
+            // the series, so the label is looked up here — by the
+            // model, off the newest sample the model holds.
             raw: None,
-            label: None,
+            label: latest.and_then(|p| coded_label(&entry.info, p.value)),
             rate: entry.rate,
             count: Some(entry.sample_count),
             time_seconds: latest.map(|p| p.t_seconds),

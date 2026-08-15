@@ -2778,6 +2778,124 @@ fn fetch_signal_page_serves_file_backed_rows_marked_by_source() {
     assert_eq!(picked[0].signal_name, "EngineSpeed");
 }
 
+/// A capture holding one coded file-backed series: three enumerators
+/// and one sample of each, newest last. `EngineSpeed` rides along on
+/// the same group index a DBC message would use for a different signal,
+/// which is what keeps the two namespaces honest.
+fn coded_file_backed_state() -> AppState {
+    let state = test_state();
+    let ts = 1_700_000_000_000_000_000u64;
+    let table = |rows: &[(i64, &str)]| -> Vec<ipc::ValueTableEntryRecord> {
+        rows.iter()
+            .map(|(raw, label)| ipc::ValueTableEntryRecord {
+                raw: *raw,
+                label: (*label).to_string(),
+            })
+            .collect()
+    };
+    for (name, rows) in [
+        (
+            "CurrentState",
+            table(&[(0, "Startup"), (1, "Idle"), (7, "Fault")]),
+        ),
+        ("AtRest", Vec::new()),
+    ] {
+        let info = signal_cache::FileSignalInfo {
+            source_path: "coded.mf4".into(),
+            group: 4,
+            group_name: Some("BMS".into()),
+            name: name.into(),
+            unit: String::new(),
+            value_table: rows,
+        };
+        let points: Vec<(u64, f64)> = [0.0, 1.0, 7.0]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (ts + i as u64 * 1_000_000_000, *v))
+            .collect();
+        state.signal_caches.fill_file_backed(&info, &points);
+    }
+    state
+}
+
+/// The labels of a coded file-backed channel are served through the
+/// same command a DBC signal's `VAL_` table goes out on — the frontend
+/// has one value-table path and both kinds of signal reach it.
+#[test]
+fn a_coded_file_backed_signals_table_is_served_like_a_dbc_signals() {
+    let state = coded_file_backed_state();
+    assert_eq!(
+        state
+            .signal_caches
+            .file_signal_value_table(4, "CurrentState"),
+        vec![
+            ipc::ValueTableEntryRecord {
+                raw: 0,
+                label: "Startup".into()
+            },
+            ipc::ValueTableEntryRecord {
+                raw: 1,
+                label: "Idle".into()
+            },
+            ipc::ValueTableEntryRecord {
+                raw: 7,
+                label: "Fault".into()
+            },
+        ],
+    );
+    // A series with no conversion behind it has no table, and neither
+    // has a group/name pair no file-backed series answers to.
+    assert!(state
+        .signal_caches
+        .file_signal_value_table(4, "AtRest")
+        .is_empty());
+    assert!(state
+        .signal_caches
+        .file_signal_value_table(9, "CurrentState")
+        .is_empty());
+}
+
+/// A coded file-backed signal reads as an enum wherever a DBC-backed
+/// one does: the catalog marks it, and the signal view's value column
+/// shows the label beside the code instead of the code alone.
+#[test]
+fn a_coded_file_backed_signal_carries_its_label_into_the_values_views() {
+    let state = coded_file_backed_state();
+    let descriptors: Vec<ipc::SignalDescriptorRecord> = state
+        .signal_caches
+        .file_signals()
+        .into_iter()
+        .map(signal_snapshot::file_backed_descriptor)
+        .collect();
+    assert_eq!(
+        descriptors
+            .iter()
+            .map(|d| (d.signal_name.as_str(), d.is_enum))
+            .collect::<Vec<_>>(),
+        vec![("AtRest", false), ("CurrentState", true)],
+    );
+
+    let sel = SignalSelection {
+        keys: vec![],
+        patterns: vec!["^//BMS/".to_string()],
+    };
+    let rows = signal_snapshot::select_file_backed(&state.signal_caches.file_signals(), &sel, None)
+        .unwrap();
+    let coded = rows
+        .iter()
+        .find(|r| r.signal_name == "CurrentState")
+        .unwrap();
+    assert!(coded.is_enum);
+    assert_eq!(coded.value, Some(7.0), "the newest sample of the series");
+    assert_eq!(
+        coded.label.as_deref(),
+        Some("Fault"),
+        "the code's own label, looked up by the model",
+    );
+    let plain = rows.iter().find(|r| r.signal_name == "AtRest").unwrap();
+    assert!(!plain.is_enum && plain.label.is_none());
+}
+
 /// A view wired to specific buses excludes file-backed signals for the
 /// same reason it excludes an unassigned-bus descriptor: nothing puts
 /// them on a bus.

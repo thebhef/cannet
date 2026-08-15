@@ -1888,6 +1888,31 @@ impl SignalCacheStore {
         out
     }
 
+    /// One file-backed series' value table, empty when it has none or
+    /// when nothing here answers to `(group, name)`.
+    ///
+    /// The file-backed counterpart of
+    /// [`cannet_dbc::Database::value_table_for_signal`], and the reason
+    /// the labels of a coded channel reach a view through the same
+    /// command a DBC signal's `VAL_` rows do. The group index and a
+    /// message id are unrelated numbers, so a caller has to say which
+    /// namespace it is asking in — that is what the file-backed flag on
+    /// the request is for.
+    pub fn file_signal_value_table(
+        &self,
+        group: u32,
+        name: &str,
+    ) -> Vec<crate::ipc::ValueTableEntryRecord> {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        caches
+            .by_key
+            .values()
+            .filter_map(|cache| cache.file.as_ref())
+            .find(|info| info.group == group && info.name == name)
+            .map(|info| info.value_table.clone())
+            .unwrap_or_default()
+    }
+
     /// Every file-backed series **with its samples** — what a save that
     /// can carry them (MDF) writes out.
     ///

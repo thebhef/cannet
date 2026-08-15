@@ -99,6 +99,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
           messageId: d.message_id,
           extended: d.extended,
           signalName: d.signal_name,
+          fileBacked: d.file_backed ?? false,
         });
         update(elementId, { rules: isEnumValueTable(rows) ? rulesFromValueTable(rows) : [] });
       } catch {

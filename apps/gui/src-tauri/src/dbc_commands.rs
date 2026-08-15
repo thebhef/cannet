@@ -404,12 +404,21 @@ fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecor
         signals: m.signals.iter().map(signal_to_wire).collect(),
     })
 }
-/// Look up the full `VAL_` table for one DBC signal across every
-/// loaded DBC, first-match-wins. Returns an empty vec if no DBC has
-/// a value table for the requested signal. The plot panel's symbolic
-/// y-axis ticks and the transmit panel's enum dropdown call this
-/// once per signal — the table doesn't have to ride along on every
-/// decoded frame.
+/// Look up the full value table for one signal. Returns an empty vec
+/// when the signal has none. The plot panel's symbolic y-axis ticks,
+/// its enum lanes and the transmit panel's enum dropdown call this once
+/// per signal — the table doesn't have to ride along on every decoded
+/// frame.
+///
+/// `file_backed` says which namespace `message_id` is in, because the
+/// two are unrelated numbers: for a DBC-backed signal it is a CAN id and
+/// the `VAL_` table is looked up across every loaded DBC,
+/// first-match-wins; for a file-backed one it is the source file's
+/// signal channel group index and the table is the one the channel's own
+/// conversion carried in (see
+/// [`crate::signal_cache::SignalCacheStore::file_signal_value_table`]).
+/// One command either way, so a view labels both kinds of enum the same
+/// way.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn list_value_tables(
@@ -417,7 +426,13 @@ pub(crate) fn list_value_tables(
     message_id: u32,
     extended: bool,
     signal_name: String,
+    file_backed: bool,
 ) -> Vec<ipc::ValueTableEntryRecord> {
+    if file_backed {
+        return state
+            .signal_caches
+            .file_signal_value_table(message_id, &signal_name);
+    }
     state
         .first_dbc(|db| {
             db.value_table_for_signal(message_id, extended, &signal_name)

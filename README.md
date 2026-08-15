@@ -1990,8 +1990,12 @@ not added to the project's DBC list.
 A coded channel — a DBC enumeration, the shape most state signals in a
 decoded group take — stores its value-to-text table as the channel's
 own conversion. The **code** is what lands in the series, since that is
-the numeric part; the text is a label, which is what a value table is
-everywhere else in this project.
+the numeric part, and the table rides along with it as that signal's
+value table — the same thing a DBC's `VAL_` block is. So an imported
+enumeration reads as one everywhere a DBC-backed enumeration does:
+symbolic y-axis ticks and labelled tiles on a plot, the label beside
+the value in the signal grid, and named rows in a colormap. The table
+is written back out on an MDF save, so the round trip keeps it.
 
 **File-backed signals** are value series the capture file carries
 already decoded: no bus message holds them and no DBC produces them.
