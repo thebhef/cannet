@@ -1,0 +1,673 @@
+{
+  "data_block": "DT",
+  "dg_record_id_size": 0,
+  "file": "sorted_finalized_mixed.mf4",
+  "finalized": true,
+  "fixture": "sorted_finalized_mixed",
+  "groups": [
+    {
+      "acq_name": "CAN",
+      "channels": [
+        "time",
+        "CAN_DataFrame",
+        "CAN_DataFrame.BusChannel",
+        "CAN_DataFrame.ID",
+        "CAN_DataFrame.IDE",
+        "CAN_DataFrame.DLC",
+        "CAN_DataFrame.DataLength",
+        "CAN_DataFrame.DataBytes",
+        "CAN_DataFrame.Dir"
+      ],
+      "cycles": 24,
+      "frame_type": "CAN_DataFrame",
+      "frames": [
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "",
+          "data_length": 0,
+          "dir": 0,
+          "dlc": 0,
+          "edl": 0,
+          "esi": 0,
+          "id": 256,
+          "ide": 0,
+          "index": 0,
+          "t_abs_ns": 1709294400000000000,
+          "t_ns": 0,
+          "t_raw": 0.0,
+          "t_raw_hex": "0x0000000000000000"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "84",
+          "data_length": 1,
+          "dir": 1,
+          "dlc": 1,
+          "edl": 0,
+          "esi": 0,
+          "id": 421,
+          "ide": 0,
+          "index": 1,
+          "t_abs_ns": 1709294400010000000,
+          "t_ns": 10000000,
+          "t_raw": 0.01,
+          "t_raw_hex": "0x7b14ae47e17a843f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "8baa",
+          "data_length": 2,
+          "dir": 0,
+          "dlc": 2,
+          "edl": 0,
+          "esi": 0,
+          "id": 419356965,
+          "ide": 1,
+          "index": 2,
+          "t_abs_ns": 1709294400020000000,
+          "t_ns": 20000000,
+          "t_raw": 0.02,
+          "t_raw_hex": "0x7b14ae47e17a943f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "92b1d0",
+          "data_length": 3,
+          "dir": 1,
+          "dlc": 3,
+          "edl": 0,
+          "esi": 0,
+          "id": 2047,
+          "ide": 0,
+          "index": 3,
+          "t_abs_ns": 1709294400030000000,
+          "t_ns": 30000000,
+          "t_raw": 0.03,
+          "t_raw_hex": "0xb81e85eb51b89e3f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "99b8d7f6",
+          "data_length": 4,
+          "dir": 0,
+          "dlc": 4,
+          "edl": 0,
+          "esi": 0,
+          "id": 217056256,
+          "ide": 1,
+          "index": 4,
+          "t_abs_ns": 1709294400040000000,
+          "t_ns": 40000000,
+          "t_raw": 0.04,
+          "t_raw_hex": "0x7b14ae47e17aa43f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "a0bfdefd1c",
+          "data_length": 5,
+          "dir": 1,
+          "dlc": 5,
+          "edl": 0,
+          "esi": 0,
+          "id": 256,
+          "ide": 0,
+          "index": 5,
+          "t_abs_ns": 1709294400050000000,
+          "t_ns": 50000000,
+          "t_raw": 0.05,
+          "t_raw_hex": "0x9a9999999999a93f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "a7c6e5042342",
+          "data_length": 6,
+          "dir": 0,
+          "dlc": 6,
+          "edl": 0,
+          "esi": 0,
+          "id": 421,
+          "ide": 0,
+          "index": 6,
+          "t_abs_ns": 1709294400060000000,
+          "t_ns": 60000000,
+          "t_raw": 0.06,
+          "t_raw_hex": "0xb81e85eb51b8ae3f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "aecdec0b2a4968",
+          "data_length": 7,
+          "dir": 1,
+          "dlc": 7,
+          "edl": 0,
+          "esi": 0,
+          "id": 419356965,
+          "ide": 1,
+          "index": 7,
+          "t_abs_ns": 1709294400070000000,
+          "t_ns": 70000000,
+          "t_raw": 0.07,
+          "t_raw_hex": "0xec51b81e85ebb13f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "b5d4f31231506f8e",
+          "data_length": 8,
+          "dir": 0,
+          "dlc": 8,
+          "edl": 0,
+          "esi": 0,
+          "id": 2047,
+          "ide": 0,
+          "index": 8,
+          "t_abs_ns": 1709294400080000000,
+          "t_ns": 80000000,
+          "t_raw": 0.08,
+          "t_raw_hex": "0x7b14ae47e17ab43f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "",
+          "data_length": 0,
+          "dir": 1,
+          "dlc": 0,
+          "edl": 0,
+          "esi": 0,
+          "id": 217056256,
+          "ide": 1,
+          "index": 9,
+          "t_abs_ns": 1709294400090000000,
+          "t_ns": 90000000,
+          "t_raw": 0.09,
+          "t_raw_hex": "0x0ad7a3703d0ab73f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "c3",
+          "data_length": 1,
+          "dir": 0,
+          "dlc": 1,
+          "edl": 0,
+          "esi": 0,
+          "id": 256,
+          "ide": 0,
+          "index": 10,
+          "t_abs_ns": 1709294400100000000,
+          "t_ns": 100000000,
+          "t_raw": 0.1,
+          "t_raw_hex": "0x9a9999999999b93f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "cae9",
+          "data_length": 2,
+          "dir": 1,
+          "dlc": 2,
+          "edl": 0,
+          "esi": 0,
+          "id": 421,
+          "ide": 0,
+          "index": 11,
+          "t_abs_ns": 1709294400110000000,
+          "t_ns": 110000000,
+          "t_raw": 0.11,
+          "t_raw_hex": "0x295c8fc2f528bc3f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "d1f00f",
+          "data_length": 3,
+          "dir": 0,
+          "dlc": 3,
+          "edl": 0,
+          "esi": 0,
+          "id": 419356965,
+          "ide": 1,
+          "index": 12,
+          "t_abs_ns": 1709294400120000000,
+          "t_ns": 120000000,
+          "t_raw": 0.12,
+          "t_raw_hex": "0xb81e85eb51b8be3f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "d8f71635",
+          "data_length": 4,
+          "dir": 1,
+          "dlc": 4,
+          "edl": 0,
+          "esi": 0,
+          "id": 2047,
+          "ide": 0,
+          "index": 13,
+          "t_abs_ns": 1709294400130000000,
+          "t_ns": 130000000,
+          "t_raw": 0.13,
+          "t_raw_hex": "0xa4703d0ad7a3c03f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "dffe1d3c5b",
+          "data_length": 5,
+          "dir": 0,
+          "dlc": 5,
+          "edl": 0,
+          "esi": 0,
+          "id": 217056256,
+          "ide": 1,
+          "index": 14,
+          "t_abs_ns": 1709294400140000000,
+          "t_ns": 140000000,
+          "t_raw": 0.14,
+          "t_raw_hex": "0xec51b81e85ebc13f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "e60524436281",
+          "data_length": 6,
+          "dir": 1,
+          "dlc": 6,
+          "edl": 0,
+          "esi": 0,
+          "id": 256,
+          "ide": 0,
+          "index": 15,
+          "t_abs_ns": 1709294400150000000,
+          "t_ns": 150000000,
+          "t_raw": 0.15,
+          "t_raw_hex": "0x333333333333c33f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "ed0c2b4a6988a7",
+          "data_length": 7,
+          "dir": 0,
+          "dlc": 7,
+          "edl": 0,
+          "esi": 0,
+          "id": 421,
+          "ide": 0,
+          "index": 16,
+          "t_abs_ns": 1709294400160000000,
+          "t_ns": 160000000,
+          "t_raw": 0.16,
+          "t_raw_hex": "0x7b14ae47e17ac43f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "f4133251708faecd",
+          "data_length": 8,
+          "dir": 1,
+          "dlc": 8,
+          "edl": 0,
+          "esi": 0,
+          "id": 419356965,
+          "ide": 1,
+          "index": 17,
+          "t_abs_ns": 1709294400170000000,
+          "t_ns": 170000000,
+          "t_raw": 0.17,
+          "t_raw_hex": "0xc3f5285c8fc2c53f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "",
+          "data_length": 0,
+          "dir": 0,
+          "dlc": 0,
+          "edl": 0,
+          "esi": 0,
+          "id": 2047,
+          "ide": 0,
+          "index": 18,
+          "t_abs_ns": 1709294400180000000,
+          "t_ns": 180000000,
+          "t_raw": 0.18,
+          "t_raw_hex": "0x0ad7a3703d0ac73f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "02",
+          "data_length": 1,
+          "dir": 1,
+          "dlc": 1,
+          "edl": 0,
+          "esi": 0,
+          "id": 217056256,
+          "ide": 1,
+          "index": 19,
+          "t_abs_ns": 1709294400190000000,
+          "t_ns": 190000000,
+          "t_raw": 0.19,
+          "t_raw_hex": "0x52b81e85eb51c83f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "0928",
+          "data_length": 2,
+          "dir": 0,
+          "dlc": 2,
+          "edl": 0,
+          "esi": 0,
+          "id": 256,
+          "ide": 0,
+          "index": 20,
+          "t_abs_ns": 1709294400200000000,
+          "t_ns": 200000000,
+          "t_raw": 0.2,
+          "t_raw_hex": "0x9a9999999999c93f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "102f4e",
+          "data_length": 3,
+          "dir": 1,
+          "dlc": 3,
+          "edl": 0,
+          "esi": 0,
+          "id": 421,
+          "ide": 0,
+          "index": 21,
+          "t_abs_ns": 1709294400210000000,
+          "t_ns": 210000000,
+          "t_raw": 0.21,
+          "t_raw_hex": "0xe17a14ae47e1ca3f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "17365574",
+          "data_length": 4,
+          "dir": 0,
+          "dlc": 4,
+          "edl": 0,
+          "esi": 0,
+          "id": 419356965,
+          "ide": 1,
+          "index": 22,
+          "t_abs_ns": 1709294400220000000,
+          "t_ns": 220000000,
+          "t_raw": 0.22,
+          "t_raw_hex": "0x295c8fc2f528cc3f"
+        },
+        {
+          "brs": 0,
+          "bus_channel": 1,
+          "data_hex": "1e3d5c7b9a",
+          "data_length": 5,
+          "dir": 1,
+          "dlc": 5,
+          "edl": 0,
+          "esi": 0,
+          "id": 2047,
+          "ide": 0,
+          "index": 23,
+          "t_abs_ns": 1709294400230000000,
+          "t_ns": 230000000,
+          "t_raw": 0.23,
+          "t_raw_hex": "0x713d0ad7a370cd3f"
+        }
+      ],
+      "index": 0,
+      "kind": "bus",
+      "payload_field_bytes": 8,
+      "record_size": 25
+    },
+    {
+      "acq_name": "Analog",
+      "channels": [
+        "time",
+        "EngineSpeed",
+        "CoolantTemp"
+      ],
+      "cycles": 20,
+      "index": 1,
+      "kind": "signal",
+      "signals": [
+        {
+          "name": "EngineSpeed",
+          "samples": [
+            {
+              "t_abs_ns": 1709294400000000000,
+              "t_ns": 0,
+              "value": 800.0
+            },
+            {
+              "t_abs_ns": 1709294400012000000,
+              "t_ns": 12000000,
+              "value": 812.5
+            },
+            {
+              "t_abs_ns": 1709294400024000000,
+              "t_ns": 24000000,
+              "value": 825.0
+            },
+            {
+              "t_abs_ns": 1709294400036000000,
+              "t_ns": 36000000,
+              "value": 837.5
+            },
+            {
+              "t_abs_ns": 1709294400048000000,
+              "t_ns": 48000000,
+              "value": 850.0
+            },
+            {
+              "t_abs_ns": 1709294400060000000,
+              "t_ns": 60000000,
+              "value": 862.5
+            },
+            {
+              "t_abs_ns": 1709294400072000000,
+              "t_ns": 72000000,
+              "value": 875.0
+            },
+            {
+              "t_abs_ns": 1709294400084000000,
+              "t_ns": 84000000,
+              "value": 887.5
+            },
+            {
+              "t_abs_ns": 1709294400096000000,
+              "t_ns": 96000000,
+              "value": 900.0
+            },
+            {
+              "t_abs_ns": 1709294400108000000,
+              "t_ns": 108000000,
+              "value": 912.5
+            },
+            {
+              "t_abs_ns": 1709294400120000000,
+              "t_ns": 120000000,
+              "value": 925.0
+            },
+            {
+              "t_abs_ns": 1709294400132000000,
+              "t_ns": 132000000,
+              "value": 937.5
+            },
+            {
+              "t_abs_ns": 1709294400144000000,
+              "t_ns": 144000000,
+              "value": 950.0
+            },
+            {
+              "t_abs_ns": 1709294400156000000,
+              "t_ns": 156000000,
+              "value": 962.5
+            },
+            {
+              "t_abs_ns": 1709294400168000000,
+              "t_ns": 168000000,
+              "value": 975.0
+            },
+            {
+              "t_abs_ns": 1709294400180000000,
+              "t_ns": 180000000,
+              "value": 987.5
+            },
+            {
+              "t_abs_ns": 1709294400192000000,
+              "t_ns": 192000000,
+              "value": 1000.0
+            },
+            {
+              "t_abs_ns": 1709294400204000000,
+              "t_ns": 204000000,
+              "value": 1012.5
+            },
+            {
+              "t_abs_ns": 1709294400216000000,
+              "t_ns": 216000000,
+              "value": 1025.0
+            },
+            {
+              "t_abs_ns": 1709294400228000000,
+              "t_ns": 228000000,
+              "value": 1037.5
+            }
+          ],
+          "unit": "rpm"
+        },
+        {
+          "name": "CoolantTemp",
+          "samples": [
+            {
+              "t_abs_ns": 1709294400000000000,
+              "t_ns": 0,
+              "value": 70
+            },
+            {
+              "t_abs_ns": 1709294400012000000,
+              "t_ns": 12000000,
+              "value": 71
+            },
+            {
+              "t_abs_ns": 1709294400024000000,
+              "t_ns": 24000000,
+              "value": 72
+            },
+            {
+              "t_abs_ns": 1709294400036000000,
+              "t_ns": 36000000,
+              "value": 73
+            },
+            {
+              "t_abs_ns": 1709294400048000000,
+              "t_ns": 48000000,
+              "value": 74
+            },
+            {
+              "t_abs_ns": 1709294400060000000,
+              "t_ns": 60000000,
+              "value": 75
+            },
+            {
+              "t_abs_ns": 1709294400072000000,
+              "t_ns": 72000000,
+              "value": 76
+            },
+            {
+              "t_abs_ns": 1709294400084000000,
+              "t_ns": 84000000,
+              "value": 77
+            },
+            {
+              "t_abs_ns": 1709294400096000000,
+              "t_ns": 96000000,
+              "value": 78
+            },
+            {
+              "t_abs_ns": 1709294400108000000,
+              "t_ns": 108000000,
+              "value": 79
+            },
+            {
+              "t_abs_ns": 1709294400120000000,
+              "t_ns": 120000000,
+              "value": 80
+            },
+            {
+              "t_abs_ns": 1709294400132000000,
+              "t_ns": 132000000,
+              "value": 81
+            },
+            {
+              "t_abs_ns": 1709294400144000000,
+              "t_ns": 144000000,
+              "value": 82
+            },
+            {
+              "t_abs_ns": 1709294400156000000,
+              "t_ns": 156000000,
+              "value": 83
+            },
+            {
+              "t_abs_ns": 1709294400168000000,
+              "t_ns": 168000000,
+              "value": 84
+            },
+            {
+              "t_abs_ns": 1709294400180000000,
+              "t_ns": 180000000,
+              "value": 85
+            },
+            {
+              "t_abs_ns": 1709294400192000000,
+              "t_ns": 192000000,
+              "value": 86
+            },
+            {
+              "t_abs_ns": 1709294400204000000,
+              "t_ns": 204000000,
+              "value": 87
+            },
+            {
+              "t_abs_ns": 1709294400216000000,
+              "t_ns": 216000000,
+              "value": 88
+            },
+            {
+              "t_abs_ns": 1709294400228000000,
+              "t_ns": 228000000,
+              "value": 89
+            }
+          ],
+          "unit": "degC"
+        }
+      ]
+    }
+  ],
+  "hd_dst_offset_min": 0,
+  "hd_start_time_ns": 1709294400000000000,
+  "hd_time_flags": 2,
+  "hd_tz_offset_min": 0,
+  "id_unfin_flags": 0,
+  "mdf_version": "4.10",
+  "shape": "logger",
+  "sorted": true,
+  "timestamp_rule": "master channel is f64 seconds; t_abs_ns = hd_start_time_ns + round(t_raw * 1e9)"
+}

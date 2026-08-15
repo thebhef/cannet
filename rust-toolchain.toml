@@ -4,5 +4,5 @@
 # `-D warnings` gate on code that was clean under an older clippy.
 # Bump this deliberately, fixing any new lints in the same change.
 [toolchain]
-channel = "1.96.0"
+channel = "1.97.1"
 components = ["clippy", "rustfmt"]

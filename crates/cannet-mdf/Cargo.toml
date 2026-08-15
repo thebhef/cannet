@@ -1,0 +1,20 @@
+[package]
+name = "cannet-mdf"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cannet-core = { path = "../cannet-core" }
+# ASAM MDF 4.x block parsing, value decoding, CC conversions and DZ
+# inflate. `compression` is what makes `DzBlock::decompress` available;
+# without it a DZ-compressed logger file cannot be read at all.
+# See `plans/technology-inventory.md` for the read/write split.
+mdf4-rs = { version = "0.6", features = ["compression"] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
