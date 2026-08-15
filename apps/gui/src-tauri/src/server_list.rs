@@ -66,6 +66,11 @@ pub enum TrustState {
 /// require waiting for it to come back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+// The flags are independent facts about one server — reachable, has a
+// token, unprotected, added by hand — and this is the JSON the panel
+// renders. Folding them into enums would invent states the model does
+// not have and change the wire shape to hide them.
+#[allow(clippy::struct_excessive_bools)]
 pub struct ServerRow {
     /// The normalized `host:port` — the row's identity, its React key,
     /// and the argument every action here takes.
@@ -90,6 +95,10 @@ pub struct ServerRow {
     pub has_token: bool,
     /// The operator accepted an unprotected connection to this address.
     pub insecure: bool,
+    /// The operator put this address in the list by hand. Not a trust
+    /// decision — it is only what keeps a server nothing advertises in
+    /// the list, and what the panel offers to take back out again.
+    pub manual: bool,
     /// The question the host is currently waiting on for this server,
     /// if any — so the panel can put the same dialog in front of the
     /// user without asking the connection to fail again.
@@ -105,7 +114,9 @@ pub struct ServerList {
     pub browse: BrowseStatus,
 }
 
-/// Merge the three sources into the rows the panel renders.
+/// Merge the three sources into the rows the panel renders. Each of
+/// them can put a row in the list on its own: something stored, something
+/// advertising, or a question the host is waiting on.
 ///
 /// Keyed by [`server_key`] throughout, because that is what the trust
 /// store files entries under: a browsed `192.168.1.10:50051` and an
@@ -143,6 +154,14 @@ pub fn merge(
         .iter()
         .map(|(address, prompt)| (server_key(address), prompt))
         .collect();
+    // A question the host is waiting on is a fact about a server too,
+    // and for an address that was dialled by hand it is the only one:
+    // nothing is stored for it yet and nothing is advertising it, so
+    // without a row of its own the question could not be answered.
+    for key in by_key.keys() {
+        rows.entry(key.clone())
+            .or_insert_with(|| offline_row(key, &TrustEntry::default()));
+    }
     for (key, row) in &mut rows {
         row.prompt = by_key.get(key).map(|p| (*p).clone());
         if matches!(row.prompt, Some(TrustPrompt::IdentityChanged { .. })) {
@@ -177,6 +196,7 @@ fn offline_row(address: &str, entry: &TrustEntry) -> ServerRow {
         fingerprint: entry.fingerprint.clone(),
         has_token: entry.token.is_some(),
         insecure: entry.insecure,
+        manual: entry.manual,
         prompt: None,
     }
 }
@@ -230,6 +250,94 @@ pub fn get_server_list(app: AppHandle) -> ServerList {
     build(&app)
 }
 
+/// The `host:port` an added address has to be, in the form the store
+/// files it under.
+///
+/// A shape check, not a reachability one — whether anything answers
+/// there is what dialling it finds out. It is the host's to make because
+/// the shape is the connection layer's: an address without a port has
+/// nothing to dial, and a bare IPv6 literal is ambiguous about where the
+/// port starts.
+fn checked_address(input: &str) -> Result<String, String> {
+    const SHAPE: &str = "A server address is host:port, for example bench.local:50051.";
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(format!("Enter the server's address. {SHAPE}"));
+    }
+    let key = server_key(trimmed);
+    if key.contains(char::is_whitespace) {
+        return Err(format!("\"{trimmed}\" has a space in it. {SHAPE}"));
+    }
+    let (host, port) = split_host_port(&key).ok_or_else(|| {
+        if key.matches(':').count() > 1 {
+            format!("\"{trimmed}\" is an IPv6 address without brackets — write it as [{key}]:port.")
+        } else {
+            format!("\"{trimmed}\" has no port. {SHAPE}")
+        }
+    })?;
+    if host.is_empty() {
+        return Err(format!("\"{trimmed}\" has no host. {SHAPE}"));
+    }
+    match port.parse::<u16>() {
+        Ok(port) if port > 0 => Ok(key),
+        _ => Err(format!("\"{port}\" is not a port number. {SHAPE}")),
+    }
+}
+
+/// Split `address` into its host and port halves, `None` when it has no
+/// port to split off. The bracketed IPv6 form is handled first, because
+/// only the brackets say which colon is the separator.
+fn split_host_port(address: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = address.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        return after.strip_prefix(':').map(|port| (host, port));
+    }
+    let (host, port) = address.split_once(':')?;
+    if port.contains(':') {
+        return None;
+    }
+    Some((host, port))
+}
+
+/// Tauri command — put a server in the list that discovery cannot
+/// produce: one on another subnet, or one started `--no-mdns`.
+///
+/// The same act a browsed row's *Trust…* is, for an address that has no
+/// row yet: the address is checked here, then dialled through
+/// [`crate::interfaces::refresh_interfaces`], so first contact goes
+/// through [`crate::connect_flow`] exactly as it does for a discovered
+/// server — refused at the certificate, with the question left against
+/// the address this returns.
+///
+/// **A refused attempt stores nothing.** The pin the operator accepts
+/// in the dialog is the store's first record of the server; until then
+/// the pending question is what holds its row. The one exception is a
+/// server that is reached with no question asked — a loopback proxy —
+/// which is recorded as [`crate::server_trust::TrustEntry::manual`],
+/// because nothing else would keep it in the list.
+#[tauri::command]
+pub async fn add_server(app: AppHandle, address: String) -> Result<String, String> {
+    let address = checked_address(&address)?;
+    match crate::interfaces::refresh_interfaces(app.clone(), address.clone()).await {
+        Ok(_) => {
+            let dir = crate::persisted_json::config_dir(&app)?;
+            crate::server_trust::update_server(&dir, &address, |entry| entry.manual = true)
+                .map_err(|e| format!("failed to record {address}: {e}"))?;
+            changed(&app);
+        }
+        // A refusal that raised a question is what first contact looks
+        // like; the question is the outcome, and it is on the row.
+        // Anything else failed with nothing to ask about, so it is
+        // reported instead.
+        Err(detail) => {
+            if !crate::connect_flow::waiting_on(&app, &address) {
+                return Err(detail);
+            }
+        }
+    }
+    Ok(address)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +357,7 @@ mod tests {
             fingerprint: Some("SHA256:aaa".into()),
             token: Some("tok".into()),
             insecure: false,
+            manual: false,
         }
     }
 
@@ -358,6 +467,62 @@ mod tests {
     }
 
     #[test]
+    fn a_server_added_by_hand_is_a_row_that_can_be_dropped_again() {
+        // A loopback proxy that advertises nowhere: nothing is ever
+        // asked about it, so nothing else would keep it in the list —
+        // and Connection Management can only offer what is in the list.
+        let entry = TrustEntry {
+            manual: true,
+            ..TrustEntry::default()
+        };
+        let rows = merged(
+            &[],
+            &store(&[("127.0.0.1:50052", entry.clone())]),
+            &BTreeMap::new(),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].trust, TrustState::Trusted);
+        assert!(rows[0].manual, "so the row can be taken back out again");
+
+        // A routable one added the same way still has to be accepted.
+        let rows = merged(&[], &store(&[("bench:50051", entry)]), &BTreeMap::new());
+        assert_eq!(rows[0].trust, TrustState::New);
+        assert!(rows[0].manual);
+    }
+
+    #[test]
+    fn an_address_typed_by_hand_is_checked_before_anything_is_dialled() {
+        for bad in [
+            "",
+            "   ",
+            "bench.example.com",
+            "bench.example.com:",
+            ":50051",
+            "bench:0",
+            "bench:70000",
+            "bench:fifty",
+            "ben ch:50051",
+            "2001:db8::1:50051",
+        ] {
+            assert!(checked_address(bad).is_err(), "{bad:?} is not an address");
+        }
+    }
+
+    #[test]
+    fn a_checked_address_comes_back_in_the_form_the_store_files_it_under() {
+        for (input, key) in [
+            (
+                " https://Bench.Example.com:50051 ",
+                "bench.example.com:50051",
+            ),
+            ("127.0.0.1:50051", "127.0.0.1:50051"),
+            ("[2001:db8::1]:50051", "[2001:db8::1]:50051"),
+        ] {
+            assert_eq!(checked_address(input).unwrap(), key, "{input:?}");
+        }
+    }
+
+    #[test]
     fn an_accepted_unprotected_connection_is_trusted_and_says_so() {
         let entry = TrustEntry {
             insecure: true,
@@ -394,6 +559,33 @@ mod tests {
             }),
             "the row carries the question, so the panel need not re-fail the connection",
         );
+    }
+
+    #[test]
+    fn an_address_the_host_is_waiting_on_gets_a_row_of_its_own() {
+        // How a server that advertises nowhere reaches the panel: it is
+        // dialled by hand, the attempt is refused at the certificate, and
+        // the question that leaves is the only thing anyone knows about
+        // the address. Without a row there is nothing to answer it from.
+        let prompts = BTreeMap::from([(
+            "bench.example.com:50051".to_string(),
+            TrustPrompt::AcceptIdentity {
+                observed: "SHA256:bbb".into(),
+            },
+        )]);
+        let rows = merged(&[], &BTreeMap::new(), &prompts);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].address, "bench.example.com:50051");
+        assert_eq!(rows[0].trust, TrustState::New);
+        assert!(!rows[0].online, "nothing is advertising it");
+        assert_eq!(rows[0].name, None);
+        assert_eq!(
+            rows[0].prompt,
+            Some(TrustPrompt::AcceptIdentity {
+                observed: "SHA256:bbb".into(),
+            }),
+        );
+        assert_eq!(rows[0].fingerprint, None, "nothing has been stored for it");
     }
 
     #[test]

@@ -23,6 +23,11 @@
 // - **Trusting is always a fresh observation.** "Trust…" dials the
 //   server first and shows the certificate that came back; it never
 //   pins something remembered from an earlier look.
+// - **An address can be added by hand**, because discovery is multicast
+//   and a server on another subnet advertises nowhere this machine can
+//   hear. "Add server…" is the same act as a row's "Trust…" for an
+//   address that has no row yet: the host checks it, dials it, and the
+//   question that comes back is what the row is made of.
 
 import { useCallback, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -30,8 +35,10 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { ServerTrustDialog } from "./ServerTrustDialog";
 import {
+  addressShapeError,
   browseNotice,
   matchServerRows,
+  serverKey,
   trustLabel,
   useServerList,
   NOTHING_ADVERTISING,
@@ -49,6 +56,13 @@ export function ServersPanel(_props: IDockviewPanelProps) {
   // a list that moves underneath cannot leave them on the wrong server.
   const [dialogFor, setDialogFor] = useState<string | null>(null);
   const [tokenFor, setTokenFor] = useState<string | null>(null);
+  // The add-by-address field: what has been typed, what the last attempt
+  // to add it said, and which row that attempt pointed at.
+  const [adding, setAdding] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addNote, setAddNote] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState<string | null>(null);
 
   const matches = useMemo(() => matchServerRows(servers, query), [servers, query]);
   const dialogRow = servers.find((r) => r.address === dialogFor);
@@ -80,6 +94,41 @@ export function ServersPanel(_props: IDockviewPanelProps) {
     setDialogFor(address);
   }, []);
 
+  /// Add the typed address. The host does the adding — it checks the
+  /// address, dials it, and leaves whatever question that raised on the
+  /// row it returns the address of, which is the row this then opens the
+  /// dialog over. Only two things are decided here: that the text looks
+  /// like an address at all, and that the list does not already have it.
+  const add = useCallback(async () => {
+    const shape = addressShapeError(typed);
+    if (shape !== null) {
+      setAddError(shape);
+      setAddNote(null);
+      return;
+    }
+    const key = serverKey(typed.trim());
+    if (servers.some((r) => r.address === key)) {
+      setAddError(null);
+      setAddNote(`${key} is already in the list.`);
+      setHighlight(key);
+      return;
+    }
+    setBusy(key);
+    try {
+      const added = await invoke<string>("add_server", { address: key });
+      setAddError(null);
+      setAddNote(null);
+      setTyped("");
+      setAdding(false);
+      setHighlight(added);
+      setDialogFor(added);
+    } catch (err) {
+      setAddError(String(err));
+      setAddNote(null);
+    }
+    setBusy(null);
+  }, [servers, typed]);
+
   const notice = browseNotice(browse);
 
   return (
@@ -99,7 +148,56 @@ export function ServersPanel(_props: IDockviewPanelProps) {
           placeholder="search"
           aria-label="search servers"
         />
+        <button
+          type="button"
+          title="Add a server this machine cannot hear advertising — one on another subnet, or one started --no-mdns."
+          onClick={() => {
+            setAdding((prev) => !prev);
+            setAddError(null);
+            setAddNote(null);
+          }}
+        >
+          Add server…
+        </button>
       </div>
+      {adding && (
+        <form
+          className="servers-add"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void add();
+          }}
+        >
+          <input
+            type="text"
+            value={typed}
+            autoFocus
+            placeholder="host:port"
+            aria-label="server address"
+            onChange={(e) => setTyped(e.target.value)}
+          />
+          <button type="submit" aria-label="add this server" disabled={busy !== null}>
+            Add
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAdding(false);
+              setTyped("");
+              setAddError(null);
+              setAddNote(null);
+            }}
+          >
+            Cancel
+          </button>
+        </form>
+      )}
+      {addError !== null && <p className="servers-error">{addError}</p>}
+      {addNote !== null && (
+        <p className="servers-notice" role="status">
+          {addNote}
+        </p>
+      )}
       {notice !== null && (
         <p
           className={`servers-notice${browse.state === "running" || browse.state === "starting" ? "" : " servers-notice-warn"}`}
@@ -120,6 +218,7 @@ export function ServersPanel(_props: IDockviewPanelProps) {
               key={row.address}
               row={row}
               busy={busy === row.address}
+              highlighted={highlight === row.address}
               tokenOpen={tokenFor === row.address}
               onTrust={() => void trust(row.address)}
               onToggleToken={() =>
@@ -150,6 +249,10 @@ export function ServersPanel(_props: IDockviewPanelProps) {
 interface ServerRowViewProps {
   row: ServerRow;
   busy: boolean;
+  /// The last add pointed at this row — either it was just added, or it
+  /// was already here and the panel is saying so rather than adding it
+  /// a second time.
+  highlighted: boolean;
   tokenOpen: boolean;
   onTrust: () => void;
   onToggleToken: () => void;
@@ -160,6 +263,7 @@ interface ServerRowViewProps {
 function ServerRowView({
   row,
   busy,
+  highlighted,
   tokenOpen,
   onTrust,
   onToggleToken,
@@ -170,10 +274,15 @@ function ServerRowView({
   // Everything stored for a server is dropped together, so the button
   // appears whenever there is anything to drop — which is not the same
   // as the row being trusted: a loopback server is reached in the clear
-  // and has nothing stored behind it.
-  const stored = row.fingerprint !== null || row.hasToken || row.insecure;
+  // and has nothing stored behind it, unless it was added by hand, which
+  // is a row that has to be removable again.
+  const stored =
+    row.fingerprint !== null || row.hasToken || row.insecure || row.manual;
+  const credentials = row.fingerprint !== null || row.hasToken || row.insecure;
   return (
-    <div className={`server-row${row.online ? "" : " offline"}`}>
+    <div
+      className={`server-row${row.online ? "" : " offline"}${highlighted ? " highlight" : ""}`}
+    >
       <span className={`server-badge ${row.trust}`}>{trustLabel(row)}</span>
       <span className="server-name">{row.name ?? "not advertising"}</span>
       <span className="server-host">{row.host ?? ""}</span>
@@ -212,7 +321,11 @@ function ServerRowView({
             className="danger"
             disabled={busy}
             aria-label={`forget ${row.address}`}
-            title="Forget this server's fingerprint and token. The next connection to it asks again."
+            title={
+              credentials
+                ? "Forget this server's fingerprint and token. The next connection to it asks again."
+                : "Take this address back out of the list. Nothing is stored for it."
+            }
             onClick={onForget}
           >
             Forget

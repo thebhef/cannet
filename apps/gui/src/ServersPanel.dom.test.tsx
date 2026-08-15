@@ -44,6 +44,7 @@ const row = (over: Partial<ServerRow>): ServerRow => ({
   fingerprint: null,
   hasToken: false,
   insecure: false,
+  manual: false,
   prompt: null,
   ...over,
 });
@@ -228,6 +229,125 @@ describe("what an empty list is saying", () => {
     expect(notice).toHaveTextContent("blocked");
     expect(notice).toHaveTextContent("send failed on eth0");
     expect(notice).toHaveClass("servers-notice-warn");
+  });
+});
+
+describe("adding a server by address", () => {
+  /// Open the add form and submit `address` through it.
+  async function add(address: string) {
+    fireEvent.click(screen.getByRole("button", { name: /add server/i }));
+    fireEvent.change(await screen.findByLabelText("server address"), {
+      target: { value: address },
+    });
+    fireEvent.click(screen.getByLabelText("add this server"));
+  }
+
+  it("dials the typed address and answers the question that comes back", async () => {
+    // Discovery is multicast, so a server on another subnet reaches the
+    // panel only this way: the address is dialled, the attempt is
+    // refused at the certificate, and the question it raised is what the
+    // host puts on the new row.
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "add_server") return "bench.example.com:50051";
+        return undefined;
+      },
+    );
+    renderPanel();
+    await screen.findByText("192.168.1.10:50051");
+    await add("bench.example.com:50051");
+
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.cmd === "add_server" &&
+            c.args.address === "bench.example.com:50051",
+        ),
+      ).toBe(true),
+    );
+    emit(
+      SERVER_LIST_CHANGED_EVENT,
+      list([
+        BENCH,
+        row({
+          address: "bench.example.com:50051",
+          name: null,
+          host: null,
+          version: null,
+          online: false,
+          prompt: { kind: "acceptIdentity", observed: "SHA256:ccc" },
+        }),
+      ]),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("SHA256:ccc");
+    expect(dialog).toHaveTextContent("bench.example.com:50051");
+  });
+
+  it("says what went wrong when the address could not be added", async () => {
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "add_server") throw "transport error: connection refused";
+        return undefined;
+      },
+    );
+    renderPanel();
+    await screen.findByText("192.168.1.10:50051");
+    await add("bench.example.com:50051");
+
+    expect(await screen.findByText(/connection refused/)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("refuses an address that is not host:port without dialling anything", async () => {
+    renderPanel();
+    await screen.findByText("192.168.1.10:50051");
+    await add("bench.example.com");
+
+    expect(await screen.findByText(/host:port/)).toBeInTheDocument();
+    expect(calls.some((c) => c.cmd === "add_server")).toBe(false);
+  });
+
+  it("points at the row a server already has instead of adding it twice", async () => {
+    renderPanel();
+    await screen.findByText("192.168.1.10:50051");
+    await add("https://192.168.1.10:50051");
+
+    await waitFor(() =>
+      expect(rowFor("192.168.1.10:50051")).toHaveClass("highlight"),
+    );
+    expect(screen.getByText(/already in the list/)).toBeInTheDocument();
+    expect(calls.some((c) => c.cmd === "add_server")).toBe(false);
+  });
+
+  it("keeps a server that is reached without any question in the list", async () => {
+    // A loopback proxy started --no-mdns: nothing advertises it and
+    // nothing is ever asked about it, so the operator's act of adding it
+    // is the only thing keeping it there — and the only thing to undo.
+    snapshot = list([
+      row({
+        address: "127.0.0.1:50052",
+        name: null,
+        host: null,
+        version: null,
+        online: false,
+        trust: "trusted",
+        manual: true,
+      }),
+    ]);
+    renderPanel();
+    await screen.findByText("127.0.0.1:50052");
+    const local = rowFor("127.0.0.1:50052");
+    expect(local).toHaveClass("offline");
+    expect(local).toHaveTextContent("trusted");
+    expect(
+      within(local).getByRole("button", { name: /^forget/ }),
+    ).toBeInTheDocument();
   });
 });
 

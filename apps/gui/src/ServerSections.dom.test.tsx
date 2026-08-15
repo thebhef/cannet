@@ -34,6 +34,7 @@ function serverRow(patch: Partial<ServerRow> & { address: string }): ServerRow {
     fingerprint: null,
     hasToken: false,
     insecure: false,
+    manual: false,
     prompt: null,
     ...patch,
   };

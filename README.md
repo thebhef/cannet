@@ -705,10 +705,16 @@ trusted server that is switched off stays in the list, greyed, so it
 can be forgotten without waiting for it to come back. Moving a server
 to a different address or port is a new entry, and prompts again.
 
-A server on another subnet never appears in the panel — discovery is
-multicast, and the panel can only offer what it can hear, so a server
-that advertises nowhere this machine listens is out of reach for now.
-The panel says which kind of empty it is looking at: it
+A server on another subnet, or one started `--no-mdns`, advertises
+nowhere this machine can hear, so it never appears in the browsed list.
+**Add server…** in the panel's toolbar is the way to it: type its
+`host:port` and the address is dialled exactly as *Trust…* dials a
+browsed row — refused at the certificate, with the same dialog to
+compare the fingerprint in. Accepting it pins the identity, and the
+server becomes a row like any other, greyed while it is not
+advertising. Nothing is stored for an address that could not be
+reached; the panel says what the attempt hit and the list is left
+alone. The panel also says which kind of empty it is looking at: it
 distinguishes a network with nothing on it from a browse that could
 not start at all, and reports the error when the mDNS browser itself
 complains, which is what a blocked UDP 5353 usually looks like.
