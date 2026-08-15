@@ -56,6 +56,14 @@ untouched.
   builds only the server archive (cargo build + sidecar freeze + tar,
   no Tauri bundling). One draft pre-release: 2 GUI bundles + 3 server
   archives.
+- **2026-08-12 — proxy overhead perf criterion (owner).** The
+  existing integrated perf harness (ADR 0031, two PEAK dongles,
+  local-only) gains the ability to point at a locally spawned
+  `cannet-server` instead of the sidecar — that retargeting is the
+  whole scope. Both paths get the same timing/performance visibility
+  so the comparison is straightforward; through-the-proxy must
+  perform about the same as direct. Multiple runs, worst-to-worst as
+  well as means, per the perf-gate discipline.
 - **2026-08-11 — exactly one supervised sidecar; no id namespacing.**
   Single is the only planned direction: the python-can sidecar
   already lists all interfaces on the system and multiplexes
@@ -81,8 +89,85 @@ untouched.
   host and the server; GUI behavior unchanged (existing tests green).
 - The fate of BLF replay and `--virtual-bus` is decided and
   implemented (rolled in / renamed / dropped), docs updated to match.
+- Perf comparison: local server proxying local hardware performs
+  about the same as the sidecar reached directly (per the grooming
+  note); result recorded in the status log.
 - Per-OS archive containing server + frozen sidecar is produced by CI.
 - ADR cleanup: remaining "test rig" phrasing scrubbed from ADRs
   touched by this work.
 - README documents running the server on a server host; rustdoc on
   the new/changed public crate surfaces.
+
+## Status log
+
+### 2026-08-12 — phase 1, slice 1: the banner grammar moves to a crate
+
+`crates/cannet-sidecar` exists, dependency-free, holding the half of
+the sidecar contract that is pure parsing: the stdout banner grammar
+(`classify_stdout_line`, `parse_listening_address`), the sidecar's
+Python-logger stderr grammar (`classify_stderr_line`), the shared
+`LogLevel` those classify into, and the two names both hosts must
+agree on (`SOURCE`, `SIDECAR_LOG_FILE`). The GUI host renames the
+crate's `LogLevel` into its own System Messages ladder at the two
+stream pumps and is otherwise unchanged.
+
+Tests: `cannet-sidecar` 0 → 8 (the eight moved verbatim);
+`cannet-gui` 531 → 523, same eight, no net loss.
+
+### 2026-08-12 — phase 1, slice 2: the discovery chain follows
+
+The launch half moves too: the frozen-vs-source decision, the
+`uv` → PATH-`uv` → `python3` fallback chain, the per-flavour command
+shapes, the `--log-level` / `--log-file` / driver-module arguments, the
+CWD-independent sidecar-directory walk-up, the Windows
+no-console flag, and the environment-beats-setting precedence rule.
+The seam is a `SidecarHost` trait with two methods — `config()` for
+what this spawn should be, `log()` for where a line goes — so the crate
+owns *how* a sidecar is found and run while the host keeps what only it
+can answer: `settings.json`, Tauri's `resource_dir()`, and the System
+Messages ring. `cannet_sidecar::resolve_command(&host)` returns the
+configured `Command`; the GUI still spawns and supervises it.
+
+Tests: `cannet-sidecar` 8 → 28; `cannet-gui` 523 → 503, the same
+twenty moved. Still 531 across the two.
+
+### 2026-08-12 — phase 1, slice 3: supervision itself
+
+`SidecarSupervisor` now owns the process: spawn with stdin piped (the
+parent-death signal), the stdout/stderr pumps, the `listening`-banner
+phase transitions, the `try_wait` loop, the crash budget, and the
+manual restart that kills the previous child first. The `SidecarHost`
+trait grew the three things supervision needs from a host —
+`restart_budget()`, `status_changed(previous, current)`, and
+`spawn_blocking()` for the thread the wait loop lives on — plus
+`log_sidecar_output()`, separate from `log()` because the GUI mirrors
+its own lifecycle lines to `tracing` and the child's output (orders of
+magnitude more of it) only to the ring, exactly as before.
+
+The GUI keeps what is genuinely its own: the `SidecarStatus` /
+`SidecarPhase` wire shapes its frontend reads, the `STATUS_EVENT`
+emit, and the `interfaces::watch` / `unwatch` moves a phase change
+implies. `sidecar.rs` is 489 lines lighter and holds no process
+handling at all.
+
+Supervision arrived untested — it needed a live `AppHandle` — so the
+extraction brought six tests with it, against a recording host: a
+crash inside the budget asks for a respawn and numbers it, a crash
+past the budget refuses and says how to recover, a manual restart
+hands the full budget back, and a phase change is published once,
+with both sides, and again when a restart re-binds a new ephemeral
+port.
+
+Tests: `cannet-sidecar` 28 → 34; `cannet-gui` 503, unchanged. 537
+across the two, up six from the 531 this phase started at.
+
+## Blockers / side effects
+
+- **`cannet-perf-measurement` has its own sidecar spawn**
+  (`crates/cannet-perf-measurement/src/sidecar.rs`: its own
+  `CANNET_SIDECAR_DIR` read, its own `uv run` invocation, its own
+  banner wait). It is a third would-be consumer of
+  `cannet-sidecar` and was left alone — phase 1's scope is the GUI
+  host and the crate. Worth folding in when the harness is touched
+  for the proxy-overhead comparison, which already has to point at a
+  spawned `cannet-server`.

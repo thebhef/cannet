@@ -1,128 +1,39 @@
-//! Vendor-driver sidecar lifecycle.
+//! Vendor-driver sidecar lifecycle, GUI-host side.
 //!
 //! At startup the host spawns the `cannet-python-can` sidecar (a
 //! Python process that uses `python-can` to enumerate Vector,
 //! Kvaser, and PEAK hardware). The sidecar speaks the same `.proto`
-//! as `cannet-server`; this module is the host-side process manager
-//! and the bridge that turns the sidecar's stdout / stderr / exit
-//! status into [`sys_debug!`] / [`sys_info!`] / [`sys_warn!`] /
-//! [`sys_error!`] System Messages tagged with [`SOURCE`].
+//! as `cannet-server`; supervising it — spawning, parsing its banner,
+//! restarting it within a budget, holding its stdin open so it dies
+//! with us — is [`cannet_sidecar`]'s job, shared with the server.
 //!
-//! ## Stdout banner format
-//!
-//! The sidecar's stdout uses a small, deliberately stable
-//! tab-separated banner format so the bridge can parse it without
-//! pulling JSON in:
-//!
-//! ```text
-//! sidecar\tversion\t<v>
-//! sidecar\tlogfile\t<path>
-//! sidecar\tinterfaces\t<n>
-//! interface\t<id>\t<display_name>\t<fd|classic>
-//! sidecar\tlistening\t<addr>
-//! sidecar\tshutdown\tsignal=<n>
-//! sidecar\texit\t<code>
-//! ```
-//!
-//! Anything that does *not* match those shapes falls through as a
-//! plain info-level message — so a stray `print` from a vendor SDK
-//! still reaches the user without code changes here. Stderr is
-//! routed to warn level.
-//!
-//! ## Two sidecar log sinks
-//!
-//! The child's stderr is one sink and the panel reads it, so it stays
-//! at the `sidecar_log_level` setting. The host also hands the sidecar
-//! `--log-file <log_dir>/`[`SIDECAR_LOG_FILE`] — a second, **always
-//! debug** rolling sink (1 MiB × 5 generations) next to the host's own
-//! `cannet.log`, holding every gRPC command with its arguments and
-//! outcome and every driver traceback. Raising the file's detail
-//! therefore never raises the panel's. The sidecar echoes the path back
-//! on the `logfile` banner line so the user can find it.
-//!
-//! ## Launch strategy
-//!
-//! Two launch flavours exist; which is preferred depends on the build
-//! profile (`plan_launch`), with the other as fallback:
-//!
-//! - **Release builds prefer the frozen self-contained binary** — the
-//!   end-user path. The `PyInstaller` onedir sidecar launcher, bundled
-//!   into the installer as a Tauri resource and resolved through the
-//!   framework-canonical `resource_dir()` (see ADR 0036 — *not* the
-//!   exe walk-up the dev paths use, since on macOS the resources land
-//!   in `Contents/Resources/`, a sibling of the exe's `Contents/MacOS/`
-//!   and never an ancestor). The frozen artifact embeds its own
-//!   `CPython` and dependencies, so it runs with no `uv`, no Python, and
-//!   no `sidecar_dir` resolution.
-//! - **Dev builds (`tauri dev`; Tauri emits the `dev` cfg) prefer the
-//!   sidecar source tree**, so edits to `servers/cannet-python-can`
-//!   take effect on the next sidecar restart without re-running
-//!   `scripts/build-sidecar.py` — the frozen resource is bundled in
-//!   dev too (Tauri copies it next to the dev binary) and would
-//!   otherwise shadow live source.
-//!
-//! The source-tree launchers, in priority order
-//! (`resolve_launch_path`); they resolve `uv`/`python3` against the
-//! sidecar *source* tree:
-//!
-//! 1. **Local `uv`** at `tools/uv/<os>-<arch>/uv[.exe]` relative to
-//!    the GUI binary's parent directory. `scripts/fetch-uv.sh`
-//!    populates this path for dev builds. The runtime contract —
-//!    "look here first" — is stable regardless of who wrote the file.
-//! 2. **`uv` on `PATH`** — the developer-machine fallback.
-//! 3. **`python3 -m cannet_python_can`** — last resort if `uv` is
-//!    not installed at all. Logs a warn-level System Message so the
-//!    user knows to install `uv` for full functionality.
-//!
-//! At every step, the failure case logs a System Message at the right
-//! severity and surfaces the install instructions; the process never
-//! panics on a missing sidecar.
-//!
-//! ## Retry budget
-//!
-//! A sidecar that crashes (non-zero exit) gets at most
-//! a budget of auto-restarts before the host stops
-//! trying; an error-level message tells the user to click "Restart
-//! sidecar" by hand (the Tauri command exposed below). The budget
-//! resets when the user runs the manual restart command.
-//!
-//! ## Lifecycle: sidecar dies when the host dies
-//!
-//! The host pipes the sidecar's stdin and writes nothing to it. The
-//! `Child` keeps the write end open for its own lifetime; when the
-//! host process exits (clean or not), the OS closes the pipe and the
-//! sidecar's stdin-EOF watcher
-//! (`cannet_python_can.__main__._install_stdin_eof_watcher`)
-//! gracefully stops the gRPC server. That cross-platform "your parent
-//! went away" contract is why a host crash never leaves an orphaned
-//! sidecar holding hardware open — no `prctl(PR_SET_PDEATHSIG)` /
-//! Windows job-object plumbing required.
+//! What lives here is the half only a Tauri app can answer, expressed
+//! as that crate's `SidecarHost`: `settings.json` and the escape-hatch
+//! environment variables on the way in; System Messages tagged
+//! [`SOURCE`], the [`STATUS_EVENT`] the connection panel listens for,
+//! and the interface watch on the way out.
 
-use std::ffi::{OsStr, OsString};
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager, State};
+
+use cannet_sidecar::{env_over_setting, Resolved, SidecarConfig, SidecarHost, SidecarSupervisor};
+pub use cannet_sidecar::{SIDECAR_LOG_FILE, SOURCE};
 
 use crate::system_log::LogLevel;
 use crate::{emit_system_log, sys_debug, sys_error, sys_info, sys_warn};
 
-/// The System Messages source tag every sidecar event is published
-/// under. Must match `cannet_python_can.server.WIRE_SOURCE` in the
-/// Python sidecar so an in-band `LogMessage` envelope from the
-/// sidecar later ends up under the same panel filter as the
-/// process-level lifecycle events.
-pub const SOURCE: &str = "sidecar:python-can";
-
-/// How many times the host auto-restarts a crashing sidecar before
-/// giving up for the rest of the session, from `settings.json`
-/// (`sidecar_restart_budget`). Resets when the user triggers a manual
-/// restart through [`restart_sidecar`].
-fn restart_budget() -> u64 {
-    crate::settings::effective().sidecar_restart_budget
+/// The shared crate's classification of a sidecar line, said in the
+/// host's own [`LogLevel`] ladder. Same four levels, so this is a
+/// rename and never a judgement call.
+fn host_level(level: cannet_sidecar::LogLevel) -> LogLevel {
+    match level {
+        cannet_sidecar::LogLevel::Debug => LogLevel::Debug,
+        cannet_sidecar::LogLevel::Info => LogLevel::Info,
+        cannet_sidecar::LogLevel::Warn => LogLevel::Warn,
+        cannet_sidecar::LogLevel::Error => LogLevel::Error,
+    }
 }
 
 /// Tauri event name fired on every transition between [`SidecarPhase`]
@@ -131,47 +42,19 @@ fn restart_budget() -> u64 {
 /// is the same struct the command returns.
 pub const STATUS_EVENT: &str = "sidecar-status-changed";
 
-/// Per-app state: the auto-restart counter, a "user asked to stay
-/// down" flag, the currently-active child handle so a manual restart
-/// can kill it before spawning a replacement, and the published
-/// status (phase + address) the frontend reads through
-/// [`get_sidecar_status`] / [`STATUS_EVENT`].
+/// Per-app state: the supervisor that owns the sidecar's process,
+/// counters, and published status. A newtype rather than the
+/// supervisor itself so Tauri's managed-state lookup is keyed on a
+/// name that says what it is here.
 #[derive(Default)]
 pub struct SidecarState {
-    inner: Mutex<SidecarInner>,
+    supervisor: Arc<SidecarSupervisor>,
 }
 
-#[derive(Default)]
-struct SidecarInner {
-    /// Total non-zero exits seen in this session. Resets on manual
-    /// restart so the user has agency.
-    crash_count: u32,
-    /// `true` after the user explicitly stops the sidecar (or after
-    /// the budget is exhausted); suppresses the next auto-restart.
-    suppress_restart: bool,
-    /// The currently-spawned sidecar's child handle, shared with the
-    /// per-spawn wait thread. `restart_sidecar` swaps this out and
-    /// calls `kill()` on the previous handle so we never leave an
-    /// orphaned process bound to the gRPC port. `None` between
-    /// "wait thread cleared its slot" and "next spawn installed
-    /// itself", and after a clean exit.
-    active: Option<Arc<Mutex<Child>>>,
-    /// Where the running sidecar is listening, parsed from its
-    /// `sidecar\tlistening\t<addr>` banner. `Some` between the banner
-    /// arriving and the wait thread observing the child's exit. The
-    /// frontend uses this address as the `connect_remote_server`
-    /// target for the local-sidecar connection — replacing the
-    /// hard-coded 50061 the project bindings previously assumed.
-    bound_address: Option<String>,
-    /// Coarse lifecycle phase. Drives the GUI's "Local sidecar" row in
-    /// the connection panel (Starting … / Ready (addr) / Offline).
-    phase: SidecarPhase,
-}
-
-/// Coarse lifecycle of the sidecar process. Distinguishes "we have a
-/// child but it hasn't reported a bound port yet" from "the child is
-/// up and answering on `bound_address`" so the GUI can show a
-/// progress hint instead of treating the gap as an outage.
+/// Coarse lifecycle of the sidecar process, in the shape the frontend
+/// reads it. A mirror of [`cannet_sidecar::SidecarPhase`] rather than
+/// a re-export because the serialized names are this app's contract
+/// with its own frontend (`types.ts`), not the supervisor's.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SidecarPhase {
@@ -196,198 +79,45 @@ pub struct SidecarStatus {
     pub phase: SidecarPhase,
     /// `Some(host:port)` once the sidecar has reported its bound
     /// address. The frontend feeds this straight into
-    /// `connect_remote_server`.
+    /// `connect_remote_server` — replacing the hard-coded 50061 the
+    /// project bindings previously assumed.
     pub address: Option<String>,
 }
 
-/// Which **developer-machine** launcher to use. The frozen end-user
-/// path is resolved separately ([`frozen_launcher_path`] →
-/// [`build_frozen_command`]) and never routed through this enum, so its
-/// variants are exactly the dev fallbacks. They exist as discrete states
-/// so the launcher can tell the user what flow they just got — the
-/// System Messages text is different per branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LaunchPath {
-    /// Bundled `uv` binary under `tools/uv/...` next to the GUI.
-    BundledUv,
-    /// `uv` resolved through `PATH`.
-    PathUv,
-    /// `python3 -m cannet_python_can` — last-resort fallback when
-    /// `uv` is not available.
-    SystemPython,
-}
-
-/// The resolved launch decision: which flavour of sidecar to run,
-/// with everything needed to build its `Command`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LaunchPlan {
-    /// Run the frozen self-contained launcher at this path.
-    Frozen(PathBuf),
-    /// Run a developer launcher against this sidecar source directory.
-    Source(LaunchPath, PathBuf),
-}
-
-/// Pick between the frozen binary and the source tree, given what's
-/// actually resolvable. Dev builds prefer the editable source tree so
-/// edits to `servers/cannet-python-can` take effect on the next
-/// sidecar restart without re-freezing — the frozen artifact is
-/// bundled as a Tauri resource even in dev, and would otherwise
-/// shadow them. Release builds prefer the frozen binary (ADR 0036).
-/// Either way the other flavour is the fallback. Pure; testable.
-fn plan_launch(
-    dev: bool,
-    frozen: Option<PathBuf>,
-    source: Option<(LaunchPath, PathBuf)>,
-) -> Option<LaunchPlan> {
-    let frozen = frozen.map(LaunchPlan::Frozen);
-    let source = source.map(|(launcher, dir)| LaunchPlan::Source(launcher, dir));
-    if dev {
-        source.or(frozen)
-    } else {
-        frozen.or(source)
+/// The supervisor's status in the frontend's shape.
+fn wire_status(status: &cannet_sidecar::SidecarStatus) -> SidecarStatus {
+    SidecarStatus {
+        phase: match status.phase {
+            cannet_sidecar::SidecarPhase::Offline => SidecarPhase::Offline,
+            cannet_sidecar::SidecarPhase::Starting => SidecarPhase::Starting,
+            cannet_sidecar::SidecarPhase::Ready => SidecarPhase::Ready,
+        },
+        address: status.address.clone(),
     }
-}
-
-/// Resolve which launcher to use without spawning the child yet.
-/// Split out so tests can inspect the choice without touching the
-/// process table.
-pub fn resolve_launch_path() -> Option<LaunchPath> {
-    if bundled_uv_path().is_some() {
-        return Some(LaunchPath::BundledUv);
-    }
-    if which_uv().is_some() {
-        return Some(LaunchPath::PathUv);
-    }
-    if which_python().is_some() {
-        return Some(LaunchPath::SystemPython);
-    }
-    None
-}
-
-/// Build the `Command` for a given launch path. Pure; no spawning
-/// happens here. `sidecar_dir` is the absolute path to the
-/// `cannet-python-can` package directory — see [`resolve_sidecar_dir`]
-/// for how the caller obtains it.
-///
-/// No `--bind` is passed: the sidecar's own default is `127.0.0.1:0`
-/// (let the OS pick a free ephemeral port), and we read the actual
-/// address back from the `sidecar\tlistening\t<addr>` banner in
-/// [`stream_stdout`]. Hard-coding a port here would just re-create the
-/// "stale instance holds 50061" failure mode the random-port
-/// selection was added to fix.
-pub fn build_command(launcher: LaunchPath, sidecar_dir: &std::path::Path) -> Command {
-    match launcher {
-        LaunchPath::BundledUv => {
-            let mut cmd = Command::new(bundled_uv_path().expect("local uv pre-checked"));
-            cmd.arg("--directory").arg(sidecar_dir);
-            cmd.args(["run", "cannet-python-can"]);
-            cmd
-        }
-        LaunchPath::PathUv => {
-            let mut cmd = Command::new("uv");
-            cmd.arg("--directory").arg(sidecar_dir);
-            cmd.args(["run", "cannet-python-can"]);
-            cmd
-        }
-        LaunchPath::SystemPython => {
-            let mut cmd = Command::new(which_python().unwrap_or_else(|| PathBuf::from("python3")));
-            cmd.env("PYTHONPATH", sidecar_dir);
-            cmd.args(["-m", "cannet_python_can"]);
-            cmd
-        }
-    }
-}
-
-/// Pull the `<addr>` out of a `sidecar\tlistening\t<addr>` banner line.
-/// `None` for any other input. Pure; testable without spawning.
-pub fn parse_listening_address(line: &str) -> Option<&str> {
-    line.strip_prefix("sidecar\tlistening\t")
 }
 
 /// Absolute path to the frozen sidecar launcher inside the Tauri
 /// resource directory, or `None` if the frozen artifact isn't present
 /// (the developer flow). Resolved through Tauri's framework-canonical
-/// `resource_dir()` -- not the exe walk-up -- because on macOS the
-/// bundled resources live in `Contents/Resources/`, a sibling of the
-/// exe's `Contents/MacOS/` and never an ancestor (see ADR 0036).
+/// `resource_dir()` -- not the exe walk-up the dev paths use -- because
+/// on macOS the bundled resources live in `Contents/Resources/`, a
+/// sibling of the exe's `Contents/MacOS/` and never an ancestor (see
+/// ADR 0036). Which is why the shared crate cannot resolve it: only a
+/// Tauri app knows where a Tauri app keeps its resources.
+///
+/// Not unit-tested: it needs a live `AppHandle` to reach
+/// `resource_dir()`, which can't be constructed in a plain unit test.
+/// Its two moving parts — the platform suffix and the "no args" launch
+/// shape — are covered in [`cannet_sidecar`].
 fn frozen_launcher_path(app: &AppHandle) -> Option<PathBuf> {
     let launcher = app
         .path()
         .resource_dir()
         .ok()?
         .join("cannet-python-can")
-        .join(frozen_launcher_name());
+        .join(cannet_sidecar::frozen_launcher_name());
     launcher.is_file().then_some(launcher)
 }
-
-/// The frozen launcher's file name — platform-suffixed to match what
-/// `PyInstaller` emits (`.exe` on Windows, bare elsewhere).
-fn frozen_launcher_name() -> &'static str {
-    if cfg!(windows) {
-        "cannet-python-can.exe"
-    } else {
-        "cannet-python-can"
-    }
-}
-
-/// Build the `Command` for the frozen self-contained launcher. Pure;
-/// no spawning. The frozen onedir bundles its own interpreter and deps,
-/// so unlike the dev paths there is no `--directory` / `PYTHONPATH` /
-/// `--bind` -- the sidecar's own `127.0.0.1:0` default still applies and
-/// the bound address is read back from the `listening` banner.
-pub fn build_frozen_command(launcher: &std::path::Path) -> Command {
-    Command::new(launcher)
-}
-
-/// Apply the settings-derived sidecar configuration to an already-built
-/// command, whichever launcher flavour built it — the frozen binary and
-/// the dev launchers differ in how they *find* the sidecar, not in how
-/// it is configured, so this is stated once here rather than in each
-/// `build_*_command`.
-///
-/// `log_level` is the sidecar's own `--log-level`, one of
-/// [`crate::settings::SIDECAR_LOG_LEVELS`]. It governs how much the
-/// sidecar writes to stderr, which is what
-/// [`classify_stderr_line`] turns into System Messages — so it is the
-/// verbosity of everything the sidecar contributes to a log a user
-/// ships back. It was unreachable only because the host passed the
-/// child no arguments at all.
-///
-/// `driver_module` is forwarded as [`DRIVER_MODULE_ENV`], which the
-/// sidecar reads to pick its driver implementation; `None` leaves the
-/// child environment alone so the sidecar uses its own default. The host
-/// never set this before, which is what made a replaced driver
-/// unreachable from the GUI.
-///
-/// `log_file` is the sidecar's own rolling, **always-debug** logfile
-/// ([`sidecar_log_file`]). It is a separate sink from stderr, on
-/// purpose: stderr is what becomes System Messages and stays at
-/// `log_level`, while the file records every gRPC command with its
-/// arguments and outcome plus every driver traceback — the detail a
-/// per-channel connect failure needs after the fact, without making the
-/// panel noisier for everyone. `None` means "don't write one", which is
-/// also the sidecar's own default when the flag is absent.
-///
-/// `--bind` is still deliberately not passed — see [`build_command`].
-fn apply_sidecar_settings(
-    cmd: &mut Command,
-    log_level: &str,
-    log_file: Option<&std::path::Path>,
-    driver_module: Option<&OsStr>,
-) {
-    cmd.arg("--log-level").arg(log_level);
-    if let Some(path) = log_file {
-        cmd.arg("--log-file").arg(path);
-    }
-    if let Some(module) = driver_module {
-        cmd.env(DRIVER_MODULE_ENV, module);
-    }
-}
-
-/// File name of the sidecar's rolling logfile, a sibling of the host's
-/// own [`crate::crash::LOG_FILE`] in the same per-OS log directory — one
-/// place to look, and one directory to attach to a bug report.
-pub const SIDECAR_LOG_FILE: &str = "sidecar-python-can.log";
 
 /// Where to tell the sidecar to write its logfile, creating the
 /// directory if it isn't there yet (the sidecar creates it too, but the
@@ -396,6 +126,10 @@ pub const SIDECAR_LOG_FILE: &str = "sidecar-python-can.log";
 /// `--log-file` argument — when the directory can't be created, since a
 /// sidecar that serves hardware without a logfile beats one that
 /// doesn't start.
+///
+/// The file is a sibling of the host's own [`crate::crash::LOG_FILE`]
+/// in the same per-OS log directory — one place to look, and one
+/// directory to attach to a bug report.
 fn sidecar_log_file(app: &AppHandle) -> Option<PathBuf> {
     let dir = crate::crash::log_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -410,533 +144,144 @@ fn sidecar_log_file(app: &AppHandle) -> Option<PathBuf> {
     Some(dir.join(SIDECAR_LOG_FILE))
 }
 
-/// Windows: suppress the console window a console-subsystem child would
-/// otherwise pop up. The release GUI is built `windows_subsystem =
-/// "windows"` (see `main.rs`), so it has no console of its own; spawning
-/// a console-subsystem executable — the frozen `PyInstaller` launcher, or
-/// `uv`/`python` on the dev paths — makes Windows allocate a fresh console
-/// window for it. `CREATE_NO_WINDOW` runs the child with no console at
-/// all; stdin/stdout/stderr are piped regardless (see `spawn_blocking_inner`),
-/// so the tab-separated banner protocol is unaffected. No-op off Windows,
-/// where a console app never spawns a stray window.
-#[cfg_attr(
-    not(windows),
-    allow(unused_variables, clippy::needless_pass_by_ref_mut)
-)]
-fn suppress_console_window(cmd: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW from winbase.h; inlined to avoid a whole
-        // winapi dependency for a single constant.
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-}
-
-/// The environment variable that names the sidecar package directory —
-/// the escape hatch `sidecar_dir` is the persistent form of.
-const SIDECAR_DIR_ENV: &str = "CANNET_SIDECAR_DIR";
-
-/// The environment variable the *sidecar* reads to pick its driver
-/// implementation. Must match `helpers.DRIVER_MODULE_ENV` in the Python
-/// sidecar; the host forwards `driver_module` to the child through it.
-const DRIVER_MODULE_ENV: &str = "CANNET_DRIVER_MODULE";
-
-/// What an environment-versus-setting resolution decided.
-struct Resolved {
-    /// The effective value; `None` when neither source said anything,
-    /// so the built-in behaviour applies.
-    value: Option<OsString>,
-    /// The line to put on the system log when the environment shadowed
-    /// a value `settings.json` shows. `None` when nothing was shadowed.
-    shadowed: Option<String>,
-}
-
-/// Precedence between an environment variable and its `settings.json`
-/// equivalent: **the environment wins**, and the shadowed setting is
-/// reported rather than silently dropped.
-///
-/// The env vars predate the settings and exist as escape hatches — for
-/// tests, CI, packaging experiments, and deployment shapes nobody
-/// foresaw. An escape hatch a persisted file can override is not an
-/// escape hatch; and harnesses already drive cannet by setting these,
-/// so a settings file must not quietly change what such a run does.
-/// The setting is therefore the *persistent default* that the
-/// environment overrides for one run.
-///
-/// The cost of that order is that `settings.json` can show a value the
-/// app is not using, which ADR 0034 does not let pass silently — hence
-/// [`Resolved::shadowed`], which the caller puts on the system log, the
-/// same treatment a refused value gets.
-///
-/// Blank means "nothing here" on both sides, so an empty env var falls
-/// through to the setting rather than resolving to an empty path.
-fn env_over_setting(var: &str, key: &str, env: Option<OsString>, setting: &str) -> Resolved {
-    let setting = setting.trim();
-    let from_setting = (!setting.is_empty()).then(|| OsString::from(setting));
-    let from_env = env.filter(|v| !v.is_empty());
-    match from_env {
-        Some(value) => {
-            let shadowed = from_setting.is_some().then(|| {
-                format!(
-                    "{var}={} in the environment overrides the {key} setting (\"{setting}\") \
-                     for this run",
-                    value.to_string_lossy()
-                )
-            });
-            Resolved {
-                value: Some(value),
-                shadowed,
-            }
-        }
-        None => Resolved {
-            value: from_setting,
-            shadowed: None,
-        },
-    }
-}
-
 /// Where to look for the `cannet-python-can` package: the
-/// [`SIDECAR_DIR_ENV`] variable, else the `sidecar_dir` setting, else
-/// nowhere (the built-in walk-up applies).
+/// [`cannet_sidecar::SIDECAR_DIR_ENV`] variable, else the `sidecar_dir`
+/// setting, else nowhere (the shared crate's walk-up applies).
 fn sidecar_dir_override() -> Resolved {
     env_over_setting(
-        SIDECAR_DIR_ENV,
+        cannet_sidecar::SIDECAR_DIR_ENV,
         "sidecar_dir",
-        std::env::var_os(SIDECAR_DIR_ENV),
+        std::env::var_os(cannet_sidecar::SIDECAR_DIR_ENV),
         &crate::settings::effective().sidecar_dir,
     )
 }
 
 /// Which driver module the sidecar should load: the
-/// [`DRIVER_MODULE_ENV`] variable already in the host's environment,
-/// else the `driver_module` setting, else nothing (the sidecar's own
-/// default).
+/// [`cannet_sidecar::DRIVER_MODULE_ENV`] variable already in the host's
+/// environment, else the `driver_module` setting, else nothing (the
+/// sidecar's own default).
 fn driver_module_override() -> Resolved {
     env_over_setting(
-        DRIVER_MODULE_ENV,
+        cannet_sidecar::DRIVER_MODULE_ENV,
         "driver_module",
-        std::env::var_os(DRIVER_MODULE_ENV),
+        std::env::var_os(cannet_sidecar::DRIVER_MODULE_ENV),
         &crate::settings::effective().driver_module,
     )
 }
 
-/// Resolve the absolute path to the `cannet-python-can` package
-/// directory, deliberately **independent of the GUI's CWD**.
-///
-/// Resolution order (first hit wins):
-///
-/// 1. **`override_dir`** — what [`sidecar_dir_override`] resolved from
-///    the `CANNET_SIDECAR_DIR` env var and the `sidecar_dir` setting.
-///    Used verbatim; if it's a non-existent path, the launcher will
-///    surface the resulting spawn failure.
-/// 2. **Walk up from the GUI binary's location** looking for
-///    `pyproject.toml` under either:
-///    - `<ancestor>/servers/cannet-python-can/` (dev / `cargo build`
-///      layouts — workspace root is somewhere above `target/`), or
-///    - `<ancestor>/cannet-python-can/` (production layout — the
-///      sidecar source sits next to the GUI binary inside the
-///      bundle).
-///
-///    Capped at 8 ancestors so a misconfigured deployment fails
-///    loudly instead of crawling the filesystem.
-///
-/// The returned path is the directory containing `pyproject.toml`,
-/// suitable for `uv --directory <path>` or `PYTHONPATH=<path>`.
-pub fn resolve_sidecar_dir(override_dir: Option<OsString>) -> Option<PathBuf> {
-    if let Some(override_dir) = override_dir {
-        return Some(PathBuf::from(override_dir));
-    }
-    let exe = std::env::current_exe().ok()?;
-    let mut cursor = exe.parent()?.to_path_buf();
-    for _ in 0..8 {
-        // Dev / workspace layout.
-        let nested = cursor.join("servers").join("cannet-python-can");
-        if nested.join("pyproject.toml").is_file() {
-            return Some(nested);
+/// This app as the supervisor's host.
+fn host(app: &AppHandle) -> Arc<dyn SidecarHost> {
+    Arc::new(GuiSidecarHost { app: app.clone() })
+}
+
+/// The GUI's half of the sidecar contract: `settings.json` plus the
+/// escape-hatch environment variables on the way in, System Messages
+/// and the connection panel's status row on the way out. Everything
+/// else about running a sidecar is [`cannet_sidecar`]'s.
+struct GuiSidecarHost {
+    app: AppHandle,
+}
+
+impl SidecarHost for GuiSidecarHost {
+    fn config(&self) -> SidecarConfig {
+        let sidecar_dir = sidecar_dir_override();
+        let driver_module = driver_module_override();
+        for note in [&sidecar_dir.shadowed, &driver_module.shadowed]
+            .into_iter()
+            .flatten()
+        {
+            sys_warn!(&self.app, SOURCE, "{note}");
         }
-        // Production "next to the binary" layout.
-        let sibling = cursor.join("cannet-python-can");
-        if sibling.join("pyproject.toml").is_file() {
-            return Some(sibling);
-        }
-        if !cursor.pop() {
-            break;
+        SidecarConfig {
+            frozen_launcher: frozen_launcher_path(&self.app),
+            // Tauri emits the `dev` cfg for `tauri dev`, where the
+            // editable source tree must win over the frozen resource
+            // bundled beside the dev binary (ADR 0036).
+            prefer_source_tree: cfg!(dev),
+            sidecar_dir: sidecar_dir.value,
+            log_level: crate::settings::effective().sidecar_log_level.clone(),
+            log_file: sidecar_log_file(&self.app),
+            driver_module: driver_module.value,
         }
     }
-    None
-}
 
-/// Where [`resolve_sidecar_dir`] looked, formatted for the System
-/// Messages panel so the user can see what we tried.
-fn sidecar_dir_search_summary() -> String {
-    let exe = std::env::current_exe().map_or_else(
-        |e| format!("<current_exe failed: {e}>"),
-        |p| p.display().to_string(),
-    );
-    format!(
-        "{SIDECAR_DIR_ENV} and the sidecar_dir setting (both unset) → walk up from {exe} looking for `servers/cannet-python-can/pyproject.toml` or `cannet-python-can/pyproject.toml`"
-    )
-}
-
-fn bundled_uv_path() -> Option<PathBuf> {
-    // Resolved relative to the GUI binary directory. The real Tauri
-    // bundle will sit it alongside the executable; in development
-    // (cargo run) it'll be next to the workspace `target/`, which is
-    // also fine for the developer flow.
-    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
-    let candidate = exe_dir.join("tools").join("uv").join(uv_filename());
-    if candidate.is_file() {
-        Some(candidate)
-    } else {
-        None
-    }
-}
-
-fn uv_filename() -> &'static str {
-    if cfg!(windows) {
-        "uv.exe"
-    } else {
-        "uv"
-    }
-}
-
-fn which_uv() -> Option<PathBuf> {
-    which_binary(if cfg!(windows) { "uv.exe" } else { "uv" })
-}
-
-fn which_python() -> Option<PathBuf> {
-    which_binary("python3").or_else(|| which_binary("python"))
-}
-
-fn which_binary(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
+    fn log(&self, level: cannet_sidecar::LogLevel, message: String) {
+        // Through the macros, not `emit_system_log`, so these lifecycle
+        // lines keep their `tracing` mirror to dev stderr.
+        match level {
+            cannet_sidecar::LogLevel::Debug => sys_debug!(&self.app, SOURCE, "{message}"),
+            cannet_sidecar::LogLevel::Info => sys_info!(&self.app, SOURCE, "{message}"),
+            cannet_sidecar::LogLevel::Warn => sys_warn!(&self.app, SOURCE, "{message}"),
+            cannet_sidecar::LogLevel::Error => sys_error!(&self.app, SOURCE, "{message}"),
         }
     }
-    None
+
+    fn log_sidecar_output(&self, level: cannet_sidecar::LogLevel, message: String) {
+        // Straight to the ring, skipping the `tracing` mirror the
+        // lifecycle lines get: this is every line the child writes, at
+        // whatever rate it writes them.
+        emit_system_log(&self.app, SOURCE, host_level(level), message);
+    }
+
+    fn restart_budget(&self) -> u64 {
+        crate::settings::effective().sidecar_restart_budget
+    }
+
+    fn status_changed(
+        &self,
+        previous: &cannet_sidecar::SidecarStatus,
+        current: &cannet_sidecar::SidecarStatus,
+    ) {
+        let _ = self.app.emit(STATUS_EVENT, wire_status(current));
+        // Lifecycle drives the local-address watch. The subscription
+        // manager itself lives in `interfaces.rs`; this just decides
+        // which transitions add or remove the local address from its
+        // managed set.
+        let ready =
+            |s: &cannet_sidecar::SidecarStatus| s.phase == cannet_sidecar::SidecarPhase::Ready;
+        match (ready(previous), ready(current)) {
+            (false, true) => {
+                if let Some(addr) = current.address.clone() {
+                    crate::interfaces::watch(&self.app, addr);
+                }
+            }
+            (true, false) => {
+                if let Some(addr) = &previous.address {
+                    crate::interfaces::unwatch(&self.app, addr);
+                }
+            }
+            // A restart re-binds an ephemeral port, so `Ready` to
+            // `Ready` at a new address has to move the watch across.
+            (true, true) if previous.address != current.address => {
+                if let Some(addr) = &previous.address {
+                    crate::interfaces::unwatch(&self.app, addr);
+                }
+                if let Some(addr) = current.address.clone() {
+                    crate::interfaces::watch(&self.app, addr);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn spawn_blocking(&self, task: Box<dyn FnOnce() + Send + 'static>) {
+        tauri::async_runtime::spawn_blocking(task);
+    }
 }
 
-/// Spawn the sidecar in the background. Safe to call from
-/// `setup`; on success the child runs until shutdown or crash, and
-/// every lifecycle event is published as a System Message tagged
-/// [`SOURCE`].
+/// Spawn the sidecar in the background. Safe to call from `setup`; on
+/// success the child runs until shutdown or crash, and every lifecycle
+/// event is published as a System Message tagged [`SOURCE`].
 ///
-/// Auto-restart on crash, capped by [`restart_budget`].
+/// Auto-restart on crash, capped by the `sidecar_restart_budget`
+/// setting.
 pub fn spawn_sidecar(app: &AppHandle) {
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        spawn_blocking_inner(&app_clone);
-    });
-}
-
-/// Resolve the sidecar invocation to a ready-to-configure [`Command`]
-/// plus a human-readable "source" line for the invocation summary
-/// (there is no `sidecar_dir` on the frozen path, so the frozen and dev
-/// branches converge here and share the whole spawn tail below).
-/// Frozen-vs-source preference is [`plan_launch`]'s call: dev builds
-/// (Tauri emits the `dev` cfg) prefer the editable source tree,
-/// release builds the frozen binary. `None` — after logging an
-/// error-level System Message — when neither flavour resolves.
-fn resolve_command(app: &AppHandle) -> Option<(Command, String)> {
-    let frozen = frozen_launcher_path(app);
-    let launcher = resolve_launch_path();
-    let sidecar_dir = sidecar_dir_override();
-    let driver_module = driver_module_override();
-    for note in [&sidecar_dir.shadowed, &driver_module.shadowed]
-        .into_iter()
-        .flatten()
-    {
-        sys_warn!(app, SOURCE, "{note}");
-    }
-    let log_level = crate::settings::effective().sidecar_log_level.clone();
-    let log_file = sidecar_log_file(app);
-    let configure = |mut cmd: Command| {
-        apply_sidecar_settings(
-            &mut cmd,
-            &log_level,
-            log_file.as_deref(),
-            driver_module.value.as_deref(),
-        );
-        cmd
-    };
-    // Resolve the sidecar source directory to an absolute path
-    // BEFORE we build the command — uv's `--directory` and Python's
-    // `PYTHONPATH` are then independent of whatever CWD the GUI was
-    // launched with. The previous relative-path version blew up with
-    // a terse "No such file or directory" any time the GUI's CWD
-    // wasn't the workspace root.
-    let source = launcher.zip(resolve_sidecar_dir(sidecar_dir.value));
-    match plan_launch(cfg!(dev), frozen, source) {
-        Some(LaunchPlan::Frozen(path)) => {
-            sys_debug!(app, SOURCE, "starting sidecar via frozen binary");
-            Some((
-                configure(build_frozen_command(&path)),
-                "source: frozen self-contained binary".to_string(),
-            ))
-        }
-        Some(LaunchPlan::Source(launcher, sidecar_dir)) => {
-            match launcher {
-                LaunchPath::BundledUv => sys_debug!(app, SOURCE, "starting sidecar via local uv"),
-                LaunchPath::PathUv => sys_debug!(app, SOURCE, "starting sidecar via PATH uv"),
-                LaunchPath::SystemPython => sys_warn!(
-                    app,
-                    SOURCE,
-                    "uv not found; falling back to python3 -m cannet_python_can. Install uv for the supported flow."
-                ),
-            }
-            sys_debug!(app, SOURCE, "sidecar dir: {}", sidecar_dir.display());
-            Some((
-                configure(build_command(launcher, &sidecar_dir)),
-                format!("sidecar dir: {}", sidecar_dir.display()),
-            ))
-        }
-        None if launcher.is_none() => {
-            sys_error!(
-                app,
-                SOURCE,
-                "no sidecar launcher found (frozen binary, local uv, PATH uv, or python3); install uv: https://docs.astral.sh/uv/"
-            );
-            None
-        }
-        None => {
-            sys_error!(
-                app,
-                SOURCE,
-                "could not locate the cannet-python-can package directory. Searched: {}",
-                sidecar_dir_search_summary()
-            );
-            None
-        }
-    }
-}
-
-#[allow(clippy::too_many_lines)]
-fn spawn_blocking_inner(app: &AppHandle) {
-    let Some((mut cmd, source_summary)) = resolve_command(app) else {
-        return;
-    };
-    set_phase(app, SidecarPhase::Starting, None);
-    // stdin is piped so we hold the write end for the lifetime of the
-    // child; we never write to it. When the host process dies (clean
-    // exit, panic, OS kill, …), Rust drops the `Child`, the pipe
-    // closes, and the sidecar's stdin-EOF watcher (see
-    // `cannet_python_can.__main__._install_stdin_eof_watcher`) reads
-    // EOF and triggers its own graceful shutdown. Without this, a
-    // host crash would leave an orphaned sidecar holding hardware
-    // open. The default (inherited stdin from a GUI process is
-    // typically `/dev/null`) would also fire the watcher immediately,
-    // so the pipe is what keeps the sidecar alive in the first place.
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // Keep the console-subsystem child from popping a terminal window
-    // (Windows only); stdio stays piped so the banner protocol works.
-    suppress_console_window(&mut cmd);
-    // Capture the resolved invocation so we can both log it at info
-    // level on the happy path AND attach it to the error-level
-    // failure message when the sidecar exits non-zero — the panel's
-    // default min-level filter is `warn`, so an info-level breadcrumb
-    // on its own is invisible to most users at the moment they need
-    // it most.
-    let program = cmd.get_program().to_string_lossy().into_owned();
-    let args: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    let cwd = std::env::current_dir()
-        .map_or_else(|e| format!("<unknown: {e}>"), |p| p.display().to_string());
-    let invocation_summary = format!(
-        "exec: {program} {}\ncwd:  {cwd}\n{source_summary}",
-        args.join(" ")
-    );
-    sys_debug!(app, SOURCE, "exec: {program} {}", args.join(" "));
-    sys_debug!(app, SOURCE, "cwd:  {cwd}");
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            sys_error!(app, SOURCE, "spawn failed: {e}");
-            set_phase(app, SidecarPhase::Offline, None);
-            return;
-        }
-    };
-    let pid = child.id();
-    sys_info!(app, SOURCE, "sidecar started (pid {pid})");
-    // Pull stdout/stderr off the child BEFORE wrapping it so the
-    // stream threads don't have to fight the wait-loop's mutex.
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    if let Some(stdout) = stdout {
-        let app_clone = app.clone();
-        std::thread::spawn(move || stream_stdout(&app_clone, stdout));
-    }
-    if let Some(stderr) = stderr {
-        let app_clone = app.clone();
-        std::thread::spawn(move || stream_stderr(&app_clone, stderr));
-    }
-    let child_arc = Arc::new(Mutex::new(child));
+    // The supervisor is managed state, installed before `setup` runs,
+    // so the `None` arm is unreachable in a built app — and a missing
+    // one is nothing this call can fix.
     if let Some(state) = app.try_state::<SidecarState>() {
-        let mut inner = state.inner.lock().expect("sidecar state mutex poisoned");
-        inner.active = Some(child_arc.clone());
+        state.supervisor.spawn(&host(app));
     }
-    // Poll `try_wait` so another thread can lock and `kill` if the
-    // user hits "Restart sidecar" while we're still alive. 250 ms is
-    // imperceptible for boot/runtime and keeps the loop cheap.
-    let exit_status = loop {
-        let result = {
-            let mut guard = child_arc.lock().expect("sidecar child mutex poisoned");
-            guard.try_wait()
-        };
-        match result {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) => std::thread::sleep(Duration::from_millis(250)),
-            Err(e) => break Err(e),
-        }
-    };
-    // Clear `active` only if we still own the slot. If
-    // `restart_sidecar` already swapped us out, the new spawn is in
-    // charge — don't auto-restart and don't touch its slot.
-    let (still_active, suppress) = if let Some(state) = app.try_state::<SidecarState>() {
-        let mut inner = state.inner.lock().expect("sidecar state mutex poisoned");
-        let still = inner
-            .active
-            .as_ref()
-            .is_some_and(|a| Arc::ptr_eq(a, &child_arc));
-        if still {
-            inner.active = None;
-        }
-        (still, inner.suppress_restart)
-    } else {
-        (true, false)
-    };
-    if !still_active {
-        // A manual restart already kicked off our replacement; the
-        // exit we just saw is the one it triggered via `kill`. Stay
-        // quiet — the new spawn has its own "sidecar started" line.
-        // It already set the phase to Starting on its way in, so we
-        // explicitly do *not* clear it here.
-        return;
-    }
-    set_phase(app, SidecarPhase::Offline, None);
-    match exit_status {
-        Ok(status) if status.success() => {
-            sys_info!(app, SOURCE, "sidecar (pid {pid}) exited cleanly");
-        }
-        Ok(status) => {
-            // Bundle the invocation context into the error message
-            // itself so it's visible at the panel's default filter
-            // level — the debug-level breadcrumbs above don't help a
-            // user who hasn't widened the filter.
-            sys_error!(
-                app,
-                SOURCE,
-                "sidecar (pid {pid}) exited with {status}\n{invocation_summary}"
-            );
-            if !suppress {
-                maybe_restart(app);
-            }
-        }
-        Err(e) => {
-            sys_error!(
-                app,
-                SOURCE,
-                "sidecar (pid {pid}) wait failed: {e}\n{invocation_summary}"
-            );
-        }
-    }
-}
-
-fn stream_stdout(app: &AppHandle, stdout: ChildStdout) {
-    let reader = BufReader::new(stdout);
-    for line in reader.lines() {
-        let Ok(line) = line else { return };
-        if line.is_empty() {
-            continue;
-        }
-        let (level, message) = classify_stdout_line(&line);
-        emit_system_log(app, SOURCE, level, message);
-        if let Some(addr) = parse_listening_address(&line) {
-            set_phase(app, SidecarPhase::Ready, Some(addr.to_string()));
-        }
-    }
-}
-
-/// Update the [`SidecarPhase`] / `bound_address` slot atomically and
-/// emit [`STATUS_EVENT`] when anything actually changes. Folded into
-/// one function so callers can't drift the two halves out of sync —
-/// the GUI's reaction (re-rendering "Local sidecar" status, redoing
-/// `connect_remote_server` against a new address) hinges on the event
-/// firing exactly when the published status moves.
-fn set_phase(app: &AppHandle, phase: SidecarPhase, address: Option<String>) {
-    let Some(state) = app.try_state::<SidecarState>() else {
-        return;
-    };
-    let (status, watch_change) = {
-        let mut inner = state.inner.lock().expect("sidecar state mutex poisoned");
-        if inner.phase == phase && inner.bound_address == address {
-            return;
-        }
-        let prev_address = inner.bound_address.clone();
-        let prev_was_ready = inner.phase == SidecarPhase::Ready;
-        inner.phase = phase;
-        inner.bound_address = address;
-        let now_ready = phase == SidecarPhase::Ready;
-        // Lifecycle drives the local-address watch. The actual
-        // subscription manager lives in `interfaces.rs`; this just
-        // decides which transitions add/remove the local address from
-        // its managed set. Done after the lock is released so the
-        // interface state's own lock isn't taken under ours.
-        let change = match (prev_was_ready, now_ready) {
-            (false, true) => WatchChange::Start(inner.bound_address.clone()),
-            (true, false) => WatchChange::Stop(prev_address),
-            (true, true) if prev_address != inner.bound_address => WatchChange::Replace {
-                stop: prev_address,
-                start: inner.bound_address.clone(),
-            },
-            _ => WatchChange::None,
-        };
-        (
-            SidecarStatus {
-                phase,
-                address: inner.bound_address.clone(),
-            },
-            change,
-        )
-    };
-    let _ = app.emit(STATUS_EVENT, status);
-    match watch_change {
-        WatchChange::Start(Some(addr)) => crate::interfaces::watch(app, addr),
-        WatchChange::Stop(Some(addr)) => crate::interfaces::unwatch(app, &addr),
-        WatchChange::Replace { stop, start } => {
-            if let Some(addr) = stop {
-                crate::interfaces::unwatch(app, &addr);
-            }
-            if let Some(addr) = start {
-                crate::interfaces::watch(app, addr);
-            }
-        }
-        // Nothing to do: either no change, or a Start/Stop whose address
-        // slot is `None` on phase transitions the launcher drives before
-        // the listening banner arrives.
-        WatchChange::None | WatchChange::Start(None) | WatchChange::Stop(None) => {}
-    }
-}
-
-/// Outcome the locked critical section in `set_phase` decides; the
-/// matching subscription-manager call happens after the lock so the
-/// `InterfacesState` lock isn't taken under the sidecar one.
-enum WatchChange {
-    None,
-    Start(Option<String>),
-    Stop(Option<String>),
-    Replace {
-        stop: Option<String>,
-        start: Option<String>,
-    },
 }
 
 /// Tauri command — snapshot the current sidecar status. The
@@ -945,608 +290,15 @@ enum WatchChange {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_sidecar_status(state: State<'_, SidecarState>) -> SidecarStatus {
-    let inner = state.inner.lock().expect("sidecar state mutex poisoned");
-    SidecarStatus {
-        phase: inner.phase,
-        address: inner.bound_address.clone(),
-    }
+    wire_status(&state.supervisor.status())
 }
 
-fn stream_stderr(app: &AppHandle, stderr: ChildStderr) {
-    let reader = BufReader::new(stderr);
-    for line in reader.lines() {
-        let Ok(line) = line else { return };
-        if line.is_empty() {
-            continue;
-        }
-        let (level, message) = classify_stderr_line(&line);
-        emit_system_log(app, SOURCE, level, message);
-    }
-}
-
-/// Parse one stderr line from the sidecar against the Python logger
-/// format configured by `logging.basicConfig` in `__main__.py`:
-/// `"%(asctime)s %(levelname)s %(name)s %(message)s"`. Returns the
-/// embedded severity (mapped onto our 3-level [`LogLevel`]) so a
-/// run-of-the-mill `INFO` line isn't surfaced as a warning, and the
-/// timestamp is stripped from the displayed text (the System Messages
-/// panel already stamps its own time).
-///
-/// Anything that doesn't look like that format — a raw traceback
-/// frame, an unbuffered `print`, a third-party library writing
-/// directly to stderr — falls through as `Warn` with the line
-/// unchanged. Warn is the safest default: it lands at the panel's
-/// default filter level so the user actually sees it, without
-/// pretending to know its real severity.
-pub fn classify_stderr_line(line: &str) -> (LogLevel, String) {
-    // asctime = "YYYY-MM-DD HH:MM:SS,mmm" → two whitespace-separated
-    // tokens. `splitn(5, …)` then peels: date, time, levelname, name,
-    // message-rest.
-    let mut parts = line.splitn(5, ' ');
-    let _date = parts.next();
-    let _time = parts.next();
-    let level_token = parts.next();
-    let name = parts.next();
-    let message = parts.next();
-    let (Some(level_token), Some(name), Some(message)) = (level_token, name, message) else {
-        return (LogLevel::Warn, line.to_string());
-    };
-    let level = match level_token {
-        // Python: DEBUG / INFO / WARNING / ERROR / CRITICAL — plus the
-        // `WARN` alias some loggers emit. The sidecar's own INFO is our
-        // Debug (it is reporting on itself; nobody asked for it), and
-        // CRITICAL collapses to Error.
-        "DEBUG" | "INFO" => LogLevel::Debug,
-        "WARNING" | "WARN" => LogLevel::Warn,
-        "ERROR" | "CRITICAL" => LogLevel::Error,
-        // Token doesn't look like a Python level — bail out so a
-        // traceback frame like `  File "x.py", line 42, in foo`
-        // isn't mis-classified.
-        _ => return (LogLevel::Warn, line.to_string()),
-    };
-    (level, format!("{name} {message}"))
-}
-
-/// Parse one tab-separated banner line from the sidecar's stdout into
-/// a level + message. Anything we don't recognise falls through as a
-/// plain info-level message so a stray `print` still reaches the
-/// panel.
-pub fn classify_stdout_line(line: &str) -> (LogLevel, String) {
-    let parts: Vec<&str> = line.split('\t').collect();
-    match parts.as_slice() {
-        ["sidecar", "version", v] => (LogLevel::Debug, format!("sidecar version {v}")),
-        ["sidecar", "interfaces", n] => (LogLevel::Debug, format!("discovered {n} interface(s)")),
-        // Coming up and going down is the pair a user reads to see whether
-        // local capture is available; the rest of the banner is the
-        // sidecar reporting on itself.
-        ["sidecar", "listening", addr] => (LogLevel::Info, format!("listening on {addr}")),
-        // Where the sidecar's own always-debug rolling log went. Info,
-        // like `listening`: it is the answer to "what do I attach to
-        // the bug report", so it has to be readable at the panel's
-        // default filter.
-        ["sidecar", "logfile", path] => (LogLevel::Info, format!("detailed log: {path}")),
-        ["sidecar", "shutdown", reason] => (LogLevel::Info, format!("shutting down ({reason})")),
-        ["sidecar", "exit", code] => (LogLevel::Debug, format!("exit code {code}")),
-        // Top-level Python failure surfaced by `__main__.py`'s
-        // last-chance handler. The matching multi-line traceback
-        // follows on stderr (one `LogLevel::Warn` line per frame).
-        ["sidecar", "error", msg] => (LogLevel::Error, format!("sidecar fatal: {msg}")),
-        ["interface", id, display, kind] => (
-            LogLevel::Debug,
-            format!("interface {id} ({display}) [{kind}]"),
-        ),
-        _ => (LogLevel::Debug, line.to_string()),
-    }
-}
-
-/// Auto-restart hook. Called from the wait-thread after a non-zero
-/// exit when the user has not asked us to stay down.
-fn maybe_restart(app: &AppHandle) {
-    let Some(state) = app.try_state::<SidecarState>() else {
-        return;
-    };
-    let attempt = {
-        let mut inner = state.inner.lock().expect("sidecar state mutex poisoned");
-        inner.crash_count += 1;
-        inner.crash_count
-    };
-    let budget = restart_budget();
-    if u64::from(attempt) > budget {
-        sys_error!(
-            app,
-            SOURCE,
-            "sidecar crash budget exhausted after {attempt} attempts; use Restart sidecar to try again"
-        );
-        return;
-    }
-    sys_warn!(app, SOURCE, "auto-restarting sidecar ({attempt}/{budget})");
-    spawn_sidecar(app);
-}
-
-/// Manual restart, exposed to the frontend as a Tauri command.
-/// Clears the crash counter so the user gets the full retry budget
-/// again, then **kills the previous child** (if any) before spawning
-/// a replacement. Killing first matters because we'd otherwise leave
-/// an unresponsive sidecar holding the gRPC port, and the new spawn
-/// would race-and-lose on `add_insecure_port`.
+/// Manual restart, exposed to the frontend as a Tauri command. Clears
+/// the crash counter so the user gets the full retry budget again,
+/// then kills the previous child before spawning a replacement (see
+/// [`cannet_sidecar::SidecarSupervisor::restart`]).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn restart_sidecar(app: AppHandle, state: State<'_, SidecarState>) {
-    let previous = {
-        let mut inner = state.inner.lock().expect("sidecar state mutex poisoned");
-        inner.crash_count = 0;
-        inner.suppress_restart = false;
-        inner.active.take()
-    };
-    if let Some(child_arc) = previous {
-        let kill_outcome = {
-            let mut guard = child_arc.lock().expect("sidecar child mutex poisoned");
-            let pid = guard.id();
-            (pid, guard.kill())
-        };
-        match kill_outcome {
-            (pid, Ok(())) => sys_debug!(&app, SOURCE, "killed previous sidecar (pid {pid})"),
-            // `InvalidInput` from `kill()` on Unix means the child has
-            // already exited — that's fine, the wait thread will see
-            // it next poll and clean up.
-            (pid, Err(e)) => sys_warn!(
-                &app,
-                SOURCE,
-                "previous sidecar (pid {pid}) could not be killed (already exited?): {e}"
-            ),
-        }
-    }
-    sys_info!(&app, SOURCE, "manual restart");
-    spawn_sidecar(&app);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classify_stdout_recognises_banner_lines() {
-        // The sidecar's own status is Debug; only "listening" / "shutdown"
-        // — is local capture available or not — rate as Info.
-        assert!(matches!(
-            classify_stdout_line("sidecar\tversion\t0.1.0"),
-            (LogLevel::Debug, _)
-        ));
-        assert!(matches!(
-            classify_stdout_line("sidecar\tlistening\t127.0.0.1:50061"),
-            (LogLevel::Info, _)
-        ));
-        let (_lvl, msg) = classify_stdout_line("sidecar\tinterfaces\t0");
-        assert!(msg.contains('0'));
-        let (_lvl, msg) = classify_stdout_line("sidecar\tlistening\t127.0.0.1:50061");
-        assert!(msg.contains("127.0.0.1:50061"));
-        let (_lvl, msg) = classify_stdout_line(
-            "interface\tvector:VN1630A(SN:12345, ch:0)\tVector VN1630A ch0\tfd",
-        );
-        assert!(msg.contains("vector:VN1630A(SN:12345, ch:0)"));
-        assert!(msg.contains("[fd]"));
-    }
-
-    #[test]
-    fn classify_stdout_passes_through_unknown_lines() {
-        let (lvl, msg) = classify_stdout_line("a stray print from the sidecar");
-        assert!(matches!(lvl, LogLevel::Debug));
-        assert_eq!(msg, "a stray print from the sidecar");
-    }
-
-    #[test]
-    fn classify_stderr_reads_python_levelname() {
-        // The Python sidecar's basicConfig format is
-        // "%(asctime)s %(levelname)s %(name)s %(message)s".
-        let (lvl, msg) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 INFO cannet_python_can.server ListInterfaces -> 2 channels",
-        );
-        assert!(
-            matches!(lvl, LogLevel::Debug),
-            "the sidecar's INFO is our Debug, and must not be warned"
-        );
-        assert_eq!(
-            msg, "cannet_python_can.server ListInterfaces -> 2 channels",
-            "timestamp should be stripped; name + message retained"
-        );
-
-        let (lvl, _) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 WARNING cannet_python_can.server rx pump for X failed",
-        );
-        assert!(matches!(lvl, LogLevel::Warn));
-
-        let (lvl, _) = classify_stderr_line(
-            "2026-05-25 16:05:43,487 ERROR cannet_python_can sidecar fatal error",
-        );
-        assert!(matches!(lvl, LogLevel::Error));
-
-        let (lvl, _) =
-            classify_stderr_line("2026-05-25 16:05:43,487 CRITICAL cannet_python_can boom");
-        assert!(matches!(lvl, LogLevel::Error));
-
-        let (lvl, _) =
-            classify_stderr_line("2026-05-25 16:05:43,487 DEBUG cannet_python_can chatty");
-        assert!(matches!(lvl, LogLevel::Debug));
-    }
-
-    #[test]
-    fn classify_stderr_falls_back_to_warn_on_unrecognised_lines() {
-        // Traceback frame — no levelname token at position 2.
-        let (lvl, msg) = classify_stderr_line("  File \"server.py\", line 42, in <module>");
-        assert!(matches!(lvl, LogLevel::Warn));
-        assert_eq!(msg, "  File \"server.py\", line 42, in <module>");
-
-        // Looks roughly right but the level token isn't a real level.
-        let (lvl, msg) =
-            classify_stderr_line("2026-05-25 16:05:43,487 BANANAS cannet_python_can not a level");
-        assert!(matches!(lvl, LogLevel::Warn));
-        assert!(msg.contains("BANANAS"));
-    }
-
-    #[test]
-    fn classify_stdout_promotes_error_banner_to_error_level() {
-        let (lvl, msg) =
-            classify_stdout_line("sidecar\terror\tVersionError: protobuf gencode/runtime mismatch");
-        assert!(matches!(lvl, LogLevel::Error));
-        assert!(
-            msg.contains("VersionError"),
-            "expected exception text preserved, got {msg}"
-        );
-        assert!(
-            msg.starts_with("sidecar fatal:"),
-            "expected `sidecar fatal:` prefix, got {msg}"
-        );
-    }
-
-    /// Cross-platform stand-in for the sidecar directory in tests —
-    /// `/tmp/...` is Unix-only, and `std::env::temp_dir()` returns an
-    /// absolute path on every supported OS.
-    fn sample_sidecar_dir() -> PathBuf {
-        std::env::temp_dir().join("cannet-python-can")
-    }
-
-    #[test]
-    fn build_command_uses_expected_program_for_each_path() {
-        let cmd = build_command(LaunchPath::SystemPython, &sample_sidecar_dir());
-        let program = cmd.get_program().to_string_lossy().to_string();
-        assert!(
-            program.ends_with("python3") || program.ends_with("python"),
-            "expected python program, got {program}",
-        );
-    }
-
-    #[test]
-    fn build_command_passes_absolute_sidecar_dir_to_uv() {
-        let dir = sample_sidecar_dir();
-        let cmd = build_command(LaunchPath::PathUv, &dir);
-        let args: Vec<std::ffi::OsString> =
-            cmd.get_args().map(std::ffi::OsStr::to_os_string).collect();
-        let idx = args
-            .iter()
-            .position(|a| a == "--directory")
-            .expect("uv invocation must include --directory");
-        assert_eq!(args[idx + 1], dir.as_os_str());
-    }
-
-    #[test]
-    fn build_command_threads_sidecar_dir_into_pythonpath_for_system_python() {
-        let dir = sample_sidecar_dir();
-        let cmd = build_command(LaunchPath::SystemPython, &dir);
-        let pythonpath = cmd
-            .get_envs()
-            .find_map(|(k, v)| (k == "PYTHONPATH").then(|| v.map(std::ffi::OsStr::to_os_string)))
-            .flatten()
-            .expect("SystemPython launcher must set PYTHONPATH");
-        assert_eq!(pythonpath, dir.as_os_str());
-    }
-
-    #[test]
-    fn build_command_does_not_pin_a_bind_address() {
-        // The sidecar's own default (`127.0.0.1:0`) is the contract
-        // for "host doesn't care about the port" — if we ever start
-        // passing `--bind` from here again we'd silently re-create
-        // the stale-instance-holds-50061 wedge that random-port
-        // selection was added to fix.
-        for launcher in [LaunchPath::PathUv, LaunchPath::SystemPython] {
-            let cmd = build_command(launcher, &sample_sidecar_dir());
-            let has_bind = cmd.get_args().any(|a| a == "--bind");
-            assert!(
-                !has_bind,
-                "{launcher:?} command should not pass --bind; got {:?}",
-                cmd.get_args().collect::<Vec<_>>()
-            );
-        }
-    }
-
-    #[test]
-    fn build_frozen_command_runs_the_launcher_with_no_args() {
-        // The frozen onedir is self-contained: the launcher embeds its
-        // own interpreter and deps, so the command is just the launcher
-        // path — no `--directory`, no `--bind`, no `run` subcommand.
-        let launcher = std::env::temp_dir().join(frozen_launcher_name());
-        let cmd = build_frozen_command(&launcher);
-        assert_eq!(cmd.get_program(), launcher.as_os_str());
-        assert_eq!(
-            cmd.get_args().count(),
-            0,
-            "frozen launcher takes no args; got {:?}",
-            cmd.get_args().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn frozen_launcher_name_matches_target_os_suffix() {
-        #[cfg(windows)]
-        assert_eq!(frozen_launcher_name(), "cannet-python-can.exe");
-        #[cfg(not(windows))]
-        assert_eq!(frozen_launcher_name(), "cannet-python-can");
-    }
-
-    // Note: `frozen_launcher_path` itself isn't unit-tested — it needs a
-    // live `AppHandle` to reach `resource_dir()`, which can't be
-    // constructed in a plain unit test (same constraint that keeps
-    // `CANNET_SIDECAR_DIR` eyeball-verified below). Its two moving
-    // parts — the platform suffix and the "no args" launch shape — are
-    // covered by the two tests above.
-
-    fn frozen_path() -> PathBuf {
-        PathBuf::from("/res/cannet-python-can/launcher")
-    }
-
-    fn source_tree() -> (LaunchPath, PathBuf) {
-        (
-            LaunchPath::BundledUv,
-            PathBuf::from("/repo/servers/cannet-python-can"),
-        )
-    }
-
-    #[test]
-    fn plan_launch_dev_prefers_source_tree_over_frozen() {
-        // The regression this locks in: with the frozen resource bundled
-        // (it is, since the sidecar became a Tauri resource), a dev build
-        // must still run the editable source tree so sidecar edits take
-        // effect without re-freezing.
-        let (launcher, dir) = source_tree();
-        assert_eq!(
-            plan_launch(true, Some(frozen_path()), Some(source_tree())),
-            Some(LaunchPlan::Source(launcher, dir)),
-        );
-    }
-
-    #[test]
-    fn plan_launch_release_prefers_frozen_over_source_tree() {
-        assert_eq!(
-            plan_launch(false, Some(frozen_path()), Some(source_tree())),
-            Some(LaunchPlan::Frozen(frozen_path())),
-        );
-    }
-
-    #[test]
-    fn plan_launch_falls_back_when_the_preferred_flavour_is_missing() {
-        assert_eq!(
-            plan_launch(true, Some(frozen_path()), None),
-            Some(LaunchPlan::Frozen(frozen_path())),
-        );
-        let (launcher, dir) = source_tree();
-        assert_eq!(
-            plan_launch(false, None, Some(source_tree())),
-            Some(LaunchPlan::Source(launcher, dir)),
-        );
-    }
-
-    #[test]
-    fn plan_launch_none_when_nothing_is_resolvable() {
-        assert_eq!(plan_launch(true, None, None), None);
-        assert_eq!(plan_launch(false, None, None), None);
-    }
-
-    #[test]
-    fn parse_listening_address_strips_the_banner_prefix() {
-        assert_eq!(
-            parse_listening_address("sidecar\tlistening\t127.0.0.1:43891"),
-            Some("127.0.0.1:43891"),
-        );
-        assert_eq!(
-            parse_listening_address("sidecar\tlistening\t[::1]:43891"),
-            Some("[::1]:43891"),
-        );
-    }
-
-    #[test]
-    fn parse_listening_address_ignores_other_banner_lines() {
-        assert_eq!(parse_listening_address("sidecar\tversion\t0.1.0"), None);
-        assert_eq!(
-            parse_listening_address("interface\tvector:ch0\tVector ch0\tfd"),
-            None,
-        );
-        assert_eq!(parse_listening_address(""), None);
-    }
-
-    // The *reads* of the process environment stay untested — the
-    // workspace forbids `unsafe` (`unsafe_code = "forbid"` in the
-    // top-level Cargo.toml) and `std::env::set_var` is `unsafe` since
-    // Rust 2024, so a test cannot set one. What the reads feed is
-    // `env_over_setting`, which is pure and is covered below.
-
-    /// `value` as the environment (or a setting) hands it over.
-    fn os(value: &str) -> OsString {
-        value.into()
-    }
-
-    #[test]
-    fn the_environment_wins_over_the_setting_and_says_so() {
-        // The env vars are escape hatches — tests, CI, packaging
-        // experiments — and an escape hatch a persisted file can
-        // override is not an escape hatch. But `settings.json` must not
-        // then show a value nothing is using without a word (ADR 0034),
-        // so the shadowing is reported.
-        let r = env_over_setting(
-            "CANNET_SIDECAR_DIR",
-            "sidecar_dir",
-            Some(os("from-the-environment")),
-            "from-the-file",
-        );
-        assert_eq!(r.value, Some(os("from-the-environment")));
-        let note = r.shadowed.expect("a shadowed setting is reported");
-        assert!(note.contains("CANNET_SIDECAR_DIR"), "{note}");
-        assert!(note.contains("sidecar_dir"), "{note}");
-        assert!(note.contains("from-the-file"), "{note}");
-        assert!(note.contains("from-the-environment"), "{note}");
-    }
-
-    #[test]
-    fn the_setting_applies_when_the_environment_is_silent() {
-        let r = env_over_setting("CANNET_SIDECAR_DIR", "sidecar_dir", None, "from-the-file");
-        assert_eq!(r.value, Some(os("from-the-file")));
-        assert_eq!(r.shadowed, None, "nothing was shadowed");
-    }
-
-    #[test]
-    fn the_environment_alone_is_not_a_shadowing() {
-        // The untouched install: the setting is blank, so there is no
-        // file value to report as overridden.
-        let r = env_over_setting(
-            "CANNET_SIDECAR_DIR",
-            "sidecar_dir",
-            Some(os("only-the-env")),
-            "",
-        );
-        assert_eq!(r.value, Some(os("only-the-env")));
-        assert_eq!(r.shadowed, None);
-    }
-
-    #[test]
-    fn a_blank_value_on_either_side_means_unset() {
-        // Blank is how both sources say "nothing here", so the built-in
-        // behaviour applies and neither shadows the other.
-        for (e, setting) in [
-            (None, ""),
-            (None, "   "),
-            (Some(os("")), ""),
-            (Some(os("")), "  "),
-        ] {
-            let r = env_over_setting("CANNET_SIDECAR_DIR", "sidecar_dir", e.clone(), setting);
-            assert_eq!(r.value, None, "env {e:?} setting {setting:?}");
-            assert_eq!(r.shadowed, None);
-        }
-        // An empty env var does not shadow a real setting either.
-        let r = env_over_setting(
-            "CANNET_SIDECAR_DIR",
-            "sidecar_dir",
-            Some(os("")),
-            "from-the-file",
-        );
-        assert_eq!(r.value, Some(os("from-the-file")));
-        assert_eq!(r.shadowed, None);
-    }
-
-    #[test]
-    fn an_override_is_used_verbatim_as_the_sidecar_dir() {
-        let dir = sample_sidecar_dir();
-        assert_eq!(
-            resolve_sidecar_dir(Some(dir.clone().into_os_string())),
-            Some(dir),
-            "the override short-circuits the walk-up entirely"
-        );
-    }
-
-    #[test]
-    fn the_sidecar_log_level_reaches_the_child_and_bind_still_does_not() {
-        // The sidecar's `--log-level` was unreachable because the host
-        // passed no arguments at all. `--bind` stays unpassed for the
-        // reason `build_command_does_not_pin_a_bind_address` gives —
-        // adding one argument must not smuggle in the other.
-        for mut cmd in [
-            build_command(LaunchPath::PathUv, &sample_sidecar_dir()),
-            build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
-            build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
-        ] {
-            apply_sidecar_settings(&mut cmd, "warning", None, None);
-            let args: Vec<OsString> = cmd.get_args().map(OsStr::to_os_string).collect();
-            let at = args
-                .iter()
-                .position(|a| a == "--log-level")
-                .unwrap_or_else(|| panic!("no --log-level in {args:?}"));
-            assert_eq!(args[at + 1], OsStr::new("warning"));
-            assert!(!args.iter().any(|a| a == "--bind"), "{args:?}");
-        }
-    }
-
-    #[test]
-    fn the_sidecar_logfile_path_reaches_the_child_on_every_launcher() {
-        // The always-debug file is the only place a per-channel connect
-        // failure is diagnosable after the fact, and the sidecar writes
-        // one only when told where — so the flag has to be on every
-        // launch flavour, frozen included.
-        let path = std::env::temp_dir().join("logs").join(SIDECAR_LOG_FILE);
-        for mut cmd in [
-            build_command(LaunchPath::PathUv, &sample_sidecar_dir()),
-            build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
-            build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
-        ] {
-            apply_sidecar_settings(&mut cmd, "info", Some(&path), None);
-            let args: Vec<OsString> = cmd.get_args().map(OsStr::to_os_string).collect();
-            let at = args
-                .iter()
-                .position(|a| a == "--log-file")
-                .unwrap_or_else(|| panic!("no --log-file in {args:?}"));
-            assert_eq!(args[at + 1], path.as_os_str());
-        }
-    }
-
-    #[test]
-    fn no_logfile_path_means_no_flag_at_all() {
-        // `None` must not degrade into an empty argument: the sidecar
-        // reads a bare `--log-file` as an error, and its own default is
-        // exactly "write no file".
-        let mut cmd = build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name()));
-        apply_sidecar_settings(&mut cmd, "info", None, None);
-        assert!(
-            !cmd.get_args().any(|a| a == "--log-file"),
-            "{:?}",
-            cmd.get_args().collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn the_logfile_banner_line_is_readable_at_the_default_filter() {
-        // Debug-level would hide it behind the panel's default filter,
-        // which defeats the point: this line is how a user finds the
-        // file to attach to a bug report.
-        let (lvl, msg) =
-            classify_stdout_line("sidecar\tlogfile\t/home/u/.local/share/cannet/logs/s.log");
-        assert!(matches!(lvl, LogLevel::Info));
-        assert!(
-            msg.contains("/home/u/.local/share/cannet/logs/s.log"),
-            "the path must survive verbatim, got {msg}"
-        );
-    }
-
-    #[test]
-    fn the_driver_module_is_forwarded_to_the_sidecar_process() {
-        // `CANNET_DRIVER_MODULE` is read by the *sidecar*, and the host
-        // never set it — so the only way to select a driver was to
-        // launch the GUI from a shell that already had it. The setting
-        // is the host-side half of that contract.
-        let mut cmd = build_command(LaunchPath::PathUv, &sample_sidecar_dir());
-        apply_sidecar_settings(&mut cmd, "info", None, Some(OsStr::new("my_team.driver")));
-        let value = cmd
-            .get_envs()
-            .find_map(|(k, v)| (k == DRIVER_MODULE_ENV).then_some(v))
-            .flatten()
-            .expect("the driver module must reach the child");
-        assert_eq!(value, OsStr::new("my_team.driver"));
-    }
-
-    #[test]
-    fn no_driver_module_leaves_the_child_environment_alone() {
-        // The untouched install must launch exactly as it did before
-        // the setting existed: the sidecar picks its own default.
-        let mut cmd = build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name()));
-        apply_sidecar_settings(&mut cmd, "info", None, None);
-        assert!(
-            !cmd.get_envs().any(|(k, _)| k == DRIVER_MODULE_ENV),
-            "nothing should be set when neither the env nor the setting names one"
-        );
-    }
+    state.supervisor.restart(&host(&app));
 }

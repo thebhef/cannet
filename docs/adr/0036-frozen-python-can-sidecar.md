@@ -41,7 +41,7 @@ stay as fallbacks. In **dev builds** the order is inverted: the frozen
 resource is bundled next to the dev binary too, and letting it win
 there shadowed live sidecar source — edits did nothing until a
 re-freeze — so dev prefers the source tree and treats the frozen
-binary as the fallback (`plan_launch` in `sidecar.rs`; amended
+binary as the fallback (`plan_launch` in `cannet-sidecar`; amended
 2026-07-13).
 
 ## Why
