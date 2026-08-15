@@ -188,6 +188,31 @@ window.__shot = {
     item.click();
     await window.__shot.settle();
   },
+  /* Move the pointer into a plot area and leave it there, so the
+     shutter falls on a hovered panel. uPlot binds its cursor to
+     `mousemove` on its own overlay (`.u-over`) and handles only events
+     whose target *is* that element, so the event is dispatched on it
+     rather than bubbled from the page; the panel folds every area's
+     report into the one shared hover x. `which` picks the area by its
+     `data-area-id` — the shared enum-lanes axis is the one whose id
+     ends in `/u:enum`. */
+  hoverPlot: async (which, fracX) => {
+    const areas = [...document.querySelectorAll(".plot-area[data-area-id]")];
+    const isLanes = (e) => (e.getAttribute("data-area-id") || "").endsWith("/u:enum");
+    const area = areas.find((e) => (which === "lanes" ? isLanes(e) : !isLanes(e)));
+    if (!area) throw new Error("no " + which + " plot area");
+    const over = area.querySelector(".u-over");
+    if (!over) throw new Error("the " + which + " plot area has no uPlot overlay");
+    const r = over.getBoundingClientRect();
+    const at = {
+      clientX: r.left + r.width * fracX,
+      clientY: r.top + r.height / 2,
+      bubbles: true,
+    };
+    over.dispatchEvent(new MouseEvent("mouseenter", at));
+    over.dispatchEvent(new MouseEvent("mousemove", at));
+    await window.__shot.settle();
+  },
   /* Click a modal's button by its exact label. */
   modal: async (label) => {
     const b = [...document.querySelectorAll(".modal-buttons button")].find(
@@ -339,6 +364,29 @@ pub const EXTRAPOLATION_SCENARIO: &[Step] = &[
             await window.__shot.sleep(1500); \
             await window.__shot.settle(); \
         })()",
+        shows: &["plot"],
+    },
+    // Hover parity (ADR 0026): the two frames that show *when* markers
+    // are drawn. Both are taken with the pointer resting inside one
+    // area of the panel — a numeric axis first, then the shared
+    // enum-lanes axis — because the rule under test is cross-area: a
+    // hovered panel reveals markers on every one of its areas, the way
+    // the shared crosshair already spans them. Photographed rather than
+    // only unit-tested because "the markers appear on the other areas
+    // too" is a claim about the picture.
+    //
+    // The pointer rests at a quarter of the window (5 s into the
+    // fixture's 20 s), where every series is still arriving — a hover
+    // inside one of the fixture's stalls would say more about the
+    // stall than about hover.
+    Step {
+        name: "03-hover-numeric-area",
+        script: "(async () => { await window.__shot.hoverPlot('numeric', 0.25); })()",
+        shows: &["plot"],
+    },
+    Step {
+        name: "04-hover-lane-area",
+        script: "(async () => { await window.__shot.hoverPlot('lanes', 0.25); })()",
         shows: &["plot"],
     },
 ];
@@ -1157,6 +1205,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The hover steps reach past labels and into structure — the
+    /// attribute a plot area carries, the suffix the shared enum-lanes
+    /// axis mints its id with, and the overlay element uPlot binds its
+    /// cursor to. All three are silent couplings: rename any of them and
+    /// the step throws "no numeric plot area" mid-run, aborting the
+    /// capture. Checked against the sources that define them, the same
+    /// way the label check is.
+    #[test]
+    fn the_hover_steps_target_a_plot_area_the_frontend_still_identifies() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let read = |rel: &str| {
+            std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"))
+        };
+        let plot_area = read("apps/gui/src/PlotArea.tsx");
+        let derivation = read("apps/gui/src/plotAxisDerivation.ts");
+        assert!(
+            PRELUDE_JS.contains(".plot-area[data-area-id]") && plot_area.contains("data-area-id="),
+            "the hover helper selects a plot area by an attribute PlotArea.tsx no longer renders",
+        );
+        assert!(
+            PRELUDE_JS.contains("/u:enum") && derivation.contains("/u:enum"),
+            "the hover helper picks the lanes axis by an id suffix plotAxisDerivation.ts no longer mints",
+        );
+        assert!(
+            PRELUDE_JS.contains(".u-over"),
+            "the hover helper must dispatch on the overlay uPlot binds its cursor to",
+        );
+        assert!(
+            EXTRAPOLATION_SCENARIO
+                .iter()
+                .any(|s| s.script.contains("hoverPlot('numeric'"))
+                && EXTRAPOLATION_SCENARIO
+                    .iter()
+                    .any(|s| s.script.contains("hoverPlot('lanes'")),
+            "the sign-off set must photograph a hover over both kinds of area",
+        );
     }
 
     /// A scenario that opens a capture needs one seeded into the profile
