@@ -95,8 +95,10 @@ impl ServerIdentity {
         }
         fs::create_dir_all(dir).map_err(|e| IdentityError::io(dir, e))?;
         let generated = generate_self_signed()?;
-        write_private(&key_path, generated.key_pem.as_bytes())?;
-        write_public(&cert_path, generated.cert_pem.as_bytes())?;
+        write_private(&key_path, generated.key_pem.as_bytes())
+            .map_err(|e| IdentityError::io(e.path, e.source))?;
+        write_public(&cert_path, generated.cert_pem.as_bytes())
+            .map_err(|e| IdentityError::io(e.path, e.source))?;
         Self::from_pem(
             generated.cert_pem.into_bytes(),
             generated.key_pem.into_bytes(),
@@ -206,18 +208,35 @@ fn first_certificate_der(pem: &[u8]) -> Result<Vec<u8>, IdentityError> {
     Ok(first.to_vec())
 }
 
+/// A file write that failed, and the path it failed on. The secrets
+/// this crate persists come from two modules but share one writer, so
+/// the writer reports in terms neither error type owns.
+pub(crate) struct FileWrite {
+    pub(crate) path: PathBuf,
+    pub(crate) source: io::Error,
+}
+
+impl FileWrite {
+    fn at(path: impl Into<PathBuf>, source: io::Error) -> Self {
+        Self {
+            path: path.into(),
+            source,
+        }
+    }
+}
+
 /// Write `contents` to `path` via a temporary file in the same
 /// directory, so readers never see a half-written file.
-fn write_public(path: &Path, contents: &[u8]) -> Result<(), IdentityError> {
+fn write_public(path: &Path, contents: &[u8]) -> Result<(), FileWrite> {
     let temp = temp_path(path);
-    fs::write(&temp, contents).map_err(|e| IdentityError::io(&temp, e))?;
-    fs::rename(&temp, path).map_err(|e| IdentityError::io(path, e))
+    fs::write(&temp, contents).map_err(|e| FileWrite::at(&temp, e))?;
+    fs::rename(&temp, path).map_err(|e| FileWrite::at(path, e))
 }
 
 /// Like [`write_public`], but the temporary file is *created* with
 /// owner-only permissions on Unix — never widened after the fact, so
-/// the key is unreadable to other users for its whole existence.
-fn write_private(path: &Path, contents: &[u8]) -> Result<(), IdentityError> {
+/// the secret is unreadable to other users for its whole existence.
+pub(crate) fn write_private(path: &Path, contents: &[u8]) -> Result<(), FileWrite> {
     use std::io::Write as _;
 
     let temp = temp_path(path);
@@ -228,14 +247,12 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<(), IdentityError> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(&temp)
-        .map_err(|e| IdentityError::io(&temp, e))?;
+    let mut file = options.open(&temp).map_err(|e| FileWrite::at(&temp, e))?;
     file.write_all(contents)
-        .map_err(|e| IdentityError::io(&temp, e))?;
-    file.sync_all().map_err(|e| IdentityError::io(&temp, e))?;
+        .map_err(|e| FileWrite::at(&temp, e))?;
+    file.sync_all().map_err(|e| FileWrite::at(&temp, e))?;
     drop(file);
-    fs::rename(&temp, path).map_err(|e| IdentityError::io(path, e))
+    fs::rename(&temp, path).map_err(|e| FileWrite::at(path, e))
 }
 
 fn temp_path(path: &Path) -> PathBuf {

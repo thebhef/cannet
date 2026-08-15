@@ -248,3 +248,74 @@ build carries one major.
 Not in this phase, per the plan: the token (phase 2), the pin-only
 client verifier and the GUI TOFU flow (phase 3). The exit criteria
 covering those are still open.
+
+### 2026-08-12 — phase 2: bearer-token auth on the server
+
+Landed on `task42b-token-auth`, five commits off `task42a-server-tls`
+(`db8a90c`):
+
+| commit | what |
+|--------|------|
+| `bc6e17f` | feat(server): mint, persist, and compare a bearer token |
+| `c1a907b` | feat(server): gate an RPC on the presented bearer token |
+| `0489568` | feat(server): enforce the bearer token on a TLS endpoint |
+| `4fdcf35` | test(server): pin the gate across all three RPCs over TLS |
+| `4f0f636` | test(server): pin that the proxy forwards no client credential |
+
+`cannet-server` tests: 58 → 85 (lib 11 → 28, bin 19 → 24, new
+`tests/auth.rs` 3, `tests/proxy.rs` 6 → 7, one doctest; one
+pre-existing ignored sidecar test unchanged). No other crate is
+touched — the client keeps its phase-3 slot.
+
+What shipped:
+
+- `auth.rs` — `AccessToken` (256-bit `ring::rand::SystemRandom`,
+  unpadded base64url, 43 chars; `load_or_generate` persists
+  `access-token` beside the certificate with the private key's hygiene,
+  `from_value` for `--token`/`CANNET_TOKEN` persisting nothing,
+  `matches` constant-time over the **encoded** ASCII). No `Debug`, no
+  `Display` — `as_str` is the only render, so the value cannot reach a
+  log or an error by accident.
+- `token_gate(Option<AccessToken>)` — the interceptor, mounted in
+  `run_proxy` as `Server::builder().layer(tonic::service::interceptor(..))`
+  (S5). `authorization`, `Bearer` case-insensitively, non-ASCII ⇒
+  `unauthenticated` with no unwrap, one generic message for every
+  failure, presented value never echoed (S10, N15).
+- `Protections` grew a `token` field; a routable bind now needs both,
+  and the refusal names them separately so it never claims protection
+  the endpoint lacks.
+- Startup banner, direct `eprintln!` (S10), verified on a real launch:
+
+  ```text
+  hardware proxy: certificate fingerprint SHA256:4EMRWrqj5MtP7Lxx4DjdNGUhBPIUijAl4UZekXCJwAc
+  hardware proxy: client token KMGqFEndqRji-y-f4Ej48LJZBu7Bjg2IfmRVMv-jHZE
+  hardware proxy: listening on 127.0.0.1:0 (tls)
+  ```
+
+- README: the token line in the banner, `--token`, `CANNET_TOKEN` and
+  the argv-visibility note (S9), rotation by deleting `access-token`,
+  and why neither protection exists on a plaintext endpoint.
+
+Two calls the plan did not settle:
+
+- **`subtle` after all, not `ring::constant_time` (N17).** ring 0.17.14
+  moved that module to `deprecated_constant_time` and deprecated
+  `verify_slices_are_equal` as "internal, no promises regarding side
+  channels" — the one promise a credential compare needs. The
+  2026-08-11 grooming note named `subtle` as the other acceptable
+  option and rustls already puts it in the lock, so this is a direct
+  dependency on a crate that was already there, not a new tree edge.
+  `technology-inventory.md` records it, and flips
+  `getrandom`/`rand`/`sha2` to `rejected` as planned.
+- **`--token` on a plaintext endpoint warns rather than errors.** The
+  token is enforced exactly when TLS is (S7), so a token given to a
+  plaintext server does nothing — and an operator who typed one
+  believes otherwise. It prints a warning naming `--tls` rather than
+  refusing to start, because refusing would make `CANNET_TOKEN` in a
+  shell profile break every loopback dev run.
+
+One thing noticed and not touched, from phase 1: `main` returns
+`Box<dyn Error>`, so a refused bind reaches the operator as
+`Error: UnprotectedBind { bind: 0.0.0.0:50051, missing: [...] }` — the
+`Display` impl written for it is never used. Informative, but not the
+sentence it was written to be.

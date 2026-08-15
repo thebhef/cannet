@@ -22,7 +22,8 @@ rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 rustls-pemfile = "2"
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+subtle = "2"
+tokio ={ version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 tokio-stream = { version = "0.1", features = ["net", "time"] }
 tonic = { version = "0.12", features = ["tls"] }
 

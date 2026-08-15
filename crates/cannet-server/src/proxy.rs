@@ -15,6 +15,13 @@
 //!   `ConfigureBus`, `FrameBatch`, `InterfaceAllocated`,
 //!   `InterfaceState`, `Log` and `Error` all cross untouched.
 //!
+//! What does *not* cross is the client's credential. Each upstream call
+//! is a fresh `Request`, so an `authorization` header presented to this
+//! endpoint authenticates the client *here* (ADR 0041) and goes no
+//! further — the supervised sidecar on loopback never asked for one,
+//! and relaying it would carry the secret a hop beyond where it
+//! belongs.
+//!
 //! The consequence is that hardware-server semantics (ADR 0022) hold
 //! end-to-end. In particular the proxy adds **no arbitration of its
 //! own**: a second client is not refused here, it is offered to the

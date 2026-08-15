@@ -10,7 +10,7 @@
 
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use blf_asc::{ArbitrationId, BlfWriter, DataBytes, Message};
@@ -45,6 +45,54 @@ async fn spawn_proxy(upstream: SocketAddr) -> (SocketAddr, JoinHandle<()>) {
             .await;
     });
     (addr, handle)
+}
+
+/// A virtual bus that records the `authorization` metadata of every
+/// RPC it is asked for — the upstream's own view of what reached it.
+async fn spawn_recording_upstream() -> (SocketAddr, Arc<Mutex<Vec<Option<String>>>>, JoinHandle<()>)
+{
+    let seen: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+    let recorder = Arc::clone(&seen);
+    #[allow(clippy::result_large_err)] // `Status` is an interceptor's only error type.
+    let record = move |request: tonic::Request<()>| {
+        recorder.lock().unwrap().push(
+            request
+                .metadata()
+                .get("authorization")
+                .map(|value| value.to_str().unwrap_or("<not ascii>").to_string()),
+        );
+        Ok::<_, tonic::Status>(request)
+    };
+
+    let config = BusConfig {
+        speed_bps: 500_000,
+        fd_data_speed_bps: None,
+        fd_enabled: false,
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stream = TcpListenerStream::new(listener);
+    let svc = cannet_server::VirtualBusServerImpl::new(config).into_service();
+    let handle = tokio::spawn(async move {
+        let _ = Server::builder()
+            .layer(tonic::service::interceptor(record))
+            .add_service(svc)
+            .serve_with_incoming(stream)
+            .await;
+    });
+    (addr, seen, handle)
+}
+
+/// A client-side interceptor presenting a bearer token, as a client of
+/// a protected endpoint would (ADR 0041).
+// The `Result` is the interceptor signature tonic asks for, and
+// `Status` is the only error it may carry; this one just never fails.
+#[allow(clippy::result_large_err, clippy::unnecessary_wraps)]
+fn with_credential(mut request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+    request
+        .metadata_mut()
+        .insert("authorization", "Bearer a-client-secret".parse().unwrap());
+    Ok(request)
 }
 
 /// A virtual bus (ADR 0021) as the thing being proxied.
@@ -339,6 +387,82 @@ async fn a_client_hanging_up_drops_its_upstream_session() {
             _ => tokio::time::sleep(Duration::from_millis(25)).await,
         }
     }
+
+    proxy_handle.abort();
+    upstream_handle.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_proxy_forwards_no_client_credentials_upstream() {
+    // The client's bearer token authenticates it to *this* endpoint
+    // (ADR 0041). The upstream is a supervised sidecar on loopback that
+    // never asked for one, so relaying the credential would leak it one
+    // hop further than it belongs. The proxy builds a fresh request per
+    // upstream call, which is what keeps that true — pinned here so it
+    // stays deliberate.
+    let (upstream, seen, upstream_handle) = spawn_recording_upstream().await;
+    let (proxy, proxy_handle) = spawn_proxy(upstream).await;
+
+    // First, straight at the upstream: proves the credential is really
+    // being sent, so the assertion below cannot pass vacuously.
+    let direct = CannetServerClient::with_interceptor(
+        tonic::transport::Channel::from_shared(format!("http://{upstream}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap(),
+        with_credential,
+    )
+    .list_interfaces(ListInterfacesRequest {})
+    .await
+    .unwrap();
+    assert_eq!(direct.into_inner().interfaces.len(), 1);
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        [Some("Bearer a-client-secret".to_string())],
+        "a client that presents a credential does reach this upstream with it"
+    );
+    seen.lock().unwrap().clear();
+
+    let channel = tonic::transport::Channel::from_shared(format!("http://{proxy}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+
+    CannetServerClient::with_interceptor(channel.clone(), with_credential)
+        .list_interfaces(ListInterfacesRequest {})
+        .await
+        .unwrap();
+    let mut watch = CannetServerClient::with_interceptor(channel.clone(), with_credential)
+        .watch_interfaces(WatchInterfacesRequest {})
+        .await
+        .unwrap()
+        .into_inner();
+    timeout(Duration::from_secs(5), watch.next())
+        .await
+        .expect("timed out waiting for the relayed snapshot")
+        .expect("the watch stream ended early")
+        .expect("the watch stream carried a transport error");
+    let (tx, rx) = mpsc::channel::<Envelope>(8);
+    tx.send(subscribe(VIRTUAL_BUS_FACTORY_ID)).await.unwrap();
+    let mut session = CannetServerClient::with_interceptor(channel, with_credential)
+        .session(ReceiverStream::new(rx))
+        .await
+        .unwrap()
+        .into_inner();
+    next_envelope(&mut session).await;
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(
+        seen.len(),
+        3,
+        "all three RPCs should have reached the upstream: {seen:?}"
+    );
+    assert!(
+        seen.iter().all(Option::is_none),
+        "the proxy must present no credential of the client's upstream: {seen:?}"
+    );
 
     proxy_handle.abort();
     upstream_handle.abort();
