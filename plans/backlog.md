@@ -547,6 +547,15 @@ next pass on this surface can address them as one piece.
   `Body::Log(_)` on the floor "for the GUI host to bridge". Picking
   this up is surfacing the log body out of the client and calling the
   function that is already written and tested.
+- `[security]` **The loopback sidecar link is unauthenticated for any
+  local user.** The GUI's (and production server's) supervised sidecar
+  listens on loopback plaintext with no token, so any local user on
+  the machine can drive the CAN hardware through it. Pre-existing,
+  explicitly outside ADR 0041's scope (its boundary is the server's
+  public endpoint), but it is the same actuation risk that ADR's
+  threat model names — flagged by the Task 42 plan review (N22).
+  Options when picked up: pass a one-shot token via the sidecar's
+  stdin/env at spawn, or a Unix-socket/named-pipe transport.
 - `[feat]` Linux `vcan` via socketcan as a writable CAN source. An
   actual local virtual-bus device on Linux is the honest follow-up to
   the in-process virtual bus. Reconsider alongside future hardware

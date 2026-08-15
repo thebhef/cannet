@@ -391,3 +391,26 @@ new assertion checked by inverting the code under it. Commits:
   Readers copy-pasting `cannet-server --virtual-bus` out of ADR 0021
   today get a parse error — worth a pass when ADR 0021 is next
   touched for its own reasons.
+
+## Exit-criteria walk (2026-08-12, orchestrator)
+
+- **Production role end-to-end** — met. Proxy session round-trips are
+  integration-tested against in-process upstreams (`Busy` and hang-up
+  release included); the real-sidecar `#[ignore]`d test listed both
+  PCAN channels through the proxy; and the phase-5 comparison drove
+  the actual GUI ingest (ADR 0031 harness) through the bare server at
+  bus-saturating rates, 20 000 frames per run, no loss.
+- **Shared supervision crate, GUI unchanged** — met (phase 1;
+  `cannet-sidecar` consumed by GUI host and server; GUI suite green).
+- **Fate of replay/vbus decided and implemented** — met (phase 2:
+  `debug replay` / `debug vbus`, docs updated).
+- **Perf comparison recorded** — met (phase 5 status log: paced and
+  flat-out tables; "about the same" holds on means and worsts).
+- **Per-OS archive produced by CI** — met as code (phase 4:
+  workflow legs written, actionlint-clean, Windows packaging
+  dry-run verified locally). The macOS and Linux legs and the
+  multi-job upload prove out on the next actual release run.
+- **ADR "test rig" cleanup** — met as a no-op: the only remaining
+  hits are ADRs 0008/0028, which this task never touched.
+- **README + rustdoc** — met (server run + distribution sections;
+  crate-root rustdoc on `cannet-sidecar`, proxy, harness flag).

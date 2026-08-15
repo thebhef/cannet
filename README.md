@@ -340,8 +340,9 @@ cargo run -p cannet-server                      # from a source checkout
 tar xzf cannet-server-vX.Y.Z-<target>.tar.gz    # macOS / Linux archive
 # or: Expand-Archive cannet-server-vX.Y.Z-<target>.zip   # Windows archive
 cd cannet-server-vX.Y.Z-<target>
-./cannet-server --bind 0.0.0.0:50051            # from a distribution archive
-# → hardware proxy: listening on 0.0.0.0:50051
+./cannet-server --bind 0.0.0.0:50051 --tls      # from a distribution archive
+# → hardware proxy: certificate fingerprint SHA256:qF3…RmA
+# → hardware proxy: listening on 0.0.0.0:50051 (tls)
 # → [info] sidecar:python-can: sidecar started (pid 61024)
 # → [info] sidecar:python-can: upstream ready on 127.0.0.1:60481
 ```
@@ -358,15 +359,44 @@ the one arbitrating who gets it. Point the GUI's connection panel at
 Flags:
 
 - `--bind <addr>` — listen address, default `127.0.0.1:50051`. Serving
-  anything but loopback is a deliberate choice: connections are not yet
-  authenticated or encrypted, so a routable bind exposes the hardware
-  to everyone who can reach the port.
+  anything but loopback is a deliberate choice: a routable bind exposes
+  the hardware to everyone who can reach the port, which is what
+  `--tls` is for.
+- `--tls` — terminate TLS on the bound endpoint
+  ([ADR 0041](docs/adr/0041-remote-connection-security.md)). No
+  certificate authority and no setup: the server generates a keypair
+  and a self-signed certificate the first time it needs one and keeps
+  them in its per-user data directory (`%LOCALAPPDATA%\cannet-server`
+  on Windows, `~/.local/share/cannet-server` on Linux,
+  `~/Library/Application Support/cannet-server` on macOS), so the
+  identity is the same on every later run. The private key file is
+  created readable by its owner only.
+- `--cert <path>` / `--key <path>` — present operator-supplied PEM
+  material instead of the generated identity; the two come as a pair
+  and imply `--tls`. **Renewing this certificate changes the
+  fingerprint**, and every client that pinned the old one has to
+  accept the new one — the certificate as a whole is the identity, so
+  re-keying and re-issuing look the same from the client's side.
 - `--sidecar-log-level <level>` — the sidecar's own verbosity
   (default `info`). Its output, and the server's supervision events,
   are written to stderr tagged `sidecar:python-can`.
 - `--sidecar-restart-budget <n>` — how many times a crashing sidecar is
   restarted automatically before the server gives up and says so
   (default 3). Restarting the server hands the budget back.
+- `--insecure` — bind a routable address with no protection at all.
+  Without it, `--bind` on anything but loopback and no TLS is a startup
+  refusal, because a routable cannet endpoint hands control of physical
+  hardware to whoever reaches the port. The flag suppresses that
+  refusal and nothing else: TLS you configured stays on. The same flag,
+  and the same refusal, apply to `debug replay` and `debug vbus`, which
+  take no certificate of their own.
+
+With TLS on, the server prints its certificate fingerprint at startup —
+`SHA256:` followed by unpadded base64, the same shape OpenSSH prints
+for a host key. That string is the server's identity: a connecting
+client compares what the server presented against it, and whoever can
+read this console is the one who tells the client which fingerprint to
+trust. It changes only when the certificate does.
 
 The sidecar is found the same way the GUI finds it
 ([ADR 0036](docs/adr/0036-frozen-python-can-sidecar.md)): a release
@@ -1106,7 +1136,9 @@ Tunable via `--speed-bps` (arbitration-phase bit rate, default
 500 000) and `--fd-data-speed-bps` (data-phase bit rate for FD frames
 with BRS; `0` leaves the bus classic-only). Runtime reconfiguration
 goes through the wire's `ConfigureBus` envelope and takes effect on
-the next arbitration round.
+the next arbitration round. `--bind` defaults to loopback and, like
+`debug replay`, terminates no TLS — a routable bind needs `--insecure`
+(§ Running the production server).
 
 **Bridges.** Any session may install a bridge with `AttachBridge {
 remote_address, interface_id, name }`. The server opens a session to
@@ -1706,6 +1738,9 @@ subscribed.
 CLI flags:
 
 - `--bind <addr>` — listen address (default `127.0.0.1:50051`).
+  Dev/test tooling terminates no TLS, so binding anything but
+  loopback needs `--insecure` (§ Running the production server).
+- `--insecure` — bind a routable address unprotected anyway.
 - `--rate <multiplier>` — replay pacing. `1.0` plays the BLF at
   its recorded cadence (real-time emulation, the closest match
   to a hardware bus); `100` plays it 100× faster; `0` (the

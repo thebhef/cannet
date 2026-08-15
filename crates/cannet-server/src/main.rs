@@ -3,7 +3,9 @@
 //! Bare invocation is the production hardware proxy (ADR 0040): it
 //! supervises the `cannet-python-can` sidecar on loopback and relays
 //! the sidecar's interfaces, under their real identities, to one
-//! network endpoint.
+//! network endpoint. That endpoint terminates TLS on request
+//! (ADR 0041), under the server's own generated certificate or
+//! operator-supplied material.
 //!
 //! `debug replay <blf>` and `debug vbus` are the prior BLF-replay and
 //! `--virtual-bus` modes, kept as explicitly dev/test tooling: replay
@@ -11,14 +13,14 @@
 //! `cannet-wire`, and vbus (ADR 0021) hosts a multi-client virtual CAN
 //! bus.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use cannet_core::BusConfig;
 use cannet_server::{
-    CannetServerImpl, LoopingBlfReplay, ProxyServerImpl, VirtualBusServerImpl,
-    VIRTUAL_BUS_FACTORY_ID,
+    identity, install_crypto_provider, CannetServerImpl, IdentityError, LoopingBlfReplay,
+    ProxyServerImpl, ServerIdentity, VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID,
 };
 use cannet_sidecar::{
     LogLevel, SidecarConfig, SidecarHost, SidecarPhase, SidecarStatus, SidecarSupervisor, SOURCE,
@@ -40,9 +42,8 @@ struct Cli {
 #[derive(Args, Debug)]
 struct ProxyArgs {
     /// Address to bind the gRPC service on. The default is loopback:
-    /// serving the network is an explicit choice, and until
-    /// connections are authenticated a non-loopback bind is
-    /// unprotected.
+    /// serving the network is an explicit choice, and an unprotected
+    /// non-loopback bind is refused (ADR 0041).
     #[arg(long, default_value = "127.0.0.1:50051")]
     bind: SocketAddr,
     /// The supervised sidecar's own `--log-level`, which governs how
@@ -54,7 +55,121 @@ struct ProxyArgs {
     /// before this server gives up and says so.
     #[arg(long, default_value_t = 3)]
     sidecar_restart_budget: u64,
+    /// Terminate TLS on the bound endpoint, using the server's own
+    /// certificate — generated and persisted in the per-user data
+    /// directory on first use, so its fingerprint survives restarts.
+    /// Implied by `--cert`.
+    #[arg(long)]
+    tls: bool,
+    /// PEM certificate (or chain) to present instead of the generated
+    /// one. Requires `--key`. Renewing this certificate changes the
+    /// fingerprint, so every pinned client has to accept it again.
+    #[arg(long, value_name = "PATH", requires = "key")]
+    cert: Option<PathBuf>,
+    /// PEM private key for `--cert`.
+    #[arg(long, value_name = "PATH", requires = "cert")]
+    key: Option<PathBuf>,
+    /// Allow an unprotected endpoint to be bound to a routable address.
+    /// Suppresses the startup refusal and nothing else — TLS that is
+    /// configured stays on.
+    #[arg(long)]
+    insecure: bool,
 }
+
+impl ProxyArgs {
+    /// The TLS identity this invocation serves with, or `None` when it
+    /// serves plaintext. Operator material wins over the generated
+    /// identity; `--tls` alone reaches for the generated one.
+    fn identity(&self) -> Result<Option<ServerIdentity>, IdentityError> {
+        match (&self.cert, &self.key) {
+            (Some(cert), Some(key)) => ServerIdentity::from_files(cert, key).map(Some),
+            // clap's `requires` rejects one without the other, so the
+            // remaining cases are "neither".
+            _ if self.tls => {
+                ServerIdentity::load_or_generate(&identity::default_identity_dir()?).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+/// What protects a bound endpoint, one field per requirement.
+///
+/// The guard reads this rather than a bare `bool` so that adding a
+/// requirement is a field here and a line in [`Self::missing`] — not a
+/// new argument at each of the three `--bind` sites.
+#[derive(Debug, Clone, Copy, Default)]
+struct Protections {
+    /// The endpoint terminates TLS.
+    tls: bool,
+}
+
+impl Protections {
+    /// The requirements this endpoint fails to meet, phrased as the
+    /// flags that would satisfy them.
+    fn missing(self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if !self.tls {
+            missing.push("TLS (--tls, or --cert with --key)");
+        }
+        missing
+    }
+}
+
+/// True when `ip` names this machine's loopback interface, including
+/// the IPv4-mapped IPv6 spelling of it (`::ffff:127.0.0.1`), which
+/// [`std::net::Ipv6Addr::is_loopback`] alone does not recognise.
+fn is_loopback(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map_or_else(|| v6.is_loopback(), |v4| v4.is_loopback()),
+    }
+}
+
+/// Refuse to bind an unprotected endpoint to anything but loopback
+/// (ADR 0041).
+///
+/// A loopback bind is the operator's own machine and stays plaintext by
+/// default. Anything routable exposes control of physical CAN hardware
+/// to whoever can reach the port, so it has to be protected — or the
+/// operator has to say `--insecure` out loud. `--insecure` suppresses
+/// this error and nothing else: it never turns off protection that is
+/// configured.
+fn guard_bind(
+    bind: SocketAddr,
+    protections: Protections,
+    insecure: bool,
+) -> Result<(), UnprotectedBind> {
+    let missing = protections.missing();
+    if insecure || missing.is_empty() || is_loopback(bind.ip()) {
+        return Ok(());
+    }
+    Err(UnprotectedBind { bind, missing })
+}
+
+/// A non-loopback bind that nothing protects, refused at startup.
+#[derive(Debug)]
+struct UnprotectedBind {
+    bind: SocketAddr,
+    missing: Vec<&'static str>,
+}
+
+impl std::fmt::Display for UnprotectedBind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "refusing to bind {}: reachable from the network without {}. \
+             Add it, bind loopback instead, or pass --insecure to serve \
+             the hardware in the clear anyway.",
+            self.bind,
+            self.missing.join(" and without ")
+        )
+    }
+}
+
+impl std::error::Error for UnprotectedBind {}
 
 #[derive(Subcommand, Debug)]
 enum Command {
@@ -71,9 +186,14 @@ enum DebugCommand {
     Replay {
         /// Path to the BLF file to load and replay on a loop.
         blf: PathBuf,
-        /// Address to bind the gRPC service on.
+        /// Address to bind the gRPC service on. Dev/test tooling takes
+        /// no certificate, so leaving loopback needs `--insecure`.
         #[arg(long, default_value = "127.0.0.1:50051")]
         bind: SocketAddr,
+        /// Allow this unprotected endpoint to be bound to a routable
+        /// address.
+        #[arg(long)]
+        insecure: bool,
         /// Replay rate multiplier. `1.0` plays the BLF back at its
         /// recorded cadence (real-time emulation); `100.0` would play
         /// it 100× faster; `0.0` (the default) disables pacing
@@ -90,9 +210,14 @@ enum DebugCommand {
     /// whose transmissions fan out to every other participant.
     /// Dev/test tooling.
     Vbus {
-        /// Address to bind the gRPC service on.
+        /// Address to bind the gRPC service on. Dev/test tooling takes
+        /// no certificate, so leaving loopback needs `--insecure`.
         #[arg(long, default_value = "127.0.0.1:50051")]
         bind: SocketAddr,
+        /// Allow this unprotected endpoint to be bound to a routable
+        /// address.
+        #[arg(long)]
+        insecure: bool,
         /// Arbitration-phase bit rate (bits per second) for the
         /// virtual bus's initial configuration.
         #[arg(long, default_value_t = 500_000)]
@@ -109,7 +234,9 @@ async fn run_replay(
     blf: PathBuf,
     bind: SocketAddr,
     rate: f64,
+    insecure: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    guard_bind(bind, Protections::default(), insecure)?;
     let replay = Arc::new(LoopingBlfReplay::open(&blf)?);
 
     eprintln!(
@@ -144,7 +271,9 @@ async fn run_vbus(
     bind: SocketAddr,
     speed_bps: u64,
     fd_data_speed_bps: u64,
+    insecure: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    guard_bind(bind, Protections::default(), insecure)?;
     let fd_enabled = fd_data_speed_bps > 0;
     let config = BusConfig {
         speed_bps,
@@ -261,6 +390,15 @@ impl SidecarHost for CliSidecarHost {
 /// current address per RPC rather than capturing one at startup — a
 /// restart re-binds a different port.
 async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let identity = args.identity()?;
+    guard_bind(
+        args.bind,
+        Protections {
+            tls: identity.is_some(),
+        },
+        args.insecure,
+    )?;
+
     let supervisor = Arc::new(SidecarSupervisor::default());
     let host: Arc<dyn SidecarHost> = Arc::new(CliSidecarHost {
         log_level: args.sidecar_log_level,
@@ -269,28 +407,53 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     });
     supervisor.spawn(&host);
 
-    eprintln!("hardware proxy: listening on {}", args.bind);
+    let mut builder = Server::builder();
+    if let Some(identity) = &identity {
+        builder = builder.tls_config(identity.tls_config())?;
+        // Straight to stderr, never through `tracing`: this is the
+        // string the operator reads off the console and compares in the
+        // client, so it must not be filterable by a log level.
+        eprintln!(
+            "hardware proxy: certificate fingerprint {}",
+            identity.fingerprint()
+        );
+    }
+    eprintln!(
+        "hardware proxy: listening on {} ({})",
+        args.bind,
+        if identity.is_some() {
+            "tls"
+        } else {
+            "plaintext"
+        }
+    );
+
     let upstream = Arc::clone(&supervisor);
     let service = ProxyServerImpl::new(move || upstream.status().address).into_service();
-    Server::builder()
-        .add_service(service)
-        .serve(args.bind)
-        .await?;
+    builder.add_service(service).serve(args.bind).await?;
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Before any TLS configuration is built: rustls picks its crypto
+    // backend from the process default, and we name ours rather than
+    // let the dependency graph decide.
+    install_crypto_provider();
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Debug(DebugCommand::Replay { blf, bind, rate })) => {
-            run_replay(blf, bind, rate).await
-        }
+        Some(Command::Debug(DebugCommand::Replay {
+            blf,
+            bind,
+            rate,
+            insecure,
+        })) => run_replay(blf, bind, rate, insecure).await,
         Some(Command::Debug(DebugCommand::Vbus {
             bind,
             speed_bps,
             fd_data_speed_bps,
-        })) => run_vbus(bind, speed_bps, fd_data_speed_bps).await,
+            insecure,
+        })) => run_vbus(bind, speed_bps, fd_data_speed_bps, insecure).await,
         None => run_proxy(cli.proxy).await,
     }
 }
@@ -311,6 +474,49 @@ mod tests {
         );
         assert_eq!(cli.proxy.sidecar_log_level, "info");
         assert_eq!(cli.proxy.sidecar_restart_budget, 3);
+        // Plaintext by default: a loopback endpoint is the dev and
+        // local-GUI path (ADR 0041).
+        assert!(!cli.proxy.tls);
+        assert!(cli.proxy.identity().unwrap().is_none());
+    }
+
+    #[test]
+    fn cert_and_key_come_as_a_pair() {
+        Cli::try_parse_from(["cannet-server", "--cert", "server.pem"])
+            .expect_err("--cert without --key should not parse");
+        Cli::try_parse_from(["cannet-server", "--key", "server.key"])
+            .expect_err("--key without --cert should not parse");
+        Cli::try_parse_from([
+            "cannet-server",
+            "--cert",
+            "server.pem",
+            "--key",
+            "server.key",
+        ])
+        .expect("--cert with --key should parse");
+    }
+
+    #[test]
+    fn operator_material_is_served_instead_of_the_generated_identity() {
+        // Stand-in for an operator's PEM files: material generated
+        // somewhere other than the per-user data directory, named on
+        // the command line.
+        let dir = tempfile::tempdir().unwrap();
+        let generated = ServerIdentity::load_or_generate(dir.path()).unwrap();
+        let cli = Cli::try_parse_from([
+            "cannet-server",
+            "--cert",
+            dir.path().join("server-cert.pem").to_str().unwrap(),
+            "--key",
+            dir.path().join("server-key.pem").to_str().unwrap(),
+        ])
+        .expect("--cert/--key should parse");
+        let identity = cli
+            .proxy
+            .identity()
+            .unwrap()
+            .expect("operator material means TLS, with or without --tls");
+        assert_eq!(identity.fingerprint(), generated.fingerprint());
     }
 
     #[test]
@@ -357,7 +563,13 @@ mod tests {
     fn debug_replay_parses_positional_blf_with_defaults() {
         let cli = Cli::try_parse_from(["cannet-server", "debug", "replay", "capture.blf"])
             .expect("debug replay <blf> should parse");
-        let Some(Command::Debug(DebugCommand::Replay { blf, bind, rate })) = cli.command else {
+        let Some(Command::Debug(DebugCommand::Replay {
+            blf,
+            bind,
+            rate,
+            insecure: _,
+        })) = cli.command
+        else {
             panic!("expected Debug(Replay), got {:?}", cli.command);
         };
         assert_eq!(blf, PathBuf::from("capture.blf"));
@@ -379,7 +591,13 @@ mod tests {
             "1.5",
         ])
         .expect("debug replay with flags should parse");
-        let Some(Command::Debug(DebugCommand::Replay { blf, bind, rate })) = cli.command else {
+        let Some(Command::Debug(DebugCommand::Replay {
+            blf,
+            bind,
+            rate,
+            insecure: _,
+        })) = cli.command
+        else {
             panic!("expected Debug(Replay), got {:?}", cli.command);
         };
         assert_eq!(blf, PathBuf::from("capture.blf"));
@@ -401,6 +619,7 @@ mod tests {
             bind,
             speed_bps,
             fd_data_speed_bps,
+            insecure: _,
         })) = cli.command
         else {
             panic!("expected Debug(Vbus), got {:?}", cli.command);
@@ -426,12 +645,131 @@ mod tests {
             bind: _,
             speed_bps,
             fd_data_speed_bps,
+            insecure: _,
         })) = cli.command
         else {
             panic!("expected Debug(Vbus), got {:?}", cli.command);
         };
         assert_eq!(speed_bps, 250_000);
         assert_eq!(fd_data_speed_bps, 2_000_000);
+    }
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn an_unprotected_loopback_bind_is_allowed() {
+        // The operator's own machine: plaintext there is the dev flow
+        // and the GUI's local path, and no one else can reach it.
+        for loopback in ["127.0.0.1:50051", "127.0.0.53:50051", "[::1]:50051"] {
+            guard_bind(addr(loopback), Protections::default(), false)
+                .unwrap_or_else(|e| panic!("{loopback} should be allowed unprotected: {e}"));
+        }
+    }
+
+    #[test]
+    fn an_ipv4_mapped_loopback_bind_is_loopback() {
+        // `Ipv6Addr::is_loopback` is false for `::ffff:127.0.0.1`, so
+        // the guard has to unwrap the mapping itself — otherwise this
+        // spelling of localhost would be refused.
+        guard_bind(
+            addr("[::ffff:127.0.0.1]:50051"),
+            Protections::default(),
+            false,
+        )
+        .expect("an IPv4-mapped loopback address is still loopback");
+    }
+
+    #[test]
+    fn an_unprotected_routable_bind_is_refused_and_names_the_escape_hatch() {
+        let err = guard_bind(addr("0.0.0.0:50051"), Protections::default(), false)
+            .expect_err("an unprotected routable bind must be refused");
+        let message = err.to_string();
+        assert!(message.contains("0.0.0.0:50051"), "{message}");
+        assert!(message.contains("TLS"), "{message}");
+        assert!(
+            message.contains("--insecure"),
+            "the refusal must name the flag that overrides it: {message}"
+        );
+    }
+
+    #[test]
+    fn a_protected_routable_bind_is_allowed() {
+        guard_bind(addr("0.0.0.0:50051"), Protections { tls: true }, false)
+            .expect("TLS is what makes a routable bind acceptable");
+        guard_bind(
+            addr("[2001:db8::1]:50051"),
+            Protections { tls: true },
+            false,
+        )
+        .expect("the same holds for IPv6");
+    }
+
+    #[test]
+    fn insecure_allows_an_unprotected_routable_bind() {
+        guard_bind(addr("0.0.0.0:50051"), Protections::default(), true)
+            .expect("--insecure is the operator saying it out loud");
+    }
+
+    #[test]
+    fn insecure_does_not_turn_off_configured_tls() {
+        // `--insecure` suppresses the refusal; it is not a way to
+        // disable TLS the operator asked for.
+        let dir = tempfile::tempdir().unwrap();
+        let generated = ServerIdentity::load_or_generate(dir.path()).unwrap();
+        let cli = Cli::try_parse_from([
+            "cannet-server",
+            "--insecure",
+            "--bind",
+            "0.0.0.0:50051",
+            "--cert",
+            dir.path().join("server-cert.pem").to_str().unwrap(),
+            "--key",
+            dir.path().join("server-key.pem").to_str().unwrap(),
+        ])
+        .expect("--insecure alongside --cert/--key should parse");
+        let identity = cli
+            .proxy
+            .identity()
+            .unwrap()
+            .expect("--insecure must not discard configured TLS material");
+        assert_eq!(identity.fingerprint(), generated.fingerprint());
+    }
+
+    #[test]
+    fn the_debug_modes_take_insecure_too() {
+        // Dev/test tooling takes no certificate, so the only way it
+        // leaves loopback is the explicit flag — the same guard, the
+        // same escape hatch.
+        let cli = Cli::try_parse_from([
+            "cannet-server",
+            "debug",
+            "vbus",
+            "--bind",
+            "0.0.0.0:9000",
+            "--insecure",
+        ])
+        .expect("debug vbus should take --insecure");
+        let Some(Command::Debug(DebugCommand::Vbus { insecure, .. })) = cli.command else {
+            panic!("expected Debug(Vbus), got {:?}", cli.command);
+        };
+        assert!(insecure);
+
+        let cli = Cli::try_parse_from([
+            "cannet-server",
+            "debug",
+            "replay",
+            "capture.blf",
+            "--bind",
+            "0.0.0.0:9000",
+            "--insecure",
+        ])
+        .expect("debug replay should take --insecure");
+        let Some(Command::Debug(DebugCommand::Replay { insecure, .. })) = cli.command else {
+            panic!("expected Debug(Replay), got {:?}", cli.command);
+        };
+        assert!(insecure);
     }
 
     #[test]

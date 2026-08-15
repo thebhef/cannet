@@ -113,22 +113,61 @@ without reshaping callers.
 - Network transport: **tonic / gRPC over HTTP/2** + **prost** —
   `adopted` (Phase 2). Schema in `crates/cannet-wire`, `tonic-build`
   codegen on both ends. See [`../docs/adr/0004-grpc-wire-protocol.md`](../docs/adr/0004-grpc-wire-protocol.md).
-- **tonic `tls` feature (rustls)** — `proposed` (Task 42). Transport
-  security for the production cannet server's public endpoint per
-  [ADR 0041](../docs/adr/0041-remote-connection-security.md);
-  rustls is already the tonic-blessed TLS stack, no new top-level
-  crate. Loopback links stay plaintext; the wire crate does not
-  hard-require it.
-- **`rcgen`** (Rust, MIT / Apache-2.0) — `proposed` (Task 42).
-  Generates the server's self-signed keypair/certificate on first
-  run (ADR 0041). The de-facto Rust cert-generation crate (used by
-  rustls' own test infra); alternative is shelling out to `openssl`,
-  which reintroduces a runtime binary dependency.
-- **Token-auth support crates** — `proposed` (Task 42):
-  `getrandom` (or `rand`) for the 256-bit OS-CSPRNG bearer token,
-  `base64` for its base64url form (already in the workspace via the
-  perf harness), and constant-time comparison via `subtle` or
-  `ring::constant_time` (ring is already in-tree under rustls). No
+- **tonic `tls` feature (rustls 0.23, `ring` backend)** — `adopted`
+  (Task 42) on `cannet-server`; still `proposed` for `cannet-client`.
+  Transport security for the production cannet server's public
+  endpoint per
+  [ADR 0041](../docs/adr/0041-remote-connection-security.md). Not a
+  mere feature flip: rustls was absent from the lock; enabling
+  `tonic/tls` added rustls 0.23 + tokio-rustls + rustls-webpki +
+  rustls-pki-types + subtle. `cannet-server` also takes `rustls` as a
+  direct dep (`default-features = false, features = ["ring", "std",
+  "logging", "tls12"]` — the defaults would pull `aws-lc-rs`) to
+  install the process-level crypto provider explicitly at startup;
+  everything in the tree stays on that one backend (see the Task 42
+  plan review, B1). Still to come on the client side:
+  `cannet-client` takes `rustls`/`rustls-pki-types` as direct deps to
+  implement the pin-only `ServerCertVerifier`, and dials through
+  `Endpoint::connect_with_connector`
+  (tonic 0.12's `ClientTlsConfig` cannot carry a custom verifier) —
+  hyper-rustls vs a small tokio-rustls connector is a spike decision
+  recorded here when made. Loopback links stay plaintext; the wire
+  crate does not hard-require TLS.
+- **`rcgen` 0.14** (Rust, MIT / Apache-2.0) — `adopted` (Task 42),
+  direct dep of `cannet-server`. Generates the server's self-signed
+  keypair/certificate on first run (ADR 0041). The de-facto Rust
+  cert-generation crate (used by rustls' own test infra); alternative
+  is shelling out to `openssl`, which reintroduces a runtime binary
+  dependency. Taken with
+  `default-features = false, features = ["crypto", "pem", "ring"]` —
+  its default `aws-lc-rs` backend would collide with rustls-`ring`
+  at runtime (plan review, B1) and cost a cmake/C toolchain.
+- **`ring` 0.17** — `adopted` (Task 42), direct dep of
+  `cannet-server`; already in the tree as rustls' crypto backend.
+  Supplies SHA-256 for the certificate fingerprint (and later the
+  token's CSPRNG and constant-time compare), so no `sha2`.
+- **`rustls-pemfile` 2** — `adopted` (Task 42), direct dep of
+  `cannet-server`; already in the tree under `tonic/tls`. Extracts
+  the end-entity certificate's DER from the PEM the fingerprint is
+  taken over. The alternative was hand-rolled PEM/DER scanning, which
+  is exactly the kind of surface we don't hand-roll.
+- **`dirs` 6** (Rust, MIT / Apache-2.0) — `adopted` (Task 42), direct
+  dep of `cannet-server`; already in the lock via Tauri. Resolves the
+  per-user data directory the generated identity is persisted in. The
+  headless server has no Tauri path API, and hard-coding
+  `%LOCALAPPDATA%` / `$XDG_DATA_HOME` / `~/Library` per OS is the
+  same surface with more ways to be wrong.
+- **`base64` 0.22** — `adopted` (Task 42), direct dep of
+  `cannet-server`; already in the lock via the perf harness. Renders
+  the fingerprint's standard-alphabet unpadded form (and later the
+  token's base64url). Pinned to the version already in the lock so the
+  build does not carry two `base64` majors.
+- **Token-auth support crates** — `proposed` (Task 42): with the
+  `ring` backend in-tree, `ring` itself covers the 256-bit OS CSPRNG
+  (`SystemRandom`) and the constant-time compare, so the token needs
+  no new dependency beyond the `base64` above.
+  `getrandom`/`rand`/`subtle`/`sha2` —
+  `rejected` as direct deps (redundant with ring). No
   structured-token library (JWT/PASETO) — there are no claims to
   carry (ADR 0041 rejected accounts/tiers).
 - **mDNS/DNS-SD crate** — `proposed` (Task 43); candidates
