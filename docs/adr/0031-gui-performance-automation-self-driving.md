@@ -142,6 +142,38 @@ the decision to touch interfaces, and the decision to record.
   before this flag existed under a customised profile. And each
   directory is its own profile: reuse one across the runs being
   compared, and a run that needs a server pinned pins it there once.
+- **A capture measures the machine as much as the build, so the run
+  procedure is part of the measurement.** Repeated runs of one
+  unchanged release binary move the gated metrics by more than the
+  differences a gate is asked to judge: over ten back-to-back runs
+  `rx_gap_short_frac_worst` rose 9× with nothing varying but session
+  position, and `renderer_mb_drift_per_min` measured a 2.2× lower mean
+  in one session than in another two hours earlier. Three rules follow,
+  and they are the procedure — not advice.
+
+  - **Measure on a quiet machine, and not straight after heavy work.**
+    Nothing else runs during a capture; a run started minutes after a
+    full build measures a different machine than one started cold.
+    Deliberate CPU contention alone has been shown to push
+    `rx_gap_short_frac_worst` past its limit on an unchanged binary.
+  - **Compare within one session.** Runs taken back to back on one
+    machine state are comparable to each other. A number carried across
+    sessions — or across the `--app-data-dir` change, which moved every
+    run to default settings — is a weaker comparison than it looks.
+  - **A single-run breach with the rest of the gate's runs clean is
+    re-run, not ruled on.** Take a fresh run after letting the machine
+    settle; the gate stands on the re-runs. A breach that repeats is
+    real and blocks. This is what closes the ambiguity a lone failing
+    first run used to create: the disposition no longer depends on
+    attributing it, which may not be possible — the levers nominated
+    for two such failures (cold page cache, a fresh profile,
+    process-table polling) were each tested and each falsified.
+
+  Drift metrics deserve particular suspicion here: a least-squares
+  slope over a 60 s window is a property of where in a memory ramp the
+  window landed, so its worst run across a gate is a noisier statistic
+  than a latency maximum, which at least corresponds to something a
+  user felt.
 - The capture includes a **memory tier**. The frontend already reports
   the JS heap (`jsheap_mb`); while a capture is armed the host stamps its
   own process-memory split onto each per-second sample — host RSS

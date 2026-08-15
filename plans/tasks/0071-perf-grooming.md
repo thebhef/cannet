@@ -243,3 +243,150 @@ Predictions: if H7 holds, at least one loaded run breaches
 produced at the p5 gate. If loaded runs measure inside the unloaded
 band on both metrics, H7 is falsified and H3 (sporadic) is what
 remains.
+
+### 2026-08-14 — experiment 2: HALTED BY OWNER VETO, partial data only
+
+**The synthetic-load approach was vetoed by the owner mid-collection.**
+The owner was at the machine; the busy-loop cells made the workstation
+unusable. Every load shell was killed on receipt of the directive
+(32 spinners plus the run they were loading, all of them processes this
+task started; the in-flight `t71-G1` run was killed with no report
+written) and no further loaded run was launched. **H7 is therefore
+untested.** Four loaded runs completed before the halt and are kept as
+data points, explicitly *not* as an attribution — one cell has two
+reps, the others one each, and no cell has enough reps to separate
+signal from the session-position effect experiment 1 already found.
+
+| label | load | `short_frac` | `p95_ratio` | `rend_slope` | `rx_fps` | check |
+| --- | --- | --- | --- | --- | --- | --- |
+| D1 | 16 busy-loop shells | **0.0687** | 1.75 | 35.3 | 1571.8 | **FAILED** (`rx_gap_short_frac_worst` 0.069 vs 0.041) |
+| D2 | 16 busy-loop shells | 0.0233 | 1.54 | 34.6 | 1593.4 | passed, 33/33 |
+| E1 | 3 disk write/read loops | 0.0082 | 1.36 | 28.7 | 1605.3 | passed, 33/33 |
+| F1 | both together | 0.0050 | 1.26 | 42.4 | 1605.0 | passed, 33/33 |
+| G1 | 32 busy-loop shells | — | — | — | — | killed mid-run by the veto; no report |
+
+**What this data literally shows, and nothing more.** One run under a
+16-shell CPU load breached the metric (0.0687) and a second under the
+identical load did not (0.0233); both sit above the unloaded band
+(0.0003–0.0048, ten runs) and both depressed `rx_fps` below the 1608
+expectation (1571.8 / 1593.4) in a way no unloaded run did. The
+combined-load cell (F1, 0.0050) sits inside the unloaded band and so
+does not follow the CPU cell, which is exactly the kind of
+contradiction more reps existed to resolve. **No causal claim is made
+from n = 2 with a contradicting neighbour.**
+
+The one thing the loaded runs do settle is a *negative*: every loaded
+run's `rend_slope` (28.7–42.4) landed inside the unloaded band
+(18.5–47.2). Concurrent machine load of this kind does **not** inflate
+`renderer_mb_drift_per_min`, so whatever moved that metric between
+sessions is not competing CPU or disk work during the window.
+
+**Hypothesis status at close.**
+
+- **H1** (fresh-profile init) — falsified, experiment 1.
+- **H2** (process-table polling) — falsified, experiment 1.
+- **H4** (renderer drift is code growth) — falsified, experiment 1.
+- **H5** (init inflates drift) — falsified, experiment 1.
+- **H6** (drift falls with run order) — falsified, experiment 1.
+- **H7** (concurrent heavy CPU/disk work carries the anomalies) —
+  **untested.** Partially observed (two CPU-load reps, one breach),
+  vetoed before it could be confirmed or falsified. Its drift half is
+  falsified by the negative above; its `short_frac` half is open.
+- **H3** (sporadic machine event, unattached to any lever tested) —
+  **surviving**, and the only hypothesis compatible with all fourteen
+  runs.
+
+### 2026-08-14 — verdicts
+
+**Item 1 — the `rx_gap_short_frac_worst` first-run failures.**
+
+*Attribution: environment, not build; specific carrier unidentified.*
+
+- **Not the build.** Fourteen runs on the constant `ea9646ae` release
+  binary, ten of them unloaded, measured 0.0003–0.0048 against a 0.041
+  limit — the same binary whose first gate run measured 0.161. A build
+  that produces 0.161 once and 0.0003 ten times in a row is not
+  producing 0.161 because of what it is.
+- **Not the two named suspects.** A fresh empty `--app-data-dir`
+  profile (4 runs) and `tasklist` polling across the window (3 runs)
+  both measure inside the clean band. Cold exe link and first-of-session
+  were already exonerated by task75-p1 run 1. Every lever nominated
+  when the anomaly was recorded is now falsified.
+- **The environment is demonstrably capable of it.** A deliberate CPU
+  load produced 0.0687 — a *reproduction of the failure shape*
+  (elevated `p95_ratio` with it, 1.75, matching the 2.27 / 2.40 of the
+  two gate failures) from machine contention alone, with no code
+  change. That establishes the metric is environment-reachable; the
+  vetoed reps mean it does not establish that contention is what
+  happened on those two gate runs.
+- **Metric sensitivity is real and measurable.** `short_frac` rose 9×
+  (0.00037 → 0.00343) across thirteen minutes of back-to-back runs on
+  a quiet machine with nothing varying but session position, and
+  `tx_late_ms_max` rose with it (5.0 → 83.6). The metric reads machine
+  state, not only app behaviour.
+
+*Consequence for the gate:* the procedure must dispose of a sporadic
+single-run breach without needing an attribution, because the
+attribution may not be available. ADR 0031 and README amended below.
+
+**Item 2 — the `renderer_mb_drift_per_min` trend.**
+
+*Attribution: measurement environment. The worst-to-worst series is
+not evidence of code growth.*
+
+- **The same binary spans the whole "trend" twice over.** `ea9646ae`
+  measured 62.5 / 88.5 / 103.7 (mean 84.9) at the p5 gate and
+  18.5–47.2 (mean 38.1, n = 10) two hours later. The six-gate
+  worst-to-worst series spans 92.6 → 103.7, i.e. **11.1 units**; one
+  binary moved its own mean by **46.8 units** between sessions, 4.2×
+  the entire trend.
+- **The per-gate means do not trend.** Worst-to-worst is a maximum,
+  and the run count per gate rose from 2 to 3 mid-series, which lifts
+  a maximum on its own. The means are 86.8 / 90.7 / 89.7 / 92.2 /
+  98.2 / **84.9** — the newest build has the *lowest* mean of the six,
+  and 38.1 on a second measurement.
+- **This build sits under the baseline's own value.** The gated
+  baseline for the metric is 50.802 (limit 106.605). Ten of the ten
+  quiet-session runs on the current build measured below 50.8.
+- **Not carried by concurrent load either** (the loaded runs' negative,
+  above), and not by profile state (A mean 34.7 vs B 39.0). The
+  carrier is some session-level machine state not isolated here — the
+  p5 gate ran minutes after a full release `tauri build`, the quiet
+  runs did not — but that specific mechanism was not tested and is not
+  claimed.
+- **No fix is warranted and none is made.** There is no growth to fix.
+  No baseline was promoted, edited, or regenerated in this task.
+
+**Queued owner decision (not actioned here).** The gate limit for
+`renderer_mb_drift_per_min` is a fixed multiple over a single baseline
+capture, and this task's data says the metric's session-to-session
+spread (18.5–103.7 on one binary, 5.6×) is wider than the margin the
+limit leaves (50.8 → 106.6, 2.1×). So the metric can fail a gate on a
+build that has not changed, and can pass one that has. Two dispositions
+worth a ruling, both owner calls:
+
+1. **Gate it on a median of the gate's runs** rather than the worst
+   run, for drift metrics specifically — the worst-run rule is right
+   for latency spikes (a user feels one), wrong for a least-squares
+   slope over a 60 s window (nobody feels one run's slope).
+2. **Widen the drift limits** to cover the measured session spread,
+   accepting that the metric then only catches gross leaks.
+
+Doing nothing is also defensible now that the trend is known to be an
+artifact — the recommendation is (1), but **the limits are not touched
+in this task**.
+
+**Not addressed.** The 90-minute follow-window observation
+(`longtask_ms_per_s` mean 95.4, `jank_fraction` 0.439 at a 5401 s
+window) was in scope only if the data tied it to the same mechanism.
+Nothing here does: it is a whole-capture-length effect, and every run
+in this task was 60 s. It stays where task 70 left it, unattributed.
+
+## Blockers / side effects
+
+- **Experiment 2 (synthetic machine load) is closed by owner veto, not
+  by data.** Busy-loop cells make the workstation unusable while they
+  run, so H7 cannot be tested this way on the owner's machine. If the
+  `short_frac` carrier is ever worth pinning down, it needs a rig the
+  owner is not sitting at, or a load shape that does not monopolise
+  the desktop.
