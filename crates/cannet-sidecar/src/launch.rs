@@ -22,6 +22,15 @@ pub const SIDECAR_DIR_ENV: &str = "CANNET_SIDECAR_DIR";
 /// through it.
 pub const DRIVER_MODULE_ENV: &str = "CANNET_DRIVER_MODULE";
 
+/// The bearer-token variable a server host accepts client credentials
+/// through (its own `TOKEN_ENV` constant). Duplicated here as a literal
+/// — `cannet-sidecar` must not depend on `cannet-server` — solely so the
+/// child's inherited environment can be scrubbed of it: the sidecar
+/// never reads it (its only environment read is [`DRIVER_MODULE_ENV`]),
+/// so a value that reaches the child anyway is inherited exposure with
+/// no purpose, worth closing even though nothing here leaks it.
+const TOKEN_ENV: &str = "CANNET_TOKEN";
+
 /// Which **developer-machine** launcher to use. The frozen end-user
 /// path is resolved separately (the host hands it over in
 /// [`SidecarConfig::frozen_launcher`] → [`build_frozen_command`]) and
@@ -214,6 +223,9 @@ pub(crate) fn apply_settings(
     if let Some(module) = driver_module {
         cmd.env(DRIVER_MODULE_ENV, module);
     }
+    // Defense-in-depth: the sidecar never reads this, so it should
+    // never sit in the child's env block either. See `TOKEN_ENV`.
+    cmd.env_remove(TOKEN_ENV);
 }
 
 /// Windows: suppress the console window a console-subsystem child would
@@ -781,6 +793,31 @@ mod tests {
             .flatten()
             .expect("the driver module must reach the child");
         assert_eq!(value, OsStr::new("my_team.driver"));
+    }
+
+    #[test]
+    fn the_server_token_is_scrubbed_from_the_child_environment() {
+        // The sidecar's only environment read is `DRIVER_MODULE_ENV`
+        // (see the tests above), so a server-side `CANNET_TOKEN` sitting
+        // in the child's env block serves no purpose — scrub it by
+        // construction. `.env(TOKEN_ENV, ..)` stands in for what a real
+        // invocation would otherwise inherit from the parent process.
+        for mut cmd in [
+            build_command(LaunchPath::PathUv, &sample_sidecar_dir()),
+            build_command(LaunchPath::SystemPython, &sample_sidecar_dir()),
+            build_frozen_command(&std::env::temp_dir().join(frozen_launcher_name())),
+        ] {
+            cmd.env(TOKEN_ENV, "super-secret-token");
+            apply_settings(&mut cmd, "info", None, None);
+            let entry = cmd.get_envs().find(|(k, _)| *k == OsStr::new(TOKEN_ENV));
+            assert_eq!(
+                entry,
+                Some((OsStr::new(TOKEN_ENV), None)),
+                "CANNET_TOKEN must be explicitly removed from the child env, not just \
+                 left unset: {:?}",
+                cmd.get_envs().collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

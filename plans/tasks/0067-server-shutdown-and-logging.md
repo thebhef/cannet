@@ -666,6 +666,73 @@ pre-commit gate ran it on every commit). No frontend file was touched,
 so the pnpm suites were not in scope; no Python file was touched, so
 the sidecar suite was not either.
 
+### 2026-08-13 — follow-ups (owner-ruled, `task67-followups`)
+
+Two independent closeouts of items left open in the Blockers section
+above; each its own commit off `plotpanel-flake-fix` (`4f9b0ba`).
+
+**`CANNET_TOKEN` scrubbed from the sidecar's spawn environment.**
+`apply_settings` (`crates/cannet-sidecar/src/launch.rs`) now calls
+`cmd.env_remove(TOKEN_ENV)` unconditionally, after the existing
+`DRIVER_MODULE_ENV` handling. Both hosts route every command flavour
+through `apply_settings` via `resolve_command`'s `configure` closure,
+so the scrub applies by construction rather than per-host. `TOKEN_ENV`
+is a crate-local literal (`cannet-sidecar` must not depend on
+`cannet-server`), documented as duplicating the server's own constant.
+
+TDD: `the_server_token_is_scrubbed_from_the_child_environment` sets
+`CANNET_TOKEN` on each of the three command flavours (standing in for
+what a real invocation would inherit from the parent process) and
+asserts `get_envs()` shows an explicit removal (`(TOKEN_ENV, None)`),
+not just an absent key — red before the `env_remove` call existed.
+
+| layer | command | result |
+| --- | --- | --- |
+| sidecar | `cargo test -p cannet-sidecar` | 40 passed |
+| server | `cargo test -p cannet-server` | 12 passed (+ 1 doctest) |
+
+`cargo clippy -p cannet-sidecar -p cannet-server --all-targets -- -D
+warnings` clean.
+
+**Reconfigure's spurious close-race WARNING silenced.**
+`_SharedInterface.reconfigure` (`servers/cannet-python-can/
+cannet_python_can/server/shared_interface.py`) swaps the channel
+without setting `_stop` — it's a swap, not a shutdown — so a
+`ConfigureBus` on an open interface could still emit one `rx for …
+failed` WARNING per swap, the cousin of the close race the landed
+phase-2 fix silenced. Deliberately not reusing `_stop`, per the
+phase-2 note that overloading it would make a genuine shutdown
+mid-reconfigure look like a swap.
+
+Signal design: `reconfigure` now stashes the exact channel object it
+is about to close in `self._reconfigure_closing_channel`, set under
+`_lock` in the same critical section that swaps `self._channel` to the
+new one, before `old.close()` runs outside the lock. `_rx_pump`'s
+exception handler reads it back under `_lock` (matching
+`_current_channel`'s convention) and compares by identity: a failure
+on exactly that channel is logged at debug and the pump loop
+`continue`s (the interface stays open on the new channel, so it must
+not `break` the way a real shutdown does); any other failure still
+warns. The reference is never explicitly cleared — each reconfigure
+just overwrites it — which sidesteps a "cleared before the lagging
+exception surfaces" race a boolean flag reset immediately after
+`close()` would have.
+
+TDD: `test_reconfigure_swap_does_not_warn_about_the_read_it_interrupted`
+in `tests/test_shared_interface.py` reuses the landed close-race
+harness (`_CloseRacingChannel` + `in_recv` event) but drives
+`reg.reconfigure(...)` instead of `reg.unsubscribe(...)` — red before
+the fix, reproducing the owner's exact warning text. The existing
+`test_a_read_failure_outside_a_close_still_warns` stayed green
+throughout.
+
+| layer | command | result |
+| --- | --- | --- |
+| sidecar (pytest) | `uv run --extra dev pytest` | 106 passed |
+
+`ruff check`, `ruff format --check`, and `mypy` (project-scoped:
+`cannet_python_can`, per `pyproject.toml`'s `[tool.mypy] files`) clean.
+
 ## Blockers / side effects
 
 - **Console Ctrl-C is disabled by inheritance in the agent's shell
@@ -682,13 +749,17 @@ the sidecar suite was not either.
   cannot be correlated against it without external markers. This was a
   live cost during phase 1 and is first-hand motivation for phase 4.~~
   Fixed in phase 4: both sinks carry RFC-3339 timestamps.
-- **Same close race, other caller (noticed in phase 2, left alone):**
+- ~~**Same close race, other caller (noticed in phase 2, left alone):**
   `_SharedInterface.reconfigure` also closes the old channel out from
   under an in-flight `recv`, but without setting `_stop` — it is a swap,
   not a shutdown — so a `ConfigureBus` on an open interface can still
   produce one `rx for … failed` WARNING. Phase 2's scope was the nominal
   *close*, and suppressing it at the reconfigure site needs a different
-  signal than `_stop`. Cosmetic, same family as (B).
+  signal than `_stop`. Cosmetic, same family as (B).~~ Fixed in the
+  task67-followups branch: `reconfigure` now remembers the channel it is
+  swapping away (`_reconfigure_closing_channel`, set under `_lock`
+  before `old.close()`), and `_rx_pump` treats a failure on exactly that
+  channel as the close doing its job rather than a fault.
 - ~~**Latent, out of scope here:** `SidecarSupervisor::restart` kills
   only the direct child.~~ Fixed in phase 3 with the same tree-kill
   primitive as the shutdown path, under its own test.
@@ -698,7 +769,7 @@ the sidecar suite was not either.
   `stop()` is now the only thing that ends it. Deliberate — it makes
   every OS take the same shutdown path — and noted here because it
   changes what a `kill -INT` on the server's group does.
-- **New in phase 4, not a log leak but noticed by the sweep:**
+- ~~**New in phase 4, not a log leak but noticed by the sweep:**
   `CANNET_TOKEN` is inherited by the sidecar child. The child inherits
   the server's whole environment on purpose (so a driver-module
   override set for the server reaches it), and the sidecar never reads
@@ -708,8 +779,46 @@ the sidecar suite was not either.
   one enforcing it, readable via `/proc/<pid>/environ` by the same
   user on Linux. Clearing that one variable on the child would close
   it; out of scope here because it changes what the child is spawned
-  with, not what any sink records.
+  with, not what any sink records.~~ Fixed in the task67-followups
+  branch: `apply_settings` (`crates/cannet-sidecar/src/launch.rs`) now
+  calls `cmd.env_remove(TOKEN_ENV)` unconditionally, so both hosts get
+  the scrub by construction.
 - **Unverified on this machine:** the Unix half of the tree kill
   (`process_group(0)` + `kill -KILL -<pgid>`). The unit tests cover it
   and CI runs them on Linux; the manual runs recorded above are Windows
   (`taskkill /T /F`).
+
+## Exit-criteria walk (2026-08-13, orchestrator)
+
+1. **Root causes recorded with experiment data** — MET. Both in
+   "Root causes": (A) the stdin wait cycle (E1/E3/E5), (B) the
+   benign close race (E4), written up as independent; (B)'s
+   `reconfigure` cousin recorded under Blockers / side effects.
+2. **Ctrl-C exits within the grace period; graceful path when
+   healthy** — MET. Phase 3 manual verification on real hardware:
+   0.41–0.51 s graceful (`reason=stdin-eof`, no kill), including
+   the owner's exact flags; suspended-tree backstop 5.87 s, tree
+   0/6 remaining; second Ctrl-C 0.13 s exit 130.
+3. **Dropped session → next session serves** — MET. Regression
+   test in `crates/cannet-server/tests/proxy.rs` (severable
+   tunnel, no GOAWAY/END_STREAM), deliberately falsified.
+4. **GUI nominal disconnect on exit** — MET (was missing;
+   implemented). Host-side `RunEvent::ExitRequested` →
+   `session::disconnect_on_exit`, bounded 500 ms, red-first test on
+   `SessionHandle::shutdown_timeout`.
+5. **Server logs: timestamps + levels, rolling file, sidecar hook
+   wired** — MET. `cannet-log` shared writer; `cannet-server.log`
+   + `sidecar-python-can.log` in the identity dir; both sinks
+   stamped; no new flags.
+6. **No credential in any log sink, recorded sweep** — MET. 21-row
+   sink × secret checklist in the phase 4 status log; empirical
+   run: token on console only; three Debug-leak hardenings landed
+   red-first (`Trust`, `Attempt`, `ProxyArgs`/`Cli`).
+7. **README documents the log location** — MET. Per-OS table in
+   the server section.
+
+Perf gate (ADR 0031): release build at `1463663`, ev-zonal 60 s
+scrub capture — **check passed, 31/31 metrics** vs the committed
+baseline (report:
+`docs/performance-measurements/frontend/2026-08-13-1463663-task67-closeout.json`,
+uncommitted). Baseline untouched.

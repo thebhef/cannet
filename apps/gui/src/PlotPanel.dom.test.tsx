@@ -552,7 +552,7 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   uplotInstances.length = 0;
 });
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -569,7 +569,10 @@ afterEach(() => {
   mockRenderCost.perTickMs = 0;
   mockRenderCost.accMs = 0;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
-  void hydrateSettings();
+  // Awaited: an un-awaited publish here can resolve inside a later
+  // test's own `hydrateSettings()` call and clobber settings that
+  // test just set up (see the `plot_fetch_interval_ms` case below).
+  await hydrateSettings();
 });
 
 describe("PlotPanel", () => {
