@@ -1552,8 +1552,9 @@ Tunable via `--speed-bps` (arbitration-phase bit rate, default
 with BRS; `0` leaves the bus classic-only). Runtime reconfiguration
 goes through the wire's `ConfigureBus` envelope and takes effect on
 the next arbitration round. `--bind` defaults to loopback and, like
-`debug replay`, terminates no TLS — a routable bind needs `--insecure`
-(§ Running the production server).
+`debug replay`, terminates no TLS — a routable bind needs `--insecure`,
+which this dev/test tooling keeps; the production proxy no longer has
+one (§ Running the production server).
 
 **Bridges.** Any session may install a bridge with `AttachBridge {
 remote_address, interface_id, name }`. The server opens a session to
@@ -2289,7 +2290,9 @@ CLI flags:
 
 - `--bind <addr>` — listen address (default `127.0.0.1:50051`).
   Dev/test tooling terminates no TLS, so binding anything but
-  loopback needs `--insecure` (§ Running the production server).
+  loopback needs `--insecure`. The production proxy no longer has one —
+  it auto-enables TLS on a routable bind instead (§ Running the
+  production server).
 - `--insecure` — bind a routable address unprotected anyway.
 - `--rate <multiplier>` — replay pacing. `1.0` plays the BLF at
   its recorded cadence (real-time emulation, the closest match

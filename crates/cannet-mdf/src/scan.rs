@@ -4,8 +4,9 @@
 //! `BusChannel` — plus the capture's time span. [`scan_mdf`] walks every
 //! bus-logging record for those, without building a
 //! [`cannet_core::CanFrame`] or allocating a payload, and reports the
-//! file's other content alongside: the message-independent signal groups
-//! it holds, and the per-message DBC-decoded groups import will step over.
+//! file's other content alongside: its signal channel groups,
+//! message-independent and per-message DBC-decoded alike, with the
+//! decoded ones also listed on their own.
 //!
 //! Because the walk covers the whole file, the census is exact — a channel
 //! that first appears in the last record is reported like any other. This

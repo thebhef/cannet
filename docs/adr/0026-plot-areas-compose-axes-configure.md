@@ -276,8 +276,11 @@ below:
   and itself — and a series whose entire content is one value has no
   shape that the usual pre-first-sample gap could be protecting. The
   gap rule is otherwise unchanged: a series with two or more samples
-  still begins where its first one does, and no series is drawn past
-  its data.
+  still begins where its first one does and is never drawn past its
+  data. The one-sample series is the deliberate exception, and it is
+  an exception in both directions: it is held across every column its
+  axis has, including columns other series contributed after — and
+  before — its only sample.
 - **Y-axis-mode selector** (`unified` / `per-unit` / `individual`)
   sits in each plot area's signal-panel head. Switching modes
   re-stacks the area's canvases. The per-axis derivation is the pure
