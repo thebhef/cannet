@@ -718,7 +718,8 @@ advertising. Nothing is stored for an address that could not be
 reached; the panel says what the attempt hit and the list is left
 alone. The same goes for a question dismissed rather than answered —
 nothing is stored, so nothing is added to the list, and reaching that
-server is typing its address again. The panel also says which kind of empty it is looking at: it
+server is typing its address again. The panel also says which kind of
+empty it is looking at: it
 distinguishes a network with nothing on it from a browse that could
 not start at all, and reports the error when the mDNS browser itself
 complains, which is what a blocked UDP 5353 usually looks like.
