@@ -343,6 +343,70 @@ capturing and, on the next hang, read `plot.userXChange` and
 `userx.setscale-hook` — a non-zero delta with no user input names the
 ring directly.
 
+### 2026-08-14 — item 2: trace-open feedback, round 2 (all three refinements)
+
+Branch `task75-p2-trace-open-feedback`, off `task75-p1-restore-refresh`.
+
+**(a) Persistence.** The census-phase busy signal (toolbar button +
+status chip, from phase 3) always ended when the census resolved —
+before the mapping dialog even opened, let alone before the pump that
+actually loads the capture ran. `state.kind === "loading"` is the
+frontend's existing completion fact for that pump: it's set once
+`open_log`/`import_mdf` resolves (right after the host spawns the pump
+thread) and only clears on the pump's own `log-finished` — the "existing
+completion fact" the task pointed at, reused rather than inventing a new
+event. The launcher/chip now go busy for this state too, as a second
+sub-phase alongside the unchanged census one.
+
+**(b) Click-to-cancel.** Host: `open_log`/`import_mdf` install a real
+`Arc<AtomicBool>` into a new `AppState::import_cancel` slot before
+spawning their pump (replacing the never-set placeholder `run_pump` was
+always handed), and a new `cancel_import` command flips it — the same
+cooperative shape `disconnect_remote_server` already uses via
+`remote_sessions`'s per-session `stop` flag. Scoped to the pump phase
+only, not the census: a census is one opaque `cannet_blf::scan_blf` /
+`cannet_mdf` call with no per-iteration checkpoint to interrupt, so it
+stays plain-disabled as phase 3 left it. Frontend: `handleImportTrace`
+routes a click during `state.kind === "loading"` to `cancel_import`
+instead of starting a second import. The pump's cancelled exit is
+indistinguishable on the wire from a natural one (both emit
+`log-finished: Ok`), so `importCancelledRef` — set the moment cancel is
+requested — is what the `log-finished` listener checks to tell the two
+apart; on a cancelled completion it resets to idle and re-runs
+`resetSession()` (the same host clear a fresh open runs before
+starting) instead of presenting the partial frames as "Done: N frames".
+
+**(c) Wording.** Toolbar label "Scanning…" → "Loading trace…" (now
+shared by both busy sub-phases); `statusLine.ts`'s two "Scanning
+`<path>` …" resting lines → "Loading `<path>` …". Grepped the frontend
+source for remaining "Scanning" text after the change — none left
+outside internal variable/state names (`scanningBlfPath` etc., not
+user-facing).
+
+**Tests (written failing first).** Host:
+`cancel_import_now_is_a_no_op_with_nothing_importing`,
+`cancel_import_now_flips_the_registered_flag`, and
+`a_cancelled_import_stops_the_pump_loop_early_leaving_the_frames_already_ingested`
+— the last replicates `run_pump`'s per-frame loop body (the suite has
+no `AppHandle` harness for calling `run_pump` itself) against a real
+BLF and `TraceStore`, cancelling mid-file and asserting the frames kept
+are exactly the ones ingested before the flag flipped. Frontend: new
+`App.traceOpenCancel.dom.test.tsx` (persistence through a `trace-grew`
+tick, and the full cancel round-trip: cancel invoked, no second import
+started, `clear_trace_store` re-invoked, UI back to idle with no "Done:"
+notice, a subsequent open works). Updated wording assertions in
+`App.importTraceGuard.dom.test.tsx`, `App.blfScanNotice.dom.test.tsx`,
+`App.mdfScanNotice.dom.test.tsx`, `statusLine.test.ts`. Also updated
+`App.recentsScope.dom.test.tsx`'s `importCapture` helper to fire
+`log-finished` after each import — with feedback now persisting past
+the mapping-dialog step, that test's second import needs the first
+one's completion signaled to get the launcher back to idle, exactly the
+new behavior working as intended.
+
+Commits: `983068d7` (host cancellation path), `d21f969c` (frontend
+persistence + cancel + wording). Host: 645 passed / 6 ignored, clippy
+clean. Frontend: 160 files / 2095 tests, `pnpm build` clean.
+
 ## Blockers / side effects
 
 - **Latent, out of scope for item 1: the by-id / signal window scan on
