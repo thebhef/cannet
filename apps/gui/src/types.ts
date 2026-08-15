@@ -1139,6 +1139,13 @@ export interface DecodedFrameRecord {
 export interface SampledPoints {
   t: number[];
   v: number[];
+  /** The stretches of this window the view is about to draw without
+   * data behind them — `[fromSeconds, toSeconds]` pairs, ascending
+   * (ADR 0026). Host-classified: whether a gap is extrapolation turns
+   * on the series' *raw* cadence, and at a coarse zoom the points
+   * above are spaced by the decimation rather than by the signal, so
+   * the renderer styles these and never re-derives them. */
+  extrapolated: [number, number][];
 }
 
 /// One signal's all-time value extent from `signal_min_max` — the

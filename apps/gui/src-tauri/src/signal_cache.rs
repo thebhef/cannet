@@ -144,6 +144,19 @@ const CATCH_UP_CHUNK_FRAMES: usize = 16_384;
 /// signal) stays negligible against the decoding.
 const CATCH_UP_SERVE_BUDGET: Duration = Duration::from_millis(150);
 
+/// How many typical raw sample intervals a gap between two consecutive
+/// samples may span before the stretch between them is **extrapolation**
+/// rather than data (ADR 0026).
+///
+/// A held value is only evidence of the signal's state for as long as the
+/// signal keeps arriving; once it has been silent for an order of
+/// magnitude longer than its own cadence, the line or tile drawn across
+/// that stretch is the renderer's guess, not a reading. Ten is the
+/// owner's ruling — loose enough that ordinary jitter, a missed frame or
+/// a bus-load spike never trips it, tight enough that a stall reads as
+/// one.
+const EXTRAPOLATION_GAP_FACTOR: f64 = 10.0;
+
 /// What a **file-backed** series is, beyond its samples: which signal
 /// channel group of the imported capture file it was read from and the
 /// metadata that group carried. Held beside the pyramid and persisted
@@ -534,6 +547,91 @@ impl SignalCache {
                     out.push(SamplePoint { t_seconds, value });
                 }
             }
+        }
+        out
+    }
+
+    /// Which stretches of `served` — the window this cache just answered
+    /// with, over `[from, to)` — the renderer is about to draw without
+    /// data behind them (ADR 0026). Ascending in time, non-overlapping.
+    ///
+    /// Two rules, and they are the owner's:
+    ///
+    /// 1. **A stretch not bounded by a sample on each side is
+    ///    extrapolation.** That is the run before the window's first
+    ///    sample, the run after its last — the tail a lane draws to its
+    ///    axis's last merged column, and the hold a line carries past its
+    ///    own data — and, for a series holding exactly one sample, both
+    ///    wings of the horizontal line it is drawn as.
+    /// 2. **A gap longer than [`EXTRAPOLATION_GAP_FACTOR`] × the series'
+    ///    typical raw sample interval is extrapolation even between two
+    ///    samples.** A held value is a reading only while the signal keeps
+    ///    arriving.
+    ///
+    /// **Rule 2 is measured against the raw series, never against the
+    /// serve.** A decimated serve's points sit a bucket span apart at
+    /// coarse levels, so comparing *its* spacing to a raw cadence would
+    /// paint every zoomed-out window as extrapolation. So a candidate gap
+    /// is confirmed by asking level 0 whether it really holds no samples
+    /// in there ([`window_count`] — every served point's timestamp is a
+    /// real raw sample time, at whatever level it was read from, so a
+    /// count above one means decimation dropped points the series has).
+    /// A raw sample sharing a timestamp with the gap's left end counts as
+    /// an intervening sample, which errs toward calling a stretch data —
+    /// the conservative direction.
+    ///
+    /// The typical interval is the reciprocal of [`Self::rate`]: the
+    /// whole series' raw cadence, which the cache holds as two reads and
+    /// a subtraction. Whole-series rather than in-window on purpose — the
+    /// window this matters most in is the one that is *mostly* gap, where
+    /// an in-window mean is dragged up by the very gap it is being asked
+    /// to judge. A series whose cadence changes over a long capture is
+    /// judged against its average; that is the cost, and it is the
+    /// reading the ruling names ("the series' typical sample interval").
+    ///
+    /// Cost is `O(served points)` plus one `O(log n)` confirmation per
+    /// *candidate* gap — none at all on a window served at raw
+    /// resolution, since a raw window's gaps are the series' own.
+    fn extrapolated_spans(
+        &self,
+        served: &[SamplePoint],
+        from: f64,
+        to: f64,
+    ) -> Vec<ExtrapolatedSpan> {
+        let (Some(first), Some(last)) = (served.first(), served.last()) else {
+            // Nothing was served, so nothing is drawn — an empty series
+            // is not extrapolated across the window, it is absent from
+            // it.
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if first.t_seconds > from {
+            out.push(ExtrapolatedSpan {
+                from_seconds: from,
+                to_seconds: first.t_seconds,
+            });
+        }
+        if let Some(rate) = self.rate() {
+            let threshold = EXTRAPOLATION_GAP_FACTOR / rate;
+            for pair in served.windows(2) {
+                let (a, b) = (pair[0].t_seconds, pair[1].t_seconds);
+                if b - a <= threshold {
+                    continue;
+                }
+                if window_count(&self.levels[0], a, b) > 1 {
+                    continue;
+                }
+                out.push(ExtrapolatedSpan {
+                    from_seconds: a,
+                    to_seconds: b,
+                });
+            }
+        }
+        if last.t_seconds < to {
+            out.push(ExtrapolatedSpan {
+                from_seconds: last.t_seconds,
+                to_seconds: to,
+            });
         }
         out
     }
@@ -1995,21 +2093,28 @@ impl SignalCacheStore {
             self.serve_deadline(),
         );
         let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut series = Vec::with_capacity(keys.len());
+        let mut extrapolated = Vec::with_capacity(keys.len());
+        for key in &keys {
+            let Some(cache) = caches.by_key.get(key) else {
+                series.push(Vec::new());
+                extrapolated.push(Vec::new());
+                continue;
+            };
+            let window = match reduction {
+                Reduction::MinMax => cache.window(from_seconds, to_seconds, max_points),
+                Reduction::Runs => cache.window_categorical(from_seconds, to_seconds, max_points),
+            };
+            // Classified here rather than in either reducer: the two
+            // serve the same window differently, and which stretches of
+            // it have no data behind them is a fact about the series, not
+            // about the render mode that asked.
+            extrapolated.push(cache.extrapolated_spans(&window, from_seconds, to_seconds));
+            series.push(window);
+        }
         ServedWindows {
-            series: keys
-                .iter()
-                .map(|key| {
-                    caches
-                        .by_key
-                        .get(key)
-                        .map_or_else(Vec::new, |cache| match reduction {
-                            Reduction::MinMax => cache.window(from_seconds, to_seconds, max_points),
-                            Reduction::Runs => {
-                                cache.window_categorical(from_seconds, to_seconds, max_points)
-                            }
-                        })
-                })
-                .collect(),
+            series,
+            extrapolated,
             complete: caught_up(&caches, &keys, store_len),
         }
     }
@@ -2074,11 +2179,29 @@ impl SignalCacheStore {
     }
 }
 
+/// One stretch of a served window across which the renderer draws
+/// something the data does not support — [`SignalCache::extrapolated_spans`]
+/// computes them, and ADR 0026 says how they render.
+///
+/// Half-open in intent but reported as a closed `[from, to]` interval in
+/// seconds, because what a renderer needs is the two x positions to style
+/// between. A span's ends are either a real sample time or a window edge.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExtrapolatedSpan {
+    pub from_seconds: f64,
+    pub to_seconds: f64,
+}
+
 /// One batch serve: the windows, and whether the caches behind them had
 /// finished catching up when it answered (ADR 0049).
 pub struct ServedWindows {
     /// One window per query, index-parallel with the batch.
     pub series: Vec<Vec<SamplePoint>>,
+    /// One list of extrapolated stretches per query, index-parallel with
+    /// [`Self::series`] and in ascending time order. The model's answer
+    /// to "which parts of this window is the view about to draw without
+    /// data behind them" — see [`SignalCache::extrapolated_spans`].
+    pub extrapolated: Vec<Vec<ExtrapolatedSpan>>,
     /// `true` when every queried signal's decode cursor reached the store
     /// tip this serve read — the windows are the whole answer for their
     /// range. `false` when the serve ran out of budget first: the windows
@@ -2929,6 +3052,179 @@ mod tests {
             .filter(|p| p.t_seconds >= from && p.t_seconds < to)
             .count();
         assert!(in_range > 0 && in_range <= 504);
+    }
+
+    // ---- Extrapolation classification (ADR 0026) ---------------------
+    //
+    // The owner's two tests for what counts as an extrapolated stretch,
+    // each pinned at the serve seam, plus the coarse-zoom case that a
+    // classification reading the *serve's* spacing instead of the raw
+    // series' would get wrong.
+
+    /// Serve one window and return its extrapolated spans as `(from, to)`
+    /// pairs, rounded to milliseconds so the assertions read as times.
+    fn extrapolated_serve(
+        cache: &SignalCacheStore,
+        from: f64,
+        to: f64,
+        max_points: usize,
+        store: &TraceStore,
+        dbs: &[&Database],
+    ) -> Vec<(f64, f64)> {
+        cache
+            .slice_many(
+                &[query_on(256, "X")],
+                from,
+                to,
+                max_points,
+                Reduction::MinMax,
+                store,
+                dbs,
+            )
+            .extrapolated
+            .pop()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                (
+                    (s.from_seconds * 1000.0).round() / 1000.0,
+                    (s.to_seconds * 1000.0).round() / 1000.0,
+                )
+            })
+            .collect()
+    }
+
+    /// A capture of `n` samples every `step_ns`, starting at `start_ns`,
+    /// appended to `store`.
+    fn append_cadence(store: &TraceStore, start_ns: u64, step_ns: u64, n: u64) {
+        for i in 0..n {
+            store.append(val_frame(start_ns + i * step_ns, (i % 7) as u16));
+        }
+    }
+
+    /// Owner's test 1, the case the extent overdraw lands in: a lane or a
+    /// line is held to its axis's last merged column, which is past its
+    /// own last sample whenever a faster series shares the axis. The
+    /// stretch from the series' last sample to the window's end is not
+    /// bounded by a sample on its right, so it is extrapolation.
+    #[test]
+    fn the_stretch_past_a_series_last_sample_is_extrapolated() {
+        let store = TraceStore::new();
+        // 100 samples at 10 ms: the series ends at 0.99 s.
+        append_cadence(&store, 0, S / 100, 100);
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+
+        // A window running four seconds past the newest sample — what a
+        // follow-live panel asks for when a faster signal is still
+        // arriving.
+        assert_eq!(
+            extrapolated_serve(&cache, 0.0, 5.0, 600, &store, dbs),
+            vec![(0.99, 5.0)],
+            "the hold past the last sample is not labelled extrapolation",
+        );
+        // A window ending on the data has nothing past it to label, and
+        // the dense cadence inside it holds no gap worth flagging.
+        assert_eq!(
+            extrapolated_serve(&cache, 0.0, 0.99, 600, &store, dbs),
+            Vec::<(f64, f64)>::new(),
+        );
+    }
+
+    /// Owner's test 1 again, at its other end: a series holding exactly
+    /// one sample is drawn as a horizontal line across the whole window
+    /// (`mergeSeries`), and *neither* wing is bounded by a second sample.
+    /// Both are extrapolation.
+    #[test]
+    fn a_one_sample_series_is_extrapolated_on_both_sides() {
+        let store = TraceStore::new();
+        store.append(val_frame(S, 3));
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+
+        assert_eq!(
+            extrapolated_serve(&cache, 0.0, 5.0, 600, &store, dbs),
+            vec![(0.0, 1.0), (1.0, 5.0)],
+            "a one-sample series' two wings are both drawn without data",
+        );
+    }
+
+    /// Owner's test 2: a gap longer than ten typical raw intervals is
+    /// extrapolation even though a sample bounds it on each side. The
+    /// held value across a stall is the renderer's guess, not a reading.
+    #[test]
+    fn an_interior_gap_beyond_ten_typical_intervals_is_extrapolated() {
+        let store = TraceStore::new();
+        // 100 samples at 10 ms (0 .. 0.99 s), five seconds of silence,
+        // then 100 more at 10 ms (6.00 .. 6.99 s). Typical interval over
+        // the series is 6.99 / 199 ≈ 35 ms, so the threshold is ~351 ms
+        // and the 5.01 s stall is an order of magnitude past it.
+        append_cadence(&store, 0, S / 100, 100);
+        append_cadence(&store, 6 * S, S / 100, 100);
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+
+        assert_eq!(
+            extrapolated_serve(&cache, 0.0, 6.99, 600, &store, dbs),
+            vec![(0.99, 6.0)],
+            "the stall between two samples is not labelled extrapolation",
+        );
+    }
+
+    /// The negative that the design constraint exists for: **a decimated
+    /// serve's own spacing must not be read as the series' cadence.**
+    ///
+    /// Zoomed out, the serve answers off a coarse pyramid level, so its
+    /// points sit a bucket span apart — hundreds of raw intervals. A
+    /// classification comparing that spacing to the raw cadence would
+    /// call every gap in every zoomed-out window extrapolation, striping
+    /// the whole plot. The raw series is what decides: each of those
+    /// gaps is full of samples the decimation dropped.
+    #[test]
+    fn a_coarse_zoom_serve_does_not_read_its_own_decimation_as_gaps() {
+        let store = TraceStore::new();
+        // 20 000 samples at 1 ms — a uniform 1 kHz series with no gap in
+        // it at all, over 20 s.
+        append_cadence(&store, 0, S / 1000, 20_000);
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+
+        // Served at a 200-point budget over the whole capture: two orders
+        // of magnitude of decimation, so consecutive served points are
+        // ~50 ms apart against a 1 ms raw interval — every one of them
+        // fifty times the threshold if the serve's spacing were trusted.
+        let served = cache.slice_many(
+            &[query_on(256, "X")],
+            0.0,
+            19.999,
+            200,
+            Reduction::MinMax,
+            &store,
+            dbs,
+        );
+        let points = &served.series[0];
+        let widest = points
+            .windows(2)
+            .map(|w| w[1].t_seconds - w[0].t_seconds)
+            .fold(0.0f64, f64::max);
+        assert!(
+            widest > 10.0 * (1.0 / 1000.0),
+            "the fixture did not decimate: widest served gap {widest} s is inside the threshold, \
+             so this test would pass without classifying anything",
+        );
+        assert_eq!(
+            served.extrapolated[0],
+            Vec::new(),
+            "a decimated window's bucket spacing was read as gaps in the series",
+        );
     }
 
     #[test]

@@ -23,15 +23,18 @@ const mockInvoke = vi.mocked(invoke);
 function encode(
   fromS: number | null,
   lastS: number | null,
-  series: { t: number[]; v: number[] }[],
+  series: { t: number[]; v: number[]; extrapolated?: [number, number][] }[],
   sliceMs = 0,
   decodeMs = 0,
   complete = true,
 ): ArrayBuffer {
   const totalPts = series.reduce((s, p) => s + p.t.length, 0);
-  const buf = new ArrayBuffer(8 + 32 + 8 + series.length * 4 + totalPts * 16);
+  const totalSpans = series.reduce((s, p) => s + (p.extrapolated?.length ?? 0), 0);
+  const buf = new ArrayBuffer(
+    8 + 32 + 8 + series.length * 8 + totalPts * 16 + totalSpans * 16,
+  );
   const view = new DataView(buf);
-  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
+  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x03];
   for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
   let off = 8;
   view.setFloat64(off, fromS == null ? NaN : fromS, true);
@@ -55,6 +58,15 @@ function encode(
     }
     for (const v of p.v) {
       view.setFloat64(off, v, true);
+      off += 8;
+    }
+    const spans = p.extrapolated ?? [];
+    view.setUint32(off, spans.length, true);
+    off += 4;
+    for (const [a, b] of spans) {
+      view.setFloat64(off, a, true);
+      off += 8;
+      view.setFloat64(off, b, true);
       off += 8;
     }
   }
@@ -110,9 +122,28 @@ describe("useDecimatedRange", () => {
     expect(out.snapshot.base).toBe(100);
     expect(out.snapshot.firstT).toBe(0); // 100 − base (window starts at origin)
     expect(out.snapshot.lastT).toBe(5); // 105 − base
-    expect(out.snapshot.byKey.get("k0")).toEqual({ t: [0, 1, 2], v: [1, 2, 3] });
+    expect(out.snapshot.byKey.get("k0")).toEqual({ t: [0, 1, 2], v: [1, 2, 3], extrapolated: [] });
     expect(mockInvoke).toHaveBeenCalledTimes(1);
     expect(result.current.current()?.base).toBe(100);
+  });
+
+  it("rebases the host's extrapolated stretches with the samples they describe", async () => {
+    // The classification travels in absolute window seconds like the
+    // samples do. Left unrebased it would land a whole session origin
+    // away from the row it labels — on a capture that started at 100 s,
+    // a tail beginning at 102 s would be drawn at 102 s of *display*
+    // time, off the far right of a two-second window.
+    mockInvoke.mockResolvedValue(
+      encode(100, 105, [
+        { t: [100, 101, 102], v: [1, 2, 3], extrapolated: [[102, 105]] },
+      ]),
+    );
+    const { result } = renderHook(() => useDecimatedRange());
+
+    const out = await run(() => result.current, req());
+
+    expect(out.snapshot.base).toBe(100);
+    expect(out.snapshot.byKey.get("k0")?.extrapolated).toEqual([[2, 5]]);
   });
 
   it("firstT is the window start relative to the session origin, not the window's own first frame", async () => {
@@ -184,7 +215,7 @@ describe("useDecimatedRange", () => {
     );
     const second = await run(() => result.current, req());
     expect(second.kind).toBe("sampled");
-    expect(second.snapshot.byKey.get("k0")).toEqual({ t: [0, 1, 2], v: [1, 2, 3] });
+    expect(second.snapshot.byKey.get("k0")).toEqual({ t: [0, 1, 2], v: [1, 2, 3], extrapolated: [] });
     expect(mockInvoke).toHaveBeenCalledTimes(2);
 
     // …until the host says it is caught up, at which point the memo does

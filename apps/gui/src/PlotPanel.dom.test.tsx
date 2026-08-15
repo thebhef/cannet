@@ -135,13 +135,16 @@ const mockSampleBounds = { from: 0, last: 2 };
  * fixture self-contained so the test doesn't depend on Rust. Layout
  * matches what `decodeSignalsSample` parses. */
 function encodeSample(
-  series: { t: number[]; v: number[] }[],
+  series: { t: number[]; v: number[]; extrapolated?: [number, number][] }[],
   complete = true,
 ): ArrayBuffer {
   const totalPts = series.reduce((s, p) => s + p.t.length, 0);
-  const buf = new ArrayBuffer(8 + 32 + 8 + series.length * 4 + totalPts * 16);
+  const totalSpans = series.reduce((s, p) => s + (p.extrapolated?.length ?? 0), 0);
+  const buf = new ArrayBuffer(
+    8 + 32 + 8 + series.length * 8 + totalPts * 16 + totalSpans * 16,
+  );
   const view = new DataView(buf);
-  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
+  const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x03];
   for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
   let off = 8;
   view.setFloat64(off, mockSampleBounds.from, true);
@@ -167,6 +170,15 @@ function encodeSample(
       view.setFloat64(off, v, true);
       off += 8;
     }
+    const spans = p.extrapolated ?? [];
+    view.setUint32(off, spans.length, true);
+    off += 4;
+    for (const [a, b] of spans) {
+      view.setFloat64(off, a, true);
+      off += 8;
+      view.setFloat64(off, b, true);
+      off += 8;
+    }
   }
   return buf;
 }
@@ -179,6 +191,14 @@ const mockValueTables: Record<string, { raw: number; label: string }[]> = {};
 // `mergeSeries`'s sample-and-hold. Unset signals fall back to the
 // default numeric fixture. Prefixed `mock` for the hoisted factory.
 const mockSampleSeries: Record<string, { t: number[]; v: number[] }> = {};
+// Per-signal extrapolated stretches the fake host serves alongside the
+// points (ADR 0026), keyed by signal name; empty by default, so a test
+// that doesn't ask for them sees the plot it always saw. The *rule* that
+// produces these host-side is pinned in `signal_cache.rs`, and the wire
+// they travel on in `plotData.test.ts`; what a panel test pins is the
+// third link — what the renderer does once it has them. Prefixed `mock`
+// for the hoisted factory.
+const mockExtrapolated: Record<string, [number, number][]> = {};
 // Per-signal all-time extents the fake host serves from `signal_min_max`
 // (ADR 0025), keyed by signal name. Unset signals fall back to the
 // default `10..20`, which matches the default sampled fixture.
@@ -256,7 +276,8 @@ vi.mock("@tauri-apps/api/core", () => ({
           const name = q.signalName ?? "";
           if (mockFileBackedSignals.has(name) && !q.fileBacked) return { t: [], v: [] };
           const series = mockSampleSeries[name] ?? { t: [0, 1, 2], v: [10, 20, 15] };
-          return req?.categorical ? mockReduceRuns(series, req.maxPoints ?? 0) : series;
+          const points = req?.categorical ? mockReduceRuns(series, req.maxPoints ?? 0) : series;
+          return { ...points, extrapolated: mockExtrapolated[name] ?? [] };
         }),
       );
     }
@@ -611,6 +632,7 @@ afterEach(async () => {
   vi.clearAllMocks();
   for (const k of Object.keys(mockValueTables)) delete mockValueTables[k];
   for (const k of Object.keys(mockSampleSeries)) delete mockSampleSeries[k];
+  for (const k of Object.keys(mockExtrapolated)) delete mockExtrapolated[k];
   for (const k of Object.keys(mockSignalExtents)) delete mockSignalExtents[k];
   mockSampleBounds.from = 0;
   mockSampleBounds.last = 2;
@@ -2269,6 +2291,42 @@ describe("PlotArea y-normalisation", () => {
         // …and each lane holds a value at every one of them.
         expect(data[1]?.length).toBe(held.t.length);
         expect(data[1]?.every((y) => y != null)).toBe(true);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("blanks an extrapolated stretch out of the solid stroke", async () => {
+    // ADR 0026. The host says which stretches of the window have no data
+    // behind them; the renderer must stop the *solid* stroke there, or a
+    // dash drawn over it reads as a solid line with darker patches. The
+    // dashes themselves go on the canvas, which this suite's uPlot stub
+    // has none of — what is observable here is the half that has to
+    // agree with them: the data uPlot is handed.
+    //
+    // EngineSpeed samples at 0 and 1 and is then held to column 3 by its
+    // neighbour, which samples out to 3. That hold is the extent
+    // overdraw the classification labels.
+    mockSampleSeries.EngineSpeed = { t: [0, 1], v: [10, 12] };
+    mockSampleSeries.EngineTemp = { t: [0, 1, 2, 3], v: [10, 12, 14, 16] };
+    mockExtrapolated.EngineSpeed = [[1, 3]];
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "unified");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        expect(data[0]).toEqual([0, 1, 2, 3]);
+        // The neighbour is untouched — it has data at every column.
+        expect(data[2]?.every((y) => y != null)).toBe(true);
+        // The held tail is gone from the stroke: two values, then
+        // nothing. Blanked to the far column inclusive, because nothing
+        // out there is a sample of this series — leaving the held value
+        // would keep the tail solid *and* drop a point marker where
+        // there is no point.
+        expect(data[1]?.slice(0, 2).every((y) => y != null)).toBe(true);
+        expect(data[1]?.slice(2)).toEqual([null, null]);
       });
     } finally {
       restore();
