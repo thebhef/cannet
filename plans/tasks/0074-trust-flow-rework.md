@@ -24,7 +24,19 @@ discovered + trusted).
    the row, paired with the ruling-1 indicators. No panel-owned
    second modal.
 
-## Grooming ruling (2026-08-14, cycle grooming)
+## Grooming rulings (2026-08-14, cycle grooming)
+
+- **No sidecar row.** The app's own python-can sidecar session must
+  not appear as a Servers-panel row at all (owner ruling, resolving
+  task 75 phase 3's recorded side effect: `server_list::merge`'s
+  live-session source minted `trusted | not advertising |
+  127.0.0.1:<ephemeral>` from the sidecar's per-launch listen
+  socket). The panel lists user-managed servers; the sidecar is an
+  implementation detail. Suppress the row at the merge source —
+  identified by the session being the app's own spawned sidecar,
+  not by loopback address (a user's own loopback server stays
+  listable) — and retire the phase-3 README/UI wording that
+  explains the row once it can no longer appear.
 
 - **Panel shape: row affordance → the one app-wide dialog.** No
   inline editor. The indicator (project view + panel row) carries
