@@ -253,12 +253,18 @@ export function splitExtrapolatedRows(
     const out: ExtrapolatedSegment[] = [];
     for (const [a, b] of spans) {
       // The columns the stretch is drawn between: the last one at or
-      // before its start, and the first one at or after its end. A
-      // stretch running past the newest column — the past-the-end tail —
-      // is drawn to that column and no further, which is exactly the
-      // extent the plot already had.
-      const i0 = lastAtOrBefore(xs, a);
-      if (i0 < 0) continue;
+      // before its start, and the first one at or after its end —
+      // **each clamped to the column grid**. A stretch running past the
+      // newest column (the past-the-end tail) is drawn to that column
+      // and no further, which is exactly the extent the plot already
+      // had; a stretch beginning before the oldest column is drawn from
+      // that column, for the same reason. The near end needs the clamp
+      // as much as the far end does: the fetch reaches past the visible
+      // x range while no series has a sample before the capture's first
+      // frame, so a *leading* span routinely starts left of column 0 —
+      // and discarding it there left the one-sample hline's leading
+      // wing drawn solid while its trailing wing dashed.
+      const i0 = Math.max(lastAtOrBefore(xs, a), 0);
       const found = firstAtOrAfter(xs, b);
       const i1 = found >= 0 ? found : xs.length - 1;
       // Is the far column carrying a *sample* of this series, or only a
