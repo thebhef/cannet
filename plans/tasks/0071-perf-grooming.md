@@ -147,3 +147,99 @@ data point (`init`) rather than thrown away.
   A slopes systematically above B slopes.
 - **H6 — drift tracks session run order / machine warmth.** Predicts
   slope falling with position regardless of cell.
+
+### 2026-08-14 — experiment 1: the A/B/C matrix (10 runs)
+
+Command per cell (absolute paths, constant binary
+`target/release/cannet-gui.exe` @ `ea9646ae`, mtime unchanged
+throughout the task):
+
+```sh
+target/release/cannet-gui.exe \
+  --project <abs>/examples/ev-zonal/ev-zonal.cannet_prj \
+  --connect-on-start --perf-capture-secs 60 --perf-interact scrub \
+  --app-data-dir <abs>/<per-cell dir> \
+  --perf-out <abs>/<label>.json --perf-label <label>
+```
+
+Cell C additionally ran two shells walking the process table
+(`tasklist`) every 5 s and every 10 s across the whole window, the
+task70-p10 condition. All ten runs: `rc=0`, 60 samples over 59.0 s,
+rx 1601.7–1607.2 fps, `ids_measured` 173, `longtask_ms_per_s_max`
+0.000, `jank_fraction` 0.000. No cannet process was alive before any
+run; nothing else on the machine competed by design.
+
+| pos | cell | profile | polling | `short_frac` | `p95_ratio` | `rend_slope` | `tree_slope` | `jsheap_slope` | `rend_mean` | `tx_late_max` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | init | fresh | no | 0.0005 | 1.12 | 42.9 | 73.9 | 6.7 | 262.1 | 5.0 |
+| 1 | A1 | fresh | no | 0.0003 | 1.13 | 18.5 | 49.5 | −1.3 | 251.8 | 5.1 |
+| 2 | B1 | warm | no | 0.0003 | 1.13 | 47.2 | 77.6 | 14.2 | 269.7 | 5.0 |
+| 3 | C1 | warm | **yes** | 0.0005 | 1.13 | 36.2 | 66.8 | 8.3 | 269.4 | 5.6 |
+| 4 | A2 | fresh | no | 0.0007 | 1.15 | 41.2 | 71.4 | 10.8 | 260.4 | 5.5 |
+| 5 | B2 | warm | no | 0.0007 | 1.14 | 37.7 | 67.1 | 8.0 | 262.2 | 6.1 |
+| 6 | C2 | warm | **yes** | 0.0012 | 1.13 | 39.9 | 70.2 | 11.3 | 266.4 | 7.9 |
+| 7 | A3 | fresh | no | 0.0027 | 1.19 | 44.4 | 75.1 | 12.6 | 259.0 | 13.4 |
+| 8 | B3 | warm | no | 0.0028 | 1.22 | 32.0 | 60.8 | 9.6 | 269.9 | 83.6 |
+| 9 | C3 | warm | **yes** | 0.0048 | 1.23 | 40.7 | 72.7 | 10.7 | 265.4 | 56.5 |
+
+**Verdicts against the stated predictions.**
+
+- **H1 (first-launch profile init) — falsified.** Four fresh-empty-dir
+  runs (`init`, A1–A3) measured 0.0005 / 0.0003 / 0.0007 / 0.0027, all
+  one to two orders of magnitude under the 0.041 limit and all inside
+  the clean band. The prediction was ≥ 2 of them over the limit. A
+  fresh profile does not reproduce the task75-p5 run-1 breach.
+- **H2 (`tasklist` polling) — falsified.** Cell C mean 0.0022 vs cell
+  B mean 0.0013, on the same warm profile — a difference smaller than
+  the session-position effect below, and nowhere near 0.041. Polling
+  does not reproduce the task70-p10 run-1 breach either.
+- **H4 (renderer drift is real code growth) — falsified, decisively.**
+  These ten runs use **the same binary file** that produced
+  `renderer_mb_drift_per_min` 103.7 / 88.5 / 62.5 at the task75-p5
+  gate two hours earlier. It now measures 18.5–47.2 (mean 38.1,
+  n = 10). The two bands do not overlap; the same build measured a
+  mean of 84.9 in one session and 38.1 in the next. A metric that
+  moves 2.2× with zero code change cannot carry a 92.6 → 103.7
+  worst-to-worst "trend" of 12 % as evidence of growth.
+- **H5 (init inflates drift) — falsified.** A mean 34.7 vs B mean
+  39.0 — fresh profiles measured *lower*, and the difference is inside
+  the noise.
+- **H6 (drift falls with run order) — falsified as stated.** Slopes by
+  position: 42.9, 18.5, 47.2, 36.2, 41.2, 37.7, 39.9, 44.4, 32.0,
+  40.7 — no order trend. The within-session spread is real but is not
+  ordered.
+- **H3 (sporadic, unattached to either lever) — surviving.** Nothing
+  in the matrix reproduced a breach.
+
+**One effect the matrix did find, unpredicted.** `short_frac` rises
+with session position while ignoring the cell: mean 0.00037 over
+positions 1–3, 0.00087 over 4–6, **0.00343** over 7–9 — a 9× rise
+across 13 minutes of back-to-back runs, and `tx_late_ms_max` follows
+it (5.0–5.6, then 5.5–7.9, then 13.4–83.6). The metric tracks
+something about accumulated machine state during a run session, not
+the profile and not the polling. That is the direction the remaining
+hypothesis points.
+
+### 2026-08-14 — experiment 2 design: concurrent machine load (prediction first)
+
+**H7 — concurrent heavy CPU / disk work carries both anomalies.**
+The `tasklist` polling of cell C is a trivial load on a 32-core, 64 GB
+machine (~15 process-table walks per window); the task75-p5 gate, by
+contrast, ran minutes after a full release `tauri build` and the
+task70-p10 gate ran inside a busy agent session. If the carrier is
+competing work of *build* magnitude rather than *polling* magnitude,
+a deliberate load should reproduce both.
+
+Cells, on the warm profile, run through the same command with a
+concurrent load started before launch and killed after exit:
+
+- **D — CPU:** 16 busy-loop shells (half the machine's 32 threads).
+- **E — disk:** three shells each writing and re-reading a 400 MB file
+  in a loop.
+
+Predictions: if H7 holds, at least one loaded run breaches
+`short_frac` 0.041 (or lands ≥ 10× the unloaded band) **and**
+`rend_slope` climbs back toward the 62.5–103.7 band the same binary
+produced at the p5 gate. If loaded runs measure inside the unloaded
+band on both metrics, H7 is falsified and H3 (sporadic) is what
+remains.
