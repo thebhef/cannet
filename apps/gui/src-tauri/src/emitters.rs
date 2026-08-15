@@ -312,7 +312,17 @@ pub(crate) fn persist_pyramids(state: &AppState, harden: Harden) {
         return;
     }
     if let Some(validity) = crate::app_state::pyramid_validity(state) {
-        state.signal_caches.persist(&validity, harden);
+        // Lock order: the DBC set before the signal caches, as every
+        // other path that needs both takes them (`sample_signals`).
+        let dbcs = state.databases();
+        let scopes: Vec<crate::signal_fingerprint::DbcScope<'_>> = dbcs
+            .iter()
+            .map(|d| crate::signal_fingerprint::DbcScope {
+                db: d.db.as_ref(),
+                buses: &d.buses,
+            })
+            .collect();
+        state.signal_caches.persist(&validity, &scopes, harden);
     }
 }
 /// Snapshot the host-side system log. Returns every message

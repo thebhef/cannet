@@ -88,6 +88,7 @@ mod state;
 // missing-panics lint is suppressed here rather than papered over.
 #[allow(clippy::missing_panics_doc, clippy::new_without_default)]
 pub mod signal_cache;
+pub mod signal_fingerprint;
 mod signal_generator;
 pub mod signal_sampler;
 mod signal_snapshot;

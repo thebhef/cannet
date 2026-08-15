@@ -97,6 +97,7 @@ use cannet_dbc::Database;
 use cannet_spill::{lower_bound, SampleSeq};
 use serde::{Deserialize, Serialize};
 
+use crate::signal_fingerprint::{self, DbcScope};
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::{read_json, write_json, RawTraceFrame, TraceStore};
 
@@ -652,16 +653,33 @@ impl SignalCache {
 
     /// Snapshot this cache's manifest row: the key it is filed under plus
     /// the two numbers per level ([`SampleSeq::reopen`] needs `len` and
-    /// `first_slot`), the fold cursors, the decode cursor, and the all-time
-    /// extent. Everything else is in the level files already.
+    /// `first_slot`), the fold cursors, the decode cursor, the all-time
+    /// extent, and the fingerprint of the encoding these samples were
+    /// decoded under. Everything else is in the level files already.
+    ///
+    /// The fingerprint is taken **here**, against the set `dbcs` names,
+    /// because here is where the samples are declared to be on disk: it
+    /// records what they were decoded from, not what is loaded when they
+    /// are read back.
     #[allow(clippy::cast_possible_truncation)]
-    fn snapshot(&self, key: &SignalKey) -> PersistedSignal {
+    fn snapshot(&self, key: &SignalKey, dbcs: &[DbcScope<'_>]) -> PersistedSignal {
+        let encoding = match &self.file {
+            Some(file) => signal_fingerprint::file_source(file),
+            None => signal_fingerprint::dbc_encoding(
+                dbcs,
+                key.bus_id.as_deref(),
+                key.slot,
+                key.extended,
+                &key.signal,
+            ),
+        };
         PersistedSignal {
             bus_id: key.bus_id.clone(),
             message_id: key.slot,
             extended: key.extended,
             signal: key.signal.clone(),
             file: self.file.clone(),
+            encoding: Some(encoding),
             next_index: self.next_index as u64,
             extent: self.extent().map(|(lo, hi)| [lo, hi]),
             levels: self
@@ -1211,6 +1229,18 @@ struct PersistedSignal {
     /// as the DBC-backed set it describes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file: Option<FileSignalInfo>,
+    /// Fingerprint of the encoding these samples were decoded under
+    /// ([`crate::signal_fingerprint`]) — for a DBC-backed row its
+    /// candidate chain through the loaded set, for a file-backed one the
+    /// source it was imported from.
+    ///
+    /// `#[serde(default)]` so a manifest written before fingerprints
+    /// existed still restores; such a row simply says nothing about its
+    /// encoding, and the whole-set [`PyramidValidity`] is what speaks for
+    /// it. Written and read back, but not yet *judged*: restore is still
+    /// gated by [`PyramidValidity`] alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    encoding: Option<String>,
     next_index: u64,
     extent: Option<[f64; 2]>,
     levels: Vec<PersistedLevel>,
@@ -1650,8 +1680,16 @@ impl SignalCacheStore {
         caches.by_key.values().map(SignalCache::unflushed).sum()
     }
 
+    /// `dbcs` is the loaded set, in load order — what each DBC-backed
+    /// row's encoding fingerprint is taken against.
+    ///
     /// Returns whether a manifest was written.
-    pub fn persist(&self, validity: &PyramidValidity, harden: Harden) -> bool {
+    pub fn persist(
+        &self,
+        validity: &PyramidValidity,
+        dbcs: &[DbcScope<'_>],
+        harden: Harden,
+    ) -> bool {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         if !caches.dirty || caches.staged.is_some() {
             return false;
@@ -1673,7 +1711,7 @@ impl SignalCacheStore {
             signals: caches
                 .by_key
                 .iter()
-                .map(|(key, cache)| cache.snapshot(key))
+                .map(|(key, cache)| cache.snapshot(key, dbcs))
                 .collect(),
         };
         match write_json(&caches.root.join(MANIFEST_FILE), &manifest) {
@@ -4764,7 +4802,7 @@ mod tests {
 
         let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
             assert!(cache.needs_persist());
-            assert!(cache.persist(&v, Harden::All));
+            assert!(cache.persist(&v, &[], Harden::All));
             cache.clear();
         });
         assert!(finished, "the exit path waited for the rebuild");
@@ -4810,8 +4848,85 @@ mod tests {
         let cache = SignalCacheStore::new(root);
         let built = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(built.len(), 200);
-        cache.persist(v, Harden::All);
+        cache.persist(v, &[], Harden::All);
         store.len()
+    }
+
+    #[test]
+    fn a_persisted_signal_records_the_encoding_it_was_decoded_under() {
+        // The manifest row says what the samples were decoded *from*, per
+        // signal — a DBC-backed row its candidate chain through the
+        // loaded set, a file-backed one the source it was imported from.
+        let store = TraceStore::new();
+        for i in 0..50u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let root = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(root.path());
+        let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        cache.fill_file_backed(&file_info(7, "Speed"), &ramp(10));
+
+        let scopes = [DbcScope {
+            db: &db,
+            buses: &[],
+        }];
+        assert!(cache.persist(&validity("capture-a", "dbc-a", 0), &scopes, Harden::All));
+
+        let manifest: PyramidManifest =
+            read_json(&root.path().join(MANIFEST_FILE)).expect("manifest reads back");
+        let row = |signal: &str| {
+            manifest
+                .signals
+                .iter()
+                .find(|s| s.signal == signal)
+                .unwrap_or_else(|| panic!("{signal} is in the manifest"))
+        };
+        assert_eq!(
+            row("X").encoding.as_deref(),
+            Some(signal_fingerprint::dbc_encoding(&scopes, None, 256, false, "X").as_str()),
+            "the DBC-backed row carries its candidate chain's fingerprint"
+        );
+        assert_eq!(
+            row("Speed").encoding.as_deref(),
+            Some(signal_fingerprint::file_source(&file_info(7, "Speed")).as_str()),
+            "the file-backed row carries its source's"
+        );
+        assert_ne!(
+            row("X").encoding,
+            row("Speed").encoding,
+            "the two provenances are fingerprinted against different things"
+        );
+    }
+
+    #[test]
+    fn a_manifest_without_encodings_still_restores() {
+        // Manifests written before the fingerprint existed carry no
+        // `encoding` at all. Such a row says nothing about what decoded
+        // it; it must still parse and come back under the whole-set gate
+        // it was written against.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", "dbc-a", 0);
+        let store_len = build_and_persist(root.path(), &v);
+
+        let path = root.path().join(MANIFEST_FILE);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for signal in json["signals"].as_array_mut().unwrap() {
+            assert!(
+                signal.as_object_mut().unwrap().remove("encoding").is_some(),
+                "the persist wrote one to remove"
+            );
+        }
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(
+            reopened.restore(&v, store_len),
+            1,
+            "an encoding-less row still restores"
+        );
     }
 
     #[test]
@@ -4831,7 +4946,7 @@ mod tests {
 
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(cache.unflushed() > 0, "a fresh pyramid owes its pages");
-        assert!(cache.persist(&v, Harden::All));
+        assert!(cache.persist(&v, &[], Harden::All));
         assert_eq!(
             cache.unflushed(),
             0,
@@ -4841,7 +4956,7 @@ mod tests {
         // And with nothing appended since, the next one has nothing to do.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         assert_eq!(cache.unflushed(), 0);
-        assert!(cache.persist(&v, Harden::All));
+        assert!(cache.persist(&v, &[], Harden::All));
         assert_eq!(cache.unflushed(), 0);
     }
 
@@ -4869,7 +4984,7 @@ mod tests {
         let owed = cache.unflushed();
         assert!(owed > 0);
         assert!(
-            cache.persist(&v, Harden::live_budget()),
+            cache.persist(&v, &[], Harden::live_budget()),
             "the manifest is written"
         );
         let after = cache.unflushed();
@@ -4879,12 +4994,12 @@ mod tests {
         // Running it again with nothing sealed since is free and changes
         // nothing — the property the live regime depends on.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
-        assert!(cache.persist(&v, Harden::live_budget()));
+        assert!(cache.persist(&v, &[], Harden::live_budget()));
         assert_eq!(cache.unflushed(), after);
 
         // The quit behind it still takes everything.
         cache.evict_below(f64::NEG_INFINITY);
-        assert!(cache.persist(&v, Harden::All));
+        assert!(cache.persist(&v, &[], Harden::All));
         assert_eq!(cache.unflushed(), 0);
     }
 
@@ -5084,7 +5199,7 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(
-            !reopened.persist(&validity("capture-b", "dbc-a", 0), Harden::All),
+            !reopened.persist(&validity("capture-b", "dbc-a", 0), &[], Harden::All),
             "nothing is written while a candidate is unjudged",
         );
         // …so the candidate is still there to be judged.
@@ -5158,7 +5273,7 @@ mod tests {
         let cache = SignalCacheStore::new(root.path());
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         cache.evict_below(1000.0);
-        cache.persist(&v, Harden::All);
+        cache.persist(&v, &[], Harden::All);
 
         let reopened = SignalCacheStore::new(root.path());
         assert_eq!(reopened.restore(&v, store.len()), 1);
@@ -5455,7 +5570,7 @@ mod tests {
                 200
             );
             cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
-            assert!(cache.persist(&v, Harden::All));
+            assert!(cache.persist(&v, &[], Harden::All));
         }
 
         let reopened = SignalCacheStore::new(root.path());
@@ -5643,7 +5758,7 @@ mod tests {
             // …and then the flusher's tick.
             let at = std::time::Instant::now();
             assert!(cache.needs_persist(), "a served pyramid is dirty");
-            assert!(cache.persist(&validity, Harden::live_budget()));
+            assert!(cache.persist(&validity, &[], Harden::live_budget()));
             per_tick_ms.push(at.elapsed().as_secs_f64() * 1000.0);
         }
 
@@ -5662,7 +5777,7 @@ mod tests {
         // The exit flush that follows such a session.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         let at = std::time::Instant::now();
-        assert!(cache.persist(&validity, Harden::All));
+        assert!(cache.persist(&validity, &[], Harden::All));
         println!(
             "[bench] the quit after it: {:.1} ms",
             at.elapsed().as_secs_f64() * 1000.0,
@@ -5842,7 +5957,7 @@ mod tests {
                     let at = std::time::Instant::now();
                     // The store is not growing during a rebuild, so this
                     // is the budget the flusher would actually use here.
-                    if cache.needs_persist() && cache.persist(&v, Harden::idle_budget()) {
+                    if cache.needs_persist() && cache.persist(&v, &[], Harden::idle_budget()) {
                         spent += at.elapsed().as_secs_f64();
                         ticks += 1;
                     }
@@ -5885,12 +6000,12 @@ mod tests {
         let drain_at = std::time::Instant::now();
         for _ in 0..drain_ticks {
             paced.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
-            paced.persist(&paced_v, Harden::idle_budget());
+            paced.persist(&paced_v, &[], Harden::idle_budget());
         }
         let drain_secs = drain_at.elapsed().as_secs_f64();
         paced.evict_below(f64::NEG_INFINITY);
         let drained_exit_at = std::time::Instant::now();
-        assert!(paced.persist(&paced_v, Harden::All));
+        assert!(paced.persist(&paced_v, &[], Harden::All));
         let drained_exit_secs = drained_exit_at.elapsed().as_secs_f64();
         drop(paced);
         println!(
@@ -5951,7 +6066,7 @@ mod tests {
         };
         let persist_at = std::time::Instant::now();
         assert!(
-            cache.persist(&validity, Harden::All),
+            cache.persist(&validity, &[], Harden::All),
             "the manifest is written"
         );
         let persist_secs = persist_at.elapsed().as_secs_f64();
@@ -5963,7 +6078,7 @@ mod tests {
         // behind the periodic flusher actually pays.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         let again_at = std::time::Instant::now();
-        assert!(cache.persist(&validity, Harden::All));
+        assert!(cache.persist(&validity, &[], Harden::All));
         let again_secs = again_at.elapsed().as_secs_f64();
         drop(cache);
 
