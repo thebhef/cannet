@@ -128,6 +128,65 @@ export function tileLabelX(
   return Math.round((visStart + visEnd - textWidth) / 2);
 }
 
+/** One `(raw, label)` row of a signal's value table, as the lane draw
+ * needs it — structurally the `ValueTableEntryRecord` the host serves. */
+interface LabelRow {
+  raw: number;
+  label: string;
+}
+
+/** Per-table code→label maps, so a draw builds one lookup per table
+ * rather than one per table *per draw*. Weak, so a table that goes out
+ * of scope (its signal removed, its DBC unloaded) takes its map with
+ * it. */
+const laneLabelMaps = new WeakMap<readonly LabelRow[], (raw: number) => string>();
+
+/** A code→label resolver for one value table: the label the table gives
+ * `raw`, or the code itself rendered as a number when the table doesn't
+ * list it.
+ *
+ * The tile draw calls this once per visible segment, and a segment count
+ * grows with the window — a linear `table.find` per segment was a
+ * measurable share of the lane's draw cost on a long capture. The map is
+ * cached against the table's own identity, so repeated draws of an
+ * unchanged table cost one lookup each.
+ *
+ * First row wins on a duplicate `raw`, matching the linear scan this
+ * replaces. */
+export function laneLabels(table: readonly LabelRow[]): (raw: number) => string {
+  const cached = laneLabelMaps.get(table);
+  if (cached) return cached;
+  const byRaw = new Map<number, string>();
+  for (const r of table) if (!byRaw.has(r.raw)) byRaw.set(r.raw, r.label);
+  const lookup = (raw: number): string => byRaw.get(raw) ?? String(raw);
+  laneLabelMaps.set(table, lookup);
+  return lookup;
+}
+
+/** Measured widths, keyed by the font that produced them. A tile lane
+ * draws a handful of distinct labels over and over, so this stays tiny
+ * — bounded by (fonts in use) × (labels in the loaded value tables). */
+const tileLabelWidths = new Map<string, number>();
+
+/** Width in canvas pixels of a tile label in `ctx`'s current font,
+ * memoised per `(label, font)`.
+ *
+ * `measureText` is a text-shaping call, and the tile draw makes one per
+ * visible segment even though the labels repeat: a lane cycling through
+ * six states redraws the same six strings for as many segments as the
+ * window holds. Keying on the font as well as the label is not
+ * optional — the same string measures differently under the axis font
+ * and the label font, and a label-only memo would silently return the
+ * wrong width to whichever caller measured second. */
+export function measureTileLabel(ctx: CanvasRenderingContext2D, label: string): number {
+  const key = `${ctx.font} ${label}`;
+  const hit = tileLabelWidths.get(key);
+  if (hit !== undefined) return hit;
+  const width = ctx.measureText(label).width;
+  tileLabelWidths.set(key, width);
+  return width;
+}
+
 /** The centered vertical extent a value tile draws within its lane
  * `band`. The tile is `tileFraction` of the lane height, floored at
  * `minPx` (given the lane's on-screen pixel height `lanePx`) and capped

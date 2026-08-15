@@ -411,6 +411,103 @@ impl SignalCache {
         }
     }
 
+    /// Serve a `[from, to)` window as a **categorical** series: the run
+    /// boundaries in the window, not a per-bucket envelope.
+    ///
+    /// Same level-choosing shape as [`Self::window`] and the same
+    /// `O(max_points)` read, but the level is chosen from the *fine* end
+    /// and the reduction is [`signal_sampler::reduce_transitions`]:
+    ///
+    /// - **Read the finest level whose in-window count fits the read
+    ///   budget** ([`PYRAMID_BRANCH`] × `max_points`, the same order the
+    ///   numeric serve reads). A window that fits at level 0 is answered
+    ///   from the raw samples, so every code and every transition time is
+    ///   exact — which is the case a live plot is in until the window
+    ///   holds more than a few `max_points` of samples.
+    /// - **Above that, resolution degrades but codes do not vanish.** A
+    ///   level-`k` point summarises `n / count_k` raw samples, and the
+    ///   chosen level holds more than `max_points` points wherever a
+    ///   coarser one would not, so a run is resolved to better than an
+    ///   eighth of a pixel column. A run shorter than that merges into
+    ///   its neighbours instead of displacing them.
+    /// - **When the runs themselves exceed the budget, coarsen** (ADR
+    ///   0049's partial answer): step up a level and re-reduce until the
+    ///   answer fits or the pyramid runs out. The alternative — truncating
+    ///   the window and continuing on the next request — is not available
+    ///   here: ADR 0049's continuation converges because each serve
+    ///   decodes *more*, whereas an identical request over an unchanged
+    ///   window returns the identical prefix forever, and the contract
+    ///   forbids the caller accumulating across responses. Coarsening
+    ///   keeps the answer whole and bounded; what it costs is resolution,
+    ///   at a zoom where the transitions are already sub-pixel.
+    /// - **The tail is always spliced at full resolution**
+    ///   ([`Self::level_points`]), so a lane read off a coarse level still
+    ///   reaches the capture's live edge rather than stopping at the last
+    ///   bucket that has folded upward.
+    ///
+    /// So the answer holds at most `max_points` runs plus that splice
+    /// (fewer than [`PYRAMID_BRANCH`] points from each level finer than
+    /// the one read) — `O(max_points)` regardless of capture length, like
+    /// the numeric serve.
+    ///
+    /// `max_points == 0` means "no budget": the raw level-0 window,
+    /// run-reduced (still lossless — a step series *is* its transitions).
+    fn window_categorical(&self, from: f64, to: f64, max_points: usize) -> Vec<SamplePoint> {
+        if self.levels[0].live_len() == 0 {
+            return Vec::new();
+        }
+        if max_points == 0 {
+            return signal_sampler::reduce_transitions(&window_slice(&self.levels[0], from, to));
+        }
+        let read_budget = max_points.saturating_mul(PYRAMID_BRANCH);
+        let mut chosen = 0;
+        for (n, level) in self.levels.iter().enumerate() {
+            chosen = n;
+            if window_count(level, from, to) <= read_budget {
+                break;
+            }
+        }
+        loop {
+            let out = signal_sampler::reduce_transitions(&self.level_points(chosen, from, to));
+            if out.len() <= max_points || chosen + 1 >= self.levels.len() {
+                return out;
+            }
+            chosen += 1;
+        }
+    }
+
+    /// The `[from, to)` window read off level `level`, extended to the
+    /// series' live edge from the finer levels below it.
+    ///
+    /// [`Self::fold`] only promotes *complete* buckets, so a level stops
+    /// short of the newest samples — by up to [`PYRAMID_BRANCH`] of its
+    /// own points per level below it. For a line renderer that is a few
+    /// pixels of missing tail; for a lane of held states it is the lane
+    /// visibly falling behind the capture, which is the whole complaint
+    /// this serve exists to answer. Each level `j < level` therefore
+    /// contributes its own points newer than everything emitted so far —
+    /// fewer than [`PYRAMID_BRANCH`] each, because anything older has
+    /// already folded upward — so the splice is bounded however deep the
+    /// pyramid is, and the newest samples are served at full resolution.
+    fn level_points(&self, level: usize, from: f64, to: f64) -> Vec<SamplePoint> {
+        let mut out = window_slice(&self.levels[level], from, to);
+        for finer in (0..level).rev() {
+            let seq = &self.levels[finer];
+            let after = out.last().map_or(from, |p| p.t_seconds);
+            let lo = partition_by_t(seq, after);
+            // The same two-point widening past the right edge that
+            // `window_slice` applies, so the last tile reaches off-canvas.
+            let hi = std::cmp::min(seq.len(), partition_by_t(seq, to).saturating_add(2));
+            for k in lo..hi {
+                let (t_seconds, value) = seq.get(k);
+                if t_seconds > after {
+                    out.push(SamplePoint { t_seconds, value });
+                }
+            }
+        }
+        out
+    }
+
     /// Snapshot this cache's manifest row: the key it is filed under plus
     /// the two numbers per level ([`SampleSeq::reopen`] needs `len` and
     /// `first_slot`), the fold cursors, the decode cursor, and the all-time
@@ -1035,6 +1132,34 @@ pub struct CacheQuery<'a> {
     /// filled: nothing decodes such a signal, so there is no series to
     /// create on demand.
     pub file_backed: bool,
+}
+
+/// How a serve summarises a window that holds more samples than the
+/// caller's point budget.
+///
+/// This is the **requesting view's render mode**, not a property of the
+/// series: the same signal is a line on one axis and a lane of held
+/// states on another, and only the view knows which it is drawing. The
+/// host stays mode-agnostic — it does not infer "categorical" from the
+/// presence of a DBC value table, which would make the reduction depend
+/// on which databases happen to be loaded and would still be wrong for
+/// the labelled-but-plotted-as-a-line case.
+///
+/// It is a property of the *request*, not of each signal in it, because a
+/// fetch batches exactly one axis and an axis has exactly one render
+/// mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Reduction {
+    /// Numeric: each bucket's min- and max-value point, so a spike
+    /// survives ([`signal_sampler::decimate_min_max`]).
+    #[default]
+    MinMax,
+    /// Categorical: the window's run boundaries, so every held code and
+    /// its transition survive ([`signal_sampler::reduce_transitions`]).
+    /// A min/max envelope over a code series keeps the two extreme codes
+    /// of each bucket and discards the rest — the held state disappears
+    /// rather than being drawn late.
+    Runs,
 }
 
 impl CacheQuery<'_> {
@@ -1717,6 +1842,7 @@ impl SignalCacheStore {
             from_seconds,
             to_seconds,
             max_points,
+            Reduction::MinMax,
             store,
             dbs,
         )
@@ -1740,6 +1866,13 @@ impl SignalCacheStore {
     /// returns in about that long however cold the caches are, and says
     /// through [`ServedWindows::complete`] whether the windows are the
     /// whole answer or a prefix of it.
+    ///
+    /// `reduction` is the caller's render mode — the one input to the
+    /// serve that is a fact about the *view* rather than about the series
+    /// (see [`Reduction`]). A window served as [`Reduction::Runs`] keeps
+    /// every code and every transition it can resolve; served as
+    /// [`Reduction::MinMax`] it keeps each bucket's extremes, which for a
+    /// code series would discard exactly the held states the view draws.
     #[allow(clippy::too_many_arguments)]
     pub fn slice_many(
         &self,
@@ -1747,6 +1880,7 @@ impl SignalCacheStore {
         from_seconds: f64,
         to_seconds: f64,
         max_points: usize,
+        reduction: Reduction,
         store: &TraceStore,
         dbs: &[&Database],
     ) -> ServedWindows {
@@ -1767,9 +1901,15 @@ impl SignalCacheStore {
             series: keys
                 .iter()
                 .map(|key| {
-                    caches.by_key.get(key).map_or_else(Vec::new, |cache| {
-                        cache.window(from_seconds, to_seconds, max_points)
-                    })
+                    caches
+                        .by_key
+                        .get(key)
+                        .map_or_else(Vec::new, |cache| match reduction {
+                            Reduction::MinMax => cache.window(from_seconds, to_seconds, max_points),
+                            Reduction::Runs => {
+                                cache.window_categorical(from_seconds, to_seconds, max_points)
+                            }
+                        })
                 })
                 .collect(),
             complete: caught_up(&caches, &keys, store_len),
@@ -2361,6 +2501,171 @@ mod tests {
             .any(|p| (p.t_seconds - (spike_at * S) as f64 / 1e9).abs() < 0.5),);
     }
 
+    /// Serve one categorical window and return its `(t, code)` pairs.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn categorical_serve(
+        cache: &SignalCacheStore,
+        from: f64,
+        to: f64,
+        max_points: usize,
+        store: &TraceStore,
+        dbs: &[&Database],
+    ) -> Vec<(f64, u32)> {
+        cache
+            .slice_many(
+                &[CacheQuery {
+                    bus_id: None,
+                    message_id: 256,
+                    extended: false,
+                    signal_name: "X",
+                    file_backed: false,
+                }],
+                from,
+                to,
+                max_points,
+                Reduction::Runs,
+                store,
+                dbs,
+            )
+            .series
+            .pop()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| (p.t_seconds, p.value as u32))
+            .collect()
+    }
+
+    /// The categorical serve's reason to exist, at the serve seam: above
+    /// the decimation threshold (`window samples > max_points`) a
+    /// categorical window must still carry **every code and every
+    /// transition time**, where the numeric serve of the same window
+    /// keeps per-bucket extremes and drops the states held in between.
+    #[test]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn categorical_serve_keeps_every_code_and_transition_above_the_budget() {
+        // 24 held runs of 6 cycling codes, 100 samples each: 2400 samples
+        // in a window served at a 600-point budget — four times over the
+        // decimation threshold.
+        const HOLD: u64 = 100;
+        const CODES: u64 = 6;
+        let store = TraceStore::new();
+        let mut n = 0u64;
+        let mut transitions: Vec<(f64, u32)> = Vec::new();
+        for run in 0..24u64 {
+            let code = run % CODES;
+            #[allow(clippy::cast_precision_loss)]
+            transitions.push(((n * S) as f64 / 1e9, code as u32));
+            for _ in 0..HOLD {
+                store.append(val_frame(n * S, code as u16));
+                n += 1;
+            }
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+
+        let max_points = 600;
+        let runs = categorical_serve(&cache, f64::MIN, f64::MAX, max_points, &store, dbs);
+        // Exactly the transitions, plus the series' final point so the
+        // last tile has an end.
+        assert_eq!(
+            &runs[..transitions.len()],
+            &transitions[..],
+            "categorical serve lost or moved a transition",
+        );
+        assert_eq!(runs.len(), transitions.len() + 1);
+        // Bounded, and far below the window's sample count.
+        assert!(runs.len() <= max_points);
+
+        // The numeric serve of the same window at a budget whose buckets
+        // span whole 0..5 cycles keeps each bucket's argmin and argmax
+        // only — the codes held in between are gone. This is the defect
+        // the categorical path exists to avoid.
+        let envelope = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 4, &store, dbs);
+        let kept: std::collections::BTreeSet<u32> =
+            envelope.iter().map(|p| p.value as u32).collect();
+        assert!(
+            !kept.contains(&2) && !kept.contains(&3),
+            "min/max decimation was expected to drop the middle codes, kept {kept:?}",
+        );
+    }
+
+    /// Above the *read* budget the answer coarsens rather than losing
+    /// held states: a run long enough to fill a coarse bucket still
+    /// arrives, with its transition placed to better than a pixel column.
+    #[test]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn categorical_serve_coarsens_a_huge_window_without_losing_held_codes() {
+        const HOLD: u64 = 5_000;
+        const RUNS: u64 = 10;
+        let store = TraceStore::new();
+        let mut n = 0u64;
+        for run in 0..RUNS {
+            for _ in 0..HOLD {
+                store.append(val_frame(n * S, (run % 6) as u16));
+                n += 1;
+            }
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+
+        // 50 000 samples at a 200-point budget: 40× over the threshold,
+        // and well past the read budget too, so this is served off a
+        // coarse pyramid level.
+        let max_points = 200;
+        let served = categorical_serve(&cache, f64::MIN, f64::MAX, max_points, &store, dbs);
+        assert!(served.len() <= max_points, "{} points", served.len());
+        // Every run still arrives, in order.
+        assert_eq!(
+            served.iter().map(|&(_, v)| v).collect::<Vec<_>>(),
+            (0..RUNS)
+                .map(|r| (r % 6) as u32)
+                .chain(std::iter::once(((RUNS - 1) % 6) as u32))
+                .collect::<Vec<_>>(),
+        );
+        // …and each transition lands within a pixel column of the truth
+        // (one column is `window samples / max_points` = 250 samples).
+        #[allow(clippy::cast_precision_loss)]
+        let column = (HOLD * RUNS) as f64 / max_points as f64;
+        for (i, &(t, _)) in served.iter().take(RUNS as usize).enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let truth = (i as u64 * HOLD) as f64;
+            assert!(
+                (t - truth).abs() <= column,
+                "transition {i} at {t}, truth {truth}, column {column}",
+            );
+        }
+    }
+
+    /// More transitions than the budget: the answer stays whole and
+    /// bounded by coarsening, never by truncating the window (ADR 0049 —
+    /// an identical request over an unchanged window cannot continue).
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn categorical_serve_coarsens_when_transitions_exceed_the_budget() {
+        let store = TraceStore::new();
+        let n = 8_000u64;
+        for i in 0..n {
+            store.append(val_frame(i * S, (i % 2) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+
+        let max_points = 200;
+        let served = categorical_serve(&cache, f64::MIN, f64::MAX, max_points, &store, dbs);
+        assert!(served.len() <= max_points, "{} points", served.len());
+        // Whole window, not a prefix: the answer still reaches the
+        // capture's last sample, via the full-resolution tail splice.
+        #[allow(clippy::cast_precision_loss)]
+        let last_sample = ((n - 1) * S) as f64 / 1e9;
+        assert_eq!(served.last().unwrap().0, last_sample);
+    }
+
     #[test]
     #[allow(clippy::cast_possible_truncation)]
     fn zoom_in_reads_a_finer_level_than_fit_data() {
@@ -2551,7 +2856,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
-        let serve = || cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        let serve = || {
+            cache.slice_many(
+                &queries,
+                f64::MIN,
+                f64::MAX,
+                0,
+                Reduction::MinMax,
+                &store,
+                dbs,
+            )
+        };
 
         // One chunk in, the serve returns rather than finishing the
         // rebuild — with points to draw, and honest about there being
@@ -2583,6 +2898,7 @@ mod tests {
             f64::MIN,
             f64::MAX,
             0,
+            Reduction::MinMax,
             &store,
             dbs,
         );
@@ -2603,12 +2919,28 @@ mod tests {
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
 
-        let empty = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &TraceStore::new(), dbs);
+        let empty = cache.slice_many(
+            &queries,
+            f64::MIN,
+            f64::MAX,
+            0,
+            Reduction::MinMax,
+            &TraceStore::new(),
+            dbs,
+        );
         assert!(empty.complete);
         assert!(empty.series[0].is_empty());
 
         let undecodable = undecodable_store(CATCH_UP_CHUNK_FRAMES);
-        let served = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &undecodable, dbs);
+        let served = cache.slice_many(
+            &queries,
+            f64::MIN,
+            f64::MAX,
+            0,
+            Reduction::MinMax,
+            &undecodable,
+            dbs,
+        );
         assert!(served.complete);
         assert!(served.series[0].is_empty());
     }
@@ -2636,7 +2968,15 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X"), query_on(512, "Y")];
-        let served = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        let served = cache.slice_many(
+            &queries,
+            f64::MIN,
+            f64::MAX,
+            0,
+            Reduction::MinMax,
+            &store,
+            dbs,
+        );
         assert!(!served.complete);
         // Half the chunk's frames are each group's, so both groups
         // scanned one chunk of the same span — neither starved.
@@ -2658,7 +2998,15 @@ mod tests {
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
 
-        let first = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        let first = cache.slice_many(
+            &queries,
+            f64::MIN,
+            f64::MAX,
+            0,
+            Reduction::MinMax,
+            &store,
+            dbs,
+        );
         assert!(!first.complete);
         assert_eq!(first.series[0].len(), CATCH_UP_CHUNK_FRAMES);
 
@@ -2667,7 +3015,15 @@ mod tests {
         for i in 2 * CATCH_UP_CHUNK_FRAMES..4 * CATCH_UP_CHUNK_FRAMES {
             store.append(val_frame(i as u64 * S, i as u16));
         }
-        let second = cache.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs);
+        let second = cache.slice_many(
+            &queries,
+            f64::MIN,
+            f64::MAX,
+            0,
+            Reduction::MinMax,
+            &store,
+            dbs,
+        );
         assert!(!second.complete);
         assert_eq!(second.series[0].len(), 2 * CATCH_UP_CHUNK_FRAMES);
     }
@@ -2693,7 +3049,15 @@ mod tests {
         assert_eq!(first[0], Some((0.0, chunk_hi)));
 
         while !cache
-            .slice_many(&queries, f64::MIN, f64::MAX, 0, &store, dbs)
+            .slice_many(
+                &queries,
+                f64::MIN,
+                f64::MAX,
+                0,
+                Reduction::MinMax,
+                &store,
+                dbs,
+            )
             .complete
         {}
         #[allow(clippy::cast_precision_loss)]
@@ -3048,7 +3412,15 @@ mod tests {
         // Shared: one pass per message for the whole batch.
         let together = TempDir::new().unwrap();
         let grouped = SignalCacheStore::new_unbounded(together.path());
-        let shared = grouped.slice_many(&queries, f64::MIN, f64::MAX, 0, &store, &dbs);
+        let shared = grouped.slice_many(
+            &queries,
+            f64::MIN,
+            f64::MAX,
+            0,
+            Reduction::MinMax,
+            &store,
+            &dbs,
+        );
 
         assert!(shared.complete);
         let shared = shared.series;
@@ -3203,8 +3575,9 @@ mod tests {
                     f64::MIN,
                     f64::MAX,
                     0,
+                    Reduction::MinMax,
                     &store,
-                    &dbs,
+                    &dbs
                 )
                 .series[0]
                 .len(),
@@ -3214,7 +3587,15 @@ mod tests {
             store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
         }
         let both = cache
-            .slice_many(&[a, b], f64::MIN, f64::MAX, 0, &store, &dbs)
+            .slice_many(
+                &[a, b],
+                f64::MIN,
+                f64::MAX,
+                0,
+                Reduction::MinMax,
+                &store,
+                &dbs,
+            )
             .series;
         assert_eq!(
             both[0].iter().map(|p| p.value).collect::<Vec<_>>(),
@@ -3248,14 +3629,22 @@ mod tests {
         };
         queries.push(repeat);
         let out = cache
-            .slice_many(&queries, f64::MIN, f64::MAX, 0, &store, &dbs)
+            .slice_many(
+                &queries,
+                f64::MIN,
+                f64::MAX,
+                0,
+                Reduction::MinMax,
+                &store,
+                &dbs,
+            )
             .series;
         assert_eq!(out.len(), queries.len());
         assert_eq!(out[0], out[queries.len() - 1]);
         // An empty batch is a no-op, not a panic — and trivially
         // complete, since it named nothing that could still be catching
         // up.
-        let none = cache.slice_many(&[], f64::MIN, f64::MAX, 0, &store, &dbs);
+        let none = cache.slice_many(&[], f64::MIN, f64::MAX, 0, Reduction::MinMax, &store, &dbs);
         assert!(none.series.is_empty() && none.complete);
         assert!(cache.min_max_many(&[], &store, &dbs).is_empty());
     }
@@ -3813,6 +4202,7 @@ mod tests {
                     f64::MIN,
                     f64::MAX,
                     max_points,
+                    Reduction::MinMax,
                     &store,
                     dbs,
                 )
@@ -3854,6 +4244,7 @@ mod tests {
             f64::MIN,
             f64::MAX,
             0,
+            Reduction::MinMax,
             &store,
             dbs,
         );
@@ -3862,7 +4253,15 @@ mod tests {
         // The DBC-backed sibling over the same capture is not.
         assert!(
             !cache
-                .slice_many(&[query_on(256, "X")], f64::MIN, f64::MAX, 0, &store, dbs)
+                .slice_many(
+                    &[query_on(256, "X")],
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    Reduction::MinMax,
+                    &store,
+                    dbs
+                )
                 .complete
         );
     }
@@ -3878,7 +4277,15 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let served = cache.slice_many(&[file_query(7, "Absent")], 0.0, 1.0, 0, &store, dbs);
+        let served = cache.slice_many(
+            &[file_query(7, "Absent")],
+            0.0,
+            1.0,
+            0,
+            Reduction::MinMax,
+            &store,
+            dbs,
+        );
         assert!(served.series[0].is_empty());
         assert!(served.complete);
         assert!(cache.caches.lock().unwrap().by_key.is_empty());
@@ -3959,6 +4366,7 @@ mod tests {
             f64::MIN,
             f64::MAX,
             0,
+            Reduction::MinMax,
             &cold,
             dbs,
         );
@@ -4026,6 +4434,7 @@ mod tests {
             f64::MIN,
             f64::MAX,
             0,
+            Reduction::MinMax,
             &cold,
             dbs,
         );
@@ -4179,7 +4588,15 @@ mod tests {
                 appended += 1;
             }
             // The plots serve, which is what advances the pyramids.
-            let _ = cache.slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs);
+            let _ = cache.slice_many(
+                &queries,
+                f64::MIN,
+                f64::MAX,
+                2000,
+                Reduction::MinMax,
+                &store,
+                dbs,
+            );
             // …and then the flusher's tick.
             let at = std::time::Instant::now();
             assert!(cache.needs_persist(), "a served pyramid is dirty");
@@ -4327,7 +4744,15 @@ mod tests {
 
         let started = std::time::Instant::now();
         let shared = cache
-            .slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs)
+            .slice_many(
+                &queries,
+                f64::MIN,
+                f64::MAX,
+                2000,
+                Reduction::MinMax,
+                &store,
+                dbs,
+            )
             .series;
         let secs = started.elapsed().as_secs_f64();
         let pts: usize = shared.iter().map(Vec::len).sum();
@@ -4384,7 +4809,15 @@ mod tests {
         };
         let paced_at = std::time::Instant::now();
         let paced_series = paced
-            .slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs)
+            .slice_many(
+                &queries,
+                f64::MIN,
+                f64::MAX,
+                2000,
+                Reduction::MinMax,
+                &store,
+                dbs,
+            )
             .series;
         let paced_secs = paced_at.elapsed().as_secs_f64();
         stop.store(true, Ordering::Relaxed);
@@ -4498,7 +4931,15 @@ mod tests {
         assert_eq!(restored, signals, "every pyramid came back");
         let served_at = std::time::Instant::now();
         let back: usize = reopened
-            .slice_many(&queries, f64::MIN, f64::MAX, 2000, &store, dbs)
+            .slice_many(
+                &queries,
+                f64::MIN,
+                f64::MAX,
+                2000,
+                Reduction::MinMax,
+                &store,
+                dbs,
+            )
             .series
             .iter()
             .map(Vec::len)
