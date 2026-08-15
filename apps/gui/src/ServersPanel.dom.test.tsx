@@ -600,6 +600,51 @@ describe("the trust lifecycle from a row", () => {
     expect(dialogs[0]).toHaveTextContent("refused the access token");
   });
 
+  it("leaves the indicator when the dialog is waved away, and opens it again", async () => {
+    // Dismissal is not an answer. The host still holds the question,
+    // the row still says so, and the row is where the user comes back
+    // to it — the whole point of not making this a modal that has to be
+    // dealt with the moment it appears.
+    const prompt: TrustPrompt = {
+      kind: "identityChanged",
+      expected: "SHA256:aaa",
+      observed: "SHA256:bbb",
+    };
+    snapshot = list([
+      row({
+        address: "rippy:50051",
+        trust: "fingerprintChanged",
+        fingerprint: "SHA256:aaa",
+        prompt,
+      }),
+    ]);
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "get_server_prompts") return { "rippy:50051": prompt };
+        return undefined;
+      },
+    );
+    renderWithDialog();
+    await screen.findByText("rippy:50051");
+    fireEvent.click(screen.getByLabelText("review rippy:50051"));
+    await screen.findByRole("dialog");
+
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // Nothing was written, so the indicator is still on the row…
+    expect(calls.some((c) => c.cmd === "accept_server_fingerprint")).toBe(false);
+    expect(rowFor("rippy:50051")).toHaveTextContent("identity changed");
+
+    // …and the row opens the same question again, whenever the user is
+    // ready for it.
+    fireEvent.click(screen.getByLabelText("review rippy:50051"));
+    const again = await screen.findAllByRole("dialog");
+    expect(again).toHaveLength(1);
+    expect(again[0]).toHaveTextContent("SHA256:bbb");
+  });
+
   it("mounts no dialog of its own", async () => {
     // One dialog implementation, one mount: the panel raises the
     // app-wide one, so two modals over the same question are impossible
