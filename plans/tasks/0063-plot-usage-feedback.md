@@ -109,6 +109,136 @@ on-show list.
 
 ## Status log
 
+### 2026-08-14 — item 1: the DisclosureToggle component and its 12-site migration
+
+Branch `task63c-disclosure-toggle` off `task63b-categorical-serve`
+(`1e055cf`). Seven commits: the component, then one per coherent
+group (plot family; standalone panel headers; the signal-section fold;
+the RBS tree; the DBC tree; the transmit row + trace table).
+
+#### The component
+
+`DisclosureToggle` (`apps/gui/src/DisclosureToggle.tsx`) owns hit
+area, ink, rotation and `aria-expanded`. The default box is a real
+24x24 CSS px hit area (padding-based: `min-width`/`min-height: 24px`
+on the button itself, not a negative-margin/pseudo-element overlay) —
+`~12px` ink centered inside it. A `compact` size variant trades the
+floor's *height* for the row it sits in, keeping width at the full
+24px (width costs nothing there): used wherever a row's height is
+fixed by a shared virtualizer constant or a toolbar line's sibling
+controls, so growing it would either bloat every row or need a
+pseudo-element hack whose hit area doesn't actually reach past
+neighbouring, tightly-stacked rows reliably (rejected — the task's own
+"must genuinely receive clicks, not just occupy space" caution). Six
+of the twelve sites take it: SignalsPanel (row ties to
+`traceViewport.ts`'s `ROW_HEIGHT` = 22px), DatabasePanel
+(`dbcPanelViewport.ts`'s `ROW_HEIGHT` = 20px), RbsPanel's three rows
+and TransmitFrameRow's identity line (no shared constant, but growing
+any of these would bloat the row's layout — out of this task's
+surgical scope regardless of the reason).
+
+Keyboard: the button's own `onKeyDown` toggles directly on Enter/Space
+and calls `preventDefault()`, rather than relying on a real
+`<button>`'s native synthetic-click activation — confirmed by a
+throwaway probe that jsdom does *not* implement that native behavior
+(`fireEvent.keyDown` on a plain button never reaches `onClick`), so a
+component that only wired `onClick` would silently fail every keyboard
+test under this suite while still working by accident in a real
+browser. `preventDefault` also stops the *browser's* native
+double-activation in a real WebView2/Chromium host.
+
+`onToggle` receives the activating event (mouse or keyboard) rather
+than being a bare `() => void`, so a site nested inside another
+clickable element (a gridview row, ADR 0044) can call
+`stopPropagation` itself — the component takes no view on whether
+that's wanted, since roughly half the twelve sites need it and half
+don't (preserved exactly per site, not defaulted on).
+
+11 new tests in `DisclosureToggle.dom.test.tsx`: a real `<button>` (not
+a decorative span), the 24x24 floor and the compact variant's width-
+only floor (read from `index.css` as text — jsdom does no layout, the
+established idiom here per `dockPanelScrolling.test.ts`), click-toggles,
+Enter/Space-toggles (and an arbitrary key does not), `aria-expanded`
+tracking, the glyph swap (hidden from the accessible name),
+children-as-accessible-name, `tabIndex` override, disabled behavior,
+and that a nested toggle's `stopPropagation` reaches an ancestor.
+
+#### The twelve sites
+
+| site | shape | variant | notes |
+| --- | --- | --- | --- |
+| PlotArea | icon-only | default | `disabled` passthrough for the "nothing to expand to" state |
+| PlotMeasurements | label ("measurements") | default | glyph moves out of the accessible name into an aria-hidden span — previously read literally by a screen reader |
+| ProjectPanel | label (section title) | default | two-class `.project-panel .project-section-toggle` kept — it exists to outrank `.project-panel button`'s bordered look, not to duplicate the shared class |
+| ConnectionManagement | label + explicit aria-label | default | same two-class reasoning as ProjectPanel |
+| ProjectGraphPanel | icon-only | default | filter-node predicate-editor disclosure |
+| BlfChannelMapModal | label ("Markers (N)") | default | |
+| SignalsPanel | icon-only | compact | row shares `traceViewport.ts`'s `ROW_HEIGHT` |
+| RbsPanel ×3 | icon-only, `tabIndex=-1` | compact | bus/ECU/message rows; row itself is the gridview tab stop (ADR 0044), caret is a secondary mouse target — pre-existing pattern, generalized |
+| DatabasePanel | icon-only, `tabIndex=-1` | compact | glyph standardized from `▼`/`▶` (this site's own drift) to the `▾`/`▸` every other site used; `onChevronClick`'s param type widened from `MouseEvent` to `SyntheticEvent` to fit the shared `onToggle` signature |
+| TransmitFrameRow | icon-only | compact | gains an `aria-label` — the original had none, so its accessible name was the raw glyph character |
+
+Two sites did **not** take the component, both documented exceptions
+rather than silent gaps:
+
+- **ByIdTable**: no change. Its row is already the entire disclosure
+  (full row height and width, real `aria-expanded`/`tabIndex`,
+  Enter/Space handling) — a deliberate, tested prior decision
+  (`2c1949a`, "drop the by-id caret; the row is the disclosure") that
+  explicitly removed a glyph for saying nothing a mid-row caret could
+  say. `ByIdTable.dom.test.tsx` asserts no caret and no button in the
+  message cell; adding either back would revert a settled, regression-
+  guarded call, not migrate it.
+- **traceTable** (the chronological trace's row, `TraceView.tsx`):
+  keeps its decorative caret, now sharing DisclosureToggle's
+  `.disclosure-toggle-glyph` ink class and gaining `aria-hidden`
+  (neither present before). Unlike ByIdTable, this row carries no
+  `aria-expanded`/`tabIndex` of its own — TraceView's `Row` never
+  wires them, only an `onClick` — so removing the glyph the way
+  ByIdTable did would leave the row with *no* expand/collapse
+  affordance for any user, sighted or not. Fixing that gap is a larger,
+  separate change (giving the chronological row the same ARIA/keyboard
+  contract ByIdTable has) that this item's "toggle affordance only"
+  scope does not cover; noted here rather than folded in.
+
+**Discrepancy from the grooming's site count**: the item lists
+"PlotMeasurements (×2)". Inspection of `PlotMeasurements.tsx` and its
+one call site in `PlotPanel.tsx` found exactly one disclosure (the
+"measurements" menu trigger) — the "measurements" checkbox beside it
+toggles the strip's visibility but is a real `<input type="checkbox">`,
+not a disclosure. No second caret/`aria-expanded` control exists
+anywhere in the file. Migrated the one found; flagging the mismatch
+rather than inventing a second site.
+
+#### CSS
+
+Retired per-site hit-area/ink rules the migration orphaned:
+`.plot-area-collapse` (kept only spacing/hover color),
+`.blf-map-markers-toggle`/`-caret` (caret rule deleted outright,
+toggle rule trimmed to its full-width/left-align/hover shape),
+`.project-section-caret` (deleted — no longer referenced),
+`.graph-node-expand` (split out of its combined rule with
+`.graph-node-insert-filter`, which keeps its own full styling),
+`.trace-disclosure` (deleted), `.rbs-caret` (deleted — all three
+RbsPanel rows always have a caret, no placeholder-span concern),
+`.dbc-row-chevron` (kept, but trimmed — a childless DBC row's
+placeholder `<span>` still carries this class for indent alignment,
+so its `min-width` widened to 24px to keep expandable and leaf rows'
+indents lined up rather than retiring the rule), `.tx-row-identity
+.tx-expand` (split out of its combined rule with `.tx-remove`, which
+keeps its own full styling; `.tx-expand` keeps only the reserved-
+border hover reveal DisclosureToggle doesn't provide).
+
+#### Tests
+
+2012 frontend tests (`pnpm --dir apps/gui test`, +11 — all in the one
+new `DisclosureToggle.dom.test.tsx` file; every migrated site's
+existing tests updated to the new markup where they touched it at all,
+and all pass unmodified otherwise since they query by role/name/aria
+attributes rather than DOM shape) and `pnpm --dir apps/gui build`
+green after every commit. No host changes; `cargo test -p cannet-gui`
+untouched by this branch.
+
 ### 2026-08-14 — item 4 phase 2: the categorical serve (fix)
 
 Branch `task63b-categorical-serve` off `task63a-enum-lag-investigation`

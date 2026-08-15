@@ -14,6 +14,7 @@ import type {
 import type { SignalSnapshotRecord } from "./types";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
+import { DisclosureToggle } from "./DisclosureToggle";
 import { buildColorResolver, type ColorResolver } from "./colorMap";
 import { SignalValueCell } from "./SignalValueCell";
 import { signalKey } from "./plotData";
@@ -1410,7 +1411,7 @@ const DbcRow = memo(function DbcRow({
     );
     if (isContainerRow && row.hasChildren) onToggle(row.id, !row.expanded);
   };
-  const onChevronClick = (e: React.MouseEvent) => {
+  const onChevronClick = (e: React.SyntheticEvent) => {
     e.stopPropagation();
     onToggle(row.id, !row.expanded);
   };
@@ -1437,16 +1438,14 @@ const DbcRow = memo(function DbcRow({
             inside it is decoration. A row with nothing to disclose keeps
             the same slot so the indents line up. */}
         {row.hasChildren ? (
-          <button
-            type="button"
+          <DisclosureToggle
             className="dbc-row-chevron"
+            compact
             tabIndex={-1}
-            aria-expanded={row.expanded}
-            aria-label={`toggle ${row.id}`}
-            onClick={onChevronClick}
-          >
-            {row.expanded ? "▼" : "▶"}
-          </button>
+            expanded={row.expanded}
+            ariaLabel={`toggle ${row.id}`}
+            onToggle={onChevronClick}
+          />
         ) : (
           <span className="dbc-row-chevron" aria-hidden="true" />
         )}

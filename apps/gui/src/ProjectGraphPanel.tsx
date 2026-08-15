@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { IDockviewPanelProps } from "dockview";
 
+import { DisclosureToggle } from "./DisclosureToggle";
 import { FilterPredicateEditor } from "./FilterPredicateEditor";
 import { insertFilterUpstream } from "./insertFilterUpstream";
 import { useUndoGesture } from "./undoGesture";
@@ -717,17 +718,15 @@ function FilterNode({ data }: NodeProps) {
       <div className="graph-node-label">
         <span className="graph-node-kind">Filter</span>
         <span className="graph-node-title">{node.label}</span>
-        <button
-          type="button"
+        <DisclosureToggle
           className="graph-node-expand nodrag"
-          aria-label={expanded ? "collapse predicate editor" : "expand predicate editor"}
-          onClick={(e) => {
+          expanded={expanded}
+          ariaLabel={expanded ? "collapse predicate editor" : "expand predicate editor"}
+          onToggle={(e) => {
             e.stopPropagation();
             setExpanded((v) => !v);
           }}
-        >
-          {expanded ? "▾" : "▸"}
-        </button>
+        />
       </div>
       {expanded && (
         <FilterPredicateEditor

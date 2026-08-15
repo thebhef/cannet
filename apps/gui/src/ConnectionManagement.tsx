@@ -16,6 +16,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { describeBusConnState } from "./connectionStates";
+import { DisclosureToggle } from "./DisclosureToggle";
 import { hostSettings } from "./hostSettings";
 import { serverKey, serverLabel, type ServerRow } from "./serverList";
 import { describeSidecarStatus } from "./sidecarStatus";
@@ -897,22 +898,14 @@ export function ServerSection({
       data-testid={`server-section-${server.address}`}
     >
       <div className="project-bus">
-        <button
-          type="button"
+        <DisclosureToggle
           className="project-section-toggle"
-          aria-expanded={expanded}
-          aria-label={`interfaces on ${server.address}`}
-          onClick={onToggle}
+          expanded={expanded}
+          ariaLabel={`interfaces on ${server.address}`}
+          onToggle={onToggle}
         >
-          {/* Glyph swap rather than a rotate, matching the panel's
-              other carets. Hidden from the accessible name — the
-              button's own `aria-expanded` already says which way it
-              points. */}
-          <span className="project-section-caret" aria-hidden="true">
-            {expanded ? "▾" : "▸"}
-          </span>
           <span className="project-bus-name">{serverLabel(server)}</span>
-        </button>
+        </DisclosureToggle>
         {server.host !== null && (
           <span className="project-server-host">{server.host}</span>
         )}

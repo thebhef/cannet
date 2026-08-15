@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { Bus, MessageDescriptorRecord } from "./types";
 import { Combobox } from "./Combobox";
+import { DisclosureToggle } from "./DisclosureToggle";
 import { effectiveBusColor } from "./busColor";
 import { theme, useThemeName } from "./theme";
 import { BytesEditor } from "./TransmitBytesEditor";
@@ -237,15 +238,14 @@ export function TransmitFrameRow({
               {messageName}
             </span>
           )}
-          <button
-            type="button"
+          <DisclosureToggle
             className="tx-expand"
-            onClick={() => onSetExpanded(!expanded)}
-            aria-expanded={expanded}
+            compact
+            expanded={expanded}
             title={expanded ? "collapse" : "expand"}
-          >
-            {expanded ? "▾" : "▸"}
-          </button>
+            ariaLabel={expanded ? "collapse" : "expand"}
+            onToggle={() => onSetExpanded(!expanded)}
+          />
           <button
             type="button"
             className={`tx-remove ${pendingRemove ? "tx-remove-armed" : ""}`}

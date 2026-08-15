@@ -7,6 +7,7 @@
  */
 import { useState } from "react";
 
+import { DisclosureToggle } from "./DisclosureToggle";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { useFloatFormatRule } from "./floatFormat";
 import {
@@ -46,9 +47,9 @@ export function MeasurementMenu({
   const toggle = (k: MeasurementKey) => onChange(measKeys.includes(k) ? measKeys.filter((x) => x !== k) : [...measKeys, k]);
   return (
     <div className="plot-meas-menu" ref={wrapRef}>
-      <button onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        measurements ▾
-      </button>
+      <DisclosureToggle expanded={open} onToggle={() => setOpen((v) => !v)}>
+        measurements
+      </DisclosureToggle>
       {open && (
         <div className="plot-meas-menu-pop" role="menu">
           {MEASUREMENT_QUANTITIES.map((q) => (
