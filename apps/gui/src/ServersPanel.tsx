@@ -295,8 +295,7 @@ function ServerRowView({
   // wording, never whether an action is offered: a row the user can see
   // is a row the user can act on, and a store that happens to be empty
   // for it is an answer the action gives, not a reason to withhold the
-  // action. (Hiding them is what left the app's own sidecar — trusted,
-  // advertising nowhere, storing nothing — with no affordance at all.)
+  // action.
   const credentials = row.fingerprint !== null || row.hasToken || row.insecure;
   const stored = credentials || row.manual;
   return (

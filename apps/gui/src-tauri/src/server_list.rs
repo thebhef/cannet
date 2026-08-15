@@ -178,6 +178,15 @@ pub struct ServerList {
 /// left unanswered is in neither source and has no row. Dismissing the
 /// question leaves nothing behind; the address is typed again to retry.
 ///
+/// `sidecar` is the address this app's own python-can sidecar is
+/// listening on, and it is **never a row**. A bus bound to local
+/// hardware dials the sidecar, so its session would otherwise put a
+/// `127.0.0.1:<ephemeral>` address in a list of servers the operator
+/// manages — one that changes every launch, holds nothing, and is not
+/// theirs to manage. It is identified by being this app's own child,
+/// not by being loopback: an operator's own loopback proxy is a server
+/// like any other and stays listed.
+///
 /// Keyed by [`server_key`] throughout, because that is what the trust
 /// store files entries under: a browsed `192.168.1.10:50051` and an
 /// accepted one are the same server, and a prompt raised against
@@ -188,6 +197,7 @@ pub fn merge(
     trusted: &BTreeMap<String, TrustEntry>,
     prompts: &BTreeMap<String, TrustPrompt>,
     clocks: &BTreeMap<String, ServerClock>,
+    sidecar: Option<&str>,
     browse: BrowseStatus,
 ) -> ServerList {
     let mut rows: BTreeMap<String, ServerRow> = BTreeMap::new();
@@ -228,6 +238,11 @@ pub fn merge(
             row.trust = TrustState::FingerprintChanged;
         }
         row.clock = clocks.get(key).copied();
+    }
+
+    // Last, so no source can slip one back in.
+    if let Some(address) = sidecar {
+        rows.remove(&server_key(address));
     }
 
     let mut servers: Vec<ServerRow> = rows.into_values().collect();
@@ -293,7 +308,14 @@ fn build(app: &AppHandle) -> ServerList {
     let trusted = crate::persisted_json::config_dir(app)
         .map(|dir| crate::server_trust::read_servers(&dir).servers)
         .unwrap_or_default();
-    merge(&discovered, &trusted, &prompts, &live_clocks(app), browse)
+    merge(
+        &discovered,
+        &trusted,
+        &prompts,
+        &live_clocks(app),
+        crate::sidecar::bound_address(app).as_deref(),
+        browse,
+    )
 }
 
 /// Every active session's clock summary, keyed by [`server_key`] —
@@ -464,6 +486,7 @@ mod tests {
             trusted,
             prompts,
             &BTreeMap::new(),
+            None,
             BrowseStatus::Running,
         )
         .servers
@@ -737,6 +760,7 @@ mod tests {
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 &BTreeMap::new(),
+                None,
                 status.clone(),
             );
             assert!(list.servers.is_empty());
@@ -751,6 +775,7 @@ mod tests {
             &store(&[("192.168.1.10:50051", pinned())]),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
             BrowseStatus::Failed {
                 detail: "address in use".into(),
             },
@@ -866,6 +891,7 @@ mod tests {
             &store(&[("192.168.1.10:50051", pinned())]),
             &BTreeMap::new(),
             &clocks,
+            None,
             BrowseStatus::Running,
         )
         .servers;
@@ -890,6 +916,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &clocks,
+            None,
             BrowseStatus::Running,
         )
         .servers;
@@ -899,42 +926,73 @@ mod tests {
     }
 
     #[test]
-    fn a_live_session_against_a_loopback_sidecar_mints_a_trusted_row_storing_nothing() {
-        // The row a user never asked for. The GUI spawns its own
-        // python-can sidecar, which binds `127.0.0.1:<ephemeral>`, and
-        // connecting a bus to local hardware dials it — so the session's
-        // clock record is the only source that knows the address. What
-        // comes out is trusted (loopback is reached in the clear, so no
-        // question will ever be asked about it), unnamed (nothing
-        // advertises a sidecar), and empty of everything the trust store
-        // would put on a row. The address changes on every launch,
-        // because the port does.
+    fn the_apps_own_sidecar_session_is_never_a_row() {
+        // The GUI spawns its own python-can sidecar, which binds
+        // `127.0.0.1:<ephemeral>`, and connecting a bus to local
+        // hardware dials it — so the session's clock record is the only
+        // source that knows the address, and it used to mint a row
+        // nobody asked for. The panel lists servers this machine's
+        // operator manages; the sidecar is an implementation detail of
+        // this app, so it is dropped here rather than explained on
+        // screen.
         let clocks = BTreeMap::from([(
             "127.0.0.1:65476".to_string(),
             server_clock_from_record(&measured(739_200_000, 0)).unwrap(),
+        )]);
+        let list = merge(
+            &[],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &clocks,
+            Some("127.0.0.1:65476"),
+            BrowseStatus::Running,
+        );
+        assert!(list.servers.is_empty(), "{:?}", list.servers);
+    }
+
+    #[test]
+    fn a_users_own_loopback_server_is_still_a_row() {
+        // It is *this app's own sidecar* that is suppressed, not
+        // loopback: a proxy the operator runs on this machine is a
+        // server like any other, and the sidecar of the moment is at a
+        // different port anyway.
+        let clocks = BTreeMap::from([(
+            "127.0.0.1:50051".to_string(),
+            server_clock_from_record(&measured(1_000_000, 0)).unwrap(),
         )]);
         let rows = merge(
             &[],
             &BTreeMap::new(),
             &BTreeMap::new(),
             &clocks,
+            Some("127.0.0.1:65476"),
             BrowseStatus::Running,
         )
         .servers;
         assert_eq!(rows.len(), 1);
-        let row = &rows[0];
-        assert_eq!(row.address, "127.0.0.1:65476");
-        assert_eq!(row.trust, TrustState::Trusted);
-        assert_eq!(row.name, None, "a sidecar advertises nowhere");
-        assert!(!row.online);
-        assert_eq!(row.fingerprint, None);
-        assert!(!row.has_token);
-        assert!(!row.insecure);
-        assert!(!row.manual, "nobody typed this address in");
-        assert!(
-            row.clock.is_some(),
-            "the session is the only thing holding it"
+        assert_eq!(rows[0].address, "127.0.0.1:50051");
+        assert_eq!(rows[0].trust, TrustState::Trusted);
+        assert!(rows[0].clock.is_some());
+    }
+
+    #[test]
+    fn the_sidecar_is_matched_the_way_the_store_keys_an_address() {
+        // The supervisor reports whatever the sidecar printed; the rows
+        // are keyed by `server_key`, so the two are compared in that
+        // form and never by string equality.
+        let clocks = BTreeMap::from([(
+            "127.0.0.1:65476".to_string(),
+            server_clock_from_record(&measured(1_000_000, 0)).unwrap(),
+        )]);
+        let list = merge(
+            &[],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &clocks,
+            Some("http://127.0.0.1:65476"),
+            BrowseStatus::Running,
         );
+        assert!(list.servers.is_empty(), "{:?}", list.servers);
     }
 
     #[test]

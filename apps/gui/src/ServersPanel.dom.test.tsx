@@ -518,13 +518,13 @@ describe("the trust lifecycle from a row", () => {
   });
 
   it("says what keeps a row in the list when forgetting it stored nothing", async () => {
-    // The GUI's own sidecar: a session dialled 127.0.0.1:<ephemeral>,
-    // and that session is the only thing holding the row. Forgetting is
-    // offered — no row is a dead end — and it answers rather than
-    // silently doing nothing.
+    // A server a session is connected to, with nothing stored behind it
+    // — the operator's own loopback proxy, reached in the clear and so
+    // never asked about. Forgetting is offered (no row is a dead end)
+    // and it answers rather than silently doing nothing.
     snapshot = list([
       row({
-        address: "127.0.0.1:65476",
+        address: "127.0.0.1:50051",
         name: null,
         host: null,
         version: null,
@@ -534,17 +534,17 @@ describe("the trust lifecycle from a row", () => {
       }),
     ]);
     renderPanel();
-    await screen.findByText("127.0.0.1:65476");
-    fireEvent.click(screen.getByLabelText("forget 127.0.0.1:65476"));
+    await screen.findByText("127.0.0.1:50051");
+    fireEvent.click(screen.getByLabelText("forget 127.0.0.1:50051"));
     await waitFor(() =>
       expect(
         calls.some(
           (c) =>
-            c.cmd === "forget_server" && c.args.address === "127.0.0.1:65476",
+            c.cmd === "forget_server" && c.args.address === "127.0.0.1:50051",
         ),
       ).toBe(true),
     );
-    const note = await screen.findByText(/Nothing was stored for 127.0.0.1:65476/);
+    const note = await screen.findByText(/Nothing was stored for 127.0.0.1:50051/);
     expect(note).toHaveTextContent(/session is connected to it/);
   });
 

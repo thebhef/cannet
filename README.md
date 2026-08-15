@@ -713,11 +713,12 @@ can be forgotten without waiting for it to come back. Moving a server
 to a different address or port is a new entry, and prompts again.
 
 Two things put a row in this list besides the trust store: a server
-advertising on the network, and a session connected to one. The second
-is why a row can appear at `127.0.0.1:<some high port>` that nobody
-typed in — that is the GUI's own python-can sidecar, which binds a port
-the OS picks and is dialled for any bus bound to local hardware. Nothing
-is stored for it, and the row goes when the session does.
+advertising on the network, and a session connected to one — so a row
+can be held by a live connection alone, and leaves when that session
+ends. The GUI's own python-can sidecar is not one of them: it is dialled
+on loopback for any bus bound to local hardware, but it is this app's
+own child rather than a server the operator manages, so it never
+appears here.
 
 A server on another subnet, or one started `--no-mdns`, advertises
 nowhere this machine can hear, so it never appears in the browsed list.
