@@ -617,6 +617,78 @@ the example invocation and says to use it for every run.
 
 Host: 650 passed / 6 ignored, workspace clippy clean.
 
+### 2026-08-14 — item 4: the recents popup dismisses like every other one
+
+Branch `task75-p4-recents`, off `task75-p3-trust-row`.
+
+**The mechanism.** `App.tsx`'s Recent-captures toolbar dropdown was a
+native `<details>`/`<summary>` pair — no React state, and no
+outside-click behavior either: it closes only on a second click of the
+summary or on picking an entry, unlike every other floating menu in the
+app (context menus, the measurements picker), which dismiss on an
+outside click or Escape through the shared `useDismissableMenu` hook.
+Converted the dropdown to plain `open` state plus that hook rather than
+inventing a bespoke handler — the task's own instruction to prefer the
+shared mechanics over something new. The `<details>`/`<summary>` markup
+becomes a `<div ref={…}>` with a `<button>` trigger and a
+conditionally-rendered `<ul>`; CSS selectors and the four existing
+tests that queried `details.recent-captures > summary` follow the
+markup change (`.recent-captures > button`).
+
+**Tests (written failing first).** New `describe("Recent captures —
+dismissal (task 75 item 4)")` in `App.importTrace.dom.test.tsx`: closes
+on an outside `mousedown` without opening anything (guards against a
+click-through actually importing something), closes on Escape, and a
+`mousedown` *inside* the menu does not dismiss it (the hook's own
+`ref.current.contains` guard, exercised through the real toolbar
+markup, not just the hook's own unit test). All three failed against
+the unconverted `<details>` markup (no `.recent-captures-menu` visible
+after "closing" was even meaningful to assert, since it never left the
+DOM under `<details>`).
+
+Frontend: 160 files / 2108 tests, `pnpm build` clean. Commit `87184399`.
+
+### 2026-08-14 — item 5: recent captures reachable from the command palette
+
+**Investigation answer (git history).** `git log --all -p -S"recentCaptures" -- apps/gui/src/commands.ts apps/gui/src/useCommands.tsx`
+returns nothing — the recents list was never wired into the palette at
+any point in history. Confirms the expected answer: this is new
+behavior, landed only because the owner ruled it in.
+
+**The wiring.** `useCommands.tsx` gains two new `UseCommandsOptions`
+fields — `recentCaptures: readonly string[]` and `openRecentCapture:
+(path: string) => void` — both passed straight through from `App.tsx`'s
+existing `recentCaptures` state and `handleImportTrace`, the same state
+and the same call the toolbar button already uses. No second source: a
+`recentCaptureCommands` memo maps each path to `{ id:
+"recent.open:<path>", path, label: "Open recent: <basename>" }`
+(`basename` promoted from `windowTitle.ts`, which already had one for
+the window-title capture label); the ids are registered into
+`commandHandlersRef` as `() => openRecentCapture(path)` alongside the
+static command handlers, and the same entries are folded into
+`commandPaletteItems` with `hint: "Recent"` and `keywords: path` — the
+full path, so a directory fragment finds the entry even though the
+label shows only the filename, the same fold-into-fuzzy-match field a
+renamed command or view already uses to stay reachable by an old name.
+An empty `recentCaptures` list produces an empty memo, so the palette
+gets no entries — no special-casing needed.
+
+**Tests (written failing first).** New `describe("Recent captures —
+command palette (task 75 item 5)")` in `App.importTrace.dom.test.tsx`:
+each recent capture lists as its own command; filtering by a directory
+fragment (`"old"` in `/old/legacy.blf`) finds it while a sibling entry
+in a different directory does not — the case that specifically
+exercises `keywords` rather than the visible label; selecting an entry
+through the palette (type, Enter) drives the real `scan_blf_channels`
+call with the recent path, the same as clicking the toolbar entry;
+and an empty recents list contributes no "Open recent:" commands. A
+pre-existing direct `useCommands(...)` call in
+`SignalsPanel.gridview.dom.test.tsx`'s harness needed the two new
+required fields (`recentCaptures: []`, `openRecentCapture: () => {}`)
+to keep building — the only other call site.
+
+Frontend: 160 files / 2108 tests, `pnpm build` clean. Commit `ae518d9e`.
+
 ## Blockers / side effects
 
 - **Latent, out of scope for item 1: the by-id / signal window scan on
