@@ -263,3 +263,82 @@ clean; frontend 159 files / 2093 tests.
 does not explain the 22:27 hang; it makes the next one legible from
 `cannet.log` alone, and distinguishes "the host died" from "the window
 stopped responding" without a debugger attached.
+
+### 2026-08-14 — item 1 leg: the 22:27 launch hang — bounded non-reproduction
+
+Not attributed. What follows is what the evidence **rules out**, with
+the experiment behind each, so the next attempt starts narrower.
+
+**Observation (from the task file's log account).** 57.7 M frames
+(~18.5 h) restored in 642 ms with pyramids reused; startup interactive
+at 2744 ms; no warning or error afterwards; health samples continuing at
+their normal cadence until the kill ~17 min later; host rss 80–103 MB;
+one renderer excursion 265 → 534 MB at 02:42 that recovered; no WebView2
+crashpad dump.
+
+**Ruled out — a host command holding the trace-store lock.** The obvious
+suspect was the restore-widened window driving a non-chunked
+`latest_in_window` pass: `useByIdView` / `useSignalView` send
+`scanEnd = winEnd` (not the live tip) whenever the trace is _stopped_,
+and a restored trace is stopped. Two data points kill it.
+_(i)_ `TraceStore::latest_in_window_where` takes the fast O(keys) path
+whenever `end == raw.len()`, and on a fresh restore `winEnd` **is** the
+restored frame count, i.e. exactly `len` — the window scan is not
+entered at all.
+_(ii)_ Decisive regardless of _(i)_: `TraceStore::len`,
+`buffer_seconds`, `frames_per_second` and `scratch_breakdown` all take
+the same `lock_inner()` mutex that a window scan would hold for its
+duration — and every one of them is read by the health sampler on each
+tick. A host command sitting on that lock would have **stalled the
+health samples**, and the log shows them arriving normally for the whole
+17 minutes. The same argument clears `fetch_filtered_trace`, whose index
+extend chunks its own locking.
+
+**Ruled out — an O(capture) walk in the trace viewport.** The one
+capture-length walk in `traceViewport.ts` (`expandedExtraHeight`) is
+reachable only from `ByIdTable`, whose `count` is id space;
+`TraceView` uses `expandedExtraHeightOf`, which costs one iteration per
+_expanded row_. Likewise `gridviewSelection`'s O(count) `selectionOrder`
+is overridden in `TraceView` to the render window.
+
+**Ruled out — any _finite_ O(capture) pass on the UI thread.** Measured
+on V8, at the observed 57.7 M: an accumulate-per-row loop takes
+**107 ms**; pushing every index into an array takes **1017 ms** and
+~460 MB; a `Set`-union-then-sort (the `mergeSeries` shape) over 2 M
+takes **1199 ms**, so ~35–60 s extrapolated to 57.7 M — and at that size
+it exhausts the heap rather than finishing. Nothing in that family
+produces 17 minutes of unbroken unresponsiveness. A single pass would
+have completed, and a fatal one would have left a crashpad dump; neither
+happened.
+
+**What the shape does say.** Seventeen minutes with no completion and no
+death is a **non-terminating loop or a deadlock on the renderer's main
+thread**, not slow work. The renderer's 265 → 534 MB excursion that
+_recovered_ fits that too: a ~270 MB allocation churned and collected
+repeatedly is a loop re-doing large work, where a single pass would show
+one step and a plateau.
+
+**Standing lead, unconfirmed.** The plot's x-sync ring — `applyXAll`
+→ uPlot's `setScale` hook → `onUserXChange` → `applyXAll` — is the one
+identified cycle on that thread. It is guarded twice (the
+`xSyncRef.suppress` window and an equality check against the shared
+window), and `PlotPanel.tsx` already carries a `plot.userXChange` DIAG
+counter placed, in its own comment, to catch this ring "during the
+freeze" — so the symptom has been suspected here before. A restore is
+the case that puts every area through a full-span programmatic window
+change at mount, which is when a missed suppression window would bite.
+
+**Why it stops here.** Reproducing it needs the ring driven by _real_
+uPlot: the jsdom double fires hooks only when a test explicitly asks it
+to, so the cycle cannot close in the component suite, and a synthetic
+capture at this scale plus an isolated-app-data GUI launch is a bigger
+lift than the remaining budget. The watchdog above is what makes the
+next occurrence cheap to attribute: `ui_last_ms` climbing while the host
+stays healthy confirms the class in one log line, and `diag.ts`'s burst
+path (`lag` / `longtask` / `plot.userXChange`) distinguishes a spinning
+render loop from a thread blocked on IPC without attaching a profiler.
+
+**Recommended next step (not done here):** rerun with the diag reporter
+capturing and, on the next hang, read `plot.userXChange` and
+`userx.setscale-hook` — a non-zero delta with no user input names the
+ring directly.
