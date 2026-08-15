@@ -282,6 +282,82 @@ end-to-end (no local Linux sandbox with the sidecar freeze toolchain
 exercised in this session), and the actual `gh release upload` /
 concurrent-upload behavior across three jobs — those are CI-only.
 
+### 2026-08-12 — phase 5: the harness measures through the proxy
+
+The 2026-08-12 perf-criterion grooming note is implemented and run.
+`cannet-perf-measurement hardware-peak --via-server <cannet-server>`
+reserves a loopback port, spawns that binary **bare** (the production
+hardware proxy — no subcommand), polls `ListInterfaces` until the
+server's own supervised sidecar answers, then runs the identical
+workload against that address. Everything downstream of the address is
+untouched, so both paths share the metric set, the report shape and the
+contending scan; the proxied report is tagged `hardware-peak-proxy` so
+its numbers can't be read as a direct run's. The flag is the only
+selector and defaults to the direct path — `baseline` and `check` pass
+`UpstreamSpec::Sidecar` explicitly and `HardwarePeakConfig` (which the
+baseline file carries) is unchanged — so the existing gate is
+untouched.
+
+The shared `cannet-sidecar` crate stayed out of it: the proxy path
+parses no banner and discovers no launcher, so folding the harness's
+bespoke `uv run` spawn in would have simplified nothing here. The
+blocker note carries that finding; the fold remains a standalone
+cleanup.
+
+**The comparison.** Both binaries built debug (`cargo build -p
+cannet-perf-measurement -p cannet-server`), so the server resolves its
+sidecar from the source tree via `uv` — the same sidecar the direct
+path spawns. Two PEAK PCAN-USB FD channels physically bridged, 500
+kbps, `examples/ev-demo`, contending scan at 8 Hz on `{"bus":"pt"}`,
+`--target-frames 20000`. Ten runs per arm, **interleaved**
+direct/proxy/direct/… so drift can't bias one path. Every one of the
+20 runs ingested exactly 20 000 frames — no loss on either path.
+
+Arm 1 — paced at the baseline's offered rate (`--tx-hz 1000`), the
+shape the gate captures; "worst" is the worst of the 5 runs per path
+(min for higher-is-better, max for lower-is-better):
+
+| metric | direct mean | proxy mean | direct worst | proxy worst |
+| --- | --- | --- | --- | --- |
+| `ingest_fps_overall` ↑ | 999.77 | 999.68 | 999.68 | 999.62 |
+| `fps_retention` ↑ | 1.000 | 1.000 | 1.000 | 1.000 |
+| `append_ms_max` ↓ | 0.582 | 0.539 | 0.962 | 0.688 |
+| `scan_ms_max` ↓ | 0.137 | 0.136 | 0.163 | 0.199 |
+| `elapsed_s` ↓ | 20.005 | 20.006 | 20.006 | 20.008 |
+
+Arm 2 — flat-out (`--tx-hz 0`), which saturates the 500 kbps bus at
+~3.4 kfps and is where a proxy hop would show if it cost anything:
+
+| metric | direct mean | proxy mean | direct worst | proxy worst |
+| --- | --- | --- | --- | --- |
+| `ingest_fps_overall` ↑ | 3392.3 | 3443.6 | 3169.4 | 3269.6 |
+| `fps_retention` ↑ | 1.071 | 1.095 | 1.061 | 1.057 |
+| `append_ms_max` ↓ | 0.453 | 0.485 | 0.654 | 0.579 |
+| `scan_ms_max` ↓ | 0.130 | 0.133 | 0.170 | 0.192 |
+| `elapsed_s` ↓ | 5.909 | 5.818 | 6.310 | 6.117 |
+
+Per-run flat-out throughput, direct: 3169 / 3259 / 3420 / 3629 / 3485
+frames/s; proxy: 3270 / 3572 / 3538 / 3271 / 3567.
+
+**Read: "about the same" holds, on means and on worsts.** Paced, the
+two paths are indistinguishable — throughput differs by 0.01 % (both
+tracking the offered 1000 fps), and the proxy's worst append stall is
+*lower* than the direct path's. Flat-out, the proxy's mean and worst
+throughput both come out nominally *higher* than direct (+1.5 % / +3.2
+%), which is noise rather than a win: the within-path spread is
+3169–3629 (direct) and 3270–3572 (proxy), so each path's own runs vary
+by more than the gap between them. No latency delta is meaningful
+either — every mean and worst on both paths sits between 0.13 and 0.96
+ms, two orders of magnitude below the checker's 5 ms latency floor, and
+the sign of the differences flips between arms and between mean and
+worst. The bus, not the transport, is what the flat-out arm measures,
+and one loopback gRPC hop does not move it.
+
+Tests: `cannet-perf-measurement` 26 → 31 lib tests (upstream selection,
+the per-path report tag, the bare invocation, the reserved port); each
+new assertion checked by inverting the code under it. Commits:
+`bd9aad9`, plus this log entry.
+
 ## Blockers / side effects
 
 - **`cannet-perf-measurement` has its own sidecar spawn**
@@ -291,7 +367,13 @@ concurrent-upload behavior across three jobs — those are CI-only.
   `cannet-sidecar` and was left alone — phase 1's scope is the GUI
   host and the crate. Worth folding in when the harness is touched
   for the proxy-overhead comparison, which already has to point at a
-  spawned `cannet-server`.
+  spawned `cannet-server`. [Phase 5 touched the harness and declined
+  the fold: the proxy path needs no banner grammar and no launcher
+  discovery at all — it spawns `cannet-server --bind <free port>` and
+  polls `ListInterfaces` until the server's own supervised sidecar
+  answers — so the shared crate would have simplified nothing about
+  the retarget. The bespoke `uv run` spawn still stands alone on the
+  direct path, and folding it in remains a standalone cleanup.]
 - **The frozen onedir's name in the archive is `cannet-python-can/`,
   not `sidecar/`.** The 2026-08-11 archive grooming note calls it "the
   already-frozen `sidecar/` onedir"; what
