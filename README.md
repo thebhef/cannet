@@ -79,6 +79,15 @@ crates/
                  stubs, conversion helpers between `cannet_core`
                  frames and the wire types, and a batching adapter
                  layer so application code stays in `Stream<CanFrame>`.
+  cannet-log/    The rolling log file both hosts write — the GUI's
+                 `cannet.log` and `cannet-server`'s
+                 `cannet-server.log`. Append + size-rotate to a single
+                 `.1` generation + flush on every write, and the
+                 ISO-8601 timestamp a line is stamped with. Stateless
+                 on purpose: the caller owns the directory, the file
+                 name, the cap and any write lock, so the two hosts
+                 share the semantics that must not drift without
+                 sharing the policy that differs.
   cannet-server/ Bare `cannet-server` is the production hardware proxy
                  (ADR 0040): it supervises the `cannet-python-can`
                  sidecar on loopback and relays all three RPCs to it
@@ -368,12 +377,15 @@ tar xzf cannet-server-vX.Y.Z-<target>.tar.gz    # macOS / Linux archive
 # or: Expand-Archive cannet-server-vX.Y.Z-<target>.zip   # Windows archive
 cd cannet-server-vX.Y.Z-<target>
 ./cannet-server --bind 0.0.0.0:50051 --tls      # from a distribution archive
-# → hardware proxy: certificate fingerprint SHA256:qF3…RmA
+# → 2026-08-13T09:12:44.108Z INFO hardware proxy: certificate fingerprint SHA256:qF3…RmA
 # → hardware proxy: client token 8Jd…q1w
-# → hardware proxy: listening on 0.0.0.0:50051 (tls)
-# → [info] sidecar:python-can: sidecar started (pid 61024)
-# → [info] sidecar:python-can: upstream ready on 127.0.0.1:60481
+# → 2026-08-13T09:12:44.109Z INFO hardware proxy: listening on 0.0.0.0:50051 (tls)
+# → 2026-08-13T09:12:44.771Z INFO sidecar:python-can: sidecar started (pid 61024)
+# → 2026-08-13T09:12:45.402Z INFO sidecar:python-can: upstream ready on 127.0.0.1:60481
 ```
+
+Every line but the token one is also written to a rolling logfile — see
+[Logs](#logs) below.
 
 It spawns and supervises one `cannet-python-can` sidecar on loopback
 (the same one the GUI runs for local dongles) and relays all three
@@ -414,7 +426,10 @@ Flags:
   unencrypted channel.
 - `--sidecar-log-level <level>` — the sidecar's own verbosity
   (default `info`). Its output, and the server's supervision events,
-  are written to stderr tagged `sidecar:python-can`.
+  are logged tagged `sidecar:python-can`. This is the only verbosity
+  knob there is: the server's own sinks have no minimum level, because
+  a log you have to configure before it is useful is a log that is
+  empty when it matters.
 - `--sidecar-restart-budget <n>` — how many times a crashing sidecar is
   restarted automatically before the server gives up and says so
   (default 3). Restarting the server hands the budget back.
@@ -450,11 +465,47 @@ meant to be read off the console:
   `access-token` file in that directory** and restart; the next start
   prints a new one and every client has to be told the new value.
 
-Both are printed straight to stderr and never to the log, so no log
-level hides them and no log file collects the token. Whoever can read
-this console is authorized to use the server's buses — that is the
-trust boundary
+The two are treated differently on disk. The **fingerprint is public**
+— it is what a client pins and what you compare out of band — so it is
+an ordinary log line. **The token never reaches the logfile**: it is
+printed to the console and nowhere else, and the log records only that
+a token is required. A credential in a file people attach to bug
+reports has a long tail. Whoever can read this console is authorized to
+use the server's buses — that is the trust boundary
 ([ADR 0041](docs/adr/0041-remote-connection-security.md)).
+
+### Logs
+
+Everything the server says goes to two places: the console you started
+it on, and a rolling `cannet-server.log` in the same per-user directory
+that holds its certificate and token —
+
+| OS | log file |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\cannet-server\cannet-server.log` |
+| Linux | `$XDG_DATA_HOME/cannet-server/cannet-server.log` (default `~/.local/share/cannet-server/…`) |
+| macOS | `~/Library/Application Support/cannet-server/cannet-server.log` |
+
+— with the same semantics the GUI host's `cannet.log` has, and for the
+same reason: it is the artifact you attach to a bug report. Every line
+is flushed as it is written, so a process that dies instantly still
+leaves its last words; past 5 MB the file is renamed `.log.1` (one
+generation, clobbering the previous) and a fresh one started, so disk
+use is bounded to ~10 MB and never needs pruning. Both sinks carry the
+same `<timestamp> <LEVEL> <source>: <message>` line. There is no
+minimum level and no flag to set one.
+
+The supervised sidecar writes its own `sidecar-python-can.log` beside
+it — always at debug level, whatever `--sidecar-log-level` says, since
+that flag governs the sidecar's *stderr*, which is the half that lands
+in the server's log. The file records every gRPC command with its
+arguments and outcome plus every driver traceback, which is where a
+per-channel connect failure is diagnosable after the fact. It is the
+same file the GUI's sidecar writes, in the same relationship to the
+host's log. Attach both.
+
+If the per-user directory cannot be resolved at all, the server logs to
+the console only, the sidecar writes no logfile, and both carry on.
 
 Neither protection exists on a plaintext endpoint: the token is
 enforced exactly when TLS is, because presenting it over an
@@ -512,7 +563,7 @@ Start the server on the bench machine and leave its console visible:
 
 ```sh
 ./cannet-server --bind 0.0.0.0:50051 --tls
-# → hardware proxy: certificate fingerprint SHA256:qF3…RmA
+# → 2026-08-13T09:12:44.108Z INFO hardware proxy: certificate fingerprint SHA256:qF3…RmA
 # → hardware proxy: client token 8Jd…q1w
 ```
 

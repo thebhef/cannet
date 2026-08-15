@@ -13,6 +13,9 @@ path = "src/main.rs"
 base64 = "0.22"
 cannet-blf = { path = "../cannet-blf" }
 cannet-core = { path = "../cannet-core" }
+# The rolling-logfile machinery behind `src/logging.rs`, shared with the
+# GUI host so `cannet-server.log` and `cannet.log` cannot drift apart.
+cannet-log = { path = "../cannet-log" }
 cannet-sidecar = { path = "../cannet-sidecar" }
 cannet-wire = { path = "../cannet-wire" }
 clap = { version = "4", features = ["derive"] }

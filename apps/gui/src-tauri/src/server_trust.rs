@@ -106,6 +106,13 @@ fn strip_scheme(address: &str) -> &str {
 /// reads as "nothing is trusted" rather than an error — the same
 /// best-effort posture the rest of the host's config files take, and the
 /// safe direction: the worst case is a re-prompt.
+///
+/// Whole-document `parse_or_default`, deliberately not the per-key
+/// `read_scoped` machinery the settings file uses: that path reports a
+/// refused value by quoting the key *and the value* into a complaint
+/// that lands in the rolling log, which for a `token` field would write
+/// a credential into the file bug reports carry. This document holds
+/// secrets, so it forgoes the finer-grained recovery.
 pub(crate) fn read_servers(dir: &Path) -> ServersDoc {
     match std::fs::read_to_string(dir.join(SERVERS_FILE)) {
         Ok(text) => crate::persisted_json::parse_or_default(&text),

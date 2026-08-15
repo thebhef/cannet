@@ -100,7 +100,7 @@ pub struct ConnectConfig {
 }
 
 /// The transport half of a [`ConnectConfig`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Trust {
     /// No TLS and no credential — the loopback default, and what every
     /// in-process and sidecar server speaks.
@@ -112,6 +112,26 @@ enum Trust {
         pin: Option<CertPin>,
         token: Option<String>,
     },
+}
+
+/// Redacts the token, which the derived impl printed in full. The pin
+/// is public material and stays legible; the credential is not, and
+/// `ConnectConfig` is a public type, so a consumer's `debug!(?config)`
+/// would otherwise write a bearer token into their log with no warning.
+/// The server keeps `Debug` off `AccessToken` for the same reason —
+/// the guarantee has to live at the type, not in every call site's
+/// memory.
+impl std::fmt::Debug for Trust {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plaintext => f.write_str("Plaintext"),
+            Self::Pinned { pin, token } => f
+                .debug_struct("Pinned")
+                .field("pin", pin)
+                .field("token", &token.as_ref().map(|_| "<redacted>"))
+                .finish(),
+        }
+    }
 }
 
 impl ConnectConfig {
@@ -1223,6 +1243,29 @@ impl From<tonic::Status> for ConnectionError {
 mod tests {
     use super::*;
     use cannet_wire::proto::error::Code;
+
+    #[test]
+    fn a_configs_debug_output_never_carries_the_token() {
+        // `ConnectConfig` is public, so a downstream consumer's
+        // `tracing::debug!(?config)` is one line away at all times. The
+        // token has to be unprintable at the type, the way the server
+        // keeps `Debug` off `AccessToken` entirely — a convention that
+        // every call site has to remember is not a guarantee.
+        let config = ConnectConfig::pinned_with_token(
+            "bench:50051",
+            CertPin::parse("SHA256:cs3ZAB6bqcYQMSlAn4EPl1BC/YPtVN4V1PDT5DL5aOU").unwrap(),
+            "the-bearer-token-value",
+        );
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains("the-bearer-token-value"),
+            "the token must not be printable: {rendered}"
+        );
+        // The shape is still debuggable: address, pin, and the fact
+        // that a credential is held.
+        assert!(rendered.contains("bench:50051"), "{rendered}");
+        assert!(rendered.contains("redacted"), "{rendered}");
+    }
 
     #[test]
     fn transmit_batch_sends_one_envelope_with_all_frames_in_order() {

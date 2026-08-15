@@ -635,12 +635,24 @@ crate retained long-term).
   private "responsible process" API + `unsafe`, deliberately not pulled
   in for a diagnostic. MIT.
 
-- **`chrono`** crate (v0.4, runtime dependency in `apps/gui/src-tauri`,
+- **`chrono`** crate (v0.4, runtime dependency in `crates/cannet-log`,
   `default-features = false`, `std` only) — `adopted` to render
-  ISO-8601 / RFC-3339 UTC timestamps in the on-disk crash log
-  (`crash.rs`). Already present transitively, so this only makes the
-  dependency direct; the `clock` feature is intentionally off (we format
-  an epoch-ms value, never read the wall clock through chrono). MIT /
-  Apache-2.0.
+  ISO-8601 / RFC-3339 UTC timestamps on rolling-log lines. Already
+  present transitively, so this only makes the dependency direct; the
+  `clock` feature is intentionally off (we format an epoch-ms value,
+  never read the wall clock through chrono). Held by `cannet-log` rather
+  than by each host, so the GUI's `cannet.log` and the server's
+  `cannet-server.log` stamp instants identically by construction.
+  MIT / Apache-2.0.
+
+- **A dedicated log-file crate rather than `tracing-appender`** —
+  `rejected` (2026-08-13) for the server's rolling logfile. The workspace
+  already has `tracing` / `tracing-subscriber` (the GUI's dev-stderr
+  layer), and `tracing-appender`'s rotation is time-based with a
+  background writer thread — neither the size cap nor the
+  flush-on-every-write that make an instant death still leave evidence.
+  The behaviour wanted is ~40 lines of `std::fs`, so it lives in the
+  first-party `crates/cannet-log` and both hosts share it. No new
+  external dependency was taken.
 
 *Profiling instrumentation TBD — populated in Phase 7.*

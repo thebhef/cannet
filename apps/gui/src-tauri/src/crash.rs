@@ -49,13 +49,12 @@
 //! services, not our descendants, so `tree_mb` there counts the host
 //! only (attributing them needs a private API + `unsafe`).
 
-use std::fs::OpenOptions;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use cannet_log::{append_block, iso8601_from_ms, unix_ms};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Manager};
 
@@ -552,20 +551,6 @@ fn format_log_line(msg: &SystemMessage) -> String {
     )
 }
 
-/// Format an epoch-millisecond instant as an ISO-8601 / RFC-3339 UTC
-/// timestamp, e.g. `2026-06-21T14:30:45.123Z`. Falls back to the raw
-/// millisecond count if the value is somehow out of `chrono`'s range
-/// (not reachable for real wall-clock times).
-fn iso8601_from_ms(ts_ms: u64) -> String {
-    i64::try_from(ts_ms)
-        .ok()
-        .and_then(chrono::DateTime::from_timestamp_millis)
-        .map_or_else(
-            || ts_ms.to_string(),
-            |dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        )
-}
-
 fn level_tag(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Debug => "DEBUG",
@@ -604,38 +589,6 @@ fn payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     } else {
         "<non-string panic payload>".to_string()
     }
-}
-
-/// Append `block` to `dir/name`, creating the dir, rotating first if the
-/// file has grown past `cap`.
-fn append_block(dir: &Path, name: &str, cap: u64, block: &str) -> io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let path = dir.join(name);
-    rotate_if_needed(&path, cap)?;
-    let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
-    f.write_all(block.as_bytes())?;
-    f.flush()
-}
-
-/// If `path` exists and exceeds `cap`, rename it to `<path>.1` (one
-/// retained generation), clobbering any previous `.1`. A missing file or
-/// a stat failure is a no-op — the caller will create it fresh.
-fn rotate_if_needed(path: &Path, cap: u64) -> io::Result<()> {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return Ok(());
-    };
-    if meta.len() > cap {
-        let mut rotated = path.as_os_str().to_owned();
-        rotated.push(".1");
-        std::fs::rename(path, PathBuf::from(rotated))?;
-    }
-    Ok(())
-}
-
-fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]
@@ -784,13 +737,6 @@ mod tests {
     }
 
     #[test]
-    fn iso8601_from_ms_renders_rfc3339_utc_millis() {
-        // 1_000 ms after the epoch, with sub-second millis preserved.
-        assert_eq!(iso8601_from_ms(1_700), "1970-01-01T00:00:01.700Z");
-        assert_eq!(iso8601_from_ms(0), "1970-01-01T00:00:00.000Z");
-    }
-
-    #[test]
     fn payload_message_reads_str_and_string_payloads() {
         let s: &str = "literal panic";
         assert_eq!(payload_message(&s), "literal panic");
@@ -839,27 +785,29 @@ mod tests {
     }
 
     #[test]
-    fn append_block_accumulates_across_calls() {
+    fn the_rolling_log_is_written_through_the_shared_writer() {
+        // The write/rotate semantics themselves are `cannet-log`'s and
+        // are tested there; what this pins is that a message admitted by
+        // `persist_message` reaches that writer as the formatted line —
+        // the join between this module and the shared one.
         let dir = tempfile::tempdir().unwrap();
-        append_block(dir.path(), LOG_FILE, log_cap_bytes(), "first\n").unwrap();
-        append_block(dir.path(), LOG_FILE, log_cap_bytes(), "second\n").unwrap();
-        let body = std::fs::read_to_string(dir.path().join(LOG_FILE)).unwrap();
-        assert_eq!(body, "first\nsecond\n");
-    }
-
-    #[test]
-    fn append_block_rotates_past_cap() {
-        let dir = tempfile::tempdir().unwrap();
-        // Cap of 0 forces a rotation on every call after the first write.
-        append_block(dir.path(), LOG_FILE, 0, "first\n").unwrap();
-        append_block(dir.path(), LOG_FILE, 0, "second\n").unwrap();
-        // The first file was rotated aside; both exist.
-        assert!(dir.path().join(LOG_FILE).exists());
-        assert!(dir.path().join(format!("{LOG_FILE}.1")).exists());
-        // The live file starts fresh with only the latest write.
-        let live = std::fs::read_to_string(dir.path().join(LOG_FILE)).unwrap();
-        assert_eq!(live, "second\n");
-        let rotated = std::fs::read_to_string(dir.path().join(format!("{LOG_FILE}.1"))).unwrap();
-        assert_eq!(rotated, "first\n");
+        let msg = SystemMessage {
+            seq: 1,
+            ts_ms: 1_700,
+            source: "crash".to_string(),
+            level: LogLevel::Info,
+            message: "hello".to_string(),
+        };
+        append_block(
+            dir.path(),
+            LOG_FILE,
+            log_cap_bytes(),
+            &format_log_line(&msg),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(LOG_FILE)).unwrap(),
+            "1970-01-01T00:00:01.700Z INFO crash: hello\n"
+        );
     }
 }

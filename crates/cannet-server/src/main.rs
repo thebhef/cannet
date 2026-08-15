@@ -8,6 +8,12 @@
 //! operator-supplied material. Unless `--no-mdns` is given, it also
 //! advertises `_cannet._tcp` so the GUI's browse can find it.
 //!
+//! Everything it says goes to two sinks — the operator's stderr and a
+//! rolling `cannet-server.log` in the same per-user directory that holds
+//! its certificate and token — with one deliberate exception: the client
+//! token is printed to the console and never written to disk. See
+//! [`logging`].
+//!
 //! Ctrl-C is a bounded shutdown: the sidecar is stopped (its stdin pipe
 //! closed, which is the EOF it exits on, with its process tree killed
 //! if it does not take it within [`SIDECAR_STOP_GRACE`]) while the mDNS
@@ -37,7 +43,16 @@ use cannet_sidecar::{
 use clap::{Args, Parser, Subcommand};
 use tonic::transport::Server;
 
-#[derive(Parser, Debug)]
+mod logging;
+use logging::{Level, PROXY, REPLAY, SERVER, VBUS};
+
+/// No `Debug`, here or on [`ProxyArgs`]: it holds `--token`, and a
+/// derived impl would print the operator's credential in full from a
+/// `dbg!` added during troubleshooting. `AccessToken` and
+/// `ServerIdentity` are kept unprintable for the same reason — the
+/// guarantee lives at the type rather than in every call site's memory.
+/// [`Command`] keeps its own `Debug`; it holds nothing sensitive.
+#[derive(Parser)]
 #[command(version, about = "cannet gRPC server")]
 struct Cli {
     #[command(subcommand)]
@@ -47,8 +62,9 @@ struct Cli {
 }
 
 /// Options for the bare invocation — the production hardware proxy.
-/// Ignored when a `debug` subcommand is given.
-#[derive(Args, Debug)]
+/// Ignored when a `debug` subcommand is given. Deliberately not
+/// `Debug` — see [`Cli`].
+#[derive(Args)]
 struct ProxyArgs {
     /// Address to bind the gRPC service on. The default is loopback:
     /// serving the network is an explicit choice, and an unprotected
@@ -313,27 +329,36 @@ async fn run_replay(
     guard_bind(bind, Protections::default(), insecure)?;
     let replay = Arc::new(LoopingBlfReplay::open(&blf)?);
 
-    eprintln!(
-        "loaded {} interface(s) from {}",
-        replay.interfaces().len(),
-        blf.display()
+    logging::info(
+        REPLAY,
+        format!(
+            "loaded {} interface(s) from {}",
+            replay.interfaces().len(),
+            blf.display()
+        ),
     );
     for iface in replay.interfaces() {
-        eprintln!(
-            "  {} ({}) {}",
-            iface.id,
-            iface.display_name,
-            if iface.fd_capable { "[fd]" } else { "" }
+        logging::info(
+            REPLAY,
+            format!(
+                "  {} ({}) {}",
+                iface.id,
+                iface.display_name,
+                if iface.fd_capable { "[fd]" } else { "" }
+            ),
         );
     }
-    eprintln!(
-        "listening on {} (rate = {})",
-        bind,
-        if rate == 0.0 {
-            "unbounded".to_string()
-        } else {
-            format!("{rate}×")
-        }
+    logging::info(
+        REPLAY,
+        format!(
+            "listening on {} (rate = {})",
+            bind,
+            if rate == 0.0 {
+                "unbounded".to_string()
+            } else {
+                format!("{rate}×")
+            }
+        ),
     );
 
     let service = CannetServerImpl::new(replay, rate).into_service();
@@ -358,15 +383,18 @@ async fn run_vbus(
         },
         fd_enabled,
     };
-    eprintln!(
-        "virtual-bus mode: factory {VIRTUAL_BUS_FACTORY_ID} \
-         (speed {} bit/s, fd data {})",
-        config.speed_bps,
-        config
-            .fd_data_speed_bps
-            .map_or_else(|| "off".to_string(), |v| format!("{v} bit/s"))
+    logging::info(
+        VBUS,
+        format!(
+            "virtual-bus mode: factory {VIRTUAL_BUS_FACTORY_ID} \
+             (speed {} bit/s, fd data {})",
+            config.speed_bps,
+            config
+                .fd_data_speed_bps
+                .map_or_else(|| "off".to_string(), |v| format!("{v} bit/s"))
+        ),
     );
-    eprintln!("listening on {bind}");
+    logging::info(VBUS, format!("listening on {bind}"));
     let service = VirtualBusServerImpl::new(config).into_service();
     Server::builder().add_service(service).serve(bind).await?;
     Ok(())
@@ -385,6 +413,35 @@ fn frozen_launcher_in(dir: &Path) -> Option<PathBuf> {
         .join(FROZEN_SIDECAR_DIR)
         .join(cannet_sidecar::frozen_launcher_name());
     launcher.is_file().then_some(launcher)
+}
+
+/// Where to tell the sidecar to write its own rolling, always-debug
+/// logfile: beside the server's, in `dir`, which is created if it isn't
+/// there yet. `None` — and no `--log-file` argument — when there is no
+/// log directory at all, or when it can't be created, since a server
+/// that serves hardware without a sidecar logfile beats one that
+/// doesn't start.
+///
+/// It is a separate sink from everything the sidecar says on stderr:
+/// stderr stays at `--sidecar-log-level` and is what lands in the
+/// server's own log, while the file records every gRPC command with its
+/// arguments and outcome plus every driver traceback — the detail a
+/// per-channel connect failure needs after the fact, without making the
+/// server's log noisier for everyone.
+fn sidecar_log_file(dir: Option<PathBuf>) -> Option<PathBuf> {
+    let dir = dir?;
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        logging::warn(
+            SOURCE,
+            format!(
+                "could not create the log directory {}: {e}; the sidecar will not \
+                 write a logfile",
+                dir.display()
+            ),
+        );
+        return None;
+    }
+    Some(dir.join(cannet_sidecar::SIDECAR_LOG_FILE))
 }
 
 /// This CLI as the sidecar supervisor's host. A headless server has no
@@ -413,9 +470,11 @@ impl SidecarHost for CliSidecarHost {
             prefer_source_tree: cfg!(debug_assertions),
             sidecar_dir: std::env::var_os(cannet_sidecar::SIDECAR_DIR_ENV),
             log_level: self.log_level.clone(),
-            // No `--log-file`: a headless server's log *is* its stderr,
-            // and everything the sidecar writes is already on it.
-            log_file: None,
+            // A sibling of the server's own rolling log, so one
+            // directory holds the whole picture. Resolved per spawn
+            // rather than captured once: a restart that follows a
+            // directory becoming writable should start writing.
+            log_file: sidecar_log_file(logging::dir()),
             // Nothing to forward: the child inherits this process's
             // environment, so a driver-module override set for the
             // server reaches the sidecar untouched.
@@ -425,12 +484,12 @@ impl SidecarHost for CliSidecarHost {
 
     fn log(&self, level: LogLevel, message: String) {
         let level = match level {
-            LogLevel::Debug => "debug",
-            LogLevel::Info => "info",
-            LogLevel::Warn => "warn",
-            LogLevel::Error => "error",
+            LogLevel::Debug => Level::Debug,
+            LogLevel::Info => Level::Info,
+            LogLevel::Warn => Level::Warn,
+            LogLevel::Error => Level::Error,
         };
-        eprintln!("[{level}] {SOURCE}: {message}");
+        logging::emit(level, SOURCE, &message);
     }
 
     fn restart_budget(&self) -> u64 {
@@ -443,11 +502,11 @@ impl SidecarHost for CliSidecarHost {
         // answering yet.
         match (current.phase, current.address.as_deref()) {
             (SidecarPhase::Ready, Some(address)) => {
-                eprintln!("[info] {SOURCE}: upstream ready on {address}");
+                logging::info(SOURCE, format!("upstream ready on {address}"));
             }
-            (SidecarPhase::Starting, _) => eprintln!("[info] {SOURCE}: starting"),
+            (SidecarPhase::Starting, _) => logging::info(SOURCE, "starting"),
             (SidecarPhase::Offline, _) => {
-                eprintln!("[warn] {SOURCE}: offline; sessions are unavailable until it returns");
+                logging::warn(SOURCE, "offline; sessions are unavailable until it returns");
             }
             (SidecarPhase::Ready, None) => {}
         }
@@ -494,15 +553,19 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
         let version = build_version();
         match discovery::Advertisement::register(&name, args.bind, version) {
             Ok(advertisement) => {
-                eprintln!(
-                    "hardware proxy: advertising \"{name}\" ({version}) via mDNS (_cannet._tcp)"
+                logging::info(
+                    PROXY,
+                    format!("advertising \"{name}\" ({version}) via mDNS (_cannet._tcp)"),
                 );
                 Some(advertisement)
             }
             Err(e) => {
-                eprintln!(
-                    "hardware proxy: warning: mDNS advertisement failed: {e}; \
-                     continuing without it (--no-mdns silences this warning)"
+                logging::warn(
+                    PROXY,
+                    format!(
+                        "mDNS advertisement failed: {e}; continuing without it \
+                         (--no-mdns silences this warning)"
+                    ),
                 );
                 None
             }
@@ -520,34 +583,43 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = Server::builder();
     if let Some(identity) = &identity {
         builder = builder.tls_config(identity.tls_config())?;
-        // Straight to stderr, never through `tracing`: these are the
-        // strings the operator reads off the console and carries to the
-        // client, so they must not be filterable by a log level — and
-        // the token in particular must not reach a log file at all.
-        eprintln!(
-            "hardware proxy: certificate fingerprint {}",
-            identity.fingerprint()
+        // The fingerprint is public by design (ADR 0041) — it is what a
+        // client pins and an operator eyeball-compares — so it is an
+        // ordinary log line and belongs in the file a bug report
+        // carries.
+        logging::info(
+            PROXY,
+            format!("certificate fingerprint {}", identity.fingerprint()),
         );
     }
     if let Some(token) = &token {
-        eprintln!("hardware proxy: client token {}", token.as_str());
+        // The value goes to the operator's console and nowhere else: it
+        // is the string they carry to the client, and a bearer token in
+        // a file that gets attached to bug reports is a credential leak
+        // with a long tail. The log gets the fact, not the secret.
+        logging::console_only(&format!("hardware proxy: client token {}", token.as_str()));
+        logging::info(PROXY, logging::token_configured_note());
     } else if token_was_supplied {
         // Saying nothing here would let an operator believe they had
         // configured authentication when the endpoint cannot carry it.
-        eprintln!(
-            "hardware proxy: warning: the token given is not enforced on a plaintext \
-             endpoint, because a bearer token must not ride an unencrypted channel. \
-             Add --tls (or --cert with --key)."
+        logging::warn(
+            PROXY,
+            "the token given is not enforced on a plaintext endpoint, because a \
+             bearer token must not ride an unencrypted channel. Add --tls (or \
+             --cert with --key).",
         );
     }
-    eprintln!(
-        "hardware proxy: listening on {} ({})",
-        args.bind,
-        if identity.is_some() {
-            "tls"
-        } else {
-            "plaintext"
-        }
+    logging::info(
+        PROXY,
+        format!(
+            "listening on {} ({})",
+            args.bind,
+            if identity.is_some() {
+                "tls"
+            } else {
+                "plaintext"
+            }
+        ),
     );
 
     let upstream = Arc::clone(&supervisor);
@@ -565,7 +637,7 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let outcome = tokio::select! {
         result = serve => Some(result),
         _ = tokio::signal::ctrl_c() => {
-            eprintln!("hardware proxy: shutting down");
+            logging::info(PROXY, "shutting down");
             None
         }
     };
@@ -616,7 +688,7 @@ async fn shut_down(
     tokio::select! {
         () = shutdown => {}
         _ = tokio::signal::ctrl_c() => {
-            eprintln!("hardware proxy: second Ctrl-C; exiting now");
+            logging::info(PROXY, "second Ctrl-C; exiting now");
             std::process::exit(INTERRUPTED_EXIT_CODE);
         }
     }
@@ -652,10 +724,15 @@ const RUNTIME_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 /// because that macro *drops* the runtime — an unbounded wait — where
 /// this needs [`tokio::runtime::Runtime::shutdown_timeout`].
 fn main() -> std::process::ExitCode {
+    // Before anything that might log: the file sink lives beside the
+    // server's certificate and token, in the same per-user directory it
+    // already owns. A machine with no resolvable data directory is
+    // stderr-only, which is what this server did before it had a file.
+    logging::init(identity::default_identity_dir().ok());
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("{}", fatal_message(&e));
+            logging::error(SERVER, fatal_message(&e));
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -664,17 +741,18 @@ fn main() -> std::process::ExitCode {
     match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{}", fatal_message(e.as_ref()));
+            logging::error(SERVER, fatal_message(e.as_ref()));
             std::process::ExitCode::FAILURE
         }
     }
 }
 
-/// The line a fatal startup error is printed on. `Display`, never
+/// The message a fatal startup error is logged with. `Display`, never
 /// `Debug` — the whole point of the bind guard's sentence is that the
-/// operator can read it.
+/// operator can read it. No `error:` prefix of its own: the log line's
+/// `ERROR` tag already says that much.
 fn fatal_message(error: &(dyn std::error::Error + 'static)) -> String {
-    format!("error: {error}")
+    error.to_string()
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -777,10 +855,16 @@ mod tests {
 
     #[test]
     fn cert_and_key_come_as_a_pair() {
-        Cli::try_parse_from(["cannet-server", "--cert", "server.pem"])
-            .expect_err("--cert without --key should not parse");
-        Cli::try_parse_from(["cannet-server", "--key", "server.key"])
-            .expect_err("--key without --cert should not parse");
+        // `is_err` rather than `expect_err`: the latter needs `Cli:
+        // Debug`, which it deliberately does not have.
+        assert!(
+            Cli::try_parse_from(["cannet-server", "--cert", "server.pem"]).is_err(),
+            "--cert without --key should not parse"
+        );
+        assert!(
+            Cli::try_parse_from(["cannet-server", "--key", "server.key"]).is_err(),
+            "--key without --cert should not parse"
+        );
         Cli::try_parse_from([
             "cannet-server",
             "--cert",
@@ -855,6 +939,31 @@ mod tests {
     }
 
     #[test]
+    fn the_sidecar_logfile_is_a_sibling_of_the_servers_own() {
+        // One directory holds the whole picture: the server's rolling
+        // log, the sidecar's always-debug one, and the identity the
+        // endpoint serves with. A bug report attaches the directory.
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("not-created-yet");
+        assert_eq!(
+            sidecar_log_file(Some(dir.clone())),
+            Some(dir.join(cannet_sidecar::SIDECAR_LOG_FILE)),
+        );
+        assert!(
+            dir.is_dir(),
+            "the directory has to exist before the sidecar is told to write into it"
+        );
+    }
+
+    #[test]
+    fn no_log_directory_means_no_sidecar_logfile() {
+        // Stderr-only is the pre-existing behaviour on a machine with
+        // no resolvable per-user directory, and `None` is also what the
+        // sidecar's own `--log-file` default means, so the two agree.
+        assert_eq!(sidecar_log_file(None), None);
+    }
+
+    #[test]
     fn a_frozen_launcher_beside_the_binary_is_found() {
         // The distribution archive's layout: the onedir unpacks next to
         // the server binary, under the name the freeze script emits.
@@ -921,8 +1030,10 @@ mod tests {
 
     #[test]
     fn debug_replay_requires_a_blf_path() {
-        Cli::try_parse_from(["cannet-server", "debug", "replay"])
-            .expect_err("debug replay with no BLF path should fail to parse");
+        assert!(
+            Cli::try_parse_from(["cannet-server", "debug", "replay"]).is_err(),
+            "debug replay with no BLF path should fail to parse"
+        );
     }
 
     #[test]
@@ -1125,13 +1236,17 @@ mod tests {
 
     #[test]
     fn old_top_level_virtual_bus_flag_no_longer_parses() {
-        Cli::try_parse_from(["cannet-server", "--virtual-bus"])
-            .expect_err("--virtual-bus is no longer a top-level flag; it is `debug vbus`");
+        assert!(
+            Cli::try_parse_from(["cannet-server", "--virtual-bus"]).is_err(),
+            "--virtual-bus is no longer a top-level flag; it is `debug vbus`"
+        );
     }
 
     #[test]
     fn old_top_level_positional_blf_no_longer_parses() {
-        Cli::try_parse_from(["cannet-server", "capture.blf"])
-            .expect_err("a bare positional BLF path is no longer accepted; it is `debug replay`");
+        assert!(
+            Cli::try_parse_from(["cannet-server", "capture.blf"]).is_err(),
+            "a bare positional BLF path is no longer accepted; it is `debug replay`"
+        );
     }
 }
