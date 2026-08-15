@@ -1008,7 +1008,16 @@ own cache space; nothing about that is a different mode.
 
 Because it lives outside the process, the capture **survives a quit or
 crash**: on the next launch the prior session reloads as a *stopped*
-historical trace so nothing is lost. It is wiped when you replace it —
+historical trace so nothing is lost. The decoded-signal caches behind
+the plots normally come back with it, so plotting a restored capture is
+immediate. When they can't — a DBC in the set changed, or the capture
+came back truncated, so what was cached no longer describes it — they
+are thrown away and rebuilt by decoding the capture's frames again,
+which on a long session is minutes. The status line says so
+(**Rebuilding signal caches…**) for as long as it takes, and offers
+**Discard** beside it: that drops the restored capture — frames, caches
+and events — leaving an empty session, and keeps the project, its DBCs,
+your layout and your server configuration. It is wiped when you replace it —
 **Start** a new capture or **Clear** — or, opt-in, on a clean exit
 (**Settings → clear scratch cache on exit**, off by default). This
 scratch is ephemeral working storage, not an archive: to keep a capture

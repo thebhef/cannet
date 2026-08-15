@@ -71,6 +71,22 @@ serve rebuilds exactly as before. **Rejection is the safe direction and
 is always available**, which is what makes an aggressive reuse rule
 tolerable: the raw frames remain the source of truth.
 
+**A rejection is announced, and the user may decline to pay for it.**
+Reuse being the normal case is what makes the exception worth saying out
+loud: a launch that discards its set restores the frames in a second and
+then spends minutes re-decoding them, which — silently — reads as the
+application being broken rather than as work being done. So the host
+records the discard where it happens (the wipe leaves no other trace of
+it), reports it as a fact the frontend can read and re-read, and the
+frontend announces it for as long as the caches are behind the capture's
+tip. Beside the announcement is the way out: **drop the restored capture
+instead**. It runs the same session clear a new capture runs — one
+deletion path, not a second one — so what is left is an empty session,
+with the project, its DBCs, the layout and the server configuration
+untouched. The offramp needs no cancellation of its own: a rebuild is
+already abandonable mid-flight ([ADR 0048](0048-no-model-lock-across-a-rebuild.md)),
+and the clear is one of the paths it yields to.
+
 **The level pages are flushed synchronously, and the manifest is written
 after them — on a periodic cadence and once more at exit.** The pyramid
 is part of the cache, and the cache's shutdown flush covers all of it
@@ -195,6 +211,10 @@ Two lifecycle rules complete it:
   eviction trims them with the raw store.
 - Every rejection path costs exactly what today costs: a wipe and a
   rebuild on the next serve. There is no half-adopted state.
+- A rejection is visible: the restore's system-log line says the caches
+  did not match, and the status line carries a rebuild chip with a
+  discard action until the caches have caught up. The fast path stays
+  silent — a reuse says nothing, which is the point of it.
 - Exit hardens the pyramid scratch alongside the trace store's own
   synchronous shutdown flush (DS-2), and what it costs falls as the
   cadence works through the sealed segments — to milliseconds for a
