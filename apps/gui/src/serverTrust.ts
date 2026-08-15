@@ -44,7 +44,7 @@ export type ServerPrompts = Record<string, TrustPrompt>;
 /// two are matched through {@link serverKey} rather than by string
 /// equality. The address that comes back is the host's own spelling —
 /// the answer is written back against the question that was asked.
-export function promptFor(
+function promptFor(
   prompts: ServerPrompts,
   address: string,
 ): RaisedPrompt | null {
