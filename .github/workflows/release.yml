@@ -13,12 +13,21 @@ name: Release
 #      beside the frozen sidecar it supervises, and each leg
 #      additionally packs a `cannet-server-vX.Y.Z-<target>` archive
 #      (the same server binary + the same `cannet-python-can` onedir)
-#      beside the GUI bundle, and
-#   4. builds a Linux x64 `cannet-server` archive on its own runner —
-#      cargo build + sidecar freeze + tar, no Tauri bundling — since
-#      cannet's Linux support is server-only for now.
+#      beside the GUI bundle — plus a native server installer (macOS
+#      `.pkg`, Windows NSIS `.exe`), and
+#   4. builds a Linux x64 `cannet-server` archive and `.deb` on its own
+#      runner — cargo build + sidecar freeze + tar + cargo-deb, no
+#      Tauri bundling — since cannet's Linux support is server-only for
+#      now.
 #   All artifacts publish to one draft pre-release for review: 2 GUI
-#   bundles + 3 server archives.
+#   bundles + 3 server archives + 3 server installers.
+#
+# A server installer puts `cannet-server` where a terminal finds it —
+# the NSIS one appends its install directory to the user `PATH`, the
+# pkg drops an `/etc/paths.d` entry, the deb symlinks
+# `/usr/bin/cannet-server` — and keeps the frozen sidecar
+# onedir beside the binary, which is where the server's own probe
+# looks. None of them starts anything.
 #
 # CI builds on every push to main are cheap (Linux); the expensive
 # cross-platform bundle build runs only here, when you actually release.
@@ -115,11 +124,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # The installer/bundle version comes from the input; the committed
-      # tauri.conf.json stays 0.0.0.
+      # tauri.conf.json and packager.toml stay 0.0.0. cargo-packager has
+      # no version-override flag, so its config is patched the same way
+      # — both edits are committed below so the tree is clean when
+      # vergen reads it.
       - name: Set bundle version
         shell: bash
         run: |
           node -e "const fs=require('fs'),p='apps/gui/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version='${{ steps.ver.outputs.version }}';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+          PKG=crates/cannet-server/packaging/packager.toml
+          sed -i 's/^version = "0\.0\.0"$/version = "${{ steps.ver.outputs.version }}"/' "$PKG"
+          grep -q '^version = "${{ steps.ver.outputs.version }}"$' "$PKG" \
+            || { echo "::error::the version placeholder in $PKG did not substitute"; exit 1; }
 
       # vergen stamps the binary with `git describe --tags --dirty`, and
       # the step above modifies a *tracked* file — so tagging before it
@@ -135,7 +151,8 @@ jobs:
           git -c user.name='cannet release' \
               -c user.email='release@users.noreply.github.com' \
               commit -m "release: bundle version ${{ steps.ver.outputs.version }}" \
-              -- apps/gui/src-tauri/tauri.conf.json
+              -- apps/gui/src-tauri/tauri.conf.json \
+                 crates/cannet-server/packaging/packager.toml
           git tag "${{ steps.ver.outputs.tag }}"
 
       - run: pnpm --dir apps/gui install --frozen-lockfile
@@ -220,6 +237,47 @@ jobs:
           tar -czf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
           echo "SERVER_ARCHIVE_PATH=$RUNNER_TEMP/$NAME.tar.gz" >> "$GITHUB_ENV"
 
+      # The macOS server installer is a flat package built with Apple's
+      # own `pkgbuild` (present on every macOS runner, so no dependency
+      # to install). Everything lands under one prefix so the binary
+      # keeps the frozen onedir beside it, and `/etc/paths.d` — read by
+      # `path_helper` from `/etc/profile` — is what puts that prefix on
+      # every login shell's PATH without editing anyone's dotfiles. A
+      # flat package has no uninstaller; removing the two paths is the
+      # documented undo (README § Running the production server).
+      #
+      # Unverifiable from a Windows dev box, so every input is checked
+      # before it is packaged and the output is checked after: a `.pkg`
+      # that silently shipped without its sidecar would look fine until
+      # someone installed it.
+      - name: Package server installer (macOS pkg)
+        if: matrix.platform == 'macos-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.rust-target }}/release/cannet-server"
+          ONEDIR="apps/gui/src-tauri/sidecar-dist/cannet-python-can"
+          for input in "$BIN" "$ONEDIR"; do
+            [ -e "$input" ] || { echo "::error::$input is missing; the pkg would ship without it"; exit 1; }
+          done
+          PREFIX="$RUNNER_TEMP/pkgroot/usr/local/cannet-server"
+          mkdir -p "$PREFIX" "$RUNNER_TEMP/pkgroot/etc/paths.d"
+          cp "$BIN" "$PREFIX/"
+          cp -R "$ONEDIR" "$PREFIX/cannet-python-can"
+          echo "/usr/local/cannet-server" > "$RUNNER_TEMP/pkgroot/etc/paths.d/cannet-server"
+          [ -x "$PREFIX/cannet-server" ] || { echo "::error::the staged server lost its exec bit"; exit 1; }
+          [ -x "$PREFIX/cannet-python-can/cannet-python-can" ] || { echo "::error::the staged sidecar launcher lost its exec bit"; exit 1; }
+          PKG="$RUNNER_TEMP/cannet-server-${{ steps.ver.outputs.tag }}-${{ matrix.rust-target }}.pkg"
+          pkgbuild \
+            --root "$RUNNER_TEMP/pkgroot" \
+            --identifier co.hefnet.cannet-server \
+            --version "${{ steps.ver.outputs.version }}" \
+            --ownership recommended \
+            --install-location / \
+            "$PKG"
+          [ -f "$PKG" ] || { echo "::error::pkgbuild reported success but $PKG is missing"; exit 1; }
+          echo "SERVER_INSTALLER_PATH=$PKG" >> "$GITHUB_ENV"
+
       # Windows gets a .zip, not a .tar.gz: the platform's own bundle
       # formats in this workflow (.msi, NSIS .exe) are already
       # Windows-native installers, and zip is the Windows-native
@@ -238,11 +296,39 @@ jobs:
           Compress-Archive -Path $Stage -DestinationPath $ArchivePath
           "SERVER_ARCHIVE_PATH=$ArchivePath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # A CI/dev tool, never a workspace dependency. It brings its own
+      # pinned NSIS toolchain, so the runner needs no NSIS install.
+      - name: Install cargo-packager
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: cargo install cargo-packager --locked --version 0.11.8
+
+      # The config reads the two directories the steps above already
+      # filled — `server-dist/` (the staged release server) and
+      # `sidecar-dist/` (this runner's frozen onedir) — so there is
+      # nothing further to stage. Its `version` was patched from the
+      # release input near the top of this job.
+      - name: Package server installer (Windows NSIS)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo packager -c crates/cannet-server/packaging/packager.toml
+          SETUP="target/packager/cannet-server_${{ steps.ver.outputs.version }}_x64-setup.exe"
+          [ -f "$SETUP" ] || { echo "::error::cargo-packager did not produce $SETUP"; ls -l target/packager || true; exit 1; }
+          echo "SERVER_INSTALLER_PATH=$SETUP" >> "$GITHUB_ENV"
+
       - name: Upload server archive to the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ steps.ver.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
+
+      - name: Upload server installer to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.ver.outputs.tag }}" "$SERVER_INSTALLER_PATH" --clobber --repo "${{ github.repository }}"
 
   # cannet's Linux support is server-only for now: no Tauri bundle, no
   # WebView host libraries, no frontend build — just the server binary
@@ -301,7 +387,35 @@ jobs:
           tar -czf "$RUNNER_TEMP/$NAME.tar.gz" -C "$RUNNER_TEMP" "$NAME"
           echo "SERVER_ARCHIVE_PATH=$RUNNER_TEMP/$NAME.tar.gz" >> "$GITHUB_ENV"
 
+      # A CI/dev tool, never a workspace dependency — same shape as
+      # cargo-packager on the Windows leg.
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked --version 3.7.0
+
+      # The layout lives in `[package.metadata.deb]`. `--no-build`
+      # reuses the binary the step above already produced (the config's
+      # `target/release` asset prefix is what cargo-deb rewrites for
+      # `--target`), and `--no-strip` keeps that binary byte-for-byte
+      # the one inside the tar.gz, so a panic backtrace from a .deb
+      # install says the same thing as one from the archive. The
+      # package's version is the release tag's; the crate's stays 0.0.0.
+      - name: Package server installer (Linux deb)
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.bundle.outputs.tag }}"
+          VERSION="${TAG#v}"
+          cargo deb -p cannet-server --no-build --no-strip \
+            --target "$RUST_TARGET" --deb-version "$VERSION"
+          DEB="target/debian/cannet-server_${VERSION}_amd64.deb"
+          [ -f "$DEB" ] || { echo "::error::cargo-deb did not produce $DEB"; ls -l target/debian || true; exit 1; }
+          echo "SERVER_INSTALLER_PATH=$DEB" >> "$GITHUB_ENV"
+
       - name: Upload server archive to the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ needs.bundle.outputs.tag }}" "$SERVER_ARCHIVE_PATH" --clobber --repo "${{ github.repository }}"
+
+      - name: Upload server installer to the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.bundle.outputs.tag }}" "$SERVER_INSTALLER_PATH" --clobber --repo "${{ github.repository }}"

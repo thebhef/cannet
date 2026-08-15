@@ -544,13 +544,14 @@ crate retained long-term).
   as a CI/dev tool (`cargo install cargo-packager --locked --version
   0.11.8`), never a workspace dependency. It downloads and caches its own
   pinned NSIS 3.09 toolchain, so no runner needs a separate NSIS install.
-  Evaluated hands-on: a trial installer built from the real
-  `cannet-server.exe` plus the real frozen `cannet-python-can` onedir
-  installed to `%LOCALAPPDATA%\cannet-server` with the onedir
-  exe-adjacent, appended the install dir to the user `PATH`, wrote a
-  standard uninstall entry, and on uninstall restored the user `PATH`
-  byte-for-byte; the installed server, launched from an unrelated working
-  directory, found its sidecar and enumerated PCAN hardware.
+  Evaluated hands-on, then shipped: the committed config
+  (`crates/cannet-server/packaging/`) installs to
+  `%LOCALAPPDATA%\Programs\cannet-server` with the onedir exe-adjacent,
+  appends the install dir to the user `PATH`, writes a standard
+  uninstall entry, and on uninstall restores the user `PATH`
+  byte-for-byte and leaves nothing behind; the installed server,
+  launched from an unrelated working directory, found its sidecar and
+  enumerated PCAN hardware.
   - The user-`PATH` append has no config field. It rides in
     `nsis.preinstallSection`, which injects verbatim NSIS at top level —
     room for both an install section and an `un.` section, so the entry
@@ -560,9 +561,16 @@ crate retained long-term).
     rewriting `PATH` in NSIS strings would silently truncate a long one.
   - The "no Start-menu shortcut" ruling needs `nsis.template` — a
     vendored copy of the upstream 671-line `installer.nsi`. The fork is
-    deletion-only (47 lines), so it re-applies cleanly across version
-    bumps, but it does commit us to re-diffing the template whenever
+    deletion-only (48 lines removed, 623 remain, no line added), so it
+    re-applies cleanly across version bumps and a `diff` against the
+    pinned upstream copy showing any added line means the fork drifted —
+    but it does commit us to re-diffing the template whenever
     `cargo-packager` moves.
+  - The install directory has no config field either; `preinstallSection`
+    carries an `InstallDir` line, since NSIS accepts that attribute at
+    top level. The template's `currentUser` default,
+    `$LOCALAPPDATA\<product name>`, is the directory the running server
+    already keeps its state in.
   - `rejected` for the Linux `.deb` leg. Its deb writer copies
     `binaries` into `/usr/bin` as real files and `resources` into
     `/usr/lib/<binary>/`, exposes no maintainer-script hook, and its
@@ -593,11 +601,26 @@ crate retained long-term).
   config lives with `cannet-server`, and `maintainer-scripts` are
   available if a `postinst` ever becomes necessary (none is planned).
   Single-maintainer project (bus factor 1) but nine years of releases,
-  ~2.1M downloads, 23 open issues, 3.7.0 released 2026-05-02. Verified
-  from documentation and source only — a `.deb` build needs a Linux
-  runner, so the leg is first exercised on CI.
+  ~2.1M downloads, 23 open issues, 3.7.0 released 2026-05-02.
+  - It is pure Rust, so it **built a real `.deb` on the Windows dev
+    box** (with a stand-in binary), which is how the layout was checked
+    without a Linux runner. Two things only Linux can do: read each
+    onedir file's mode (asset `mode` is therefore left off, so the
+    frozen launcher keeps its exec bit) and run `dpkg-shlibdeps` for
+    `$auto` dependency resolution.
+  - `target/release/…` is a magic asset prefix that cargo-deb rewrites
+    for whatever `--target` it was given — spelling a cross-compilation
+    triple into the config is rejected outright.
+  - `--no-strip` is passed so the packaged binary is byte-for-byte the
+    one in the tar.gz; the default would strip it, and on this repo's
+    profile that also means splitting out debug symbols.
 - **`pkgbuild`** (Apple, ships with macOS) — `adopted` in Task 64 to
-  build the macOS server `.pkg`. Present on every macOS runner, so it
+  build the macOS server `.pkg`: a staged root plus one command in the
+  release workflow, no config file. `/etc/paths.d/cannet-server` is how
+  the install prefix reaches a login shell's `PATH` — `path_helper`,
+  run from `/etc/profile`, reads that directory — so no dotfile is
+  edited and uninstalling is `rm` of two paths (a flat package has no
+  uninstaller). Present on every macOS runner, so it
   adds no dependency; chosen because `cargo-packager` emits no flat
   package and `.pkg` is the canonical installer for a CLI tool.
 - **Code signing / notarization** — `proposed` (deferred). First alpha

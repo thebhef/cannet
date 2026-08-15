@@ -421,6 +421,200 @@ coverage), verbatim-entry replacement, replacement idempotency, and the
 `~/.zprofile` line was checked and already writes a plain absolute
 path — no `\\?\` equivalent there, no change needed.
 
+### 2026-08-13 — phase 4a: the Windows NSIS installer, shipped
+
+`crates/cannet-server/packaging/` carries `packager.toml` and the
+vendored `installer-cli.nsi`; the release workflow's Windows leg
+installs `cargo-packager` pinned, packages after the Tauri bundle step
+(which is what produced this runner's `sidecar-dist/` onedir), and
+uploads the installer beside the zip.
+
+**Config decisions beyond phase 1's trial.**
+
+- *Inputs need no staging.* `binariesDir` is
+  `apps/gui/src-tauri/server-dist` and the resource `src` is
+  `apps/gui/src-tauri/sidecar-dist/cannet-python-can` — both stable
+  paths that `scripts/stage-server.py` and the sidecar freeze already
+  fill, on every runner and locally, with no target triple or profile
+  directory in them. Only `version` is patched by CI, in the same step
+  that patches `tauri.conf.json` and into the same local commit, so the
+  vergen cleanliness assert still passes.
+- *Install directory* is `%LOCALAPPDATA%\Programs\cannet-server`, via an
+  `InstallDir` line in `preinstallSection` (NSIS takes that attribute at
+  top level). Setting it means `$INSTDIR` is already non-empty when the
+  template's `.onInit` runs, so `RestorePreviousInstallLocation` is
+  skipped — an upgrade takes the default rather than a previously chosen
+  directory, which is acceptable for a tool whose install location is
+  not a documented choice.
+- *The PATH scripts are phase 3's semantics, not phase 1's.* Phase 1
+  used `[Environment]::GetEnvironmentVariable/SetEnvironmentVariable`,
+  which expands `%VAR%` entries on read and can demote a
+  `REG_EXPAND_SZ` `PATH` to `REG_SZ` on write. The shipped scripts read
+  `HKCU\Environment` with `DoNotExpandEnvironmentNames`, write the value
+  back with its own registry kind, and append to the raw string rather
+  than a split-and-rejoined list — the same three rules
+  `apps/gui/src-tauri/src/server_path.rs` follows. Install and uninstall
+  are exact inverses: install appends `;<dir>`, uninstall splits on `;`,
+  drops only entries naming that directory, and rejoins, which
+  reproduces the original string including empty entries.
+- *Two residues phase 1 saw are fixed*, in a `Function un.onUninstSuccess`
+  (a callback the template does not define) rather than a section, so an
+  uninstall that aborts because the server is still running has not
+  already had its directory removed: `RMDir /r` on the onedir directory
+  tree the template only shallow-`RMDir`s, and `DeleteRegKey` on
+  `HKCU\Software\cannet\cannet-server`, which the template writes and
+  never removes.
+- *The fork is 48 lines of 671, all deletions* (623 remain); `diff`
+  against the pinned upstream copy shows no added line, which is the
+  check that it has not drifted. The inventory's "47" was off by one.
+
+**Local verification** (owner's Windows 11 box, silent throughout — no
+installer window was ever shown; `Start-Process … '/S' -Wait`).
+
+- Round trip, one run: install exit 0 → user `PATH` gained exactly one
+  entry, `C:\…\AppData\Local\Programs\cannet-server`, **plain, not
+  `\\?\`-verbatim**, appended at the end; value kind still `String`; the
+  owner's pre-existing empty entry and their `\\?\`-prefixed GUI entry
+  both untouched. Uninstall exit 0 → install directory gone entirely (0
+  files, 0 directories), both registry keys gone, and the user `PATH`
+  **byte-identical to the pre-install capture**: SHA-256 of the raw
+  (unexpanded) value `6FB8105D…BC6E24A0` before and after. The server's
+  own data directory `%LOCALAPPDATA%\cannet-server` (access token, TLS
+  key pair, logs) was untouched throughout — the reason for the
+  `Programs\` install path.
+- Installed layout: `cannet-server.exe`, `cannet-python-can\` (131
+  files), `uninstall.exe`. Add/Remove Programs entry present with
+  DisplayName / DisplayVersion / Publisher / InstallLocation /
+  UninstallString / EstimatedSize. **No Start-menu entry, no desktop
+  shortcut, no run-on-finish.**
+- End to end from a shell whose `PATH` was rebuilt from the machine +
+  user registry values (what a fresh logon gets), cwd `C:\`:
+  `cannet-server` resolved to
+  `…\Programs\cannet-server\cannet-server.exe`, and the running server
+  logged `exec:
+  …\Programs\cannet-server\cannet-python-can\cannet-python-can.exe` and
+  enumerated both PEAK PCAN-USB FD channels (`pcan:PCAN_USBBUS1`,
+  `pcan:PCAN_USBBUS2`). Killed by process tree afterwards; no
+  `cannet-server` or `cannet-python-can` process survived.
+- Idempotency: a second `/S` install over the first left the `PATH`
+  string unchanged (one entry naming the install directory, not two).
+
+`actionlint` 1.7.7 (downloaded for the check, not committed) reports the
+edited `release.yml` clean.
+
+### 2026-08-13 — phase 4b: the Linux `.deb`
+
+`[package.metadata.deb]` in `crates/cannet-server/Cargo.toml`; the
+release workflow's server-only job installs `cargo-deb` pinned and runs
+`cargo deb -p cannet-server --no-build --no-strip --target
+"$RUST_TARGET" --deb-version <version>` after its existing build,
+freeze and tar steps, then uploads the `.deb` beside the tar.gz.
+
+- *No triple in the config.* cargo-deb **rejects** an asset source that
+  spells out a cross-compilation path; `target/release/…` is a magic
+  prefix it rewrites for whatever `--target` it is given. So the
+  binary asset is `target/release/cannet-server` and the config is
+  target-agnostic.
+- *No `mode` on the onedir asset.* Omitting it makes cargo-deb read each
+  file's own mode from disk, which is what keeps the frozen launcher
+  executable; forcing one mode over the whole tree would not.
+- *`--no-strip`* so the packaged binary is byte-for-byte the one in the
+  tar.gz — a panic backtrace from a `.deb` install says the same thing
+  as one from the archive.
+- *Version* comes from `--deb-version` on the command line, so unlike
+  the NSIS config there is no placeholder in the manifest to patch. The
+  crate version stays 0.0.0.
+- `[package] description` was added to the crate: a Debian
+  `Description:` field needs a first line, and cargo-deb takes it from
+  there.
+
+**Local verification.** cargo-deb is pure Rust, so it built a real
+`.deb` on this Windows box against a stand-in Linux binary and the real
+(Windows) onedir as a stand-in tree. Two things needed a temporary
+local edit that is **not** committed — a forced `mode` on the onedir
+asset, because file modes are unreadable on Windows — and one flag that
+is committed, `--no-strip`, because `strip` does not exist here either.
+The resulting `cannet-server_0.1.0_amd64.deb` was unpacked by parsing
+the `ar` container and the xz tarballs directly (no `dpkg` on this
+machine):
+
+- `control`: well-formed, `Package: cannet-server`, `Version: 0.1.0`,
+  `Architecture: amd64`, `Section: net`, `Priority: optional`,
+  maintainer set, `Description:` first line plus the wrapped extended
+  description, correctly UTF-8 encoded.
+- `data.tar.xz`, 167 entries, all `uid=0:0`:
+  `./usr/lib/cannet-server/cannet-server` (regular, `0o755`),
+  `./usr/lib/cannet-server/cannet-python-can/…` (the onedir tree, its
+  directory structure preserved by the `**/*` glob), and
+  `./usr/bin/cannet-server` as a **symlink** whose target cargo-deb
+  rewrote to the Debian-policy relative form
+  `../lib/cannet-server/cannet-server`. Plus
+  `./usr/share/doc/cannet-server/copyright`.
+
+**Still CI-only** (recorded for the next release run): `dpkg-shlibdeps`
+cannot run here, so the built `Depends:` was empty. On the Linux runner
+`$auto` will fill it — and it resolves over *every* ELF in the package,
+including the `.so` files PyInstaller already bundles, so the generated
+`Depends:` line is worth reading once. If it over-constrains the
+package (a dependency on a library the bundle carries itself), pin
+`depends` explicitly instead. Installing and running the `.deb` on a
+Debian/Ubuntu host is the other next-release check.
+
+### 2026-08-13 — phase 4c: the macOS `.pkg`
+
+No config file and no new dependency: a staging + `pkgbuild` step in the
+release workflow's macOS leg, after the Tauri bundle step that froze
+this runner's onedir. It stages `/usr/local/cannet-server/` (binary +
+`cannet-python-can/`) and a one-line `/etc/paths.d/cannet-server`
+naming that prefix, then
+`pkgbuild --root … --identifier co.hefnet.cannet-server --version
+<release version> --ownership recommended --install-location /`.
+
+`/etc/paths.d` rather than a dotfile edit: `path_helper`, run from
+`/etc/profile`, reads it for every login shell, so the package needs no
+per-user state and uninstalling is `rm` of the two paths (a flat
+package carries no uninstaller — the README says so).
+
+**Unverifiable from this machine**, so the step is written to fail
+loudly instead of silently shipping something wrong: both inputs are
+checked to exist before staging, both staged executables are checked
+for their exec bit after the copy (the `.pkg`'s whole value depends on
+`cp -R` having preserved it), and the output is checked to exist after
+`pkgbuild`. Version comes straight from the release input; nothing
+committed carries it.
+
+### 2026-08-13 — phase 4 close-out: what the next release run must check
+
+The three legs are wired and the workflow lints clean (`actionlint`
+1.7.7). One leg is verified end to end locally; the other two are
+first exercised on a real release.
+
+- **macOS `.pkg`** — install it on macOS, confirm
+  `/usr/local/cannet-server` holds the binary *and* the onedir with
+  their exec bits, that a new terminal resolves `cannet-server` through
+  the `/etc/paths.d` entry, that the server finds its sidecar from an
+  unrelated working directory, and that
+  `sudo rm -rf /usr/local/cannet-server /etc/paths.d/cannet-server`
+  undoes it. Gatekeeper will refuse the double-click; right-click →
+  **Open**.
+- **Linux `.deb`** — `apt install ./cannet-server_X.Y.Z_amd64.deb` on a
+  Debian/Ubuntu host, then `cannet-server` from any directory (through
+  the `/usr/bin` symlink), sidecar found, `apt remove` clean. Read the
+  generated `Depends:` line: `$auto` resolves over the bundled
+  PyInstaller `.so` files too, so it may over-constrain the package —
+  pin `depends` explicitly if it does.
+- **Windows NSIS** — already verified locally, but the *release* build
+  additionally proves the CI-only parts: the version substitution in
+  `packager.toml`, the `cargo install cargo-packager` step, and that
+  the installer built from the runner's own frozen onedir.
+- Also still open from phase 3: confirm `Contents/Resources/cannet-server`
+  is `+x` in the built `.app`.
+
+The task's remaining exit criterion — "one draft pre-release" carrying
+GUI bundles, three server archives and three server installers — is an
+**owner action**: the release workflow is `workflow_dispatch`-only, so
+someone has to run it.
+
 - **New maintenance obligation (phase 1, accepted):** the Windows leg
   carries a vendored fork of `cargo-packager`'s `installer.nsi`. The
   fork is deletion-only and `cargo-packager` is version-pinned, so the

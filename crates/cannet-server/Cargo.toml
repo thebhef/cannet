@@ -1,6 +1,9 @@
 [package]
 name = "cannet-server"
 version = "0.0.0"
+# One line, because that is what a Debian `Description:` field's first
+# line is; `[package.metadata.deb] extended-description` carries the rest.
+description = "cannet hardware proxy — CAN interfaces over the network"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -47,3 +50,49 @@ tokio-stream = { version = "0.1", features = ["net", "time"] }
 
 [lints]
 workspace = true
+
+# Linux `.deb` server package, built by the release workflow's
+# server-only job with `cargo deb -p cannet-server --no-build
+# --no-strip --target <triple> --deb-version <release version>`.
+# Everything the package contains was built by earlier steps of that
+# job, so nothing here triggers a second compile, and the version comes
+# from the release tag on the command line — this crate's own version
+# stays 0.0.0, so there is no placeholder in this file to patch.
+#
+# Layout (owner-agreed): binary *and* the frozen `cannet-python-can`
+# onedir under one prefix, with `/usr/bin/cannet-server` a symlink into
+# it. `cannet-server` resolves its own `current_exe()` through the
+# symlink, so the onedir is still exe-adjacent, which is where its
+# sidecar probe looks. Installing the binary into `/usr/bin` as a real
+# file would break that. No man page — `--help` and the README cover it.
+[package.metadata.deb]
+maintainer = "cannet <thebhef@users.noreply.github.com>"
+copyright = "cannet contributors"
+license-file = ["../../LICENSE", "0"]
+section = "net"
+priority = "optional"
+extended-description = """\
+Run cannet-server on the machine the CAN hardware is plugged into and \
+that hardware becomes reachable over the network from a cannet GUI \
+anywhere else. The package carries a frozen, self-contained \
+python-can sidecar, so no Python or uv is needed at runtime."""
+
+# `target/release` is a magic prefix: cargo-deb rewrites it to the real
+# target directory for whatever `--target` it was given, so the
+# cross-compilation triple must *not* be spelled out here.
+[[package.metadata.deb.assets]]
+source = "target/release/cannet-server"
+dest = "/usr/lib/cannet-server/cannet-server"
+mode = "755"
+
+# No `mode`: cargo-deb then takes each file's own mode, which is what
+# keeps the frozen launcher executable and the rest of the onedir not.
+[[package.metadata.deb.assets]]
+source = "../../apps/gui/src-tauri/sidecar-dist/cannet-python-can/**/*"
+dest = "/usr/lib/cannet-server/cannet-python-can/"
+
+# `dest` is the link, `link_name` is what it points at; cargo-deb
+# rewrites it to the Debian-policy-mandated relative form.
+[[package.metadata.deb.assets]]
+dest = "/usr/bin/cannet-server"
+link_name = "/usr/lib/cannet-server/cannet-server"
