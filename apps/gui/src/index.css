@@ -2916,9 +2916,6 @@ button.trace-event-swatch {
 
 /* Signal view panel (SignalsPanel.tsx). The table reuses the trace
  * chrome (.trace / .trace-header / .trace-row). */
-.signals-panel .signals-add {
-  min-width: 12rem;
-}
 .signals-error {
   color: var(--danger-text);
   font-size: 0.75rem;

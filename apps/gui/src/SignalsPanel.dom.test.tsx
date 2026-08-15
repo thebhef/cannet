@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { SignalDescriptorRecord, SignalSnapshotRecord } from "./types";
+import type { SignalSnapshotRecord } from "./types";
 
 const DEFAULT_ROWS: SignalSnapshotRecord[] = [
   {
@@ -70,14 +70,11 @@ const RAW_FIELD_ROW: SignalSnapshotRecord = {
 // viewport fits two).
 let ROWS: SignalSnapshotRecord[] = DEFAULT_ROWS;
 
-// The `list_signals` catalog. Empty by default; a test can set entries
-// to exercise the "add signal" picker.
-let SIGNALS: SignalDescriptorRecord[] = [];
 const invokeCalls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     invokeCalls.push({ cmd, args });
-    if (cmd === "list_signals") return SIGNALS;
+    if (cmd === "list_signals") return [];
     if (cmd === "fetch_signal_page") return { count: ROWS.length, start: 0, rows: ROWS };
     return undefined;
   }),
@@ -92,7 +89,6 @@ import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { freshTrace } from "./trace";
 import { SIGNAL_DND_MIME } from "./dragSignals";
-import { openCombobox } from "./comboboxTestKit";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { signalKey } from "./plotData";
 import { stableSignalColor } from "./palette";
@@ -208,7 +204,6 @@ function renderPanel(opts?: {
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   invokeCalls.length = 0;
-  SIGNALS = [];
   ROWS = DEFAULT_ROWS;
 });
 afterEach(() => {
@@ -217,39 +212,6 @@ afterEach(() => {
 });
 
 describe("SignalsPanel", () => {
-  it("lists the DBC signal catalog in the 'add signal' picker, grouped by ECU/message", async () => {
-    SIGNALS = [
-      {
-        bus_id: "p",
-        message_id: 256,
-        extended: false,
-        message_name: "EngineData",
-        transmitter: "EngineEcu",
-        signal_name: "EngineSpeed",
-        unit: "rpm",
-        is_enum: false,
-      },
-    ];
-    renderPanel();
-    openCombobox(screen.getByLabelText("add signal"));
-    const option = await waitFor(() => {
-      const el = document.querySelector('[role="option"]');
-      if (!el) throw new Error("option not yet rendered");
-      return el as HTMLElement;
-    });
-    expect(option.textContent).toBe("EngineSpeed [rpm]");
-    const headers = Array.from(document.querySelectorAll(".combobox-group")).map(
-      (h) => h.textContent,
-    );
-    expect(headers).toContain("EngineEcu");
-    expect(headers).toContain("EngineData");
-
-    fireEvent.click(option);
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /selection \(1\)/ })).toBeInTheDocument();
-    });
-  });
-
   it("marks a file-backed row by source and labels it with its channel group", async () => {
     // A file-backed signal (docs/CONTEXT.md) has no message and no ECU,
     // so the message column carries its source channel group plus a
@@ -285,35 +247,6 @@ describe("SignalsPanel", () => {
     expect(screen.getByText(/Analog/)).toBeInTheDocument();
     // The DBC-backed row beside it wears no badge.
     expect(document.querySelectorAll(".signal-source-badge")).toHaveLength(1);
-  });
-
-  it("offers file-backed signals in the picker under their own source segment", async () => {
-    SIGNALS = [
-      {
-        bus_id: null,
-        message_id: 1,
-        extended: false,
-        message_name: "Analog",
-        transmitter: null,
-        signal_name: "EngineSpeed",
-        unit: "rpm",
-        is_enum: false,
-        file_backed: true,
-      },
-    ];
-    renderPanel();
-    openCombobox(screen.getByLabelText("add signal"));
-    const option = await waitFor(() => {
-      const el = document.querySelector('[role="option"]');
-      if (!el) throw new Error("option not yet rendered");
-      return el as HTMLElement;
-    });
-    expect(option.textContent).toBe("EngineSpeed [rpm]");
-    const headers = Array.from(document.querySelectorAll(".combobox-group")).map(
-      (h) => h.textContent,
-    );
-    expect(headers).toContain("(file-backed)");
-    expect(headers).toContain("Analog");
   });
 
   it("renders one row per snapshot record, blanks included", async () => {

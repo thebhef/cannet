@@ -74,6 +74,54 @@ Owner feedback from first live use of the Task 38 surfaces
 
 ## Status log
 
+### 2026-08-14 — phase 3 (final): picker removal + staleness fix
+
+**Landed** (branch `task66c-picker-removal`, off `task66b-database-panel`
+tip `edcb191`), two commits:
+
+- `ef0aa6f` **refactor(gui)** — removed `SignalsPanel`'s "add signal"
+  catalog `Combobox` (option-building `catalogOptions`, `handlePick`),
+  the now-orphaned `FILE_BACKED_LABEL` import, and the `.signals-add`
+  CSS rule. **`SignalCatalogProvider` verdict: stays** — `PlotPanel`,
+  `TransmitPanel`, `ColorMapPanel`, and `SignalsPanel`'s own
+  regex-pattern matching (`SignalPatternEditor`/`SectionPatternPopover`,
+  which still read `scopedCatalog`) all consume it; the top-of-file
+  comment's consumer list was corrected (dropped the removed picker,
+  named the pattern matching that remains). Two new dnd tests
+  (`SignalsPanel.dnd.dom.test.tsx`) prove the add-paths survive the
+  picker's removal: a DBC signal and a file-backed signal, each dropped
+  on the panel with nothing but `parseSignalDragData` → `addKeys` in the
+  loop, land in the manual selection and reach `fetch_signal_page`'s
+  wire query with the right identity (`fileBacked` threaded correctly).
+  The two picker DOM tests in `SignalsPanel.dom.test.tsx` were removed
+  with the picker; the now-unused `SIGNALS` catalog fixture and
+  `comboboxTestKit` import went with them.
+- `17c1bbb` **fix(gui)** — the staleness fix phase 2 flagged:
+  `SignalCatalogProvider` now also refetches on `file-signals-changed`
+  (added in phase 2 for the Database panel), so the file-backed half of
+  the catalog no longer goes stale after a Clear or a scratch-capture
+  restore — neither fires `dbc-changed` or `log-finished`. Red-first:
+  the new `signalCatalogContext.dom.test.tsx` case failed against the
+  two prior triggers alone, then passed once the third `listen()` call
+  was added.
+
+**Verification**: `pnpm --dir apps/gui test` — 153 files, 1994 tests,
+all green (1993 before: −2 picker tests, +2 add-path proof tests, +1
+staleness test). `pnpm --dir apps/gui build` clean. No Rust touched, so
+no `cargo test`/`clippy` run.
+
+**Docs**: swept README and `docs/CONTEXT.md` for the removed picker —
+neither ever named `SignalsPanel`'s "add signal" combobox specifically
+(README's plot-panel paragraph already carries the "no separate
+add-signal picker" note from that panel's own earlier removal; the
+signal-catalog file-backed paragraph's "the signal catalog and picker"
+phrase covers `ColorMapPanel`'s still-live target picker, not this
+one), so no doc text needed correcting beyond the `signalCatalogContext`
+code comment above.
+
+**Exit criteria**: all four bullets above are met. This closes task 66;
+ready for the exit-criteria walk.
+
 ### 2026-08-14 — phase 2: the Database panel (rename + file-backed branches)
 
 **Landed** (branch `task66b-database-panel`, off `task66a-import-trace`
