@@ -250,6 +250,24 @@ way `tauri.conf.json`'s already is. `resources.src` can point straight
 at `apps/gui/src-tauri/sidecar-dist/cannet-python-can`, so no staging
 step is needed beyond what the release workflow already does.
 
+### 2026-08-13 — phase 2: `--sidecar-dir` flag
+
+`cannet-server` gains `--sidecar-dir <PATH>`, beside the other
+`--sidecar-*` flags on `ProxyArgs`. `CliSidecarHost::config()` resolves
+it against `CANNET_SIDECAR_DIR` through
+`cannet_sidecar::env_over_setting` — the same function
+`apps/gui/src-tauri/src/sidecar.rs` uses for the `sidecar_dir` setting
+— so the env var wins over the flag, the flag wins over nothing, and a
+shadowed flag is logged rather than silently dropped. The `debug`
+subcommands (`replay`, `vbus`) don't spawn a sidecar and so don't take
+the flag.
+
+Commit `1fbef59`. Tests: 3 new (`sidecar_dir_flag_parses_and_plumbs_through`,
+`the_environment_wins_over_the_sidecar_dir_flag`,
+`absent_both_resolves_to_none`) + 33 pre-existing bin-target tests, all
+passing (36 total); `cargo clippy -p cannet-server --all-targets -- -D
+warnings` and `cargo build -p cannet-server` both clean.
+
 ## Blockers / side effects
 
 - **New maintenance obligation (phase 1, accepted):** the Windows leg

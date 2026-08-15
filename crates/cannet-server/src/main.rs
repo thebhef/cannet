@@ -26,6 +26,7 @@
 //! `cannet-wire`, and vbus (ADR 0021) hosts a multi-client virtual CAN
 //! bus. Neither advertises — discovery is a production-server concern.
 
+use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -80,6 +81,16 @@ struct ProxyArgs {
     /// before this server gives up and says so.
     #[arg(long, default_value_t = 3)]
     sidecar_restart_budget: u64,
+    /// Where to look for the sidecar's *source tree*, overriding the
+    /// crate's walk-up search from the server binary — the
+    /// developer/field-engineer escape hatch, not a way to pick a
+    /// different frozen `cannet-python-can` onedir (that stays
+    /// inexpressible on both hosts, deliberately). Matches the GUI's
+    /// `sidecar_dir` setting. `CANNET_SIDECAR_DIR` wins over this flag
+    /// when both are set; the flag wins over nothing, which is today's
+    /// behavior when both are absent.
+    #[arg(long, value_name = "PATH")]
+    sidecar_dir: Option<PathBuf>,
     /// Terminate TLS on the bound endpoint, using the server's own
     /// certificate — generated and persisted in the per-user data
     /// directory on first use, so its fingerprint survives restarts.
@@ -450,6 +461,9 @@ fn sidecar_log_file(dir: Option<PathBuf>) -> Option<PathBuf> {
 struct CliSidecarHost {
     log_level: String,
     restart_budget: u64,
+    /// The `--sidecar-dir` flag, before `CANNET_SIDECAR_DIR`
+    /// precedence is applied — see [`resolved_sidecar_dir`].
+    sidecar_dir: Option<PathBuf>,
     /// The runtime the wait loop's thread is taken from. Captured
     /// rather than looked up per call so a restart dispatched from
     /// inside the wait loop's own blocking thread cannot depend on
@@ -457,8 +471,34 @@ struct CliSidecarHost {
     runtime: tokio::runtime::Handle,
 }
 
+/// Resolve the sidecar source-tree override, `CANNET_SIDECAR_DIR`
+/// against `--sidecar-dir`, with the same precedence
+/// [`cannet_sidecar::env_over_setting`] gives the GUI's `sidecar_dir`
+/// setting: the environment variable is the escape hatch and wins, and
+/// a flag it shadows is reported rather than silently dropped. `env` is
+/// a parameter (rather than read here) so this stays testable without
+/// touching process-global state.
+fn resolved_sidecar_dir(flag: Option<&Path>, env: Option<OsString>) -> cannet_sidecar::Resolved {
+    let flag_as_setting = flag
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    cannet_sidecar::env_over_setting(
+        cannet_sidecar::SIDECAR_DIR_ENV,
+        "--sidecar-dir",
+        env,
+        &flag_as_setting,
+    )
+}
+
 impl SidecarHost for CliSidecarHost {
     fn config(&self) -> SidecarConfig {
+        let sidecar_dir = resolved_sidecar_dir(
+            self.sidecar_dir.as_deref(),
+            std::env::var_os(cannet_sidecar::SIDECAR_DIR_ENV),
+        );
+        if let Some(note) = &sidecar_dir.shadowed {
+            self.log(LogLevel::Warn, note.clone());
+        }
         SidecarConfig {
             frozen_launcher: std::env::current_exe()
                 .ok()
@@ -468,7 +508,7 @@ impl SidecarHost for CliSidecarHost {
             // artifact that happens to be lying beside the binary
             // (ADR 0036).
             prefer_source_tree: cfg!(debug_assertions),
-            sidecar_dir: std::env::var_os(cannet_sidecar::SIDECAR_DIR_ENV),
+            sidecar_dir: sidecar_dir.value,
             log_level: self.log_level.clone(),
             // A sibling of the server's own rolling log, so one
             // directory holds the whole picture. Resolved per spawn
@@ -576,6 +616,7 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let host: Arc<dyn SidecarHost> = Arc::new(CliSidecarHost {
         log_level: args.sidecar_log_level,
         restart_budget: args.sidecar_restart_budget,
+        sidecar_dir: args.sidecar_dir,
         runtime: tokio::runtime::Handle::current(),
     });
     supervisor.spawn(&host);
@@ -961,6 +1002,51 @@ mod tests {
         // no resolvable per-user directory, and `None` is also what the
         // sidecar's own `--log-file` default means, so the two agree.
         assert_eq!(sidecar_log_file(None), None);
+    }
+
+    #[test]
+    fn sidecar_dir_flag_parses_and_plumbs_through() {
+        let cli = Cli::try_parse_from(["cannet-server", "--sidecar-dir", "/srv/custom-python-can"])
+            .expect("--sidecar-dir should parse");
+        assert_eq!(
+            cli.proxy.sidecar_dir,
+            Some(PathBuf::from("/srv/custom-python-can"))
+        );
+        let resolved = resolved_sidecar_dir(cli.proxy.sidecar_dir.as_deref(), None);
+        assert_eq!(
+            resolved.value,
+            Some(OsString::from("/srv/custom-python-can"))
+        );
+        assert_eq!(resolved.shadowed, None);
+    }
+
+    #[test]
+    fn the_environment_wins_over_the_sidecar_dir_flag() {
+        // The escape-hatch precedence documented on `--sidecar-dir`,
+        // matching the GUI's `sidecar_dir` setting
+        // (`cannet_sidecar::env_over_setting`).
+        let flag = PathBuf::from("/srv/custom-python-can");
+        let resolved = resolved_sidecar_dir(
+            Some(&flag),
+            Some(OsString::from("/srv/from-the-environment")),
+        );
+        assert_eq!(
+            resolved.value,
+            Some(OsString::from("/srv/from-the-environment"))
+        );
+        let note = resolved.shadowed.expect("a shadowed flag is reported");
+        assert!(note.contains("CANNET_SIDECAR_DIR"), "{note}");
+        assert!(note.contains("--sidecar-dir"), "{note}");
+        assert!(note.contains("/srv/custom-python-can"), "{note}");
+    }
+
+    #[test]
+    fn absent_both_resolves_to_none() {
+        // Today's behaviour when neither is set: the shared crate's
+        // walk-up applies.
+        let resolved = resolved_sidecar_dir(None, None);
+        assert_eq!(resolved.value, None);
+        assert_eq!(resolved.shadowed, None);
     }
 
     #[test]
