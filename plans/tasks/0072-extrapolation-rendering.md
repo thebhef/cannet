@@ -506,6 +506,16 @@ guard.
 
 ## Blockers / side effects
 
+- **The enum leading-edge lag is attributed but NOT fixed** — phase 3
+  stopped at the attribution because the fix is a budget/scheduling
+  decision against ADR 0049's bounded-serve contract, not an
+  investigation-phase edit. The mechanism, the confirming data and
+  three candidate fix shapes (batch the chunk scan across a serve's
+  groups; scale the budget with the group count; move catch-up off the
+  serve path) are in phase 3's status entry. It needs a phase of its
+  own and an owner call on which shape. Until then a per-unit panel
+  with many enum lanes on a fast, long capture draws those lanes a
+  growing fraction of the window stale.
 - **Marker _visibility_ on a lane axis is still governed by uPlot's
   density rule.** Phase 1 restored the per-sample columns; whether a
   marker is painted on them is a separate gate — uPlot's `auto` rule
