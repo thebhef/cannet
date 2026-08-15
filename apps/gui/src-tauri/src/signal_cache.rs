@@ -1752,8 +1752,20 @@ impl SignalCacheStore {
     ///
     /// `deadline` bounds the whole batch ([`CATCH_UP_SERVE_BUDGET`]) —
     /// but every group still scans at least one chunk, so a signal listed
-    /// after an expensive one is never starved of progress by a budget an
-    /// earlier group has already spent.
+    /// after an expensive one always makes *some* progress rather than
+    /// none on a budget an earlier group has already spent.
+    ///
+    /// That floor is one chunk per serve, and it is a floor rather than a
+    /// guarantee of currency. The budget is spent group by group, so once
+    /// a batch holds more groups than the deadline can carry, every group
+    /// after the one that spends it advances [`CATCH_UP_CHUNK_FRAMES`]
+    /// frames per serve and no further — a batch's per-group catch-up
+    /// throughput falls as its group count rises. A capture growing by
+    /// more than a chunk between two serves of the same batch therefore
+    /// leaves those groups falling further behind on every serve, which
+    /// the caller sees as ADR 0049's incomplete answer and a viewer sees
+    /// as a series whose newest sample is a growing fraction of the
+    /// window old.
     fn catch_up_keys(
         &self,
         keys: &[SignalKey],

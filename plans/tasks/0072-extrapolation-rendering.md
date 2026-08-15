@@ -343,6 +343,167 @@ guard.
   - Frontend: 161 test files / 2118 tests passed; `tsc --noEmit` and
     `pnpm build` clean. No host code touched.
 
+- **2026-08-15, phase 3 (`task72-p3-enum-lag`, branched off
+  `task72-p2-scroll-disconnect`):** §1, the enum leading-edge lag.
+
+  **Verdict: REPRODUCED at the serve seam, and attributed. The drawn
+  leading edge of an enum-lanes axis falls behind by ~50–56 % of the
+  window and its absolute lag grows monotonically, while the numeric
+  axes of the same panel sit exactly on the live edge. The cause is
+  not the categorical reduction and not any frontend consumer — it is
+  that `CATCH_UP_SERVE_BUDGET` is spent per _serve_, a serve is one
+  plot **area**, and per-unit mode puts every enum on the panel onto
+  one shared lanes axis.** No fix landed: the fix is a budget /
+  scheduling change against ADR 0049's bounded-serve contract, which
+  sprawls past an investigation phase. Proposed shape recorded below.
+
+  - _Observation (raw)._ Owner: on a full-trace view growing live, the
+    enum lanes' leading edge falls behind by roughly a constant
+    fraction of the window — ~2/3 observed — reaching hours on a long
+    capture; observable "on a live bus if you collect for long enough
+    with enough signals". Task 70 phase 6's rig at 5400 s / ~20 signals
+    measured drawn-vs-served 0.000 and did not reproduce it.
+
+  - _Hypothesis 1 (the owner's lead, refuted by reading)._ A consumer
+    maps a relative index rather than a timestamp, so a sparse series
+    covers only its fraction of the axis's merged columns. Falsifiable
+    by finding such a consumer. **Refuted:** the only count-vs-index
+    crossover in the whole plot path is `enumSegments`'
+    `Math.min(ts.length, vs.length)`, and its two callers pass arrays
+    built in the same statement as `u.data` (`laneRawRef.current` is
+    assigned from `mergeSeries`' rows immediately before `u.setData`),
+    so `vs` is never short. Everything downstream is timestamps:
+    `enumSegments` ends its final segment at `ts[n - 1]`, `mergeSeries`
+    sample-and-holds with no trailing `null`, and `drawEnumTiles` maps
+    through `valToPos`. **A lane is therefore drawn to its axis's last
+    merged column — the freshest series on the axis — and cannot fall
+    short of what was served.** (That is task 70 phase 6's extent
+    overdraw, read from the other side.) The host half is timestamps
+    too: `sample_signals_inner` slices on `from_seconds`/`to_seconds`,
+    and `window_categorical` reaches the newest sample through
+    `level_points` (phase 6, 20/20 exact).
+
+  - _Hypothesis 2._ If the render cannot lose the edge and the serve
+    reaches the newest **decoded** sample, then the lag is the decode
+    cursor: ADR 0049's bounded catch-up, in the regime phase 6's
+    experiment B did not cover — a capture still _growing_, at the
+    owner's "enough signals". Falsifiable: if a growing capture's
+    served edge converged on the tip however many signals were asked
+    for, the mechanism would be elsewhere.
+
+  - _Experiment A (growing capture, chunk-at-a-time floor)._ 32 message
+    groups (8 enum + 24 numeric), a 200 000-frame store grown by a
+    fixed number of frames before each serve, served through the real
+    `slice_many` with `new_chunk_at_a_time` — the deterministic worst
+    case of exactly one `CATCH_UP_CHUNK_FRAMES` chunk per group per
+    serve. Lag is `capture tip − newest served point`, worst series.
+
+    | growth / serve | round 0 | round 5 | round 11 | trend |
+    | --- | --- | --- | --- | --- |
+    | 2 000 | 91.9 % | 53.6 % | 12.2 % | converging |
+    | 8 000 | 92.1 % | 60.4 % | 33.6 % | converging |
+    | 16 000 (≈ chunk) | 92.4 % | 66.8 % | 49.9 % | absolute lag flat |
+    | 24 000 | 92.7 % | 71.4 % | 59.7 % | **absolute lag grows** |
+    | 48 000 | 93.4 % | 79.9 % | **74.7 %** | **absolute lag grows** |
+
+    **The signature is real: above one chunk of growth per serve the
+    shortfall stops converging and settles at a constant fraction of
+    the window** — 74.7 % and still falling toward its 65.9 %
+    asymptote (`1 − 16384/48000`) at growth 48 000, with the absolute
+    lag climbing every round. The reported "~2/3" is in this family.
+    **But the enum and numeric lags were bit-identical in every one of
+    these rows**, because at the chunk floor group count buys nothing —
+    so this alone is not the owner's enum-selective report.
+
+  - _Experiment B (the group-count asymmetry, with the shipping
+    budget)._ The panel shape per-unit mode actually produces: **one**
+    lanes axis carrying every enum, beside several small per-unit
+    numeric axes, each area serving on its own
+    `CATCH_UP_SERVE_BUDGET`. A 1 500 000-frame store grown by 100 000
+    frames before each round; the big axis served `Runs`, the four
+    4-group axes `MinMax`. Drawn-edge lag is the _freshest_ series on
+    the axis — what `mergeSeries`' union makes the last column, i.e.
+    what the lane tiles are actually drawn to.
+
+    | round | capture | big axis (16 groups) drawn edge | as % of window | small axes (4 groups) drawn edge |
+    | --- | --- | --- | --- | --- |
+    | 0 | 1600.0 s | 780.8 s | 48.8 % | 780.8 s |
+    | 1 | 1700.0 s | 798.9 s | 47.0 % | **0.0 s** |
+    | 2 | 1800.0 s | 882.5 s | 49.0 % | 0.0 s |
+    | 3 | 1900.0 s | 966.1 s | 50.8 % | 83.6 s |
+    | 4 | 2000.0 s | 1049.8 s | 52.5 % | 0.0 s |
+    | 5 | 2100.0 s | 1133.4 s | 54.0 % | 0.0 s |
+    | 6 | 2200.0 s | 1217.0 s | 55.3 % | 0.0 s |
+    | 7 | 2300.0 s | 1284.2 s | **55.8 %** | 0.0 s |
+
+    **The owner's report, in numbers: the lanes axis's drawn leading
+    edge sits half the window behind and its absolute lag grows by
+    83.6 s every serve, while the numeric axes of the same panel are
+    exactly on the live edge.** 83.6 s is `growth (100.0 s) − one chunk
+    (16 384 frames = 16.4 s)` — the starved groups advance exactly one
+    chunk per serve and lose the rest.
+
+  - _Falsification (the reduction is not the cause)._ Same run with the
+    reductions **swapped** — the 16-group axis served `MinMax`, the
+    four 4-group axes served `Runs`. The 16-group axis still lags
+    (993.8 s → 1267.8 s, 62.1 % → 55.1 %); the 4-group axes still
+    converge to 0.0 s. **Control**, every area at 4 groups: the big
+    axis behaves like the others (67.2 % → 9.9 % → 19.5 %) and both
+    kinds converge together. **The lag follows the area's message-group
+    count, not the render mode.** Enum lanes are hit because
+    `deriveAxesForArea` "pull[s] every enum onto one shared enum-lanes
+    axis" while numerics group by unit — so the lanes axis is
+    structurally the area with the most message groups on the panel.
+
+  - _Root cause._ `slice_many` catches its queried caches up under one
+    `CATCH_UP_SERVE_BUDGET` per serve, and a serve is one plot area.
+    `catch_up_keys` walks that area's `(message_id, extended)` groups
+    and lets each run chunks until the shared deadline, guaranteeing
+    every group only **one** `CATCH_UP_CHUNK_FRAMES` chunk — so an
+    area's per-group catch-up throughput falls as its group count
+    rises, and each group re-scans the same store rows through its own
+    `matching_frames_indexed` pass. Once the capture grows by more than
+    a chunk between two serves of that area, its groups lose
+    `growth − chunk` frames each serve, forever. The decoded prefix —
+    and with it the served window, the merged x-column union and the
+    drawn tile extent — settles at a constant fraction of the capture
+    while the absolute lag grows without bound. "With enough signals"
+    is _enough enums on the one lanes axis_; "collect for long enough"
+    is the absolute lag growing with the capture. Two penalties
+    compound on the same axis: the lanes axis has the most groups, and
+    being the panel's most expensive area `plotPacing` gives it the
+    longest idle time between serves — which is exactly the `growth`
+    term.
+
+    The owner's lead was right in kind and wrong in place: the index
+    that produces a proportional time shortfall is the catch-up's
+    **frame-index cursor**, which advances a fixed number of frames per
+    serve however much wall clock those frames span — not an extent
+    taken from a consumer's point count.
+
+  - _Proposed fix shape (not landed — sprawls)._ Per-group catch-up
+    throughput must not degrade with an area's group count. Three
+    candidates, in ascending order of reach: (a) scan **one** chunk of
+    store rows for the whole batch and dispatch the decoded frames to
+    every group that wants them, instead of one `matching_frames_
+    indexed` pass per group over the same rows — makes throughput
+    independent of group count, but rewrites the plan/scan/apply
+    interleave ADR 0048 pins; (b) scale the serve's budget with the
+    batch's group count — three lines, but it multiplies a 16-lane
+    axis's serve latency by four and so re-opens ADR 0049's
+    "a serve is bounded in time"; (c) move catch-up off the serve path
+    entirely into a background pass, which is the architecturally right
+    answer and the largest. All three are owner/ADR decisions, not
+    investigation-phase edits. The `catch_up_keys` rustdoc is corrected
+    here in the same commit, where it claimed a signal after an
+    expensive one "is never starved of progress" — the data says the
+    guarantee is one chunk per serve, which _is_ starvation once the
+    capture outruns it.
+
+  - Host: `cargo test -p cannet-gui` 657 passed / 6 ignored; clippy
+    `--all-targets` clean; `cargo fmt --check` clean. No behavioural
+    change in this commit — rustdoc only.
+
 ## Blockers / side effects
 
 - **Marker _visibility_ on a lane axis is still governed by uPlot's
