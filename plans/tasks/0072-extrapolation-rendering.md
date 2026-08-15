@@ -35,14 +35,32 @@ experiment's data.
 
 ## 2. Ruling — extrapolated stretches render visibly as extrapolation
 
-Owner ruling (2026-08-14, explicit): wherever a series is drawn
-beyond (or before) its actual samples — a held enum tile past its
-last sample, a one-sample hline's both sides, any held line stretch —
-that stretch renders **differentiated**: dashed for lines, a
+Owner ruling (2026-08-14, explicit, refined same day): **anywhere
+the plot extrapolates** — not just the hline and enum lanes — the
+stretch renders **differentiated**: dashed for lines, a
 muted/hatched treatment for lane tiles. Data-backed stretches keep
 the solid rendering. Nothing is cut; the information stays, honestly
 labeled. Styling specifics (dash pattern, tile treatment) are groomed
 here, in this task.
+
+**The owner's two tests define an extrapolated section:**
+
+1. A section **not bounded by a sample on each side** is
+   extrapolation (covers past-the-last-sample, before-the-first,
+   and both sides of a one-sample series).
+2. A gap longer than **10× the series' typical sample interval** is
+   extrapolation even between two samples — a stale interior
+   stretch is extrapolation too.
+
+Design constraint on test 2 (recorded at grooming): the typical
+interval must come from the **raw** series cadence, which the
+host-side cache/pyramid knows — never from the spacing of a
+decimated serve, whose points sit a bucket span apart at coarse
+levels and would classify every zoomed-out window as extrapolation.
+Classification is therefore host-side (the model computes domain
+facts; the renderer styles segments). Expected cost is O(window
+points) beside a serve that is already O(window points) — no major
+adverse perf impact expected; the exit-criteria gate verifies.
 
 In-scope companions from the same attributions (Task 70 phase 6):
 
@@ -62,8 +80,11 @@ In-scope companions from the same attributions (Task 70 phase 6):
   composition); root cause attributed with the confirming
   experiment; fixed test-first if it is a defect.
 - Extrapolated stretches visually distinct from data-backed ones in
-  line, hline, and lane rendering, regression-tested at the
-  renderer seam.
+  line, hline, and lane rendering, regression-tested at the renderer
+  seam — with the owner's two classification tests (unbounded
+  section; gap > 10× typical raw interval) each pinned by a test,
+  including a coarse-zoom case proving decimated spacing does not
+  false-positive.
 - Enum lanes show their sample positions (markers or equivalent),
   tested.
 - ADR 0026 (sparse-series render rules) amended to record the

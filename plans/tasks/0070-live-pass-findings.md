@@ -1488,7 +1488,19 @@ bits, the `.deb` `$auto` `Depends:` line, the NSIS CI-only legs, the
    muted/hatched treatment for lane tiles), while data-backed
    stretches keep the solid rendering. Nothing is cut; the
    information stays, honestly labeled. Styling specifics groomed in
-   the follow-up task.
+   the follow-up task. **Owner refinement (same day): the cue is
+   universal — anywhere the plot extrapolates, not just the hline
+   and enum lanes — and the definition of an extrapolated section
+   is testable:** (a) a section not bounded by a sample on each
+   side is extrapolation; (b) a gap longer than **10× the series'
+   typical sample interval** is extrapolation even between samples.
+   Orchestrator's perf assessment, to be verified at task 72's
+   gate: no major adverse impact expected — the classification is
+   O(window points) beside a serve that is already O(window
+   points) — with one design trap: the 10× test must be computed
+   against the RAW series cadence host-side (the pyramid knows it),
+   never against decimated serve spacing, or every coarse-zoom
+   window would read as extrapolation.
 4. **RULED — same ruling as 3**: it is the rule for lane extent too,
    superseding the three sketched options. The lane-marker
    visibility questions (density suppression, tile over-paint) ride
