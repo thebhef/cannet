@@ -263,6 +263,71 @@ without reshaping callers.
   runtimes — a generality cannet has no use for, since it needs mDNS
   from exactly one tokio process and one Tauri process.
 - A **hand-rolled UDP beacon** remains `rejected` — see ADR 0040.
+- **Windows native DNS-SD (`dnsapi.dll` —
+  `DnsServiceBrowse`/`DnsServiceResolve`, Win10+)** — evaluated
+  2026-08-13 for Task 65, to replace the GUI's *browse* side so the
+  OS resolver owns UDP 5353 and Windows mints no per-app inbound
+  firewall rule for the GUI binary. **The premise holds; no crate
+  delivers it.** Measured on the development machine: a probe binary
+  built at a path with no firewall rule browsed a live
+  `cannet-server` advertisement through the native API and the rule
+  table was unchanged across the run (899 rules before and after, no
+  entry for the probe's path, no prompt); UDP 5353 was held by
+  `svchost`/`dnscache`, for which Windows ships its own built-in
+  `MDNS-In-UDP-*` allow rules. Instance name, SRV target host, port,
+  and the `ver` TXT key all arrived intact. Two things the browse
+  reducer needs did not:
+  - **One address per resolve, and which one is a race.**
+    `DNS_SERVICE_INSTANCE` carries a single `ip4Address` and a single
+    `ip6Address` pointer, and the resolve is answered by whichever
+    interface replies first. Four runs against the same server gave
+    the VMware adapter's link-local IPv6 three times and a routable
+    IPv4 once. The reducer's `dial_rank` treats link-local IPv6 as
+    undialable, so on three of four runs the server would not have
+    been listed at all. Reconstructing the address set needs either a
+    per-interface resolve fan-out or dialling the SRV host name
+    instead of an IP — the latter would make the trust store's
+    `host:port` key differ by platform for one server.
+  - **No removal signal.** With the server hard-killed at t=6 s, no
+    removal event arrived in the following 124 s. A one-shot resolve
+    of the vanished instance did fail (3 s timeout) at t=130 s, so
+    liveness is recoverable — by polling, which is a mechanism the
+    event-driven reducer does not have.
+  Status is `proposed` and **blocked on an owner decision**: the only
+  route that fixes the removal gap is `unsafe` FFI in our own tree
+  (diffing the PTR record set the browse callback hands over), and the
+  workspace forbids `unsafe` outside `crates/cannet-spill`.
+- **`mdns-sd-discovery` 0.3.0** (Rust, MIT) — `rejected` (Task 65).
+  The only maintained crate that wraps the native stacks for
+  *browsing*: `dnsapi.dll`'s `DnsServiceBrowse`/`DnsServiceResolve` on
+  Windows (via `windows` 0.62 + `widestring`), Apple's DNS-SD
+  framework on macOS, Avahi over D-Bus on Linux — and it does keep
+  `unsafe` inside itself, so adopting it would not have needed a
+  workspace lint exception. Rejected on the probe data in the entry
+  above, both defects observed through this crate: its Windows backend
+  never constructs a `Removed` event at all (the Linux and macOS
+  backends do), and it dedupes found instances by name, so the single
+  address the first answering interface reported is the only one the
+  consumer ever sees. Health is the secondary reason: first release
+  2026-06-18, one maintainer, 1 star, an issue tracker that is
+  entirely Dependabot, and no human-filed bug — no field exposure for
+  a protocol whose failure modes are all in the field. Also
+  `rust-version = 1.94` and edition 2024, which the pinned 1.97.1
+  toolchain satisfies today but which narrows the toolchain floor.
+- **`win-dns-sd` 0.1.1** (Rust, MIT) — `rejected` (Task 65).
+  Register-only, and over WinRT (`Windows.Networking.ServiceDiscovery.Dnssd`)
+  rather than the Win32 browse API. ~100 lines, last released
+  2021-05-13, no browse surface to evaluate.
+- **`dns-sd-native` 0.1.1** (Rust, MIT) — `rejected` (Task 65).
+  Same platform-backend spread as `mdns-sd-discovery` but "supports
+  registration of services only, not browsing/discovery" — the wrong
+  half of DNS-SD for the GUI, which never registers.
+- **`astro-dnssd` 0.3.6** (Rust, MIT OR Apache-2.0) — `rejected`
+  (Task 65). Covers browse and register, but wraps Apple's `dns_sd.h`,
+  so on Windows it wants the Bonjour SDK and runtime — the same
+  third-party-install objection that rejected `zeroconf` in Task 43,
+  and it would not move the firewall problem anyway, since Bonjour's
+  `mDNSResponder` is one more userland 5353 socket.
 - **`hostname` 0.4** (Rust, MIT) — `adopted` (Task 43 phase 2), direct
   dep of `cannet-server`. Supplies `--name`'s default: the system
   hostname, for the `ServiceInfo` DNS-SD instance name and SRV host.
