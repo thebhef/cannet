@@ -32,17 +32,36 @@ untouched.
 - Until Task 42 lands, non-loopback binds remain unprotected (status
   quo today); Task 42 flips the default.
 
-## Open
+## Grooming notes
 
-- CLI shape: how hardware-proxy, virtual-bus, and replay roles are
-  expressed (subcommands vs flags), and what plain `cannet-server`
-  does.
-- Interface-id namespacing if a server ever supervises more than one
-  sidecar (id collisions); single sidecar is fine for v1.
-- Whether the proxy is a generic gRPC pass-through or re-terminates
-  sessions (affects `Busy`/error propagation and per-client
-  bookkeeping).
-- Archive layout and which CI job builds it.
+- **2026-08-11 — CLI shape (owner).** The entire existing behavior
+  moves under a `debug` subcommand namespace: `cannet-server debug
+  replay <blf>` and `cannet-server debug vbus`, help text marking
+  them dev/test tooling. Bare `cannet-server` is the production
+  hardware proxy. No production use is known for the server vbus;
+  nothing is dropped, but everything pre-existing is explicitly
+  debug.
+- **2026-08-11 — proxy is pure 1:1 pass-through.** Each client
+  `Session` opens exactly one upstream `Session` to the sidecar and
+  relays envelopes verbatim both ways; `ListInterfaces` /
+  `WatchInterfaces` forward likewise. No envelope interpretation, no
+  re-termination: `Busy` / errors / `InterfaceState` propagate
+  untouched and the sidecar's single-owner semantics arbitrate.
+  Task 42's token check sits at RPC start (gRPC metadata), needing no
+  envelope inspection.
+- **2026-08-11 — archive via the existing release workflow.** The
+  macOS arm64 and Windows x64 release legs additionally pack
+  `cannet-server-vX.Y.Z-<target>` (server binary + the already-frozen
+  `sidecar/` onedir) beside the GUI bundle; a new Linux x64 leg
+  builds only the server archive (cargo build + sidecar freeze + tar,
+  no Tauri bundling). One draft pre-release: 2 GUI bundles + 3 server
+  archives.
+- **2026-08-11 — exactly one supervised sidecar; no id namespacing.**
+  Single is the only planned direction: the python-can sidecar
+  already lists all interfaces on the system and multiplexes
+  connections, so multiple sidecars per host is wrong on its face.
+  The multi-sidecar hypothetical (some future non-python-can vendor
+  sidecar) gets its own task if it ever materializes.
 
 ## Non-goals
 

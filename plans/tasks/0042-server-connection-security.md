@@ -26,18 +26,43 @@ becomes a startup error unless `--insecure`.
   ([ADR 0032](../../docs/adr/0032-machine-local-ui-state-host-side.md))
   — not project-file content.
 
-## Open
+## Grooming notes
 
-- Token format/length and whether it's persisted server-side across
-  restarts or regenerated (lean: persist beside the cert so the
-  printed token stays valid).
-- Cert lifetime / regeneration story (self-signed + pinning makes
-  expiry mostly moot; decide what the client does with an expired
-  pinned cert).
-- Fingerprint presentation format (SHA-256, grouped hex vs words).
-- Whether `cannet-client`'s API takes a connection-config struct
-  (addr + TLS + token) — likely yes; today it takes a bare address
-  string at three call sites.
+- **2026-08-11 — token pinned (owner).** Standard opaque-API-key
+  shape, no token library: 256-bit OS-CSPRNG value, base64url
+  (RFC 4648 §5, 43 chars), presented as RFC 6750
+  `authorization: Bearer` gRPC metadata checked by a tonic
+  interceptor, constant-time compared (`subtle` or
+  `ring::constant_time`). Generated on first run, persisted beside
+  the cert, reprinted every startup (console readers are authorized
+  by definition); `--token` overrides for the run without persisting;
+  rotation = delete the token file. New direct deps
+  (`getrandom`/`rand`, `base64`) go through `technology-inventory.md`.
+- **2026-08-11 — cert lifetime: SSH model, no expiry path.** Cert
+  generated with a far-future `notAfter` (rcgen default, year 4096);
+  the GUI's pinning verifier checks fingerprint equality only and
+  ignores validity dates — an expired pinned cert is a non-event by
+  construction, with no client code path. Operator `--cert`/`--key`
+  material goes through the same pin-only verifier. Standard for
+  pin-based trust (SSH host keys); on the plan-review subagent's
+  checklist.
+- **2026-08-11 — fingerprint format: OpenSSH's.** `SHA256:` +
+  unpadded base64 of the SHA-256 digest (43 chars) — the format the
+  audience already eyeball-compares daily, half the length of
+  colon-hex, self-labels the hash. Server prints it at startup beside
+  the token; the GUI shows the identical string in the TOFU accept
+  dialog and the pinned-server list.
+- **2026-08-11 — `cannet-client` grows a connection-config struct**
+  (codebase-confirmed): all three entry points (`list_interfaces`,
+  `watch_interfaces`, `connect_and_subscribe`) take a bare `&str` and
+  independently format `http://{address}` — TLS (pinned-fingerprint
+  verifier), scheme, and bearer token need one shared
+  `ConnectConfig`-style struct threaded through all three instead.
+- **2026-08-11 — plan review gate (owner).** When this task's plan is
+  ready, dispatch a review subagent to vet it for security best
+  practices and proper application of the libraries and techniques
+  relied on (rustls/tonic TLS, rcgen, token handling) before
+  implementation starts.
 
 ## Non-goals
 
