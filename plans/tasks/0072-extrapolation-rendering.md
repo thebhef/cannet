@@ -1368,3 +1368,20 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   data" phrasing reconciled.
 - ADR-0031 perf gate run on the final build (this touches the render
   hot path); all metrics, no baseline promotion.
+
+## 5. Hover-marker parity (owner observations, 2026-08-15, on a phase-7-complete build)
+
+Two semantic gaps reported during live review, both gating this
+task's closeout by owner ruling ("before we close out the plot/enum
+lane changes"):
+
+1. **Hover points are per-area.** Point markers appear only on the
+   plot area under the mouse; they must appear on **every** area of
+   the panel on hover, the way the shared freehand crosshair already
+   spans all stacked areas.
+2. **Lanes don't participate in hover-reveal.** A hovered enum-lane
+   area shows no markers even with the mouse inside it; a hovered
+   lane must behave exactly like a hovered numeric area does.
+
+Phase 7's invariant binds throughout: a marker sits only on a real
+sample — hover changes *when* markers show, never *where*.
