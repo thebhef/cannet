@@ -135,12 +135,12 @@ use app_state::{invalidate_derived_caches, LoadedDbc};
 use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
-#[cfg(test)]
-use capture::write_blf_capture;
 use capture::{
-    clear_trace_store, import_mdf, open_log, restore_scratch_capture, save_capture,
+    cancel_import, clear_trace_store, import_mdf, open_log, restore_scratch_capture, save_capture,
     scan_blf_channels, scan_mdf_channels,
 };
+#[cfg(test)]
+use capture::{cancel_import_now, write_blf_capture};
 use clock_status::spawn_clock_status_emitter;
 #[cfg(test)]
 use dbc_commands::decode_against;
@@ -473,6 +473,7 @@ pub fn run() -> ! {
             scan_blf_channels,
             import_mdf,
             scan_mdf_channels,
+            cancel_import,
             add_dbc,
             remove_dbc,
             clear_dbcs,
@@ -624,6 +625,7 @@ pub fn run() -> ! {
                 verifier: verification::VerificationState::default(),
                 filter_index_dir: Mutex::new(filter_dir),
                 filter_index: Mutex::new(None),
+                import_cancel: Mutex::new(None),
                 live_tail_rows: std::sync::atomic::AtomicU64::new(0),
                 active_project_id: Mutex::new(None),
             });
