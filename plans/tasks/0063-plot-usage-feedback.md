@@ -15,9 +15,15 @@ baseline disclosure-toggle implementation (one shared
 component/style with a properly sized hit area, distinct from its
 ink), and migrate the existing disclosure sites onto it.
 
-Grooming: enumerate the sites (plot-area collapse, the BLF markers
-gridview, signal-view sections, …); pick the hit-area standard;
-decide whether the shared piece is a component or a class contract.
+Groomed 2026-08-13 (owner): a single **`DisclosureToggle`
+component** (owns hit area, ink, rotation, aria-expanded — not a
+CSS contract a site can half-adopt). Hit area **≥ 24×24 CSS px**
+(WCAG 2.5.8 floor), ink ~12 px so dense rows don't bloat. All
+twelve sites found in the sweep migrate: PlotArea, SignalsPanel,
+RbsPanel (×3), PlotMeasurements (×2), ByIdTable, DbcPanel,
+ConnectionManagement, ProjectPanel, ProjectGraphPanel,
+BlfChannelMapModal, TransmitFrameRow, traceTable. A shared test
+asserts the hit-area dimension.
 
 ### 2. Collapsing a plot area should give the space back
 
@@ -25,9 +31,22 @@ Collapsing a plot area today reclaims essentially nothing — the plot
 height goes, but the rest of the area still holds its space. A
 collapsed area should reduce to essentially its heading row.
 
-Grooming: what survives in the collapsed representation (heading +
-match chip? signal count?), and how this composes with the
-collapsed-run shared drag handle (ADR 0026).
+Groomed 2026-08-13 (owner): collapsed representation is **one
+heading row — area name + signal-count chip + match chip** (when a
+pattern rule feeds the area); nothing else. Expanding restores the
+prior layout exactly. ADR 0026 composition: a run of adjacent
+collapsed areas keeps the shared drag handle; each heading stays
+individually expandable.
+
+Extended 2026-08-13 (owner): **axes within an area collapse too** —
+the individual series' lane in an individual-mode area, and the
+per-unit axis in a per-unit-mode area, each get the same
+`DisclosureToggle` and collapse to a single label strip. A
+collapsed axis's height share redistributes to the remaining axes
+(the axis-weight machinery); the series keeps existing and
+ingesting — collapse is layout, not signal visibility (distinct
+from item 3's hide). Collapsed state persists per axis id, like
+axis weights do.
 
 ### 3. Hidden signals collapse to a single row
 
@@ -57,11 +76,13 @@ should scroll the plot's signal side panel so the first on-show row
 is visible — today the selection can land entirely off-screen and
 the page change reads as nothing happening.
 
-Grooming: visibility of solo-masked rows while a page/subset is on
-show — the current model marks them (and item 3 compacts them); we
-may actually want rows outside the mask / current page hidden from
-the side list entirely. Interacts with item 3's ruling that
-solo-masked rows visually behave as hidden ones.
+Groomed 2026-08-14 (owner): rows outside the current solo page are
+**hidden from the side list entirely** while a solo page is
+active — the page is the working set; the page indicator carries
+the "there's more" context. Item 3's single-line compaction applies
+to individually-hidden signals in normal (non-solo) mode.
+Scroll-into-view then reduces to scrolling to the top of the short
+on-show list.
 
 ## Exit criteria (to be firmed in grooming)
 

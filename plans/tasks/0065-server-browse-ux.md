@@ -93,8 +93,13 @@ Owner feedback from first live use of the Task 42/43 surfaces
 - Auto-generated tokens are 5-word EFF-large hyphenated
   passphrases; `--token` stays free-form; wire/trust store
   unchanged.
-- Windows GUI browse produces no per-app firewall rules (native
-  DNS-SD backend), verified on this machine. **Blocked on an owner
+- ~~Windows GUI browse produces no per-app firewall rules~~ —
+  **waived by owner ruling 2026-08-14** (phase-4 eval, option B):
+  stay on `mdns-sd`; the native backend's one-address race and
+  missing removal signal disqualify it even with an unsafe
+  exception. The minted rules are silent; deny-path visibility
+  (phase 2) and add-by-address (phase 3b) cover the blocked
+  cases. README documents the Windows firewall reality instead. **Blocked on an owner
   decision** — see the phase 4 status log: the native API delivers the
   firewall property but no maintained crate feeds the reducer, and the
   route that would is `unsafe` in our tree.
@@ -517,3 +522,38 @@ wants A anyway, the honest scope is: new crate with `unsafe_code =
 "deny"`, browse + resolve + cancel, PTR-set diffing for removal, a
 per-interface resolve fan-out for addresses, and a reducer-level test
 suite fed by a fake backend.
+
+### 2026-08-13 — phase 5: documentation close-out
+
+**Landed** (branch `task65f-docs-sweep`, off `task65e-native-dnssd`
+tip `e7f8501`): the doc-only sweep the option-B ruling owed, plus the
+pending grooming-resolution edits carried since phases 1–3b.
+
+- Committed verbatim: this file's waived-exit-criterion edit, the
+  task 63 and task 66 grooming resolutions, and ADR 0052.
+- README gains the Windows firewall reality for both the GUI and the
+  server (one prompt per binary install path, per network profile;
+  allowing is correct; a browse a deny is blocking shows as
+  `degraded`/`failed` in the Servers panel rather than failing
+  silently; **Add server…** reaches a blocked or non-advertising
+  server regardless) and the macOS local-network permission note
+  (denial silently empties browse — `mdns-sd` has no denied signal —
+  with **Add server…** as the workaround and the System Settings path
+  to re-grant it).
+- Consistency sweep: the Connection-Management paragraph describing
+  discovery vs. trust (README, near ADR 0040/0041) still said "a
+  browsed server is checked exactly as a typed one would be" and "a
+  server started with `--no-mdns` never appears in the list" — both
+  leftover from before phase 3 removed the per-bus typed-address field
+  and phase 3b added **Add server…**. Reworded to the current
+  mechanism; no other stale references to `AddServerInline`,
+  `TrustedServersList`, or a per-bus typed address found outside
+  historical status-log prose (which stays, describing what those
+  phases changed). CONTEXT.md's Servers-panel terms (Servers panel,
+  Add server…, Unknown server, Server section, Trust state) already
+  matched the shipped UX; the passphrase-token prose phase 1 landed
+  also still stands. No code changed.
+
+Task 65 is ready for its exit-criteria walk: every criterion is met
+except the Windows-firewall one, which carries the owner's option-B
+waiver recorded above.
