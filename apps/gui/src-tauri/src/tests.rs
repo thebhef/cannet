@@ -1905,6 +1905,20 @@ fn windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store()
     );
 }
 
+/// The rebuild chip's own query on an ordinary session: nothing was
+/// restored, so nothing was discarded, so there is nothing to announce.
+/// The fast-path silence the chip depends on (task 75 item 6).
+#[test]
+fn a_session_with_nothing_restored_is_not_rebuilding_pyramids() {
+    let state = test_state();
+    assert!(!pyramids_rebuilding_now(&state));
+    // …and it stays quiet once frames arrive by the ordinary route: a
+    // live capture builds its pyramids for the first time, which is not
+    // the loss this announces.
+    state.trace_store.append(dummy_frame(0, 0x100));
+    assert!(!pyramids_rebuilding_now(&state));
+}
+
 /// `cancel_import` with nothing importing is a no-op, not a panic — the
 /// busy launcher it backs isn't perfectly synchronized with the pump's
 /// own lifetime (task 75's trace-open feedback, click-to-cancel).

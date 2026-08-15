@@ -1434,6 +1434,32 @@ pub struct RestoredCapture {
     /// trace gets none). `None` when nothing was truncated or restored.
     first_index_ts_ns: Option<u64>,
     session_start_seconds: f64,
+    /// Whether the restore had to **discard** the pyramids a prior
+    /// session persisted (ADR 0047), so every plotted signal is decoded
+    /// again from frame zero — minutes on a large capture. The frontend
+    /// announces this and offers to drop the capture instead; it is the
+    /// host's own reading of [`SignalCacheStore::rebuilding`], never
+    /// something the frontend infers from how slow a plot feels.
+    pyramids_rebuilding: bool,
+}
+
+/// Whether the session is still owed the cold pyramid rebuild a restore
+/// forced (ADR 0047). Factored out from [`signal_pyramids_rebuilding`]
+/// so it's testable against a plain `AppState` — the command wrapper
+/// needs a live Tauri app to construct its `State`.
+pub(crate) fn pyramids_rebuilding_now(state: &AppState) -> bool {
+    state.signal_caches.rebuilding(state.trace_store.len())
+}
+
+/// The still-rebuilding fact, polled by the frontend while it shows the
+/// rebuild chip. A queryable fact rather than an event: the answer is
+/// derived from where the caches' decode cursors have reached, so there
+/// is no single moment for the host to fire, and the chip only asks
+/// while it is up.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn signal_pyramids_rebuilding(state: State<'_, AppState>) -> bool {
+    pyramids_rebuilding_now(&state)
 }
 
 /// Reload the prior disk-spill capture as a stopped historical trace, if
@@ -1467,6 +1493,7 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
             first_index: 0,
             first_index_ts_ns: None,
             session_start_seconds: 0.0,
+            pyramids_rebuilding: false,
         };
     };
     let (count, first_index_usize, first_index_ts_ns) = state.trace_store.len_and_low_water();
@@ -1480,6 +1507,11 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
     let pyramids = crate::app_state::pyramid_validity(&state)
         .map_or(0, |v| state.signal_caches.restore(&v, count));
     let pyramids_ms = pyramids_at.elapsed().as_secs_f64() * 1000.0;
+    // A rejection used to be invisible from here: the capture came back
+    // fast and then every plot over it spent minutes re-decoding, with
+    // nothing said. The frontend announces this and offers to drop the
+    // capture instead of paying for it.
+    let pyramids_rebuilding = pyramids_rebuilding_now(&state);
     let first_index = first_index_usize as u64;
     let session_start_ns = state.trace_store.session_start_ns();
     // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the
@@ -1507,6 +1539,14 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         "restore: {breakdown} notes {notes_ms:.0} \
          pyramids {pyramids_ms:.0} ({pyramids} signals) command {total_ms:.0}"
     );
+    if pyramids_rebuilding {
+        sys_info!(
+            &app,
+            "project",
+            "the persisted signal caches did not match this capture — \
+             rebuilding them by re-decoding its frames"
+        );
+    }
     // Whatever the restore adopted (or rejected) is the file-backed set
     // this session now has.
     let _ = app.emit(FILE_SIGNALS_CHANGED, ());
@@ -1516,5 +1556,6 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         first_index,
         first_index_ts_ns,
         session_start_seconds: session_start_ns as f64 / 1_000_000_000.0,
+        pyramids_rebuilding,
     }
 }
