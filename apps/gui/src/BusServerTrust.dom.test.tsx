@@ -183,13 +183,19 @@ describe("the notice on the bus row", () => {
       />,
     );
     const notice = screen.getByTestId("bus-server-trust-b1");
-    expect(notice).toHaveTextContent(`unknown server ${BENCH_ADDRESS}`);
-    expect(notice).toHaveTextContent(/trust it in the Servers panel/i);
+    expect(notice).toHaveTextContent(
+      `${BENCH_ADDRESS} is not trusted on this machine`,
+    );
+    expect(notice).toHaveTextContent(/add it in the Servers panel/i);
     fireEvent.click(screen.getByRole("button", { name: "Manage servers…" }));
     expect(onManageServers).toHaveBeenCalledTimes(1);
   });
 
-  it("does not call a server it can see unknown", () => {
+  it("states one fact for both, and differs only in what to do about it", () => {
+    // The fact is the same either way — the machine will not reach this
+    // server without an answer. Whether the address is in the list at
+    // all changes the *fix*, not what is wrong, so it belongs in the
+    // instruction and never in a second name for one state.
     render(
       <BusServerTrustNotice
         bus={BUS1}
@@ -198,7 +204,10 @@ describe("the notice on the bus row", () => {
       />,
     );
     const notice = screen.getByTestId("bus-server-trust-b1");
-    expect(notice).toHaveTextContent(/is not trusted on this machine/i);
+    expect(notice).toHaveTextContent(
+      `${BENCH_ADDRESS} is not trusted on this machine`,
+    );
+    expect(notice).toHaveTextContent(/trust it in the Servers panel/i);
     expect(notice).not.toHaveTextContent("unknown server");
   });
 

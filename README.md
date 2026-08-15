@@ -1721,11 +1721,13 @@ something invisible.
 A project carries only the `host:port` a bus is bound to — never a
 fingerprint or a token — so opening one on a machine that has not
 accepted that server is the ordinary case, not an error. The bus row
-says so in as many words: *unknown server `host:port` — trust it in
-the Servers panel* for an address this machine has no record of, and a
-matching line for a server it can see but has not accepted, or one
-whose identity has changed since it was pinned. Each carries the same
-*Manage servers…* jump. Whether an address needs an answer at all is
+says so in as many words: *`host:port` is not trusted on this machine —
+add it in the Servers panel* for an address this machine has no record
+of, and the same line ending *trust it in the Servers panel* for a
+server it can see but has not accepted. One fact, two fixes. A server
+whose identity has changed since it was pinned, or one that refused the
+token stored for it, gets its own line. Each carries the same *Manage
+servers…* jump. Whether an address needs an answer at all is
 the host's call, so a loopback proxy — reached in the clear and never
 asked about — is not flagged.
 

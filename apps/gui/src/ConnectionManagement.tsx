@@ -610,12 +610,18 @@ export function busServerTrust(
 
 /// The notice's wording. Each says what is wrong and where it is fixed;
 /// the Servers panel is the only place any of them is answered.
+///
+/// `unknown` and `untrusted` state the *same fact* — this machine will
+/// not reach that server without an answer — and differ only in the
+/// fix, because an address that is not in the list yet is added rather
+/// than trusted. Calling one of them an "unknown server" made a second
+/// name for one state and hid the fact behind it.
 export function busServerTrustMessage(state: BusServerTrust): string | null {
   switch (state.kind) {
     case "ok":
       return null;
     case "unknown":
-      return `unknown server ${state.address} — trust it in the Servers panel`;
+      return `${state.address} is not trusted on this machine — add it in the Servers panel`;
     case "untrusted":
       return `${state.address} is not trusted on this machine — trust it in the Servers panel`;
     case "changed":
