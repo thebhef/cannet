@@ -64,8 +64,11 @@ crates/
                  stubs, conversion helpers between `cannet_core`
                  frames and the wire types, and a batching adapter
                  layer so application code stays in `Stream<CanFrame>`.
-  cannet-server/ Bare `cannet-server` is the production hardware-proxy
-                 entry point (ADR 0040; not yet implemented). `debug
+  cannet-server/ Bare `cannet-server` is the production hardware proxy
+                 (ADR 0040): it supervises the `cannet-python-can`
+                 sidecar on loopback and relays all three RPCs to it
+                 1:1, so a remote client sees the host's real
+                 interfaces under their real ids. `debug
                  replay <blf>` and `debug vbus` are dev/test tooling:
                  replay loads a BLF into memory and streams its
                  channels on a loop while a client is subscribed
@@ -305,6 +308,52 @@ previous session's capture is *not* part of that wait: reopening it
 scales with the capture's size, so it loads in the background and its
 history appears when it is ready. Connect waits for it (the reload
 replaces the buffer wholesale); the rest of the app does not.
+
+### Running the production server
+
+`cannet-server`, invoked bare, is the production hardware proxy
+([ADR 0040](docs/adr/0040-production-cannet-server.md)): run it on the
+machine the CAN hardware is plugged into, and that hardware becomes
+reachable over the network from a GUI anywhere else.
+
+```sh
+cargo run -p cannet-server                      # from a source checkout
+./cannet-server --bind 0.0.0.0:50051            # from a distribution archive
+# → hardware proxy: listening on 0.0.0.0:50051
+# → [info] sidecar:python-can: sidecar started (pid 61024)
+# → [info] sidecar:python-can: upstream ready on 127.0.0.1:60481
+```
+
+It spawns and supervises one `cannet-python-can` sidecar on loopback
+(the same one the GUI runs for local dongles) and relays all three
+RPCs to it 1:1. Nothing on the wire is reinterpreted: clients list
+`pcan:PCAN_USBBUS1` and friends under their real ids, and
+`ConfigureBus`, `InterfaceState`, `Busy` and every error pass through
+as the sidecar sent them — the process that owns the hardware is still
+the one arbitrating who gets it. Point the GUI's connection panel at
+`host:50051` exactly as it would at a local sidecar.
+
+Flags:
+
+- `--bind <addr>` — listen address, default `127.0.0.1:50051`. Serving
+  anything but loopback is a deliberate choice: connections are not yet
+  authenticated or encrypted, so a routable bind exposes the hardware
+  to everyone who can reach the port.
+- `--sidecar-log-level <level>` — the sidecar's own verbosity
+  (default `info`). Its output, and the server's supervision events,
+  are written to stderr tagged `sidecar:python-can`.
+- `--sidecar-restart-budget <n>` — how many times a crashing sidecar is
+  restarted automatically before the server gives up and says so
+  (default 3). Restarting the server hands the budget back.
+
+The sidecar is found the same way the GUI finds it
+([ADR 0036](docs/adr/0036-frozen-python-can-sidecar.md)): a release
+build prefers the frozen `cannet-python-can/` onedir unpacked beside
+the server binary and falls back to the source tree; a `cargo run`
+build prefers the source tree, so sidecar edits take effect on its next
+restart. `CANNET_SIDECAR_DIR` overrides where that source tree is. The
+sidecar dies with the server — it watches the stdin pipe it inherited —
+so Ctrl-C leaves nothing holding the hardware open.
 
 ### Self-driving performance runs
 

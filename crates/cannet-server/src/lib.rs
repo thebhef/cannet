@@ -1,7 +1,13 @@
 //! gRPC server for the cannet wire protocol.
 //!
-//! Two server modes ship today:
+//! Three server modes ship today:
 //!
+//! - **Hardware proxy** ([`proxy::ProxyServerImpl`]) — the production
+//!   role (ADR 0040). One network endpoint in front of an upstream
+//!   that speaks the same protocol (a supervised vendor sidecar),
+//!   relaying all three RPCs 1:1 with no envelope interpretation, so
+//!   remote clients see the real interfaces under their real
+//!   identities.
 //! - **BLF replay** ([`server::CannetServerImpl`] over a
 //!   [`replay::LoopingBlfReplay`]) loads a BLF file once at startup
 //!   and streams it on a loop to the subscribed client. Read-only:
@@ -15,6 +21,7 @@
 //!
 //! ## Crate layout
 //!
+//! - [`proxy`] — pass-through tonic service over an upstream endpoint.
 //! - [`replay`] — pure-data: load a BLF file into memory, partition it by
 //!   channel, expose interfaces and frame slices.
 //! - [`server`] — BLF replay tonic service.
@@ -26,10 +33,12 @@
 //! arguments and chooses one of the services.
 
 pub mod bridge_client;
+pub mod proxy;
 pub mod replay;
 pub mod server;
 pub mod virtual_bus;
 
+pub use proxy::ProxyServerImpl;
 pub use replay::{LoopingBlfReplay, ReplayError};
 pub use server::CannetServerImpl;
 pub use virtual_bus::{VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID};

@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 cannet-blf = { path = "../cannet-blf" }
 cannet-core = { path = "../cannet-core" }
+cannet-sidecar = { path = "../cannet-sidecar" }
 cannet-wire = { path = "../cannet-wire" }
 clap = { version = "4", features = ["derive"] }
 futures-core = "0.3"
