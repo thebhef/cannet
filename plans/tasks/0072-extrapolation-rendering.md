@@ -1130,6 +1130,148 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     phase 6); `tsc --noEmit` and `pnpm build` clean. No host code
     touched, so no Rust run.
 
+- **2026-08-15, phase 8 (`task72-p8-light-legibility`, branched off
+  `task72-p7-marker-honesty`):** the sign-off review's second finding —
+  "light mode legibility is quite poor basically everywhere in the
+  capture. Dark mode legibility is good."
+
+  **Verdict: an enum tile's label was drawn in the tile's accent, and the
+  tile's fill is a tint of that same accent. On a dark theme the two
+  separate — the accent is light, `colorMapLaneFill` darkens it — so the
+  label reads. On a light theme they collapse, and the label is drawn a
+  hair off the plate it sits on: measured against the committed fixture's
+  own colormaps, 1.03–1.80:1, against 3.23–5.89:1 for the same tints on
+  dark.** Fixed by measuring instead of assuming (`3600ee96`), and
+  photographed from a real build both ways.
+
+  - _Observation (raw)._ Owner, on phase 6's `light-02` sign-off frame.
+    Phase 6's own status entry had already recorded the same thing as a
+    side observation: "the enum tile labels (`Idle`, `Active`, `Derate`,
+    `Fault`) read much weaker against their colormap tints than the dark
+    theme's do".
+
+  - _Hypothesis._ The label's ink and the tile's fill are the same color
+    put through two different transforms, so their separation is a
+    property of the theme rather than of the design: `drawEnumTiles`
+    fills with `colorMapLaneFill(accent)` (the accent darkened to 40 %,
+    at 0.65 alpha) and then writes the label in `accent`. On a dark
+    background that composite lands near the background and a light
+    accent stands off it; on a light background it lands mid-tone and a
+    darkened accent sits on top of a mid-tone of itself. Falsifiable: if
+    the two themes' measured label-vs-ground contrasts were comparable,
+    the cause would be elsewhere (the halo, the stripes, the font).
+
+  - _Data (WCAG 2.x contrast, ink against the ground the tile actually
+    paints — its fill composited over `theme().background`)._ Every tile
+    label in the sign-off frame, before and after.
+
+    | tile | tint | dark before → after | light before → after | lighthk before → after |
+    | --- | --- | --- | --- | --- |
+    | `Idle` | `#6b7280` | **3.23 → 3.23** | **1.03 → 4.46** | **1.06 → 4.11** |
+    | `Arming` | `#f59e0b` | **5.89 → 5.89** | **1.80 → 5.44** | **1.93 → 5.07** |
+    | `Active` | `#22c55e` | **5.65 → 5.65** | **1.74 → 5.30** | **1.90 → 4.85** |
+    | `Derate` | `#3b82f6` | **4.01 → 4.01** | **1.23 → 4.66** | **1.34 → 4.28** |
+    | `Fault` | `#ef4444` | **4.04 → 4.04** | **1.27 → 4.41** | **1.35 → 4.13** |
+    | `Standby` | `#6b7280` | **3.23 → 3.23** | **1.03 → 4.46** | **1.06 → 4.11** |
+    | `Running` | `#22c55e` | **5.65 → 5.65** | **1.74 → 5.30** | **1.90 → 4.85** |
+    | `Closed` | `#6b7280` | **3.23 → 3.23** | **1.06 → 4.46** | **1.06 → 4.11** |
+    | `Open` | `#3b82f6` | **4.01 → 4.01** | **1.23 → 4.66** | **1.34 → 4.28** |
+
+    1.03:1 is the same color. The hypothesis' prediction holds in both
+    directions: the dark column is a theme that never had the problem,
+    and the light columns are the owner's report as a number.
+
+  - _Fix (`f4a2bcb5`, `3600ee96`)._ `laneLabelInk` composites the fill
+    over the theme background and measures. The accent survives wherever
+    it clears **3:1** — which is every dark tile and every untinted lane
+    on every theme — and is otherwise replaced by the extreme opposite
+    the theme's background. Three choices in that rule are load-bearing
+    and each is a measurement, not a taste:
+
+    - **The threshold is 3, not 4.5.** A tile label is a short word on a
+      colored plate (WCAG 1.4.11's non-text tier and the large-text tier
+      both sit at 3), and 3 is the value the data leaves free: the
+      weakest dark tile reads its accent at 3.23 and the strongest light
+      one at 1.80, so anything in that gap replaces every collapsed label
+      and disturbs nothing on the theme that reads well. At 4.5 the dark
+      theme's `Idle`, `Derate` and `Fault` would have lost their accents
+      too — a change to a theme nobody complained about.
+    - **The replacement follows the theme's polarity, not the higher
+      measurement.** On these grounds the two extremes land within 5 % of
+      each other and the winner alternates by tint (white for `Idle` and
+      `Fault`, black for `Arming`, `Active` and `Derate`), which would
+      put one theme's lanes in two inks on a margin that means nothing.
+      The other extreme is still taken where the preferred one fails —
+      a near-black tint on a light theme grounds at rgb(85, 86, 86),
+      where black measures 2.95 — so it is a preference, not a constant,
+      and its own test says so.
+    - **The border keeps the accent.** It is read against the plot
+      background _outside_ the tile, where the accent has all the
+      contrast it needs, and it is what carries the signal's identity
+      once the label has stopped.
+
+  - _Halo, retuned by pairing rather than by a number._ The halo was
+    `theme().background` unconditionally. That is right whenever the
+    background reads against the ink — it is the color the stripes are
+    painted in, so it is what stops them cutting the glyphs — and it is
+    what all three shipping themes take for every tint above. But it is
+    wrong for the one case the new ink introduces: where the ink itself
+    landed on the background's side of the axis, a near-white halo around
+    a white glyph is no halo at all. So the halo is chosen with the ink
+    and flips to the opposing extreme there. `laneLabelShadowPasses`
+    keeps its per-theme values (dark 2, light 4, lighthk 4) —
+    **unchanged, because the frames give no reason to change them**: with
+    a black ink under a white halo the striped stretches' labels
+    (`Running` over green stripes, `Open` over blue) read at full
+    strength in `after/light-02`.
+
+  - _Stripe geometry untouched_, per the ruling — and the ruling holds up
+    under the new ink. Striped-region legibility in light was the case
+    the halo existed for and is now the _better_ of the two: the stripes
+    are painted in the background, which is also the halo, so a black
+    glyph over a white-striped tile has the halo and the stripes working
+    the same direction. Nothing here is left as an owner call on the
+    stripes.
+
+  - _Verification: rebuilt and photographed both ways_ (constraint
+    relaxed by the owner mid-phase). Four sign-off frames from two real
+    `pnpm --dir apps/gui tauri build --no-bundle` builds —
+    `task72-p7-marker-honesty` at `7c70d79e` for _before_, this branch at
+    `3600ee96` for _after_ — through `screenshot --scenario
+    extrapolation` per theme, into the run's own app-data and WebView2
+    profiles. Kept out of the repo per the no-committed-review-artifacts
+    rule.
+
+    - _light, before_: `Idle`, `Standby` and `Closed` are not there at
+      all on their grey tiles; `Derate`, `Fault` and `Arming` are a
+      smudge; `Running` and `Open` are faint colored text. The picture
+      the owner reported.
+    - _light, after_: all nine labels crisp, in black, over both plain
+      and striped stretches.
+    - _dark, before vs after_: **0 differing pixels of 1 600 000**
+      (`screenshot-diff`, max Δchannel 0) on `02-extrapolated-stretches`.
+      The pin the phase was given, taken at the pixel rather than at the
+      helper: a rebuild of the whole frontend changed nothing at all in
+      the theme that reads well.
+
+  - _Cost._ One `Map` lookup per tile segment, keyed on
+    `(theme, fill, accent)` — bounded like the tile-label width memo by
+    what the loaded value tables and colormaps hold, and hit on every
+    segment after the first of each code. The parse/composite/contrast
+    arithmetic runs once per distinct key, not per segment or per frame.
+
+  - _ADR 0026 amended (`3600ee96`)._ The ink rule, the three deliberate
+    choices, and the halo pairing. `laneLabelShadowPasses`' rustdoc no
+    longer says the halo _is_ the background — it says how hard the halo
+    is laid down, and points at where the color is decided.
+
+  - Frontend: 163 test files / 2184 tests passed (from 162 / 2161 at
+    phase 7 — one new file, 23 new tests: 18 at the unit tier in
+    `laneLabelInk.test.ts` and 5 at the draw tier in
+    `PlotArea.draw.test.ts`, the two that reproduce the defect written
+    first and watched fail); `tsc --noEmit` and `pnpm build` clean. No
+    host code touched, so no Rust run; no perf-gate run.
+
 ## Blockers / side effects
 
 - ~~**The enum leading-edge lag is attributed but NOT fixed.**~~ **Fixed
@@ -1152,23 +1294,48 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   toolbar's Recent menu → the channel dialog's own defaults) and pins the
   x window with **fit x axis**. Verified for real against the shipping
   binary, twice per theme.
-- **The sign-off set predates the leading-wing fix, and re-shooting it
-  needs a build this phase could not run.** The four PNGs were taken from
-  `target/release/cannet-gui.exe` as built at the tip of phase 5, and
-  phase 6 then found and fixed (`a874e4c9`) the one-sample hline's
-  **leading** wing drawing solid. So five of the six ruled shapes are
-  photographed as ruled and the sixth is photographed as the defect. The
-  fix is landed and pinned at the unit seam; what is outstanding is one
-  `pnpm --dir apps/gui tauri build --no-bundle` plus two
-  `screenshot --scenario extrapolation --theme dark|light` runs, which
-  now take about a minute each. **This is the owner/orchestrator
-  decision left in this task**: sanction the rebuild, or accept the set
-  with the leading wing read from the test rather than the picture.
-  **Phase 7 adds a second fix to the same re-shoot** (`9ae79890`): the
-  set was photographed with markers drawn at every merged column, so
-  the striped and dashed stretches in it carry dots that the current
-  code does not draw. Read the four PNGs as the picture of two defects,
-  not one.
+- ~~**The sign-off set predates the leading-wing fix, and re-shooting it
+  needs a build this phase could not run.**~~ **Re-shot in phase 8**,
+  after the owner sanctioned the rebuild. The set phase 6 produced was
+  taken from a phase-5 binary and so photographed two defects since
+  fixed — the one-sample hline's **leading** wing drawing solid
+  (`a874e4c9`) and markers drawn at every merged column (`9ae79890`).
+  Phase 8's `after` set is from a `tauri build --no-bundle` of
+  `3600ee96`, and both are right in it: `OneShotLevel`'s hline runs
+  dashed across **both** wings with a single marker at its one sample
+  (x = 10 s), and the striped and dashed stretches carry no dots. The
+  frames stay out of the repo (no-committed-review-artifacts) — they are
+  in phase 8's scratchpad, listed in its report.
+- **The `extrapolation` scenario shoots an empty plot about a third of
+  the time.** Noticed in phase 8: of six runs across two binaries and
+  both themes, **two** wrote an `02-extrapolated-stretches` with no data
+  at all — x axis at 0–1 s, every side-panel readout `— %`. It is not a
+  function of the build (it hit the phase-7 binary and the phase-8 one
+  once each) or of the theme (once light, once dark), and a re-run of the
+  same command produced the correct frame both times. The scenario waits
+  for the app's own "Loading trace…" to clear before the fit, so the
+  suspicion is that something after that wait is not yet settled when
+  **fit x axis** is pressed — but that is a hypothesis with no experiment
+  behind it, and no one has looked. It matters because these captures are
+  eyeballed: an empty frame is obvious to a human, but an unattended
+  gate would take it. Left for whoever next touches the harness.
+- **`colorMapLaneFill` darkens on every theme, which is what caps the
+  light themes' tile legibility — an owner call, not acted on.** The
+  ink fix takes the light theme's tinted tiles from 1.03–1.80:1 to
+  4.41–5.44:1, and that ceiling is the fill's doing: darkening a tint by
+  60 % and laying it at 0.65 alpha over a _light_ background lands a
+  mid-tone ground (rgb(94, 137, 111) for `Active`), and a mid-tone ground
+  is the one place neither extreme has much room — the best any ink can
+  do there is about 5.4. The dark theme has no such ceiling because the
+  same transform lands the ground near its own background (rgb(14, 57,
+  32) for the same tint), where a light ink reads at will.
+  `laneFillDefault` already flips polarity per theme (near-black on dark,
+  near-white on light); `colorMapLaneFill` does not. Giving it the same
+  per-theme polarity would put the light themes' tiles on a near-white
+  ground where the _accent_ reads on its own — no replacement ink needed
+  — but it changes what every tinted tile looks like on both light
+  themes, which is a look the owner has not been shown. Measured and
+  recorded rather than done.
 - **`max_points == 0` still run-reduces a categorical window**, where
   the numeric serve of the same request returns the raw slice. Left
   as-is: no plot fetch reaches it (`MIN_DECIMATION_POINTS = 200` is
