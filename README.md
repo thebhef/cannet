@@ -316,8 +316,30 @@ replaces the buffer wholesale); the rest of the app does not.
 machine the CAN hardware is plugged into, and that hardware becomes
 reachable over the network from a GUI anywhere else.
 
+Prebuilt archives publish alongside the GUI bundles on [GitHub
+Releases](https://github.com/thebhef/cannet/releases) (§ Downloads),
+one per OS:
+
+| Platform    | Archive                                                |
+|-------------|--------------------------------------------------------|
+| macOS arm64 | `cannet-server-vX.Y.Z-aarch64-apple-darwin.tar.gz`     |
+| Windows x64 | `cannet-server-vX.Y.Z-x86_64-pc-windows-msvc.zip`      |
+| Linux x64   | `cannet-server-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+
+Each unpacks to one directory holding the `cannet-server` binary and,
+beside it, the `cannet-python-can/` onedir it supervises — no `uv` or
+Python needed at runtime, same as the GUI's frozen sidecar. Like the
+GUI bundles, these binaries are unsigned: macOS Gatekeeper quarantines
+a downloaded, un-notarized binary (right-click → **Open** and confirm,
+or `xattr -dr com.apple.quarantine cannet-server`); Windows SmartScreen
+shows the same warning the GUI installer does (**More info → Run
+anyway**). Linux has no equivalent gate.
+
 ```sh
 cargo run -p cannet-server                      # from a source checkout
+tar xzf cannet-server-vX.Y.Z-<target>.tar.gz    # macOS / Linux archive
+# or: Expand-Archive cannet-server-vX.Y.Z-<target>.zip   # Windows archive
+cd cannet-server-vX.Y.Z-<target>
 ./cannet-server --bind 0.0.0.0:50051            # from a distribution archive
 # → hardware proxy: listening on 0.0.0.0:50051
 # → [info] sidecar:python-can: sidecar started (pid 61024)
