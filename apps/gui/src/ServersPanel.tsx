@@ -286,7 +286,23 @@ export function ServersPanel(_props: IDockviewPanelProps) {
 /// dials to find out what to ask.
 function trustActionLabel(prompt: TrustPrompt | null): string {
   if (prompt === null) return "Trust…";
-  return prompt.kind === "identityChanged" ? "Review identity…" : "Review…";
+  switch (prompt.kind) {
+    case "identityChanged":
+      return "Review identity…";
+    case "tokenRefused":
+      return "Review token…";
+    default:
+      return "Review…";
+  }
+}
+
+/// The token cell — the row's indicator for a credential the server
+/// stopped accepting. The host's trust state cannot carry that (the pin
+/// is still good), so the question it is waiting on is what says so,
+/// and it says it where the token is.
+function tokenLabel(row: ServerRow): string {
+  if (row.prompt?.kind === "tokenRefused") return "token refused";
+  return row.hasToken ? "token stored" : "no token";
 }
 
 interface ServerRowViewProps {
@@ -330,8 +346,10 @@ function ServerRowView({
       <span className="server-host">{row.host ?? ""}</span>
       <span className="server-address">{row.address}</span>
       <span className="server-version">{row.version ?? ""}</span>
-      <span className="server-token">
-        {row.hasToken ? "token stored" : "no token"}
+      <span
+        className={`server-token${row.prompt?.kind === "tokenRefused" ? " refused" : ""}`}
+      >
+        {tokenLabel(row)}
       </span>
       <span className="server-actions">
         {(row.trust !== "trusted" || row.prompt !== null) && (

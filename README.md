@@ -701,10 +701,12 @@ asked about once, never retried in a loop.
 keeps watching servers it already knows, so it can find a changed
 identity with nobody trying to connect; interrupting the window for
 that would be a nuisance. Such a question shows up as an *indicator*
-instead — the badge on the server's row reads `identity changed`, and
-every bus bound to it says so on the bus row — and the row's *Review…*
-puts the same dialog up whenever you are ready, showing both
-fingerprints, the accepted one and the presented one. Connecting,
+instead — the badge on the server's row reads `identity changed`, a
+credential the server stopped accepting turns the row's token cell to
+`token refused`, and every bus bound to that server says so on the bus
+row — and the row's *Review…* puts the same dialog up whenever you are
+ready, showing both fingerprints, the accepted one and the presented
+one. Connecting,
 *Trust…*, and *Add server…* are the acts that open it directly, because
 each is a connection you asked for and the question is what blocked it.
 Waving the dialog away leaves the indicator: the question is still

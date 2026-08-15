@@ -525,6 +525,81 @@ describe("the trust lifecycle from a row", () => {
     expect(calls.some((c) => c.cmd === "refresh_interfaces")).toBe(false);
   });
 
+  it("shows an identity that changed while nobody was connecting, without a dialog", async () => {
+    // The passive case. The host was watching a server it already knows
+    // and found a certificate that is not the pinned one; nobody asked
+    // for that connection. It is an indicator on the row — and the
+    // affordance to look at it when the user is ready — never a modal.
+    const prompt: TrustPrompt = {
+      kind: "identityChanged",
+      expected: "SHA256:aaa",
+      observed: "SHA256:bbb",
+    };
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "get_server_prompts") return { "rippy:50051": prompt };
+        return undefined;
+      },
+    );
+    renderWithDialog();
+    await screen.findByText("192.168.1.10:50051");
+    emit(
+      SERVER_LIST_CHANGED_EVENT,
+      list([
+        row({
+          address: "rippy:50051",
+          trust: "fingerprintChanged",
+          fingerprint: "SHA256:aaa",
+          prompt,
+        }),
+      ]),
+    );
+    expect(rowFor("rippy:50051")).toHaveTextContent("identity changed");
+    expect(
+      within(rowFor("rippy:50051")).getByRole("button", {
+        name: "review rippy:50051",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("says on the row when the server refused the stored token", async () => {
+    // The other half of the same ruling: a credential the server stops
+    // accepting is a fact about the row — in the cell that is about the
+    // token — and the way back to the dialog is the row's affordance.
+    const prompt: TrustPrompt = { kind: "tokenRefused" };
+    snapshot = list([
+      row({
+        address: "rippy:50051",
+        trust: "trusted",
+        fingerprint: "SHA256:qqq",
+        hasToken: true,
+        prompt,
+      }),
+    ]);
+    invokeMock.mockImplementation(
+      async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args: args ?? {} });
+        if (cmd === "get_server_list") return snapshot;
+        if (cmd === "get_server_prompts") return { "rippy:50051": prompt };
+        return undefined;
+      },
+    );
+    renderWithDialog();
+    await screen.findByText("rippy:50051");
+    const rippy = rowFor("rippy:50051");
+    expect(rippy).toHaveTextContent("token refused");
+    expect(rippy).not.toHaveTextContent("token stored");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("review rippy:50051"));
+    const dialogs = await screen.findAllByRole("dialog");
+    expect(dialogs).toHaveLength(1);
+    expect(dialogs[0]).toHaveTextContent("refused the access token");
+  });
+
   it("mounts no dialog of its own", async () => {
     // One dialog implementation, one mount: the panel raises the
     // app-wide one, so two modals over the same question are impossible
