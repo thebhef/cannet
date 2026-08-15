@@ -1415,6 +1415,28 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     and `cargo fmt --check` clean. No `cannet-gui` host code touched. No
     perf-gate run (the orchestrator's, at closeout).
 
+- **2026-08-15, closeout gate (orchestrator, release build of
+  `46ae4a0a` — the p9 tip):** ADR-0031 gate **PASSED, 69/69** on three
+  qualifying runs (median drift form, owner window geometry seeded
+  into each isolated `--app-data-dir`).
+
+  The path there is itself a data point for the task-71 attribution.
+  Six captures were taken on the one binary. Run 1 (started ~90 s
+  after the release build finished) breached `rx_gap_short_frac_worst`
+  at 0.159 vs 0.041 with the elevated-`p95_ratio` shape (2.60); the
+  amended-procedure re-run _also_ breached (0.093, ratio 1.87) — but
+  that re-run was contaminated the same way: its 60 s settle began
+  right after a cold debug compile of the check crate (the incremental
+  cache had just been deleted for disk space). Stated prediction: with
+  no compilation preceding and a 120 s settle, the metric returns to
+  the clean band. Two further quiet runs measured **0.004 / 0.004**
+  (ratios 1.17 / 1.16). Final series on the constant binary: four
+  quiet runs 0.001–0.006, the two post-compilation runs 0.159 / 0.093
+  — the breach follows recent compilation activity, not the build.
+  Gate stands on the three settled runs (runs 4, 5, 2). No baseline
+  promoted. Reports: `task72-close/run{1,1b,2,3,4,5}.json` +
+  `check-final.txt` in the session scratchpad.
+
 ## Blockers / side effects
 
 - ~~**The enum leading-edge lag is attributed but NOT fixed.**~~ **Fixed
@@ -1531,6 +1553,62 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   data" phrasing reconciled.
 - ADR-0031 perf gate run on the final build (this touches the render
   hot path); all metrics, no baseline promotion.
+
+## Exit-criteria walk (2026-08-15, orchestrator, at the p9 tip `46ae4a0a`)
+
+1. **Leading-edge lag reproduced, attributed, fixed test-first —
+   MET.** Phase 3 reproduced the proportional lag on a grown session
+   and attributed it with the confirming experiment (per-group
+   catch-up budget divided across an area's message groups); phase 5
+   landed the owner's shape 1 (`880eb5f9`, budget spent in rounds
+   across groups) with the convergence proof in its status entry.
+   Shape 3 is deliberately deferred to task 77 by owner ruling.
+2. **Extrapolated stretches visually distinct in line, hline, and
+   lane rendering, classification pinned by tests — MET.** Host-side
+   `extrapolated_spans` carries both ruled tests (unbounded section;
+   gap > 10× typical raw interval), each pinned, including the
+   coarse-zoom case confirming candidates against level-0
+   `window_count` so decimated spacing cannot false-positive (phase
+   4). Renderer seams regression-tested at the draw tier; the ruled
+   styling (dash, lane stripes at exact 50 % duty, per-theme label
+   halo and ink) ratified on both themes' frames (phases 4, 6, 8).
+3. **Enum lanes show their sample positions, tested — MET.** Phase 4
+   (`1b8913b6`): a tile axis draws its own markers over the tiles,
+   one mechanism replacing uPlot's density rule and the ≤32 floor on
+   lanes; phase 7 made all markers sit only on the series' own
+   samples (`sampleColumns`).
+4. **Hover-over-a-lane regression fixed, introducing change named —
+   MET.** Phase 1 named `61379f88` (PR #282, categorical
+   serve-by-runs) in the status log with the pickaxe evidence; the
+   within-budget categorical raw serve restored per-sample columns,
+   reproducing test kept. Phase 9 then replaced the per-instance
+   hover point entirely with the honest panel-wide markers (§5).
+5. **Scroll-after-disconnect regression fixed, original fix's fate
+   recorded — MET.** Phase 2: PR #120's guard was widened by PR #123
+   (recorded in the status log); the fix stops prediction at the
+   newest frame in `followWindow.ts`, with the reproducing test as
+   the guard.
+6. **Hover-marker parity (§5) — MET.** Phase 9: a pointer in any
+   area reveals markers on every area, lanes included, riding the
+   existing crosshair channel; markers still sit only on real samples
+   (`hoverMarkerColumn` over the series' own columns); tested at
+   draw, unit, and panel tiers; photographed hovered in both themes
+   with the unhovered frames pixel-identical to phase 8's pin.
+7. **ADR 0026 amended, phrasing reconciled — MET.** The
+   extrapolation-rendering rule, the marker-honesty invariant ("a
+   marker sits only on a sample," `bc02241c`), and the hover rule
+   (`c81c2534`) all landed in ADR 0026 in the phases that implemented
+   them; the "no series is drawn past its data" phrasing was
+   reconciled in phase 4's ADR commit.
+8. **ADR-0031 gate on the final build, all metrics, no promotion —
+   MET.** Closeout gate above: 69/69 on the release build of
+   `46ae4a0a`, median drift form, seeded geometry, no baseline
+   touched; the two contaminated runs recorded rather than discarded.
+
+Verdict: **all eight criteria MET** — none waived. Open items for
+the consolidated review live under Blockers / side effects
+(`colorMapLaneFill` polarity, lane hover-marker legibility, the
+screenshot-scenario flake).
 
 ## 5. Hover-marker parity (owner observations, 2026-08-15, on a phase-7-complete build)
 
