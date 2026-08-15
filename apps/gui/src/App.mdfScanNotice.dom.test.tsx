@@ -156,7 +156,7 @@ describe("MDF census feedback", () => {
     });
 
     await act(async () => {
-      fireEvent.click(findButton("Open MDF…"));
+      fireEvent.click(findButton("Import trace…"));
     });
 
     // The census is still walking: the notice is up and the dialog is

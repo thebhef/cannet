@@ -71,3 +71,77 @@ Owner feedback from first live use of the Task 38 surfaces
   via the Database view and copy/drag.
 - ADR 0052 committed; CONTEXT.md and README reflect the rename,
   the format-plural principle, and the file-backed surfacing.
+
+## Status log
+
+### 2026-08-14 — owner ruling: Recent captures are per-project
+
+Recent captures are per-project — owner, 2026-08-14; storage already
+per-project, preserved. The `recent_blfs` state field has been
+`Scope::Workspace` (the open project's own `.cannet/state.json`, ADR
+0042) all along (`apps/gui/src-tauri/src/state.rs`); unifying BLF and
+MDF into one list did not move it, and MDF entries join the same
+per-project list. Only the `recent_blfs_limit` cap stays user-scope,
+unchanged.
+
+### 2026-08-13 — phase 1: Import trace + Recent captures
+
+**Landed** (branch `task66a-import-trace`, off `task65f-docs-sweep`
+tip `13213cb`), two commits:
+
+- `e7961c7` **docs(task65)** — carried forward the orchestrator's
+  pending exit-criteria walk and close-out gate for task 65, verbatim.
+- `b7d5365` **feat(gui)** — one "Import trace…" toolbar button and
+  palette command replaces "Open BLF…" / "Open MDF…"; the file dialog
+  offers "All supported traces" (`*.blf;*.mf4`), "Vector BLF", and
+  "ASAM MDF". The picked (or recalled) path routes to the format's
+  existing scan/mapping flow by extension alone
+  (`apps/gui/src/importFormat.ts`) — the host still never sniffs the
+  file, it just receives an explicit command choice made frontend-side,
+  same as the save-side `saveFormat.ts` this mirrors. `scan_mdf_channels`
+  only ever accepted `.mf4` (confirmed against `cannet-mdf`'s docs and
+  the prior single-format filter), so that's the only MDF extension
+  offered.
+  - The recents list (`recentBlfs.ts` renamed to `recentCaptures.ts`)
+    now records a successful MDF import the same way it always recorded
+    BLF (previously a deliberate scope trim); the toolbar/palette label
+    it "Recent captures". Storage is unchanged: the per-project
+    `recent_blfs` state field and the user-scope `recent_blfs_limit`
+    setting are both kept as-is (no migration) — only display names
+    changed (`settings_descriptor.rs`'s label, the toolbar dropdown's
+    aria-label/title/class names). A recents entry from before the
+    merge (a bare `.blf` path) opens with no special-casing, since the
+    storage shape never distinguished format.
+  - The palette gained keyword matching (`CommandSpec.keywords` /
+    `PaletteItem.keywords`, folded into the `fzf` search text but never
+    displayed) so typing "Open BLF" or "Open MDF" still finds the
+    merged "Import trace…" action. This is the mechanism the
+    Database-panel "DBC panel" alias (phase 2) is expected to reuse.
+  - Command palette entry: `trace.import`, category "File" (same
+    grouping "Open BLF…"/"Open MDF…" held). No `blf.open`/`mdf.open`
+    ids remain; neither was bound to a default keychord, so no binding
+    cleanup was needed.
+- Docs: README (the quick-start paragraph, the Save-Capture/notes
+  section, the remote-connect paragraph, the Phase-9 section header)
+  and ADR 0037 (an example mentioning the old dropdown name) updated
+  to "Import trace…" / "Recent captures". CONTEXT.md does not name the
+  import action, so it needed no change.
+- Tests: frontend `pnpm --dir apps/gui test` — 153 files, 1986 tests,
+  all green. New/changed coverage: `importFormat.test.ts` (6, new —
+  extension routing + the filter list shape),
+  `App.importTrace.dom.test.tsx` (6, new — dialog-filter routing by
+  extension, MDF recents recording, mixed-list rendering + per-entry
+  open routing, pre-merge-entry compatibility), one added
+  keyword-matching case in `PaletteModal.dom.test.tsx`,
+  `recentBlfs.test.ts` renamed to `recentCaptures.test.ts` (+1 case for
+  a mixed BLF/MDF list), 3 existing dom tests (`App.blfScanNotice`,
+  `App.mdfScanNotice`, `App.sessionReset`) updated for the renamed
+  button. `pnpm --dir apps/gui build` clean (`tsc -b && vite build`).
+  `cargo test -p cannet-gui` — 609 passed, 0 failed, 6 ignored. `cargo
+  clippy -p cannet-gui --all-targets -- -D warnings` clean.
+
+Remaining Task 66 scope (the Database panel rename, file-backed
+signals in the tree, the SignalsPanel picker sweep) is unstarted —
+this phase covers only the Import-trace/Recent-captures item. ADR
+0052 itself already landed ahead of this phase (commit `04a0f5b`);
+what remains is the code and doc surfacing it describes.

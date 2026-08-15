@@ -568,13 +568,13 @@ header {
   margin: 0 0.2rem;
 }
 
-/* Phase 9 Recent BLFs dropdown. The native <details>/<summary>
- * pair gives us a no-state-needed dropdown; styling matches the
- * surrounding toolbar buttons. */
-.toolbar details.recent-blfs {
+/* Recent-captures dropdown. The native <details>/<summary> pair gives
+ * us a no-state-needed dropdown; styling matches the surrounding
+ * toolbar buttons. */
+.toolbar details.recent-captures {
   position: relative;
 }
-.toolbar details.recent-blfs > summary {
+.toolbar details.recent-captures > summary {
   list-style: none;
   cursor: pointer;
   padding: 0.2rem 0.5rem;
@@ -584,13 +584,13 @@ header {
   color: inherit;
   font: inherit;
 }
-.toolbar details.recent-blfs > summary::-webkit-details-marker {
+.toolbar details.recent-captures > summary::-webkit-details-marker {
   display: none;
 }
-.toolbar details.recent-blfs > summary:hover {
+.toolbar details.recent-captures > summary:hover {
   background: var(--surface-hover-strong);
 }
-.toolbar ul.recent-blfs-menu {
+.toolbar ul.recent-captures-menu {
   position: absolute;
   top: 100%;
   left: 0;
@@ -605,7 +605,7 @@ header {
   z-index: 50;
   box-shadow: 0 4px 12px var(--shadow-menu);
 }
-.toolbar ul.recent-blfs-menu > li > button {
+.toolbar ul.recent-captures-menu > li > button {
   display: block;
   width: 100%;
   text-align: left;
@@ -619,7 +619,7 @@ header {
   text-overflow: ellipsis;
   cursor: pointer;
 }
-.toolbar ul.recent-blfs-menu > li > button:hover {
+.toolbar ul.recent-captures-menu > li > button:hover {
   background: var(--surface-hover-strong);
 }
 

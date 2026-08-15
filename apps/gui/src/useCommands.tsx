@@ -653,6 +653,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
         id: c.id,
         label: c.label,
         hint: binding ? formatChord(binding.chord, isMac) : c.category,
+        keywords: c.keywords,
       };
     });
     // Recently-used first (the fzf ranking takes over once the user
