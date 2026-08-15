@@ -24,6 +24,15 @@ discovered + trusted).
    the row, paired with the ruling-1 indicators. No panel-owned
    second modal.
 
+## Grooming ruling (2026-08-14, cycle grooming)
+
+- **Panel shape: row affordance → the one app-wide dialog.** No
+  inline editor. The indicator (project view + panel row) carries
+  the passive identity/token-change state; a row's "Review
+  identity…" affordance is direct user input, so it raises the
+  single app-wide dialog. The re-raise path is the indicator
+  itself — it opens the same dialog.
+
 ## Scope notes
 
 - The re-raise path ("Review identity…" on a row after the question
