@@ -17,29 +17,29 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 41 — Production Cannet Server](0041-production-cannet-server.md)
-   — `cannet-server` becomes the production server (ADR 0040):
-   operator-launched CLI that supervises the frozen python-can sidecar
-   and proxies its interfaces, under their real identities, at one
-   network endpoint. Sidecar supervision factored out of the GUI host
-   and shared; per-OS distribution archive.
-2. [Task 42 — Server Connection Security](0042-server-connection-security.md)
-   — TLS (rustls via tonic) with an auto-generated self-signed server
-   cert, TOFU fingerprint pinning in the GUI, and bearer-token client
-   auth (ADR 0041). Non-loopback binds require TLS + token unless
-   `--insecure`.
-3. [Task 43 — Server Discovery](0043-server-discovery.md)
-   — the server advertises `_cannet._tcp` via mDNS/DNS-SD (name + a
-   `ver` TXT key, `--no-mdns` opt-out); the GUI shows a fuzzy-searchable
-   browse list beside manual host:port entry. mDNS-crate
-   evaluate-dependency pass is the blocking prerequisite.
-4. [Task 38 — MDF (MF4) Import and Export](0038-mdf-import.md)
-    — import and export ASAM MDF 4.x bus-logging files so MDF
-    round-trips; import lands through the existing `CanFrameSource`
-    seam; one read+write library evaluate-dependency pass is the
-    blocking prerequisite. Message-independent signals (present in
-    user-provided example MDF data) are a model gap this task closes.
-    Signal-shape MF4 import is explicitly later.
+1. [Task 67 — Server Shutdown Hang and Logging
+   Parity](0067-server-shutdown-and-logging.md) — owner feedback
+   2026-08-13: Ctrl+C after a client hard-close left the server
+   stuck at "shutting down" for minutes (investigation-first), and
+   `cannet-server` gets the GUI host's logging pattern (rolling
+   logfile, timestamps, levels; sidecar debug-log hook wired).
+2. [Task 64 — Server Installers, and the Server in the GUI
+   Install](0064-server-installers.md) — `.dmg` + NSIS + `.deb`
+   server installers beside the existing plain archives, and the GUI
+   bundles ship `cannet-server` (binary only — no in-app launch
+   surface) reusing the bundled frozen sidecar. Opened by owner ask
+   2026-08-12; supersedes Task 41's archive-only distribution.
+3. [Task 65 — Server Browse & Trust UX Round](0065-server-browse-ux.md)
+   — owner feedback 2026-08-12: server browse becomes its own
+   singleton panel; selection/auth is user-level config surfaced in
+   the project view; host name in the list; Windows native DNS-SD
+   browse (no per-app firewall rules), macOS permission note,
+   blocked-discovery legibility.
+4. [Task 66 — Database Panel Round](0066-database-panel-round.md)
+   — owner feedback 2026-08-12: one "Import trace" action for
+   BLF + MDF; DBC panel renamed "Database" and lists file-backed
+   signals as the primary add-signal mechanism; first-draft signal
+   pickers removed (signal view confirmed; sweep for others).
 5. [Task 63 — Plot Usage-Feedback Round](0063-plot-usage-feedback.md)
    — from owner live use 2026-08-11: a baseline disclosure-toggle
    implementation (the too-small ▾/▸ recurs at every disclosure
