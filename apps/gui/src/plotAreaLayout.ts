@@ -65,6 +65,48 @@ export function pruneAxisWeights(stored: AxisWeights, liveIds: Iterable<string>)
   return out;
 }
 
+/** Which derived axes the user has collapsed, keyed by axis id. Sparse:
+ * an axis nobody collapsed carries no entry, so an untouched panel
+ * persists nothing (ADR 0026). */
+export type AxisCollapsed = Record<string, true>;
+
+/** Tolerant parse of a persisted `axisCollapsed` blob: keep only string
+ * keys mapping to `true`. */
+export function axisCollapsedFromRaw(v: unknown): AxisCollapsed {
+  if (typeof v !== "object" || v === null) return {};
+  const out: AxisCollapsed = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (val === true) out[k] = true;
+  }
+  return out;
+}
+
+/** Collapse `id` if it is expanded, expand it if it is collapsed.
+ * Expanding deletes the entry rather than storing `false` — the store is
+ * sparse, and "absent" is the only expanded state. */
+export function toggleAxisCollapsed(stored: AxisCollapsed, id: string): AxisCollapsed {
+  if (stored[id]) {
+    const out = { ...stored };
+    delete out[id];
+    return out;
+  }
+  return { ...stored, [id]: true };
+}
+
+/** Drop collapsed entries whose axis is no longer live — the same
+ * lifecycle the weights have, since both describe the layout the user is
+ * currently looking at. Same reference when nothing is removed. */
+export function pruneAxisCollapsed(stored: AxisCollapsed, liveIds: Iterable<string>): AxisCollapsed {
+  const live = liveIds instanceof Set ? liveIds : new Set(liveIds);
+  const keys = Object.keys(stored);
+  if (keys.every((k) => live.has(k))) return stored;
+  const out: AxisCollapsed = {};
+  for (const k of keys) {
+    if (live.has(k)) out[k] = true;
+  }
+  return out;
+}
+
 /** Which axis the splitter above `idx` trades weight with: the nearest
  * axis above it that isn't collapsed, or `null` when there is none.
  *

@@ -128,6 +128,10 @@ export interface PlotPanelParams {
   /** Per-derived-axis vertical weight (flex-grow), keyed by axis id.
    * See {@link AxisWeights}. Absent axes default to weight 1. */
   axisWeights?: unknown;
+  /** Which derived axes the user has collapsed, keyed by axis id. See
+   * {@link AxisCollapsed}. Sparse: absent means expanded, so an
+   * untouched panel persists nothing. */
+  axisCollapsed?: unknown;
   /** The panel's solo state — the regex and, when a page of its match
    * groups is on show, that page's index. See `plotSolo.ts`. Sparse:
    * absent while solo is off. */
@@ -181,6 +185,10 @@ export interface AxisHandlers {
   /** Collapse the parent area if expanded, expand it if collapsed —
    * one collapse state per logical area (ADR 0026). */
   onToggleCollapsed: () => void;
+  /** Collapse / expand *this derived axis* alone. Layout only: the
+   * axis keeps its series and their visibility, it just gives up its
+   * canvas and its share of the panel's height (ADR 0026). */
+  onToggleAxisCollapsed: () => void;
   onFocus: () => void;
   onRemoveArea: () => void;
   /** The parent area's grip (or its collapsed run's handle) started a

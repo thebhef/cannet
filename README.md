@@ -1314,17 +1314,28 @@ resample at the end.
   before the first ticked group's. Editing the pattern drops it.
 - **Collapse / expand an area.** The **▾ / ▸ toggle** at the left of a
   plot area's signal-panel heading (beside the grip) collapses that
-  area: it gives up its plot height entirely — every axis it derives
-  drops its canvas — while its signal rows stay listed, so the toggle
-  back and the swatches are still in reach. One toggle per plot area
-  however many axes its y-axis mode stacks, and the state persists in
-  the project file. An area whose signals are **all hidden** collapses
-  on its own (there is nothing to draw); its toggle is inert until you
-  un-hide one. Stacked collapsed areas leave a band of empty canvas
-  column with **one drag handle for the whole run** — grab it to drag
-  the run's first area, reordering it here or moving it to another
-  panel like any grip; to move a specific area buried inside a run,
-  drag its own grip or drop onto its side-panel strip.
+  area down to **one heading row** — its name, how many series it holds,
+  and how many its patterns match — and gives everything else back:
+  the canvas, the signal rows, the per-area controls, and, in per-unit
+  or individual mode, the extra axis strips. Expanding restores the
+  layout exactly as it was, splitter-dragged axis heights included. One
+  toggle per plot area however many axes its y-axis mode stacks, and the
+  state persists in the project file. An area whose signals are **all
+  hidden** collapses on its own (there is nothing to draw); that one
+  *keeps* its rows — a swatch in them is how you un-hide a signal — and
+  its toggle is inert until you do. Stacked collapsed areas leave a band
+  of empty canvas column with **one drag handle for the whole run** —
+  grab it to drag the run's first area, reordering it here or moving it
+  to another panel like any grip; to move a specific area buried inside
+  a run, drag its own grip or drop onto its side-panel strip.
+- **Collapse / expand one axis.** In per-unit or individual mode each
+  axis carries **its own ▾ / ▸ toggle**, on its own label (`Area 1 ·
+  [V]`). Collapsing leaves that axis as a label strip: its height goes
+  to the axes still drawing, and the splitter it would have traded with
+  disappears since there is nothing left to trade. Its series keep
+  running and keep their visibility — this is layout, not hiding — and
+  the state persists per axis alongside the axis heights. Collapsing
+  every axis of an area is fine; each strip keeps its own toggle.
 - **Zoom, pan & follow.** **Wheel** zooms x on every area; **shift +
   wheel** pans x (synced); **right-drag** box-zooms x; **⌘/ctrl +
   wheel** zooms y on the hovered area (buried — y is usually set with
