@@ -521,6 +521,177 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     `--all-targets` clean; `cargo fmt --check` clean. No behavioural
     change in this commit — rustdoc only.
 
+- **2026-08-15, phase 4 (`task72-p4-extrapolation-rendering`, branched
+  off `task72-p3-enum-lag`):** §2, the ruling — extrapolation-aware
+  rendering, with the two in-scope companions.
+
+  **Delivered: host-side classification by the owner's two tests, dashed
+  lines, hatched lane tiles, theme-tuned label halos, lane sample
+  markers, and the extent overdraw labelled rather than cut. ADR 0026
+  amended and its "never drawn past its data" phrasing reconciled.** The
+  screenshot set is **blocked** — see below.
+
+  - _Classification, host-side (`1d46968e`)._
+    `SignalCache::extrapolated_spans` implements the two tests: a
+    stretch not bounded by a sample on each side (before the first,
+    after the last, and both wings of a one-sample series), and a gap
+    past `EXTRAPOLATION_GAP_FACTOR` (10) × the series' typical raw
+    interval. The typical interval is the reciprocal of the cache's
+    existing `rate()` — the whole series' raw cadence, two reads and a
+    subtraction. Whole-series rather than in-window deliberately: the
+    window this matters most in is the one that is _mostly_ gap, where
+    an in-window mean is dragged up by the very gap it is judging.
+
+    **The design constraint is carried by a second step, not by the
+    interval.** A candidate gap is confirmed against level 0
+    (`window_count`) — every served point's timestamp is a real raw
+    sample time at whatever level it was read from, so a count above one
+    means decimation dropped points the series has. That is what makes a
+    coarse-zoom window come back empty. Falsified, not assumed: with the
+    confirmation stubbed out, the coarse-zoom test's 20 000-sample
+    uniform 1 kHz series comes back with **160 extrapolated spans**
+    covering the whole window — exactly the failure the constraint
+    names. Each of the other two rules was falsified the same way (gap
+    threshold stubbed → the interior test's stall goes unlabelled;
+    leading wing stubbed → the one-sample series reports one span
+    instead of two).
+
+    Cost: `O(served points)` plus one `O(log n)` confirmation per
+    _candidate_ gap — none at all on a window served at raw resolution,
+    which is the live case until the window holds more samples than the
+    renderer has pixels. Nothing here scales with capture length, so the
+    serve's cost class is unchanged; the gate is what confirms it.
+
+  - _Wire._ `SIGSAMP\x02` → `\x03`, a per-signal `(count, [from, to]…)`
+    list after each signal's points. It rides the serve rather than
+    travelling as its own query because it is a fact about the very
+    window being answered — a second round trip could only disagree with
+    it. Three encoders had to move in lockstep (`sampling.rs`, and the
+    two test mirrors in `plotData.test.ts` / `useDecimatedRange.test.ts`,
+    plus the panel suite's fake host).
+
+  - _Lines, dashed (`1d46968e`)._ `splitExtrapolatedRows` blanks each
+    stretch out of the merged row — so uPlot's own stroke stops at the
+    data — and returns the column stretches to re-stroke.
+    `drawExtrapolatedSegments` strokes them `[6, 4]` in the series' own
+    color and width. Two shapes needed care:
+    - **An interior stretch gets a midpoint column minted for it**
+      (`mergeSeries`). Both its ends are samples this series needs, so
+      neither may be blanked; with no other series contributing a column
+      in between there is nothing to blank at all, and the stretch would
+      stay solid.
+    - **A span only draws where something is drawn today.** A
+      multi-sample series' pre-first-sample gap stays a gap: a dash
+      there would be _new ink_, not honest ink. The one-sample hline is
+      where both wings do fire, because `mergeSeries` holds its value
+      across every column.
+
+    The cursor/legend readout is unaffected by the blanking: uPlot's
+    legend is off and the side panel reads `valueAt` on the raw
+    per-signal series, not on `u.data`.
+
+  - _Lane tiles, hatched (`1b8913b6`)._ **A lane cannot take the line's
+    treatment.** `enumSegments` ends a run at a `null`, so blanking a
+    lane row would _delete_ the stale tile rather than mark it — and a
+    lane's held state is information whether or not the signal is still
+    arriving. So a tile axis keeps its row whole (`extrapolatedRef` is
+    empty there) and `drawEnumTiles` hatches the stale sub-stretch of
+    each tile: 45° stripes in `theme().background`, 20 px period, exact
+    50 % duty via `lineWidth = period / (2·√2)` — the prototype's
+    geometry note, pinned by a test asserting the property
+    (`lineWidth·√2 === period/2`) rather than the formula. Stripes are
+    anchored to the canvas, not to each tile, so two touching tiles
+    continue one another's pattern instead of putting a double band on
+    the join. A partially stale tile stripes only the stale part
+    (`stripedOverlap`).
+
+  - _Labels._ A label over hatching gets a `theme().background` halo,
+    stacked `fillText` passes toward opacity. Strength is a **per-theme
+    number** (`Theme.laneLabelShadowPasses`: dark 2, light 4, lighthk 4)
+    rather than a branch on the theme name — the file's stated extension
+    model is "adding a theme is adding a `Theme` to `THEMES`", and a
+    name branch would have silently treated `lighthk` as dark.
+
+  - _Lane sample markers (companion 2, `1b8913b6`)._ The three
+    mechanisms reconciled by **removing** one of them: a tile axis sets
+    `points: { show: false }` and draws its own markers over the tiles.
+    uPlot's layer was never going to serve a lane — its `auto` rule
+    reads the _axis's_ merged density, and a shared lanes axis carries
+    every enum's samples at once, so one fast lane suppresses every slow
+    one; `applyAutoPointFloor`'s ≤32 floor rescues only a handful-sample
+    series; and whatever survived both was painted over by 65–75 %-opaque
+    tiles. Two competing mechanisms became one. `laneSampleMarkerIndices`
+    selects the in-view samples, thinned to the same `MAX_POINT_MARKERS`
+    cap a line's `on` mode uses, always keeping the newest.
+    `showPoints: "off"` still means off.
+
+  - _Extent honesty (companion 1)._ The overdraw is exactly what the
+    trailing-span rule labels: `the_stretch_past_a_series_last_sample_is_extrapolated`
+    at the host seam, `"blanks an extrapolated stretch out of the solid
+    stroke"` and `"enum lanes: keeps a stale lane's row whole so the tile
+    survives to be hatched"` at the panel seam, and the dash/hatch of it
+    at the canvas seam.
+
+  - _A renderer test tier that did not exist (`1b8913b6`)._
+    `PlotPanel.dom.test.tsx` mocks uPlot to a stub with no canvas, so
+    **everything the draw hook paints has always been unpinned**. That is
+    tolerable for tiles; it is not tolerable for this feature, where a
+    stretch blanked out of the stroke and then not re-drawn has been
+    _deleted_ rather than labelled — and no existing test could tell the
+    difference. `PlotArea.draw.test.ts` drives the two exported draw
+    functions against a recording 2D context that carries the style state
+    each ink call was made under (a dash set and reset two calls later
+    says nothing unless you know which stroke it was in force for).
+
+  - _ADR 0026 amended (`1b8913b6`)._ The extrapolation rule, the styling,
+    and the lane-marker rule are recorded. The "**never drawn past its
+    data**" phrasing is reconciled by saying what the code does: the
+    sample-and-hold has never obeyed it — a merged row carries its last
+    value to the end — and that overdraw is worth keeping, so the ADR now
+    says a series _is_ drawn past its data and the stretch where it is
+    says so. The _leading_ half of the rule stands unchanged.
+    `theme.ts`'s "not painted from here" comment on `background` is
+    corrected in the same commit: the hatching paints it.
+
+  - _Screenshot-harness isolation fixed (`a680eb1b`)._ Task 75 phase 3's
+    recorded gap: `spawn_gui` launched with `--project` alone, against
+    the operator's real user scope. Wrong in both directions — it
+    **writes** it (window geometry alone means a capture moves the
+    operator's window next time they open the app) and it **reads** it,
+    which makes the picture a function of whoever ran it. The reading
+    half is what blocked the theme: the theme is a user-scope setting
+    resolved at boot and the shipping app has no flag for it (nor should
+    it — the harness photographs the shipping app), so a run that does
+    not own its profile cannot choose what it photographs. The capture
+    now passes `--app-data-dir` at a directory it owns, defaulted beside
+    `--out-dir`, and seeds `{"theme": …}` into that profile _before_ the
+    launch; seeding after would photograph the previous run's theme. Only
+    that key is seeded, so everything else comes up at the shipping
+    default. Launch args split into `gui_args` so the isolation is
+    testable without running a GUI. README's determinism section grew the
+    fifth lever.
+
+  - _Screenshots: **BLOCKED, no shots produced.**_ The harness needs a
+    binary with the frontend embedded (`tauri build --no-bundle`), and
+    the only release binary in the tree is `target/release/cannet-gui.exe`
+    dated **2026-08-14 23:01** — about ten hours _before_ this phase's
+    first feature commit (`1d46968e`, 2026-08-15 08:44). Photographing it
+    would produce a set showing the pre-feature rendering, which is worse
+    than none. Producing the set needs a release rebuild of the current
+    tip, which this phase was instructed not to do. The isolation fix
+    above is landed and tested, so the set is one `tauri build
+    --no-bundle` plus two `screenshot --theme dark|light` runs away
+    whenever a build is sanctioned. Correctness does not depend on it:
+    the DOM and canvas tests carry it, and the owner's ratification was
+    already taken on canvas mockups drawn with the real `theme.ts`
+    palettes.
+
+  - Host: `cargo test -p cannet-gui` 661 passed / 6 ignored;
+    `cargo test -p cannet-perf-measurement` 45 passed; `cargo clippy
+    --workspace --all-targets` clean; `cargo fmt --check` clean.
+    Frontend: 162 test files / 2148 tests passed (from 161 / 2117 at
+    phase 1); `tsc --noEmit` and `pnpm build` clean.
+
 ## Blockers / side effects
 
 - **The enum leading-edge lag is attributed but NOT fixed** — phase 3
@@ -533,16 +704,21 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   own and an owner call on which shape. Until then a per-unit panel
   with many enum lanes on a fast, long capture draws those lanes a
   growing fraction of the window stale.
-- **Marker _visibility_ on a lane axis is still governed by uPlot's
-  density rule.** Phase 1 restored the per-sample columns; whether a
-  marker is painted on them is a separate gate — uPlot's `auto` rule
-  reads the axis's merged column count, `applyAutoPointFloor` only
-  rescues a series of at most 32 samples, and `drawEnumTiles` paints
-  0.65–0.75-alpha tiles over whatever markers do land in the band.
-  A lane dense enough to lose the density test therefore still shows
-  no sample positions. That is the separate exit criterion "enum lanes
-  show their sample positions (markers or equivalent)" and belongs to
-  the §2 phase; it is recorded here so the two are not confused.
+- ~~**Marker _visibility_ on a lane axis is still governed by uPlot's
+  density rule.**~~ **Fixed in phase 4** (`1b8913b6`): a tile axis turns
+  uPlot's point layer off and draws its own markers over the tiles, so
+  the density rule, the ≤32 floor and the tile over-paint are reconciled
+  by there being one mechanism instead of two competing ones. See phase
+  4's status entry.
+- **The screenshot set for owner sign-off was not produced** — the only
+  release binary in the tree predates this phase's feature commits by
+  about ten hours, and photographing it would show the pre-feature
+  rendering. It needs a `tauri build --no-bundle` of the current tip,
+  which phase 4 was instructed not to run. The harness's isolation gap
+  is fixed and tested, so the set is that build plus two `screenshot
+  --theme dark|light` runs. Correctness does not ride on it (the DOM and
+  canvas tests do), but the ruling's "the implementation phase still
+  delivers true renderer screenshots for final sign-off" is outstanding.
 - **`max_points == 0` still run-reduces a categorical window**, where
   the numeric serve of the same request returns the raw slice. Left
   as-is: no plot fetch reaches it (`MIN_DECIMATION_POINTS = 200` is
