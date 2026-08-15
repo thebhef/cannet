@@ -691,7 +691,7 @@ next pass on this surface can address them as one piece.
   IPC.** The command serialises every loaded DBC's full message/signal
   tree (~5 MB on the reference 5-DBC project), and the DBC panel
   re-pulls all of it on every `dbc-changed` event and every bus/scope
-  edit ([`apps/gui/src/DbcPanel.tsx`](apps/gui/src/DbcPanel.tsx)
+  edit ([`apps/gui/src/DatabasePanel.tsx`](apps/gui/src/DatabasePanel.tsx)
   `refreshContent`). The DBC-panel rework that surfaced this ruled it
   explicitly out of scope — the layout cliff it was chasing was
   DOM-side and is fixed — but the

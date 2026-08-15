@@ -5,7 +5,7 @@ Status: accepted (2026-05-27)
 `cannet-core` grows a `shared_bus` primitive: one CAN bus shared by
 N participants with configurable bitrate, ISO 11898-style arbitration, and
 support for bridge participants that front a physical CAN interface on a
-remote wire endpoint. `cannet-server --virtual-bus` wraps it as a
+remote wire endpoint. `cannet-server debug vbus` wraps it as a
 gRPC service ([ADR 0004](0004-grpc-wire-protocol.md)) for the
 remote case; the GUI host uses the same primitive in-process for
 local virtual buses (and, later, rest-of-bus simulation). The
@@ -47,7 +47,7 @@ The wire protocol supports two server roles. This ADR covers the
 **virtual-bus server**; the **hardware server** is defined in
 [ADR 0022](0022-hardware-server-model.md).
 
-- **Virtual-bus server** (`cannet-server --virtual-bus`, this
+- **Virtual-bus server** (`cannet-server debug vbus`, this
   ADR): hosts a virtual CAN network — arbitration / fan-out, a
   factory interface, bridge orchestration. Doesn't own physical
   interfaces; doesn't proxy state, stats, or config from hardware
@@ -87,7 +87,7 @@ goes away in the same change — no caller is preserved.
 
 ### Factory-shaped interface listing
 
-`cannet-server --virtual-bus` publishes:
+`cannet-server debug vbus` publishes:
 
 - One **factory** entry `virtual:bus0`. Subscribing allocates a
   fresh server-side participant; the server returns
@@ -172,7 +172,7 @@ session's sink/source, and let the bus pump both ways.
 
 - **In-process** (host's local virtual bus): the host orchestrates
   directly — opens its own client session, calls `attach_bridge`.
-- **Over the wire** (`cannet-server --virtual-bus`):
+- **Over the wire** (`cannet-server debug vbus`):
   `Body::AttachBridge { remote_address, interface_id, name? }` from
   any session asks the server to do the same orchestration on the
   client's behalf; the server then pushes the updated interface
@@ -185,7 +185,7 @@ session — bridge knowledge lives entirely on the orchestrating
 side.
 
 **Bridging into another virtual bus works the same way.** A bridge
-whose remote endpoint is another `cannet-server --virtual-bus`'s
+whose remote endpoint is another `cannet-server debug vbus`'s
 factory (`virtual:bus0`) is just a bridge whose backend happens to
 be a virtual bus. The remote sees one extra session, allocates it
 a participant, fans out to it like any other client; the orchestrator's
@@ -218,8 +218,8 @@ store ingests fan-out from the bus's participants the same way it ingests
 frames from a gRPC session. Bridges on a local virtual bus are
 installed by the host opening a `cannet-client` session to the
 bridge target (typically a python-can sidecar) and wiring those
-streams into `SharedBus::attach_bridge`. `cannet-server
---virtual-bus` exists for the *remote* case and is built from the
+streams into `SharedBus::attach_bridge`. `cannet-server debug
+vbus` exists for the *remote* case and is built from the
 same workspace, but is not bundled with the GUI for in-process
 use. Remote exposure of *hardware* is the production cannet
 server's interface proxy
@@ -295,7 +295,7 @@ and a `shared_bus` participant.
 
 **Bridge orchestration lives on the bus side, not in the sidecar.**
 Whoever calls `attach_bridge` — the GUI host (in-process) or a
-`cannet-server --virtual-bus` (on behalf of a client) — opens an
+`cannet-server debug vbus` (on behalf of a client) — opens an
 ordinary session to the sidecar. The python-can sidecar stays
 virtual-bus-agnostic; future vendor sidecars plug in unchanged.
 
