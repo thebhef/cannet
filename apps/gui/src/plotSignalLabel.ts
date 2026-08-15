@@ -2,7 +2,7 @@
 ///
 /// The row names its signal on one line and the message it came from on
 /// the next. That second line is the DBC ancestry — `bus · ecu ·
-/// message`, the same hierarchy the DBC panel's tree and the signal
+/// message`, the same hierarchy the Database panel's tree and the signal
 /// picker's group headers use — so a row and the tree it was dragged
 /// from read identically.
 ///

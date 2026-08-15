@@ -9,7 +9,7 @@
 // list, and a match order.
 //
 // The matcher is `fzf`, the same one the command palette and the DBC
-// panel use, with the same relative score floor the DBC panel applies —
+// panel use, with the same relative score floor the Database panel applies —
 // fzf accepts any subsequence, and over help text a query like "cadence"
 // "matches" any setting whose prose happens to contain those letters in
 // order. The floor is relative to the best score *for that query*, so a
@@ -171,7 +171,7 @@ interface SearchEntry {
 }
 
 /// Score floor, as a fraction of the best match's score — the same rule
-/// and the same number the DBC panel's tree filter uses. Everything
+/// and the same number the Database panel's tree filter uses. Everything
 /// below it is scattered-subsequence noise.
 const MIN_RELATIVE_SCORE = 0.7;
 

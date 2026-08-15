@@ -783,6 +783,50 @@ pub struct SignalSnapshotRecord {
     pub file_backed: bool,
 }
 
+/// One source file's **file-backed signals** (`docs/CONTEXT.md`) as
+/// the Database view's branch for that file (ADR 0052): the file, its
+/// signal channel groups, their signals. The MDF format's own
+/// structure, arranged host-side by
+/// [`signal_snapshot::file_backed_content`](crate::signal_snapshot::file_backed_content).
+///
+/// These branches share the **capture's** lifecycle — they exist while
+/// a capture carrying them is open and go with it — unlike the DBC
+/// branches beside them, whose files are project members.
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileBackedContentRecord {
+    /// Path of the capture file the series were imported from. Empty
+    /// for a series restored from a manifest written before the path
+    /// was recorded.
+    pub source_path: String,
+    pub groups: Vec<FileBackedGroupRecord>,
+}
+
+/// One signal channel group inside a [`FileBackedContentRecord`].
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileBackedGroupRecord {
+    /// The group's index in its source file — what keeps two groups'
+    /// same-named signals apart, and the message-id slot of the
+    /// signal's provenance-keyed identity.
+    pub group: u32,
+    /// The group's own acquisition name, or its index-derived stand-in
+    /// when the file left it unnamed.
+    pub label: String,
+    pub signals: Vec<FileBackedSignalRecord>,
+}
+
+/// One file-backed signal row: what the tree shows about it. No sample
+/// count — the Database view catalogs what exists, it doesn't report on
+/// series statistics.
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileBackedSignalRecord {
+    pub name: String,
+    /// Engineering unit, verbatim from the file; empty when it has none.
+    pub unit: String,
+}
+
 /// The full content of one loaded DBC, shaped for the DBC
 /// discovery panel (tree-with-fuzzy-search). One entry per loaded DBC
 /// file; each carries the path so the panel can group by file and a

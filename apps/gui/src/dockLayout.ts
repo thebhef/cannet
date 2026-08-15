@@ -22,12 +22,13 @@ export const PROJECT_GRAPH_PANEL_COMPONENT = "project-graph";
 /// Host-side log bus surface. Multiple are allowed (each
 /// carries its own source / min-level filter in `params`).
 export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
-/// DBC discovery panel (tree-with-fuzzy-search over every
-/// loaded DBC's messages → signals). Singleton (same pattern as the
-/// project, graph, and system-messages panels) — the loaded-DBC set
-/// lives on the host and there's no per-panel differentiation worth
-/// having. Search query + expand state still live in panel `params`
-/// so a layout save / restore preserves them.
+/// Database panel: tree-with-fuzzy-search over every signal-defining
+/// artifact the session holds — each loaded DBC's messages → signals,
+/// and each capture file's own signal channel groups (ADR 0052).
+/// Singleton (same pattern as the project, graph, and system-messages
+/// panels) — both catalogs live on the host and there's no per-panel
+/// differentiation worth having. Search query + expand state still
+/// live in panel `params` so a layout save / restore preserves them.
 export const DBC_PANEL_COMPONENT = "dbc";
 /// Rest-of-bus-simulation panel (ADR 0028). Element-backed —
 /// multiple named RBS elements per project are allowed, each
@@ -41,7 +42,7 @@ export const COLORMAP_PANEL_COMPONENT = "colormap";
 export const GENERATOR_PANEL_COMPONENT = "generator";
 /// User-settings editor over the host's `settings.json` (ADR 0034).
 /// Singleton (same pattern as the project / graph / system-messages /
-/// DBC panels) — settings are app-global, so one instance suffices.
+/// Database panels) — settings are app-global, so one instance suffices.
 export const SETTINGS_PANEL_COMPONENT = "settings";
 /// Read-only About view — a singleton panel holding the build version
 /// and the bundled third-party license notices (ADR 0036).
@@ -54,7 +55,7 @@ export const SHORTCUTS_PANEL_COMPONENT = "shortcuts";
 /// The server list (ADR 0041) — a singleton panel holding this
 /// machine's trust decisions and what is advertising on the network.
 export const SERVERS_PANEL_COMPONENT = "servers";
-/// Singleton id — toolbar's "DBC panel" button uses this to
+/// Singleton id — toolbar's "Database panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
 

@@ -2325,7 +2325,7 @@ button.trace-event-swatch {
 
 /* Signal value/unit/label parts (SignalValueText), shared by the
    expanded-row `.signal-value` lines and the `.signal-value-cell` of the
-   signal view and DBC panel. The unit is its own element so it doesn't
+   signal view and Database panel. The unit is its own element so it doesn't
    read as part of the number: it recedes to the secondary text color
    and carries the spacing, so a caller with the unit in a separate
    column renders the value alone. */
@@ -3092,7 +3092,7 @@ button.trace-event-swatch {
   color: var(--text-muted);
 }
 
-/* DBC panel live value column (shared SignalValueCell renderer). */
+/* Database panel live value column (shared SignalValueCell renderer). */
 .dbc-row-value {
   margin-left: auto;
   padding-right: 0.5rem;
@@ -4446,7 +4446,7 @@ button.trace-event-swatch {
   text-align: center;
 }
 
-/* Phase 12: DBC discovery panel — tree-with-fuzzy-search over loaded DBCs. */
+/* Phase 12: Database panel — tree-with-fuzzy-search over loaded DBCs. */
 .dbc-panel {
   display: flex;
   flex-direction: column;
@@ -4550,6 +4550,22 @@ button.trace-event-swatch {
 }
 .dbc-row-scope {
   font-style: italic;
+}
+/* File-backed branches (ADR 0052) read as siblings of the DBC ones:
+   the source file like a DBC file, its channel group like an ECU. */
+.dbc-row-file .dbc-row-label {
+  color: var(--text-source);
+  font-weight: 600;
+}
+.dbc-row-filegroup .dbc-row-label {
+  color: var(--text-ecu);
+  font-weight: 600;
+}
+.dbc-row-filesignal .dbc-row-label {
+  color: var(--text-primary);
+}
+.dbc-row-filesignal {
+  cursor: default;
 }
 .dbc-row-message .dbc-row-label {
   color: var(--text-secondary);

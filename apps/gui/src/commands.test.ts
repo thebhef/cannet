@@ -46,6 +46,15 @@ describe("the shipped command set", () => {
     expect(byId.get("plot.followLive.enable")).toBe("l");
   });
 
+  it("names the Database panel by its panel-level name, findable by the old one", () => {
+    // ADR 0052: the panel is format-plural and named "Database"
+    // everywhere a user sees it; the old name stays a palette keyword so
+    // muscle memory still lands on it (and learns the new label).
+    const spec = COMMANDS.find((c) => c.id === "panel.show.dbc");
+    expect(spec?.label).toBe("Show Database panel");
+    expect(spec?.keywords).toContain("DBC panel");
+  });
+
   it("plot hotkeys are context-gated to a focused plot panel", () => {
     const available = (c: CommandContext) =>
       commandsAvailableIn(COMMANDS, c).map((s) => s.id);

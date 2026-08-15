@@ -7,7 +7,7 @@ import {
   dbcKey,
   dbcNodeId,
   expandedFromParams,
-} from "./DbcPanel";
+} from "./DatabasePanel";
 
 // Minimal but fully-typed content records. Two DBCs deliberately share a
 // filename (from different directories) to exercise the duplicate-basename

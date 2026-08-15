@@ -195,6 +195,19 @@ The keyed snapshot of a capture — one summary row per arbitration id
 (its latest frame plus stats: count, period, last payload). Bounded by
 id-space, not by capture length.
 
+**Database view**:
+The one catalog surface over every signal-defining artifact the
+session holds — loaded DBCs, capture-carried signal definitions, and
+any format added later (ADR 0052). Each format's branch is organised
+the way that format organises signals (DBC: bus → DBC → ECU → message
+→ signal), never normalised into a shared hierarchy. It is the primary
+place a signal is chosen for another view: rows drag out carrying a
+provenance-keyed signal reference, so a drop target never asks which
+format a signal came from. Naming is format-neutral only at the panel
+level — operations on one format still name it ("Add DBC…").
+_Avoid_: "DBC panel" — the panel outgrew the one format it was named
+for; the palette keeps the old name only as a search keyword.
+
 **Gridview**:
 The shared tree/grid interaction base every grid-like view
 instantiates — one row space of branch nodes and leaf rows, with a

@@ -28,6 +28,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "list_transmit_frames":
       case "list_signals":
       case "list_dbc_content":
+      case "list_file_backed_content":
       case "rbs_dirty":
         return [];
       case "fetch_filtered_trace":
@@ -801,15 +802,15 @@ describe("element undo", () => {
   }, 30_000);
 
   it("typing in a find box is not a step", async () => {
-    // Params-only view state (a find box, the DBC panel's expanded set)
+    // Params-only view state (a find box, the Database panel's expanded set)
     // stays out of undo: it never reaches the element, and the layout
     // history scrubs `params`.
     await mountApp();
     await act(async () => {
-      fireEvent.click(findButton("DBC panel"));
+      fireEvent.click(findButton("Database panel"));
     });
     await waitFor(() => {
-      if (!document.querySelector(".dbc-panel")) throw new Error("no DBC panel yet");
+      if (!document.querySelector(".dbc-panel")) throw new Error("no Database panel yet");
     });
     await act(async () => {
       clickMode("trace");

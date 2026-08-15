@@ -154,6 +154,15 @@ const CATCH_UP_SERVE_BUDGET: Duration = Duration::from_millis(150);
 /// to label one is in the loaded DBCs.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct FileSignalInfo {
+    /// Path of the capture file the series was read from — the branch a
+    /// catalog surface files it under (ADR 0052). Not part of the
+    /// series' identity (the group index and name are), so re-importing
+    /// the same file to a different path replaces the series rather
+    /// than adding one. `#[serde(default)]` so a manifest written
+    /// before the path was recorded still restores, as series with no
+    /// named source.
+    #[serde(default)]
+    pub source_path: String,
     /// Signal-channel-group index in the source file. Plays the part a
     /// message id plays for a DBC-backed signal: it is what keeps two
     /// groups' same-named signals apart.
@@ -3739,6 +3748,7 @@ mod tests {
 
     fn file_info(group: u32, name: &str) -> FileSignalInfo {
         FileSignalInfo {
+            source_path: "capture.mf4".into(),
             group,
             group_name: Some("Analog".into()),
             name: name.to_string(),

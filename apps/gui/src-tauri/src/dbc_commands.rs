@@ -16,8 +16,8 @@ use cannet_dbc::{Database, DecodedSignal};
 use crate::app_state::{invalidate_derived_caches, AppState, LoadedDbc};
 use crate::ipc::{
     self, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
-    DbcSignalContentRecord, DecodedRecord, SignalDescriptorRecord, SignalRecord,
-    ValueTableEntryRecord,
+    DbcSignalContentRecord, DecodedRecord, FileBackedContentRecord, SignalDescriptorRecord,
+    SignalRecord, ValueTableEntryRecord,
 };
 use crate::trace_store::RawTraceFrame;
 use crate::{filter, rbs, signal_snapshot};
@@ -231,6 +231,22 @@ pub(crate) fn list_signals(
             .map(signal_snapshot::file_backed_descriptor),
     );
     out
+}
+
+/// Snapshot the capture's **file-backed signals** (`docs/CONTEXT.md`)
+/// for the Database view's per-file branches (ADR 0052): one record per
+/// source file, each holding that file's signal channel groups and
+/// their signals.
+///
+/// The twin of [`list_dbc_content`] for the other format the view
+/// carries, and shaped the same way — the host arranges, the panel
+/// renders. Empty whenever the open capture has no file-backed signals,
+/// which is how the branches come and go with the capture rather than
+/// with anything the project persists.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn list_file_backed_content(state: State<'_, AppState>) -> Vec<FileBackedContentRecord> {
+    signal_snapshot::file_backed_content(state.signal_caches.file_signals())
 }
 
 /// Snapshot every loaded DBC's content for the DBC

@@ -1,9 +1,9 @@
 /// The one signal-value renderer (Task-20 shared cell): physical value
 /// + optional enum label, tinted by the project's colormaps
-/// (ADR 0029). The signal view's value column and the DBC panel's live
+/// (ADR 0029). The signal view's value column and the Database panel's live
 /// value column both render through this, so the two surfaces cannot
 /// drift. The unit is a parameter because the signal view shows it in
-/// its own column (pass `""`) while the DBC panel shows it beside the
+/// its own column (pass `""`) while the Database panel shows it beside the
 /// value — as its own element, never glued onto the value string
 /// (`SignalValueText`).
 

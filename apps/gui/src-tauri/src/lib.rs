@@ -144,7 +144,7 @@ use capture::{
 use dbc_commands::decode_against;
 use dbc_commands::{
     add_dbc, clear_dbcs, decode_frame, describe_message, encode_frame, list_dbc_content,
-    list_signals, list_value_tables, remove_dbc, set_dbc_buses,
+    list_file_backed_content, list_signals, list_value_tables, remove_dbc, set_dbc_buses,
 };
 #[cfg(test)]
 use dbc_commands::{decode_frame_inner, describe_message_inner, encode_frame_inner};
@@ -501,6 +501,7 @@ pub fn run() -> ! {
             settings_descriptor::get_setting_descriptors,
             list_signals,
             list_dbc_content,
+            list_file_backed_content,
             sample_signals,
             signal_min_max,
             list_transmit_frames,

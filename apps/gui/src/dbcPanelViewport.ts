@@ -1,8 +1,8 @@
-/// Pure geometry for the DBC panel's row-list virtualization.
+/// Pure geometry for the Database panel's row-list virtualization.
 ///
-/// Split out of `DbcPanel.tsx` so the offset arithmetic (row stacking,
+/// Split out of `DatabasePanel.tsx` so the offset arithmetic (row stacking,
 /// scrollTop ↔ row-index mapping) can be unit-tested without a DOM.
-/// `DbcPanel.tsx` owns the React/scroll glue; this module owns the
+/// `DatabasePanel.tsx` owns the React/scroll glue; this module owns the
 /// numbers.
 ///
 /// Unlike the trace table, DBC rows are not all the same height: with

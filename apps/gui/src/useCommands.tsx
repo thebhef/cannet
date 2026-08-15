@@ -285,7 +285,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       showSingletonPanel({
         id: DBC_PANEL_ID,
         component: DBC_PANEL_COMPONENT,
-        title: "DBC",
+        title: "Database",
       }),
     [showSingletonPanel],
   );
@@ -707,7 +707,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       views.push({ id, label, open });
     singleton(PROJECT_PANEL_ID, "Project", showProjectPanel);
     singleton(PROJECT_GRAPH_PANEL_ID, "Graph", showProjectGraphPanel);
-    singleton(DBC_PANEL_ID, "DBC", showDbcPanel);
+    singleton(DBC_PANEL_ID, "Database", showDbcPanel);
     singleton(SYSTEM_MESSAGES_PANEL_ID, "System messages", showSystemMessagesPanel);
     singleton(SETTINGS_PANEL_ID, "Settings", showSettingsPanel);
     singleton(ABOUT_PANEL_ID, "About", showAboutPanel);

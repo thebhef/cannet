@@ -115,6 +115,23 @@ describe("dragSignals", () => {
       const out = dedupeSignalRefs([SAMPLE, { ...SAMPLE, busId: "bus-b" }]);
       expect(out).toHaveLength(2);
     });
+    it("keeps a file-backed signal apart from a message that shares its number", () => {
+      // A file-backed ref's `messageId` is a channel-group index — an
+      // unrelated namespace (ADR 0052) that may collide numerically.
+      // Collapsing the two would drop one of them from a mixed drag.
+      const fileBacked: DraggableSignalRef = {
+        busId: null,
+        messageId: 256,
+        extended: false,
+        signalName: "EngineSpeed",
+        messageName: "Analog",
+        unit: "rpm",
+        fileBacked: true,
+      };
+      const out = dedupeSignalRefs([{ ...SAMPLE, busId: null }, fileBacked, fileBacked]);
+      expect(out).toHaveLength(2);
+      expect(out.filter((r) => r.fileBacked)).toHaveLength(1);
+    });
   });
 
   // ADR 0045: one payload carries signals and/or patterns, and the
