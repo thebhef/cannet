@@ -338,3 +338,26 @@ subnet or `--no-mdns` never appears; a killed server can linger to its
 TTL). The TOFU walkthrough now names the browse list beside typing an
 address. No ADR changed — ADR 0040's discovery bullet was already
 amended in phase 2, and the browse is what it described.
+
+## Exit-criteria walk (2026-08-12, orchestrator)
+
+- **Eval + inventory** — met. `mdns-sd` 0.21 `adopted` for both
+  sides with spike-measured behavior; alternatives `rejected` with
+  reasons.
+- **Browse list: name + version, connect via Task 42 flow, fuzzy
+  search** — met in code and tests (reducer 18 unit tests; frontend
+  list/filter/pick tests; selection feeds the same connect path as a
+  typed address). Two halves await the owner's hands: seeing the row
+  in a *running* GUI and connecting through it, and the cross-machine
+  walk (needs the Windows inbound UDP 5353 allow on the advertising
+  box).
+- **`--no-mdns`** — met. Live run observed nothing on the wire;
+  manual entry unchanged.
+- **Shutdown removes (goodbye honored)** — met. Live browse test
+  observes `ServiceRemoved` after the goodbye; TTL expiry drops the
+  entry through the same reducer path.
+- **Integration where CI permits, unit coverage regardless** — met.
+  Reducer tests run in the default suite; live register/browse tests
+  are `#[ignore]`d on both crates (multicast-dependent), each run
+  once locally and green.
+- **features.md + README** — met.
