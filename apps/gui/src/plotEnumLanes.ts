@@ -179,7 +179,7 @@ const tileLabelWidths = new Map<string, number>();
  * and the label font, and a label-only memo would silently return the
  * wrong width to whichever caller measured second. */
 export function measureTileLabel(ctx: CanvasRenderingContext2D, label: string): number {
-  const key = `${ctx.font} ${label}`;
+  const key = `${ctx.font}\u0000${label}`;
   const hit = tileLabelWidths.get(key);
   if (hit !== undefined) return hit;
   const width = ctx.measureText(label).width;
