@@ -15,6 +15,45 @@ const listeners = new Map<string, Handler[]>();
 /// arguments the import was launched with.
 const calls: { cmd: string; args: Record<string, unknown> }[] = [];
 
+/// What `scan_mdf_channels` answers — the file shape under test. The
+/// owner's default: frames *and* signal content, the second of which is
+/// mostly per-message decoded groups. A test that is about a different
+/// file shape reassigns it before rendering.
+const MIXED_SCAN = {
+  channels: [0],
+  frame_count: 15_285,
+  first_timestamp_ns: 1_000_000_000,
+  last_timestamp_ns: 1_080_000_000,
+  start_unix_nanos: 1_700_000_000_000_000_000,
+  markers: [],
+  unfinalized: false,
+  signal_group_count: 61,
+  signal_count: 172,
+  decoded_message_groups: [
+    {
+      source_path: "CAN1.CAN_DataFrame.ID=0x310 EXT=False",
+      name: "CAN1 message ID=0x310 EXT=False",
+      signal_count: 24,
+    },
+  ],
+};
+
+/// A file with signal groups and no bus-logging group at all: the census
+/// reports no channels and no frames, so there is no CAN-message content
+/// to offer.
+const SIGNAL_ONLY_SCAN = {
+  ...MIXED_SCAN,
+  channels: [],
+  frame_count: 0,
+  first_timestamp_ns: null,
+  last_timestamp_ns: null,
+  signal_group_count: 2,
+  signal_count: 3,
+  decoded_message_groups: [],
+};
+
+let mdfScan: Record<string, unknown> = MIXED_SCAN;
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     calls.push({ cmd, args: args ?? {} });
@@ -28,26 +67,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "get_interfaces":
         return [];
       case "scan_mdf_channels":
-        // The owner's file shape: frames *and* signal content, the
-        // second of which is mostly per-message decoded groups.
-        return {
-          channels: [0],
-          frame_count: 15_285,
-          first_timestamp_ns: 1_000_000_000,
-          last_timestamp_ns: 1_080_000_000,
-          start_unix_nanos: 1_700_000_000_000_000_000,
-          markers: [],
-          unfinalized: false,
-          signal_group_count: 61,
-          signal_count: 172,
-          decoded_message_groups: [
-            {
-              source_path: "CAN1.CAN_DataFrame.ID=0x310 EXT=False",
-              name: "CAN1 message ID=0x310 EXT=False",
-              signal_count: 24,
-            },
-          ],
-        };
+        return mdfScan;
       case "import_mdf":
         return { mdf_path: "/logs/capture.mf4" };
       case "fetch_filtered_trace":
@@ -143,6 +163,7 @@ beforeEach(() => {
   localStorage.clear();
   listeners.clear();
   calls.length = 0;
+  mdfScan = MIXED_SCAN;
 });
 
 afterEach(() => {
@@ -176,6 +197,12 @@ describe("MDF import contents", () => {
     return el.querySelector("input") as HTMLInputElement;
   }
 
+  function hasCheckbox(label: RegExp): boolean {
+    return Array.from(document.querySelectorAll<HTMLLabelElement>("label.blf-map-content")).some(
+      (l) => label.test(l.textContent ?? ""),
+    );
+  }
+
   it("imports the file's signals and leaves its frames alone by default", async () => {
     await openTheDialog();
     expect(checkbox(/^Signals/).checked).toBe(true);
@@ -200,5 +227,20 @@ describe("MDF import contents", () => {
     await waitFor(() => importArgs());
     expect(importArgs().importSignals).toBe(true);
     expect(importArgs().importMessages).toBe(true);
+  }, 30_000);
+
+  it("offers only Signals for a file with no frames in it", async () => {
+    mdfScan = SIGNAL_ONLY_SCAN;
+    await openTheDialog();
+    expect(checkbox(/^Signals/).checked).toBe(true);
+    expect(hasCheckbox(/^CAN messages/)).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(findButton("Open"));
+    });
+    await waitFor(() => importArgs());
+    expect(importArgs().importSignals).toBe(true);
+    expect(importArgs().importMessages).toBe(false);
+    expect(importArgs().channelBusMapping).toEqual([]);
   }, 30_000);
 });
