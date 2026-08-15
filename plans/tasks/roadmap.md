@@ -24,51 +24,71 @@ the order below is the order of work, top first.
    build-provenance verification for the "still not fixed" items,
    disclosure-ink sizing, task-file retirement, and the
    MDF-decoded-groups scope question. Groom, then work through.
-2. [Task 69 — Extension Architecture](0069-extension-architecture.md)
+2. [Task 71 — Perf Grooming](0071-perf-grooming.md)
+   — the two unattributed perf questions from Task 70's closeout
+   gates: the run-1 `rx_gap_short_frac_worst` failure (isolating
+   experiment never run) and the four-gate `renderer_mb_drift_per_min`
+   rise now at 93 % of its limit. Opened by owner ruling 2026-08-14;
+   position in the order is the owner's to adjust.
+3. [Task 72 — Extrapolation-Aware Plot Rendering + Enum Leading-Edge
+   Lag](0072-extrapolation-rendering.md) — investigation-first: the
+   proportional leading-edge lag on a growing full-trace view
+   (hours-scale, owner-observed, rig-unreproduced at 5400 s), then
+   the ruled differentiated rendering for extrapolated stretches
+   (lines, hlines, enum lanes) and lane sample-marker visibility.
+   Opened by owner rulings 2026-08-14.
+4. [Task 73 — MDF Ingestion Round 2](0073-mdf-ingestion-round-2.md)
+   — signal-only MF4 import and decoded-enum value labels; both
+   ruled yes 2026-08-14, building on the task-70 ingestion work.
+5. [Task 74 — Trust-Flow Rework](0074-trust-flow-rework.md)
+   — identity/token changes surface as indicators (project view +
+   Servers panel), modal only for a directly blocked connect, one
+   dialog implementation total. Opened by owner rulings 2026-08-14.
+6. [Task 69 — Extension Architecture](0069-extension-architecture.md)
    — implement ADR 0051: out-of-process, GUI-host-supervised
    extensions on a new `ExtensionHost` service in `cannet.proto`
    (filtered frame subscription, manifest-gated transmit, sandboxed
    contributed webviews, `.cannet-extension` packaging) plus an
    in-repo Python reference extension. Design groomed 2026-08-13;
    adopted onto the roadmap same day.
-3. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
+7. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
    — the two data-named cuts from the 2026-08-08 ingest profiling: the
    disk-spill segment write (43 % of the release per-frame budget)
    and `bus_id: Option<String>` interning (~15 %). Opened by owner
    ruling 2026-08-09.
-4. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+8. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
    — crash on exit (wry/WebKit layer-tree teardown race) and missing
    Spotlight bundle metadata. Independently-shippable macOS fixes.
-5. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
+9. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — the remaining argument-taking commands (go-to-row / -time,
    set-visible-range) and the shared input-prompt UI, on top of the
    command / palette framework. Save-with-picker (`capture.save`), the
    close commands, and a list-select go-to-event palette shipped with
    Task 37; what's left is the typed-argument prompt infrastructure.
-6. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+10. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the hardware/virtual-bus verify-and-fix pass (post-clear negative
    timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
    plot-color bug and the `decimatePoints` dead-code removal.
-7. [Task 22 — CANopen](0022-canopen.md)
+11. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-8. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+12. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
    — triggers, math channels, per-series offset / gain, export.
    (Drag-a-plot-area-between-panels shipped separately, 2026-08-08.)
-9. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
+13. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
     — generalize the DBC auto-reload watcher to project (`.cannet_prj`)
     and RBS (`.cannet_rbs`) files so external edits are picked up
     automatically.
-10. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+14. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
     — cannet connects out to a value-source server that streams sparse
     `(signal, value)` updates by name; RBS applies them as overrides and
     keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
     (e.g. an EV drive cycle) drive the RBS.
-11. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+15. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
     — staged: pcapng import (CAN linktypes, no model change), step/hold
     plot semantics for on-change series, then the multi-protocol trace
     model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
     Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-12. [Task 40 — bridge_client / cannet-client Session-Machinery
+16. [Task 40 — bridge_client / cannet-client Session-Machinery
     Consolidation](0040-bridge-client-consolidation.md) — gated on
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else

@@ -1471,6 +1471,79 @@ re-run, and 0064's next-release verification checklist (`.pkg` exec
 bits, the `.deb` `$auto` `Depends:` line, the NSIS CI-only legs, the
 `.app`'s bundled `cannet-server` being `+x`).
 
+### Owner rulings on the decision list (2026-08-14, closeout review)
+
+1. **Perf gate run 1 + renderer-drift trend → follow-up task.** Both
+   perf questions (isolating the run-1 `rx_gap_short_frac_worst`
+   failure; attributing the four-gate `renderer_mb_drift_per_min`
+   rise) are captured as
+   [Task 71 — Perf Grooming](0071-perf-grooming.md). The gate stands
+   on runs 2–3 for this task's closeout.
+2. (Folded into ruling 1.)
+3. **RULED (2026-08-14, third round, explicit confirm): extrapolated
+   stretches render visibly as extrapolation.** Wherever a series is
+   drawn beyond (or before) its actual samples — a held enum tile, a
+   one-sample hline's both sides, any held line stretch — that
+   stretch is rendered differentiated (dashed for lines; a
+   muted/hatched treatment for lane tiles), while data-backed
+   stretches keep the solid rendering. Nothing is cut; the
+   information stays, honestly labeled. Styling specifics groomed in
+   the follow-up task.
+4. **RULED — same ruling as 3**: it is the rule for lane extent too,
+   superseding the three sketched options. The lane-marker
+   visibility questions (density suppression, tile over-paint) ride
+   along in the same follow-up scope.
+5. **CLARIFIED (2026-08-14, third round) — the observation was
+   misread by the investigation; item 3 obs. 1 is OPEN as a real
+   defect with a sharper repro spec.** The owner was watching the
+   **full trace as it grew**, not a short follow window: the enum
+   lanes' leading edge fell behind by ~2/3 of the _whole-trace_
+   window — reaching **hours** on a long capture — and "it can be
+   observed on a live bus if you collect for long enough with
+   enough signals." The cycle-time question was therefore
+   meaningless (seconds-scale mechanism offered for an hours-scale
+   observation). Constraints for the investigation: phase 6's rig
+   run did NOT reproduce this at 5400 s / ~20 signals on the fixed
+   build (drawn-vs-served 0.000, edge lag ms-scale), so the repro
+   needs longer collection, more signals, the owner's real
+   composition, or a consumer the rig's gauges don't measure.
+   **Owner-suggested lead**: the proportional shortfall (a constant
+   _fraction_ of the window, growing with it) smells like something
+   consuming **relative index rather than timestamp** — e.g. an
+   extent mapped from point count where sparse series cover only
+   their fraction of the axis. Lands in the plot-rendering
+   follow-up task as its investigation phase.
+6. **Signal-only MF4s become importable** — lift the
+   `MdfSourceError::SignalFile` rejection so the Signals checkbox
+   gets its chance on a frameless file.
+7. **Decoded enum channels should carry their value labels** —
+   "yes, ideally"; pick between the two recorded ways out during
+   implementation.
+8. **Item 12's narrow scope stands** ("fine") — `debug replay` /
+   `debug vbus` keep their `--insecure`; no further work.
+9. **RULED (2026-08-14, second round): identity/token change on a
+   passively discovered server is an indicator, not a modal.** The
+   owner's actual objection: being shown a modal dialog because a
+   known server's token/identity changed, when all that happened is
+   the server was seen on the network and its interfaces couldn't
+   be fetched — "a nuisance." Ruling: that state surfaces as an
+   indicator in the project view and the Servers panel. A modal is
+   appropriate only when the user directly attempts to connect and
+   the trust question blocks that attempt. (The prompt fact on the
+   row therefore survives — it is what feeds the indicator — but
+   its presentation changes from dialog-driven to indicator-driven.)
+10. **RULED (2026-08-14, second round): one dialog, used sparingly.**
+    The duplicate is "absolutely a no." The Servers panel either
+    uses the app-wide dialog (modal reserved for direct user input
+    that needs it) OR offers inline editing on the row, paired with
+    the ruling-9 indicators. No panel-owned second modal.
+
+Where the ruled work lands (72–74 numbering pending owner
+confirmation): the 3+4+5 clarification round decides the
+plot-rendering follow-up's scope; rulings 6+7 one MDF follow-up
+task; rulings 9+10 one trust-flow follow-up task (indicator-driven
+trust surfacing, single dialog, modal only on direct connect).
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
