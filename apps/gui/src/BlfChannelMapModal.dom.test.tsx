@@ -265,7 +265,7 @@ describe("BlfChannelMapModal", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows a not-imported-yet notice for message-independent signal groups", () => {
+  it("says signal channel groups arrive as file-backed signals", () => {
     render(
       <BlfChannelMapModal
         blfPath="/tmp/cap.mf4"
@@ -278,7 +278,7 @@ describe("BlfChannelMapModal", () => {
       />,
     );
     expect(
-      screen.getByText(/3 message-independent signal groups found; not imported yet\./),
+      screen.getByText(/3 signal channel groups — imported as file-backed signals/),
     ).toBeInTheDocument();
   });
 });

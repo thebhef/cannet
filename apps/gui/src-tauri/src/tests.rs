@@ -2042,6 +2042,337 @@ fn mdf_scan_reports_skipped_decoded_groups_for_the_dialog() {
     );
 }
 
+/// Saving to BLF drops file-backed signals — the format carries frames
+/// and nothing else can hold them — so the save path says so. A warning,
+/// not a refusal: BLF is still the right save for a capture whose frames
+/// are the point.
+#[test]
+fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
+    let state = file_backed_state();
+    let warning = capture::dropped_file_backed_warning(&state.signal_caches.file_signals())
+        .expect("a capture with file-backed signals warns");
+    assert!(
+        warning.contains("2 file-backed signal(s) will not be in the saved file"),
+        "{warning}"
+    );
+    assert!(warning.contains("Analog/EngineSpeed"), "{warning}");
+    assert!(warning.contains("Analog/CoolantTemp"), "{warning}");
+}
+
+/// And a capture with none is saved without a word about it — a warning
+/// every save emits is one nobody reads.
+#[test]
+fn a_blf_save_of_a_frames_only_capture_warns_about_nothing() {
+    let state = test_state();
+    assert!(capture::dropped_file_backed_warning(&state.signal_caches.file_signals()).is_none());
+}
+
+/// A capture holding two file-backed signals, one DBC loaded beside
+/// them so both provenances are in play at once.
+#[allow(clippy::cast_precision_loss)] // ten small integers
+fn file_backed_state() -> AppState {
+    let state = test_state();
+    state
+        .databases
+        .lock()
+        .unwrap()
+        .push(loaded("modes.dbc", MUX_SNAPSHOT_DBC));
+    invalidate_derived_caches(&state);
+    for (name, unit, base) in [("EngineSpeed", "rpm", 800.0), ("CoolantTemp", "degC", 70.0)] {
+        let info = signal_cache::FileSignalInfo {
+            group: 1,
+            group_name: Some("Analog".into()),
+            name: name.into(),
+            unit: unit.into(),
+        };
+        let points: Vec<(u64, f64)> = (0..10u64)
+            .map(|i| {
+                (
+                    1_700_000_000_000_000_000 + i * 1_000_000_000,
+                    base + i as f64,
+                )
+            })
+            .collect();
+        state.signal_caches.fill_file_backed(&info, &points);
+    }
+    state
+}
+
+/// Every file-backed signal the capture holds, as `fetch_signal_page`
+/// serves them to the signal grid for `selection`.
+fn file_backed_rows(state: &AppState, patterns: &[&str]) -> Vec<SignalSnapshotRecord> {
+    let sel = SignalSelection {
+        keys: vec![],
+        patterns: patterns.iter().map(|p| (*p).to_string()).collect(),
+    };
+    fetch_signal_page_inner(
+        state,
+        &sel,
+        None,
+        0,
+        u64::MAX,
+        None,
+        None,
+        vec![],
+        &[],
+        None,
+        0,
+        100,
+    )
+    .expect("valid pattern")
+    .rows
+    .iter()
+    .filter_map(ipc::SignalPageRow::signal)
+    .filter(|r| r.file_backed)
+    .cloned()
+    .collect()
+}
+
+/// The catalog lists file-backed signals beside DBC-backed ones,
+/// marked by source and labelled by their channel group. A picker that
+/// couldn't see them would leave imported signals unplottable.
+#[test]
+fn list_signals_offers_file_backed_signals_marked_by_source() {
+    let state = file_backed_state();
+    // `list_signals` itself needs a Tauri `State`, so exercise the
+    // projection it appends — the one place a file-backed catalog row
+    // is built.
+    let rows: Vec<ipc::SignalDescriptorRecord> = state
+        .signal_caches
+        .file_signals()
+        .into_iter()
+        .map(signal_snapshot::file_backed_descriptor)
+        .collect();
+    assert_eq!(
+        rows.iter()
+            .map(|r| (
+                r.signal_name.as_str(),
+                r.message_name.as_str(),
+                r.unit.as_str(),
+                r.file_backed
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CoolantTemp", "Analog", "degC", true),
+            ("EngineSpeed", "Analog", "rpm", true),
+        ],
+    );
+    // The catalog identity is the group index in the message slot,
+    // never a bus — nothing puts a file-backed signal on one.
+    assert!(rows.iter().all(|r| r.bus_id.is_none() && r.message_id == 1));
+}
+
+/// The signal grid serves file-backed rows through the same paged
+/// command as DBC-backed ones, selected by the same canonical-path
+/// patterns (ADR 0038) with empty bus and ECU segments, and marked by
+/// source. Their statistics describe the whole imported series, since
+/// no frame in the trace window carries them.
+#[test]
+#[allow(clippy::float_cmp)]
+fn fetch_signal_page_serves_file_backed_rows_marked_by_source() {
+    let state = file_backed_state();
+    let rows = file_backed_rows(&state, &["^//Analog/"]);
+    assert_eq!(
+        rows.iter()
+            .map(|r| (r.signal_name.as_str(), r.unit.as_str(), r.count))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CoolantTemp", "degC", Some(10)),
+            ("EngineSpeed", "rpm", Some(10))
+        ],
+    );
+    let engine = rows
+        .iter()
+        .find(|r| r.signal_name == "EngineSpeed")
+        .unwrap();
+    assert_eq!(engine.value, Some(809.0), "the newest sample of the series");
+    assert_eq!(engine.rate, Some(1.0));
+    assert_eq!(engine.message_name, "Analog");
+    assert!(engine.bus_id.is_none() && engine.transmitter.is_none());
+    // A pattern that doesn't match their path leaves them out, exactly
+    // as it would a DBC-backed descriptor.
+    assert!(file_backed_rows(&state, &["^/powertrain/"]).is_empty());
+    // And a manual pick reaches one without any pattern at all.
+    let sel = SignalSelection {
+        keys: vec![ipc::SignalQuery {
+            bus_id: None,
+            message_id: 1,
+            extended: false,
+            signal_name: "EngineSpeed".into(),
+            file_backed: true,
+        }],
+        patterns: vec![],
+    };
+    let picked =
+        signal_snapshot::select_file_backed(&state.signal_caches.file_signals(), &sel, None)
+            .unwrap();
+    assert_eq!(picked.len(), 1);
+    assert_eq!(picked[0].signal_name, "EngineSpeed");
+}
+
+/// A view wired to specific buses excludes file-backed signals for the
+/// same reason it excludes an unassigned-bus descriptor: nothing puts
+/// them on a bus.
+#[test]
+fn a_bus_wired_view_has_no_file_backed_rows() {
+    let state = file_backed_state();
+    let sel = SignalSelection {
+        keys: vec![],
+        patterns: vec![".".to_string()],
+    };
+    let page = fetch_signal_page_inner(
+        &state,
+        &sel,
+        None,
+        0,
+        u64::MAX,
+        None,
+        None,
+        vec![],
+        &[],
+        Some(&["powertrain".to_string()]),
+        0,
+        100,
+    )
+    .unwrap();
+    assert_eq!(page.count, 0);
+}
+
+/// A DBC reload drops every decoded pyramid (ADR 0033) and must leave
+/// the file-backed rows exactly where they were — same signals, same
+/// samples, same statistics.
+#[test]
+fn a_dbc_reload_leaves_the_file_backed_rows_untouched() {
+    let state = file_backed_state();
+    let before = file_backed_rows(&state, &["^//Analog/"]);
+    assert_eq!(before.len(), 2);
+
+    state.databases.lock().unwrap().clear();
+    invalidate_derived_caches(&state);
+
+    let after = file_backed_rows(&state, &["^//Analog/"]);
+    assert_eq!(
+        after
+            .iter()
+            .map(|r| (r.signal_name.clone(), r.value, r.count))
+            .collect::<Vec<_>>(),
+        before
+            .iter()
+            .map(|r| (r.signal_name.clone(), r.value, r.count))
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// An MDF's message-independent signal channel groups land as
+/// **file-backed signals** (`docs/CONTEXT.md`): one signal-cache entry
+/// per channel, filled once and complete. `sorted_finalized_mixed.mf4`
+/// is the logger file that carries one such group — `Analog`, with
+/// `EngineSpeed` (rpm) and `CoolantTemp` (degC), 20 samples each,
+/// pinned against the fixture's `expected/sorted_finalized_mixed.json`.
+#[test]
+fn mdf_import_fills_file_backed_signals_from_the_signal_channel_groups() {
+    let path = mdf_fixture_path("sorted_finalized_mixed");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    let (signals, samples) = capture::fill_file_backed_signals(&caches, &groups, None, None);
+    assert_eq!((signals, samples), (2, 40));
+
+    let listed = caches.file_signals();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|e| (
+                e.info.name.as_str(),
+                e.info.unit.as_str(),
+                e.info.group_label(),
+                e.sample_count
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("CoolantTemp", "degC", "Analog".to_string(), 20),
+            ("EngineSpeed", "rpm", "Analog".to_string(), 20),
+        ],
+        "both channels of the file's one signal group, with their metadata",
+    );
+    // Timestamps are absolute (ADR 0024): the group's master channel is
+    // seconds off `hd_start_time_ns`, re-absolutized by the reader.
+    let engine = listed
+        .iter()
+        .find(|e| e.info.name == "EngineSpeed")
+        .unwrap();
+    let latest = engine.latest.as_ref().unwrap();
+    assert!(
+        (latest.t_seconds - 1_709_294_400.228).abs() < 1e-6,
+        "last sample at hd_start + 228 ms, got {}",
+        latest.t_seconds
+    );
+    assert!((latest.value - 1037.5).abs() < 1e-9);
+
+    // A second import of the same file replaces the series rather than
+    // appending to it — a re-import is not a doubling.
+    capture::fill_file_backed_signals(&caches, &groups, None, None);
+    assert_eq!(
+        caches
+            .file_signals()
+            .iter()
+            .map(|e| e.sample_count)
+            .collect::<Vec<_>>(),
+        vec![20, 20],
+    );
+}
+
+/// The import range (ADR 0046) bounds the file-backed fill exactly as
+/// `WindowedSource` bounds the frames — otherwise a windowed import
+/// would put a whole-file series on the same plot as a sliced trace.
+/// The fixture's `Analog` group samples every 12 ms from
+/// `hd_start_time_ns`; `[+24 ms, +60 ms]` is four of them, boundaries
+/// inclusive.
+#[test]
+fn mdf_import_range_bounds_the_file_backed_fill_too() {
+    let path = mdf_fixture_path("sorted_finalized_mixed");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+    let base = 1_709_294_400_000_000_000u64;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    let (signals, samples) = capture::fill_file_backed_signals(
+        &caches,
+        &groups,
+        Some(base + 24_000_000),
+        Some(base + 60_000_000),
+    );
+    assert_eq!((signals, samples), (2, 8), "four samples per channel");
+
+    // A window the file has nothing in fills nothing at all, rather than
+    // leaving empty series claiming the capture has those signals.
+    let empty_dir = tempfile::TempDir::new().unwrap();
+    let empty = SignalCacheStore::new(empty_dir.path());
+    assert_eq!(
+        capture::fill_file_backed_signals(&empty, &groups, Some(base + 10_000_000_000), None),
+        (0, 0)
+    );
+    assert!(empty.file_signals().is_empty());
+}
+
+/// A pure logger file has no signal channel groups, so an import of one
+/// fills nothing — the file-backed path costs a capture that doesn't
+/// use it nothing at all.
+#[test]
+fn mdf_import_of_a_pure_logger_file_fills_no_file_backed_signals() {
+    let path = mdf_fixture_path("sorted_finalized_classic");
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let dir = tempfile::TempDir::new().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    assert_eq!(
+        capture::fill_file_backed_signals(&caches, &source.signal_groups(), None, None),
+        (0, 0)
+    );
+}
+
 /// Signal-shape MF4 files (pre-decoded measurements, no bus-logging
 /// group) are detected and rejected with a clear, typed message — the
 /// same error both `scan_mdf_channels` and `import_mdf` surface as

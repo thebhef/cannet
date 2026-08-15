@@ -1569,12 +1569,29 @@ recognised and skipped rather than imported, since the file's own raw
 frames plus the project's DBC already reproduce them; every skipped
 group (its name, source path, and signal count) is listed in the
 mapping dialog and logged to System Messages, never silently dropped.
-**Message-independent signal channels** (signals recorded with no bus
-message behind them) are counted and shown in the dialog too, but not
-imported yet — that lands with the file-backed signal model. A
+**Signal channel groups** (signals recorded with no bus message behind
+them) are imported as **file-backed signals**, and the dialog says how
+many groups it is bringing in. A
 signal-shape MF4 (a post-processed measurement with no bus-logging
 group at all) is detected and rejected with a message naming the
 mismatch, rather than opening as an empty capture.
+
+**File-backed signals** are value series the capture file carries
+already decoded: no bus message holds them and no DBC produces them.
+They live in the same model as DBC-decoded signals — one cached series
+each, with the same resolution pyramid, the same paged serve and the
+same on-disk persistence — and differ only in how they fill. A
+DBC-decoded signal fills incrementally by decoding frames for as long
+as frames arrive; a file-backed one is read once, at import, and is
+then complete. So they appear wherever a *series* appears — the signal
+catalog and picker, plots, and the signal grid, marked `file` and
+labelled with their source channel group — and never in the trace
+views, which list frames. Loading, reloading or removing a DBC leaves
+them exactly as they are, in the session and across a relaunch.
+
+Saving such a capture as BLF drops them: BLF carries frames and has
+nowhere to put a signal series. The save still happens, and names in
+System Messages what will not be in the file.
 
 **Per-bus DBC scoping**. Each DBC entry in the project panel grows a
 row of checkboxes — one per defined logical bus — that control which

@@ -22,6 +22,7 @@ use crate::app_state::AppState;
 use crate::ipc::{ImportMdfResult, LogFinished, OpenLogResult};
 use crate::notes::{self, Note};
 use crate::sampling::off_async_workers;
+use crate::signal_cache::{FileSignalEntry, FileSignalInfo, SignalCacheStore};
 use crate::trace_store;
 use crate::{sys_debug, sys_error, sys_info, sys_warn};
 // `run_pump` / `panic_message` live in `session` once it is split out;
@@ -189,9 +190,13 @@ pub(crate) async fn open_log(
 /// no sidecar file (ADR 0010). The write is atomic at the BLF
 /// level (temp file + rename in `cannet-blf`).
 ///
+/// **Frames only.** A capture can also hold file-backed signals
+/// (`docs/CONTEXT.md`), and BLF has nowhere to put them, so a save that
+/// is about to drop some says so ([`dropped_file_backed_warning`]).
+///
 /// Emits `capture`-tagged System Messages: `info` with the frame
-/// count + byte size + marker count on success, `error` on
-/// failure.
+/// count + byte size + marker count on success, `warn` naming any
+/// file-backed signals the format cannot carry, `error` on failure.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn save_capture(
@@ -236,8 +241,45 @@ pub(crate) fn save_capture(
             d = outcome.max_timestamp_drift_ns,
         );
     }
+    if let Some(warning) = dropped_file_backed_warning(&state.signal_caches.file_signals()) {
+        sys_warn!(&app, "capture", "{warning}");
+    }
 
     Ok(outcome)
+}
+
+/// What a BLF save is about to lose, or `None` when it loses nothing.
+///
+/// A BLF carries frames. File-backed signals (`docs/CONTEXT.md`) are not
+/// frames and nothing in the format can hold them, so saving a capture
+/// that has them to BLF silently drops them — the one thing this warning
+/// exists to stop being silent. It names them rather than counting them:
+/// which signals disappeared is what decides whether the user wanted a
+/// different format.
+///
+/// A warning, not a refusal. BLF is still the right save for a capture
+/// whose frames are the point, and the user is the one who knows.
+#[must_use]
+pub(crate) fn dropped_file_backed_warning(signals: &[FileSignalEntry]) -> Option<String> {
+    // Long captures can carry hundreds; the log line names enough to
+    // recognise what is going and says how many more there are.
+    const NAMED: usize = 8;
+    if signals.is_empty() {
+        return None;
+    }
+    let mut names: Vec<String> = signals
+        .iter()
+        .take(NAMED)
+        .map(|e| format!("{}/{}", e.info.group_label(), e.info.name))
+        .collect();
+    if signals.len() > NAMED {
+        names.push(format!("… and {} more", signals.len() - NAMED));
+    }
+    Some(format!(
+        "BLF carries frames only — {n} file-backed signal(s) will not be in the saved file: {list}",
+        n = signals.len(),
+        list = names.join(", "),
+    ))
 }
 
 /// Result of [`save_capture`]; mirrors the `cannet-blf` writer's
@@ -576,6 +618,11 @@ pub(crate) async fn import_mdf(
         mdf_path: mdf_path.clone(),
     };
 
+    // Read the file's signal channel groups before the source is handed
+    // to the pump: they are a one-time read that completes, unlike the
+    // frame stream, and `signal_groups` needs the open file.
+    let signal_groups = source.signal_groups();
+
     let channel_to_bus: Vec<(u8, Option<String>)> = channel_bus_mapping
         .unwrap_or_default()
         .into_iter()
@@ -602,6 +649,26 @@ pub(crate) async fn import_mdf(
                     channel_to_bus,
                     true, // replay_origin: MDF anchors the session at the first frame's ts
                 );
+                // After the frames, not before: `run_pump` mints the
+                // capture identity on the first frame it appends, and
+                // that wipes the signal caches (`restamp_scratch_for_capture`).
+                // Filling ahead of it would have the wipe eat the fill.
+                let state: State<'_, AppState> = app_for_thread.state();
+                let (signals, samples) = fill_file_backed_signals(
+                    &state.signal_caches,
+                    &signal_groups,
+                    start_ns,
+                    end_ns,
+                );
+                if signals > 0 {
+                    sys_info!(
+                        &app_for_thread,
+                        "mdf-import",
+                        "imported {signals} file-backed signal(s) \
+                         ({samples} sample(s)) from {groups} signal channel group(s)",
+                        groups = signal_groups.len(),
+                    );
+                }
             }));
             if let Err(payload) = result {
                 let msg = format!("load failed: {}", panic_message(payload.as_ref()));
@@ -612,6 +679,55 @@ pub(crate) async fn import_mdf(
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
     Ok(result)
+}
+
+/// Fill one cache entry per signal of `groups` — the file-backed half of
+/// an MDF import. Returns `(signals filled, samples across them)`.
+///
+/// Each channel is already a decoded value series with absolute
+/// timestamps (ADR 0024), so this is a straight hand-off into the signal
+/// cache: no message carries these signals and no DBC decodes them, and
+/// what lands is complete the moment it lands.
+///
+/// `start_ns` / `end_ns` are the import range (ADR 0046), applied here
+/// for the same reason `WindowedSource` applies it to frames — a
+/// windowed import must not put a file-backed series spanning the whole
+/// file on the same plot as a trace holding a slice of it. Bounds are
+/// inclusive, matching `WindowedSource`. A signal left with no samples
+/// in range is not filled at all: the capture simply doesn't have it.
+pub(crate) fn fill_file_backed_signals(
+    caches: &SignalCacheStore,
+    groups: &[cannet_mdf::SignalChannelGroup],
+    start_ns: Option<u64>,
+    end_ns: Option<u64>,
+) -> (usize, u64) {
+    let (mut signals, mut samples) = (0usize, 0u64);
+    for group in groups {
+        for signal in &group.signals {
+            let points: Vec<(u64, f64)> = signal
+                .timestamps_ns
+                .iter()
+                .zip(&signal.values)
+                .filter(|(ts, _)| {
+                    start_ns.is_none_or(|s| **ts >= s) && end_ns.is_none_or(|e| **ts <= e)
+                })
+                .map(|(ts, v)| (*ts, *v))
+                .collect();
+            if points.is_empty() {
+                continue;
+            }
+            let info = FileSignalInfo {
+                group: u32::try_from(group.group_index).unwrap_or(u32::MAX),
+                group_name: group.name.clone(),
+                name: signal.name.clone(),
+                unit: signal.unit.clone().unwrap_or_default(),
+            };
+            samples += points.len() as u64;
+            signals += 1;
+            caches.fill_file_backed(&info, &points);
+        }
+    }
+    (signals, samples)
 }
 
 /// One per-message DBC-decoded channel group [`scan_mdf_channels`]
@@ -653,9 +769,9 @@ pub struct MdfScanResult {
     pub start_unix_nanos: u64,
     pub markers: Vec<Note>,
     pub unfinalized: bool,
-    /// Message-independent signal channel groups the file carries.
-    /// Not imported yet (a later phase); carried here so that phase
-    /// does not have to reshape this command.
+    /// Signal channel groups the file carries — the ones [`import_mdf`]
+    /// brings in as file-backed signals (`docs/CONTEXT.md`), so the
+    /// mapping dialog can say what arrives beyond the frames.
     pub signal_group_count: usize,
     /// Per-message DBC-decoded groups import is skipping. See
     /// [`SkippedDecodedGroupInfo`].

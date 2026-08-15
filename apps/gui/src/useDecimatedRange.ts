@@ -36,6 +36,9 @@ export interface DecimatedSignal {
   messageId: number;
   extended: boolean;
   signalName: string;
+  /// Names a file-backed signal (`docs/CONTEXT.md`) — `messageId` is
+  /// then a signal channel group index, not a message id.
+  fileBacked?: boolean;
 }
 
 /// Everything that determines a fetch. A request that cannot return
@@ -261,6 +264,7 @@ export function useDecimatedRange(): DecimatedRange {
             messageId: s.messageId,
             extended: s.extended,
             signalName: s.signalName,
+            fileBacked: s.fileBacked ?? false,
           })),
           maxPoints: req.maxPoints,
         }),

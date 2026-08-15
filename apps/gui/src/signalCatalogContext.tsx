@@ -76,6 +76,19 @@ export function SignalCatalogProvider({ children }: { children: ReactNode }): Re
     };
   }, [refreshCatalog]);
 
+  // Re-fetch when a capture import finishes. The catalog is not purely
+  // a function of the DBC set any more: a capture file can carry
+  // file-backed signals (`docs/CONTEXT.md`), which exist only once the
+  // import that read them has run.
+  useEffect(() => {
+    const unlisten = listen("log-finished", () => {
+      refreshCatalog();
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  }, [refreshCatalog]);
+
   const value = useMemo(() => ({ catalog, refresh: refreshCatalog }), [catalog, refreshCatalog]);
   return <SignalCatalogContext.Provider value={value}>{children}</SignalCatalogContext.Provider>;
 }

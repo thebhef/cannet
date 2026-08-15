@@ -198,7 +198,7 @@ pub(crate) fn list_signals(
     // Shared enumeration with `fetch_signal_page` (per-bus scope
     // expansion + descriptor-key dedup), so the picker catalog and the
     // signal-view rows can't disagree about what exists.
-    signal_snapshot::scoped_descriptors(
+    let mut out: Vec<SignalDescriptorRecord> = signal_snapshot::scoped_descriptors(
         dbs.iter().map(|l| (l.db.as_ref(), l.buses.as_slice())),
         &project_buses,
     )
@@ -214,8 +214,23 @@ pub(crate) fn list_signals(
         is_enum: d.is_enum,
         display_hex: d.display_hex,
         decimals: d.decimals,
+        file_backed: false,
     })
-    .collect()
+    .collect();
+    drop(dbs);
+    // File-backed signals (`docs/CONTEXT.md`) are catalog entries like
+    // any other series — the picker offers them, the plot draws them.
+    // They come from the capture rather than from a DBC, so they are
+    // appended here rather than enumerated by `scoped_descriptors`, and
+    // they carry no bus, transmitter or value table.
+    out.extend(
+        state
+            .signal_caches
+            .file_signals()
+            .into_iter()
+            .map(signal_snapshot::file_backed_descriptor),
+    );
+    out
 }
 
 /// Snapshot every loaded DBC's content for the DBC

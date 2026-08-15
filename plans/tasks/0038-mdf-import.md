@@ -453,3 +453,98 @@ file-open surface".
 Still outstanding for this task: the model work for file-backed
 signals and message-independent-signal import (phase 4), and the whole
 export side (phase 5).
+
+### 2026-08-12 — phase 4: file-backed signals
+
+The model gap is closed. Every signal is a `SignalCache` entry and
+**decode provenance decides the fill**, exactly as the ruling states:
+a DBC-backed entry decodes frames of its `(message, bus)` on catch-up,
+a file-backed entry fills once from an imported signal channel group
+and is then complete. Everything after the fill is shared — one store,
+one resolution pyramid, one paged serve, one persistence path under the
+capture's spill dir.
+
+**Where provenance lives.** In the cache key, not beside it: a
+file-backed series has no bus and its `slot` is the source file's
+channel-group index, so the two namespaces cannot alias (a group index
+and a message id are unrelated numbers that would otherwise collide).
+The wire identity `signal_identity` / `signalKey` gained a third flag
+value — `f` beside `s`/`x` — for the same reason, and stays
+byte-for-byte identical across host and frontend.
+
+**What follows from the fill, each pinned by a test.** A file-backed
+serve is `complete` the moment the series exists and catch-up skips it;
+a query for one the import never filled creates nothing (nothing could
+ever fill it); a DBC-set change leaves them and their level files alone,
+within a session *and* across a relaunch — the restore now judges the
+two provenances separately, a DBC-backed row against the whole
+`PyramidValidity` and a file-backed row against `capture_id` alone; the
+raw store's ring eviction leaves them whole, because nothing could
+re-derive what it would trim; a new capture still takes them with it.
+
+**Import.** `import_mdf` reads `signal_groups()` before handing the
+source to the pump and fills after `run_pump` returns — not before,
+since the pump mints the capture identity on its first frame and that
+wipes the caches. The import range (ADR 0046) bounds the fill as
+`WindowedSource` bounds the frames; a signal with nothing in range is
+not filled at all. The mapping dialog stopped saying the groups were
+found but not imported, and the system log reports signals/samples/groups.
+
+**Views.** `list_signals` appends them to the DBC-derived catalog and
+`fetch_signal_page` serves them beside the DBC-backed rows, selected by
+the same canonical-path patterns (ADR 0038) with empty bus and ECU
+segments (`//Analog/EngineSpeed`). Their value/time/count/rate describe
+the *whole imported series*, read off the pyramid by the model — no
+frame in the trace window carries them. Trace views untouched. A
+bus-wired view has no file-backed rows, the same rule that excludes an
+unassigned-bus descriptor. Marking follows the existing per-signal
+metadata pattern: the message column carries the source channel group
+plus a `file` badge, the picker shows `(file-backed)` where a
+DBC-backed signal shows its ECU, and both strings live in one module so
+two surfaces cannot mark the same thing differently. The catalog also
+refetches on `log-finished` — it is no longer purely a function of the
+DBC set.
+
+**BLF save.** `save_capture` warns (`capture`-tagged `sys_warn`, the
+channel its existing precision warning uses) naming the file-backed
+signals the format cannot carry. Warn, not block.
+
+**Tests.** `cargo test -p cannet-gui`: **566 passed**, 0 failed, 6
+ignored (was 549 — 17 new: 8 in `signal_cache`, 9 in `tests.rs`).
+`pnpm --dir apps/gui test`: **147 files / 1917 tests** (was 147 / 1912
+— 5 new: the file-backed grid badge, the picker source segment, two
+`signalKey` provenance cases, the catalog's import refetch, and the
+mapping-dialog notice rewritten). `cargo clippy -p cannet-gui
+--all-targets`, `cargo fmt --all --check`, `pnpm --dir apps/gui build`
+all clean.
+
+**Perf gate** (ADR 0031, this phase touches the signal-cache data
+path). Release GUI via `pnpm --dir apps/gui tauri build --no-bundle`,
+60 s ev-zonal capture with `--perf-interact scrub`
+(`docs/performance-measurements/frontend/2026-08-12-2c65e78-task38d.json`),
+then `cannet-perf-measurement check` against the committed
+`baseline.json`: **passed, 33/33 metrics ok**, nothing promoted. rx
+1610.2 / tx 1608.7 fps (expected 1608 ±15 %), retention 1.001/1.001,
+`longtask_ms_per_s_mean` 0.0 (baseline 1.3), `lag_ms_max` 3.1 (27.1),
+`jank_fraction` 0.000 (0.017), `flush_ms_mean` 4.44 (ceiling 25),
+`tx_late_ms_mean` 5.33 (ceiling 18), `jsheap_mb_peak` 75.6 (71.6),
+`renderer_mb_peak` 304.9 (319.3), `tree_mb_peak` 727.7 (743.3),
+`rx_gap_p95_ratio_worst` 1.185 (1.196). Host modes: tracebuffer
+25000.1 fps, grpc 2907.6, hardware-peak 999.7 — all ok.
+
+**Local verification**, the same 14-file user corpus phases 1–3 used
+(kept out of the repo; nothing identifying recorded here), run through
+`signal_groups()` + `fill_file_backed` via a throwaway example deleted
+after the run. All 14 open and fill. **452 file-backed signals across
+the corpus, 3,823 samples** — the signal count matches phase 2's
+oracle-verified 452 rows exactly. Per file: 32–35 signal groups, one
+channel each, 65–436 samples; the listing round-trips (`file_signals()`
+reports the same signal and sample counts that were filled, on every
+file). Level-0 spill is 32–69 KB per file across 32–67 segment files,
+pyramid depth 1–2 — these series are short, so the pyramid barely grows
+past level 0. Fill time 31–83 ms per file, dominated by the reader's
+whole-file materialisation. The corpus's signal channels carry no unit
+string, so the unit column is empty for all 452; rate is defined for
+every signal with ≥2 samples (32 per file).
+
+Still outstanding for this task: the whole export side (phase 5).

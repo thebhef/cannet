@@ -688,6 +688,12 @@ export interface SignalDescriptorRecord {
   /// decimal expansion — and the value then reads by the float rule.
   /// The host computes it (`cannet_dbc`); a readout renders it.
   decimals?: number;
+  /// A **file-backed** signal (`docs/CONTEXT.md`): a value series
+  /// imported from the capture file rather than decoded from frames.
+  /// `message_id` is then its source signal channel group index and
+  /// `message_name` that group's label; it has no bus, no transmitter
+  /// and no trace rows. Absent when false.
+  file_backed?: boolean;
 }
 
 /// A signal view's selection, sent to `fetch_signal_page`: manual
@@ -700,6 +706,10 @@ export interface SignalSelectionWire {
     messageId: number;
     extended: boolean;
     signalName: string;
+    /// Names a file-backed signal (`docs/CONTEXT.md`), whose
+    /// `messageId` is a signal channel group index. Omitted is the
+    /// DBC-backed signal every key used to be.
+    fileBacked?: boolean;
   }[];
   patterns: string[];
 }
@@ -740,6 +750,11 @@ export interface SignalSnapshotRecord {
   /// evaluates the second — so the view renders this rather than
   /// looking the row up in the assignment map.
   section?: string | null;
+  /// A **file-backed** signal — see `SignalDescriptorRecord.file_backed`.
+  /// Its value/rate/count describe the whole imported series rather
+  /// than the trace window, since no frame in the window carries it.
+  /// Absent when false.
+  file_backed?: boolean;
 }
 
 /// A signal view's user-authored sections, sent with its query. Mirrors

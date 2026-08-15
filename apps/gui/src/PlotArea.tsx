@@ -1334,6 +1334,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         messageId: s.messageId,
         extended: s.extended,
         signalName: s.signalName,
+        fileBacked: s.fileBacked ?? false,
       }));
       const sidecar = wantHostExtent
         ? () => invoke<(SignalExtent | null)[]>("signal_min_max", { signals: sigQuery })
