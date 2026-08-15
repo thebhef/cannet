@@ -492,9 +492,18 @@ The sidecar is found the same way the GUI finds it
 build prefers the frozen `cannet-python-can/` onedir unpacked beside
 the server binary and falls back to the source tree; a `cargo run`
 build prefers the source tree, so sidecar edits take effect on its next
-restart. `CANNET_SIDECAR_DIR` overrides where that source tree is. The
-sidecar dies with the server — it watches the stdin pipe it inherited —
-so Ctrl-C leaves nothing holding the hardware open.
+restart. `CANNET_SIDECAR_DIR` overrides where that source tree is.
+
+The sidecar dies with the server — it watches the stdin pipe it
+inherited, so an EOF on that pipe, however it arrives, is its cue to
+shut down. Ctrl-C therefore leaves nothing holding the hardware open,
+and does it within a bounded window: the server closes the pipe by
+hand, sends the mDNS goodbye at the same time, and gives the sidecar
+five seconds to exit before killing its whole process tree. In practice
+it takes about a second and the kill never fires. **A second Ctrl-C
+during that window exits immediately** (code 130) instead of waiting —
+the sidecar still sees the pipe close, because the pipe dies with the
+process.
 
 ### Connecting the GUI to a protected server
 

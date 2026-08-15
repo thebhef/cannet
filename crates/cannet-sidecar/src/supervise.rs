@@ -8,10 +8,11 @@
 //! stdin-EOF lifetime contract.
 
 use std::io::{BufRead, BufReader};
-use std::process::{Child, ChildStderr, ChildStdout, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use crate::process_tree;
 use crate::{
     classify_stderr_line, classify_stdout_line, parse_listening_address, resolve_command, LogLevel,
     SidecarHost,
@@ -74,8 +75,29 @@ struct SupervisorInner {
     /// "wait loop cleared its slot" and "next spawn installed
     /// itself", and after a clean exit.
     active: Option<Arc<Mutex<Child>>>,
+    /// The write end of the active child's stdin pipe — the sidecar's
+    /// lifetime contract in one handle (see the crate root). Held here
+    /// rather than left inside the `Child` because the `Child` belongs
+    /// to the wait loop, which is itself waiting for the child to exit:
+    /// nothing owned by that loop can deliver the EOF the child is
+    /// waiting for. [`SidecarSupervisor::stop`] drops this to close it.
+    stdin: Option<ChildStdin>,
     /// The status the host last saw published.
     status: SidecarStatus,
+}
+
+/// How a [`SidecarSupervisor::stop`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// There was no sidecar to stop; restarts are suppressed all the
+    /// same, so a spawn already in flight cannot bring one back.
+    NotRunning,
+    /// The expected path: the child exited on the stdin EOF within the
+    /// grace period, and nothing had to be killed.
+    Exited,
+    /// The backstop: the grace period ran out, so the sidecar's whole
+    /// process tree was killed.
+    Killed,
 }
 
 impl SidecarSupervisor {
@@ -124,32 +146,95 @@ impl SidecarSupervisor {
             let mut inner = self.inner.lock().expect("sidecar state mutex poisoned");
             inner.crash_count = 0;
             inner.suppress_restart = false;
+            // Closing the old pipe first gives a sidecar that is merely
+            // slow the chance to go on its own terms; the kill below
+            // does not wait for it, because the replacement needs the
+            // port and the hardware now.
+            drop(inner.stdin.take());
             inner.active.take()
         };
         if let Some(child_arc) = previous {
-            let kill_outcome = {
-                let mut guard = child_arc.lock().expect("sidecar child mutex poisoned");
-                let pid = guard.id();
-                (pid, guard.kill())
-            };
-            match kill_outcome {
-                (pid, Ok(())) => host.log(
-                    LogLevel::Debug,
-                    format!("killed previous sidecar (pid {pid})"),
-                ),
-                // `InvalidInput` from `kill()` on Unix means the child
-                // has already exited — that's fine, the wait loop will
-                // see it next poll and clean up.
-                (pid, Err(e)) => host.log(
-                    LogLevel::Warn,
-                    format!(
-                        "previous sidecar (pid {pid}) could not be killed (already exited?): {e}"
-                    ),
-                ),
-            }
+            kill_child_tree(host.as_ref(), &child_arc);
         }
         host.log(LogLevel::Info, "manual restart".to_string());
         self.spawn(host);
+    }
+
+    /// Stop the sidecar, and do not let it come back.
+    ///
+    /// The graceful path is the sidecar's own lifetime contract (see the
+    /// crate root): closing the stdin pipe makes the sidecar read EOF
+    /// and shut its gRPC server down. `grace` bounds the wait for that —
+    /// when it runs out, the sidecar's whole process tree is killed
+    /// instead, because a host on its way out must not leave a process
+    /// holding CAN hardware open. The kill is the backstop, never the
+    /// expected path.
+    ///
+    /// Restarts are suppressed before anything else, so neither an
+    /// auto-restart nor a spawn already in flight can hand back a
+    /// sidecar the host has stopped.
+    ///
+    /// Blocking, like the rest of this crate's process handling: call it
+    /// from a blocking context, never from an async worker.
+    ///
+    /// # Panics
+    ///
+    /// If a previous holder of the supervisor's or the child's lock
+    /// panicked, which means the supervision state is no longer
+    /// trustworthy.
+    pub fn stop(&self, host: &dyn SidecarHost, grace: Duration) -> StopOutcome {
+        let active = {
+            let mut inner = self.inner.lock().expect("sidecar state mutex poisoned");
+            inner.suppress_restart = true;
+            // The EOF itself. Everything below is only about how long
+            // we are prepared to wait for the sidecar to act on it.
+            drop(inner.stdin.take());
+            inner.active.clone()
+        };
+        let Some(child_arc) = active else {
+            return StopOutcome::NotRunning;
+        };
+        let pid = child_arc.lock().expect("sidecar child mutex poisoned").id();
+        host.log(
+            LogLevel::Debug,
+            format!("stopping sidecar (pid {pid}); waiting up to {grace:?} for it to exit"),
+        );
+        let deadline = Instant::now() + grace;
+        loop {
+            let polled = {
+                let mut guard = child_arc.lock().expect("sidecar child mutex poisoned");
+                guard.try_wait()
+            };
+            match polled {
+                Ok(Some(_)) => {
+                    host.log(
+                        LogLevel::Info,
+                        format!("sidecar (pid {pid}) exited on stdin EOF"),
+                    );
+                    return StopOutcome::Exited;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    host.log(
+                        LogLevel::Warn,
+                        format!("sidecar (pid {pid}) could not be waited on: {e}"),
+                    );
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            // Short enough that the graceful path costs the operator
+            // nothing measurable, long enough not to spin.
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        host.log(
+            LogLevel::Warn,
+            format!("sidecar (pid {pid}) did not exit within {grace:?}; killing its process tree"),
+        );
+        kill_child_tree(host, &child_arc);
+        StopOutcome::Killed
     }
 
     /// The blocking body: resolve, spawn, pump, wait, and decide what
@@ -164,18 +249,22 @@ impl SidecarSupervisor {
         self.set_phase(host.as_ref(), SidecarPhase::Starting, None);
         // stdin is piped so we hold the write end for the lifetime of
         // the child; we never write to it. When the host process dies
-        // (clean exit, panic, OS kill, …), Rust drops the `Child`, the
-        // pipe closes, and the sidecar's stdin-EOF watcher (see
+        // (clean exit, panic, OS kill, …), the OS closes the pipe and
+        // the sidecar's stdin-EOF watcher (see
         // `cannet_python_can.__main__._install_stdin_eof_watcher`) reads
-        // EOF and triggers its own graceful shutdown. Without this, a
-        // host crash would leave an orphaned sidecar holding hardware
-        // open. The default (inherited stdin from a GUI process is
-        // typically `/dev/null`) would also fire the watcher
+        // EOF and triggers its own graceful shutdown; a deliberate
+        // [`SidecarSupervisor::stop`] closes the same pipe by hand.
+        // Without this, a host crash would leave an orphaned sidecar
+        // holding hardware open. The default (inherited stdin from a GUI
+        // process is typically `/dev/null`) would also fire the watcher
         // immediately, so the pipe is what keeps the sidecar alive in
         // the first place.
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // So the backstop kill can reach the whole launch chain and not
+        // just the launcher we spawned.
+        process_tree::spawn_as_group_leader(&mut cmd);
         // Capture the resolved invocation so we can both log it at
         // debug level on the happy path AND attach it to the
         // error-level failure message when the sidecar exits non-zero
@@ -221,11 +310,7 @@ impl SidecarSupervisor {
             let host = Arc::clone(host);
             std::thread::spawn(move || stream_stderr(&host, stderr));
         }
-        let child_arc = Arc::new(Mutex::new(child));
-        {
-            let mut inner = self.inner.lock().expect("sidecar state mutex poisoned");
-            inner.active = Some(Arc::clone(&child_arc));
-        }
+        let child_arc = self.install_child(child);
         // Poll `try_wait` so another thread can lock and `kill` if the
         // user hits "Restart sidecar" while we're still alive. 250 ms is
         // imperceptible for boot/runtime and keeps the loop cheap.
@@ -251,6 +336,9 @@ impl SidecarSupervisor {
                 .is_some_and(|a| Arc::ptr_eq(a, &child_arc));
             if still {
                 inner.active = None;
+                // The pipe belonged to the child that just exited; a
+                // later stop must not think it has one to close.
+                inner.stdin = None;
             }
             (still, inner.suppress_restart)
         };
@@ -270,6 +358,18 @@ impl SidecarSupervisor {
                     format!("sidecar (pid {pid}) exited cleanly"),
                 );
             }
+            // A non-zero exit after the host asked for a stop is one we
+            // caused: `stop` kills the process tree when its grace
+            // period runs out, and has already said so at warn level.
+            // Reporting it as a failure — with the whole invocation
+            // summary attached — would read as a sidecar that could not
+            // be launched.
+            Ok(status) if suppress => {
+                host.log(
+                    LogLevel::Info,
+                    format!("sidecar (pid {pid}) exited with {status} after being stopped"),
+                );
+            }
             Ok(status) => {
                 // Bundle the invocation context into the error message
                 // itself so it's visible at the usual default filter
@@ -279,9 +379,7 @@ impl SidecarSupervisor {
                     LogLevel::Error,
                     format!("sidecar (pid {pid}) exited with {status}\n{invocation_summary}"),
                 );
-                if !suppress {
-                    self.maybe_restart(host);
-                }
+                self.maybe_restart(host);
             }
             Err(e) => {
                 host.log(
@@ -290,6 +388,21 @@ impl SidecarSupervisor {
                 );
             }
         }
+    }
+
+    /// Publish a freshly spawned child as the active one: the handle a
+    /// restart or a stop reaches for, and — taken out of the `Child`
+    /// first — the stdin pipe whose closing is the sidecar's cue to
+    /// exit. Left inside the `Child`, that pipe is owned by the wait
+    /// loop that is itself waiting for the child, and so can never be
+    /// closed in time to end it.
+    fn install_child(&self, mut child: Child) -> Arc<Mutex<Child>> {
+        let stdin = child.stdin.take();
+        let child_arc = Arc::new(Mutex::new(child));
+        let mut inner = self.inner.lock().expect("sidecar state mutex poisoned");
+        inner.stdin = stdin;
+        inner.active = Some(Arc::clone(&child_arc));
+        child_arc
     }
 
     fn stream_stdout(&self, host: &Arc<dyn SidecarHost>, stdout: ChildStdout) {
@@ -354,6 +467,32 @@ impl SidecarSupervisor {
     }
 }
 
+/// Kill a supervised child and everything it started, falling back to
+/// the direct child alone if the OS's tree kill is unavailable — an
+/// incomplete kill still beats leaving the launcher holding the port.
+fn kill_child_tree(host: &dyn SidecarHost, child: &Mutex<Child>) {
+    let mut guard = child.lock().expect("sidecar child mutex poisoned");
+    let pid = guard.id();
+    match process_tree::kill_tree(pid) {
+        Ok(()) => host.log(
+            LogLevel::Debug,
+            format!("killed the sidecar process tree (pid {pid})"),
+        ),
+        Err(e) => {
+            // Often just a race already won: a tree whose root has
+            // exited is one the killer cannot find, on either OS.
+            let fallback = match guard.kill() {
+                Ok(()) => "killed the direct child instead".to_string(),
+                Err(direct) => format!("and the direct child could not be killed either: {direct}"),
+            };
+            host.log(
+                LogLevel::Warn,
+                format!("could not kill the sidecar process tree (pid {pid}): {e}; {fallback}"),
+            );
+        }
+    }
+}
+
 fn stream_stderr(host: &Arc<dyn SidecarHost>, stderr: ChildStderr) {
     let reader = BufReader::new(stderr);
     for line in reader.lines() {
@@ -368,7 +507,11 @@ fn stream_stderr(host: &Arc<dyn SidecarHost>, stderr: ChildStderr) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Instant;
 
     use super::*;
     use crate::SidecarConfig;
@@ -452,6 +595,223 @@ mod tests {
     /// The recording host as the supervisor wants it.
     fn as_host(host: &Arc<RecordingHost>) -> Arc<dyn SidecarHost> {
         Arc::clone(host) as Arc<dyn SidecarHost>
+    }
+
+    // ---- A real child process to supervise ---------------------------
+    //
+    // Stopping a sidecar is about a live process: the pipe it holds,
+    // whether it exits when that pipe closes, and what becomes of its
+    // descendants when it does not. None of that can be faked with a
+    // struct — and none of it may depend on Python, `uv` or a shell
+    // being installed on the machine running the suite. So the
+    // stand-in sidecar is the one program `cargo test` has already
+    // built and knows exists: this test binary, re-executed with
+    // `FAKE_SIDECAR_MODE` set and a filter that runs exactly the
+    // `fake_sidecar_process` entry point below.
+
+    /// Set on a re-execution of this test binary to turn it into a
+    /// stand-in sidecar; absent on the ordinary run of the suite.
+    const FAKE_SIDECAR_MODE: &str = "CANNET_FAKE_SIDECAR_MODE";
+
+    /// The stand-in sidecar's entry point. Does nothing at all when the
+    /// suite runs it as a test — it is here to be re-executed.
+    // The grandchild is deliberately never waited on: the whole point of
+    // it is to be still running when the code under test kills the tree.
+    #[allow(clippy::zombie_processes)]
+    #[test]
+    fn fake_sidecar_process() {
+        let Ok(mode) = std::env::var(FAKE_SIDECAR_MODE) else {
+            return;
+        };
+        match mode.as_str() {
+            // A healthy sidecar: stdin EOF is the signal to go.
+            "eof" => {
+                announce_ready();
+                let mut ignored = Vec::new();
+                std::io::stdin().read_to_end(&mut ignored).ok();
+                std::process::exit(0);
+            }
+            // A wedged one, with a descendant of its own: it never
+            // reads stdin, so only a kill ends it, and the grandchild
+            // is what separates a tree kill from a direct-child one —
+            // it inherits this process's stdout, so the pipe the test
+            // holds reaches EOF only once *both* are gone. Spawned
+            // before the announcement so a test that has seen "ready"
+            // knows the whole tree is up.
+            "ignore-eof" => {
+                fake_sidecar_command("leaf")
+                    .stdin(Stdio::null())
+                    .spawn()
+                    .expect("the stand-in sidecar must be able to start its own child");
+                announce_ready();
+                sleep_until_killed();
+            }
+            // The grandchild. Silent on purpose: the only "ready" line
+            // on the shared pipe has to be its parent's.
+            _ => sleep_until_killed(),
+        }
+    }
+
+    /// Say "up" on the real stdout — past libtest's own chatter, and
+    /// past its output capture, which only intercepts the `print!`
+    /// machinery.
+    fn announce_ready() {
+        let mut out = std::io::stdout();
+        writeln!(out, "ready").expect("the stand-in sidecar's stdout is a pipe the test reads");
+        out.flush().ok();
+    }
+
+    fn sleep_until_killed() -> ! {
+        loop {
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    }
+
+    /// This test binary, aimed at [`fake_sidecar_process`] and told
+    /// which stand-in to be. Spawned exactly the way the supervisor
+    /// spawns a sidecar, because [`crate::process_tree::kill_tree`] is
+    /// only valid for a child that went out through
+    /// [`crate::process_tree::spawn_as_group_leader`].
+    fn fake_sidecar_command(mode: &str) -> Command {
+        let mut cmd = Command::new(std::env::current_exe().expect("this test binary's own path"));
+        // libtest names a test by its module path minus the crate.
+        let module = module_path!()
+            .split_once("::")
+            .map_or(module_path!(), |(_, rest)| rest);
+        cmd.arg(format!("{module}::fake_sidecar_process"))
+            .args(["--exact", "--nocapture"])
+            .env(FAKE_SIDECAR_MODE, mode);
+        crate::process_tree::spawn_as_group_leader(&mut cmd);
+        cmd
+    }
+
+    /// Start a stand-in sidecar and wait until it says it is up, so no
+    /// test races the process it means to supervise. Hands back the
+    /// child with its stdin still attached (the supervisor's to take)
+    /// and the reader on the stdout its whole tree shares.
+    // Waiting on the stand-in is the supervisor's job, not the
+    // harness's — that is the behaviour under test.
+    #[allow(clippy::zombie_processes)]
+    fn start_fake_sidecar(mode: &str) -> (Child, BufReader<ChildStdout>) {
+        let mut child = fake_sidecar_command(mode)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("this test binary must be re-executable");
+        let mut reader = BufReader::new(child.stdout.take().expect("stdout was piped"));
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = reader
+                .read_line(&mut line)
+                .expect("reading the stand-in sidecar's stdout");
+            assert!(
+                read > 0,
+                "the stand-in sidecar exited without announcing itself \
+                 — has the test filter stopped matching its entry point?"
+            );
+            if line.trim() == "ready" {
+                return (child, reader);
+            }
+        }
+    }
+
+    /// Whether `pipe` reaches end-of-file within `budget` — i.e.
+    /// whether every process holding the write end has gone. Bounded on
+    /// its own thread so a surviving process fails the test instead of
+    /// hanging the suite.
+    fn reaches_eof(mut pipe: impl Read + Send + 'static, budget: Duration) -> bool {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut drained = Vec::new();
+            pipe.read_to_end(&mut drained).ok();
+            tx.send(()).ok();
+        });
+        rx.recv_timeout(budget).is_ok()
+    }
+
+    #[test]
+    fn stop_hands_a_healthy_sidecar_the_eof_it_exits_on() {
+        // The defect this pins: the write end of the sidecar's stdin
+        // used to sit untaken inside the `Child`, so nothing could ever
+        // close it and the sidecar's lifetime contract could not fire.
+        let (host, supervisor) = host_and_supervisor(3);
+        let (child, _stdout) = start_fake_sidecar("eof");
+        let child_arc = supervisor.install_child(child);
+
+        let started = Instant::now();
+        let outcome = supervisor.stop(as_host(&host).as_ref(), Duration::from_secs(5));
+        let elapsed = started.elapsed();
+
+        assert_eq!(outcome, StopOutcome::Exited);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the graceful path must not spend the grace period, took {elapsed:?}"
+        );
+        let status = child_arc
+            .lock()
+            .unwrap()
+            .try_wait()
+            .unwrap()
+            .expect("stop only reports Exited once the child is gone");
+        assert!(
+            status.success(),
+            "a killed process does not exit 0 — the EOF, not the backstop, has to be \
+             what ended a healthy sidecar (got {status})"
+        );
+    }
+
+    #[test]
+    fn stop_kills_the_whole_tree_once_the_grace_expires() {
+        let (host, supervisor) = host_and_supervisor(3);
+        let (child, stdout) = start_fake_sidecar("ignore-eof");
+        let _child_arc = supervisor.install_child(child);
+
+        let outcome = supervisor.stop(as_host(&host).as_ref(), Duration::from_millis(300));
+
+        assert_eq!(
+            outcome,
+            StopOutcome::Killed,
+            "a sidecar that ignores the EOF has to be killed, not waited on forever"
+        );
+        assert!(
+            reaches_eof(stdout, Duration::from_secs(10)),
+            "the grandchild still holds the shared pipe open: killing the direct child \
+             left part of the sidecar tree running"
+        );
+    }
+
+    #[test]
+    fn stop_without_a_sidecar_still_says_it_must_stay_down() {
+        let (host, supervisor) = host_and_supervisor(3);
+        let outcome = supervisor.stop(as_host(&host).as_ref(), Duration::from_secs(5));
+        assert_eq!(outcome, StopOutcome::NotRunning);
+        assert!(
+            supervisor.inner.lock().unwrap().suppress_restart,
+            "a sidecar the host has stopped must not be brought back by an auto-restart"
+        );
+    }
+
+    #[test]
+    fn a_manual_restart_kills_the_previous_tree_not_just_its_root() {
+        // Same only-the-direct-child flaw as the shutdown path had: the
+        // point of killing the previous sidecar is that nothing is left
+        // holding the gRPC port or the hardware.
+        let (host, supervisor) = host_and_supervisor(3);
+        let (child, stdout) = start_fake_sidecar("ignore-eof");
+        supervisor.install_child(child);
+
+        supervisor.restart(&as_host(&host));
+
+        assert!(
+            reaches_eof(stdout, Duration::from_secs(10)),
+            "a descendant of the previous sidecar outlived the manual restart"
+        );
+        assert_eq!(
+            host.dispatch_count(),
+            1,
+            "the replacement is still asked for"
+        );
     }
 
     #[test]

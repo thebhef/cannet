@@ -392,6 +392,16 @@ without reshaping callers.
 - **Vector XL Driver Library** / **Kvaser CANlib** /
   **PEAK PCAN-Basic** — `adopted` as runtime, user-installed
   vendor dependencies; not bundled. See ADR 0008.
+- **`windows-sys` (job objects)** / **`libc` (`setpgid` + `killpg`)** —
+  `rejected` as the way a host kills a wedged sidecar's whole process
+  tree (the backstop when the graceful stdin-EOF stop times out). Both
+  are `unsafe` FFI, which the workspace forbids outside
+  `crates/cannet-spill`, and a job object additionally has to be created
+  and assigned at spawn time. `cannet-sidecar` stays dependency-free
+  instead: `std::os::unix::process::CommandExt::process_group` (safe,
+  stable) makes the child a group leader on Unix, and each OS's own tool
+  does the walking — `kill -KILL -<pgid>` there, `taskkill /T /F` on
+  Windows, which follows the parent link Windows already records.
 
 ### File Formats
 

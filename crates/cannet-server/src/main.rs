@@ -6,8 +6,13 @@
 //! network endpoint. That endpoint terminates TLS on request
 //! (ADR 0041), under the server's own generated certificate or
 //! operator-supplied material. Unless `--no-mdns` is given, it also
-//! advertises `_cannet._tcp` so the GUI's browse can find it, and a
-//! Ctrl-C waits for the mDNS goodbye packet before the process exits.
+//! advertises `_cannet._tcp` so the GUI's browse can find it.
+//!
+//! Ctrl-C is a bounded shutdown: the sidecar is stopped (its stdin pipe
+//! closed, which is the EOF it exits on, with its process tree killed
+//! if it does not take it within [`SIDECAR_STOP_GRACE`]) while the mDNS
+//! goodbye packet goes out, and a second Ctrl-C during that window
+//! exits immediately with [`INTERRUPTED_EXIT_CODE`].
 //!
 //! `debug replay <blf>` and `debug vbus` are the prior BLF-replay and
 //! `--virtual-bus` modes, kept as explicitly dev/test tooling: replay
@@ -18,6 +23,7 @@
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use cannet_core::BusConfig;
 use cannet_server::{
@@ -555,10 +561,7 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
         .serve(args.bind);
 
     // Ctrl-C is the graceful path: it races the server future so a
-    // held connection can't block the goodbye. Whichever way this
-    // exits, the mDNS shutdown below waits for the goodbye packet to
-    // reach the wire before the process does (see `Advertisement::
-    // shutdown`) — a bare `shutdown()` with no wait can lose it.
+    // held connection can't block the shutdown below.
     let outcome = tokio::select! {
         result = serve => Some(result),
         _ = tokio::signal::ctrl_c() => {
@@ -566,14 +569,77 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
             None
         }
     };
-    if let Some(advertisement) = mdns {
-        advertisement.shutdown().await;
-    }
+
+    shut_down(&supervisor, &host, mdns).await;
+
     if let Some(result) = outcome {
         result?;
     }
     Ok(())
 }
+
+/// Bring the proxy down within a bounded window, leaving nothing behind
+/// that holds the hardware.
+///
+/// Stopping the sidecar and saying goodbye on the network run
+/// *concurrently*, so the goodbye packet's second is spent inside the
+/// sidecar's grace period rather than after it. Both are bounded: the
+/// sidecar's stop by [`SIDECAR_STOP_GRACE`], the goodbye by the
+/// advertisement's own wait (which exists because a bare `shutdown()`
+/// with no wait can lose the packet).
+async fn shut_down(
+    supervisor: &Arc<SidecarSupervisor>,
+    host: &Arc<dyn SidecarHost>,
+    mdns: Option<discovery::Advertisement>,
+) {
+    let stopping = {
+        let supervisor = Arc::clone(supervisor);
+        let host = Arc::clone(host);
+        // Blocking by contract — it polls a child process — so it may
+        // not run on an async worker.
+        tokio::task::spawn_blocking(move || supervisor.stop(host.as_ref(), SIDECAR_STOP_GRACE))
+    };
+    let shutdown = async {
+        let goodbye = async {
+            if let Some(advertisement) = mdns {
+                advertisement.shutdown().await;
+            }
+        };
+        let _ = tokio::join!(stopping, goodbye);
+    };
+    // A second Ctrl-C during that window is the operator saying they
+    // will not wait. Exiting here is *our* exit, with our code: the
+    // alternative is the console host killing the process out from
+    // under us (`STATUS_CONTROL_C_EXIT`). The sidecar outlives it only
+    // as long as this process does — its stdin pipe dies with us, and
+    // that is the same EOF the graceful stop hands it.
+    tokio::select! {
+        () = shutdown => {}
+        _ = tokio::signal::ctrl_c() => {
+            eprintln!("hardware proxy: second Ctrl-C; exiting now");
+            std::process::exit(INTERRUPTED_EXIT_CODE);
+        }
+    }
+}
+
+/// How long the sidecar is given to exit on its own once its stdin pipe
+/// is closed, before its process tree is killed. Generous next to the
+/// ~1 s the sidecar actually takes, because the kill is a backstop and
+/// a slow-but-orderly shutdown releases the hardware more cleanly than
+/// a fast one that does not.
+const SIDECAR_STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// The exit code for a shutdown the operator cut short with a second
+/// Ctrl-C: 128 + SIGINT, the shell convention for "interrupted".
+const INTERRUPTED_EXIT_CODE: i32 = 130;
+
+/// Last-resort bound on tokio's runtime teardown. Dropping a runtime
+/// waits — with no timeout — for every *running* blocking-pool task,
+/// and the sidecar supervisor's wait loop is one of those: it returns
+/// only when the child exits. The shutdown sequence has already ended
+/// both by the time we get here, so this is not the mechanism, only the
+/// guarantee that nothing can hold the process open indefinitely.
+const RUNTIME_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Print the error the way it was written to read and exit non-zero.
 ///
@@ -581,9 +647,21 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
 /// the bind guard's carefully worded sentence reached the operator as
 /// `UnprotectedBind { bind: 0.0.0.0:50051, missing: [...] }`. The
 /// operator gets the `Display` form; nothing else changes.
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
-    match run().await {
+///
+/// The runtime is built by hand rather than by `#[tokio::main]`,
+/// because that macro *drops* the runtime — an unbounded wait — where
+/// this needs [`tokio::runtime::Runtime::shutdown_timeout`].
+fn main() -> std::process::ExitCode {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("{}", fatal_message(&e));
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let outcome = runtime.block_on(run());
+    runtime.shutdown_timeout(RUNTIME_TEARDOWN_TIMEOUT);
+    match outcome {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{}", fatal_message(e.as_ref()));
