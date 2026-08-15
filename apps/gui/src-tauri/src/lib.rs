@@ -676,6 +676,15 @@ pub fn run() -> ! {
             if code.is_some() {
                 *exit_code_slot.lock().expect("exit code mutex poisoned") = code;
             }
+            // Hang up on every server before the process goes away, so
+            // the disconnect is something we did rather than something
+            // the server infers from a socket that stopped answering.
+            // Done host-side rather than in the window's close handler:
+            // this arm is reached by every exit route, including the
+            // ones where the webview is already gone. Bounded — see
+            // `session::disconnect_on_exit`. First, so no more frames
+            // land while the flush below runs.
+            session::disconnect_on_exit(app_handle);
             // Opt-in "clear scratch cache on exit" (Settings, ADR 0002
             // DS-7): wipe the session buffer so the prior session isn't
             // reloaded next launch. This is the same reset the Clear

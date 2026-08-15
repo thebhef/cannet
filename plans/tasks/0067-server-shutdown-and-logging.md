@@ -350,6 +350,96 @@ code changed in phase 1 — the temporary probes in
 `cannet-client` example used to drive a real session were removed
 before committing.
 
+### 2026-08-13 — phase 2, session robustness
+
+Branch `task67b-session-robustness`, off `task67a-shutdown-investigation`
+(`bc26cae`). Three commits, one per leg of the phase-1 verdict.
+
+**Leg 1 — the GUI hangs up on exit** (`768f7a3`).
+
+*Layer choice: the host's `RunEvent::ExitRequested` arm, not the
+window's `onCloseRequested` handler.* The frontend handler is reached
+only on a window close and returns early when nothing is dirty; the host
+arm is on every exit route (window close, `AppHandle::exit`, the ADR
+0031 perf harness) and does not depend on a webview that may already be
+gone. The verdict's "fix on the close path, before `win.destroy()`"
+therefore landed one layer down.
+
+*Second design point: signalling was not enough.* Dropping a
+`SessionHandle` only sends a oneshot; the worker learns of it on its
+next poll, and `run` reaches `std::process::exit` far sooner than that,
+so a disconnect-and-exit would have been indistinguishable from the
+process dying mid-session — the very case being fixed. So
+`cannet_client::SessionHandle` grew `shutdown_timeout(Duration)`, which
+signals and then waits for the worker to finish (a channel whose sender
+lives in the worker thread's closure, so its drop is the "worker and its
+runtime are gone" edge), returning whether it made the budget.
+`session::disconnect_on_exit` spends **500 ms** across all sessions on a
+single deadline — enough for a healthy loopback/LAN close, short enough
+that an unreachable server cannot make quitting feel stuck. No
+connection-state event is emitted; the webview it would notify is on its
+way out.
+
+TDD: `shutdown_timeout_returns_only_once_the_session_is_torn_down` in
+`crates/cannet-client/tests/end_to_end.rs` (red — no such method —
+before the implementation). It asserts the receive half is *already* at
+end-of-stream when `shutdown_timeout` returns, which is what separates
+"the disconnect completed" from "the disconnect was signalled". The
+Tauri arm itself is two lines with no unit-test seam.
+
+README's remote-session section now says quitting disconnects.
+
+**Leg 2 — dropped-session regression test** (`ae7b380`).
+
+Harness: `crates/cannet-server/tests/proxy.rs`, the existing
+fake-upstream pattern (single-owner `LoopingBlfReplay` behind
+`ProxyServerImpl`), plus a new `spawn_severable_tunnel` — a bare TCP
+relay in front of the proxy that drops both sockets on command. That is
+what makes it a *death* rather than the nominal hang-up the neighbouring
+`a_client_hanging_up_drops_its_upstream_session` already covers: no
+`GOAWAY`, no `END_STREAM`, and the client end is left intact and held
+past the assertions so nothing on it can send a close. The single-owner
+upstream is the witness — a leaked session would answer the next one
+`BUSY` forever.
+
+The behaviour was already correct (E4), so the test passed on first run.
+Falsified deliberately to prove it is not vacuous: with `cut.send(())`
+commented out, it fails with "the killed client's session was never
+released". No hardware, no Python; runs in ~2 s.
+
+**Leg 3 — the close-race warn is gone** (`a860fa3`).
+
+Fix shape: **suppress at the reader**, not join-before-close.
+`_close_locked` runs under `_lock` and `_rx_pump` takes the same lock in
+`_current_channel`, so joining the rx thread from the close would
+deadlock — the code does not support the verdict's second option
+cleanly. Since `_close_locked` sets `_stop` *before* closing the
+channel, a read that fails with `_stop` already set is by construction
+one we asked for: it now goes to the debug sink and ends the loop. A
+read that fails with `_stop` clear still warns.
+
+TDD: two tests in `tests/test_shared_interface.py`. The first drives the
+real race — a fake channel that fails an in-flight `recv` once closed,
+the way PCAN-Basic does, with an `in_recv` event so the close lands
+while the reader is provably inside a read — and asserts no WARNING
+record survives it (red before the fix, with the owner's exact message).
+The second pins the other half: a read that fails outside a close still
+warns.
+
+Test counts, all green after the last commit:
+
+| layer | command | result |
+| --- | --- | --- |
+| client | `cargo test -p cannet-client --test end_to_end` | 8 passed |
+| host | `cargo test -p cannet-gui` | 569 passed, 6 ignored |
+| server | `cargo test -p cannet-server` | 94 passed, 2 ignored |
+| sidecar | `uv run --extra dev pytest` | 105 passed |
+
+`cargo clippy --all-targets` clean on `cannet-client`, `cannet-gui`,
+`cannet-server`; `ruff check`, `ruff format --check` and `mypy` clean on
+the sidecar. No frontend file was touched, so the pnpm suites were not
+in scope.
+
 ## Blockers / side effects
 
 - **Console Ctrl-C is disabled by inheritance in the agent's shell
@@ -365,6 +455,13 @@ before committing.
 - **The server log has no timestamps**, so an experiment timeline
   cannot be correlated against it without external markers. This was a
   live cost during phase 1 and is first-hand motivation for phase 4.
+- **Same close race, other caller (noticed in phase 2, left alone):**
+  `_SharedInterface.reconfigure` also closes the old channel out from
+  under an in-flight `recv`, but without setting `_stop` — it is a swap,
+  not a shutdown — so a `ConfigureBus` on an open interface can still
+  produce one `rx for … failed` WARNING. Phase 2's scope was the nominal
+  *close*, and suppressing it at the reconfigure site needs a different
+  signal than `_stop`. Cosmetic, same family as (B).
 - **Latent, out of scope here:** `SidecarSupervisor::restart` kills
   only the direct child. It happens to be sufficient on the dev `uv`
   chain (E5) but is not a guarantee for other launcher shapes; folded

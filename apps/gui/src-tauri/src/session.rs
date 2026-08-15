@@ -795,6 +795,45 @@ pub(crate) fn disconnect_remote_server(
     connection_state::remove_and_emit(&app, retired);
 }
 
+/// How long the whole exit-time disconnect may take. Generous enough
+/// for a healthy session to close over loopback or a LAN, short enough
+/// that a wedged or unreachable server can't make quitting feel stuck.
+const EXIT_DISCONNECT_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// End every active session as the app exits, waiting — briefly — for
+/// each remote session's worker to finish.
+///
+/// Without this the process simply dies with its sessions open, and the
+/// server has to infer the disconnect from a socket that stopped
+/// answering: exactly the shape of a client that crashed. The wait is
+/// what makes the difference real (signalling alone is asynchronous, and
+/// the process exits far sooner than the worker would get around to it),
+/// and [`EXIT_DISCONNECT_BUDGET`] is what keeps it from delaying the
+/// exit when the server is gone.
+///
+/// No connection-state event is emitted: the webview this would notify
+/// is already on its way out.
+pub(crate) fn disconnect_on_exit(app: &AppHandle) {
+    let state: State<'_, AppState> = app.state();
+    let sessions = state.unregister_sessions(None);
+    if sessions.is_empty() {
+        return;
+    }
+    let deadline = std::time::Instant::now() + EXIT_DISCONNECT_BUDGET;
+    for (addr, mut session) in sessions {
+        session.stop.store(true, Ordering::Relaxed);
+        let Some(handle) = session.handle.take() else {
+            continue; // in-process session — nothing on the wire to close
+        };
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if handle.shutdown_timeout(remaining) {
+            tracing::info!(address = %addr, "disconnected on exit");
+        } else {
+            tracing::warn!(address = %addr, "session did not close within the exit budget");
+        }
+    }
+}
+
 /// Decide how to route an incoming frame given the per-channel bus
 /// mapping. Returns `Some(bus_id)` to stamp the frame with that bus,
 /// `None` to leave it unassigned, or `Err(())` to drop the frame

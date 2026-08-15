@@ -54,6 +54,7 @@ pub mod tls;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use cannet_core::{CanFrame, CanFrameSource};
 use cannet_wire::proto::{
@@ -522,10 +523,18 @@ pub fn connect_and_subscribe(
     let (frame_tx, frame_rx) = mpsc::channel::<Result<CanFrame, ConnectionError>>();
     let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<SessionReady, ConnectionError>>(1);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
 
     let thread = thread::Builder::new()
         .name("cannet-client".into())
-        .spawn(move || run_worker(&config, subscriptions, frame_tx, ready_tx, shutdown_rx))
+        .spawn(move || {
+            // Nothing is ever sent on `done_tx`; it exists so that its
+            // drop — which happens only once the worker has returned and
+            // its runtime is gone — wakes
+            // `SessionHandle::shutdown_timeout`.
+            let _done = done_tx;
+            run_worker(&config, subscriptions, frame_tx, ready_tx, shutdown_rx);
+        })
         .map_err(|e| ConnectionError::Thread(e.to_string()))?;
 
     match ready_rx.recv() {
@@ -536,6 +545,7 @@ pub fn connect_and_subscribe(
             },
             handle: SessionHandle {
                 shutdown_tx: Some(shutdown_tx),
+                done_rx,
                 _thread: thread,
             },
             transmitter: SessionTransmitter {
@@ -751,6 +761,10 @@ impl std::error::Error for SessionClosed {}
 /// next [`CanFrameSource::next_frame`] call.
 pub struct SessionHandle {
     shutdown_tx: Option<oneshot::Sender<()>>,
+    /// Wakes when the worker thread's closure drops its sending half —
+    /// i.e. once the worker has returned and its runtime, with the gRPC
+    /// stream inside it, is gone. See [`Self::shutdown_timeout`].
+    done_rx: mpsc::Receiver<()>,
     _thread: thread::JoinHandle<()>,
 }
 
@@ -759,6 +773,30 @@ impl SessionHandle {
     /// dropping the handle; provided for explicitness at call sites.
     pub fn shutdown(self) {
         // Drop fires here, sending the signal.
+    }
+
+    /// Signal the worker to disconnect and wait up to `timeout` for it
+    /// to finish tearing the session down. Returns whether it finished
+    /// inside the budget.
+    ///
+    /// Signalling alone — [`Self::shutdown`] or a plain drop — is
+    /// asynchronous: the worker learns of it on its next poll. A caller
+    /// that is about to end the process needs more than that, because a
+    /// session torn down by process death is indistinguishable, from the
+    /// server's side, from a client that crashed. This is that wait, and
+    /// the budget is what stops it turning into a hang when the worker
+    /// is wedged.
+    #[must_use]
+    pub fn shutdown_timeout(mut self, timeout: Duration) -> bool {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        // `Disconnected` is the success case: the worker dropped its
+        // sender on the way out.
+        !matches!(
+            self.done_rx.recv_timeout(timeout),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        )
     }
 }
 
