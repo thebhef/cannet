@@ -188,7 +188,11 @@ async function recentsShown(): Promise<string[]> {
 }
 
 /// Import a capture through the toolbar's single entry point, all the
-/// way through the channel-map dialog's Open.
+/// way through the channel-map dialog's Open, then the host's own
+/// `log-finished` the pump emits once it's done — the launcher stays
+/// busy (`state.kind === "loading"`) until that arrives (task 75 item
+/// 2(a)), so a scope test that imports twice needs it fired to get back
+/// to an idle "Import trace…" button between imports.
 async function importCapture(path: string): Promise<void> {
   dialogPath = path;
   await act(async () => {
@@ -200,6 +204,9 @@ async function importCapture(path: string): Promise<void> {
   });
   await act(async () => {
     await new Promise((r) => setTimeout(r, 20));
+  });
+  await act(async () => {
+    for (const h of listeners.get("log-finished") ?? []) h({ payload: { status: "ok", total: 1 } });
   });
 }
 

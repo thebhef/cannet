@@ -108,10 +108,10 @@ export function splitStatus(inp: StatusInputs): StatusSplit {
   // the user is waiting on, and the session it may be about to replace
   // is not. Ongoing activity, so it rests rather than flashing.
   if (inp.scanningBlfPath != null) {
-    return { resting: `Scanning ${shortenPath(inp.scanningBlfPath)} … ${dbc}.`, transient: null };
+    return { resting: `Loading ${shortenPath(inp.scanningBlfPath)} … ${dbc}.`, transient: null };
   }
   if (inp.scanningMdfPath != null) {
-    return { resting: `Scanning ${shortenPath(inp.scanningMdfPath)} … ${dbc}.`, transient: null };
+    return { resting: `Loading ${shortenPath(inp.scanningMdfPath)} … ${dbc}.`, transient: null };
   }
 
   // Remote sessions take priority over the BLF idle/done line — the user

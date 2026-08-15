@@ -1040,6 +1040,22 @@ export function App() {
     unlistens.push(
       listen<LogFinished>("log-finished", (event) => {
         if (event.payload.status === "ok") {
+          // A cancelled pump ends through the identical clean-exit path
+          // a natural EOF does (`cancel_import`'s cooperative flag just
+          // makes `run_pump` stop early) — this side is the only one
+          // that knows the click happened, so it's what tells the two
+          // apart. Abandon rather than present the partial frames as a
+          // finished capture: reset to idle and clear what the pump
+          // already appended, the same clear a fresh open runs before
+          // starting.
+          if (importCancelledRef.current) {
+            importCancelledRef.current = false;
+            setState({ kind: "idle" });
+            void resetSession({
+              onError: (err) => setState({ kind: "error", message: String(err) }),
+            });
+            return;
+          }
           const total = event.payload.total;
           setState((s) => {
             if (s.kind === "loading" || s.kind === "running") {
@@ -1053,6 +1069,7 @@ export function App() {
           // Disconnect (clear-all) or look at the per-server status in
           // the project panel.
         } else {
+          importCancelledRef.current = false;
           setState({ kind: "error", message: event.payload.message });
         }
       }),
@@ -1061,7 +1078,7 @@ export function App() {
     return () => {
       unlistens.forEach((p) => p.then((fn) => fn()));
     };
-  }, [invalidateCache]);
+  }, [invalidateCache, resetSession]);
 
   // Re-anchor every trace window when the session buffer shrinks (a new
   // connection cleared it) — a no-op on every other tick.
@@ -1106,6 +1123,14 @@ export function App() {
   // stretch is the pending state itself, which cannot go stale.
   const traceOpenInFlight = useRef(false);
 
+  // Set the moment the busy launcher is clicked to cancel a running
+  // import, read (and cleared) by the `log-finished` listener: the
+  // pump's own clean-exit path emits the identical `Ok` event whether
+  // it hit EOF or was cancelled (`cancel_import`'s cooperative flag), so
+  // the frontend is the only side that knows a completion was actually
+  // an abandonment — it's the one that asked for it.
+  const importCancelledRef = useRef(false);
+
   // "Import trace…": one file-open dialog for both formats,
   // routed by the picked path's extension (`importFormatFor`) to the
   // format's own scan command — the host still never sniffs the file,
@@ -1114,6 +1139,21 @@ export function App() {
   // dialog.
   const handleImportTrace = useCallback(
     async (presetPath?: string) => {
+      // The launcher doubles as Cancel once the pump is actually
+      // running (`state.kind === "loading"`, task 75 item 2(b)) rather
+      // than merely censusing — the census phase stays plain-disabled,
+      // unchanged, since there's no cooperative checkpoint to cancel it
+      // at (a single opaque file walk, not a per-frame loop).
+      if (state.kind === "loading") {
+        importCancelledRef.current = true;
+        try {
+          await invoke("cancel_import");
+        } catch (err) {
+          importCancelledRef.current = false;
+          setState({ kind: "error", message: String(err) });
+        }
+        return;
+      }
       if (traceOpenInFlight.current || pendingBlf !== null || pendingMdf !== null) return;
       traceOpenInFlight.current = true;
       try {
@@ -1162,7 +1202,7 @@ export function App() {
         traceOpenInFlight.current = false;
       }
     },
-    [dropRecentCapture, pendingBlf, pendingMdf],
+    [state.kind, dropRecentCapture, pendingBlf, pendingMdf],
   );
 
   // Confirm the BLF channel mapping and actually start the pump.
@@ -3031,16 +3071,28 @@ export function App() {
   // The capture whose census is walking right now, in whichever format
   // — one trace-open at a time, so at most one of the two is set.
   const scanningTracePath = scanningBlfPath ?? scanningMdfPath;
+  // The capture actually loading right now — past the census, past the
+  // mapping dialog, the pump running until its own `log-finished`. This
+  // is `state.kind === "loading"`'s whole lifetime (task 75 item 2(a)):
+  // it must not end when data starts reaching the plot panel, only when
+  // the import genuinely finishes. Unlike the census, this phase is
+  // click-to-cancel (item 2(b)) rather than merely disabled.
+  const importingTracePath = state.kind === "loading" ? capturePath(state.result) : null;
   const toolbarItems: ToolbarItem[] = [
     { id: "project.open", label: "Open project…" },
     { id: "project.save", label: "Save project" },
     "sep",
     // A census running is the one thing the user is waiting on, so the
     // button that started it says so rather than sitting there looking
-    // idle — which is what got clicked through repeatedly.
+    // idle — which is what got clicked through repeatedly. Once the
+    // pump itself is running the button stays busy but is no longer
+    // disabled: clicking it cancels (`handleImportTrace`'s own busy
+    // check does the routing).
     scanningTracePath !== null
-      ? { id: "trace.import", label: "Scanning…", disabled: true, busy: true }
-      : { id: "trace.import", label: "Import trace…" },
+      ? { id: "trace.import", label: "Loading trace…", disabled: true, busy: true }
+      : importingTracePath !== null
+        ? { id: "trace.import", label: "Loading trace…", busy: true }
+        : { id: "trace.import", label: "Import trace…" },
     "recentCaptures",
     { id: "dbc.add", label: "Add DBC…" },
     "sep",
@@ -3158,8 +3210,12 @@ export function App() {
           {/* Indeterminate — the walk's length is the file's length,
               and there is no progress to report until it ends. Same
               affordance the plot uses while its first sample builds;
-              the status text alongside it names the file. */}
-          {scanningTracePath !== null && <span className="trace-scan-bar" aria-hidden="true" />}
+              the status text alongside it names the file. Spans the
+              census and the pump: it must not drop out just because
+              data has started reaching the plot panel. */}
+          {(scanningTracePath !== null || importingTracePath !== null) && (
+            <span className="trace-scan-bar" aria-hidden="true" />
+          )}
           {status}
         </div>
       </header>

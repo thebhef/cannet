@@ -149,7 +149,7 @@ function findButton(label: string): HTMLButtonElement {
 
 function importButton(): HTMLButtonElement {
   const btn = Array.from(document.querySelectorAll<HTMLButtonElement>(".toolbar > button")).find(
-    (b) => b.textContent === "Import trace…" || b.textContent === "Scanning…",
+    (b) => b.textContent === "Import trace…" || b.textContent === "Loading trace…",
   );
   if (!btn) throw new Error("the Import trace… toolbar button is gone");
   return btn;
@@ -337,7 +337,7 @@ describe("census busy feedback", () => {
     const busy = importButton();
     expect(busy).toHaveAttribute("aria-busy", "true");
     expect(busy).toBeDisabled();
-    expect(busy.textContent).toBe("Scanning…");
+    expect(busy.textContent).toBe("Loading trace…");
     // …alongside an indeterminate progress affordance in the header.
     expect(document.querySelector(".trace-scan-bar")).not.toBeNull();
 
