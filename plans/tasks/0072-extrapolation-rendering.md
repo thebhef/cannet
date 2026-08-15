@@ -847,6 +847,152 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     **This change is on the data path the ADR-0031 gate measures** — the
     gate is the orchestrator's task-end run, not this phase's.
 
+- **2026-08-15, phase 6 (`task72-p6-extrapolation-shots`, branched off
+  `task72-p5-batched-catchup`):** make the rendering photographable, and
+  produce the sign-off set.
+
+  **Delivered: a committed fixture carrying every ruled shape, a
+  dialog-free capture scenario that opens it, and four PNGs (dark +
+  light × two windows) in which five of the six shapes render as ruled.
+  The sixth — the one-sample hline's _leading_ wing — was found drawing
+  solid, attributed to a one-ended clamp in `splitExtrapolatedRows`, and
+  fixed test-first. The shots predate that fix and photographing it needs
+  a build this phase was not allowed to run.**
+
+  - _The fixture (`a4854949`)._ `examples/extrapolation/`: 20 s, 871
+    frames, ~5 KB, seven single-signal messages and nothing else. Six
+    carry a ruled shape; the seventh (`RefLevel`, 50 ms throughout)
+    exists **only to carry the window's right edge** — without a series
+    that outlives the others, every other series' last sample _is_ the
+    edge and there is no tail to draw. The generator is deterministic (no
+    RNG, no wall clock), so the file is byte-identical across runs. The
+    project puts all seven on one **per-unit** area, which is the mode
+    that gives the enums a shared lanes axis, so one frame holds
+    everything.
+
+    Guarded from both ends, because these captures are **eyeballed rather
+    than diffed** and nothing else in the build would notice a fixture
+    that stopped exhibiting a shape.
+    `the_screenshot_fixture_exhibits_every_ruled_extrapolated_shape`
+    reads the committed BLF through the real reader, decodes it against
+    the committed DBC, and asserts each series' classified spans over the
+    photographed window — `StoppedLevel [(8, 20)]`, `StalledLevel
+    [(6, 13)]`, `OneShotLevel [(0, 10), (10, 20)]`, `StoppedMode
+    [(6, 20)]`, `StalledMode [(7, 15)]`, and **nothing** for `RefLevel`
+    or `DenseMode`, the two controls. `parses_the_checked_in_
+    extrapolation_example_project` keeps the project openable and its one
+    area whole.
+
+  - _The scenario (`632e02e5`)._ `--scenario extrapolation`, a second
+    scenario rather than a step of the parity walk: the walk photographs
+    an **idle** app on purpose, and this one needs data. The import is
+    dialog-free because the file picker is a native dialog outside
+    everything a page can reach — `--capture` is seeded into the run's
+    own profile as `recent_blfs`, and the step opens it from the
+    toolbar's Recent menu, which is the same import call with a path.
+    The channel dialog's own defaults map the one BLF channel onto the
+    project's one bus, so the step presses **Open**. No fixed sleeps: it
+    waits for the dialog, then for the app's own "Loading trace…" to go
+    away, because a shutter falling mid-import photographs a partial
+    capture — whose series all end early, which is the very shape the
+    scenario exists to show. Then **fit x axis**, which is what pins the
+    window to the capture's whole extent. Follow-live is left on: with a
+    static capture the newest frame is the fixture's last, so the window
+    comes to rest where the fit put it (phase 2's ceiling fix is what
+    makes that true).
+
+    The label guard now walks **every** scenario and learned the second
+    spelling the frontend has — a command or toolbar label is declared
+    (`label: "…"`), a modal's button carries its text as JSX, matched as
+    a line of its own. Verified red against a bogus modal label.
+
+  - _Defect found by the photograph (`a874e4c9`)._ The whole point of
+    taking the picture.
+
+    - _Observation (raw)._ In `dark-02`, `OneShotLevel`'s hline runs
+      **solid** from 0 to 10 s and **dashed** from 10 to 20 s. Measured
+      on the PNG along the lit row: left of the sample, one unbroken run
+      of 600 lit pixels, 5 px thick; right of it, 57 runs of 5 px on a
+      10 px period — the `[6, 4]` dash. The ruling is that both wings
+      dash.
+
+    - _Hypothesis._ `splitExtrapolatedRows` clamps only one end of a
+      stretch to the column grid: a span running past the newest column
+      is drawn to that column (`found >= 0 ? found : xs.length - 1`),
+      while a span starting before the oldest column is discarded whole
+      (`if (i0 < 0) continue`). Both cases arise for the same reason —
+      the fetch reaches past the visible x range while no series has a
+      sample before the capture's first frame — so a _leading_ span
+      routinely starts left of column 0. Falsifiable: if the function
+      produced two dashed wings for a leading span that starts before
+      column 0, the mechanism would be elsewhere (the spans not reaching
+      the renderer, or the classification itself).
+
+    - _Data._ The two inputs side by side at the unit seam. A leading
+      span starting **exactly at** column 0 gives row `[7, null, 7, null,
+      null]` and segments `[{0,2},{2,4}]` — both wings blanked and
+      dashed. The same span starting **half a second earlier** gives
+      `[7, 7, 7, null, null]` and `[{2,4}]` — solid left, dashed right,
+      which is the photograph. Hypothesis confirmed; the classification
+      and the wire are exonerated, and the host-side test above already
+      pins that both spans are computed.
+
+    - _Fix._ `Math.max(lastAtOrBefore(xs, a), 0)` — the same rule the far
+      end already had. The rule it sits beside is unchanged and pinned by
+      its own new case: a multi-sample series is still not drawn before
+      its first sample, because its near-end column carries `null` and
+      the stretch is skipped whole; a series whose first sample _is_
+      column 0 has a leading span covering no column and is skipped by
+      the existing `i1 <= i0`.
+
+  - _Harness isolation, one layer down (`632e02e5`)._ Found the hard way:
+    every capture run after **17:41:25 UTC** died at the attach with a
+    bare `Connection refused`, on two different `--port`s, from a harness
+    that had worked at 17:40. At 17:41:25 the operator's own
+    `cannet-gui.exe` started, and its `WebView2` browser process holds
+    `--user-data-dir=%LOCALAPPDATA%\dev.cannet.app\EBWebView` with no
+    `--remote-debugging-port`. **`WebView2` keys its browser process by
+    user data folder**, and the app's is a fixed path unaffected by
+    `--app-data-dir` — so the capture's child was served by the browser
+    process already running, and
+    `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` was never applied.
+    Falsification: give the child its own `WEBVIEW2_USER_DATA_FOLDER`
+    inside the run's app-data directory and re-run the capture that had
+    just failed, with the operator's app still open — it attached and
+    wrote both PNGs. Same isolation argument phase 4 made for the app
+    profile, one layer down; it lands in `gui_env` beside `gui_args` so
+    it is testable without running a GUI, and it is the sixth determinism
+    lever in the harness README.
+
+  - _The set._ Four PNGs at 1600×1000, dark and light, from
+    `target/release/cannet-gui.exe` as built at the tip of phase 5.
+    `01-capture-imported` is the follow-live window the import leaves
+    (10–20 s in both themes — a zoomed second view; its width is the
+    panel's own, not a pinned one), `02-extrapolated-stretches` is the
+    fitted 0–20 s sign-off frame. Read and checked, not just written.
+    **Five of six shapes render as ruled** in both themes: the dashed
+    tail (8 → 20 s), the dashed interior stall (6 → 13 s), the one-sample
+    hline's trailing wing, the striped lane tail (`Running`, 6 → 20 s)
+    with a haloed label, the partially striped tile (`Open`, striped
+    7 → 15 s inside a tile spanning 3 → 20 s), and lane sample markers on
+    all three lanes. The sixth is the leading wing above. Kept out of the
+    repo, per the no-committed-review-artifacts rule.
+
+    Side observation for the owner, not acted on: in the **light** theme
+    the enum tile labels (`Idle`, `Active`, `Derate`, `Fault`) read much
+    weaker against their colormap tints than the dark theme's do — the
+    halo that makes a label survive hatching does not also make it
+    survive a light tint. Visible in `light-02`.
+
+  - Host: `cargo test -p cannet-gui` 665 passed / 6 ignored (from 663 at
+    phase 5 — the fixture-shape and project-parse tests);
+    `cargo test -p cannet-perf-measurement` 44 lib tests passed (from 40
+    — the recents seeding, its JSON escaping, the scenario selector and
+    the WebView2 profile); `cargo clippy --workspace --all-targets`
+    clean; `cargo fmt --check` clean. Frontend: 162 test files / 2150
+    tests passed (from 2148 — the two clamp cases); `tsc --noEmit` and
+    `pnpm build` clean. No release rebuild, no perf-gate run.
+
 ## Blockers / side effects
 
 - ~~**The enum leading-edge lag is attributed but NOT fixed.**~~ **Fixed
@@ -862,26 +1008,25 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   the density rule, the ≤32 floor and the tile over-paint are reconciled
   by there being one mechanism instead of two competing ones. See phase
   4's status entry.
-- **The screenshot set for owner sign-off was not produced** — the only
-  release binary in the tree predates the feature commits, and
-  photographing it would show the pre-feature rendering. It needs a
-  `tauri build --no-bundle` of the current tip, which neither phase 4 nor
-  phase 5 was allowed to run. The harness's isolation gap is fixed and
-  tested and its stale scenario step is fixed (phase 5, `267c3e08`), so
-  the set is that build plus two `screenshot --theme dark|light` runs.
-  Correctness does not ride on it (the DOM and canvas tests do), but the
-  ruling's "the implementation phase still delivers true renderer
-  screenshots for final sign-off" is outstanding.
-- **The scenario cannot photograph the extrapolation rendering at all**
-  — and this is the larger half of the gap above. The walk runs an idle
-  app, so every plot in it is empty; a dashed tail, an interior >10×
-  stall, a one-sample hline and a striped lane need a capture with those
-  shapes loaded. Phase 5 scoped the work (fixture capture + DBC + an
-  example project curating them, a dialog-free import via seeded
-  `recent_blfs` and the toolbar's Recent menu, a deterministic x window)
-  and stopped there: none of it can be verified without a release build,
-  and an unverified interactive step aborts the whole capture run. See
-  phase 5's status entry for the recommended slice.
+- ~~**The scenario cannot photograph the extrapolation rendering at
+  all.**~~ **Fixed in phase 6** (`a4854949`, `632e02e5`): a committed
+  fixture carrying every ruled shape, and a `--scenario extrapolation`
+  that imports it without a native dialog (seeded `recent_blfs` → the
+  toolbar's Recent menu → the channel dialog's own defaults) and pins the
+  x window with **fit x axis**. Verified for real against the shipping
+  binary, twice per theme.
+- **The sign-off set predates the leading-wing fix, and re-shooting it
+  needs a build this phase could not run.** The four PNGs were taken from
+  `target/release/cannet-gui.exe` as built at the tip of phase 5, and
+  phase 6 then found and fixed (`a874e4c9`) the one-sample hline's
+  **leading** wing drawing solid. So five of the six ruled shapes are
+  photographed as ruled and the sixth is photographed as the defect. The
+  fix is landed and pinned at the unit seam; what is outstanding is one
+  `pnpm --dir apps/gui tauri build --no-bundle` plus two
+  `screenshot --scenario extrapolation --theme dark|light` runs, which
+  now take about a minute each. **This is the owner/orchestrator
+  decision left in this task**: sanction the rebuild, or accept the set
+  with the leading wing read from the test rather than the picture.
 - **`max_points == 0` still run-reduces a categorical window**, where
   the numeric serve of the same request returns the raw slice. Left
   as-is: no plot fetch reaches it (`MIN_DECIMATION_POINTS = 200` is
