@@ -329,6 +329,8 @@ describe("D10 end to end", () => {
       sessionStartSeconds: 0,
       renameElement: () => {},
       appCommands: { "capture.clear": onFired },
+      recentCaptures: [],
+      openRecentCapture: () => {},
     } as unknown as Parameters<typeof useCommands>[0]);
     return (
       <>

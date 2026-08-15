@@ -2680,6 +2680,8 @@ export function App() {
     sessionStartSeconds,
     renameElement,
     appCommands,
+    recentCaptures,
+    openRecentCapture: (path: string) => void handleImportTrace(path),
   });
   const runCommand = commands.runCommand;
 

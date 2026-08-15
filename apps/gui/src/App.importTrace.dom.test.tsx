@@ -352,3 +352,73 @@ describe("Recent captures — dismissal (task 75 item 4)", () => {
     expect(document.querySelector(".recent-captures-menu")).not.toBeNull();
   });
 });
+
+describe("Recent captures — command palette (task 75 item 5)", () => {
+  async function openCommandPalette() {
+    await act(async () => {
+      fireEvent.keyDown(document.activeElement ?? document.body, {
+        key: "P",
+        ctrlKey: true,
+        shiftKey: true,
+      });
+    });
+  }
+  function paletteLabels(): string[] {
+    return Array.from(document.querySelectorAll(".palette-item-label")).map(
+      (el) => el.textContent ?? "",
+    );
+  }
+
+  it("lists each recent capture as its own command", async () => {
+    seededRecents = ["/old/legacy.blf", "/new/fresh.mf4"];
+    await hydrateState();
+    await mountAndSeed();
+    await openCommandPalette();
+    const labels = paletteLabels();
+    expect(labels).toContain("Open recent: legacy.blf");
+    expect(labels).toContain("Open recent: fresh.mf4");
+  });
+
+  it("finds a recent entry by a fragment of its full path, not just its filename", async () => {
+    seededRecents = ["/old/legacy.blf", "/new/fresh.mf4"];
+    await hydrateState();
+    await mountAndSeed();
+    await openCommandPalette();
+    const input = document.querySelector<HTMLInputElement>(".palette input.palette-input")!;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "old" } });
+    });
+    const labels = paletteLabels();
+    expect(labels).toContain("Open recent: legacy.blf");
+    expect(labels).not.toContain("Open recent: fresh.mf4");
+  });
+
+  it("selecting a recent entry routes through the same open call the button uses", async () => {
+    seededRecents = ["/old/legacy.blf"];
+    await hydrateState();
+    await mountAndSeed();
+    await openCommandPalette();
+    const input = document.querySelector<HTMLInputElement>(".palette input.palette-input")!;
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "legacy" } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(input, { key: "Enter" });
+    });
+    await waitFor(() => findButton("Open"));
+    expect(
+      invokeCalls.some(
+        (c) => c.cmd === "scan_blf_channels" && c.args.blfPath === "/old/legacy.blf",
+      ),
+    ).toBe(true);
+    expect(dialogOpenCalls.length).toBe(0);
+  });
+
+  it("an empty recents list contributes no commands", async () => {
+    seededRecents = [];
+    await hydrateState();
+    await mountAndSeed();
+    await openCommandPalette();
+    expect(paletteLabels().some((l) => l.startsWith("Open recent:"))).toBe(false);
+  });
+});
