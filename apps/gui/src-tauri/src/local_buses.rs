@@ -143,11 +143,17 @@ impl LocalBusRegistry {
 
     /// Open a `cannet-client` session against `spec.remote_address`
     /// and attach a bridge on the named virtual bus.
+    ///
+    /// `config` says how that server is reached — the caller plans it
+    /// from what the host has stored for the address (ADR 0041), because
+    /// the registry has no view of the trust store and a bridge must not
+    /// be the one connection that skips it.
     pub fn attach_bridge(
         &self,
         virtual_bus_id: &str,
         spec: &BridgeSpec,
         allocates: bool,
+        config: &ConnectConfig,
     ) -> Result<(), String> {
         let mut guard = self.inner.lock().expect("local-bus registry poisoned");
         let entry = guard
@@ -167,11 +173,10 @@ impl LocalBusRegistry {
         } else {
             Subscription::new(spec.interface.clone(), LOCAL_BUS_CHANNEL)
         };
-        let session = connect_and_subscribe(
-            &ConnectConfig::plaintext(&spec.remote_address),
-            vec![subscription],
-        )
-        .map_err(|e: ConnectionError| format!("bridge {:?} failed to connect: {e}", spec.name))?;
+        let session =
+            connect_and_subscribe(config, vec![subscription]).map_err(|e: ConnectionError| {
+                format!("bridge {:?} failed to connect: {e}", spec.name)
+            })?;
         let effective_id = session
             .subscriptions()
             .first()
@@ -225,7 +230,15 @@ impl LocalBusRegistry {
 /// buses are dropped first. Per-binding session participants are
 /// **not** opened here — that happens on Connect, the same way a
 /// remote session would.
-pub fn replay(registry: &LocalBusRegistry, defs: &[LocalVirtualBusDef]) -> Vec<String> {
+///
+/// `connect` plans how each bridge's remote server is reached; a bridge
+/// whose address the host cannot plan for is reported as an error
+/// alongside the others rather than silently dialled unprotected.
+pub fn replay(
+    registry: &LocalBusRegistry,
+    defs: &[LocalVirtualBusDef],
+    connect: &dyn Fn(&str) -> Result<ConnectConfig, String>,
+) -> Vec<String> {
     registry.drop_all();
     let mut errors = Vec::new();
     for def in defs {
@@ -237,7 +250,9 @@ pub fn replay(registry: &LocalBusRegistry, defs: &[LocalVirtualBusDef]) -> Vec<S
             // Until BridgeSpec carries an explicit `allocates` hint,
             // default false. Users who need to bridge against a
             // factory id can hand-edit the project file.
-            if let Err(e) = registry.attach_bridge(&def.id, bridge, false) {
+            let attached = connect(&bridge.remote_address)
+                .and_then(|config| registry.attach_bridge(&def.id, bridge, false, &config));
+            if let Err(e) = attached {
                 errors.push(format!(
                     "attach bridge {:?} on vbus {:?}: {e}",
                     bridge.name, def.id,
@@ -314,7 +329,9 @@ pub(crate) fn replay_local_virtual_buses(
     state: State<'_, AppState>,
     defs: Vec<project::LocalVirtualBusDef>,
 ) -> Result<Vec<String>, String> {
-    let errors = replay(&state.local_buses, &defs);
+    let errors = replay(&state.local_buses, &defs, &|address| {
+        crate::connect_flow::config_for(&app, address)
+    });
     for err in &errors {
         sys_warn!(&app, "virtual-bus", "{err}");
     }
@@ -377,9 +394,10 @@ pub(crate) fn attach_local_bus_bridge(
     spec: project::BridgeSpec,
     allocates: Option<bool>,
 ) -> Result<(), String> {
+    let config = crate::connect_flow::config_for(&app, &spec.remote_address)?;
     state
         .local_buses
-        .attach_bridge(&virtual_bus_id, &spec, allocates.unwrap_or(false))?;
+        .attach_bridge(&virtual_bus_id, &spec, allocates.unwrap_or(false), &config)?;
     sys_info!(
         &app,
         "virtual-bus",
@@ -472,8 +490,37 @@ mod tests {
             name: "Bench".into(),
             bridges: vec![],
         }];
-        let errs = replay(&reg, &defs);
+        let errs = replay(&reg, &defs, &|address| {
+            Ok(ConnectConfig::plaintext(address))
+        });
         assert!(errs.is_empty(), "unexpected errors: {errs:?}");
         assert_eq!(reg.bus_ids(), vec!["vbus1".to_string()]);
+    }
+
+    #[test]
+    fn a_bridge_whose_connection_cannot_be_planned_is_reported_not_dialled() {
+        // A bridge is a `cannet-client` session like any other, so it
+        // goes through the host's trust decision for its server. When
+        // that decision can't be produced the bridge is reported —
+        // never dialled unprotected as a fallback.
+        let reg = LocalBusRegistry::default();
+        let defs = vec![LocalVirtualBusDef {
+            id: "vbus1".into(),
+            name: "Bench".into(),
+            bridges: vec![BridgeSpec {
+                remote_address: "bench.example.com:50051".into(),
+                interface: "can0".into(),
+                name: "uplink".into(),
+            }],
+        }];
+
+        let errs = replay(&reg, &defs, &|_| Err("no trust decision yet".into()));
+
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].contains("no trust decision yet"), "{errs:?}");
+        assert!(
+            reg.bridge_names("vbus1").is_empty(),
+            "nothing may be attached when the connection could not be planned",
+        );
     }
 }

@@ -434,3 +434,106 @@ Two calls the plan did not settle:
 Not in this phase, per the plan: the GUI's TOFU dialog, the per-server
 pin/token store (ADR 0032), and terminal handling in
 `interfaces.rs`'s watch-retry loop.
+
+### 2026-08-12 — phase 4: the GUI TOFU flow
+
+Landed on `task42d-gui-tofu`, five commits off `task42c-client-connect`
+(`bec5907`):
+
+| commit | what |
+|--------|------|
+| `7b68df2` | feat(gui): remember a server's pin, token, and insecure choice host-side |
+| `b6f10e3` | feat(gui): plan every server connection from what the host has stored |
+| `d947ef5` | feat(gui): route the session and bridge connects through the same plan |
+| `063ddf8` | fix(server): show the operator the refusal, not the struct |
+| `5e1e55e` | feat(gui): put the trust questions and the accepted identities on screen |
+
+`cannet-gui` tests: 503 → 527 (`server_trust` 8, `connect_flow` 15, one
+in `local_buses`). `cannet-server`: 85 → 86. Frontend: 1876 → 1896
+(`ServerTrustDialog.dom.test.tsx` 15, `TrustedServersList.dom.test.tsx`
+5). `cannet-client` (27) unchanged; clippy-clean and `pnpm build` clean
+throughout.
+
+**The store** — `server_trust.rs`, `servers.json` under
+`app_config_dir`, keyed by scheme-stripped lowercased `host:port`
+(N21). Entries carry `fingerprint`, `token`, and `insecure`; an entry an
+edit empties is removed. `TrustEntry`'s `Debug` is hand-written to
+redact the token (S8), and the shape the frontend receives
+(`TrustedServer`) has `hasToken: bool` and no value at all.
+
+**The state machine** — `connect_flow.rs`, two pure functions the
+frontend never sees:
+
+- `plan(address, trust) -> Attempt` — `Plaintext` for loopback /
+  `localhost` / `local-vbus://` (IPv4-mapped canonicalised, N16),
+  `Pinned` whenever a fingerprint is stored *even if* `insecure` also
+  is (S7 as a code path, not a convention), `Plaintext` for a stored
+  insecure choice, `Probe` otherwise.
+- `classify(attempt, error) -> Outcome` — `Ask(TrustPrompt)` for
+  `PinMismatch` (both arms), `Unauthenticated`, and a probe's
+  `Connect`; `Fatal` for `InsecureScheme` / `InvalidToken`; `Retry` for
+  everything else. `Ask` and `Fatal` are terminal for
+  `interfaces.rs`'s loop (S13).
+
+Four prompts reach the frontend as a map keyed by address, over
+`server-prompts-changed`, hydrated by `get_server_prompts` — the same
+pull-then-follow shape as the interface cache and the connection states
+(ADR 0016): `acceptIdentity`, `identityChanged`, `tokenRefused`,
+`noProtection`. Answering one writes the store, drops the prompt, and
+`interfaces::rewatch` restarts the stopped watch, so accepting an
+identity connects rather than leaving the user to find a retry button.
+
+Every call site that used to build `ConnectConfig::plaintext` from a
+bare address now plans: `interfaces.rs` ×2, `session.rs` (once, reused
+for discovery *and* the subscribe, so a token cannot be on one and not
+the other), and the vbus bridges.
+
+Four calls the plan did not settle:
+
+- **`servers.json`, its own file, user scope only.** `state.json` was
+  the obvious home and is the wrong one: it has a *workspace* scope
+  (`.cannet/state.json` inside the project directory, ADR 0042), so a
+  token would travel with whatever the project is checked into.
+  `settings.json` is excluded by S8 and by ADR 0034 anyway — none of
+  this is a choice the user sets. A separate document also keeps the
+  scope-routing table honest, since every key here is user-scope by
+  construction.
+- **The unprotected case is asked about, not detected** (the plan's
+  "offer an explicit connect-without-protection choice" for a probe
+  that hits a not-TLS transport error). The host cannot tell "this
+  endpoint is plaintext" from "nothing is listening" without a second,
+  unprotected probe — which is the thing being avoided. So a *probe*
+  that fails with `Connect(_)` raises `noProtection` carrying the
+  transport error, and the user decides; a *pinned* server that fails
+  the same way keeps retrying forever, because there the ambiguity does
+  not exist. That is this phase's reading of "no automatic
+  https→http": nothing is downgraded, and nothing is retried into a
+  downgrade either.
+- **A stored fingerprint that no longer parses is fatal, not a
+  re-prompt.** `Attempt::config` fails with a message naming the
+  address and *Forget*. Falling back to a probe would quietly turn a
+  hand-edited file into a fresh trust decision.
+- **Dismissal is view-local and keyed by the question**, not by the
+  server. The host keeps the prompt — it is still true — but a window
+  that has been told "not now" stops re-raising *that* question, while
+  a different one about the same server still appears. This is the only
+  frontend state the flow adds.
+
+`LocalBusRegistry::attach_bridge` takes a `ConnectConfig` rather than an
+address, and `replay` takes the planner as a parameter: the registry has
+no view of the trust store, and a bridge must not be the one connection
+that skips it. A bridge whose connection cannot be planned is reported
+alongside the other replay errors instead of being dialled.
+
+Phase 2's leftover is fixed in the same branch: `main` returned
+`Result`, so the bind guard's sentence reached the operator as
+`UnprotectedBind { .. }`. It now prints the `Display` form through a
+`fatal_message` helper and exits non-zero, with a regression test on the
+rendering.
+
+Exit criteria closed here: the GUI TOFU flow (fingerprint shown, pinned,
+mismatch refused with a re-accept path, token stored per server
+host-side) and the README walkthrough — *Connecting the GUI to a
+protected server*, covering the fingerprint comparison, the token paste,
+the changed-identity warning, the trusted-server list, and the
+`--insecure` tradeoff.

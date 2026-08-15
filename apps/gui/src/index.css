@@ -695,6 +695,123 @@ header {
   background: var(--surface-button-hover);
 }
 
+/* Server-trust dialogs (ADR 0041). Reuses the modal chrome; the extra
+   rules are all about making a fingerprint eyeball-comparable — full
+   width, monospace, and selectable so it can be pasted next to the
+   server's console line. */
+.modal.server-trust {
+  max-width: 34rem;
+}
+
+.server-trust-address {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-secondary);
+}
+
+.server-trust-explain {
+  margin: 0 0 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.server-trust-warn {
+  color: var(--text-primary);
+  border-left: 3px solid var(--danger-border);
+  padding-left: 0.6rem;
+}
+
+.server-trust-fingerprint {
+  margin: 0 0 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.server-trust-fingerprint-label {
+  font-size: 0.85em;
+  color: var(--text-secondary);
+}
+
+.server-trust-fingerprint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--surface-field);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem;
+  user-select: text;
+  word-break: break-all;
+}
+
+.server-trust-detail {
+  margin: 0 0 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
+.server-trust-token {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.8rem;
+  color: var(--text-secondary);
+  font-size: 0.9em;
+}
+
+.server-trust-token input {
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--surface-field);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem;
+}
+
+.server-trust-error {
+  margin: 0 0 0.8rem;
+  color: var(--danger-text);
+}
+
+/* Settings › Connection › Trusted servers: the accepted-identity list. */
+.trusted-server-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.trusted-server-address {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  min-width: 12rem;
+}
+
+.trusted-server-fingerprint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85em;
+  color: var(--text-secondary);
+  word-break: break-all;
+  flex: 1;
+}
+
+.trusted-server-fingerprint.unprotected {
+  font-family: inherit;
+}
+
+.trusted-server-token {
+  font-size: 0.85em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.trusted-servers-empty,
+.trusted-servers-error {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
 /* Command / go-to-view palette (ADR 0018). Reuses the modal chrome
    but anchors near the top and scrolls a result list. */
 .palette-backdrop {

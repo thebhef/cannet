@@ -16,12 +16,13 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_client::{
-    ConnectConfig, PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription,
+    ConnectionError, PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription,
 };
 use cannet_core::CanFrameSource;
 
 use crate::app_state::AppState;
 use crate::capture::restamp_scratch_for_capture;
+use crate::connect_flow::{self, Attempt, Outcome};
 use crate::connection_state::{self, AppliedBusConfig, BusConnState};
 use crate::ipc::{self, InterfaceRecord, LogFinished, RemoteSessionResult};
 use crate::project;
@@ -290,6 +291,26 @@ fn register_session_or_warn(
     })
 }
 
+/// Fold a failed connection attempt through the connect-flow
+/// classifier, publishing anything only the user can answer as a
+/// [`crate::connect_flow::TrustPrompt`] against `address`. Returns the
+/// sentence for the bus rows and the system log either way — the dialog
+/// carries the detail, the rows carry the reason.
+fn ask_or_report(
+    app: &AppHandle,
+    address: &str,
+    attempt: &Attempt,
+    error: &ConnectionError,
+) -> String {
+    match connect_flow::classify(attempt, error) {
+        Outcome::Ask(prompt) => {
+            connect_flow::ask(app, address, prompt);
+            error.to_string()
+        }
+        Outcome::Fatal(msg) | Outcome::Retry(msg) => msg,
+    }
+}
+
 /// Connect to a `cannet-server`, list its interfaces, subscribe only
 /// to the interfaces named by `bindings`, and spawn a pump thread to
 /// push frames at the frontend.
@@ -364,16 +385,28 @@ pub(crate) async fn connect_remote_server(
     }
 
     sys_debug!(&app, "connection", "connecting to {address}");
-    let interfaces = match cannet_client::list_interfaces(&ConnectConfig::plaintext(&address)).await
-    {
+    // How this server is reached is the host's decision, planned once
+    // from what it has stored for the address (ADR 0041) and reused for
+    // both the discovery call and the session below.
+    let attempt = connect_flow::plan(&address, &crate::server_trust::trust_for(&app, &address));
+    let config = match attempt.config(&address) {
+        Ok(config) => config,
+        Err(msg) => {
+            sys_error!(&app, "connection", "{msg}");
+            fail_all(&app, &msg);
+            return Err(msg);
+        }
+    };
+    let interfaces = match cannet_client::list_interfaces(&config).await {
         Ok(v) => v,
         Err(e) => {
-            let msg = e.to_string();
+            let msg = ask_or_report(&app, &address, &attempt, &e);
             sys_error!(&app, "connection", "failed to connect to {address}: {msg}");
             fail_all(&app, &msg);
             return Err(msg);
         }
     };
+    connect_flow::resolved(&app, &address);
 
     if interfaces.is_empty() {
         let msg = format!("server at {address} exposes no interfaces");
@@ -442,19 +475,16 @@ pub(crate) async fn connect_remote_server(
         );
     };
 
-    let address_for_thread = address.clone();
+    let config_for_thread = config.clone();
     let subs_for_thread = subscriptions.clone();
     let source = match tokio::task::spawn_blocking(move || {
-        cannet_client::connect_and_subscribe(
-            &ConnectConfig::plaintext(&address_for_thread),
-            subs_for_thread,
-        )
+        cannet_client::connect_and_subscribe(&config_for_thread, subs_for_thread)
     })
     .await
     {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            let msg = e.to_string();
+            let msg = ask_or_report(&app, &address, &attempt, &e);
             sys_error!(&app, "connection", "subscribe to {address} failed: {msg}");
             fail_subscribed(&app, &msg);
             return Err(msg);

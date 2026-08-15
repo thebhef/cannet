@@ -507,8 +507,31 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Print the error the way it was written to read and exit non-zero.
+///
+/// Returning `Result` from `main` renders the error with `Debug`, so
+/// the bind guard's carefully worded sentence reached the operator as
+/// `UnprotectedBind { bind: 0.0.0.0:50051, missing: [...] }`. The
+/// operator gets the `Display` form; nothing else changes.
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{}", fatal_message(e.as_ref()));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// The line a fatal startup error is printed on. `Display`, never
+/// `Debug` — the whole point of the bind guard's sentence is that the
+/// operator can read it.
+fn fatal_message(error: &(dyn std::error::Error + 'static)) -> String {
+    format!("error: {error}")
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Before any TLS configuration is built: rustls picks its crypto
     // backend from the process default, and we name ours rather than
     // let the dependency graph decide.
@@ -817,6 +840,21 @@ mod tests {
         assert!(
             message.contains("--insecure"),
             "the refusal must name the flag that overrides it: {message}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_reaches_the_operator_as_the_sentence_it_was_written_as() {
+        // Returning `Result` from `main` renders the error with `Debug`,
+        // so the refusal used to arrive as
+        // `UnprotectedBind { bind: .., missing: [..] }`.
+        let err = guard_bind(addr("0.0.0.0:50051"), Protections::default(), false)
+            .expect_err("an unprotected routable bind must be refused");
+        let printed = fatal_message(&err);
+        assert!(printed.contains("refusing to bind"), "{printed}");
+        assert!(
+            !printed.contains("UnprotectedBind {"),
+            "the operator must not be shown the struct: {printed}"
         );
     }
 
