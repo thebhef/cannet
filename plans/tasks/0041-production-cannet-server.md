@@ -161,6 +161,23 @@ port.
 Tests: `cannet-sidecar` 28 → 34; `cannet-gui` 503, unchanged. 537
 across the two, up six from the 531 this phase started at.
 
+### 2026-08-12 — phase 2: replay and vbus move under `debug`
+
+The 2026-08-11 CLI-shape grooming note is implemented. `cannet-server`
+gained a `debug` subcommand namespace holding the prior positional-BLF
+replay (`debug replay <blf>`) and `--virtual-bus` (`debug vbus`)
+modes, flags and behavior unchanged, help text marked dev/test
+tooling. Bare `cannet-server` — no subcommand — is the production
+hardware-proxy entry point; it prints a `debug replay` / `debug vbus`
+pointer and exits 1 until phase 3 implements the proxy. README's run
+instructions and ADR 0040's "prior server modes" bullet now name the
+resolved shape.
+
+Tests: `cannet-server` 22 → 31 (nine new CLI-parsing tests: each
+subcommand's defaults and flags, the removed top-level
+`--virtual-bus` flag and bare positional BLF path no longer parsing,
+and the bare-invocation error message).
+
 ## Blockers / side effects
 
 - **`cannet-perf-measurement` has its own sidecar spawn**
@@ -171,3 +188,11 @@ across the two, up six from the 531 this phase started at.
   host and the crate. Worth folding in when the harness is touched
   for the proxy-overhead comparison, which already has to point at a
   spawned `cannet-server`.
+- **ADR 0021 still says `cannet-server --virtual-bus` throughout**
+  (it uses the flag as the concept's identifying label in a dozen-odd
+  places, not as runnable examples). Phase 2's doc scope was
+  README + ADR 0040; ADR 0021 was left alone rather than churning an
+  architectural document beyond this phase's CLI-rename brief.
+  Readers copy-pasting `cannet-server --virtual-bus` out of ADR 0021
+  today get a parse error — worth a pass when ADR 0021 is next
+  touched for its own reasons.
