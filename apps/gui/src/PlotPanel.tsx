@@ -264,6 +264,7 @@ import {
   soloLabel,
   soloMaskSignals,
   soloMaskedKeys,
+  soloOffPageKeys,
   soloMatchedAreaIds,
   soloMatches,
   soloMemberKeys,
@@ -386,6 +387,12 @@ interface DerivedAreaConfig {
   /// plain hidden treatment. Empty (the shared {@link EMPTY_KEY_SET})
   /// while solo isn't applying to this axis.
   soloMaskedKeys: ReadonlySet<string>;
+  /// Keys of this axis's rows that solo matched somewhere in the panel
+  /// but the current page/subset leaves off — genuinely off the page,
+  /// not merely unmatched (`soloOffPageKeys`). The row renderer drops
+  /// these from the side list entirely rather than rendering them
+  /// compact: the page is the working set.
+  soloOffPageKeys: ReadonlySet<string>;
   /// The parent area's solo match count, `null` unless solo applies to
   /// it — set only on the first derived axis (like `patterns`) so the
   /// per-area chip renders once per logical area, not once per axis.
@@ -396,11 +403,15 @@ interface DerivedAreaConfig {
 /// `yAxisMode` (ADR 0026). Unified produces one entry per area; per-unit
 /// groups signals by unit (with all enums on one shared enum-lanes
 /// axis); individual is one entry per signal. `soloMask` is the visible
-/// set while solo is active, `null` while it is not.
+/// set while solo is active, `null` while it is not; `soloMatched` is
+/// every match's `soloMaskKey`, over the *full* group list rather than
+/// the current page — what {@link soloOffPageKeys} needs to tell "off
+/// the page" apart from "never matched".
 function deriveAreaConfigs(
   a: PlotAreaConfig,
   isEnum: (key: string) => boolean,
   soloMask: ReadonlySet<string> | null,
+  soloMatched: ReadonlySet<string>,
   soloMatchCount: number,
   axisCollapsed: AxisCollapsed,
 ): DerivedAreaConfig[] {
@@ -442,6 +453,9 @@ function deriveAreaConfigs(
       // persisted `collapsed` stays untouched.
       collapsedBySolo: allHidden && !ax.signals.every((s) => s.hidden),
       soloMaskedKeys: soloMask ? soloMaskedKeys(a.id, ax.signals, soloMask) : EMPTY_KEY_SET,
+      soloOffPageKeys: soloMask
+        ? soloOffPageKeys(a.id, ax.signals, soloMatched, soloMask)
+        : EMPTY_KEY_SET,
       soloChip: soloMask && i === 0 ? { matched: soloMatchCount, total: a.signals.length } : null,
     };
   });
@@ -1543,6 +1557,22 @@ export function PlotPanel(props: IDockviewPanelProps) {
         : soloVisibleKeys(soloGroupList, soloPage, soloPageSize),
     [soloGroupList, soloPage, soloPageSize, soloSelected],
   );
+  /// Every match's `soloMaskKey`, over the *whole* group list rather
+  /// than the current page — what `soloOffPageKeys` needs to tell "on
+  /// another page" apart from "solo never selected this at all".
+  const soloAllMatched = useMemo(() => soloMemberKeys(soloGroupList), [soloGroupList]);
+  /// Identifies the *scope* solo currently shows — changes exactly
+  /// when stepping, ticking or clearing changes what's on show, and
+  /// nothing else (re-deriving the same page on an unrelated render
+  /// leaves it identical). `PlotArea` scrolls its side panel to the
+  /// top on a change, so a page step's first row lands in view instead
+  /// of wherever the previous page happened to leave the scroll.
+  const soloScope =
+    soloSelected.length > 0
+      ? `checked:${soloSelected.map((g) => g.id).sort().join(" ")}`
+      : soloPage == null
+        ? "all"
+        : `page:${soloPage}`;
   const soloInvalid = soloPatternInvalid(solo.pattern);
   /// Entering or editing the pattern lands a *capturing* one on page 1:
   /// a new pattern is a new group list, and the first page of it is what
@@ -1958,10 +1988,19 @@ export function PlotPanel(props: IDockviewPanelProps) {
     const out: DerivedAreaConfig[] = [];
     for (const a of effectiveAreas) {
       const soloMask = soloActive && soloMatchedAreas.has(a.id) ? soloVisible : null;
+      // Scoped the same way `soloMask` is: an untouched area's memo key
+      // must not move just because *some other* area's edit rebuilt the
+      // panel-wide match list. `EMPTY_KEY_SET` is a shared constant, so
+      // its identity is stable across renders — unlike `soloAllMatched`,
+      // which is a fresh `Set` whenever the match list is recomputed.
+      const soloMatchedForArea = soloMask ? soloAllMatched : EMPTY_KEY_SET;
       const soloMatchCount = soloAreaMatchCounts.get(a.id) ?? 0;
       out.push(
-        ...derivedAreaMemo.get(a.id, [a, enumKeys, soloMask, soloMatchCount, axisCollapsed], () =>
-          deriveAreaConfigs(a, isEnum, soloMask, soloMatchCount, axisCollapsed),
+        ...derivedAreaMemo.get(
+          a.id,
+          [a, enumKeys, soloMask, soloMatchedForArea, soloMatchCount, axisCollapsed],
+          () =>
+            deriveAreaConfigs(a, isEnum, soloMask, soloMatchedForArea, soloMatchCount, axisCollapsed),
         ),
       );
     }
@@ -1973,6 +2012,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
     soloActive,
     soloMatchedAreas,
     soloVisible,
+    soloAllMatched,
     soloAreaMatchCounts,
     axisCollapsed,
     derivedAreaMemo,
@@ -2595,6 +2635,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
                 collapsedBySolo={d.collapsedBySolo}
                 collapsedByAxis={d.collapsedByAxis}
                 soloMaskedKeys={d.soloMaskedKeys}
+                soloOffPageKeys={d.soloOffPageKeys}
+                soloScope={soloScope}
                 soloChip={d.soloChip}
                 collapsedRunHead={runHeadFlags[idx]}
                 enumLanes={d.enumLanes}

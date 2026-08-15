@@ -3421,6 +3421,98 @@ describe("PlotPanel axis collapse", () => {
   });
 });
 
+describe("PlotPanel hidden signal rows", () => {
+  const twoSignalRegistry = (id: string) =>
+    makeRegistry({
+      id,
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [
+              { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#abc" },
+              { busId: null, messageId: 256, extended: false, signalName: "EngineTemp", messageName: "EngineData", unit: "degC", color: "#def" },
+            ],
+          },
+        ],
+      },
+    });
+
+  const row = (name: string) => screen.getByText(name).closest(".plot-signal-row") as HTMLElement;
+
+  it("drops a hidden row to swatch + name, and restores it on show", () => {
+    const registry = twoSignalRegistry("el-hide-compact");
+    renderPanel({ params: { elementId: "el-hide-compact" }, registry });
+
+    // Shown: the full readout — message, value, remove/badge affordance.
+    const shown = row("EngineSpeed");
+    expect(shown.querySelector(".plot-signal-message")).not.toBeNull();
+    expect(shown.querySelector(".plot-signal-readout")).not.toBeNull();
+    expect(
+      shown.querySelector(".plot-signal-remove") ?? shown.querySelector(".plot-signal-pattern-badge"),
+    ).not.toBeNull();
+
+    // The swatch is the only un-hide affordance phase 4 relies on — same
+    // gesture, no new control.
+    fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
+    const hidden = row("EngineSpeed");
+    expect(hidden.classList.contains("hidden")).toBe(true);
+    expect(hidden.querySelector(".plot-signal-message")).toBeNull();
+    expect(hidden.querySelector(".plot-signal-readout")).toBeNull();
+    expect(hidden.querySelector(".plot-signal-remove")).toBeNull();
+    expect(hidden.querySelector(".plot-signal-pattern-badge")).toBeNull();
+    // Swatch and name survive — the un-hide path and the row's identity.
+    expect(hidden.querySelector(".plot-signal-swatch")).not.toBeNull();
+    expect(hidden.querySelector(".plot-signal-name")).not.toBeNull();
+    // The other row is untouched.
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(false);
+    expect(row("EngineTemp").querySelector(".plot-signal-message")).not.toBeNull();
+
+    // Showing it again restores the full row.
+    fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
+    const shownAgain = row("EngineSpeed");
+    expect(shownAgain.classList.contains("hidden")).toBe(false);
+    expect(shownAgain.querySelector(".plot-signal-message")).not.toBeNull();
+    expect(shownAgain.querySelector(".plot-signal-readout")).not.toBeNull();
+  });
+
+  it("still shows compact rows when every signal on the axis is hidden", () => {
+    // ADR 0026 / phase 4: an all-hidden axis keeps its rows rather than
+    // reducing to a heading — a swatch in one of them is the only way
+    // back. They compact exactly like any other hidden row.
+    const bothHidden = makeRegistry({
+      id: "el-all-hidden",
+      config: {
+        areas: [
+          {
+            id: "a1",
+            signals: [
+              { busId: null, messageId: 256, extended: false, signalName: "EngineSpeed", messageName: "EngineData", unit: "rpm", color: "#abc", hidden: true },
+              { busId: null, messageId: 256, extended: false, signalName: "EngineTemp", messageName: "EngineData", unit: "degC", color: "#def", hidden: true },
+            ],
+          },
+        ],
+      },
+    });
+    renderPanel({ params: { elementId: "el-all-hidden" }, registry: bothHidden });
+
+    expect(document.querySelector(".plot-area")!.classList.contains("collapsed")).toBe(true);
+    // Not a deliberate collapse — the row list still renders, compact.
+    expect(document.querySelector(".plot-area")!.classList.contains("heading-only")).toBe(false);
+    const rows = Array.from(document.querySelectorAll(".plot-signal-row"));
+    expect(rows.length).toBe(2);
+    for (const r of rows) {
+      expect(r.classList.contains("hidden")).toBe(true);
+      expect(r.querySelector(".plot-signal-message")).toBeNull();
+      expect(r.querySelector(".plot-signal-swatch")).not.toBeNull();
+    }
+    // The swatch still un-hides from here.
+    fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
+    expect(row("EngineSpeed").classList.contains("hidden")).toBe(false);
+    expect(row("EngineSpeed").querySelector(".plot-signal-message")).not.toBeNull();
+  });
+});
+
 describe("PlotPanel solo", () => {
   const sig = (signalName: string, unit = "V", hidden?: boolean) => ({
     busId: null,
@@ -3692,14 +3784,17 @@ describe("PlotPanel solo", () => {
     expect(rowVisibility().every(([, visible]) => visible)).toBe(true);
     // Completing it makes it live again — and its capture group makes
     // two keys ("" for Cell1, "6" for Cell16), of which the fresh
-    // pattern lands on the first page.
+    // pattern lands on the first page. Cell16's match is on page 2, so
+    // it drops out of the side list entirely (item 5) rather than
+    // showing hidden; PackVoltage never matched at all, so it stays
+    // (item 3's ordinary compact-hidden row, not off-page).
     typeSolo("Cell1(6)?");
     expect(soloBox()).not.toHaveAttribute("aria-invalid");
     expect(rowVisibility()).toEqual([
       ["Cell1", true],
-      ["Cell16", false],
       ["PackVoltage", true],
     ]);
+    expect(screen.queryByText("Cell16")).not.toBeInTheDocument();
   });
 
   it("restores the full view on Escape, and on clearing the box", () => {
@@ -3829,6 +3924,72 @@ describe("PlotPanel solo", () => {
     expect(soloPosition()).toBe('3/3 \u00b7 "Cell3" (1 of 3)');
   });
 
+  it("drops off-page rows from the side list entirely, not just styled hidden", () => {
+    // The page is the working set (groomed 2026-08-14): a match parked
+    // on another page has no row here at all \u2014 no `.hidden` styling to
+    // find, because there is no row.
+    const registry = stepRegistry("el-solo-offpage-absent");
+    renderPanel({ params: { elementId: "el-solo-offpage-absent" }, registry });
+    typeSolo("(Cell\\d)");
+    expect(soloPosition()).toBe('1/3 \u00b7 "Cell1" (1 of 3)');
+    expect(screen.getByText("Cell1")).toBeInTheDocument();
+    expect(screen.queryByText("Cell2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cell3")).not.toBeInTheDocument();
+    // PackVoltage never matched at all \u2014 it's the *ordinary* masked row
+    // (item 3's compact-hidden treatment), not off-page, so it stays.
+    expect(screen.getByText("PackVoltage")).toBeInTheDocument();
+    expect(document.querySelectorAll(".plot-signal-row").length).toBe(2);
+  });
+
+  it("scrolls the side panel back to the top on a page step", () => {
+    const registry = stepRegistry("el-solo-scroll");
+    renderPanel({ params: { elementId: "el-solo-scroll" }, registry });
+    typeSolo("(Cell\\d)");
+    const panel = screen.getByText("Cell1").closest(".plot-area-signals") as HTMLElement;
+    panel.scrollTop = 40;
+    expect(panel.scrollTop).toBe(40);
+    fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
+    expect(soloPosition()).toBe('2/3 \u00b7 "Cell2" (1 of 3)');
+    expect(panel.scrollTop).toBe(0);
+  });
+
+  it("restores the off-page rows when solo clears", () => {
+    const registry = stepRegistry("el-solo-offpage-restore");
+    renderPanel({ params: { elementId: "el-solo-offpage-restore" }, registry });
+    typeSolo("(Cell\\d)");
+    expect(screen.queryByText("Cell2")).not.toBeInTheDocument();
+
+    typeSolo("");
+    expect(screen.getByText("Cell2")).toBeInTheDocument();
+    expect(document.querySelectorAll(".plot-signal-row").length).toBe(4);
+  });
+
+  it("renders a signal both individually hidden and on the current solo page compact, not suppressed", () => {
+    // The interplay case: `soloMaskSignals` never overrides a signal's
+    // own `hidden` flag for a member of the visible page \u2014 it only
+    // forces `hidden` on the ones *outside* it. So an on-page row that
+    // the user hid stays exactly a hidden row: compact (item 3), never
+    // dropped for being "off the page" (item 5), because it isn't.
+    const registry = makeRegistry({
+      id: "el-solo-hidden-onpage",
+      config: {
+        areas: [{ id: "a1", signals: [sig("Cell1", "V", true), sig("Cell2")] }],
+      },
+      trace: { start: 0, end: 60, isPaused: false } as unknown as ReturnType<typeof freshTrace>,
+    });
+    renderPanel({ params: { elementId: "el-solo-hidden-onpage" }, registry });
+    typeSolo("(Cell\\d)");
+    // Numeric-ascending group keys land "1" on page 1.
+    expect(soloPosition()).toBe('1/2 \u00b7 "Cell1" (1 of 2)');
+    const cell1 = screen.getByText("Cell1").closest(".plot-signal-row") as HTMLElement;
+    expect(cell1.classList.contains("hidden")).toBe(true);
+    // The user hid it, not solo \u2014 so no solo marker.
+    expect(cell1.classList.contains("solo-masked")).toBe(false);
+    expect(cell1.querySelector(".plot-signal-message")).toBeNull();
+    // Cell2's group is the other page \u2014 genuinely off it, suppressed.
+    expect(screen.queryByText("Cell2")).not.toBeInTheDocument();
+  });
+
   it("shows every captureless match at once, and leaves a zero-match area alone", () => {
     // A pattern that captures nothing has no index to page by, so it is
     // a flat filter: whatever matches, in every signal panel, all at
@@ -3887,13 +4048,16 @@ describe("PlotPanel solo", () => {
     });
     renderPanel({ params: { elementId: "el-solo-keyed" }, registry });
     typeSolo("Cell(?<cell>\\d+)$");
-    // Both Cell1 rows are the one group, and the read-out names its key.
+    // Both Cell1 rows are the one group on show, and the read-out names
+    // its key. Cell2 and Cell10 match too, just on other pages \u2014 off
+    // the page, not merely unmatched, so they drop out of the side
+    // list entirely (item 5) rather than showing hidden.
     expect(rowVisibility()).toEqual([
       ["Cell1", true],
-      ["Cell2", false],
       ["Cell1", true],
-      ["Cell10", false],
     ]);
+    expect(screen.queryByText("Cell2")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cell10")).not.toBeInTheDocument();
     expect(soloPosition()).toBe("1/3 \u00b7 cell=1 (2 of 4)");
     // Keys order numerically: 2 before 10.
     fireEvent.click(screen.getByRole("button", { name: "next solo match" }));
@@ -4846,9 +5010,14 @@ describe("PlotPanel signal-row selection", () => {
 
     expect(row("EngineTemp").classList.contains("hidden")).toBe(true);
     expect(order()).toEqual(before);
-    // And it is still the pattern's row, not a pick: the badge stays and
-    // there is no per-row × to remove something the pattern would put
-    // straight back.
+    // A hidden row compacts to swatch + name (item 3), so neither the
+    // badge nor a remove control renders while it's hidden — the
+    // persistence check has to happen on the way back. Showing it
+    // again still reads as the pattern's row, not a pick: the badge
+    // returns and there is no per-row × to remove something the
+    // pattern would put straight back.
+    fireEvent.click(row("EngineTemp").querySelector("button.plot-signal-swatch")!);
+    expect(row("EngineTemp").classList.contains("hidden")).toBe(false);
     expect(row("EngineTemp").querySelector(".plot-signal-remove")).toBeNull();
     expect(row("EngineTemp").querySelector(".plot-signal-pattern-badge")).not.toBeNull();
   });

@@ -2552,38 +2552,13 @@ button.trace-event-swatch {
   max-height: none;
   overflow-y: hidden;
 }
-/* Nothing on this axis is drawn, so its rows only have to stay
-   identifiable and clickable. Fold the message line up beside the
-   signal name and tighten the padding, so a fully-hidden axis costs a
-   line or two of panel height instead of a full row per signal. */
+/* Nothing on this axis is drawn, so its head only has to stay
+   identifiable — tighten the padding so a fully-hidden axis costs a
+   line or two of panel height instead of a full head. Its rows are
+   every one hidden by construction, so they compact the same way any
+   hidden row does (below) — no separate rule needed here. */
 .plot-area.collapsed .plot-area-signals-head {
   padding: 0.1rem 0.4rem;
-}
-.plot-area.collapsed .plot-signal-row {
-  align-items: center;
-  padding: 0.05rem 0.4rem;
-  row-gap: 0;
-}
-.plot-area.collapsed .plot-signal-text {
-  flex-direction: row;
-  align-items: baseline;
-  column-gap: 0.35rem;
-}
-/* Ellipsis inside a flex row needs an explicit `min-width` floor — the
-   default `auto` sizes each child to its content and neither shrinks. */
-.plot-area.collapsed .plot-signal-name {
-  font-size: 0.82rem;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-.plot-area.collapsed .plot-signal-message {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-.plot-area.collapsed .plot-signal-swatch {
-  width: 0.8rem;
-  height: 0.8rem;
-  margin-top: 0;
 }
 
 /* An area waiting on the *first* sample for its signal set: the
@@ -3477,8 +3452,23 @@ button.trace-event-swatch {
   vertical-align: middle;
   border: 1px solid var(--border-wash-strong);
 }
-.plot-signal-row.hidden .plot-signal-name,
-.plot-signal-row.hidden .plot-signal-message {
+/* A hidden row (including one solo's mask hid — same treatment, ADR
+ * 0026) has nothing to draw, so it drops to swatch + name: no
+ * message, value, or remove control to read. The un-hide affordance
+ * stays the swatch. The row grid's other two columns (readout,
+ * remove/badge) are simply unused — no extra layout needed to reclaim
+ * them once nothing is placed in them. */
+.plot-signal-row.hidden {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  padding-block: 0.15rem;
+}
+.plot-signal-row.hidden .plot-signal-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  margin-top: 0;
+}
+.plot-signal-row.hidden .plot-signal-name {
   opacity: 0.45;
   font-style: italic;
 }
@@ -3489,8 +3479,7 @@ button.trace-event-swatch {
 .plot-signal-row.solo-masked {
   box-shadow: inset 2px 0 0 var(--border-strong);
 }
-.plot-signal-row.solo-masked .plot-signal-name,
-.plot-signal-row.solo-masked .plot-signal-message {
+.plot-signal-row.solo-masked .plot-signal-name {
   opacity: 0.55;
   font-style: normal;
 }
