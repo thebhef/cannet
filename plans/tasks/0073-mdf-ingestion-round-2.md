@@ -37,9 +37,15 @@ generic over `(raw, label)` tables, so labels reach lanes and values
 views through the existing plumbing. Rejected: synthesizing database
 entries (fabricates entries with false provenance in the Database
 panel, entangles bus-scoping and DBC management with signals that are
-in no DBC) and name-matching against loaded DBCs (fails exactly when
-the recording tool's DBC is not in the project, which is the owner's
-actual file set).
+in no DBC).
+
+**Owner amendment (2026-08-15):** name-matching a file-backed signal
+against a loaded DBC is **not** rejected — it is **later scope**,
+deferred until the DBC can be gotten out of the MDF itself (its
+embedded/external attachments). As things stand it fails exactly when
+the recording tool's DBC is not in the project, so it is not the
+mechanism this phase builds; the value table on the file-backed signal
+model is.
 
 ## Test data
 
