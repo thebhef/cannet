@@ -48,21 +48,74 @@ sidecar debug logfile), not just the server's new file.
   reader tasks run via `spawn_blocking`, and tokio runtime teardown
   waits **indefinitely** for blocking-pool tasks.
 
-## Hypothesis (unconfirmed — investigation phase must falsify or
-confirm before any fix)
+## Root causes (confirmed 2026-08-13, phase 1)
 
-The sidecar did not exit on stdin EOF — plausibly a thread stuck in
-a PCAN read/error loop after the client vanished mid-session (the
-`PCAN Channel has not been initialized` warning marks that state) —
-so the blocking readers never returned EOF and runtime teardown
-hung. Alternative hypotheses to rule out: stdin never actually
-closed (drop-order of the supervisor Arc — a clone captured by the
-proxy service closure may outlive the select); the mDNS shutdown
-await itself stalling.
+Both observations are root-caused, and they turn out to be
+**independent of each other**. The experiments and their raw data are
+in the Status log below.
+
+### (A) The Ctrl-C hang — a closed wait cycle around the sidecar's stdin
+
+The shutdown path itself is fine and finishes in milliseconds. The
+process then hangs in **tokio runtime teardown**, in a cycle that
+cannot break on its own:
+
+1. `main`'s async body returns, so `#[tokio::main]` **drops the
+   runtime**. Dropping a runtime blocks until every *running*
+   blocking-pool task returns, with no timeout.
+2. The one running blocking task is `SidecarSupervisor::run`,
+   dispatched through `CliSidecarHost::spawn_blocking` →
+   `Handle::spawn_blocking`. It polls `child.try_wait()` every 250 ms
+   and returns only once the sidecar child has exited.
+3. The sidecar child exits only on **stdin EOF** (its lifetime
+   contract). The write end of that pipe is the `ChildStdin` inside
+   the `Child` that the wait loop itself owns (`child_arc`, plus the
+   clone in `SupervisorInner::active`). `child.stdin` is never taken
+   and never dropped.
+
+So teardown waits for the wait loop, the wait loop waits for the
+child, and the child waits for an EOF only that wait loop's own
+`Child` can produce. Nothing in the cycle involves hardware, a
+client, or PCAN — E1 reproduced the hang with **no client ever
+connected and no channel ever opened**. The owner's second Ctrl-C did
+not "force our exit": it made the console host terminate the process
+(`STATUS_CONTROL_C_EXIT`), because our code never reaches an exit at
+all.
+
+Falsified alternatives:
+
+- *The mDNS goodbye stalls* — E3 (mDNS on, the owner's exact flags)
+  printed the "goodbye done" probe immediately, then hung.
+- *A PCAN-wedged sidecar swallows the EOF* — E1 hung with no session
+  ever opened; and E5 shows the sidecar exits on a real EOF in ~1 s
+  through the full dev launch chain (`shutting down
+  (reason=stdin-eof)`, `exit code 0`).
+- *Drop-order: a supervisor `Arc` clone captured by the proxy service
+  closure outlives the select* — immaterial. The `Child` is owned by
+  the blocking task's own stack frame, so no amount of `Arc` dropping
+  closes that pipe while the wait loop runs.
+
+### (B) The `PCAN Channel has not been initialized` warn — a benign close race
+
+`_SharedInterface._close_locked` (`servers/cannet-python-can/
+cannet_python_can/server/shared_interface.py`) sets `self._channel =
+None` and calls `ch.close()` while `_rx_pump` is blocked inside
+`ch.recv(timeout_s=0.25)` on the channel object it fetched *before*
+the close. PCAN-Basic fails that in-flight read with
+`PCAN_ERROR_INITIALIZE`; `_rx_pump` logs `rx for … failed: …` at
+WARNING, then sees `_stop` and breaks out of its loop. One line, once
+per close.
+
+It is **not** a symptom of the abrupt client loss and **not** a wedge:
+E4 produced the identical line on an abrupt kill *and* on a nominal
+disconnect, and the interface reopened cleanly for the very next
+session both times. It is a cosmetic defect of the close sequence —
+see the verdict for where it goes.
 
 ## Phases (groomed 2026-08-13)
 
-1. **Investigation** — reproduce both observations (GUI hard-close
+1. **Investigation** — *done 2026-08-13; see "Root causes", "Verdict"
+   and the Status log.* Reproduce both observations (GUI hard-close
    mid-session → channel-wedge warn; then Ctrl-C → hang),
    instrument to locate the wait (which task/thread survives; does
    the sidecar process outlive the stdin drop?) and the wedge
@@ -143,3 +196,176 @@ await itself stalling.
   secret is held (server `--token`/`CANNET_TOKEN`/generated token,
   TLS private key, GUI `servers.json` tokens, auth-failure paths).
 - README's server section documents the log location.
+
+## Verdict — what phases 2 and 3 should actually do
+
+Written 2026-08-13 at the end of phase 1, from the confirmed root
+causes above. Phase 2's scope shrinks (the server already tolerates a
+dropped session); phase 3's grows a little (the fix is a real
+supervisor `stop()`, not just a timer).
+
+### Phase 2 — session robustness
+
+1. **The GUI does not perform a nominal disconnect on exit. Add
+   one.** `disconnect_remote_server` is invoked from the explicit
+   Disconnect action (`apps/gui/src/App.tsx`) and from the
+   session-reset path, but the window's `onCloseRequested` handler
+   never calls it, and the host's `RunEvent::ExitRequested` arm
+   (`apps/gui/src-tauri/src/lib.rs`) only flushes the trace store and
+   the pyramids. Quitting the GUI is therefore *exactly* the abrupt
+   case the owner hit. Fix on the close path, before `win.destroy()`.
+2. **The server and sidecar already tolerate a dropped session** — E4
+   demonstrated it end to end on real PCAN hardware: the relay ends
+   both directions, the sidecar's request pump sees the stream end,
+   `cleanup()` unsubscribes, the channel closes, and the next session
+   subscribes to the same channel and runs. Land a regression test
+   for it rather than a change.
+3. **Silence the close-race warn (B).** Either suppress the `rx for …
+   failed` warning when `_stop` is already set (a close the reader was
+   told about), or have `_close_locked` join the rx thread before
+   closing the channel. It is small enough to fix inside 67; if it is
+   split out, it is a cosmetic-logging task, not a robustness one.
+4. The "sidecar exits gracefully on stdin-EOF even with a wedged or
+   active channel" item is **already true** as written — E5 confirms
+   the EOF path works through the real launch chain. What is missing
+   is the EOF, not the handling of it, which is phase 3's business.
+
+### Phase 3 — bounded shutdown
+
+1. **The fix that matters is an explicit sidecar stop, not a timer
+   around the current behaviour.** After the Ctrl-C select,
+   `run_proxy` must call a new `SidecarSupervisor::stop()` that
+   (a) sets `suppress_restart`, (b) **takes and drops the child's
+   `ChildStdin`** so the sidecar actually sees EOF, (c) waits up to
+   5 s for the child to exit, (d) kills the process tree on expiry.
+   The runtime may only be dropped after that returns.
+2. **`Child::stdin` has to become reachable.** Today it is never
+   taken, so there is nothing for `stop()` to drop; stash the
+   `ChildStdin` alongside `active` in `SupervisorInner`.
+3. **Kill the tree, not the child.** The dev chain is
+   `cannet-server → uv → uv → cannet-python-can.exe → python →
+   python`. E5 shows that killing the direct `uv` did take the whole
+   tree down — but only because uv forwards stdin, so the
+   grandchildren saw EOF. That is uv's behaviour, not a guarantee, so
+   the backstop should be a Windows job object / `taskkill /T`-style
+   tree kill. (Same argument applies to the existing
+   `SidecarSupervisor::restart`, which calls `Child::kill()` on the
+   direct child only.)
+4. **Own the second Ctrl-C.** Race a second `ctrl_c()` against the 5 s
+   wait and `std::process::exit` on it, so the hard exit is our code
+   and our exit code rather than the console host's
+   `0xc000013a`.
+5. **Never let runtime teardown be the thing that waits.** With
+   `stop()` in place the blocking wait loop is already finished, but
+   the shutdown should still end with an explicit
+   `Runtime::shutdown_timeout` — which `#[tokio::main]` cannot
+   express, so `main` builds its runtime by hand.
+6. The GUI host does **not** have this bug: it ends in
+   `std::process::exit`, so the OS closes the pipe. It is worth
+   noticing that its sidecar is cleaned up only *because* the process
+   dies — a shared `stop()` would make that deliberate rather than
+   incidental.
+
+## Status log
+
+### 2026-08-13 — phase 1, investigation
+
+Method: observation → hypothesis → experiment → data → conclusion.
+All experiments run on the owner's machine against the real PCAN
+hardware (two PEAK PCAN-USB FD channels), debug build of
+`cannet-server` at `a2f88ed`, sidecar via the dev `uv` path.
+
+**Observation 1.** Owner's repro: Ctrl-C printed `hardware proxy:
+shutting down` and the process then sat for minutes; a second Ctrl-C
+produced `STATUS_CONTROL_C_EXIT`. A
+`rx for pcan:PCAN_USBBUS2(…) failed: A PCAN Channel has not been
+initialized yet or the initialization process has failed` warning
+appeared around the time the GUI was closed.
+
+**Hypothesis A1.** *The server hangs because the sidecar never exits,
+because it never receives stdin EOF — and that is independent of any
+PCAN state.* Falsifiable: if a PCAN wedge were required, a run with no
+client and no open channel would shut down cleanly.
+
+**E1 — Ctrl-C with no client, `--no-mdns --sidecar-restart-budget 0`.**
+`hardware proxy: shutting down` printed immediately. Server still
+running 30 s later; the whole sidecar tree (uv → uv →
+cannet-python-can.exe → python → python) still present and unchanged;
+**no `shutdown reason=stdin-eof` banner from the sidecar**. Killing the
+sidecar tree → **server exited 0.33 s later**. Conclusion: A1
+supported, and the PCAN-wedge explanation is falsified — the hang
+needs no client, no session and no hardware channel.
+
+**E2 — does the sidecar honour stdin EOF at all?**
+`uv run --extra dev pytest tests/test_stdin_shutdown.py -q` → 2
+passed in 2.56 s. Conclusion: the sidecar exits promptly on a real
+EOF; the failure is that the EOF is never delivered.
+
+**Hypothesis A2.** *The wait is in tokio runtime teardown, after
+`main`'s body — not in the mDNS goodbye and not in the select.*
+Experiment: temporary `eprintln!` probes after the select, after the
+mDNS shutdown, and as the last statement of `main`.
+
+**E3 — the owner's exact invocation (`--bind 0.0.0.0:50051 --tls`,
+mDNS on), with probes.** stderr, in order and all within one second of
+the Ctrl-C: `hardware proxy: shutting down` → `probe: select
+resolved; awaiting the mDNS goodbye` → `probe: mDNS goodbye done;
+run_proxy returning` → `probe: main body finished; runtime teardown
+starts now`. Then **40 s with no exit** and the sidecar tree intact.
+Killing the sidecar tree → **server exited 0.30 s later**. Conclusion:
+A2 confirmed. The mDNS hypothesis is falsified; the hang is strictly
+inside runtime teardown, waiting on the blocking wait loop, which
+waits on the child, which waits on the stdin the wait loop holds.
+Root cause (A) as written above. Probes removed afterwards.
+
+**Observation 2 / Hypothesis B1.** *The `PCAN Channel has not been
+initialized` warn is a close-time race in `_rx_pump`, not a wedge, and
+not specific to an abrupt client loss.* Falsifiable two ways: it
+should also appear on a **nominal** disconnect, and the interface
+should reopen cleanly straight afterwards.
+
+**E4 — real PCAN session, client killed abruptly, then a second
+session (`--sidecar-log-level debug`).** Sequence in the server log:
+`Session opened` → `Subscribe pcan:PCAN_USBBUS1(h:0x51, ch:0, uid:0)`
+→ `opened` → *(client hard-killed)* → `Session closing; releasing
+['pcan:PCAN_USBBUS1(…)']` → `closing pcan:PCAN_USBBUS1(…)` → `[warn]
+rx for pcan:PCAN_USBBUS1(…) failed: A PCAN Channel has not been
+initialized yet or the initialization process has failed`. The second
+client then subscribed to the same channel, got `Subscribe … -> ok`,
+disconnected **nominally**, and produced the *same* close +
+`rx … failed` warn pair. Conclusion: B1 confirmed on both counts — the
+warn is a spurious close-race line, the session is recoverable, and
+observation 2 is unrelated to observation 1.
+
+**E5 — killing only the direct child.** With the sidecar ready,
+`Stop-Process` on the direct `uv` child alone: the entire descendant
+tree was gone within 3 s and the sidecar logged `shutting down
+(reason=stdin-eof)` / `exit code 0`. Conclusion: uv forwards stdin, so
+its death propagates EOF; the graceful path works through the whole
+real launch chain when the pipe actually closes.
+
+Commits: see the branch `task67a-shutdown-investigation`. No product
+code changed in phase 1 — the temporary probes in
+`crates/cannet-server/src/main.rs` and the temporary
+`cannet-client` example used to drive a real session were removed
+before committing.
+
+## Blockers / side effects
+
+- **Console Ctrl-C is disabled by inheritance in the agent's shell
+  tree.** Every process launched from it inherits an "ignore Ctrl+C"
+  console state, so `GenerateConsoleCtrlEvent(CTRL_C_EVENT, …)`
+  returns success and does nothing. The experiment harness had to call
+  `SetConsoleCtrlHandler(NULL, FALSE)` before launching the server.
+  Not a product defect — recorded so the next investigator does not
+  spend the time again.
+- **The auto-restart budget confounds any "kill the sidecar"
+  experiment**: the supervisor spawns a replacement that re-takes a
+  fresh stdin pipe. Run with `--sidecar-restart-budget 0`.
+- **The server log has no timestamps**, so an experiment timeline
+  cannot be correlated against it without external markers. This was a
+  live cost during phase 1 and is first-hand motivation for phase 4.
+- **Latent, out of scope here:** `SidecarSupervisor::restart` kills
+  only the direct child. It happens to be sufficient on the dev `uv`
+  chain (E5) but is not a guarantee for other launcher shapes; folded
+  into the phase 3 verdict rather than left as a separate item.
