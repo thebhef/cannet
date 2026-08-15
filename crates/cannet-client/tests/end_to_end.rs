@@ -574,6 +574,275 @@ impl cannet_wire::proto::cannet_server_server::CannetServer for SilentServer {
     }
 }
 
+// ---------- correction against a skewed server ----------
+
+/// This host's wall clock, the one corrected frames must land on.
+fn local_now_ns() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap()
+}
+
+/// A server on a clock `skew_ns` from this host's.
+///
+/// The skew is injected in exactly one place — the server's reading of
+/// its own clock — so its probe replies and its frame stamps are
+/// consistently wrong together. That is what a misconfigured host looks
+/// like on the wire, and it is the only thing that makes the
+/// correction's two halves (measure, apply) testable as one.
+struct SkewedServer {
+    skew_ns: i64,
+}
+
+impl SkewedServer {
+    fn now_ns(&self) -> u64 {
+        u64::try_from(i128::from(local_now_ns()) + i128::from(self.skew_ns)).unwrap()
+    }
+}
+
+/// How often the skewed server emits a frame once subscribed.
+const SKEWED_FRAME_PERIOD: Duration = Duration::from_millis(20);
+
+#[tonic::async_trait]
+impl cannet_wire::proto::cannet_server_server::CannetServer for SkewedServer {
+    async fn list_interfaces(
+        &self,
+        _request: tonic::Request<cannet_wire::proto::ListInterfacesRequest>,
+    ) -> Result<tonic::Response<cannet_wire::proto::InterfaceList>, tonic::Status> {
+        Ok(tonic::Response::new(
+            cannet_wire::proto::InterfaceList::default(),
+        ))
+    }
+
+    type WatchInterfacesStream = tokio_stream::wrappers::ReceiverStream<
+        Result<cannet_wire::proto::InterfaceList, tonic::Status>,
+    >;
+
+    async fn watch_interfaces(
+        &self,
+        _request: tonic::Request<cannet_wire::proto::WatchInterfacesRequest>,
+    ) -> Result<tonic::Response<Self::WatchInterfacesStream>, tonic::Status> {
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+    }
+
+    type SessionStream =
+        tokio_stream::wrappers::ReceiverStream<Result<cannet_wire::proto::Envelope, tonic::Status>>;
+
+    async fn session(
+        &self,
+        request: tonic::Request<tonic::Streaming<cannet_wire::proto::Envelope>>,
+    ) -> Result<tonic::Response<Self::SessionStream>, tonic::Status> {
+        use cannet_wire::proto::{envelope::Body, ClockReply, Envelope, FrameBatch};
+
+        let skew = SkewedServer {
+            skew_ns: self.skew_ns,
+        };
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            let mut incoming = request.into_inner();
+            let mut emitting = false;
+            let mut ticker = tokio::time::interval(SKEWED_FRAME_PERIOD);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    message = incoming.message() => match message {
+                        Ok(Some(envelope)) => match envelope.body {
+                            Some(Body::ClockProbe(probe)) => {
+                                let reply = Envelope {
+                                    body: Some(Body::ClockReply(ClockReply {
+                                        t1: probe.t1,
+                                        t2: skew.now_ns(),
+                                        t3: skew.now_ns(),
+                                    })),
+                                };
+                                if tx.send(Ok(reply)).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Some(Body::Subscribe(_)) => emitting = true,
+                            _ => {}
+                        },
+                        _ => return,
+                    },
+                    _ = ticker.tick(), if emitting => {
+                        let frame = cannet_core::CanFrame::classic(
+                            skew.now_ns(),
+                            0,
+                            cannet_core::CanId::standard(0x123).unwrap(),
+                            cannet_core::Direction::Rx,
+                            vec![1, 2, 3],
+                        )
+                        .unwrap();
+                        let batch = Envelope {
+                            body: Some(Body::FrameBatch(FrameBatch {
+                                interface_id: "skewed:0".into(),
+                                frames: vec![cannet_wire::frame_to_proto(&frame)],
+                            })),
+                        };
+                        if tx.send(Ok(batch)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(tonic::Response::new(
+            tokio_stream::wrappers::ReceiverStream::new(rx),
+        ))
+    }
+}
+
+async fn spawn_skewed_server(skew_ns: i64) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stream = TcpListenerStream::new(listener);
+    let handle = tokio::spawn(async move {
+        let _ = Server::builder()
+            .add_service(
+                cannet_wire::proto::cannet_server_server::CannetServerServer::new(SkewedServer {
+                    skew_ns,
+                }),
+            )
+            .serve_with_incoming(stream)
+            .await;
+    });
+    (addr, handle)
+}
+
+/// Frames to drain — 40 at 20 ms is around 800 ms of production, which
+/// is an order of magnitude past the probe burst.
+const SKEWED_FRAME_COUNT: usize = 40;
+
+/// How close a corrected frame must land to the moment we read it.
+/// Loose next to the skews under test (they are 5×–20× this), because
+/// the gap it has to absorb is delivery latency on a loaded test
+/// machine, not clock error.
+const CORRECTED_SLACK_NS: i128 = 200_000_000;
+
+/// The exit criterion: a server stamping in a skewed clock, and frames
+/// that land where they really happened after the client corrects them.
+///
+/// The skew is applied to the server's whole clock, so nothing in this
+/// test tells the client what the answer is — it has to measure it from
+/// the probe exchange and apply it to the frames.
+async fn skewed_frames_land_on_our_clock(skew_ns: i64) {
+    let (addr, server) = spawn_skewed_server(skew_ns).await;
+    let source = tokio::task::spawn_blocking(move || {
+        connect_and_subscribe(
+            &ConnectConfig::plaintext(addr.to_string()),
+            vec![Subscription::new("skewed:0", 0)],
+        )
+        .unwrap()
+    })
+    .await
+    .unwrap();
+
+    // Each frame is paired with the moment we read it, so "landed
+    // correctly" is measured against this host's clock rather than
+    // against an expectation computed from the skew we injected.
+    let (source, observed) = tokio::task::spawn_blocking(move || {
+        let mut source = source;
+        let mut observed: Vec<(u64, u64)> = Vec::with_capacity(SKEWED_FRAME_COUNT);
+        for _ in 0..SKEWED_FRAME_COUNT {
+            match source.next_frame() {
+                Ok(Some(frame)) => observed.push((frame.timestamp_ns, local_now_ns())),
+                Ok(None) => panic!("the skewed server ended the stream early"),
+                Err(e) => panic!("the skewed session failed: {e}"),
+            }
+        }
+        (source, observed)
+    })
+    .await
+    .unwrap();
+
+    let error_ns: Vec<i128> = observed
+        .iter()
+        .map(|(stamp, read_at)| i128::from(*stamp) - i128::from(*read_at))
+        .collect();
+
+    // Frames delivered before the first probe round settles are
+    // uncorrected by design — the alternative is holding frames until a
+    // clock is known. What must be true is that the transient is short.
+    let first_corrected = error_ns
+        .iter()
+        .position(|e| e.abs() < CORRECTED_SLACK_NS)
+        .unwrap_or_else(|| panic!("no frame was ever corrected: {error_ns:?}"));
+    assert!(
+        first_corrected < 15,
+        "the uncorrected start-up transient ran {first_corrected} frames \
+         (~{} ms), far past the probe burst",
+        first_corrected * 20,
+    );
+
+    // From there on, every frame lands on our clock and the corrected
+    // timeline only ever moves forwards.
+    let mut previous = 0u64;
+    for (i, (stamp, _)) in observed.iter().enumerate().skip(first_corrected) {
+        assert!(
+            error_ns[i].abs() < CORRECTED_SLACK_NS,
+            "frame {i} landed {} ms from when it was read, after correction \
+             had already begun",
+            error_ns[i] / 1_000_000,
+        );
+        assert!(
+            *stamp >= previous,
+            "the corrected timeline went backwards at frame {i}",
+        );
+        previous = *stamp;
+    }
+
+    let record = source.clock().record();
+    let measured = record
+        .measured_offset_ns
+        .unwrap_or_else(|| panic!("the skewed server answers probes; got {record:?}"));
+    assert!(
+        (i128::from(measured) - i128::from(skew_ns)).abs() < CORRECTED_SLACK_NS,
+        "the session measured {measured} ns against an injected skew of {skew_ns} ns",
+    );
+    assert_eq!(
+        record.start_offset_ns,
+        Some(measured),
+        "one round has settled, so start and current are the same reading",
+    );
+    assert_eq!(
+        record.applied_offset_ns, measured,
+        "the first measurement is applied whole, not slewed towards",
+    );
+    assert_eq!(record.silent_rounds, 0);
+
+    drop(source);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn frames_from_a_server_seconds_ahead_land_on_our_clock() {
+    // Past the step threshold: applied immediately and whole.
+    skewed_frames_land_on_our_clock(4_000_000_000).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn frames_from_a_server_seconds_behind_land_on_our_clock() {
+    // The sign that a `u64` subtraction anywhere in the path turns into
+    // roughly +584 years rather than −4 s.
+    skewed_frames_land_on_our_clock(-4_000_000_000).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sub_threshold_skew_is_still_applied_from_the_first_measurement() {
+    // 800 ms is inside the step threshold, so a session that slewed its
+    // *first* measurement would spend 160 s knowingly misplacing every
+    // frame by an amount it had already measured. There is no corrected
+    // timeline to protect at session start, so there is nothing to slew.
+    skewed_frames_land_on_our_clock(800_000_000).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_that_never_answers_is_reported_unsupported_rather_than_waited_on() {
     // The failure this pins is a hang: an older server is a normal

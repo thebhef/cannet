@@ -273,3 +273,123 @@ crate)
 - Periodic re-probe (~30–60 s) and the warn-state transition logging.
 - The GUI surface: the server row's measured offset and the single
   session-start system-log line (warn above 100 ms).
+
+### Phase 2 — live tracking and slewed application (2026-08-14)
+
+Branch `task68b-offset-application` off `task68a-clock-wire`
+(f13d218). Scope: the offset stops being a reading and becomes a
+correction. Frames leaving `cannet-client` are now stamped on the
+local host's clock. GUI surfacing and logging remain phase 3.
+
+**Re-probe cadence — 30 s.** The fast end of the ruled 30–60 s range.
+Cost is not what bounds it: a round is four envelope pairs of two
+`uint64`s each, under a tenth of a frame's worth of traffic per
+second. What bounds it is that the correction only moves at the slew
+rate, so the interval has to leave the applied offset room to
+*converge* between measurements rather than permanently trail them.
+30 s × 5 ms/s is 150 ms of authority against a worst case of ~30 ms of
+genuine drift over that interval — a 5× margin. Each round is a fresh
+burst reduced by the same minimum-delay rule, so no round is worse
+than the start-up measurement was.
+
+**Slew rate — 5 ms per second, of the frame timeline.** Chosen from
+both ends. Fast enough to track: a host disciplining itself with NTP
+slews at up to 500 ppm, and two of them can pull apart at twice that,
+so 5 ms/s (5000 ppm) is an order of magnitude of margin and the
+correction converges instead of chasing. Slow enough to be invisible:
+while it moves the corrected timeline runs 0.5 % fast or slow, which
+across a one-second trace window is 5 ms of stretch and between two
+adjacent frames a millisecond apart is 5 µs. The worst error that does
+not step closes in 200 s; a realistic one — tens of ms between rounds
+— closes in seconds.
+
+The rate is spent per second of the **frame timeline**, not of local
+elapsed time. This was the phase's one real design decision. The
+obvious wall-clock-driven slew cannot promise monotonicity: two frames
+the server stamped identically but delivered a second apart would come
+out a slew-step apart, in the wrong order. Advancing on the stamps
+themselves makes the correction a strictly increasing function of the
+raw stamp (the rate is far below 1 ns/ns), so any non-decreasing run
+of raw stamps stays non-decreasing whatever the delivery timing was —
+and it costs no clock read on the frame path, which matters where
+every frame passes. A stamp that does not advance the timeline (an
+out-of-order arrival, or a server clock that went backwards) does not
+advance the slew; order is preserved as observed, never invented.
+
+**Step exceptions — two, not one.** The ruled >1 s threshold, and the
+session's *first* measurement, which is always applied whole. There is
+no corrected timeline to keep continuous at session start, and a
+session that slewed a known 800 ms offset would spend 160 s knowingly
+misplacing every frame by an amount it had already measured. Frames
+delivered in the ~80 ms before the first round settles are
+uncorrected — the alternative is holding frames until a clock is
+known, which trades a bounded brief error for an unbounded stall, and
+phase 1 already rejected that trade for readiness.
+
+**Staleness — silence is a lost round, not a retraction.** The two
+silences are different things. A peer that answers nothing on its
+*first* round does not recognise the envelopes: it stays `Unsupported`
+and is never asked again, so no timer runs forever against something
+that cannot hear it. A peer that answered once and then goes quiet
+keeps its last measurement and keeps being re-probed — that is far
+more likely a busy link than a peer that forgot the protocol — and
+`ClockRecord::silent_rounds` is how a consumer tells a fresh number
+from an old one.
+
+**The record.** `SessionClock::record() -> ClockRecord`: `status`,
+`start_offset_ns`, `measured_offset_ns`, `applied_offset_ns`,
+`delay_ns`, `samples`, `rounds`, `silent_rounds`, `measured_at_ns`.
+Measured and applied differ while the slew travels; that gap *is* the
+convergence. `i128` throughout the arithmetic, `i64` on the surface.
+The applied offset lives in an `AtomicI64` rather than under the
+record's mutex, because the slew advances it on the frame path and a
+lock per frame there would be a real cost for a number nobody has to
+read consistently with anything else.
+
+**Commits**
+
+| commit | what |
+|---|---|
+| `d0ae173` | live tracking: 30 s rounds, the `ProbeRounds` state machine, `ClockRecord` |
+| `ddb15a5` | `OffsetSlew`, the application seam, the skewed-clock tests |
+
+**The skewed-clock test.** A `SkewedServer` in the client's
+end-to-end suite whose *whole clock* is offset — its probe replies and
+its frame stamps are consistently wrong together, so nothing in the
+test tells the client the answer; it has to measure it and apply it.
+Each frame is paired with the moment the test read it, so "landed
+correctly" is measured against this host's clock rather than against
+the skew that was injected. Three skews: +4 s and −4 s (past the step
+threshold, and the sign a `u64` subtraction anywhere in the path turns
+into +584 years) and +800 ms (inside the threshold, proving the first
+measurement is still applied whole). 40 frames at 20 ms each; the
+assertion is that the uncorrected start-up transient ends inside 15
+frames and that every frame after it lands within 200 ms of when it
+was read and never moves backwards. Falsified before being believed:
+with the correction removed, all 40 errors sat at +3999 ms.
+
+Slew *behaviour* is unit-tested rather than end-to-end — an
+end-to-end slew needs a mid-session clock change and a 30 s re-probe
+wait, which does not belong in a suite that has to stay fast.
+
+**Tests** (all green; clippy `-D warnings` clean on every touched
+crate)
+
+| layer | new | suite total |
+|---|---|---|
+| `cannet-client` unit | 22 (`clock`: record ×6, cadence ×5, slew ×11) | 47 |
+| `cannet-client` end-to-end | 3 (skewed server: ahead, behind, sub-threshold) | 13 |
+| `cannet-client` protected | — | 8 |
+| `cannet-server` | — | 37 unit + 36 integration |
+| `cannet-wire` | — | 21 |
+| `cannet-gui` | — | 617 |
+
+**Open for the next phase**
+
+- The GUI surface: the server row's measured offset, the single
+  session-start system-log line (warn above 100 ms), and the
+  warn-state transition lines. Everything it needs to render is on
+  `SessionClock::record()`; nothing in the GUI reads the clock yet.
+- Nothing here exposes a disable switch, as ruled — correction is
+  default-on and unconditional. The seam for one, if it is ever
+  asked for, is `OffsetSlew::retarget` never being called.
