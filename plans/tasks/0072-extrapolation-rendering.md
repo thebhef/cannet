@@ -1098,7 +1098,10 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     per series. The per-draw work is the same shape as before (a strided
     scan bounded by the cap), over a list that is now shorter.
 
-  - _Guards._ Nine new tests, all watched fail first. At the draw tier
+  - _Guards._ Nineteen new tests, eleven net of the eight the fix
+    orphaned. The eleven that reproduce the defect were written first and
+    watched fail; the unit suites replacing the orphaned ones were
+    written with the code they cover. At the draw tier
     (`PlotArea.draw.test.ts`, driving the real `mergeSeries` /
     `splitExtrapolatedRows` on the fixture's shapes): a lane marks its
     own samples and not a dense sibling's columns; a dense lane keeps
@@ -1123,9 +1126,9 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     orchestrator's, and they now cover two fixes (this one and phase 6's
     leading-wing clamp).
 
-  - Frontend: 162 test files / 2160 tests passed (from 162 / 2150 at
-    phase 6 — nine added and the orphaned suites removed); `tsc --noEmit`
-    and `pnpm build` clean. No host code touched, so no Rust run.
+  - Frontend: 162 test files / 2161 tests passed (from 162 / 2150 at
+    phase 6); `tsc --noEmit` and `pnpm build` clean. No host code
+    touched, so no Rust run.
 
 ## Blockers / side effects
 
