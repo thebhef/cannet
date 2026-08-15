@@ -48,8 +48,8 @@ struct Cli {
     /// before; with more than one, the three memory-drift metrics
     /// (`{jsheap,renderer,tree}_mb_drift_per_min`) gate on the **median**
     /// across the given reports instead of each report's own worst value
-    /// (owner ruling, task 71) — every other metric stays per-run. Omit to
-    /// leave the frontend tier out of the run.
+    /// (ADR 0031) — every other metric stays per-run. Omit to leave the
+    /// frontend tier out of the run.
     #[arg(long = "frontend-report", global = true)]
     frontend_report: Vec<PathBuf>,
     /// Expected receive rate (frames/s) for the live sim, gated by `check`
@@ -509,9 +509,8 @@ fn run_check(
         // The harness can't re-run the frontend; fresh report(s) must be
         // supplied. Without one, the tier is skipped, not failed. With more
         // than one, the drift family gates on their median rather than
-        // each report's own worst run (owner ruling, task 71) —
-        // `check_frontend_gate` is exactly `check_frontend` for a single
-        // report.
+        // each report's own worst run (ADR 0031) — `check_frontend_gate`
+        // is exactly `check_frontend` for a single report.
         if frontend_reports.is_empty() {
             skipped.push(("frontend", "no --frontend-report supplied".to_string()));
         } else {

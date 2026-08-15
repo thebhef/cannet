@@ -595,12 +595,12 @@ fn median(mut values: Vec<f64>) -> f64 {
 /// (`{jsheap,renderer,tree}_mb_drift_per_min`) is still judged **per
 /// report** — one verdict row per report, worst-run-fails-the-gate
 /// preserved — while the drift family instead gates the **median** of
-/// the reports' values against the same limit (owner ruling, task 71,
-/// 2026-08-15: a least-squares slope over a 60 s capture window is a
-/// property of where in a memory ramp the window landed, so its worst
-/// run across a gate is a noisier statistic than a latency maximum,
-/// which at least corresponds to something a user felt — see ADR 0031).
-/// The limit itself is untouched; only the statistic gated against it
+/// the reports' values against the same limit (ADR 0031): a
+/// least-squares slope over a 60 s capture window is a property of
+/// where in a memory ramp the window landed, so its worst run across a
+/// gate is a noisier statistic than a latency maximum, which at least
+/// corresponds to something a user felt. The limit itself is untouched;
+/// only the statistic gated against it
 /// moves from worst-run to median. Each drift verdict's metric name is
 /// suffixed `(median of N)` so the printed table records what it was
 /// judged on. Still baseline-armed: a drift metric whose baseline is
