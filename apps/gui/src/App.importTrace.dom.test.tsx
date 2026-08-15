@@ -257,7 +257,7 @@ describe("Recent captures", () => {
     await hydrateState();
     await mountAndSeed();
 
-    const summary = document.querySelector("details.recent-captures > summary");
+    const summary = document.querySelector(".recent-captures > button");
     expect(summary?.getAttribute("aria-label")).toBe("Recent captures (2)");
 
     await act(async () => {
@@ -286,7 +286,7 @@ describe("Recent captures", () => {
     seededRecents = ["/old/legacy.blf"];
     await hydrateState();
     await mountAndSeed();
-    const summary = document.querySelector("details.recent-captures > summary");
+    const summary = document.querySelector(".recent-captures > button");
     await act(async () => {
       fireEvent.click(summary as Element);
     });
@@ -299,5 +299,56 @@ describe("Recent captures", () => {
     await waitFor(() => findButton("Open"));
     expect(invokeCalls.some((c) => c.cmd === "scan_blf_channels")).toBe(true);
     expect(dialogOpenCalls.length).toBe(0);
+  });
+});
+
+describe("Recent captures — dismissal (task 75 item 4)", () => {
+  it("closes on an outside click, without opening anything", async () => {
+    seededRecents = ["/old/legacy.blf"];
+    await hydrateState();
+    await mountAndSeed();
+    const trigger = document.querySelector<HTMLButtonElement>(".recent-captures > button")!;
+    await act(async () => {
+      fireEvent.click(trigger);
+    });
+    expect(document.querySelector(".recent-captures-menu")).not.toBeNull();
+
+    await act(async () => {
+      fireEvent.mouseDown(document.body);
+    });
+    expect(document.querySelector(".recent-captures-menu")).toBeNull();
+    expect(invokeCalls.some((c) => c.cmd === "scan_blf_channels")).toBe(false);
+  });
+
+  it("closes on Escape, without opening anything", async () => {
+    seededRecents = ["/old/legacy.blf"];
+    await hydrateState();
+    await mountAndSeed();
+    const trigger = document.querySelector<HTMLButtonElement>(".recent-captures > button")!;
+    await act(async () => {
+      fireEvent.click(trigger);
+    });
+    expect(document.querySelector(".recent-captures-menu")).not.toBeNull();
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "Escape" });
+    });
+    expect(document.querySelector(".recent-captures-menu")).toBeNull();
+    expect(invokeCalls.some((c) => c.cmd === "scan_blf_channels")).toBe(false);
+  });
+
+  it("a mousedown inside the menu does not dismiss it", async () => {
+    seededRecents = ["/old/legacy.blf"];
+    await hydrateState();
+    await mountAndSeed();
+    const trigger = document.querySelector<HTMLButtonElement>(".recent-captures > button")!;
+    await act(async () => {
+      fireEvent.click(trigger);
+    });
+    const entry = document.querySelector<HTMLButtonElement>(".recent-captures-menu button")!;
+    await act(async () => {
+      fireEvent.mouseDown(entry);
+    });
+    expect(document.querySelector(".recent-captures-menu")).not.toBeNull();
   });
 });
