@@ -689,6 +689,84 @@ to keep building — the only other call site.
 
 Frontend: 160 files / 2108 tests, `pnpm build` clean. Commit `ae518d9e`.
 
+### 2026-08-14 — item 6: a cold rebuild announces itself, and offers a way out
+
+Branch `task75-p5-rebuild-offramp`, off `task75-p4-recents`.
+
+**The fact, and who owns it.** A restore that fails ADR 0047's validity
+check wipes the persisted pyramids, and the wipe is the last trace of
+them: nothing downstream can tell "these caches were thrown away" from
+"this capture never had any". So the discard is recorded where it
+happens. `SignalCacheStore::restore` sets a latch when it was offered
+DBC-backed rows and took none over a capture that came back with frames;
+`rebuilding(store_len)` reports it until the caches that replaced them
+have decoded to the tip, and clears the latch when they have.
+`clear` — the same call a fresh open and the offramp make — drops it
+with everything else. The frontend never infers any of this: the host
+returns `pyramids_rebuilding` from `restore_scratch_capture` and answers
+`signal_pyramids_rebuilding` afterwards.
+
+**Why a queryable fact and not an event.** The rebuild is lazy and
+per-signal (ADR 0049): it runs inside plot serves, so "it finished" is
+not a moment the host passes through — it is a property of where the
+decode cursors have reached. The chip polls that property once a second
+and only while it is up; a session that is not rebuilding issues no poll
+at all (pinned by a test).
+
+**The surface.** The status line grows the same indeterminate chip the
+trace-open census uses (`.trace-scan-bar`, phase 3's affordance reused
+rather than a second one invented), labelled **"Rebuilding signal
+caches…"**, with **Discard** beside it. The restore's system-log line
+says it too, at info — a rejection previously left the log reading
+"restored N frames in 600 ms" with the minutes that followed unmentioned.
+
+**The offramp is the existing clear, not a new deletion path.** Discard
+calls `resetSession` with Clear's own error policy, which invokes
+`clear_trace_store`: `start_session` (raw store, its segments and reopen
+manifest, the derived file and the scratch identity) plus
+`restamp_scratch_for_capture` (signal caches, notes, filter index) plus
+the verification runtime. Nothing new deletes anything. **No new
+cancellation was needed either**, and this was checked rather than
+assumed: a rebuild is already abandonable mid-flight — it decodes off
+the cache lock and drops a chunk whose generation no longer matches
+(ADR 0048), which the pre-existing
+`the_exit_path_does_not_wait_for_a_cold_rebuild` pins — and the clear is
+one of the paths it yields to. The frontend adds only what the clear
+does not own: `firstIndex` / `firstIndexTsNs`, the restored capture's
+eviction mark, which an empty session cannot have.
+
+**Tests (the falsification was run, not assumed).** Host, written
+failing first, in `signal_cache.rs`: a reused set and a restore with
+nothing staged announce nothing; a discarded set announces _before any
+serve has run_ and stops once the rebuild has caught up; a clear ends
+the announcement and leaves the root empty. In `trace_store/flush.rs`,
+`discarding_a_restored_session_leaves_nothing_for_the_next_launch` — the
+exit criterion's "clean empty session, not a half-deleted scratch",
+checked from the next launch's side: the identity gate opens on the
+restamped scratch and finds an empty capture, with no derived residue.
+In `tests.rs`, an ordinary session (nothing restored, then frames
+arriving live) is never rebuilding — the fast-path silence.
+
+Frontend, new `App.rebuildOfframp.dom.test.tsx` (8): the chip appears on
+a discarding restore and on nothing else (a reused set and a
+`count == 0` restore are both silent); it goes down on the host's answer
+rather than a timeout; a non-rebuilding session never polls; Discard
+invokes `clear_trace_store`, leaves Clear and Save-capture disabled (an
+empty session, observably), takes the chip down, stops the polling, and
+keeps the project open (`close_project` never invoked, the window title
+still the project's). Falsification: with the chip's render condition
+forced false, 5 of the 8 fail.
+
+Docs in the same commits: ADR 0047 gains a decision paragraph ("a
+rejection is announced, and the user may decline to pay for it") and a
+consequence; README's capture-survives-a-quit paragraph names the chip,
+what the rebuild is, and exactly what Discard drops and keeps.
+
+Commits: `1c67c64a` (the cache-layer fact), `dcd5715f` (the restore's
+answer + the query command), `4fb96128` (chip, offramp, docs). Host: 656
+passed / 6 ignored, clippy clean. Frontend: 161 files / 2116 tests,
+`pnpm build` clean.
+
 ## Blockers / side effects
 
 - **Latent, out of scope for item 1: the by-id / signal window scan on
@@ -727,3 +805,32 @@ Frontend: 160 files / 2108 tests, `pnpm build` clean. Commit `ae518d9e`.
   panel now explains it (leg (b)) and README names it. Whether such a
   row should be there at all is a product question for the owner, not
   something to decide inside a defect fix.
+
+- **The rebuild chip has no natural end on a session with no plot open**
+  (item 6, accepted rather than fixed). `rebuilding()` reports the
+  rebuild as owed while no DBC-backed cache exists at all, because the
+  samples genuinely are gone and the first serve over any signal will
+  re-decode the capture. The consequence is that a discarding restore in
+  a workspace with no plot panel keeps the chip up until the user opens
+  one or hits Discard — honest about the state, but the wording implies
+  work in progress. The alternative (treat "no cache yet" as caught up)
+  is worse: the chip would clear a frame after appearing, before the
+  first serve had run. A third reading — end the chip on the frontend's
+  own aggregate of every plot area's `catchingUp` — needs a context
+  across all areas and has the same corner from the other side.
+- **The chip can clear early under one interleaving** (item 6). If one
+  plot area's signals catch up before another area has created its
+  caches, the poll sees nothing behind the tip and takes the chip down
+  while the second area is still cold. Areas mount together on a restore
+  and serve on the same self-paced loop, so the window is roughly one
+  tick wide, and the cost is a chip that ends early rather than a wrong
+  plot. Recorded rather than papered over with a debounce.
+- **Clear leaves the frontend's eviction mark stale** (noticed from item
+  6, pre-existing, not changed). `useSessionReset` re-anchors the
+  windows, the session clock and the count, but not `firstIndex` /
+  `firstIndexTsNs` — so after a Clear over a restored, truncated capture
+  the frontend still believes history was dropped below index N, until a
+  `trace-grew` tick corrects it (and a cleared session that is never
+  started gets none). The discard offramp resets them at its own call
+  site; folding them into `useSessionReset` would change Clear, Connect,
+  BLF-map-confirm and New alike, which is its own change.
