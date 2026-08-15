@@ -432,3 +432,67 @@ outstanding.
   run procedure copies the operator profile's `.window-state.json`
   into the isolated dir before launch; ADR-0031/README get the
   step in the same slice. Applies to every gate run from now on.
+
+### 2026-08-15 — implementation slice landed
+
+Both queued rulings above are implemented, on
+`task71-p2-median-gating` off `task72-p1-hover-points`:
+
+- `3ac8bac4` feat(perf-measurement): gate the drift metric family on
+  the median — `frontend::check_frontend_gate` (new); `median()`
+  helper; degenerates to `check_frontend` for one report.
+- `2776a0af` feat(perf-measurement): accept repeated --frontend-report
+  on the CLI — `--frontend-report` is now `Vec<PathBuf>` (repeatable),
+  wired into `check`; `baseline` keeps single-snapshot semantics
+  (uses the first, notes the rest are ignored).
+- `5d2f2bb2` docs(perf-measurement): cite ADR 0031, not a task number,
+  in code comments — self-correction of an initial CLAUDE.md slip
+  (rustdoc/comments named "task 71"; fixed before this landed anywhere
+  the rule would have caught it downstream).
+- `5141a16a` docs(adr-0031,readme): median-gating gate form +
+  window-geometry seeding — ADR 0031's run-procedure section gets both
+  rulings; top-level README and the crate README get the multi-report
+  `check --frontend-report a --frontend-report b …` canonical form and
+  the `.window-state.json` copy step with the real per-OS path
+  (`%APPDATA%\dev.cannet.app\.window-state.json` on Windows).
+
+**Behavior.** `check_frontend_gate(baseline, currents, expected)`: with
+one report, byte-for-byte the same verdicts as `check_frontend` (same
+mode/metric/pass, unchanged for every existing single-report caller).
+With more than one, every metric except
+`{jsheap,renderer,tree}_mb_drift_per_min` is still judged once per
+report (worst-run-fails-the-gate preserved); the three drift metrics
+instead gate the median of the given reports' values against the same
+unmoved limit, and the verdict's metric name is suffixed
+`(median of N)` so the printed table says what it was judged on. A
+drift metric whose baseline is absent (≤ 0) stays inert exactly as
+before — arming is unaffected by this change.
+
+**Tests.** `cargo test -p cannet-perf-measurement` — 42 passed (36 lib,
+5 `example_artifacts`, 1 `fps_flat`), 0 failed. The 6 new
+`frontend::tests` cases (synthetic fixtures, no dependency on the
+committed `docs/performance-measurements/` JSONs): single-report
+equivalence to `check_frontend`; a lone-outlier run (90 vs an 85
+limit) whose median with two clean runs (50, 48) passes where the old
+worst-run rule would have failed the gate; three consistently-elevated
+runs (95/100/92) whose median (95) still fails, so the change isn't a
+rubber stamp; non-drift metrics (`jank_fraction`) still produce one
+verdict row per report and a regression in exactly one of three still
+fails the gate; the drift gate stays inert under a zero (unarmed)
+baseline with multiple reports, matching single-report behavior.
+`cargo clippy -p cannet-perf-measurement --all-targets` — clean.
+
+**No perf runs, no GUI launches, no real per-user app-data writes**
+were performed — the window-geometry step is documented only, per the
+task's hard constraints; no harness automation was written for the
+copy (no obvious one-line seam was found in `apps/gui/src-tauri` that
+does it without adding machinery, so a documented manual step is what
+landed, as the task allowed). `docs/performance-measurements/baseline.json`
+and every committed report file are untouched.
+
+**Not done here, and not this task's call:** roadmap retirement.
+Task 71's own rulings section says it retires from `plans/tasks/roadmap.md`
+once this slice lands — that edit is left to whoever reviews this
+slice against the roadmap, per the task instructions for this work.
+
+No blockers or out-of-scope findings surfaced during this slice.
