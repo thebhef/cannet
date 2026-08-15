@@ -1757,6 +1757,25 @@ header {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* The measured clock offset vs a connected server — a small,
+   unobtrusive health indicator on the section header, not an error. */
+.project-server-clock {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.project-server-clock.warn {
+  color: var(--warn-text);
+}
+
+/* Stale readings grey out even under `.warn` — the number is a last
+   known value, not a live one. */
+.project-server-clock.stale {
+  opacity: 0.6;
+  font-style: italic;
+}
+
 .project-server-bindings {
   list-style: none;
   margin: 0.1rem 0 0;

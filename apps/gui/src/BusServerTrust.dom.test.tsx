@@ -40,6 +40,7 @@ function serverRow(patch: Partial<ServerRow> & { address: string }): ServerRow {
     insecure: false,
     manual: false,
     prompt: null,
+    clock: null,
     ...patch,
   };
 }

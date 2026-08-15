@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   addressShapeError,
   browseNotice,
+  formatClockOffset,
   matchServerRows,
   serverLabel,
   trustLabel,
@@ -22,6 +23,7 @@ const row = (over: Partial<ServerRow>): ServerRow => ({
   insecure: false,
   manual: false,
   prompt: null,
+  clock: null,
   ...over,
 });
 
@@ -158,5 +160,23 @@ describe("the shape of a typed server address", () => {
 
   it("names host:port in the complaint, because that is the fix", () => {
     expect(addressShapeError("bench.example.com")).toContain("host:port");
+  });
+});
+
+describe("formatClockOffset", () => {
+  it("shows sub-second offsets in milliseconds", () => {
+    expect(formatClockOffset(42_000_000)).toBe("+42 ms");
+    expect(formatClockOffset(-42_000_000)).toBe("-42 ms");
+    expect(formatClockOffset(0)).toBe("+0 ms");
+  });
+
+  it("switches to seconds with one decimal at 1000 ms and above", () => {
+    expect(formatClockOffset(4_200_000_000)).toBe("+4.2 s");
+    expect(formatClockOffset(-1_000_000_000)).toBe("-1.0 s");
+  });
+
+  it("keeps the sign so ahead and behind read at a glance", () => {
+    expect(formatClockOffset(500_000_000)).toMatch(/^\+/);
+    expect(formatClockOffset(-500_000_000)).toMatch(/^-/);
   });
 });

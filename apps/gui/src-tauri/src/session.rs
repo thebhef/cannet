@@ -16,7 +16,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_client::{
-    ConnectionError, PreSubscribeConfig, SessionHandle, SessionTransmitter, Subscription,
+    clock::SessionClock, ConnectionError, PreSubscribeConfig, SessionHandle, SessionTransmitter,
+    Subscription,
 };
 use cannet_core::CanFrameSource;
 
@@ -62,6 +63,12 @@ pub(crate) struct RemoteSession {
     /// destinations.
     pub(crate) channel_to_bus: Vec<(u8, Option<String>)>,
     pub(crate) stop: Arc<AtomicBool>,
+    /// This session's live clock-offset tracking, or `None` for a
+    /// session with no `Session` behind it — the in-process
+    /// `local-vbus://` backend never opens one, so there is no peer
+    /// clock to measure. Cheap to clone: [`crate::clock_status`] polls
+    /// it from a separate task without touching the session map.
+    pub(crate) clock: Option<SessionClock>,
 }
 
 /// Backend-specific transmit machinery for a [`RemoteSession`].
@@ -498,6 +505,7 @@ pub(crate) async fn connect_remote_server(
     };
 
     let (handle, receiver, transmitter) = source.into_parts();
+    let clock = receiver.clock().clone();
     let stop = Arc::new(AtomicBool::new(false));
 
     // Build the channel-to-bus mapping from the per-server
@@ -533,6 +541,7 @@ pub(crate) async fn connect_remote_server(
                 .collect(),
             channel_to_bus,
             stop: Arc::clone(&stop),
+            clock: Some(clock),
         },
     )
     .inspect_err(|e| fail_subscribed(&app, e))?;
@@ -676,6 +685,10 @@ fn connect_local_vbus(
             channel_to_interface,
             channel_to_bus: channel_to_bus.clone(),
             stop: Arc::clone(&stop),
+            // No `Session` is opened for an in-process vbus backend
+            // (see the module docs), so there is no peer clock to
+            // measure.
+            clock: None,
         },
     )?;
 
