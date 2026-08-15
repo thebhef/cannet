@@ -110,3 +110,47 @@ export function capPointMarkers(u: uPlot, seriesIdx: number): number[] | null {
   if (out[out.length - 1] !== i1) out.push(i1);
   return out;
 }
+
+/**
+ * Which of a lane's served samples get a marker drawn at them.
+ *
+ * A lane's markers cannot ride uPlot's `points` layer. That layer's
+ * `auto` rule reads the density of the **axis** — and a shared
+ * enum-lanes axis carries every enum's samples in its merged columns, so
+ * one fast lane suppresses the markers of every slow one — and
+ * {@link AUTO_POINT_MARKER_FLOOR} only rescues a series of a handful of
+ * samples. Whatever markers do survive that are then painted over by the
+ * value tiles, which are 65–75 % opaque and sit in front of the line by
+ * design.
+ *
+ * But a lane needs its markers *more* than a line does, not less. A
+ * line's own shape shows where it was measured; a lane's tiles show only
+ * its transitions, so with no markers there is nothing on screen
+ * distinguishing a state held through a thousand samples from one held
+ * through none — which is exactly the difference between data and
+ * extrapolation this view now claims to draw.
+ *
+ * So a lane draws its own, over the tiles, at every served sample in
+ * view — thinned to `max` the way {@link capPointMarkers} thins the `on`
+ * mode, because a marker per sample costs the same here as there. `ts`
+ * must be ascending. The last in-view sample is always kept, so a lane's
+ * newest sample is always marked.
+ */
+export function laneSampleMarkerIndices(
+  ts: readonly number[],
+  from: number,
+  to: number,
+  max = MAX_POINT_MARKERS,
+): number[] {
+  let i0 = 0;
+  while (i0 < ts.length && ts[i0] < from) i0++;
+  let i1 = ts.length - 1;
+  while (i1 >= 0 && ts[i1] > to) i1--;
+  if (i1 < i0) return [];
+  const count = i1 - i0 + 1;
+  const stride = Math.max(1, Math.ceil(count / Math.max(1, max)));
+  const out: number[] = [];
+  for (let i = i0; i <= i1; i += stride) out.push(i);
+  if (out[out.length - 1] !== i1) out.push(i1);
+  return out;
+}

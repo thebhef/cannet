@@ -203,3 +203,83 @@ export function laneTileBand(
   const half = ((band.hi - band.lo) * frac) / 2;
   return { lo: center - half, hi: center + half };
 }
+
+/** Horizontal period of the diagonal stripes an extrapolated lane tile
+ * is overlaid with (ADR 0026), in CSS pixels. Wide enough that the
+ * pattern reads as hatching at a glance rather than as a texture, and
+ * that a label's glyphs are crossed a couple of times at most. */
+export const EXTRAPOLATION_STRIPE_PERIOD_PX = 20;
+
+/** One stripe, as the two endpoints to stroke between. */
+export interface StripeLine {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+/**
+ * The 45° stripe overlay for one rectangle (ADR 0026): the stroke width
+ * that makes the painted and unpainted bands exactly even, and the lines
+ * to stroke — which run past the rectangle's edges, so the caller clips
+ * to it.
+ *
+ * **The width is not half the period.** A 45° stroke of width `w`
+ * occupies `w·√2` horizontally, so a naive `period / 2` paints
+ * `period / √2` ≈ 71 % of each period and the overlay reads as a
+ * repaint of the tile rather than as hatching over it. Even bands need
+ * `period / (2·√2)`.
+ *
+ * Stripes are anchored to the canvas x origin rather than to the
+ * rectangle, so two tiles that meet continue one another's pattern
+ * instead of both restarting it at their shared edge — which would put
+ * a double-width band on every join.
+ *
+ * All lengths are in the caller's pixel space (device pixels, i.e. CSS
+ * pixels already multiplied by the canvas ratio, if that is what it
+ * passes as `periodPx`).
+ */
+export function stripeOverlay(
+  rect: { x0: number; x1: number; yTop: number; yBot: number },
+  periodPx: number,
+): { lineWidth: number; lines: StripeLine[] } {
+  const lineWidth = periodPx / (2 * Math.SQRT2);
+  const lines: StripeLine[] = [];
+  const h = rect.yBot - rect.yTop;
+  if (!(periodPx > 0) || !(h > 0) || !(rect.x1 > rect.x0)) return { lineWidth, lines };
+  // A stripe starting at `xt` on the top edge reaches `xt + h` on the
+  // bottom one, so the rectangle is covered by every anchored start from
+  // one height left of it through its right edge.
+  const first = Math.floor((rect.x0 - h) / periodPx);
+  const last = Math.ceil(rect.x1 / periodPx);
+  for (let k = first; k <= last; k++) {
+    const xt = k * periodPx;
+    lines.push({ x0: xt, y0: rect.yTop, x1: xt + h, y1: rect.yBot });
+  }
+  return { lineWidth, lines };
+}
+
+/**
+ * The part of `[t0, tEnd]` that `spans` marks as extrapolation, or
+ * `null` when they do not meet.
+ *
+ * A tile is a run of one held code and a stretch of extrapolation is a
+ * run of silence; neither is a subdivision of the other, so a tile can
+ * be wholly, partly, or not at all stale. **Only the stale part is
+ * striped** — a tile that went stale halfway through still shows, in
+ * the same picture, when it was a reading and when it stopped being one.
+ *
+ * Spans are ascending and non-overlapping, so the union of their
+ * overlaps with one tile is reported as its outer bounds; a tile
+ * straddling two stretches has data between them, and the caller's
+ * per-span iteration is what keeps that gap unstriped.
+ */
+export function stripedOverlap(
+  t0: number,
+  tEnd: number,
+  span: readonly [number, number],
+): { from: number; to: number } | null {
+  const from = Math.max(t0, span[0]);
+  const to = Math.min(tEnd, span[1]);
+  return to > from ? { from, to } : null;
+}

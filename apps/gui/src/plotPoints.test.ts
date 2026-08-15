@@ -5,6 +5,7 @@ import {
   applyAutoPointFloor,
   AUTO_POINT_MARKER_FLOOR,
   capPointMarkers,
+  laneSampleMarkerIndices,
   MAX_POINT_MARKERS,
   showPointsFromRaw,
   showPointsToUplot,
@@ -129,5 +130,36 @@ describe("applyAutoPointFloor", () => {
     expect(series[1].points!.show).toBe(true);
     expect(series[2].points!.show).toBe(false);
     expect(series[0]).toEqual({});
+  });
+});
+
+describe("laneSampleMarkerIndices", () => {
+  it("marks every served sample inside the view", () => {
+    // The whole point: a lane's tiles show its transitions, so without
+    // a marker per sample there is nothing on screen distinguishing a
+    // state held through many samples from one held through none.
+    expect(laneSampleMarkerIndices([0, 1, 2, 3, 4], 0, 4)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("drops samples outside the visible window", () => {
+    // The serve is widened past the window by two boundary points a
+    // side, and those sit off-canvas.
+    expect(laneSampleMarkerIndices([0, 1, 2, 3, 4], 1, 3)).toEqual([1, 2, 3]);
+    expect(laneSampleMarkerIndices([0, 1, 2], 5, 9)).toEqual([]);
+    expect(laneSampleMarkerIndices([], 0, 9)).toEqual([]);
+  });
+
+  it("thins to the marker cap and always keeps the newest sample", () => {
+    // A marker per sample costs the same on a lane as on a line, so the
+    // same flat cap applies. The last in-view sample is kept whatever
+    // the stride lands on, so a lane's leading edge is always marked —
+    // it is the one position a reader is checking.
+    const ts = Array.from({ length: 1234 }, (_, i) => i);
+    const out = laneSampleMarkerIndices(ts, 0, 1233);
+    expect(out.length).toBeLessThanOrEqual(MAX_POINT_MARKERS + 1);
+    expect(out[0]).toBe(0);
+    expect(out[out.length - 1]).toBe(1233);
+    // Evenly strided, so the thinning does not bunch the markers.
+    expect(out[1] - out[0]).toBe(Math.ceil(1234 / MAX_POINT_MARKERS));
   });
 });

@@ -2333,6 +2333,39 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
+  it("enum lanes: keeps a stale lane's row whole so the tile survives to be hatched", async () => {
+    // The two renderers differentiate extrapolation differently, and a
+    // lane must not get the line's treatment. Blanking the row is how a
+    // line's solid stroke is stopped at its data — but `enumSegments`
+    // ends a run at a `null`, so the same blanking on a lane would
+    // *delete* the stale tile instead of marking it, and a lane's held
+    // state is information whether or not the signal is still arriving.
+    // The extent overdraw the classification labels here is exactly the
+    // tail EngineSpeed is held across by its faster neighbour.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockValueTables.EngineTemp = ENUM3;
+    mockSampleSeries.EngineSpeed = { t: [0, 1], v: [0, 1] };
+    mockSampleSeries.EngineTemp = { t: [0, 1, 2, 3], v: [0, 1, 2, 0] };
+    mockExtrapolated.EngineSpeed = [[1, 3]];
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        expect(data[0]).toEqual([0, 1, 2, 3]);
+        // Every column still carries a lane position for the stale
+        // signal — nothing was blanked, so `enumSegments` still produces
+        // a tile out to the axis's last column for the draw hook to
+        // hatch the stale part of.
+        expect(data[1]?.length).toBe(4);
+        expect(data[1]?.every((y) => y != null)).toBe(true);
+      });
+    } finally {
+      restore();
+    }
+  });
+
   it("enum lanes: a late value-table resolution re-normalises the data", async () => {
     // Regression: tables are fetched after the area first renders, and
     // the lane normalisation runs *through* them, so a resolution has
