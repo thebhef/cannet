@@ -157,22 +157,31 @@ describe("advanceLiveEdge", () => {
     }
   });
 
-  it("stops dead once the data edge has stopped", () => {
-    // Disconnect with the trace still running: the observed symptom was
-    // a slow "filtered residual" slide — the clock advancing by elapsed
-    // time while the pull only clawed back a fraction, creeping to
-    // equilibrium without ever stopping. It may coast, bounded, and
-    // must then hold *exactly*. Bounded rather than instant because
-    // "no new data" also describes an extra plot area reporting the
-    // same tick, and a data edge that dipped below its high-water mark
-    // — neither of which means the bus went quiet.
-    let edge = adv(null, 10, 1000);
-    const first = liveEdgeAt(edge, 1000);
-    for (let k = 1; k < 200; k++) edge = adv(edge, 10, 1000 + k * 66);
+  it("comes to rest on the newest frame once the data edge has stopped", () => {
+    // Disconnect with the trace still running: nothing stops the trace,
+    // so the resample loop keeps ticking and keeps handing the clock
+    // the same live edge. Where the prediction is allowed to run to is
+    // therefore exactly where the plot stops scrolling.
+    //
+    // It may coast the lag it was tracking behind — the prediction
+    // between fetches is what keeps the motion smooth, and "no new
+    // data" also describes an extra plot area reporting the same tick —
+    // and must then hold *exactly*, on the last frame. Ceiling the
+    // prediction with `maxLagSeconds` instead (the tolerance for a
+    // clock that has fallen *behind*) let it keep scrolling at
+    // real-time rate for that whole budget and come to rest out past
+    // its own data.
+    const LAGGED = { ...TUNING, targetLagSeconds: 0.3 };
+    let edge = adv(null, 10, 1000, LAGGED);
+    // Tracking behind the newest frame, as the target lag asks.
+    expect(liveEdgeAt(edge, 1000)).toBeCloseTo(9.7, 9);
+    for (let k = 1; k < 200; k++) edge = adv(edge, 10, 1000 + k * 66, LAGGED);
     const held = liveEdgeAt(edge, 1000 + 199 * 66);
-    expect(held - first).toBeLessThanOrEqual(TUNING.maxLagSeconds);
+    // Coasted the lag, and no further: the window rests with the last
+    // frame on its right edge, not in the blank strip past it.
+    expect(held).toBeCloseTo(10, 9);
     // ...and it stays there, however long the dead stream is polled.
-    for (let k = 200; k < 400; k++) edge = adv(edge, 10, 1000 + k * 66);
+    for (let k = 200; k < 400; k++) edge = adv(edge, 10, 1000 + k * 66, LAGGED);
     expect(liveEdgeAt(edge, 1000 + 399 * 66)).toBeCloseTo(held, 9);
   });
 
