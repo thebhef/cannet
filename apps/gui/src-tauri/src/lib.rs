@@ -71,6 +71,7 @@ mod project_registry;
 mod rbs;
 mod sampling;
 mod server_browse;
+mod server_path;
 mod server_trust;
 mod session;
 mod settings;
@@ -490,6 +491,7 @@ pub fn run() -> ! {
             project_registry::clear_project_cache,
             project_registry::delete_project_cache,
             project_registry::clear_all_project_caches,
+            server_path::add_server_to_path,
             state::get_state,
             state::set_state,
             settings::get_settings,

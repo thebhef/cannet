@@ -45,7 +45,8 @@ this repo.**
 
 - The drive-cycle engine (out of repo).
 - Timestamp-scheduled replay (v1 is latest-wins).
-- Generic inbound control API, plugin framework, in-app source UI.
+- Generic inbound control API, extension framework (that design now
+  lives in ADR 0051 / Task 69), in-app source UI.
 - Feeding signals anywhere but RBS.
 
 ## Exit criteria

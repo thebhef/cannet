@@ -2556,6 +2556,12 @@ export function App() {
     "project.saveAll": () => void handleSaveAllRef.current(),
     "project.clearColors": () => setConfirmingClearColors(true),
     "rbs.killSwitch": toggleRbsKillSwitch,
+    // Both outcomes — what was added, or why it couldn't be — are
+    // logged by the host, so they arrive in the System Messages panel
+    // with nothing for the view to hold.
+    "server.addToPath": () => {
+      void invoke<string>("add_server_to_path").catch(() => {});
+    },
     // Quit via the window's own close path: runs the unsaved-changes
     // prompt (`onCloseRequested`) and the clean-shutdown flush, exactly
     // like clicking the title-bar close button.

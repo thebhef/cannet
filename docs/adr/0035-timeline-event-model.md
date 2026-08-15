@@ -21,8 +21,9 @@ Several pending capabilities want more of the same shape:
 - those same markers rendered in the chronological/filtered trace and the
   graph view, not just the plot;
 - a global panel for browsing, filtering, and editing markers;
-- utilities/plugins that scan the stream and emit markers for detected
-  conditions (faults, contactor open/close, specific commands).
+- utilities/extensions that scan the stream and emit markers for
+  detected conditions (faults, contactor open/close, specific
+  commands).
 
 Left unmanaged these drift into per-feature one-offs: each view
 re-derives "a labelled point on the timeline," and persistence, export,
@@ -80,7 +81,7 @@ render. Named so far:
 | truncation | no | no (derived) | no | disk-spill low-water mark |
 | message-bound | yes | yes | `EVENT_COMMENT` | created from a message |
 | trigger | no | yes | `EVENT_COMMENT` | plot trigger fires |
-| plugin/utility | varies | varies | varies | detector output |
+| extension/utility | varies | varies | varies | detector output |
 
 ## Why
 
@@ -97,8 +98,9 @@ render. Named so far:
 - **Host ownership keeps views thin** (CLAUDE.md; [ADR 0032](0032-machine-local-ui-state-host-side.md))
   and is exactly what makes "visible in every view over the same
   timeline" hold — the reason notes are session-scoped already.
-- **A sanctioned output for detectors.** Utilities and plugins that find a
-  condition emit an event through the same store and inherit rendering,
+- **A sanctioned output for detectors.** Utilities and extensions
+  ([ADR 0051](0051-extension-architecture.md)) that find a condition
+  emit an event through the same store and inherit rendering,
   persistence, export, and goto — no per-detector UI plumbing.
 
 ## Consequences

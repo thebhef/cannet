@@ -411,9 +411,12 @@ async fn run_vbus(
     Ok(())
 }
 
-/// The name of the frozen sidecar's onedir, as
-/// `scripts/build-sidecar.py` emits it. A distribution archive unpacks
-/// it beside the server binary.
+/// The name of the frozen sidecar's onedir, as the freeze script emits
+/// it. A distribution archive unpacks it beside the server binary, and
+/// every install layout that ships one — including the GUI bundle,
+/// which carries this binary at its resource root next to the onedir it
+/// already ships (ADR 0036) — keeps that adjacency, so one probe covers
+/// them all.
 const FROZEN_SIDECAR_DIR: &str = "cannet-python-can";
 
 /// The frozen sidecar launcher inside `dir`, or `None` when it isn't
@@ -1065,6 +1068,29 @@ mod tests {
         let launcher = onedir.join(cannet_sidecar::frozen_launcher_name());
         std::fs::write(&launcher, b"").unwrap();
         assert_eq!(frozen_launcher_in(dir.path()), Some(launcher));
+    }
+
+    #[test]
+    fn the_gui_bundles_resource_root_is_the_same_adjacency() {
+        // The GUI install carries this binary at its bundle resource
+        // root, which is where the frozen onedir already lives — beside
+        // the GUI executable on Windows, `Contents/Resources/` on macOS
+        // (ADR 0036). Either way the server's own directory contains the
+        // onedir, so the exe-adjacent probe needs no bundle-specific
+        // case. This test is the guard on that: a layout change that
+        // moved the server away from the onedir would break it.
+        let bundle = tempfile::tempdir().unwrap();
+        let resources = bundle.path().join("Contents").join("Resources");
+        let onedir = resources.join(FROZEN_SIDECAR_DIR);
+        std::fs::create_dir_all(&onedir).unwrap();
+        let launcher = onedir.join(cannet_sidecar::frozen_launcher_name());
+        std::fs::write(&launcher, b"").unwrap();
+        // `server_exe.parent()` — what `config()` probes with.
+        let server_exe = resources.join("cannet-server");
+        assert_eq!(
+            frozen_launcher_in(server_exe.parent().unwrap()),
+            Some(launcher)
+        );
     }
 
     #[test]

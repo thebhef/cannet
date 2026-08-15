@@ -66,8 +66,11 @@ closes that gap.
   - deb: binary + onedir in `/usr/lib/cannet-server/`;
     `/usr/bin/cannet-server` symlink (`current_exe` resolves it).
   - GUI bundle: server as a Tauri resource — Windows beside the GUI
-    exe (probe works); macOS `Contents/Resources/` needs the one
-    probe extension (check the resource dir on macOS).
+    exe, macOS `Contents/Resources/`. **Amended by phase 3**: putting
+    the server binary itself in the resource root (rather than via
+    `externalBin`, which lands in `Contents/MacOS/` on macOS) leaves it
+    beside the onedir on *both* platforms, so no probe extension is
+    needed at all.
 - **GUI palette command "Add cannet-server to PATH"** (owner-asked):
   cross-platform, user-scope, no elevation — Windows appends the
   bundled server's dir to the `HKCU` user `PATH`; macOS appends the
@@ -268,7 +271,155 @@ Commit `1fbef59`. Tests: 3 new (`sidecar_dir_flag_parses_and_plumbs_through`,
 passing (36 total); `cargo clippy -p cannet-server --all-targets -- -D
 warnings` and `cargo build -p cannet-server` both clean.
 
-## Blockers / side effects
+### 2026-08-13 — phase 3: the server inside the GUI bundle, and the PATH command
+
+**Placement: a Tauri `resources` entry, not `externalBin`.** The server
+is staged into `apps/gui/src-tauri/server-dist/` and declared as
+`"server-dist": ""` — a directory entry whose *contents* land at the
+bundle's resource root. Rationale, against the three criteria:
+
+- *Probe*: the resource root is where the frozen onedir already lives,
+  so `<server exe>/..` contains `cannet-python-can/` on **both**
+  platforms — Windows install dir beside `cannet.exe`, macOS
+  `Contents/Resources/`. **No probe extension was needed**, which
+  amends the grooming note above (it assumed the macOS copy would land
+  in `Contents/MacOS/`, which is exactly what `externalBin` would have
+  done). `frozen_launcher_in`'s doc comment now names the bundle case
+  and a new test, `the_gui_bundles_resource_root_is_the_same_adjacency`,
+  is the guard against a future layout change breaking it silently.
+  `externalBin` would additionally have demanded target-triple-suffixed
+  file names.
+- *macOS exec bit*: not directly verifiable from this machine, but the
+  frozen sidecar launcher is **already** an executable shipped inside a
+  resource *directory* and executed from `Contents/Resources/` in
+  released macOS builds (`sidecar.rs::frozen_launcher_path` resolves it
+  through `resource_dir()`), so the resource path demonstrably preserves
+  the bit. The staging script copies with `shutil.copy2` (mode
+  preserved) for the same reason. Recorded as the one open risk for the
+  next release run: confirm `Contents/Resources/cannet-server` is `+x`
+  in the built `.app`.
+- *Dev ergonomics*: `build.rs` creates the empty `server-dist/` in debug
+  builds, exactly as it already does for `sidecar-dist/`, so `tauri dev`
+  and a bare `cargo build -p cannet-gui` work in a tree that has never
+  built the server (verified: built clean after deleting the directory).
+
+**Staging: `scripts/stage-server.py`**, called from
+`beforeBuildCommand` beside `build-sidecar.py`. It builds
+`cargo build --release -p cannet-server` and copies the binary in, so a
+bundle can never be built around a stale or absent server. The target
+triple comes from `CANNET_SERVER_TARGET`; the release workflow sets it
+job-wide, so its own fail-fast server build and the beforeBuildCommand
+run share one `target/<triple>/release/` artifact instead of building
+the server twice (the workflow's old explicit `cargo build` step is now
+that same script).
+
+**Palette command `server.addToPath` — "Add cannet-server to PATH"**
+(category `App`, `apps/gui/src-tauri/src/server_path.rs`). Host command
+`add_server_to_path` resolves the bundled server through
+`resource_dir()`, refuses when the binary is not there (a dev build
+stages none), edits the user environment, and reports both outcomes
+itself via `sys_info!`/`sys_error!` — the System Messages panel is where
+command results are read in this app, and the status-bar transient is
+derived from `LogState` and not addressable from a command. The
+frontend handler is therefore one `invoke` and no view state.
+
+- *Windows*: `HKCU\Environment\Path`, read and written through
+  PowerShell (absolute interpreter path — this must not depend on the
+  `PATH` it is editing). Two lessons from phase 1 are carried over: the
+  read is explicitly `DoNotExpandEnvironmentNames`, and the new entry is
+  appended to the raw string rather than to a split-and-rejoined list,
+  so empty entries survive (**the owner's own PATH contains one** — see
+  the round-trip below). Beyond phase 1: the value's registry *kind* is
+  read and written back unchanged, so a `REG_EXPAND_SZ` PATH is not
+  demoted to `REG_SZ` (which would stop `%USERPROFILE%`-style entries
+  expanding). PowerShell rather than `winreg`: no new dependency, and
+  the `mklink` precedent in `project_dir.rs` is the house pattern for
+  one-off Windows work under `unsafe_code = "forbid"`.
+- *The `WM_SETTINGCHANGE` broadcast is not skipped.* Broadcasting it
+  directly needs Win32 FFI this crate forbids, but .NET's user-scope
+  `SetEnvironmentVariable` broadcasts as part of its contract, so the
+  write script ends by *deleting* a variable that was never set: a
+  registry no-op with exactly the wanted side effect. Without it a new
+  terminal would keep the old PATH until the next logon, because
+  Explorer hands out its cached environment block.
+- *macOS*: one marked `export` line appended to `~/.zprofile`. A
+  directory containing `"`, `$`, `` ` `` or `\` is refused rather than
+  written into a login profile.
+- Both idempotent; the deciding logic is pure functions
+  (`user_path_with`, `zprofile_with`, `parse_user_path`) compiled on
+  every platform behind `cfg_attr(…, allow(dead_code))`, so Linux CI
+  runs the Windows *and* macOS semantics even though it executes
+  neither.
+
+Commits `540b618` (bundle placement) and `0a3e88e` (palette command).
+Tests: **cannet-server** 37 (1 new); **cannet-gui host** 588 (14 new in
+`server_path`); **frontend** 1930 across 151 files (2 new in
+`App.addServerToPath.dom.test.tsx`, which drives the real App through
+the real palette chord). `cargo clippy -p cannet-gui --all-targets -- -D
+warnings` and `-p cannet-server` both clean; `pnpm --dir apps/gui build`
+clean.
+
+**Live verification.** The GUI NSIS bundle was installed at
+`%LOCALAPPDATA%\cannet` (`cannet-gui.exe`, `cannet-server.exe`,
+`cannet-python-can\`, `uninstall.exe`).
+
+- *Palette command, owner-verified (2026-08-13).* The owner ran "Add
+  cannet-server to PATH" from the installed GUI's command palette and
+  confirmed a fresh terminal resolves `cannet-server` — the palette
+  command's exit criterion.
+- *Bundled server, terminal-verified.* `cannet-server.exe --bind
+  127.0.0.1:50051` launched directly from `%LOCALAPPDATA%\cannet`, cwd
+  the user's home directory (not the install dir). Startup log: `exec:
+  %LOCALAPPDATA%\cannet\cannet-python-can\cannet-python-can.exe`
+  — the frozen sidecar beside the GUI install, confirming the
+  resource-root placement's no-probe-extension claim above. Two PCAN
+  interfaces enumerated: `pcan:PCAN_USBBUS1` and `pcan:PCAN_USBBUS2`
+  (PEAK PCAN-USB FD, both `fd`). The sidecar's own log,
+  `%LOCALAPPDATA%\cannet-server\sidecar-python-can.log`, independently
+  records the same logfile path, timestamp, and interface pair. The
+  process was killed after the check; `ps aux` and
+  `tasklist` afterward show no `cannet-server` or `cannet-python-can`
+  process remaining (the kill did not produce a graceful
+  `shutdown reason=` line in the sidecar log the way a stdin-EOF exit
+  does, but no process was left behind).
+- *Registry, read-only.* `HKCU\Environment\Path` (queried via
+  PowerShell `Get-ItemProperty`, no write) contains exactly one
+  `cannet` entry: `\\?\%LOCALAPPDATA%\cannet` (extended-length-prefixed),
+  appended by the palette command. Not modified by this check.
+- *Installed bundle left untouched*: the uninstaller was not run, the
+  GUI was not launched, and nothing under `%LOCALAPPDATA%\cannet` or
+  `%LOCALAPPDATA%\cannet-server` was edited beyond the log entries the
+  verification run itself produced.
+- *Note for future phases:* an earlier attempt at this verification
+  was aborted because it required driving the installed GUI (clicking
+  the palette command, reading its result) — synthetic input and
+  window-focus dependence are forbidden on this machine. The palette
+  command's own verification was therefore split off to the owner
+  (who ran it by hand), while everything reachable from a terminal
+  (the bundled server's process, the registry) was verified directly.
+
+### 2026-08-13 — defect: verbatim `\\?\` path written into PATH
+
+The registry read-only check above recorded the owner's live entry as
+`\\?\%LOCALAPPDATA%\cannet` — `resource_dir()` returns a `\\?\`-prefixed
+verbatim path on Windows, and the palette command wrote it into
+`HKCU\Environment\Path` unnormalized. It resolves, but a verbatim entry
+in PATH confuses some tools and reads as broken.
+
+Fix: `bundled_server_dir` now strips the `\\?\` (and `\\?\UNC\` → `\\`)
+prefix via a new hand-rolled `strip_verbatim_prefix` helper before the
+directory is compared against or written into PATH — no new dependency
+(the workspace only carries `dunce` transitively, not as a direct
+dependency, so it wasn't pulled in for this). `user_path_with` also
+now recognizes a pre-existing verbatim entry as the same directory and
+*replaces* it with the plain form instead of appending a duplicate;
+re-running the palette command against the owner's current PATH will
+fix that entry in place. Re-running once more reports already-present.
+Four new tests in `server_path` cover this: plain-append (pre-existing
+coverage), verbatim-entry replacement, replacement idempotency, and the
+`\\?\UNC\` share form, plus a direct test of the helper. macOS's
+`~/.zprofile` line was checked and already writes a plain absolute
+path — no `\\?\` equivalent there, no change needed.
 
 - **New maintenance obligation (phase 1, accepted):** the Windows leg
   carries a vendored fork of `cargo-packager`'s `installer.nsi`. The

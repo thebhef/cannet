@@ -39,6 +39,12 @@ out of the box — these bundles ship a frozen, self-contained sidecar, so
 no `uv` or Python is needed at runtime (`uv` is developer-only; see
 § `uv` resolution).
 
+Every GUI install also **contains `cannet-server`**, beside that same
+frozen sidecar — so any machine with the GUI on it is already a
+potential hardware host, with nothing else to download. Running it stays
+a terminal act (the app never starts a server for you); see § Running
+the bundled server.
+
 ## Repository layout
 
 ```
@@ -317,9 +323,13 @@ pnpm --dir apps/gui tauri build    # release bundle
 ```
 
 `tauri build` first freezes the `cannet-python-can` sidecar
-([`scripts/build-sidecar.py`](scripts/build-sidecar.py), run by the
-`beforeBuildCommand` hook), so it needs `uv` on `PATH`. Rebuilds are
-incremental — an unchanged sidecar refreezes in seconds.
+([`scripts/build-sidecar.py`](scripts/build-sidecar.py)) and builds and
+stages the release `cannet-server` the bundle ships
+([`scripts/stage-server.py`](scripts/stage-server.py)) — both run by the
+`beforeBuildCommand` hook, so it needs `uv` on `PATH`. Rebuilds of
+either are incremental: an unchanged sidecar refreezes, and an
+unchanged server restages, in seconds. `tauri dev` does neither — a
+development build has no bundle to fill.
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
 cannet window. Use **Open BLF…** or **Open MDF…** to pick a log (a
@@ -479,6 +489,42 @@ a token is required. A credential in a file people attach to bug
 reports has a long tail. Whoever can read this console is authorized to
 use the server's buses — that is the trust boundary
 ([ADR 0041](docs/adr/0041-remote-connection-security.md)).
+
+### Running the bundled server
+
+Every GUI install carries the same `cannet-server` binary, staged
+beside the frozen `cannet-python-can/` onedir the app already ships —
+so the server's own sidecar lookup finds it there with no extra
+configuration, exactly as in a distribution archive. Nothing in the app
+launches it: starting a server stays an explicit terminal act.
+
+| OS      | Bundled server                                                |
+|---------|---------------------------------------------------------------|
+| Windows | `<install dir>\cannet-server.exe` (beside `cannet-gui.exe`)   |
+| macOS   | `/Applications/cannet.app/Contents/Resources/cannet-server`   |
+
+```powershell
+# Windows, default per-user install location
+& "$env:LOCALAPPDATA\cannet\cannet-server.exe" --bind 0.0.0.0:50051 --tls
+```
+
+```sh
+# macOS
+/Applications/cannet.app/Contents/Resources/cannet-server --bind 0.0.0.0:50051 --tls
+```
+
+Its flags, logs, certificate and token are the ones documented above —
+it is the same binary the archives ship.
+
+To type `cannet-server` instead of that path, run **Add cannet-server
+to PATH** from the command palette (`Ctrl/Cmd+Shift+P`). It edits your
+*user* environment only — no elevation, nothing machine-wide — and says
+what it did in the System Messages panel; running it twice reports that
+the directory is already there and changes nothing. On Windows it
+appends the install directory to the `Path` value under
+`HKCU\Environment`; on macOS it appends an `export` line to
+`~/.zprofile`. Either way, open a new terminal for it to take effect.
+Nothing about it starts a server.
 
 ### Logs
 

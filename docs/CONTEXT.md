@@ -246,6 +246,50 @@ flex-grow weight (default 1, persisted per axis id). A draggable
 **splitter** between two adjacent axes trades weight between that pair
 (conserving their sum); double-click equalizes them.
 
+### Extensions
+
+**Extension**:
+Third-party, user-installed code that extends cannet — a supervised
+child process, spawned and owned by the GUI host, that observes
+filtered frames/events/signals from the capture model, may transmit
+(if its manifest declares it), and may contribute one or more views.
+Persists across cannet upgrades as long as the Extension API version
+it targets is still supported. (ADR 0051.)
+_Avoid_: "plugin" — resolved in favor of "Extension" to match the
+VS Code-derived vocabulary this architecture borrows (Extension Host,
+contributed views).
+
+**Extension host connection**:
+The gRPC connection an Extension process holds with the GUI host —
+the _only_ channel it has. Carries frame/event/signal subscriptions,
+transmit requests, and (for a contributed view) an opaque
+`postMessage` relay to/from that view's webview. An Extension never
+dials a bus source (sidecar/cannet server) directly.
+_Avoid_: "Extension session" — reads as a capture Trace's own start/
+stop lifecycle, which this isn't.
+
+**Extension manifest**:
+The package-level declaration inside an extension's `.cannet-extension`
+archive: id, version, the Extension API version it targets, its
+entrypoint, whether it requests transmit capability, and the path to
+its contributed view's webview assets, if any. The host reads it
+before launch to gate transmit and to refuse an incompatible Extension
+API version with a clear error rather than a crash.
+
+**Extension API version**:
+A single monotonic integer carried by `cannet.proto`. Additive changes
+to the wire schema (new optional fields/RPCs) never bump it; breaking
+changes do. An Extension's manifest declares the version it targets;
+the host refuses to launch an Extension declaring a version it no
+longer (or doesn't yet) support.
+
+**Contributed view**:
+A dockview panel an Extension supplies: a sandboxed webview loading
+that Extension's bundled HTML/JS/CSS, whose only data channel is an
+opaque `postMessage` relay through the extension host connection. The
+host never interprets the relayed payload — the Extension owns the
+view's rendering and its performance.
+
 ## Flagged ambiguities
 
 **"trace"** was used for three different things: the captured data, the
