@@ -16,7 +16,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use cannet_client::{connect_and_subscribe, list_interfaces, PreSubscribeConfig, Subscription};
+use cannet_client::{
+    connect_and_subscribe, list_interfaces, ConnectConfig, PreSubscribeConfig, Subscription,
+};
 use cannet_gui_lib::trace_store::TraceStore;
 
 use crate::runner::{
@@ -84,7 +86,7 @@ pub fn run(
     // Enumerate interfaces (async one-shot) and pick the PEAK adapters.
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("tokio runtime: {e}"))?;
     let interfaces = rt
-        .block_on(list_interfaces(&address))
+        .block_on(list_interfaces(&ConnectConfig::plaintext(&address)))
         .map_err(|e| format!("list_interfaces: {e}"))?;
     drop(rt);
     let pcans: Vec<String> = interfaces
@@ -109,8 +111,8 @@ pub fn run(
     if rx_iface != tx_iface {
         subs.push(Subscription::new(&tx_iface, 1).with_config(pre));
     }
-    let session =
-        connect_and_subscribe(&address, subs).map_err(|e| format!("session connect: {e}"))?;
+    let session = connect_and_subscribe(&ConnectConfig::plaintext(&address), subs)
+        .map_err(|e| format!("session connect: {e}"))?;
     let (handle, mut recv, transmitter) = session.into_parts();
 
     let store = Arc::new(TraceStore::new());
