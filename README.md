@@ -429,7 +429,7 @@ tar xzf cannet-server-vX.Y.Z-<target>.tar.gz    # macOS / Linux archive
 cd cannet-server-vX.Y.Z-<target>
 ./cannet-server --bind 0.0.0.0:50051 --tls      # from a distribution archive
 # → 2026-08-13T09:12:44.108Z INFO hardware proxy: certificate fingerprint SHA256:qF3…RmA
-# → hardware proxy: client token 8Jd…q1w
+# → hardware proxy: client token chug-pruning-unclad-hazard-morphine
 # → 2026-08-13T09:12:44.109Z INFO hardware proxy: listening on 0.0.0.0:50051 (tls)
 # → 2026-08-13T09:12:44.771Z INFO sidecar:python-can: sidecar started (pid 61024)
 # → 2026-08-13T09:12:45.402Z INFO sidecar:python-can: upstream ready on 127.0.0.1:60481
@@ -512,8 +512,12 @@ meant to be read off the console:
   base64, the same shape OpenSSH prints for a host key. That string is
   the server's identity: a connecting client compares what the server
   presented against it. It changes only when the certificate does.
-- **The client token** — 43 characters of random base64url that a
-  client must present on every RPC, in an
+- **The client token** — five lowercase words from the [EFF large
+  wordlist](https://www.eff.org/dice), hyphen-separated (e.g.
+  `chug-pruning-unclad-hazard-morphine`, ≈64.6 bits of entropy — ample
+  against online guessing through the TLS endpoint, and there is no
+  offline crack target since the token sits in plaintext on disk
+  either way), that a client must present on every RPC, in an
   `authorization: Bearer <token>` header. Without it, or with the
   wrong one, every call is refused before it reaches the hardware.
   Like the certificate, it is generated the first time it is needed
@@ -521,6 +525,8 @@ meant to be read off the console:
   a client that stored it keeps working. **To rotate it, delete the
   `access-token` file in that directory** and restart; the next start
   prints a new one and every client has to be told the new value.
+  `--token` / `CANNET_TOKEN` still accept any string the operator
+  hands them — the passphrase format is generation-side only.
 
 The two are treated differently on disk. The **fingerprint is public**
 — it is what a client pins and what you compare out of band — so it is
@@ -658,7 +664,7 @@ Start the server on the bench machine and leave its console visible:
 ```sh
 ./cannet-server --bind 0.0.0.0:50051 --tls
 # → 2026-08-13T09:12:44.108Z INFO hardware proxy: certificate fingerprint SHA256:qF3…RmA
-# → hardware proxy: client token 8Jd…q1w
+# → hardware proxy: client token chug-pruning-unclad-hazard-morphine
 ```
 
 In the GUI, add the server to a bus binding — type its `host:port`, or

@@ -894,7 +894,11 @@ mod tests {
         let first = cli.proxy.access_token(dir.path(), None).unwrap();
         let second = cli.proxy.access_token(dir.path(), None).unwrap();
         assert_eq!(first.as_str(), second.as_str());
-        assert_eq!(first.as_str().len(), 43);
+        assert!(
+            first.as_str().matches('-').count() >= 4,
+            "a passphrase token joins five words with hyphens: {}",
+            first.as_str()
+        );
     }
 
     #[test]

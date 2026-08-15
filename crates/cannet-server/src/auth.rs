@@ -1,11 +1,17 @@
 //! Bearer-token client authentication (ADR 0041).
 //!
 //! One shared secret guards the endpoint: whoever can read the console
-//! the server was launched from is authorized to use its buses. The
-//! token is a 256-bit value from the OS CSPRNG, rendered as unpadded
-//! base64url (RFC 4648 §5) so it is 43 characters of copy-pasteable
-//! ASCII, and clients present it as an RFC 6750
-//! `authorization: Bearer <token>` gRPC metadata entry.
+//! the server was launched from is authorized to use its buses. A
+//! generated token is a 5-word passphrase drawn from the embedded EFF
+//! large wordlist — `word-word-word-word-word`, lowercase,
+//! hyphen-separated — chosen over the previous 256-bit base64url blob
+//! because that blob was "ridiculously long and difficult to
+//! transcribe across machines" (owner feedback, Task 65). Clients
+//! present it as an RFC 6750 `authorization: Bearer <token>` gRPC
+//! metadata entry; generation is the only thing that changed —
+//! `--token` / `CANNET_TOKEN` still accept any string the operator
+//! hands them, and the wire, trust store and constant-time compare
+//! treat every token as an opaque string regardless of its shape.
 //!
 //! Like the certificate, the generated token is persisted in the
 //! server's per-user data directory so it survives a restart — a client
@@ -20,9 +26,8 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
 use subtle::ConstantTimeEq as _;
 
 use crate::identity::write_private;
@@ -30,9 +35,75 @@ use crate::identity::write_private;
 /// File name of the persisted token inside the identity directory.
 const TOKEN_FILE: &str = "access-token";
 
-/// Entropy behind a generated token: 256 bits, the standard opaque
-/// API-key size.
-const TOKEN_BYTES: usize = 32;
+/// The embedded EFF large wordlist: 7776 tab-separated
+/// `dice-index<TAB>word` lines, committed verbatim from EFF's own
+/// distribution. See `assets/eff_large_wordlist.LICENSE` for
+/// provenance (CC BY 3.0, Electronic Frontier Foundation) and
+/// `plans/technology-inventory.md` for the adoption record.
+const WORDLIST_RAW: &str = include_str!("../assets/eff_large_wordlist.txt");
+
+/// Words per generated passphrase. `PASSPHRASE_WORDS *
+/// log2(wordlist().len())` is the entropy math cited on
+/// [`AccessToken::generate`].
+const PASSPHRASE_WORDS: usize = 5;
+
+/// The embedded wordlist, parsed once: each line is
+/// `dice-index<TAB>word`, and only the word half is kept.
+fn wordlist() -> &'static [&'static str] {
+    static WORDS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    WORDS
+        .get_or_init(|| {
+            WORDLIST_RAW
+                .lines()
+                .filter_map(|line| line.split('\t').nth(1))
+                .collect()
+        })
+        .as_slice()
+}
+
+/// Draw an index uniformly from `0..bound` off `rng`, by rejecting
+/// draws that would otherwise land unevenly.
+///
+/// `bound` (7776 for the wordlist) does not evenly divide 65536, the
+/// range of a `u16`: naively reducing a random `u16` mod `bound` would
+/// make the low `65536 % bound` indices very slightly more likely than
+/// the rest. Rejection sampling removes that skew instead of
+/// tolerating it: draw two bytes, and if the value falls in the
+/// trailing partial range, throw it away and draw again. `bound` up to
+/// `u16::MAX as usize + 1` is supported; the wordlist's 7776 is nowhere
+/// near that ceiling, so rejection is rare in practice.
+fn uniform_index(rng: &dyn ring::rand::SecureRandom, bound: usize) -> Result<usize, TokenError> {
+    assert!(bound > 0, "uniform_index: bound must be positive");
+    // `usize::from` (never a truncating cast) keeps every value here
+    // lossless; the widest quantity, `draw_space`, is 65536.
+    let draw_space = usize::from(u16::MAX) + 1;
+    assert!(
+        bound <= draw_space,
+        "uniform_index: bound must fit a u16 draw"
+    );
+    // Largest multiple of `bound` that fits in a u16 draw; a draw at or
+    // past it is the biased remainder and gets rejected.
+    let limit = (draw_space / bound) * bound;
+    loop {
+        let mut buf = [0u8; 2];
+        rng.fill(&mut buf).map_err(|_| TokenError::Generate)?;
+        let raw = usize::from(u16::from_be_bytes(buf));
+        if raw < limit {
+            return Ok(raw % bound);
+        }
+    }
+}
+
+/// Draw [`PASSPHRASE_WORDS`] words from the embedded wordlist, each
+/// chosen uniformly and independently (repeats across the five slots
+/// are allowed, exactly like independent dice rolls).
+fn generate_words() -> Result<Vec<&'static str>, TokenError> {
+    let rng = ring::rand::SystemRandom::new();
+    let words = wordlist();
+    (0..PASSPHRASE_WORDS)
+        .map(|_| uniform_index(&rng, words.len()).map(|i| words[i]))
+        .collect()
+}
 
 /// The shared secret a client presents to open any RPC.
 ///
@@ -43,12 +114,24 @@ const TOKEN_BYTES: usize = 32;
 pub struct AccessToken(String);
 
 impl AccessToken {
-    /// Mint a fresh token from the OS CSPRNG.
+    /// Mint a fresh passphrase token from the OS CSPRNG:
+    /// [`PASSPHRASE_WORDS`] words drawn uniformly (no modulo bias — see
+    /// [`uniform_index`]) from the embedded EFF large wordlist,
+    /// lowercase, joined with `-`.
+    ///
+    /// Entropy: 5 × log2(7776) ≈ 64.6 bits. That is far below the 256
+    /// bits the previous base64url token carried, and that is fine:
+    /// the token is stored in plaintext on disk either way (module
+    /// docs above), so there was never an offline crack target to
+    /// defend against — the only attack is guessing it live, one
+    /// attempt at a time, through a TLS endpoint that a
+    /// `Status::unauthenticated` reply and ordinary network latency
+    /// already rate-limit. ~65 bits puts online brute force completely
+    /// out of reach while being five words a person can read off one
+    /// console and type into another — the transcription problem this
+    /// format exists to solve (owner feedback, Task 65).
     pub fn generate() -> Result<Self, TokenError> {
-        let bytes: [u8; TOKEN_BYTES] = ring::rand::generate(&ring::rand::SystemRandom::new())
-            .map_err(|_| TokenError::Generate)?
-            .expose();
-        Ok(Self(URL_SAFE_NO_PAD.encode(bytes)))
+        Ok(Self(generate_words()?.join("-")))
     }
 
     /// Load the token persisted in `dir`, minting and persisting one
@@ -225,22 +308,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_generated_token_is_43_characters_of_base64url() {
+    fn the_wordlist_has_exactly_7776_unique_lowercase_entries() {
+        let words = wordlist();
+        assert_eq!(words.len(), 7776, "the EFF large wordlist is 7776 words");
+        let unique: std::collections::HashSet<_> = words.iter().collect();
+        assert_eq!(
+            unique.len(),
+            7776,
+            "the embedded wordlist must carry no duplicate entries"
+        );
+        for word in words {
+            assert!(!word.is_empty(), "a blank line parsed as a word");
+            assert!(
+                word.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "{word} is not lowercase ascii (a handful of EFF entries carry an \
+                 internal hyphen, e.g. \"t-shirt\"; nothing else is expected)"
+            );
+        }
+    }
+
+    #[test]
+    fn generate_words_draws_five_members_of_the_wordlist() {
+        let words = generate_words().unwrap();
+        assert_eq!(words.len(), PASSPHRASE_WORDS);
+        let list = wordlist();
+        for word in &words {
+            assert!(
+                list.contains(word),
+                "{word} is not in the embedded wordlist"
+            );
+        }
+    }
+
+    #[test]
+    fn a_generated_token_is_five_lowercase_words_hyphen_separated() {
         let token = AccessToken::generate().unwrap();
         let value = token.as_str();
-        assert_eq!(value.len(), 43, "256 bits, unpadded base64: {value}");
-        assert!(!value.contains('='), "no padding: {value}");
         assert!(
-            value
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-            "base64url alphabet — no `+` or `/`, so the token survives a URL or a shell: {value}"
+            value.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+            "lowercase ascii and hyphens only: {value}"
         );
-        assert_eq!(
-            URL_SAFE_NO_PAD.decode(value).unwrap().len(),
-            TOKEN_BYTES,
-            "the value has to decode back to the entropy that went in"
+        assert!(!value.starts_with('-') && !value.ends_with('-'), "{value}");
+        // Four separators join five words; a few EFF words carry an
+        // internal hyphen too, so the total hyphen count can only be
+        // *at least* four, not exactly four.
+        assert!(
+            value.matches('-').count() >= PASSPHRASE_WORDS - 1,
+            "expected at least {} hyphens joining {} words: {value}",
+            PASSPHRASE_WORDS - 1,
+            PASSPHRASE_WORDS
         );
+    }
+
+    #[test]
+    fn uniform_index_never_panics_and_stays_in_bounds() {
+        // Boundary bounds: 1 (degenerate, always index 0), a power of
+        // two that divides 65536 evenly (no rejection ever fires), and
+        // 7776 (the real wordlist size, which does reject sometimes).
+        let rng = ring::rand::SystemRandom::new();
+        for bound in [1usize, 2, 7776, usize::from(u16::MAX) + 1] {
+            for _ in 0..200 {
+                let index = uniform_index(&rng, bound).unwrap();
+                assert!(index < bound, "{index} not < {bound}");
+            }
+        }
     }
 
     #[test]

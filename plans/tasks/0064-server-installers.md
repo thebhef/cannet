@@ -621,3 +621,35 @@ someone has to run it.
   cost is a re-diff on each bump — but it is a standing cost, and the
   only alternative is dropping the "no Start-menu shortcut / no
   run-on-finish" ruling, which no config knob can satisfy.
+
+## Exit-criteria walk (2026-08-13, orchestrator)
+
+1. **Release workflow produces GUI bundles (with `cannet-server`),
+   server `.pkg` + NSIS + `.deb`, and the three archives — one
+   draft pre-release** — WORKFLOW WIRED AND LINT-CLEAN; the draft
+   pre-release itself is an owner action (`workflow_dispatch` after
+   the stack lands). Recorded as the one open clause.
+2. **Palette command puts the bundled server on the user PATH** —
+   MET. Owner personally verified on Windows (2026-08-13); macOS
+   leg code-reviewed; verbatim-path defect found in review and
+   fixed (`3595347`) with replace-in-place healing.
+3. **`--sidecar-dir` with the GUI's precedence** — MET (three
+   red-first tests, shared `env_over_setting`).
+4. **Server from a GUI install finds the bundled sidecar and serves
+   hardware (Windows locally)** — MET. Phase 3 close-out: installed
+   server run from a foreign cwd found the frozen onedir and
+   enumerated both PCAN FD channels.
+5. **Install → run → uninstall per OS where hardware allows** —
+   MET for Windows (silent `/S` round-trip, PATH SHA-256
+   byte-identical before/after, zero leftovers); `.deb` built and
+   dissected locally (symlink + modes verified), install
+   CI-only; `.pkg` CI-only — deferrals recorded in the phase-4
+   status log for the next release run.
+6. **README Downloads/Running + technology inventory** — MET.
+
+Perf gate (ADR 0031): **passed 31/31** (2026-08-13, release build
+at `e1465dd`, ev-zonal 60 s scrub capture vs the committed
+baseline; report
+`docs/performance-measurements/frontend/2026-08-13-e1465dd-task64-closeout.json`).
+Baseline untouched. Task closed; the draft pre-release clause
+remains the owner's `workflow_dispatch` after the stack lands.
