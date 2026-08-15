@@ -47,6 +47,27 @@ length somewhere, unattributed.
   trend extends: 92.6 → 97.6 → 97.6 → 99.4 → **100.7** against the
   106.605 limit (94 %) — the creep continues across builds.
 
+- **2026-08-15, task75-p5 gate (build ea9646a, runs under the new
+  `--app-data-dir` isolation): run 1 FAILED `rx_gap_short_frac_worst`
+  at 0.161 vs 0.041; runs 2–3 measured 0.002 / 0.001; all other
+  metrics green all runs.** The matrix now holds three first-run
+  cells: task70-p10 run 1 = real profile + cold link + `tasklist`
+  polling → **0.120 FAIL**; task75-p1 run 1 = real profile + cold
+  link + no polling → **0.002 clean**; task75-p5 run 1 = **fresh
+  empty profile** (first-launch init) + cold link + no polling →
+  **0.161 FAIL**. Cold link alone is exonerated (p1 run 1); the
+  live suspects are first-launch initialization work and the
+  polling, possibly two faces of one mechanism (extra process/disk
+  activity during the capture's first seconds). Gate disposition
+  follows the owner's task-70 precedent: stands on the clean runs,
+  anomaly attributed here. `renderer_mb_drift_per_min` on the p5
+  gate: 103.7 / 88.5 / 62.5 — worst-to-worst series now 92.6 →
+  97.6 → 97.6 → 99.4 → 100.7 → **103.7** (97 % of 106.605), and
+  the wide within-build spread (62.5–103.7, worst on the same run
+  as the rx_gap failure) points at machine/run-state sensitivity
+  as much as code growth. Comparability caveat (default-settings
+  isolated profile from p5 on) recorded in ADR 0031.
+
 ## Exit criteria (draft — firm at grooming)
 
 - The run-1 anomaly attributed with the isolating experiment's data;

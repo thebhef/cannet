@@ -834,3 +834,47 @@ passed / 6 ignored, clippy clean. Frontend: 161 files / 2116 tests,
   started gets none). The discard offramp resets them at its own call
   site; folding them into `useSessionReset` would change Clear, Connect,
   BLF-map-confirm and New alike, which is its own change.
+
+## Exit-criteria walk (2026-08-14, orchestrator, end of phase 5)
+
+- **Item 1 — MET.** All three original observations attributed:
+  (a) restore wall-clock = the one-time cold rebuild after the
+  phase-2 bleed fix (owner-accepted; and now announced with an
+  offramp, item 6); (b) plots-not-updating = the resample loop gated
+  on `live` with no mechanism on a stopped trace — fixed test-first
+  (phase 1, `catchingUp` latch); (c) transient hlines = (b) made
+  visible through the one-sample rule — accepted as cosmetic by
+  owner ruling. The added launch-hang observation ended in a
+  bounded non-reproduction (finite O(capture) passes ruled out with
+  measurements; non-terminating-loop shape remains, x-sync ring
+  lead recorded) with the UI-liveness watchdog landed so the next
+  occurrence is diagnosable from the log.
+- **Item 2 — MET (reading recorded).** Feedback persists through
+  the whole import (census + pump, ends at `log-finished`), cancel
+  works and is tested through the host's cooperative flag, label
+  reads "Loading trace…". Reading: "the plot has the imported
+  data" was implemented as import completion; the plot's residual
+  catch-up after `log-finished` is covered by phase 1's loop. If
+  the chip still ends visibly early on a very large file, extending
+  it to the serve-completeness token is the recorded follow-on
+  seam.
+- **Item 3 — MET.** Origin named with decisive evidence (the app's
+  own python-can sidecar's per-launch ephemeral listen port; both
+  recorded leads refuted; nothing stored, nothing to clear).
+  Harness pins ruled on: none are written; `--app-data-dir`
+  isolation landed regardless per the ruling. Forget/token-change
+  now render and work on every row state, regression-tested.
+- **Item 4 — MET.** Popup converted to the shared
+  `useDismissableMenu`; click-outside and Escape tested.
+- **Item 5 — MET.** Verdict recorded (palette recents were never
+  offered; new behavior by ruling). One "Open recent" command per
+  MRU entry, same source and open path as the button, path in
+  `keywords`; tested including the empty-list case.
+- **Item 6 — MET.** The rebuild announces itself (latched host
+  fact, polled chip) and Discard drops the capture through the
+  same clear a fresh open runs; both directions tested, including
+  clean-empty-next-launch and the silent fast path.
+
+Three recorded side effects stay open in Blockers / side effects
+(chip without a plot open; one-tick-early clear; `useSessionReset`
+eviction-mark gap) — none blocks the criteria as written.
