@@ -29,7 +29,11 @@
 //!
 //! [`reduce_transitions`] is the same reduction for a **categorical**
 //! series (one rendered as held states rather than as a line): it keeps
-//! the run boundaries, which is the whole of what such a renderer draws.
+//! the run boundaries, which is the whole of the *shape* such a
+//! renderer draws. It is what an over-budget window reduces to; a
+//! window that already fits is served whole either way, since the
+//! sample positions inside a run are information the renderer shows
+//! (markers, and where a hovering cursor snaps to).
 //! Which reducer a serve applies is the caller's declared render mode,
 //! not a property of the signal — see
 //! [`SignalCacheStore::slice_many`](crate::signal_cache::SignalCacheStore::slice_many).
