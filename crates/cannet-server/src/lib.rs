@@ -23,6 +23,8 @@
 //!
 //! - [`auth`] — the bearer token clients present and the check every
 //!   RPC passes through (ADR 0041).
+//! - [`discovery`] — mDNS/DNS-SD advertisement of the hardware proxy
+//!   (ADR 0040).
 //! - [`identity`] — the server's TLS certificate/key material and the
 //!   fingerprint clients pin (ADR 0041).
 //! - [`proxy`] — pass-through tonic service over an upstream endpoint.
@@ -38,6 +40,7 @@
 
 pub mod auth;
 pub mod bridge_client;
+pub mod discovery;
 pub mod identity;
 pub mod proxy;
 pub mod replay;
@@ -45,6 +48,7 @@ pub mod server;
 pub mod virtual_bus;
 
 pub use auth::{AccessToken, TokenError};
+pub use discovery::Advertisement;
 pub use identity::{install_crypto_provider, CertFingerprint, IdentityError, ServerIdentity};
 pub use proxy::ProxyServerImpl;
 pub use replay::{LoopingBlfReplay, ReplayError};
