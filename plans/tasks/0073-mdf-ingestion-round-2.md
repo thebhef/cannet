@@ -29,6 +29,18 @@ pick during grooming/implementation. Whatever carries the labels must
 survive the paged serve — the lane renderer gets labels the same way
 it does for DBC-backed enums.
 
+**Grooming ruling (2026-08-15): the value table lives on the
+file-backed signal model.** `FileSignal` gains a value table read from
+the MDF conversion block, and the host serves it the way it serves a
+DBC signal's table — the lane renderer's label path is already
+generic over `(raw, label)` tables, so labels reach lanes and values
+views through the existing plumbing. Rejected: synthesizing database
+entries (fabricates entries with false provenance in the Database
+panel, entangles bus-scoping and DBC management with signals that are
+in no DBC) and name-matching against loaded DBCs (fails exactly when
+the recording tool's DBC is not in the project, which is the owner's
+actual file set).
+
 ## Test data
 
 The owner's example capture files stay out of the repository — in
