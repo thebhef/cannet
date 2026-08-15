@@ -25,6 +25,10 @@
 //!   cleanly, and `Err(_)` if the server reports an in-band error or
 //!   the gRPC stream itself fails.
 //!
+//! - [`clock`]: how far the server's wall clock is from ours. Every
+//!   session measures it once at start-up and publishes the result on
+//!   [`FrameReceiver::clock`]; frames are delivered uncorrected.
+//!
 //! Dropping the source aborts the worker thread's runtime, which cancels
 //! the gRPC stream and closes the connection.
 //!
@@ -48,7 +52,14 @@
 //!   the allocated id onto the subscription's `channel`, and surfaces
 //!   the resolved id through [`ResolvedSubscription::allocated_id`]
 //!   so the caller can transmit against it.
+//! - **The clock probe never gates anything.** It runs alongside the
+//!   frame stream on the same session, so readiness is signalled at the
+//!   speed of the subscribes and a peer that does not answer costs a
+//!   status of `Unsupported` and nothing else. Waiting on a clock
+//!   before delivering frames would trade a definite small error for
+//!   an indefinite stall.
 
+pub mod clock;
 pub mod tls;
 
 use std::sync::mpsc;
@@ -58,8 +69,8 @@ use std::time::Duration;
 
 use cannet_core::{CanFrame, CanFrameSource};
 use cannet_wire::proto::{
-    cannet_server_client::CannetServerClient, envelope::Body, ConfigureBus, Envelope, FrameBatch,
-    ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
+    cannet_server_client::CannetServerClient, envelope::Body, ClockProbe, ConfigureBus, Envelope,
+    FrameBatch, ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
 };
 use cannet_wire::{frame_to_proto, proto_to_frame, ProtoConversionError};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -68,12 +79,41 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use tonic::transport::{Channel, Endpoint};
 
+use crate::clock::{ClockSample, SessionClock};
 use crate::tls::{CertPin, ObservedPin};
 
 /// Outgoing-envelope channel depth for the per-session request stream.
 /// Subscribes are bursty at startup; this gives them room without
 /// blocking the worker thread before the stream is up.
 const REQUEST_CHANNEL_DEPTH: usize = 16;
+
+/// How many clock probes a session sends at start-up. Minimum-delay
+/// selection needs several exchanges to choose between, and each one
+/// costs two small envelopes — but the marginal value of a fifth is
+/// low next to the extra window it keeps open.
+const CLOCK_PROBE_COUNT: usize = 4;
+
+/// Spacing between probes. Far enough apart that a single transient
+/// queue does not distort every exchange, close enough that the whole
+/// burst is over long before a user notices a session existing.
+const CLOCK_PROBE_SPACING: Duration = Duration::from_millis(20);
+
+/// How long the session waits for probe replies before concluding.
+///
+/// Generous, because nothing waits on it: the probe runs alongside the
+/// frame stream and readiness is signalled without it, so the only
+/// thing this budget buys is a chance for a slow link to answer before
+/// its server is written off as not supporting the exchange.
+const CLOCK_PROBE_DEADLINE: Duration = Duration::from_secs(2);
+
+/// Wall-clock nanoseconds since the Unix epoch — the clock the wire's
+/// timestamps are on, and therefore the one whose distance from the
+/// server's is worth measuring.
+fn wall_clock_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
 
 /// How a connection to one server is protected — the argument every
 /// entry point in this crate takes in place of a bare address.
@@ -562,6 +602,7 @@ pub fn connect_and_subscribe(
             receiver: FrameReceiver {
                 rx: frame_rx,
                 subscriptions: ready.resolved,
+                clock: ready.clock,
             },
             handle: SessionHandle {
                 shutdown_tx: Some(shutdown_tx),
@@ -585,6 +626,10 @@ pub fn connect_and_subscribe(
 struct SessionReady {
     req_tx: tokio_mpsc::Sender<Envelope>,
     resolved: Vec<ResolvedSubscription>,
+    /// Handed over already, though the probe it reports on is usually
+    /// still in flight: readiness must not wait on the clock, and the
+    /// caller reads the answer whenever it wants one.
+    clock: SessionClock,
 }
 
 /// The combined receive + shutdown handle returned by
@@ -611,6 +656,13 @@ impl RemoteCanFrameSource {
     #[must_use]
     pub fn subscriptions(&self) -> &[ResolvedSubscription] {
         self.receiver.subscriptions()
+    }
+
+    /// This session's clock measurement — how far the server's wall
+    /// clock is from ours. See [`FrameReceiver::clock`].
+    #[must_use]
+    pub fn clock(&self) -> &SessionClock {
+        self.receiver.clock()
     }
 
     /// Split into the shutdown handle, the receive half, and the
@@ -647,6 +699,7 @@ impl CanFrameSource for RemoteCanFrameSource {
 pub struct FrameReceiver {
     rx: mpsc::Receiver<Result<CanFrame, ConnectionError>>,
     subscriptions: Vec<ResolvedSubscription>,
+    clock: SessionClock,
 }
 
 impl FrameReceiver {
@@ -655,6 +708,24 @@ impl FrameReceiver {
     #[must_use]
     pub fn subscriptions(&self) -> &[ResolvedSubscription] {
         &self.subscriptions
+    }
+
+    /// How far this server's wall clock is from ours, as measured at
+    /// session start (see [`crate::clock`]).
+    ///
+    /// The frames this receiver yields are **not** corrected by it —
+    /// they carry the timestamps the server sent. This is the measured
+    /// number and its error bound, for a caller that wants to show it
+    /// or act on it.
+    ///
+    /// Reads never block: the answer is
+    /// [`clock::ClockProbeStatus::Pending`] until the probe window
+    /// closes, then either a measurement or
+    /// [`clock::ClockProbeStatus::Unsupported`] for a peer that never
+    /// answered.
+    #[must_use]
+    pub fn clock(&self) -> &SessionClock {
+        &self.clock
     }
 }
 
@@ -977,6 +1048,18 @@ async fn run_session(
     let req_tx_for_handle = req_tx.clone();
     let _req_tx = req_tx;
 
+    // The clock probe runs alongside everything else rather than
+    // gating readiness: a session must come up at the speed of its
+    // subscribes, and a server that never answers must cost nothing
+    // but a status of `Unsupported` once the window closes.
+    let clock = SessionClock::pending();
+    let mut clock_samples: Vec<ClockSample> = Vec::with_capacity(CLOCK_PROBE_COUNT);
+    let mut probes_sent = 0usize;
+    let mut probe_window_open = true;
+    let mut probe_spacing = tokio::time::interval(CLOCK_PROBE_SPACING);
+    let probe_deadline = tokio::time::sleep(CLOCK_PROBE_DEADLINE);
+    tokio::pin!(probe_deadline);
+
     let mut stream = response.into_inner();
     let mut ready_sent = false;
     let mut maybe_ready = Some(ready_tx);
@@ -986,6 +1069,7 @@ async fn run_session(
             let _ = tx.send(Ok(SessionReady {
                 req_tx: req_tx_for_handle.clone(),
                 resolved: resolved.clone(),
+                clock: clock.clone(),
             }));
         }
         ready_sent = true;
@@ -997,6 +1081,28 @@ async fn run_session(
             // pending FrameBatch in the stream can't keep the worker
             // alive after the user has dropped the source.
             _ = &mut shutdown_rx => return,
+            // Send the start-up probe burst. `try_send` rather than an
+            // await: the probe is best-effort and must never be the
+            // thing holding this loop up. A full queue just means the
+            // next tick tries again, inside the deadline below.
+            _ = probe_spacing.tick(), if probe_window_open && probes_sent < CLOCK_PROBE_COUNT => {
+                let t1 = wall_clock_ns();
+                if req_tx_for_handle
+                    .try_send(Envelope {
+                        body: Some(Body::ClockProbe(ClockProbe { t1 })),
+                    })
+                    .is_ok()
+                {
+                    probes_sent += 1;
+                }
+            }
+            // The window closed with fewer than the full set of
+            // replies. Whatever arrived is what the measurement rests
+            // on; nothing at all means the peer does not answer.
+            () = &mut probe_deadline, if probe_window_open => {
+                probe_window_open = false;
+                clock.settle(&clock_samples);
+            }
             message = stream.next() => match message {
                 Some(Ok(envelope)) => match envelope.body {
                     Some(Body::FrameBatch(batch)) => {
@@ -1040,6 +1146,7 @@ async fn run_session(
                                     let _ = tx.send(Ok(SessionReady {
                                         req_tx: req_tx_for_handle.clone(),
                                         resolved: resolved.clone(),
+                                        clock: clock.clone(),
                                     }));
                                 }
                                 ready_sent = true;
@@ -1083,6 +1190,20 @@ async fn run_session(
                         }));
                         return;
                     }
+                    Some(Body::ClockReply(reply)) => {
+                        // t4 first: anything done before sampling it
+                        // lands in the measured delay.
+                        let t4 = wall_clock_ns();
+                        if probe_window_open {
+                            clock_samples.push(clock::sample(
+                                reply.t1, reply.t2, reply.t3, t4,
+                            ));
+                            if clock_samples.len() >= CLOCK_PROBE_COUNT {
+                                probe_window_open = false;
+                                clock.settle(&clock_samples);
+                            }
+                        }
+                    }
                     // Subscribe / Unsubscribe round-trips (a peer
                     // echoing the request) are ignored; wire `Log`
                     // envelopes (ADR 0014) and the remaining
@@ -1090,8 +1211,10 @@ async fn run_session(
                     // (`InterfaceState`, `ConfigureBus`,
                     // `AttachBridge`, `DetachBridge`) have no
                     // consumer in this crate; the GUI host bridges
-                    // them into its own surfaces. `None` is the
-                    // no-body case. All drop.
+                    // them into its own surfaces. A `ClockProbe` is
+                    // a client→server envelope, so one arriving here
+                    // is a peer echoing. `None` is the no-body case.
+                    // All drop.
                     Some(
                         Body::Log(_)
                         | Body::Subscribe(_)
@@ -1099,7 +1222,8 @@ async fn run_session(
                         | Body::ConfigureBus(_)
                         | Body::InterfaceState(_)
                         | Body::AttachBridge(_)
-                        | Body::DetachBridge(_),
+                        | Body::DetachBridge(_)
+                        | Body::ClockProbe(_),
                     )
                     | None => {}
                 },

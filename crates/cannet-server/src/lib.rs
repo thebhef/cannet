@@ -55,7 +55,7 @@ pub use replay::{LoopingBlfReplay, ReplayError};
 pub use server::CannetServerImpl;
 pub use virtual_bus::{VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID};
 
-use cannet_wire::proto::{envelope::Body, error::Code, Envelope, Error as ErrorMsg};
+use cannet_wire::proto::{envelope::Body, error::Code, ClockReply, Envelope, Error as ErrorMsg};
 
 /// Build an in-band `Error` envelope carrying the given wire [`Code`] and
 /// message. Shared by both server modes (BLF replay and the virtual bus):
@@ -65,6 +65,35 @@ pub(crate) fn error_envelope(code: Code, message: String) -> Envelope {
         body: Some(Body::Error(ErrorMsg {
             code: code.into(),
             message,
+        })),
+    }
+}
+
+/// Wall-clock nanoseconds since the Unix epoch — the one scale every
+/// timestamp this server puts on the wire uses.
+pub(crate) fn wall_clock_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+}
+
+/// Answer a `ClockProbe` whose `t1` was echoed in, received at `t2`.
+///
+/// `t3` is sampled here, as late as a queue-based server can manage:
+/// whatever handling time sits between the two shows up in the
+/// client's delay estimate rather than in its offset estimate, which
+/// is the whole reason the exchange carries both stamps.
+///
+/// Both are wall-clock readings, not monotonic ones. The client is
+/// measuring the distance between its clock and the one this server
+/// stamps frames and log messages with; a monotonic reading would
+/// answer about a clock nothing on the wire ever sees.
+pub(crate) fn clock_reply_envelope(t1: u64, t2: u64) -> Envelope {
+    Envelope {
+        body: Some(Body::ClockReply(ClockReply {
+            t1,
+            t2,
+            t3: wall_clock_ns(),
         })),
     }
 }

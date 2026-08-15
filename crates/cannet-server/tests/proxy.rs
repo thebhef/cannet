@@ -20,7 +20,7 @@ use cannet_server::{
     VIRTUAL_BUS_FACTORY_ID,
 };
 use cannet_wire::proto::{
-    cannet_server_client::CannetServerClient, envelope::Body, error::Code,
+    cannet_server_client::CannetServerClient, envelope::Body, error::Code, ClockProbe,
     Direction as ProtoDirection, Envelope, Frame as ProtoFrame, FrameBatch, FrameKind,
     ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
 };
@@ -572,4 +572,46 @@ async fn a_client_killed_mid_session_leaves_the_server_ready_for_the_next_one() 
     tunnel_handle.abort();
     proxy_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn a_clock_probe_crosses_to_the_upstream_and_its_reply_comes_back() {
+    // The proxy does not answer clock probes itself. The clock a client
+    // is measuring is the one that stamps the frames it will receive,
+    // and that clock belongs to the upstream process — so the probe is
+    // relayed like every other envelope and the upstream's stamps are
+    // what come back. Anything else would measure a neighbouring
+    // process and be right only by deployment coincidence.
+    let (upstream_addr, upstream) = spawn_virtual_bus().await;
+    let (proxy_addr, proxy) = spawn_proxy(upstream_addr).await;
+
+    let mut client = connect(proxy_addr).await;
+    let (tx, rx) = mpsc::channel::<Envelope>(8);
+    let t1 = 1_760_000_000_123_456_789;
+    tx.send(Envelope {
+        body: Some(Body::ClockProbe(ClockProbe { t1 })),
+    })
+    .await
+    .unwrap();
+    let mut stream = client
+        .session(ReceiverStream::new(rx))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let env = next_envelope(&mut stream).await;
+    let Some(Body::ClockReply(reply)) = env.body else {
+        panic!("expected ClockReply, got {env:?}");
+    };
+    assert_eq!(reply.t1, t1, "the probe crossed unaltered");
+    assert!(
+        reply.t2 <= reply.t3,
+        "the upstream's own receive/send stamps came back: t2={} t3={}",
+        reply.t2,
+        reply.t3,
+    );
+
+    drop(tx);
+    proxy.abort();
+    upstream.abort();
 }

@@ -5,9 +5,9 @@ use std::time::Duration;
 use cannet_core::BusConfig;
 use cannet_server::{VirtualBusServerImpl, VIRTUAL_BUS_FACTORY_ID};
 use cannet_wire::proto::{
-    cannet_server_client::CannetServerClient, envelope::Body, AttachBridge, ConfigureBus,
-    DetachBridge, Direction as ProtoDirection, Envelope, Frame as ProtoFrame, FrameBatch,
-    FrameKind, ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
+    cannet_server_client::CannetServerClient, envelope::Body, AttachBridge, ClockProbe,
+    ConfigureBus, DetachBridge, Direction as ProtoDirection, Envelope, Frame as ProtoFrame,
+    FrameBatch, FrameKind, ListInterfacesRequest, Subscribe, WatchInterfacesRequest,
 };
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -596,4 +596,102 @@ async fn detach_bridge_removes_from_list_and_watch_snapshots() {
 
     a_server.abort();
     b_server.abort();
+}
+
+/// Wall-clock nanoseconds, the scale every stamp on this wire uses.
+fn wall_clock_ns() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_clock_probe_is_answered_with_wall_clock_receive_and_send_stamps() {
+    // The clock a client wants to measure is the one this server stamps
+    // its fan-out frames with. A monotonic reading here would be ~3
+    // orders of magnitude smaller and would measure a clock nothing on
+    // the wire ever sees — the same bug `wall_clock_ns` exists to
+    // prevent for frames.
+    let config = BusConfig {
+        speed_bps: 500_000,
+        fd_data_speed_bps: None,
+        fd_enabled: false,
+    };
+    let (addr, server) = spawn_server(config).await;
+    let mut client = connect(addr).await;
+    let (tx, rx) = mpsc::channel::<Envelope>(8);
+
+    let t1 = wall_clock_ns();
+    tx.send(Envelope {
+        body: Some(Body::ClockProbe(ClockProbe { t1 })),
+    })
+    .await
+    .unwrap();
+    let mut stream = client
+        .session(ReceiverStream::new(rx))
+        .await
+        .unwrap()
+        .into_inner();
+    let env = next_envelope(&mut stream, "ClockReply").await;
+    let t4 = wall_clock_ns();
+
+    let Some(Body::ClockReply(reply)) = env.body else {
+        panic!("expected ClockReply, got {env:?}");
+    };
+    assert_eq!(reply.t1, t1, "the probe's t1 comes back untouched");
+    assert!(
+        t1 <= reply.t2 && reply.t2 <= reply.t3 && reply.t3 <= t4,
+        "receive/send stamps must be wall clock inside [{t1}, {t4}], got \
+         t2={} t3={}",
+        reply.t2,
+        reply.t3,
+    );
+
+    drop(tx);
+    server.abort();
+}
+
+#[tokio::test]
+async fn every_clock_probe_gets_its_own_reply() {
+    // Minimum-delay sampling needs several exchanges, so a burst of
+    // probes must produce a reply each, in order.
+    let config = BusConfig {
+        speed_bps: 500_000,
+        fd_data_speed_bps: None,
+        fd_enabled: false,
+    };
+    let (addr, server) = spawn_server(config).await;
+    let mut client = connect(addr).await;
+    let (tx, rx) = mpsc::channel::<Envelope>(8);
+
+    let stamps: Vec<u64> = (0..4).map(|i| 1_760_000_000_000_000_000 + i).collect();
+    for t1 in &stamps {
+        tx.send(Envelope {
+            body: Some(Body::ClockProbe(ClockProbe { t1: *t1 })),
+        })
+        .await
+        .unwrap();
+    }
+    let mut stream = client
+        .session(ReceiverStream::new(rx))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut echoed = Vec::new();
+    for _ in 0..stamps.len() {
+        let env = next_envelope(&mut stream, "ClockReply").await;
+        let Some(Body::ClockReply(reply)) = env.body else {
+            panic!("expected ClockReply, got {env:?}");
+        };
+        echoed.push(reply.t1);
+    }
+    assert_eq!(echoed, stamps);
+
+    drop(tx);
+    server.abort();
 }

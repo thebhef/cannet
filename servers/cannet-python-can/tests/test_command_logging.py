@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -214,3 +215,50 @@ def test_transmits_are_not_logged_per_frame(
     text = debug_log.text
     for i in range(64):
         assert f"{0x1A0 + i:x}" not in text.lower(), "no per-frame content in the log"
+
+
+# ----- clock probe ---------------------------------------------------------
+
+
+def test_a_clock_probe_is_answered_on_the_session() -> None:
+    """The sidecar answers, because the sidecar owns the stamping clock.
+
+    A proxy in front of it relays the probe rather than answering, so
+    this handler is what a remote client's offset is measured against —
+    the very process whose ``time.time_ns()`` goes onto every hardware
+    frame.
+    """
+    driver = _Driver()
+    before = time.time_ns()
+    out = _run_session(driver, [pb.Envelope(clock_probe=pb.ClockProbe(t1=12345))])
+    after = time.time_ns()
+
+    replies = [e for e in out if e.WhichOneof("body") == "clock_reply"]
+    assert len(replies) == 1, f"expected exactly one ClockReply, got {out}"
+    reply = replies[0].clock_reply
+    assert reply.t1 == 12345
+    assert before <= reply.t2 <= reply.t3 <= after
+
+
+def test_a_clock_probe_is_not_logged_per_probe(
+    debug_log: pytest.LogCaptureFixture,
+) -> None:
+    """Probes recur for the life of a session; they are not an event.
+
+    The same reasoning as ``_handle_tx``: a record here would rotate the
+    log budget away for something that says nothing about the hardware.
+    """
+    driver = _Driver()
+    _run_session(driver, [pb.Envelope(clock_probe=pb.ClockProbe(t1=1))])
+    assert "clock" not in debug_log.text.lower()
+
+
+def test_every_clock_probe_gets_its_own_reply() -> None:
+    """Minimum-delay sampling needs several exchanges to choose between."""
+    driver = _Driver()
+    out = _run_session(
+        driver,
+        [pb.Envelope(clock_probe=pb.ClockProbe(t1=t)) for t in (7, 8, 9, 10)],
+    )
+    echoed = [e.clock_reply.t1 for e in out if e.WhichOneof("body") == "clock_reply"]
+    assert echoed == [7, 8, 9, 10]

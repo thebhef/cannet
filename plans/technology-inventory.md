@@ -564,6 +564,32 @@ crate retained long-term).
 - CAN 2.0 A/B
 - CAN FD
 - CANopen (SDO, PDO)
+- **SNTP (RFC 4330) — the algorithm, `adopted`; the NTP wire protocol
+  and PTP (IEEE 1588), `rejected` as transport.** Every frame on the
+  cannet wire carries Unix-epoch nanoseconds stamped by whichever host
+  produced it, so a server whose clock is off silently misplaces
+  frames in the trace. Measuring that offset is a solved problem and
+  we take the standard solution: RFC 4330 § 5's four-timestamp
+  exchange (θ = ((t2−t1) + (t3−t4)) / 2, δ = (t4−t1) − (t3−t2)) with
+  minimum-delay sample selection, carried by the `ClockProbe` /
+  `ClockReply` envelopes on our existing authenticated `Session`
+  stream.
+  - *NTP's own wire protocol (UDP 123, stratum, the discipline loop)
+    and PTP are rejected as transport*: either one is a second port, a
+    second protocol and a second firewall surface next to a
+    bidirectional stream we already have open, authenticated and
+    pinned. We need one number about one peer, not a time service.
+  - *The Rust NTP client crates (`sntpc`, `rsntp`, both permissively
+    licensed) are rejected* for the same reason at the code level:
+    they implement that UDP client, and expose no seam for running
+    the offset math over a caller-supplied exchange. What we would
+    reuse from them is the arithmetic, which is four subtractions and
+    a shift — written against the RFC in `cannet-client`, in signed
+    wide types so `uint64` epoch stamps can't underflow. No new
+    dependency.
+  - Hosts running NTP or PTP themselves are the *good* case, not a
+    conflict: the measured offset collapses to ~0 and the correction
+    no-ops. The code path exists because neither can be assumed.
 
 ### Plotting / Visualization
 

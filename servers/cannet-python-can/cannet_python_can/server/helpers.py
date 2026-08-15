@@ -124,6 +124,22 @@ def _log_envelope(level: "pb.LogLevel.V", message: str) -> pb.Envelope:
     )
 
 
+def _clock_reply_envelope(t1: int, t2: int) -> pb.Envelope:
+    """Answer one ``ClockProbe`` received at ``t2``, echoing its ``t1``.
+
+    ``t3`` is stamped here, as late as this queue-based server can
+    manage: whatever handling time sits between ``t2`` and ``t3`` shows
+    up in the client's *delay* estimate rather than its *offset*
+    estimate, which is why the exchange carries both (RFC 4330 § 5).
+
+    Both stamps come from :func:`_now_ns` — the same wall clock that
+    stamps hardware RX frames — because that is the clock the client is
+    measuring against. A ``time.monotonic_ns()`` reading here would
+    answer about a clock that never reaches the wire.
+    """
+    return pb.Envelope(clock_reply=pb.ClockReply(t1=t1, t2=t2, t3=_now_ns()))
+
+
 def _error_envelope(code: "pb.Error.Code.V", message: str) -> pb.Envelope:
     return pb.Envelope(error=pb.Error(code=code, message=message))
 

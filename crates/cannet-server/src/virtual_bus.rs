@@ -353,18 +353,25 @@ async fn run_session(
             Body::DetachBridge(DetachBridge { name }) => {
                 handle_detach_bridge(&inner, &name);
             }
+            Body::ClockProbe(probe) => {
+                let t2 = crate::wall_clock_ns();
+                let _ = outgoing
+                    .send(Ok(crate::clock_reply_envelope(probe.t1, t2)))
+                    .await;
+            }
             // Client `Error` / `Log` are informational here. The
             // virtual-bus server doesn't model controller config or
             // controller state, so `ConfigureBus` and `InterfaceState`
             // are silently ignored — those concerns belong to the
             // hardware server (ADR 0021 § "Server roles"). The
-            // server→client envelope `InterfaceAllocated` a peer might
-            // echo is dropped.
+            // server→client envelopes a peer might echo
+            // (`InterfaceAllocated`, `ClockReply`) are dropped.
             Body::Error(_)
             | Body::Log(_)
             | Body::ConfigureBus(_)
             | Body::InterfaceAllocated(_)
-            | Body::InterfaceState(_) => {}
+            | Body::InterfaceState(_)
+            | Body::ClockReply(_) => {}
         }
     }
 

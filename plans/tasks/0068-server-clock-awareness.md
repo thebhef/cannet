@@ -182,3 +182,94 @@ behaviour and should be fixed in whatever change touches this area:
 - `:157-159` — "The receiver maps this to its own clock for display" on
   `LogMessage.timestamp_ns`. No such mapping exists anywhere; the client
   drops the envelope.
+
+## Status log
+
+### Phase 1 — the wire pair and the client-side offset math (2026-08-14)
+
+Branch `task68a-clock-wire` off `task63f-follow-window-fix` (25418ff).
+Scope as groomed: the `ClockProbe` / `ClockReply` envelopes, whoever
+answers them, and the client-side measurement. Application, slewing,
+live re-probing and the GUI surface are later phases — this phase
+**measures and exposes only**; frames are delivered uncorrected.
+
+**Who answers — decided: the process that stamps the frames.** The
+sidecar answers; the proxy relays. Both in-tree Rust servers (BLF
+replay, virtual bus) answer for their own sessions.
+
+The two candidates were clock-equivalent *today* — a supervised sidecar
+and the proxy in front of it share a host — but only one is
+principle-shaped:
+
+1. The clock worth measuring is the one that produces the timestamps.
+   For hardware that is `driver_python_can._msg_to_frame`'s
+   `time.time_ns()`, inside the sidecar. Answering at the proxy would
+   report a neighbouring process's clock, correct only for as long as
+   the deployment keeps them co-hosted.
+2. Proxy interception would cover only the proxy path. The GUI's own
+   supervised sidecar is reached directly on loopback — the most common
+   session in the product — and would have been left unanswered, as
+   would the BLF replay and virtual-bus servers, each paying the probe
+   deadline and reporting `Unsupported` at every connect.
+3. ADR 0040's pure-relay principle needed no documented exception. The
+   extra hop's latency lands in δ, which is exactly what minimum-delay
+   sampling discards.
+4. Both Rust servers' `match body` are exhaustive, so the new variant
+   forced an arm at each; answering cost ~6 lines versus ~4 to ignore.
+
+**Local-session behaviour.** A probe against a local vbus / BLF replay
+server measures ≈0 (they answer). The GUI's in-process local-bus
+bindings never open a `Session` at all — `LocalBusRegistry::attach_
+participant` hands out `LocalSink`/`LocalSource` directly — so no probe
+exists on that path. Local-bus *bridges* do open a client session and
+are answered by whatever is at the far end. Nothing can hang: the probe
+window is bounded and never gates readiness.
+
+**Commits**
+
+| commit | what |
+|---|---|
+| `6205d27` | orchestrator's task-63 close-out doc edits, landed verbatim |
+| `941b99f` | proto pair + both Rust servers answer + the two stale proto comments + inventory entry |
+| `a63c155` | sidecar answers; regenerated python stubs; sidecar README |
+| `bb2d69c` | client probe machinery (`cannet-client::clock`) |
+
+**Tests** (all green; clippy `-D warnings` clean on every touched
+crate)
+
+| layer | new | suite total |
+|---|---|---|
+| `cannet-wire` | 2 (probe/reply round trip, unknown variant decodes as no body) | 21 |
+| `cannet-server` | 4 (vbus ×2, BLF replay, proxy relay) | 37 unit + 36 integration |
+| `cannet-client` | 12 unit (`clock`) + 2 end-to-end | 25 unit + 18 integration |
+| sidecar (pytest) | 4 | 110 |
+
+**Design notes carried forward**
+
+- Envelope tags 12 / 13. Tag 9 was never used in the `oneof` (checked
+  through the file's history) but was skipped deliberately enough that
+  reusing it buys nothing.
+- The probe is 4 exchanges at 20 ms spacing with a 2 s window, running
+  on the session's existing `select!` loop. It gates nothing: readiness
+  is signalled at the speed of the subscribes, so a slow or silent peer
+  costs a status, not a stall.
+- `ClockProbeStatus` is `Pending` / `Measured(ClockOffset)` /
+  `Unsupported`. `Unsupported` is the honest answer for a peer built
+  before the variants existed — it parses the probe, recognises no
+  body, and never replies.
+- δ is clamped at zero. RFC 4330 notes the computation can come out
+  negative when the two clocks tick at different rates across an
+  exchange; left signed, such a sample would win minimum-delay
+  selection every time, promoting the worst sample to the chosen one.
+- The measurement is exposed at `FrameReceiver::clock()` (and
+  `RemoteCanFrameSource::clock()`), a cheap-to-clone `SessionClock`.
+  `into_parts` keeps its arity; the clock rides with the receive half,
+  which is where the correction will be applied.
+
+**Open for the next phase**
+
+- Applying the offset at the client seam, slewed not stepped, with the
+  >1 s step exception.
+- Periodic re-probe (~30–60 s) and the warn-state transition logging.
+- The GUI surface: the server row's measured offset and the single
+  session-start system-log line (warn above 100 ms).

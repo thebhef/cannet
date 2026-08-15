@@ -38,11 +38,14 @@ class CannetServerStub(object):
     Cyclic / scheduled emission is not modelled at the wire layer.
     Sending on a cadence is a feature of the client transmit UI.
 
-    Discovery: see ADR 0016. `ListInterfaces` and `WatchInterfaces`
-    are deliberately redundant in the steady state — pull vs. push of
-    the same underlying server-side cache. The server owns the polling
-    cadence and the change-detection rule; clients either ask once or
-    subscribe.
+    Discovery: see ADR 0016. `ListInterfaces` (pull) and
+    `WatchInterfaces` (subscribe) are two views of the same interface
+    set. Whether `WatchInterfaces` ever pushes past its initial snapshot
+    is the server's choice: it owns change detection, and a server that
+    cannot cheaply detect changes (e.g. where enumeration contends with
+    active traffic) may emit the snapshot once and rely on clients
+    re-pulling `ListInterfaces`. Clients must not assume every change is
+    pushed.
     """
 
     def __init__(self, channel):
@@ -81,11 +84,14 @@ class CannetServerServicer(object):
     Cyclic / scheduled emission is not modelled at the wire layer.
     Sending on a cadence is a feature of the client transmit UI.
 
-    Discovery: see ADR 0016. `ListInterfaces` and `WatchInterfaces`
-    are deliberately redundant in the steady state — pull vs. push of
-    the same underlying server-side cache. The server owns the polling
-    cadence and the change-detection rule; clients either ask once or
-    subscribe.
+    Discovery: see ADR 0016. `ListInterfaces` (pull) and
+    `WatchInterfaces` (subscribe) are two views of the same interface
+    set. Whether `WatchInterfaces` ever pushes past its initial snapshot
+    is the server's choice: it owns change detection, and a server that
+    cannot cheaply detect changes (e.g. where enumeration contends with
+    active traffic) may emit the snapshot once and rely on clients
+    re-pulling `ListInterfaces`. Clients must not assume every change is
+    pushed.
     """
 
     def ListInterfaces(self, request, context):
@@ -152,11 +158,14 @@ class CannetServer(object):
     Cyclic / scheduled emission is not modelled at the wire layer.
     Sending on a cadence is a feature of the client transmit UI.
 
-    Discovery: see ADR 0016. `ListInterfaces` and `WatchInterfaces`
-    are deliberately redundant in the steady state — pull vs. push of
-    the same underlying server-side cache. The server owns the polling
-    cadence and the change-detection rule; clients either ask once or
-    subscribe.
+    Discovery: see ADR 0016. `ListInterfaces` (pull) and
+    `WatchInterfaces` (subscribe) are two views of the same interface
+    set. Whether `WatchInterfaces` ever pushes past its initial snapshot
+    is the server's choice: it owns change detection, and a server that
+    cannot cheaply detect changes (e.g. where enumeration contends with
+    active traffic) may emit the snapshot once and rely on clients
+    re-pulling `ListInterfaces`. Clients must not assume every change is
+    pushed.
     """
 
     @staticmethod

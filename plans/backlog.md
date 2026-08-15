@@ -832,6 +832,13 @@ next planning pass.
   covers the first ≥5 s of every ADR-0031 run; the chrono trace is
   hidden behind the by-ID tab in the stock gate scenario (a
   chrono-visible variant exists from the task-51 heap work).
+  Added 2026-08-14 (task-63 phase 6): the `scrub` warm-up's 93×
+  zoom-in lands the plot at a ~0.05 s window on self-driving
+  captures, so **no committed capture has ever measured the plot at
+  a realistic follow window** (the follow-window defect is fixed;
+  this is purely the scenario's zoom target). Fixing the warm-up
+  changes the workload and therefore requires a deliberate
+  re-baseline in the same change.
   Changing the gate scenario is a baseline decision — take it
   deliberately.
 - `[feat]` **DBC-carried generator rules (`Cannet*` database-level

@@ -9,8 +9,8 @@ use std::time::Duration;
 use blf_asc::{ArbitrationId, BlfWriter, DataBytes, Message};
 use cannet_server::{CannetServerImpl, LoopingBlfReplay};
 use cannet_wire::proto::{
-    cannet_server_client::CannetServerClient, envelope::Body, error::Code, Envelope, FrameBatch,
-    ListInterfacesRequest, Subscribe, Unsubscribe,
+    cannet_server_client::CannetServerClient, envelope::Body, error::Code, ClockProbe, Envelope,
+    FrameBatch, ListInterfacesRequest, Subscribe, Unsubscribe,
 };
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -299,4 +299,59 @@ async fn second_concurrent_client_is_rejected_with_busy() {
 
     drop(tx_a);
     server_handle.abort();
+}
+
+#[tokio::test]
+async fn a_clock_probe_is_answered_with_wall_clock_receive_and_send_stamps() {
+    // The replay server answers even though its frames carry recorded
+    // BLF stamps rather than its own clock: what the exchange measures
+    // is the offset between the two hosts, and a client that gets no
+    // answer cannot tell "clock in sync" from "server too old to ask".
+    let (addr, server_handle) = spawn_server().await;
+    let mut client = connect(addr).await;
+    let (tx, rx) = mpsc::channel::<Envelope>(8);
+
+    let t1 = wall_clock_ns();
+    tx.send(Envelope {
+        body: Some(Body::ClockProbe(ClockProbe { t1 })),
+    })
+    .await
+    .unwrap();
+    let mut stream = client
+        .session(ReceiverStream::new(rx))
+        .await
+        .unwrap()
+        .into_inner();
+    let env = timeout(Duration::from_secs(2), stream.next())
+        .await
+        .expect("timed out waiting for ClockReply")
+        .expect("stream ended")
+        .expect("status error");
+    let t4 = wall_clock_ns();
+
+    let Some(Body::ClockReply(reply)) = env.body else {
+        panic!("expected ClockReply, got {env:?}");
+    };
+    assert_eq!(reply.t1, t1, "the probe's t1 comes back untouched");
+    assert!(
+        t1 <= reply.t2 && reply.t2 <= reply.t3 && reply.t3 <= t4,
+        "receive/send stamps must be wall clock inside [{t1}, {t4}], got \
+         t2={} t3={}",
+        reply.t2,
+        reply.t3,
+    );
+
+    drop(tx);
+    server_handle.abort();
+}
+
+/// Wall-clock nanoseconds, the scale every stamp on this wire uses.
+fn wall_clock_ns() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap()
 }

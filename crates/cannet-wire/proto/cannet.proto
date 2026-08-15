@@ -90,6 +90,18 @@ message Envelope {
     // client → server. Tear down a previously installed bridge by
     // name.
     DetachBridge detach_bridge = 11;
+
+    // ---- Clock probe ----
+    //
+    // Additive: a peer built before these variants existed parses the
+    // envelope and sees no body, so it simply never answers. A client
+    // that gets no reply within its probe window reports the peer as
+    // not supporting the exchange rather than waiting on it.
+    //
+    // client → server.
+    ClockProbe clock_probe = 12;
+    // server → client, one per ClockProbe.
+    ClockReply clock_reply = 13;
   }
 }
 
@@ -113,7 +125,12 @@ message FrameBatch {
 }
 
 message Frame {
-  // Sender's monotonic timestamp in nanoseconds.
+  // When the frame happened, in nanoseconds since the Unix epoch, on
+  // the producing host's wall clock. Not monotonic and not mapped by
+  // the receiver: every producer on this wire stamps on that one
+  // scale, which is what lets frames from different sources share a
+  // timeline. Clients that need to know how far the producing host's
+  // clock is from their own measure it with ClockProbe / ClockReply.
   uint64 timestamp_ns = 1;
   // CAN identifier (raw bits).
   uint32 can_id = 2;
@@ -154,8 +171,10 @@ enum FrameKind {
 // session continues normally. The host bridges incoming wire log
 // messages into its local System Messages bus.
 message LogMessage {
-  // Sender's monotonic timestamp in nanoseconds. The receiver maps
-  // this to its own clock for display.
+  // When the sender emitted this message, in nanoseconds since the
+  // Unix epoch, on the sender's wall clock — the same scale as
+  // Frame.timestamp_ns. The receiver displays it as sent; no clock
+  // mapping is applied.
   uint64 timestamp_ns = 1;
   LogLevel level = 2;
   // Short stable source tag. Wire convention: vendor sidecars send
@@ -254,4 +273,41 @@ message AttachBridge {
 // Tear down a previously installed bridge by name (ADR 0021).
 message DetachBridge {
   string name = 1;
+}
+
+// Client → server clock probe: the first of the four timestamps in the
+// SNTP exchange (RFC 4330 § 5), carried on this stream rather than on
+// NTP's own UDP transport.
+//
+// A server answers each probe with exactly one ClockReply. Answering
+// is the job of whichever process stamps the frames a client will
+// receive — the clock being measured is the stamping clock, so a
+// relaying intermediary forwards the probe rather than answering it.
+message ClockProbe {
+  // Client's transmit time, nanoseconds since the Unix epoch on the
+  // client's wall clock. The server echoes it back untouched; it is
+  // the client's own correlation handle, so the wire needs no
+  // request id.
+  uint64 t1 = 1;
+}
+
+// Server → client answer to one ClockProbe. With the client's receive
+// time t4, sampled when this envelope arrives, the four stamps give
+// the offset θ = ((t2−t1) + (t3−t4)) / 2 and the round-trip delay
+// δ = (t4−t1) − (t3−t2) of RFC 4330 § 5.
+//
+// All three are nanoseconds since the Unix epoch, and t1 is on the
+// *client's* clock while t2 and t3 are on the server's — so the
+// differences are computed in signed wide arithmetic, never as
+// unsigned subtraction.
+message ClockReply {
+  // The probe's t1, echoed unchanged.
+  uint64 t1 = 1;
+  // Server's receive time, on the same wall clock it stamps frames
+  // and log messages with.
+  uint64 t2 = 2;
+  // Server's transmit time, on that same clock. Stamped as late as
+  // the server can manage, so (t3−t2) accounts for its own handling
+  // time and leaves δ measuring the network.
+  uint64 t3 = 3;
 }
