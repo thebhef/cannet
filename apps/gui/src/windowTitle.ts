@@ -1,4 +1,4 @@
-import type { LogState, RemoteStatus } from "./statusLine";
+import { capturePath, type LogState, type RemoteStatus } from "./statusLine";
 
 const APP_NAME = "cannet";
 
@@ -66,7 +66,7 @@ export function captureLabel(
     case "loading":
     case "running":
     case "done":
-      return basename(state.result.blf_path);
+      return basename(capturePath(state.result));
     default:
       return null;
   }

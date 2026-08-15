@@ -17,6 +17,7 @@ function inputs(over: Partial<StatusInputs>): StatusInputs {
     scratchBytes: null,
     memBytes: null,
     scanningBlfPath: null,
+    scanningMdfPath: null,
     ...over,
   };
 }
@@ -50,6 +51,15 @@ describe("splitStatus", () => {
   it("no scan in flight leaves the line alone", () => {
     const { resting } = splitStatus(inputs({ scanningBlfPath: null }));
     expect(resting).toMatch(/Open a BLF log/);
+  });
+
+  it("an MDF scan is resting activity, the same as a BLF scan", () => {
+    const state: LogState = { kind: "running", result: { blf_path: "/logs/drive.blf" } };
+    const { resting, transient } = splitStatus(
+      inputs({ state, count: 1000, scanningMdfPath: "/logs/next.mf4" }),
+    );
+    expect(transient).toBeNull();
+    expect(resting).toMatch(/Scanning next\.mf4/);
   });
 
   it("a running BLF stream is resting with the residency line, no transient", () => {

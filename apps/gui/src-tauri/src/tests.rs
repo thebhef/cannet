@@ -1901,6 +1901,167 @@ fn windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store()
     );
 }
 
+/// Path to one of `cannet-mdf`'s committed phase-1/2 fixtures, shared by
+/// every MDF import test below so `import_mdf` / `scan_mdf_channels`
+/// exercise the same corpus the reader crate's own suite already pins.
+fn mdf_fixture_path(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../crates/cannet-mdf/tests/fixtures")
+        .join(format!("{name}.mf4"))
+}
+
+/// MDF import runs the same per-frame pipeline BLF import does
+/// (`RawTraceFrame::from` → `route_channel` → `TraceStore::append`,
+/// the pieces `run_pump` is built from — see
+/// `windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store`
+/// above), just fed by `MdfCanFrameSource` instead of `BlfCanFrameSource`.
+/// `sorted_finalized_classic.mf4` carries 60 frames on `BusChannel` 1
+/// (wire channel 0 after the 1-based → 0-based adjustment
+/// `cannet_mdf` documents), starting at `hd_start_time_ns`
+/// 1709294400000000000 — pinned against the fixture's
+/// `expected/sorted_finalized_classic.json`.
+#[test]
+fn mdf_import_lands_frames_with_absolute_timestamps_and_mapped_buses() {
+    use cannet_core::CanFrameSource as _;
+    use cannet_mdf::MdfCanFrameSource;
+
+    let path = mdf_fixture_path("sorted_finalized_classic");
+    let mut source = MdfCanFrameSource::open(&path).unwrap();
+
+    let scratch = tempfile::TempDir::new().unwrap();
+    let store_dir = scratch.path().join("current");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let store = open_trace_store(&store_dir);
+
+    let channel_to_bus: Vec<(u8, Option<String>)> = vec![(0, Some("p".into()))];
+    let mut n = 0u64;
+    while let Some(frame) = source.next_frame().unwrap() {
+        let mut raw = trace_store::RawTraceFrame::from(frame);
+        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            continue;
+        };
+        raw.bus_id = bid;
+        store.append(raw);
+        n += 1;
+    }
+    assert_eq!(n, 60, "phase 2 pinned this fixture at 60 frames");
+
+    let kept = store.slice(0, store.len());
+    assert_eq!(kept.len(), 60);
+    assert!(
+        kept.iter().all(|f| f.bus_id.as_deref() == Some("p")),
+        "every frame on BusChannel 1 / wire channel 0 must map to the chosen bus"
+    );
+    assert_eq!(
+        kept[0].timestamp_ns, 1_709_294_400_000_000_000,
+        "timestamps land absolute (ADR 0024): hd_start_time_ns + the first record's t_ns == 0"
+    );
+    assert!(
+        kept.windows(2)
+            .all(|w| w[0].timestamp_ns <= w[1].timestamp_ns),
+        "frames must arrive in non-decreasing timestamp order across the whole import"
+    );
+}
+
+/// The import time range (ADR 0046) applies to MDF exactly the way it
+/// applies to BLF: `import_mdf` wraps the source in
+/// `cannet_core::WindowedSource` ahead of `run_pump`, so a frame
+/// outside `[start_ns, end_ns]` never reaches `TraceStore::append`.
+/// Boundaries are the fixture's own 11th/41st frame timestamps
+/// (indices 10 and 40), inclusive on both ends — 31 frames.
+#[test]
+fn mdf_windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store() {
+    use cannet_core::{CanFrameSource as _, WindowedSource};
+    use cannet_mdf::MdfCanFrameSource;
+
+    let path = mdf_fixture_path("sorted_finalized_classic");
+    let source = MdfCanFrameSource::open(&path).unwrap();
+    let start = 1_709_294_400_020_000_000u64; // frame index 10
+    let end = 1_709_294_400_080_000_000u64; // frame index 40
+    let mut windowed = WindowedSource::new(source, Some(start), Some(end));
+
+    let scratch = tempfile::TempDir::new().unwrap();
+    let store_dir = scratch.path().join("current");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let store = open_trace_store(&store_dir);
+    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    while let Some(frame) = windowed.next_frame().unwrap() {
+        let mut raw = trace_store::RawTraceFrame::from(frame);
+        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            continue;
+        };
+        raw.bus_id = bid;
+        store.append(raw);
+    }
+
+    let kept = store.slice(0, store.len());
+    assert_eq!(kept.len(), 31, "boundaries inclusive: indices 10..=40");
+    assert!(kept
+        .iter()
+        .all(|f| f.timestamp_ns >= start && f.timestamp_ns <= end));
+}
+
+/// `scan_mdf_channels` projects `cannet_mdf::scan_mdf`'s
+/// `skipped_decoded_groups` and signal-group count straight through
+/// (`MdfScanResult`), so the mapping dialog can say what it is leaving
+/// behind rather than importing it silently twice (the shape-3 rule
+/// from the task's grooming notes). `sorted_finalized_dbcdecoded.mf4`
+/// carries 18 bus frames plus two per-message decoded groups — message
+/// `0x100` with signals `VehSpeed`/`GearPos` (2) and message `0x1a5`
+/// with `TankLevel` (1), each group's master ("time") channel excluded
+/// from the count — that must be reported, not imported.
+#[test]
+fn mdf_scan_reports_skipped_decoded_groups_for_the_dialog() {
+    let path = mdf_fixture_path("sorted_finalized_dbcdecoded");
+    let scan = cannet_mdf::scan_mdf(&path).unwrap();
+    assert_eq!(scan.frame_count, 18);
+    assert_eq!(scan.skipped_decoded_groups.len(), 2);
+    assert!(scan
+        .skipped_decoded_groups
+        .iter()
+        .any(|g| g.signal_count == 2));
+    assert!(scan
+        .skipped_decoded_groups
+        .iter()
+        .any(|g| g.signal_count == 1));
+
+    // `capture::SkippedDecodedGroupInfo::from` is the exact projection
+    // `scan_mdf_channels` applies to build the wire response — pin the
+    // field-for-field mapping here rather than only in the command
+    // (which needs an `AppHandle` to call).
+    let projected: Vec<capture::SkippedDecodedGroupInfo> =
+        scan.skipped_decoded_groups.iter().map(Into::into).collect();
+    assert_eq!(projected.len(), 2);
+    assert_eq!(
+        projected[0].source_path,
+        scan.skipped_decoded_groups[0].source_path
+    );
+    assert_eq!(
+        projected[0].signal_count,
+        scan.skipped_decoded_groups[0].signal_count
+    );
+}
+
+/// Signal-shape MF4 files (pre-decoded measurements, no bus-logging
+/// group) are detected and rejected with a clear, typed message — the
+/// same error both `scan_mdf_channels` and `import_mdf` surface as
+/// `Err(String)` to the frontend. Exit criterion: not misread as an
+/// empty capture.
+#[test]
+fn mdf_signal_file_scan_reports_a_clear_error_not_an_empty_capture() {
+    let path = mdf_fixture_path("signal_only");
+
+    let scan_err = cannet_mdf::scan_mdf(&path).unwrap_err();
+    let open_err = cannet_mdf::MdfCanFrameSource::open(&path).unwrap_err();
+
+    for msg in [scan_err.to_string(), open_err.to_string()] {
+        assert!(
+            msg.contains("pre-decoded signals") && msg.contains("no CAN_DataFrame"),
+            "expected a message that names the shape mismatch, got: {msg}"
+        );
+    }
+}
+
 /// `write_capture` re-channels each frame by its `bus_id`'s
 /// position in the project's ordered bus list. This is how the
 /// logical bus assignment round-trips through BLF — the channel

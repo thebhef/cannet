@@ -364,3 +364,92 @@ oracle's count.
 Still outstanding for this task: the `import_mdf` GUI command with its
 channel→bus mapping dialog, the model work for file-backed signals,
 and the whole export side.
+
+### 2026-08-12 — phase 3: the `import_mdf` GUI command
+
+`scan_mdf_channels` + `import_mdf` land in `cannet-gui`, mirroring
+`scan_blf_channels` / `open_log` field for field: the same one-pass
+census, the same `run_pump` pipeline (generic over `CanFrameSource`,
+so an `MdfCanFrameSource` runs through it unchanged) wrapped in a
+`WindowedSource` for the import-range filter (ADR 0046), `BusChannel`
+playing the role a BLF channel number plays (ADR 0023). Shape-3
+(per-message DBC-decoded) groups the reader skips are never silent:
+`scan_mdf_channels` logs them via `sys_info` and projects them into
+`MdfScanResult` (`SkippedDecodedGroupInfo`) so the mapping dialog can
+say what it is leaving behind, per the grooming pass's ruling. The
+message-independent signal-group count rides the same scan result
+(`signal_group_count`) so the phase that actually imports them won't
+need to reshape this command. A signal-shape file surfaces
+`MdfSourceError::SignalFile`'s message as `Err(String)` instead of
+scanning as an empty capture.
+
+**4 new host tests** (`apps/gui/src-tauri/src/tests.rs`), mirroring the
+BLF import tests over `cannet-mdf`'s committed phase-1/2 fixtures —
+tested at the same level those do (the frame pipeline directly, not
+the `async` Tauri command, which needs an `AppHandle` the test suite
+has no harness for): frames land with absolute timestamps and mapped
+buses (`sorted_finalized_classic`, 60 frames), the import-range window
+keeps only in-range frames (boundaries inclusive), skipped decoded
+groups surface with the right per-group signal counts
+(`sorted_finalized_dbcdecoded`), and the `signal_only` fixture produces
+a clear, typed error string on both `scan_mdf` and
+`MdfCanFrameSource::open`. `cargo test -p cannet-gui`: 549 passed, 0
+failed, 6 ignored (4 of the 549 are the new tests). `cargo clippy -p
+cannet-gui --all-targets` and `cargo fmt --all --check` clean.
+
+**Frontend.** Open MDF… mirrors Open BLF… — a toolbar item, an
+`mdf.open` command (palette + toolbar), a `.mf4`-filtered file dialog,
+a "Scanning …" status-line notice while the census walks
+(`scanningMdfPath`, alongside the existing `scanningBlfPath`), and
+`BlfChannelMapModal` reused for the mapping step. The grooming note's
+prediction — "it should need only the scan-result wiring" — mostly
+held: `scan`'s shape (channels/frame_count/timestamps/markers) and the
+mapping-persistence helpers (`blf_channel_maps`, keyed by path +
+channel count alone, so an `.mf4` path needs no format-specific
+counterpart) were reused with zero changes. Two things needed real
+(if small) additions, recorded as the finding the grooming note asked
+for: a `format` prop ("BLF"/"MDF") for the dialog's title text, and
+two new optional props — a skipped-decoded-groups list and a
+message-independent-signal-group count — since the reader crate's
+"never silent" design means the dialog has to say what an MDF import
+is leaving behind, which a BLF import never needs to say. `LogState`
+(`statusLine.ts`) widens `result` from `OpenLogResult` to a
+`BlfResult | ImportMdfResult` union (`CaptureResult`) so the window
+title, capture label, and status line work for either source; a new
+`capturePath` helper is the one place that reads across the two
+field names.
+
+Scope trim, not an oversight: no Recent-MDFs list. `recentBlfs.ts`'s
+persisted MRU and toolbar dropdown aren't duplicated for MDF paths in
+this phase — the exit criteria ask for channel scan + mapping, not
+MRU parity, and the channel-mapping persistence (the thing the exit
+criteria do name) is already shared. Worth adding later if it's
+missed in practice.
+
+**5 new frontend tests**: `BlfChannelMapModal.dom.test.tsx` grew three
+(title switches BLF/MDF, skipped-groups list renders/hides, the
+signal-group-count notice), a new `statusLine.test.ts` case for the
+MDF scanning notice, and a new `App.mdfScanNotice.dom.test.tsx`
+mirroring `App.blfScanNotice.dom.test.tsx` for the Open MDF… trigger.
+`pnpm --dir apps/gui test`: 147 files / 1912 tests passed (was 146 /
+1908). `pnpm --dir apps/gui build` clean.
+
+**Local verification**, all 14 files of the phase-1/2 user corpus
+(kept out of the repo; nothing identifying recorded here), run through
+the same two calls `scan_mdf_channels` / `import_mdf` make
+(`cannet_mdf::scan_mdf` + a full `MdfCanFrameSource` drain) via a
+throwaway example deleted after the run: all 14 open, scan, and decode
+without error; frame counts land at 7,645–21,982 per file — matching
+phase 2's numbers exactly, low and high end included — and the census
+count agrees with the full-decode count on every file (0 discrepancy).
+Skipped-decoded-group counts are 28–29 per file, matching phase 2's
+oracle-verified numbers.
+
+Branch `task38c-gui-import` off `task38b-mdf-reader` (tip `6c2c05b`),
+two commits: `1012077` "feat(gui): add scan_mdf_channels + import_mdf
+host commands", `c913bf7` "feat(gui): wire MDF import into the
+file-open surface".
+
+Still outstanding for this task: the model work for file-backed
+signals and message-independent-signal import (phase 4), and the whole
+export side (phase 5).

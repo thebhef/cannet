@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 
 import { Combobox } from "./Combobox";
-import type { BlfScanResult, Bus } from "./types";
+import type { BlfScanResult, Bus, SkippedDecodedGroup } from "./types";
 import { formatElapsed } from "./format";
 import { useGridview } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
@@ -28,15 +28,21 @@ function elapsedSeconds(timestampNs: number, originNs: number): number {
   return (timestampNs - originNs) / 1e9;
 }
 
-/// BLF channel → bus mapping step. Shown after the user picks
-/// a BLF and before frames start flowing. The user maps each distinct
-/// channel observed in the file to a project bus (or to "skip"), reads
-/// the capture's metadata and markers (one header-only scan feeds all
-/// three — ADR 0046), and may narrow the import to a time range.
+/// BLF (or MDF — see `format`) channel → bus mapping step. Shown after
+/// the user picks a capture file and before frames start flowing. The
+/// user maps each distinct channel observed in the file to a project
+/// bus (or to "skip"), reads the capture's metadata and markers (one
+/// header-only scan feeds all three — ADR 0046), and may narrow the
+/// import to a time range.
 ///
 /// Kept deliberately small and self-contained; the parent owns the bus
 /// list and resolves the resulting `Map<channel, bus_id | null>` (plus
-/// the chosen range) into the wire shape `open_log` consumes.
+/// the chosen range) into the wire shape `open_log` / `import_mdf`
+/// consumes. `scan`'s shape and the mapping/persistence logic are
+/// identical for both formats (`BlfScanResult` and `MdfScanResult`
+/// share the same channel-census fields); `format`,
+/// `skippedDecodedGroups` and `signalGroupCount` are the only
+/// MDF-specific additions, each optional so the BLF path is unaffected.
 export function BlfChannelMapModal(props: {
   blfPath: string;
   scan: BlfScanResult;
@@ -44,8 +50,28 @@ export function BlfChannelMapModal(props: {
   initial?: Record<number, ChannelChoice>;
   onConfirm: (choices: Record<number, ChannelChoice>, range: ImportRange) => void;
   onCancel: () => void;
+  /// Display label only — everything else about the flow is
+  /// format-agnostic. Defaults to "BLF".
+  format?: "BLF" | "MDF";
+  /// MDF only: per-message DBC-decoded groups import is skipping
+  /// because the file's own frames plus the project DBC already imply
+  /// them. Omitted/empty renders nothing.
+  skippedDecodedGroups?: SkippedDecodedGroup[];
+  /// MDF only: message-independent signal groups found. Not imported
+  /// yet (a later phase) — shown so the count isn't silently dropped.
+  signalGroupCount?: number;
 }) {
-  const { blfPath, scan, buses, initial, onConfirm, onCancel } = props;
+  const {
+    blfPath,
+    scan,
+    buses,
+    initial,
+    onConfirm,
+    onCancel,
+    format = "BLF",
+    skippedDecodedGroups,
+    signalGroupCount,
+  } = props;
   const { channels, markers } = scan;
   const [choices, setChoices] = useState<Record<number, ChannelChoice>>(() => {
     // Default seed: channel N → project bus at position N. The host
@@ -141,7 +167,7 @@ export function BlfChannelMapModal(props: {
   return (
     <div className="modal-overlay" role="dialog" aria-labelledby="blf-map-title">
       <div className="modal">
-        <h3 id="blf-map-title">Map BLF channels to logical buses</h3>
+        <h3 id="blf-map-title">Map {format} channels to logical buses</h3>
         <p className="modal-subtitle" title={blfPath}>
           {basename(blfPath)} — {channels.length} channel
           {channels.length === 1 ? "" : "s"}
@@ -246,6 +272,29 @@ export function BlfChannelMapModal(props: {
               </div>
             )}
           </div>
+        )}
+        {skippedDecodedGroups != null && skippedDecodedGroups.length > 0 && (
+          <div className="blf-map-skipped-section">
+            <p className="blf-map-meta">
+              {skippedDecodedGroups.length} per-message decoded group
+              {skippedDecodedGroups.length === 1 ? "" : "s"} already covered by the frames
+              above plus the project DBC — not imported:
+            </p>
+            <ul className="blf-map-skipped-list">
+              {skippedDecodedGroups.map((g) => (
+                <li key={g.source_path}>
+                  {g.name ?? g.source_path} ({g.signal_count} signal
+                  {g.signal_count === 1 ? "" : "s"})
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {signalGroupCount != null && signalGroupCount > 0 && (
+          <p className="blf-map-meta">
+            {signalGroupCount} message-independent signal group{signalGroupCount === 1 ? "" : "s"}{" "}
+            found; not imported yet.
+          </p>
         )}
         <div className="modal-buttons">
           <button type="button" onClick={onCancel}>

@@ -309,10 +309,11 @@ pnpm --dir apps/gui tauri build    # release bundle
 incremental — an unchanged sidecar refreezes in seconds.
 
 `pnpm tauri dev` boots Vite, compiles the Rust host, and launches the
-cannet window. Use **Open BLF…** to pick a log; **Add DBC…** loads a
-database for live decoding — load more than one and frames decode
-against each in order, first match wins (every loaded DBC applies to
-the one interface for now).
+cannet window. Use **Open BLF…** or **Open MDF…** to pick a log (a
+Vector `.blf` or an ASAM MDF 4.x bus-logging `.mf4`); **Add DBC…**
+loads a database for live decoding — load more than one and frames
+decode against each in order, first match wins (every loaded DBC
+applies to the one interface for now).
 
 **Every launch opens on a splash** carrying the safety disclaimer —
 cannet transmits, and the system on the other end of the cable should
@@ -1556,6 +1557,24 @@ time range is a filter at that pass's frame source rather than a
 second pipeline — frames outside the range never reach the trace
 store, and the pass itself stops early once it walks past the range's
 end.
+
+**MDF import** (`import_mdf` / `scan_mdf_channels`) mirrors BLF import
+end to end, reusing the same channel-mapping modal (`BusChannel` plays
+the role a BLF channel number plays — [ADR
+0023](docs/adr/0023-logical-bus-vs-interface.md)) and the same shared
+ingest pump for the actual pass. Two things an MDF can carry that a
+BLF cannot: **per-message DBC-decoded groups** — what a tool writes
+when it decodes a capture with a DBC and saves the result — are
+recognised and skipped rather than imported, since the file's own raw
+frames plus the project's DBC already reproduce them; every skipped
+group (its name, source path, and signal count) is listed in the
+mapping dialog and logged to System Messages, never silently dropped.
+**Message-independent signal channels** (signals recorded with no bus
+message behind them) are counted and shown in the dialog too, but not
+imported yet — that lands with the file-backed signal model. A
+signal-shape MF4 (a post-processed measurement with no bus-logging
+group at all) is detected and rejected with a message naming the
+mismatch, rather than opening as an empty capture.
 
 **Per-bus DBC scoping**. Each DBC entry in the project panel grows a
 row of checkboxes — one per defined logical bus — that control which

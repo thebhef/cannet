@@ -1,11 +1,13 @@
-//! Capture-session commands: BLF open / save / scan, the raw↔core frame
-//! conversion, and the scratch-buffer lifecycle (clear / restore /
-//! restamp).
+//! Capture-session commands: BLF/MDF open / scan, BLF save, the
+//! raw↔core frame conversion, and the scratch-buffer lifecycle
+//! (clear / restore / restamp).
 //!
-//! Opening a BLF spawns a pump thread (`crate::run_pump`); saving writes
-//! the whole session buffer plus notes back out as a Vector BLF (ADR
-//! 0010 — no sidecar files); clearing/restoring manage the disk-spill
-//! scratch identity (ADR 0002 DS-7).
+//! Opening a BLF or an MDF spawns a pump thread (`crate::run_pump`,
+//! generic over `cannet_core::CanFrameSource`, so the same pipeline
+//! runs either source); saving writes the whole session buffer plus
+//! notes back out as a Vector BLF (ADR 0010 — no sidecar files);
+//! clearing/restoring manage the disk-spill scratch identity (ADR
+//! 0002 DS-7).
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,9 +16,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_blf::{BlfCanFrameSource, BlfCaptureWriter};
 use cannet_core::{CanFrame as CoreCanFrame, CanId};
+use cannet_mdf::MdfCanFrameSource;
 
 use crate::app_state::AppState;
-use crate::ipc::{LogFinished, OpenLogResult};
+use crate::ipc::{ImportMdfResult, LogFinished, OpenLogResult};
 use crate::notes::{self, Note};
 use crate::sampling::off_async_workers;
 use crate::trace_store;
@@ -524,6 +527,205 @@ pub(crate) async fn scan_blf_channels(
             last_timestamp_ns: scan.last_timestamp_ns,
             start_unix_nanos: scan.start_unix_nanos,
             markers,
+        })
+    })
+    .await
+}
+
+/// Start importing `mdf_path`, routing each `BusChannel` per
+/// `channel_bus_mapping`, optionally narrowed to `[start_ns, end_ns]`.
+/// The MDF counterpart of [`open_log`]: same shape, same
+/// one-pass-over-the-source pipeline (`run_pump`, generic over
+/// [`cannet_core::CanFrameSource`]), same `WindowedSource` import-range
+/// filter (ADR 0046). `MdfCanFrameSource` carries no marker sink —
+/// `cannet-mdf` does not read MDF event (`EV`) blocks yet — so unlike
+/// `open_log` there is no notes collection here.
+///
+/// `async` for the same reason as `open_log`: opening and finalizing an
+/// unsorted MDF parses the whole block graph, and that must not hold up
+/// the Tauri main thread.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
+pub(crate) async fn import_mdf(
+    app: AppHandle,
+    mdf_path: String,
+    #[allow(non_snake_case)] channel_bus_mapping: Option<Vec<ChannelBusMapping>>,
+    start_ns: Option<u64>,
+    end_ns: Option<u64>,
+) -> Result<ImportMdfResult, String> {
+    // Open (and, for an unsorted/unfinalized CANedge file, finalize +
+    // sort) before returning, so a bad path or a signal-shape file
+    // fails immediately rather than behind a spawned thread.
+    let source = match MdfCanFrameSource::open(&mdf_path) {
+        Ok(s) => s,
+        Err(e) => {
+            let msg = e.to_string();
+            sys_error!(&app, "mdf-import", "failed to open MDF {mdf_path}: {msg}");
+            return Err(msg);
+        }
+    };
+    sys_info!(
+        &app,
+        "mdf-import",
+        "opened MDF {mdf_path}: unfinalized={unfinalized}",
+        unfinalized = source.is_unfinalized(),
+    );
+
+    let result = ImportMdfResult {
+        mdf_path: mdf_path.clone(),
+    };
+
+    let channel_to_bus: Vec<(u8, Option<String>)> = channel_bus_mapping
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| (m.channel, m.bus_id))
+        .collect();
+
+    // Same seam BLF import uses (ADR 0046): the selected range is a
+    // filter at the `CanFrameSource` boundary, ahead of `run_pump`, so
+    // an out-of-range frame never reaches `TraceStore::append`.
+    let source = cannet_core::WindowedSource::new(source, start_ns, end_ns);
+
+    let app_for_thread = app.clone();
+    std::thread::Builder::new()
+        .name("cannet-mdf-pump".into())
+        .spawn(move || {
+            // See `open_log`'s identical guard: a panic on the ingest
+            // path must end the load with a visible error, not a
+            // silently dead thread the UI waits on forever.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_pump(
+                    &app_for_thread,
+                    source,
+                    Arc::new(AtomicBool::new(false)),
+                    channel_to_bus,
+                    true, // replay_origin: MDF anchors the session at the first frame's ts
+                );
+            }));
+            if let Err(payload) = result {
+                let msg = format!("load failed: {}", panic_message(payload.as_ref()));
+                sys_error!(&app_for_thread, "mdf-import", "{msg}");
+                let _ = app_for_thread.emit("log-finished", LogFinished::Error { message: msg });
+            }
+        })
+        .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
+
+    Ok(result)
+}
+
+/// One per-message DBC-decoded channel group [`scan_mdf_channels`]
+/// found and import is skipping — already implied by the file's own
+/// bus-logging frames plus the project's DBC (see `cannet_mdf`'s
+/// module docs for why importing it too would double-count every
+/// signal). Surfaced here, never silent, so the mapping dialog can say
+/// what it is leaving behind.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SkippedDecodedGroupInfo {
+    pub source_path: String,
+    pub name: Option<String>,
+    pub signal_count: usize,
+}
+
+impl From<&cannet_mdf::SkippedDecodedGroup> for SkippedDecodedGroupInfo {
+    fn from(g: &cannet_mdf::SkippedDecodedGroup) -> Self {
+        Self {
+            source_path: g.source_path.clone(),
+            name: g.name.clone(),
+            signal_count: g.signal_count,
+        }
+    }
+}
+
+/// Everything the import dialog needs from one census walk of an MDF
+/// 4.x bus-logging file — the MDF counterpart of [`BlfScanResult`].
+///
+/// `markers` is always empty: `cannet_mdf` does not read MDF event
+/// (`EV`) blocks yet. The field exists purely so the channel→bus
+/// mapping dialog (shared with BLF import) needs no per-format
+/// branching for its markers section.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MdfScanResult {
+    pub channels: Vec<u8>,
+    pub frame_count: u64,
+    pub first_timestamp_ns: Option<u64>,
+    pub last_timestamp_ns: Option<u64>,
+    pub start_unix_nanos: u64,
+    pub markers: Vec<Note>,
+    pub unfinalized: bool,
+    /// Message-independent signal channel groups the file carries.
+    /// Not imported yet (a later phase); carried here so that phase
+    /// does not have to reshape this command.
+    pub signal_group_count: usize,
+    /// Per-message DBC-decoded groups import is skipping. See
+    /// [`SkippedDecodedGroupInfo`].
+    pub skipped_decoded_groups: Vec<SkippedDecodedGroupInfo>,
+}
+
+/// Pre-scan an MDF file and return its distinct `BusChannel` census,
+/// capture metadata, and the file's other content shapes — everything
+/// the channel → bus mapping dialog shows before frames start flowing.
+/// The MDF counterpart of [`scan_blf_channels`]: same one-pass-over-
+/// the-file cost model (ADR 0046), routed through [`cannet_mdf::scan_mdf`]
+/// instead of `cannet_blf::scan_blf`.
+///
+/// A signal-shape file (no bus-logging group) fails with a clear,
+/// typed message rather than scanning as an empty capture — the same
+/// error [`import_mdf`] itself would surface.
+#[tauri::command]
+pub(crate) async fn scan_mdf_channels(
+    app: AppHandle,
+    mdf_path: String,
+) -> Result<MdfScanResult, String> {
+    off_async_workers(move || {
+        let started = std::time::Instant::now();
+        let scan = match cannet_mdf::scan_mdf(&mdf_path) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = e.to_string();
+                sys_error!(&app, "mdf-import", "MDF scan failed: {msg}");
+                return Err(msg);
+            }
+        };
+        sys_debug!(
+            &app,
+            "mdf-import",
+            "scanned {mdf_path} in {ms:.0} ms: {frames} frame(s) on {channels} channel(s), \
+             {skipped} decoded group(s) skipped, {signals} signal group(s)",
+            ms = started.elapsed().as_secs_f64() * 1000.0,
+            frames = scan.frame_count,
+            channels = scan.channels.len(),
+            skipped = scan.skipped_decoded_groups.len(),
+            signals = scan.signal_group_names.len(),
+        );
+        // Never silent (per the crate's own design): every group import
+        // is leaving behind is named in the System Messages, not just
+        // counted.
+        if !scan.skipped_decoded_groups.is_empty() {
+            let names = scan
+                .skipped_decoded_groups
+                .iter()
+                .map(|g| g.name.clone().unwrap_or_else(|| g.source_path.clone()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            sys_info!(
+                &app,
+                "mdf-import",
+                "skipping {n} per-message decoded group(s) already covered by frames + the \
+                 project DBC: {names}",
+                n = scan.skipped_decoded_groups.len(),
+            );
+        }
+        Ok(MdfScanResult {
+            channels: scan.channels,
+            frame_count: scan.frame_count,
+            first_timestamp_ns: scan.first_timestamp_ns,
+            last_timestamp_ns: scan.last_timestamp_ns,
+            start_unix_nanos: scan.start_unix_nanos,
+            markers: Vec::new(),
+            unfinalized: scan.unfinalized,
+            signal_group_count: scan.signal_group_names.len(),
+            skipped_decoded_groups: scan.skipped_decoded_groups.iter().map(Into::into).collect(),
         })
     })
     .await

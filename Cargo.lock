@@ -499,6 +499,7 @@ dependencies = [
  "cannet-client",
  "cannet-core",
  "cannet-dbc",
+ "cannet-mdf",
  "cannet-sidecar",
  "cannet-spill",
  "cannet-wire",
