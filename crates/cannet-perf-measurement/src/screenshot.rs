@@ -22,9 +22,15 @@
 //! same picture. The app renders live data, so the scenario is built to
 //! stand still:
 //!
-//! - **Idle** — the app is launched with `--project` only. Without
-//!   `--connect-on-start` no interface is touched, so no frames arrive
-//!   and every rate, counter and follow-live window is at rest.
+//! - **Idle** — the app is launched without `--connect-on-start`, so no
+//!   interface is touched, no frames arrive, and every rate, counter and
+//!   follow-live window is at rest.
+//! - **An isolated profile** — `--app-data-dir` redirects the whole user
+//!   scope into a directory the run owns ([`CaptureConfig::app_data_dir`]),
+//!   so the capture neither writes the operator's settings and window
+//!   geometry nor reads them. Reading matters as much as writing here: every
+//!   user-scope setting is an input to the picture, and the theme the
+//!   capture is *for* ([`CaptureConfig::theme`]) is one of them.
 //! - **Fixed viewport** — `Emulation.setDeviceMetricsOverride` pins the
 //!   layout to [`CaptureConfig::width`] × [`CaptureConfig::height`] at
 //!   device-scale 1, so the OS window geometry (restored from the user's
@@ -265,6 +271,54 @@ pub struct CaptureConfig {
     /// How long to wait for the splash overlay to drop (it has a 5 s
     /// floor and stays until the boot project-open concludes).
     pub boot_timeout: Duration,
+    /// Directory this run's whole **user scope** is redirected into —
+    /// trust store, recents, settings, window geometry — via the app's
+    /// `--app-data-dir` flag.
+    ///
+    /// A capture must not run against the operator's own state, for two
+    /// separate reasons. It would **write** it: window geometry alone
+    /// means running a capture moves the operator's window next time
+    /// they open the app. And it would **read** it: every user-scope
+    /// setting is an input to what gets photographed, so two runs on two
+    /// machines are two different pictures, and the theme — the one the
+    /// capture is *for* — is a user-scope setting, so a capture that
+    /// does not own the profile cannot choose it.
+    pub app_data_dir: PathBuf,
+    /// Theme to photograph in — one of the frontend's `ThemeName`
+    /// spellings (`dark`, `light`, `lighthk`). Seeded into
+    /// [`Self::app_data_dir`]'s settings before the app is launched,
+    /// because that is where the app reads it from; there is no flag for
+    /// it and there should not be one, since the shipping app's theme is
+    /// a user setting and the harness's job is to measure the shipping
+    /// app.
+    pub theme: String,
+}
+
+/// The settings document the app reads its user scope from, seeded into
+/// a capture's own app-data directory.
+const SETTINGS_FILE: &str = "settings.json";
+
+/// The user-scope settings a capture run seeds before launching, as the
+/// JSON the app will read.
+///
+/// Only the keys the capture needs to control are written. The file is
+/// otherwise absent, so every other setting comes up at its default —
+/// which is the point: a capture is a picture of the shipping defaults
+/// plus the one thing it is varying.
+#[must_use]
+pub fn seed_settings_json(theme: &str) -> String {
+    format!("{{\n  \"theme\": {}\n}}\n", json!(theme))
+}
+
+/// Write [`seed_settings_json`] into `dir`, creating it.
+///
+/// # Errors
+/// Returns a message if the directory or the file can't be written.
+pub fn seed_app_data(dir: &Path, theme: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    let path = dir.join(SETTINGS_FILE);
+    std::fs::write(&path, seed_settings_json(theme))
+        .map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
 /// Result of one capture run.
@@ -364,10 +418,25 @@ fn first_duplicate(shots: &[(&str, Vec<u8>)]) -> Option<String> {
     None
 }
 
+/// The command line a capture launches the app with. Split out from
+/// [`spawn_gui`] so the isolation is testable without running a GUI.
+#[must_use]
+pub fn gui_args(cfg: &CaptureConfig) -> Vec<String> {
+    vec![
+        "--project".to_string(),
+        cfg.project.to_string_lossy().into_owned(),
+        "--app-data-dir".to_string(),
+        cfg.app_data_dir.to_string_lossy().into_owned(),
+    ]
+}
+
 fn spawn_gui(cfg: &CaptureConfig) -> Result<Child, String> {
+    // Seed the profile *before* the launch: the theme is a user-scope
+    // setting read at boot, so writing it afterwards would photograph
+    // the previous run's theme.
+    seed_app_data(&cfg.app_data_dir, &cfg.theme)?;
     Command::new(&cfg.gui_binary)
-        .arg("--project")
-        .arg(&cfg.project)
+        .args(gui_args(cfg))
         // `WebView2` reads this env var natively; the app is untouched.
         .env(
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
@@ -965,5 +1034,63 @@ mod tests {
         // The mask must not introduce a color into a color comparison.
         assert!(!MASK_CSS.contains('#'), "mask must not set a color");
         assert!(MASK_CSS.contains("visibility: hidden"));
+    }
+
+    fn cfg(dir: &Path, theme: &str) -> CaptureConfig {
+        CaptureConfig {
+            gui_binary: PathBuf::from("cannet-gui"),
+            project: PathBuf::from("/p/x.cannet_prj"),
+            out_dir: dir.join("out"),
+            prefix: String::new(),
+            port: 9333,
+            width: 1600,
+            height: 1000,
+            boot_timeout: Duration::from_secs(90),
+            app_data_dir: dir.join("profile"),
+            theme: theme.to_string(),
+        }
+    }
+
+    /// A capture must not run against the operator's own user scope.
+    /// Writing it would move their window next time they open the app;
+    /// reading it would make the picture depend on their settings, and
+    /// the theme a capture is *for* is one of those settings.
+    #[test]
+    fn a_capture_launches_against_its_own_app_data_directory() {
+        let dir = std::env::temp_dir().join("cannet-shot-args");
+        let args = gui_args(&cfg(&dir, "dark"));
+        let i = args
+            .iter()
+            .position(|a| a == "--app-data-dir")
+            .expect("the launch must redirect the user scope");
+        assert_eq!(
+            args.get(i + 1).map(String::as_str),
+            dir.join("profile").to_str()
+        );
+        assert!(args.contains(&"--project".to_string()));
+    }
+
+    /// The theme is read from the profile's settings at boot, so it is
+    /// seeded there rather than passed as a flag — the shipping app has
+    /// no theme flag, and the harness photographs the shipping app.
+    #[test]
+    fn the_capture_theme_is_seeded_inside_the_isolated_profile() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let c = cfg(dir.path(), "light");
+        seed_app_data(&c.app_data_dir, &c.theme).unwrap();
+        let written =
+            std::fs::read_to_string(c.app_data_dir.join(SETTINGS_FILE)).expect("settings written");
+        let v: Value = serde_json::from_str(&written).expect("valid JSON");
+        assert_eq!(v.get("theme").and_then(Value::as_str), Some("light"));
+        // Only the key the capture is varying: everything else must come
+        // up at the shipping default, or the picture is of this
+        // machine rather than of the app.
+        assert_eq!(v.as_object().map(serde_json::Map::len), Some(1));
+    }
+
+    #[test]
+    fn a_seeded_theme_is_json_escaped_rather_than_pasted() {
+        let v: Value = serde_json::from_str(&seed_settings_json("da\"rk")).expect("valid JSON");
+        assert_eq!(v.get("theme").and_then(Value::as_str), Some("da\"rk"));
     }
 }

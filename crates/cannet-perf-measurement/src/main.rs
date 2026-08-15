@@ -135,6 +135,16 @@ struct ScreenshotArgs {
     /// Seconds to wait for the splash overlay to drop.
     #[arg(long, default_value_t = 90)]
     boot_timeout_secs: u64,
+    /// Directory this run's whole user scope is redirected into, so the
+    /// capture neither reads nor writes the operator's own settings,
+    /// recents, trust store or window geometry. Absent ⇒ a
+    /// `cannet-screenshot-<theme>` directory beside `--out-dir`.
+    #[arg(long)]
+    app_data_dir: Option<PathBuf>,
+    /// Theme to photograph in — `dark`, `light` or `lighthk`. Seeded
+    /// into the isolated profile, which is where the app reads it from.
+    #[arg(long, default_value = "dark")]
+    theme: String,
 }
 
 #[derive(Args)]
@@ -642,6 +652,13 @@ fn run_validate(dir: &std::path::Path) -> Result<ExitCode, String> {
 }
 
 fn run_screenshot(args: ScreenshotArgs) -> Result<ExitCode, String> {
+    // Defaulted beside the output rather than under the operator's
+    // config directory: a capture's profile is an artifact of the run,
+    // and it must be somewhere a wipe is obviously safe.
+    let app_data_dir = args.app_data_dir.unwrap_or_else(|| {
+        args.out_dir
+            .join(format!("cannet-screenshot-{}", args.theme))
+    });
     let cfg = screenshot::CaptureConfig {
         gui_binary: args.gui_binary,
         project: args.project,
@@ -651,6 +668,8 @@ fn run_screenshot(args: ScreenshotArgs) -> Result<ExitCode, String> {
         width: args.width,
         height: args.height,
         boot_timeout: std::time::Duration::from_secs(args.boot_timeout_secs),
+        app_data_dir,
+        theme: args.theme,
     };
     let out = screenshot::run_capture(&cfg)?;
     println!("{} captures written", out.files.len());

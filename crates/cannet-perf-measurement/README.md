@@ -348,8 +348,12 @@ scenario, and writes one PNG per step:
 cargo run -p cannet-perf-measurement -- screenshot \
   --gui-binary <ABS>/target/release/cannet-gui.exe \
   --project    <ABS>/examples/ev-demo/ev-demo.cannet_prj \
-  --out-dir    <ABS>/shots/before --prefix before-
+  --out-dir    <ABS>/shots/before --prefix before- --theme dark
 ```
+
+The run gets its own app-data directory (see *Determinism* below), so it
+neither reads nor writes the operator's settings; `--theme` picks the
+theme it is seeded with.
 
 `screenshot-diff` compares two capture sets (or two single PNGs), prints
 the differing-pixel count/percentage per pair, writes a magenta-marked
@@ -381,12 +385,23 @@ throughout.
 ### Determinism, and its limits
 
 A pixel diff is only meaningful if both captures were of the same
-picture, and the app renders live data. Four levers make the scenario
+picture, and the app renders live data. Five levers make the scenario
 stand still:
 
-- **Idle** — launched with `--project` only. Without `--connect-on-start`
-  nothing connects, so no frames arrive and every rate, counter and
-  follow-live window is at rest.
+- **Idle** — launched without `--connect-on-start`, so nothing connects,
+  no frames arrive, and every rate, counter and follow-live window is at
+  rest.
+- **An isolated profile** — the child is launched with `--app-data-dir`
+  pointed at a directory the run owns (defaulting to
+  `<out-dir>/cannet-screenshot-<theme>`), so the whole user scope — trust
+  store, recents, settings, window geometry — is the run's own. Without
+  it a capture both *writes* the operator's state (running one would move
+  their window next time they opened the app) and *reads* it, which makes
+  the picture a function of whoever ran it. The `--theme` to photograph
+  in is seeded into that profile's `settings.json` before launch, because
+  the theme is a user-scope setting the app reads at boot and the
+  shipping app has no flag for it. Capture each theme into its own
+  `--out-dir` / `--prefix`.
 - **Fixed viewport** — CDP `Emulation.setDeviceMetricsOverride` pins the
   layout to `--width` × `--height` at device-scale 1, so the OS window
   geometry restored from the user's window state cannot move a pixel.
