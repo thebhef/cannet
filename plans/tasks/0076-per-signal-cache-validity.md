@@ -205,3 +205,83 @@ File-backed series fingerprint against their source instead:
 | Loaded DBC set (any of it) | no | same |
 | Source file size / mtime | no — the samples were read once at import and the file is never re-read; requiring a stat would invalidate on a file that has merely moved, or vanished | same |
 | `value_table`, unit, group name | no — carried in the manifest row and served from there | same |
+
+### 2026-08-15 — phase 1: the fingerprint layer lands
+
+Branch `task76-p1-signal-fingerprints`, off `task74-trust-flow`.
+
+| Commit | What landed |
+| --- | --- |
+| `1c08dd8` | the decode-input audit above |
+| `8dfd474` | `cannet_dbc::Database::signal_decode_specs` — the effective decode spec as a public type |
+| `bf73bad` | `signal_fingerprint.rs`, the fingerprint per `PersistedSignal`, and the audit-pinning suite |
+
+Tests: `cannet-gui` 670 → **684** (12 fingerprint tests, 2 persistence
+tests), `cannet-dbc` 108 → **109**, frontend unchanged at 2215 in 164
+files (nothing under `apps/gui/src` was touched). `cargo clippy
+--all-targets` clean on both touched crates, `cargo fmt --check` clean.
+
+#### What the fingerprint is
+
+`Database::signal_decode_specs(id, name)` answers "what would this
+database decode this signal with?" — every `SG_` entry that could answer
+to the name in that message, in declaration order, carrying exactly the
+fields `decode_signal` reads. `signal_fingerprint::dbc_encoding` hashes
+the series' key and then that signal's **candidate chain**: each loaded
+database that contributes at least one spec, in load order, with its bus
+scoping. `file_source` hashes a file-backed series' source path, group
+index and channel name.
+
+Design choices worth carrying into phase 2:
+
+- **Chain, not winner.** The recorded design risk asked for the *winning*
+  effective spec. There is no single winner to take: resolution is per
+  frame (see the audit above), so the faithful reading of "the winning
+  spec" is "everything that could win", ordered. It has the property the
+  risk was after — a priority change that cannot change any frame's
+  decode moves nothing, because a database that defines nothing about the
+  signal never enters the chain.
+- **Hash and serialization.** FNV-1a 64 over an explicit,
+  length-delimited, tagged byte encoding, matching the two fingerprints
+  already in this area. Deliberately not `std::hash::Hasher` (SipHash is
+  keyed per process — a fingerprint has to survive a relaunch), no
+  `HashMap` iteration anywhere in it, integers little-endian and `f64` as
+  `to_bits()` so it is identical across platforms. The reasoning is in
+  the module's rustdoc.
+- **Not judged yet.** `persist` writes an `encoding` per manifest row and
+  `restore` reads it back through serde; the whole-set `PyramidValidity`
+  still decides everything. `#[serde(default)]` means a manifest written
+  before this phase restores exactly as it did.
+
+## Blockers / side effects
+
+- **The pyramid decode path does not honour DBC bus scoping** (found
+  during the audit, pre-existing). `sampling.rs:252` hands *every* loaded
+  database to the signal cache whatever `LoadedDbc::buses` says, and
+  `scan_chunk` filters only the frames, by the series' own bus. Every
+  other decode surface does filter the databases —
+  `dbc_commands.rs:218`, `app_state.rs:440`, `transmit_commands.rs:79`,
+  `verification.rs:137`, all through `filter::dbc_applies`. So a series
+  scoped to bus A can today be decoded by a DBC scoped only to bus B.
+  Fixing it changes decoded values, which phase 1 must not do, so it is
+  recorded rather than done. The fingerprint is written to be correct
+  either way: each contributing database's scoping joins its
+  contribution, so a re-scope invalidates conservatively now and stays
+  correct if the path is fixed.
+- **`SignalCacheStore::persist` gained a parameter** — the loaded set, in
+  load order, as `&[DbcScope]`. One production call site
+  (`emitters::persist_pyramids`), which now takes the DBC lock before the
+  signal-cache lock; that is the order `sample_signals` already
+  establishes, so no new edge in the lock order.
+- **The existing `signal_cache` persist fixtures pass an empty DBC set**,
+  so their rows now carry the empty-chain fingerprint. Harmless while
+  nothing judges it; **phase 2 must give those fixtures a real set** or
+  their restores will start failing for the right reason.
+- `f64` fields are fingerprinted bit-wise, so a `0.0` → `-0.0` edit moves
+  a fingerprint although it changes no decoded value. Conservative in the
+  safe direction; documented on the module.
+- README not touched: no shipped behaviour, dependency, prerequisite or
+  run command changed, and its source-tree map does not enumerate host
+  internals at this granularity (`signal_cache.rs` itself is absent from
+  it). ADR 0047 is deliberately left alone — it is amended in phase 2,
+  with the behaviour change.
