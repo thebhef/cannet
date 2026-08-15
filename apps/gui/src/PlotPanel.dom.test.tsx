@@ -1823,6 +1823,59 @@ describe("PlotPanel", () => {
     });
   });
 
+  it("paints each partial answer on a stopped trace too, with no user interaction", async () => {
+    // The boot-restore case. A restored capture is *stopped*
+    // (`restoredTrace`), so the self-paced resample loop — which only
+    // runs while the trace is running — cannot be what re-requests.
+    // ADR 0049 nonetheless says a partial answer is continued by the
+    // view until the host reports it caught up; if nothing does that
+    // here, the prefix the cold pyramid rebuild served sits on screen
+    // until the user zooms or hits Fit Data.
+    //
+    // `of` is set well above the handful of resamples mount alone
+    // triggers, so reaching it can only be the catch-up re-request.
+    await withSizedCanvas(async () => {
+      mockSampleRebuild.on = true;
+      mockSampleRebuild.of = 30;
+      const registry = makeRegistry({
+        id: "el-restored",
+        trace: { start: 0, end: 60, isPaused: false },
+      });
+      renderPanel({ params: { elementId: "el-restored" }, registry });
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(30), {
+        timeout: 5000,
+      });
+    });
+  });
+
+  it("stops re-sampling a stopped trace once the host reports it caught up", async () => {
+    // The other half: the catch-up re-request must terminate. A stopped
+    // trace has no window growth to justify a further fetch, so once the
+    // host's answer is complete the memo takes over and the panel goes
+    // quiet — otherwise this is a permanent host round-trip loop over a
+    // capture that cannot change.
+    await withSizedCanvas(async () => {
+      mockSampleRebuild.on = true;
+      mockSampleRebuild.of = 3;
+      const registry = makeRegistry({
+        id: "el-settled",
+        trace: { start: 0, end: 60, isPaused: false },
+      });
+      renderPanel({ params: { elementId: "el-settled" }, registry });
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3), {
+        timeout: 5000,
+      });
+      // Past the post-mount uPlot rebuild (250 ms) so its own resample
+      // is inside the quiet window rather than after it.
+      await new Promise((r) => setTimeout(r, 400));
+      const settled = sampleCalls();
+      await new Promise((r) => setTimeout(r, 600));
+      expect(sampleCalls()).toBe(settled);
+    });
+  });
+
   it("an area with no signals never says it is building", async () => {
     // "Nothing to draw yet" must stay distinguishable from "nothing to
     // draw": an empty area is the latter and arms nothing, however long

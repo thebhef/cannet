@@ -161,3 +161,62 @@ task 72 §3–4.)
   a discard action that drops the stale session instead; both
   tested (the discard leaves a clean empty session, not a
   half-deleted scratch).
+
+## Status log
+
+### 2026-08-14 — item 1 leg (b): plots don't refresh during a rebuild
+
+**Observation.** Owner, on a boot restore that cold-rebuilt the
+pyramids: "zooming in and out seems to be necessary to keep things
+actually updating. spamming 'fit data' causes updates. Did not observe
+this unresponsiveness/lagginess during BLF streaming."
+
+**Hypothesis.** The plot's re-request of a partial (ADR 0049) serve is
+carried by the per-area self-paced resample loop, and that loop runs
+only while the trace is _running_. A restored capture is stopped
+(`trace.ts::restoredTrace` → `traceStatus` = `"stopped"` →
+`PlotPanel.tsx:504 const live = trace.status === "running"` = `false`
+→ `PlotArea.tsx` loop effect returns early), so on the restore path
+nothing continues the prefixes a rebuilding cache serves. BLF
+streaming is unaffected because the trace is running throughout.
+
+**Experiment.** Two new component tests in `PlotPanel.dom.test.tsx`,
+against the existing `mockSampleRebuild` fake host (one more point per
+serve, `complete = false` until the last), with the panel's element
+seeded as a **stopped** trace (`{start: 0, end: 60}`) — the shape
+`restoredTrace` produces. No user interaction is performed. Falsifiable:
+if anything continued the catch-up, the drawn point count would reach
+the host's full answer.
+
+- `paints each partial answer on a stopped trace too, with no user
+  interaction` — 30 prefixes on offer.
+- `stops re-sampling a stopped trace once the host reports it caught
+  up` — 3 prefixes, then the round-trip count must go quiet.
+
+**Data.** Before the fix: expected 30 drawn points, **received 2**.
+The second test: expected 3, **received 2**. A stopped panel makes
+exactly two real serves at mount (the construction effect's one-shot
+plus its rAF follow-up) and then stops forever; the remaining 28
+prefixes are never requested. The running-trace sibling test (`paints
+each partial answer as the rebuild advances`) passes throughout, which
+is the BLF-streaming half of the owner's report reproduced as the
+control.
+
+**Conclusion (attributed).** The defect is an ADR-0049 violation on the
+stopped-trace path: the ADR's "the view re-requests; it does not poll"
+is implemented only by a loop gated on `live`. A restored capture is
+stopped by construction, so a cold pyramid rebuild under one leaves the
+first prefix on screen until a gesture bumps `xEpoch` (pan/zoom, Fit
+Data, goto-event) — exactly the owner's workaround.
+
+This also explains observation (c), the transient hlines: a prefix
+holds one sample in-window for a series the catch-up has not reached,
+and the one-sample-hline rule draws it flat. They are the stall made
+visible, not a separate defect — matching the owner's ruling that they
+are accepted and need no work here.
+
+**Fix.** `PlotArea.tsx` latches the host's completeness token into a
+`catchingUp` state and the resample loop runs on `live || catchingUp`.
+The latch clears on the token, so a frozen capture with nothing left to
+decode still stops dead — pinned by the second test. Landed with the
+tests. Frontend suite: 158 files / 2092 tests green; `pnpm build` clean.

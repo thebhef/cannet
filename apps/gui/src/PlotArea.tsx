@@ -971,6 +971,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   const seriesRef = useRef<Map<string, Series>>(new Map());
   const presentRef = useRef<Map<string, number | null>>(new Map());
   const resampleBusyRef = useRef(false);
+  /** True while the host's last answer for this area was a *prefix* —
+   * the serve ran out of its catch-up budget (ADR 0049). It runs the
+   * re-sample loop below alongside `live`, because "the view
+   * re-requests" is not something a running trace's loop can be relied
+   * on to do: a restored capture is stopped, and a cold pyramid rebuild
+   * under it would otherwise leave the first prefix on screen until the
+   * user zoomed or hit Fit Data. Cleared by the completeness token, so
+   * the loop stops the moment the host says it has caught up. */
+  const [catchingUp, setCatchingUp] = useState(false);
   // The plot's time-addressed windowed source (ADR 0025): it owns the
   // fetch + cache lifecycle (descriptor-memo, re-anchor, base/extent),
   // leaving `resample` only the renderer-shaping. Methods are stable
@@ -1339,6 +1348,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     try {
       const lr = liveRef.current;
       if (signals.length === 0) {
+        setCatchingUp(false); // nothing to catch up on
         resetRange();
         withSuppressed(() => u.setData([[]]));
         seriesRef.current = new Map();
@@ -1456,6 +1466,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // belongs to the old instance; the rebuild kicks a fresh one.
       if (uplotRef.current !== u) return;
       if (outcome.kind === "pending") return; // nothing real yet — retry next tick
+      // ADR 0049: the completeness token is the only evidence of
+      // completeness, and a partial answer is continued by the *view*.
+      // Latch it so the re-sample loop runs for a catch-up as well as
+      // for a live capture — a restored (stopped) trace has no other
+      // tick, and a cold pyramid rebuild under one serves prefixes for
+      // as long as it runs.
+      setCatchingUp(outcome.kind === "sampled" && !outcome.snapshot.complete);
       // The wait ends at the first *paint* or at the host's "that is all
       // there is", whichever comes first. A serve is bounded in time, so
       // a cold one answers with the prefix it has decoded: points to
@@ -2629,7 +2646,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     floatRule.mantissaDecimals,
   ]);
 
-  // While the trace is running, re-sample on a self-paced loop at the
+  // While the trace is running — or while the host is still catching a
+  // cold cache up (ADR 0049) — re-sample on a self-paced loop at the
   // configured rate (each tick scheduled after the previous one
   // finishes — decoupled from React re-renders, which lurch / stall at
   // high capture rates, and never piling up). Pause/Stop ends the loop,
@@ -2638,6 +2656,14 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // re-anchors (Clear / Start gives a new `winStart`) or the rate
   // changes.
   //
+  // `catchingUp` is what makes ADR 0049's "the view re-requests" true on
+  // a *stopped* trace: a restored capture is stopped by construction
+  // (`restoredTrace`), so a pyramid rebuild triggered by opening it had
+  // no loop to continue its prefixes — the plot froze on the first one
+  // until a zoom or Fit Data forced a fetch. The latch clears on the
+  // host's completeness token, so the loop still stops dead on a frozen
+  // capture that has nothing left to decode.
+  //
   // The interval is a floor, not the cadence: a tick that did expensive
   // synchronous work is followed by proportional idle time, so however
   // many signals the area holds it can never occupy more than a bounded
@@ -2645,7 +2671,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // series the tick is far cheaper than the interval and this is a no-op.
   useEffect(() => {
     void resampleRef.current();
-    if (!live) {
+    if (!live && !catchingUp) {
       rateEmaRef.current = 0;
       return;
     }
@@ -2669,7 +2695,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       rateEmaRef.current = 0;
       lastResampleTsRef.current = 0;
     };
-  }, [live, winStart, fetchIntervalMs]);
+  }, [live, catchingUp, winStart, fetchIntervalMs]);
 
   // Re-sample on a window change the loop above cannot see: the first
   // non-empty window after mount (`winEnd` is still `0` on the first
