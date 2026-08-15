@@ -1293,6 +1293,184 @@ document; their location travels only in phase prompts.
       `cargo clippy -p cannet-gui --all-targets` clean. Frontend: 158
       test files / 2090 tests passed; build clean.
 
+- **2026-08-14, phase 10 (`task70-p10-closeout`, branched off
+  `task70-p9-servers-panel`):** exit-criteria walk, docs pass, final
+  perf gate. No behavior changed in this phase — every commit is
+  documentation or a measurement.
+  - `5839e4a` docs(readme): rewrap the trust-prompt paragraph — a
+    96-column line phase 9's edit left mid-paragraph.
+  - `a21489c` docs(task70): the exit-criteria walk — see
+    § "Exit-criteria walk (2026-08-14, phase 10)" below the criteria
+    list. Fourteen MET, three MET-WITH-DEVIATION, nothing waived.
+  - `e9c4367` docs: four doc-vs-code mismatches the nine phases left
+    behind, each verified against the code before being touched.
+    - `cannet-mdf`'s `scan` module doc still said import would "step
+      over" the per-message DBC-decoded groups; phase 7 made them
+      importable, and the struct field doc eight lines below already
+      said so.
+    - ADR 0026's one-sample-hline amendment **and** `mergeSeries`'s own
+      JSDoc both closed with "no series is drawn past its data". The
+      one-sample fill is unconditional and never consults `span`, so on
+      a shared axis such a series is held across its neighbours'
+      columns — after _and_ before its only sample. That is the standing
+      owner decision recorded below, so the docs were what was wrong,
+      not the code.
+    - README's two `debug replay`/`debug vbus` flag notes sent the
+      reader to § Running the production server for `--insecure`, which
+      phase 8 removed from that section.
+    - `MdfScanResult::signal_group_count`'s rustdoc described an
+      unconditional import; signals are a checkbox now.
+  - `76173da` perf: the three closeout gate reports.
+
+  **Verification sweep at `e9c4367`** (every suite re-run at the tip,
+  not carried forward from a phase log):
+
+  | suite | result |
+  | --- | --- |
+  | `pnpm --dir apps/gui test` | **158 test files / 2090 tests passed** |
+  | `pnpm --dir apps/gui build` | clean |
+  | `cargo test -p cannet-gui` | **640 passed / 6 ignored** |
+  | `cargo test -p cannet-server` | **118 passed / 2 ignored** |
+  | `cargo test -p cannet-client` | **68 passed** |
+  | `cargo test -p cannet-mdf` | **40 passed** |
+  | `cargo clippy --workspace --all-targets` | clean — 12 crates, **0 warnings** |
+
+  - **Perf gate (ADR 0031, release build at `e9c4367`): three runs, and
+    the first one FAILED. No baseline promoted; the failure stands as a
+    blocker, not an explanation.**
+    - _Run 1_ (`docs/performance-measurements/frontend/2026-08-14-e9c4367-task70-p10-run1.json`)
+      — **check FAILED**: `rx_gap_short_frac_worst` **0.120** against a
+      limit of 0.041 (baseline 0.006). Every other gated metric passed.
+      rx 1615.5 fps, tx 1623.3 fps, 60 samples over 59.0 s,
+      `ids_measured` 173. Also elevated relative to the whole series
+      without breaching: `rx_gap_p95_ratio_worst` 2.397 (2.893),
+      `tx_late_ms_max` 160.163 (176.894), `tx_late_ms_mean` 8.663
+      (18.000). longtask_ms_per_s_mean 0.000, lag_ms_max 3.900,
+      jank_fraction 0.000, jsheap_mb_peak 91.100,
+      jsheap_mb_drift_per_min 9.833, renderer_mb_peak 362.105,
+      renderer_mb_drift_per_min 88.577, host_mb_peak 58.129,
+      tree_mb_peak 791.176, tree_mb_drift_per_min 116.020,
+      flush_ms_mean 3.158, flush_ms_max 8.785, rx/tx_fps_retention
+      0.998 / 1.003. Host tiers: tracebuffer 25000.101, grpc 2871.3,
+      hardware-peak 999.8, all ok.
+    - _Run 2_ (`...-run2.json`) — **passed, 33 / 33**.
+      `rx_gap_short_frac_worst` **0.002**, the lowest value in the whole
+      task's gate series. rx 1602.0 fps, tx 1607.6 fps.
+      rx_gap_p95_ratio_worst 1.165, tx_late_ms_max 10.603,
+      tx_late_ms_mean 4.312, lag_ms_max 3.900, jsheap_mb_peak 84.600,
+      jsheap_mb_drift_per_min 7.249, renderer_mb_peak 355.980,
+      renderer_mb_drift_per_min 88.658, host_mb_peak 58.477,
+      tree_mb_peak 785.602, tree_mb_drift_per_min 115.909,
+      flush_ms_mean 3.280, flush_ms_max 8.899. Tiers 25000.102 /
+      2860.6 / 999.6.
+    - _Run 3_ (`...-run3.json`), added **because run 1 failed** —
+      **passed, 33 / 33**, `rx_gap_short_frac_worst` **0.002** again.
+      rx 1608.6 fps, tx 1610.2 fps. rx_gap_p95_ratio_worst 1.183,
+      tx_late_ms_max 18.966, tx_late_ms_mean 4.491, lag_ms_max 8.200,
+      jsheap_mb_peak 90.400, jsheap_mb_drift_per_min 11.933,
+      renderer_mb_peak 375.082, renderer_mb_drift_per_min 99.376,
+      host_mb_peak 58.531, tree_mb_peak 806.645, tree_mb_drift_per_min
+      129.048, flush_ms_mean 3.424, flush_ms_max 10.223. Tiers
+      25000.105 / 2868.5 / 999.9.
+    - _Sanity._ All three carry 60 samples over 59.0 s with
+      `ids_measured` 173 and rx in the 1602–1616 range (not 0, so each
+      run held the dongles itself); no cannet instance was running
+      before any of them and the process tree was killed after each.
+      `cannet.log` over the three capture windows carries **no error** —
+      only the two benign warnings every run on this machine emits
+      (`vxlapi64` not installed, and the startup clock-offset notice at
+      +174 / +179 / +191 ms).
+    - _What is and is not known about run 1._ Two variables separate it
+      from the two clean runs, and **neither was isolated**: it was the
+      first capture after a fresh link, so the 22 MB binary and its
+      DLLs were cold in the page cache; and two watcher shells were
+      polling `tasklist` every 5–10 s across its whole capture window,
+      which runs ~15 process-table walks through the measured machine.
+      Runs 2 and 3 had neither, and both landed at the series minimum
+      for the metric that failed. That is consistent with perturbation
+      but does not demonstrate it — a falsifying experiment would hold
+      the page cache warm and reintroduce the polling alone, which was
+      not run. **Recorded as a blocker below.**
+    - _Five-gate worst-to-worst._ Worst run of each gate in this task:
+
+      | metric (limit) | p5 | p6 | p7 | p10 | trend |
+      | --- | --- | --- | --- | --- | --- |
+      | `renderer_mb_drift_per_min` (106.605) | 92.6 | 97.6 | 97.6 | **99.4** | **rising, now 93 % of limit** |
+      | `tree_mb_drift_per_min` (165.233) | 120.9 | 127.1 | 126.2 | **129.0** | rising, 78 % of limit |
+      | `jsheap_mb_drift_per_min` (16.386) | 8.7 | 13.3 | 12.9 | 11.9 | noisy, no trend |
+      | `rx_gap_short_frac_worst` (0.041) | 0.003 | 0.017 | 0.004 | **0.120** | run 1 only; runs 2–3 at 0.002 |
+      | `longtask_ms_per_s_mean` (12.600) | 0.000 | 0.000 | 0.000 | 0.000 | flat at zero |
+      | `jank_fraction` (0.083) | 0.000 | 0.000 | 0.000 | 0.000 | flat at zero |
+      | `flush_ms_max` (55.352) | 13.5 | 17.6 | 14.7 | 10.2 | flat / improving |
+
+      **`renderer_mb_drift_per_min` is the metric to watch.** It has
+      risen at every gate in this task and now sits 7.2 units under its
+      limit; two more gates at this slope put it through. Nothing in
+      these phases was attributed to it — phases 5, 6 and 7 each
+      recorded the same shape and each concluded it predates the task —
+      but four consecutive rises is a trend, and it will trip before
+      anything else on this list.
+
+## Consolidated closeout (2026-08-14)
+
+**Branch chain**, each phase branched off the previous one, linear off
+`batch-docs-closeout` (`c8de8a3`), never merged to main:
+
+| phase | branch | tip |
+| --- | --- | --- |
+| — | `batch-docs-closeout` | `c8de8a3` |
+| 1 | `task70-p1-quick-ui` | `7aede3d` |
+| 2 | `task70-p2-state-persistence` | `a401542` |
+| 3 | `task70-p3-blf-dialog` | `15b2534` |
+| 4 | `task70-p4-plot-dropdowns` | `e40bcca` |
+| 5 | `task70-p5-filebacked-signals` | `e66befa` |
+| 6 | `task70-p6-enum-leading-edge` | `a7875c1` |
+| 7 | `task70-p7-mdf-ingestion` | `d54ebbb` |
+| 8 | `task70-p8-secure-defaults` | `3f38da9` |
+| 9 | `task70-p9-servers-panel` | `e2f4ad8` |
+| 10 | `task70-p10-closeout` | this phase's tip |
+
+**Test counts at the tip:** frontend 158 files / 2090 tests; host
+`cannet-gui` 640 / 6 ignored; `cannet-server` 118 / 2 ignored;
+`cannet-client` 68; `cannet-mdf` 40. Workspace clippy clean. The task
+added 2090 − 2042 = **48 frontend tests** and, on the host, `cannet-gui`
+630 → 640 plus the new `cannet-mdf` and `cannet-server` coverage.
+
+### (a) Owner decisions needed
+
+| # | Decision | Where it came from |
+| --- | --- | --- |
+| 1 | **Perf gate: run 1 failed.** `rx_gap_short_frac_worst` 0.120 vs 0.041, with two runs either side at 0.002. Accept the two clean runs as the gate, or require an isolating re-run (warm cache, polling reintroduced alone) before the batch merges? | phase 10 |
+| 2 | **`renderer_mb_drift_per_min` has risen at all four gates** and is at 93 % of its limit. Open a task for it, re-baseline, or keep watching? | phase 10 trend table |
+| 3 | **Does the one-sample hline apply to a lane drawn _beside_ live series**, where it necessarily back-dates a held state 40 units before its only sample? Item 11 (a)'s ruling is satisfied as implemented; narrowing it would be diverging from a ruling. | phases 5 / 6 |
+| 4 | **A lane's drawn extent is its axis's, not its own** — a lane whose message stopped is drawn 90 units past its newest sample, and (same decision) **enum lanes cannot show where their samples are**. Options recorded: (a) cut at the lane's last sample and accept the gap; (b) draw the held stretch differently; (c) cut after a multiple of the message's observed period. | phase 6, item 3 obs. 2 |
+| 5 | **Item 3 observation 1 needs an owner check before it is a defect at all:** what is the `GenMsgCycleTime` of the balancing-state messages? A 6.7 s period is two thirds of the shipped 10 s follow window, which reproduces the reported magnitude from a correctly behaving pipeline. If they are slow, the open question is a product one — should a lane show its own sample cadence? | phase 6, item 3 obs. 1 |
+| 6 | **Should a signal-only MF4 be importable?** Still rejected with `MdfSourceError::SignalFile`, so the Signals checkbox never gets a chance on a frameless file. Nothing in the live pass asked for it. | phase 7 |
+| 7 | **Should a per-message decoded signal carry its value labels?** 39 of the sampled file's 139 decoded channels are enumerations whose text table is in the MDF; the code lands, the label is dropped at the seam. Two ways out recorded. | phase 7 |
+| 8 | **Item 12's scope:** should `debug replay`/`debug vbus` also auto-enable TLS+token on a routable bind, or does ADR 0041's "production endpoint" scope stand? Implemented as the narrow reading. | phase 8 |
+| 9 | **The pending-prompt drop's scope:** should a row stop carrying its pending question too, accepting that the identity-changed badge and the panel's re-raise go with it? Implemented as "a question never holds a row". | phase 9 |
+| 10 | **Trusting from the Servers panel raises two identical dialogs** (pre-existing). Either the panel's dialog defers to the app-wide one and re-raising becomes "un-dismiss", or the app-wide one skips questions a panel is showing. Not verified against a running GUI — the phases forbid launching it. | phase 9 |
+
+### (b) FYI — recorded, no decision asked
+
+| # | Item | Where |
+| --- | --- | --- |
+| 1 | `close_project`'s re-root is exercised only through the frontend's mocked host; a real end-to-end test needs a command-level Tauri harness, which is its own work. | phase 2 |
+| 2 | New project no longer stomps the previous project's layout snapshot — a behavior change nobody asked about, falling out of item 8's ordering. | phase 2 |
+| 3 | The BLF map modal's markers disclosure had item 4's identical CSS defect. **Closed** in phase 3 (`b7f3d65`). | phases 1 / 3 |
+| 4 | A blocked trace-open is silent by design: with the guard in place, invoking Import trace during a census does nothing, and the busy launcher is what says why. | phase 3 |
+| 5 | The whole-capture follow window is expensive at 90 minutes (`longtask_ms_per_s` mean 95.4, `jank_fraction` 0.439 at a 5401 s window) — outside the gated scenario, unattributed, and superlinear in window length somewhere. | phase 6 rig |
+| 6 | An embedded database is a session load, not a project file: it decodes and shows up, but is not persisted with the project, so reopening drops it until the capture is imported again. | phase 7 |
+| 7 | A bus bound to an unaccepted server now reads "unknown server" rather than "not trusted" — wording nobody asked to change, both notices ending in the same place. | phase 9 |
+| 8 | Exit criterion 4's stated yardstick does not hold on its own arithmetic (126.2 ms axis-to-axis vs a ~91 ms serve period); the criterion's substance does. Recorded in the exit-criteria walk. | phase 10 |
+| 9 | Source still carries phase-number and `plans/` references that the working agreement forbids for the same reason task numbers are. All pre-date `batch-docs-closeout`; outside item 16's task-number scope, so left alone. | phase 10 |
+
+Owner actions already standing from the batch, unchanged by this task:
+merge to main (fast-forward), draft pre-release dispatch, palette PATH
+re-run, and 0064's next-release verification checklist (`.pkg` exec
+bits, the `.deb` `$auto` `Depends:` line, the NSIS CI-only legs, the
+`.app`'s bundled `cannet-server` being `+x`).
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
