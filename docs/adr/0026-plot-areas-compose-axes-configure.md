@@ -146,10 +146,42 @@ background color, 20 px horizontal period at exactly 50 % duty**;
 because a 45° stroke's horizontal footprint is `lineWidth·√2`, even
 bands need `lineWidth = period / (2·√2)` and the naive `period / 2`
 paints ~71 % of each period. A tile only partly stale stripes only the
-stale part. A label over stripes gets a background-color halo, stacked
-passes toward opacity, about twice as many on a light theme as on a
-dark one — its stripes carry far more contrast and swallow a single
-pass.
+stale part. A label over stripes gets a halo, stacked passes toward
+opacity, about twice as many on a light theme as on a dark one — its
+stripes carry far more contrast and swallow a single pass.
+
+**A tile label's ink is measured, not assumed.** The label used to be
+drawn in the tile's accent — the colormap tint, or the series color
+where no colormap claims the value — and the tile's fill is a *tint of
+that same accent*. On a dark theme the two separate, because the accent
+is light and the fill darkens it; on a light theme they collapse, and
+the label is drawn a hair off the plate it sits on. So the ink is
+chosen per tile by WCAG contrast against the ground the tile actually
+paints (its fill composited over the app background): the accent
+wherever it clears **3:1**, and otherwise the extreme (black or white)
+**opposite the theme's background**.
+
+Three things about that rule are deliberate. The threshold is 3 rather
+than 4.5 because a tile label is a short word on a colored plate
+(WCAG 1.4.11's non-text tier, and the large-text tier, both sit at 3),
+and because 3 is the value that separates the two themes as measured —
+the weakest dark-theme tile reads its accent at 3.23:1 and the
+strongest light-theme one at 1.80:1 — so it replaces every collapsed
+label without disturbing a theme that already reads well. The
+replacement follows the theme's polarity rather than whichever extreme
+measures highest, because on these grounds the two land within 5 % of
+each other and the winner alternates by tint, which would put one
+theme's lanes in two different inks on a margin that means nothing. And
+the **border** stays the accent whatever the label does: it is read
+against the plot background outside the tile, where the accent has all
+the contrast it needs, and it is what carries the signal's identity
+once the label has stopped.
+
+The halo pairs with the ink rather than being fixed: the app background
+wherever the background reads against the ink — which is the striping
+color, and is what every case on all three shipping themes takes — and
+the opposing extreme where the ink itself landed on the background's
+side, since a near-white halo around a white glyph is no halo at all.
 
 **An enum lane draws its own sample markers.** uPlot's point layer
 cannot serve a lane: its `auto` rule reads the density of the *axis*,

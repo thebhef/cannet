@@ -18,7 +18,7 @@ import { drawEnumTiles, drawExtrapolatedSegments } from "./PlotArea";
 import { mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
 import { applySampleMarkerFilter } from "./plotPoints";
-import { setActiveTheme, theme, type ThemeName } from "./theme";
+import { THEMES, setActiveTheme, theme, type ThemeName } from "./theme";
 
 /** One recorded canvas operation. */
 type Op = {
@@ -460,6 +460,95 @@ describe("drawEnumTiles extrapolation hatching", () => {
     expect(dark).toBeGreaterThan(0);
     expect(passes("light")).toBe(dark * 2);
     expect(passes("lighthk")).toBe(dark * 2);
+  });
+});
+
+describe("enum tile label legibility", () => {
+  // The owner's report off the light-theme sign-off frame: "light mode
+  // legibility is quite poor basically everywhere in the capture. Dark
+  // mode legibility is good." The ink was the accent and the fill is a
+  // tint of that same accent, so on a light theme the label was drawn in
+  // a color a hair off the plate it sits on (1.03-1.80:1 on the
+  // fixture's own colormaps). `laneLabelInk` measures instead.
+
+  const TABLE = [{ raw: 1, label: "Running" }];
+
+  /** Draw one tinted tile under `name` and hand back the recorded ops.
+   * The tint reaches the tile the way the fixture's colormaps do — the
+   * accent *is* the tint, which is the whole of the defect. */
+  function tintedTile(name: ThemeName, tint: string, extrapolated: (readonly [number, number])[]) {
+    const before = theme().name;
+    setActiveTheme(name);
+    const r = recorder();
+    drawEnumTiles(r.ctx, fakeU([[0, 10], [1, 1]], [{}]), {
+      seriesIdx: 1,
+      table: TABLE,
+      target: { messageId: 513, extended: false, signalName: "StoppedMode", busId: null },
+      resolveColor: () => tint,
+      bandTop: 40,
+      bandBot: 60,
+      accent: tint,
+      left: 0,
+      width: 1000,
+      ratio: 1,
+      extrapolated,
+    });
+    setActiveTheme(before);
+    return r.ops;
+  }
+
+  /** The color the visible glyph (the last, un-shadowed pass) was in. */
+  const inkOf = (ops: Op[]) => {
+    const texts = ops.filter((o) => o.op === "fillText");
+    return String(texts[texts.length - 1].fill);
+  };
+  /** The color the halo passes were in. */
+  const haloOf = (ops: Op[]) => {
+    const shadows = ops.filter((o) => o.op === "fillText" && String(o.fill).startsWith("shadow:"));
+    return [...new Set(shadows.map((o) => String(o.fill).slice("shadow:".length)))];
+  };
+
+  it("light: replaces an accent that has collapsed into its own tint", () => {
+    for (const tint of ["#6b7280", "#f59e0b", "#22c55e", "#3b82f6", "#ef4444"]) {
+      expect(inkOf(tintedTile("light", tint, [])), tint).toBe("#000000");
+      expect(inkOf(tintedTile("lighthk", tint, [])), tint).toBe("#000000");
+    }
+  });
+
+  it("dark: draws exactly what it drew before", () => {
+    // The pin. The owner reads the dark theme fine, so every one of the
+    // fixture's tints must still label in its own accent.
+    for (const tint of ["#6b7280", "#f59e0b", "#22c55e", "#3b82f6", "#ef4444"]) {
+      expect(inkOf(tintedTile("dark", tint, [])), tint).toBe(tint);
+    }
+  });
+
+  it("keeps the tile's border in the accent whichever ink the label takes", () => {
+    // The border is read against the plot background *outside* the tile,
+    // where the accent has all the contrast it needs — and it is what
+    // carries the signal's identity once the label has stopped.
+    const ops = tintedTile("light", "#22c55e", []);
+    const border = ops.find((o) => o.op === "strokeRect");
+    expect(border?.stroke).toBe("#22c55e");
+  });
+
+  it("halos in the background wherever the background reads against the ink", () => {
+    // The stripes are painted in the background, so a background halo is
+    // what stops them cutting the glyphs — and it is what the dark theme
+    // already had.
+    const dark = tintedTile("dark", "#3b82f6", [[0, 10]]);
+    expect(haloOf(dark)).toEqual([THEMES.dark.background]);
+    const light = tintedTile("light", "#3b82f6", [[0, 10]]);
+    expect(haloOf(light)).toEqual([THEMES.light.background]);
+  });
+
+  it("flips the halo when the ink lands on the background's own side", () => {
+    // A near-black tint on a light theme is the one ground a black ink
+    // cannot hold (2.95:1), so the ink goes white — and a near-white halo
+    // around a white glyph would be no halo at all.
+    const ops = tintedTile("light", "#000000", [[0, 10]]);
+    expect(inkOf(ops)).toBe("#ffffff");
+    expect(haloOf(ops)).toEqual(["#000000"]);
   });
 });
 
