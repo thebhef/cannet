@@ -47,6 +47,14 @@ describe("signalRefKey", () => {
     expect(signalRefKey({ ...core })).toBe("b1|s:291:Speed");
     expect(signalRefKey({ ...core, extended: true })).toBe("b1|x:291:Speed");
   });
+
+  it("discriminates a file-backed signal, whose id is a group index", () => {
+    // The key `useValueTables` files a table under, so an imported
+    // enum's labels reach the lane renderer through the same lookup a
+    // DBC-backed one's do — and a group index never collides with the
+    // CAN id that happens to share its number.
+    expect(signalRefKey({ ...core, busId: null, fileBacked: true })).toBe("*|f:291:Speed");
+  });
 });
 
 describe("isSignalRefCore", () => {
