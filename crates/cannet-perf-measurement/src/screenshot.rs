@@ -209,6 +209,12 @@ window.__shot = {
       clientY: r.top + r.height / 2,
       bubbles: true,
     };
+    /* A real pointer is in one place: leaving the areas it is not in is
+       part of moving into this one, and skipping it would leave the
+       previous step's hover standing in the frame beside this one. */
+    for (const other of document.querySelectorAll(".u-over")) {
+      if (other !== over) other.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+    }
     over.dispatchEvent(new MouseEvent("mouseenter", at));
     over.dispatchEvent(new MouseEvent("mousemove", at));
     await window.__shot.settle();
