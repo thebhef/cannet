@@ -220,3 +220,46 @@ are accepted and need no work here.
 The latch clears on the token, so a frozen capture with nothing left to
 decode still stops dead — pinned by the second test. Landed with the
 tests. Frontend suite: 158 files / 2092 tests green; `pnpm build` clean.
+
+### 2026-08-14 — item 1 leg: hang visibility (host-side watchdog)
+
+**Observation.** The 22:27 hang left `cannet.log` with nothing to read:
+startup interactive in 2744 ms, restore 642 ms with pyramids reused, no
+errors or warnings afterwards, and health samples continuing at their
+normal cadence right up to the kill ~17 minutes later.
+
+**Why the log was silent.** Every field the health sample carries —
+`trace_len`, `fps`, `rss_mb`/`tree_mb`/`webview_mb`, `sys_avail_mb`, the
+scratch breakdown — is the **host describing itself**, and the host was
+fine. The one number that originates in the renderer, `jsheap_mb`, is
+pushed by the frontend's 1 Hz diag reporter through `report_js_heap`;
+the host stored the value but not the _time it arrived_, so a frontend
+that stopped pushing was indistinguishable from one pushing an unchanged
+figure.
+
+**Change (host-side).** `crash.rs` stamps every `report_js_heap` arrival
+as a UI liveness heartbeat — the reporter runs on the renderer's main
+thread, so a wedged one cannot issue it. The health sample gains
+`ui_last_ms=<age>` (`?` when the frontend has never reported), and
+`ui_liveness` turns the age into a once-per-episode verdict: a `warn`
+line naming the stall when the beat has been missing for
+`UI_HEARTBEAT_STALL_MS` (5 s, five beats), and an `info` line when it
+returns. Both are above the level a bug report filters away; the sample
+trail underneath keeps showing when the stall began.
+
+One frontend line changes with it: the heartbeat now goes out even where
+`performance.memory` is absent (WebKitGTK / WKWebView) — the heap number
+is then `0`, which the host already reads as "no reading" and does not
+store. Without that the watchdog would have been inert everywhere but
+Windows. Pinned by `diag.heartbeat.test.ts`, which failed 0-of-3 beats
+before the change.
+
+Tests: `crash::tests::health_message_reports_how_stale_the_ui_heartbeat_is`
+and `..::the_ui_stall_verdict_fires_once_per_episode_and_clears_on_recovery`
+(both written failing first). Host suite 642 passed / 6 ignored, clippy
+clean; frontend 159 files / 2093 tests.
+
+**Note on scope.** This is a _visibility_ change, not an attribution. It
+does not explain the 22:27 hang; it makes the next one legible from
+`cannet.log` alone, and distinguishes "the host died" from "the window
+stopped responding" without a debugger attached.
