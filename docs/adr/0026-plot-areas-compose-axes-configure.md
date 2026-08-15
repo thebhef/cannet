@@ -211,6 +211,33 @@ bound one (a stall's two ends, the last frame before a series stopped)
 keep their markers, which is what makes the dashed stretch beside them
 legible.
 
+**A hover reveals markers on every area of the panel, lanes included.**
+The pointer rests in one plot area, but what it is pointing at is a
+moment on the shared timeline, which every stacked area is showing. So
+hover markers follow the crosshair's rule rather than the pointer's: one
+panel-level hover x, folded from whichever area reported it, and every
+area marks the sample nearest it — the area the pointer is in, the ones
+above and below it, and the enum-lanes axis alike. uPlot's own per-series
+hover point is off: it is a property of the instance whose pointer moved,
+so it can never appear in the areas the pointer is not in, and it snaps
+to the nearest **merged** column, which is a neighbour's reading as often
+as it is this series'. The rule above binds here too — the candidates are
+the series' own sample columns, so a hover changes *when* a marker is
+drawn and never *where*. A series that has stopped therefore keeps its
+marker on its last reading while the pointer moves on past it, which is
+the honest picture: the stretch between the two is already drawn as
+extrapolation.
+
+The show-points modes compose with this the way they do with everything
+else. `off` is off, hover or not. `auto` and `on` both reveal, because
+what a hover adds is one marker per series, and neither uPlot's density
+rule nor the minimum-sample-count floor has an opinion about a single
+column under the pointer — those two govern the *static* markers, which
+is where the modes differ. A lane's static markers are drawn under both
+modes already (it has no density rule of its own, per the paragraph
+above), so what the hover adds to a lane is what it adds to a line: the
+pointer's own sample, told apart from the rest.
+
 **Vertical space is fit-to-panel, with draggable splitters.** The
 derived axes of a panel always fit its height — no stack-scrolling
 once N axes exceed it. Each axis carries a **weight** (flex-grow,
