@@ -1,11 +1,11 @@
 //! The three content shapes an `.mf4` file can carry, and what the reader
 //! does with each: frames decoded, message-independent signals offered,
-//! per-message DBC-decoded groups skipped and reported, signal files
-//! rejected outright.
+//! per-message DBC-decoded groups reported and offered too, and a file
+//! that is nothing but signal groups read as exactly that.
 
 mod common;
 
-use cannet_mdf::{scan_mdf, MdfCanFrameSource, MdfSourceError};
+use cannet_mdf::{scan_mdf, MdfCanFrameSource};
 
 use common::{expected, fixture_path, groups_of_kind};
 
@@ -128,34 +128,66 @@ fn a_message_independent_group_carries_no_decoded_source() {
     assert_eq!(groups[0].decoded_source, None);
 }
 
+/// A file with only signal groups carries series and no frames, and that
+/// is a shape this reader has: it opens, emits nothing down the frame
+/// path, and offers every group it has through the signal path.
 #[test]
-fn a_signal_file_is_rejected_rather_than_read_as_empty() {
+fn a_signal_only_file_opens_and_offers_its_signals() {
+    use cannet_core::CanFrameSource as _;
+
     let doc = expected("signal_only");
     assert_eq!(doc["shape"], "signal_file");
-    let groups = doc["groups"].as_array().unwrap().len();
+    let want = groups_of_kind(&doc, "signal");
+    assert_eq!(want.len(), 2, "the signal-only fixture has two groups");
 
-    let err = MdfCanFrameSource::open(fixture_path("signal_only")).unwrap_err();
-    match err {
-        MdfSourceError::SignalFile {
-            signal_groups,
-            decoded_groups,
-        } => {
-            assert_eq!(signal_groups, groups);
-            assert_eq!(decoded_groups, 0);
+    let mut source = MdfCanFrameSource::open(fixture_path("signal_only")).unwrap();
+    assert!(
+        source.next_frame().unwrap().is_none(),
+        "a file with no bus-logging group has no frames to emit"
+    );
+
+    let got = source.signal_groups();
+    assert_eq!(got.len(), want.len());
+    for (got, want) in got.iter().zip(&want) {
+        assert_eq!(
+            got.group_index,
+            usize::try_from(want["index"].as_u64().unwrap()).unwrap()
+        );
+        assert_eq!(got.name.as_deref(), want["acq_name"].as_str());
+        assert_eq!(
+            got.decoded_source, None,
+            "these groups are message-independent"
+        );
+        let want_signals = want["signals"].as_array().unwrap();
+        assert_eq!(got.signals.len(), want_signals.len());
+        for (signal, want) in got.signals.iter().zip(want_signals) {
+            assert_eq!(signal.name, want["name"].as_str().unwrap());
+            assert_eq!(
+                signal.values.len(),
+                want["samples"].as_array().unwrap().len(),
+                "{} sample count",
+                signal.name
+            );
         }
-        other => panic!("expected a signal-file rejection, got {other:?}"),
     }
-    // The message has to say what the file is, so a user is not left
-    // wondering why their capture came up empty.
-    let message = MdfCanFrameSource::open(fixture_path("signal_only"))
-        .unwrap_err()
-        .to_string();
-    assert!(message.contains("pre-decoded signals"), "{message}");
+    assert!(source.decoded_message_groups().is_empty());
+}
 
-    // The scan says the same thing, so the import dialog fails the same
-    // way the import itself would.
-    assert!(matches!(
-        scan_mdf(fixture_path("signal_only")).unwrap_err(),
-        MdfSourceError::SignalFile { .. }
-    ));
+/// The census says the same thing, so the import dialog can offer the
+/// file's signals — and no CAN-message content, there being none.
+#[test]
+fn a_signal_only_file_scans_as_a_frameless_census() {
+    let scan = scan_mdf(fixture_path("signal_only")).unwrap();
+    assert!(scan.channels.is_empty(), "no frames, so no wire channels");
+    assert_eq!(scan.frame_count, 0);
+    assert_eq!(scan.first_timestamp_ns, None);
+    assert_eq!(scan.last_timestamp_ns, None);
+    assert_eq!(
+        scan.signal_groups
+            .iter()
+            .map(|g| (g.name.as_deref(), g.signal_count))
+            .collect::<Vec<_>>(),
+        vec![(Some("Powertrain"), 2), (Some("Electrical"), 1)],
+    );
+    assert!(scan.decoded_message_groups.is_empty());
 }

@@ -59,10 +59,13 @@ pub struct MdfScan {
 /// Walk `path` for its channel census, frame count, time span and content
 /// shape. See the module docs for what this does and does not decode.
 ///
+/// A file with no bus-logging group at all scans to an empty channel
+/// census with its signal content listed in full — what a dialog needs
+/// to offer that content and nothing else.
+///
 /// # Errors
 ///
-/// [`MdfSourceError::SignalFile`] for a file with no bus-logging group,
-/// and otherwise the I/O and block-parsing errors of a malformed file.
+/// The I/O and block-parsing errors of a malformed file.
 pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
     let file = Mdf4File::open(path.as_ref())?;
     let decoded_message_groups = collect_decoded(&file);
@@ -70,12 +73,6 @@ pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
     let bus_groups: Vec<usize> = (0..file.groups.len())
         .filter(|i| bus::frame_structure(&file.groups[*i]).is_some())
         .collect();
-    if bus_groups.is_empty() {
-        return Err(MdfSourceError::SignalFile {
-            signal_groups: file.groups.len(),
-            decoded_groups: decoded_message_groups.len(),
-        });
-    }
 
     let mut channels: BTreeSet<u8> = BTreeSet::new();
     let mut frame_count = 0u64;
