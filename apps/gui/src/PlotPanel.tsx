@@ -609,6 +609,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // (session-relative time of each area's first frame — the x-window's
   // floor, ADR 0024).
   const xSyncRef = useRef<XSync>({ suppress: false, xMin: null, xMax: null });
+  /** The x-window width the user asked for, in seconds, or `null` while
+   * they haven't asked for one (follow-live then uses the
+   * `follow_window_ms` default). Separate from `xSyncRef` because that
+   * ref records every window the panel *applies*, including the ones
+   * follow-live computes: taking a width from it fed the panel its own
+   * output back as a gesture. Only the gestures below write here. */
+  const userXWidthRef = useRef<number | null>(null);
   const instancesRef = useRef<Map<string, uPlot>>(new Map());
   const extentByAreaRef = useRef<Map<string, number>>(new Map());
   const startByAreaRef = useRef<Map<string, number>>(new Map());
@@ -717,6 +724,8 @@ export function PlotPanel(props: IDockviewPanelProps) {
       // missed and the x-sync ring (applyXAll → setScale hook →
       // onUserXChange) is the loop.
       diagCount("plot.userXChange"); // DIAG
+      // A gesture: this width is the user's, and follow-live keeps it.
+      userXWidthRef.current = max - min;
       applyXAll(min, max, fromId);
       // A zoom out over the old end of the window is a request to change
       // scale, not to stop following: `followXWindow` keeps whatever
@@ -784,12 +793,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
       } else {
         liveEdgeRef.current = null; // re-anchor on the next resume
       }
-      const sync = xSyncRef.current;
       const win = followXWindow(
         followLiveRef.current,
         runningRef.current,
-        sync.xMin,
-        sync.xMax,
+        userXWidthRef.current,
+        xSyncRef.current.xMax,
         edgeT,
         hostSettings().follow_window_ms / 1000,
         sharedStart(),
@@ -868,7 +876,11 @@ export function PlotPanel(props: IDockviewPanelProps) {
         }
       }
       ext ??= sharedExtent();
-      applyXAll(start, ext != null && ext > start ? ext : start + 1, null);
+      const max = ext != null && ext > start ? ext : start + 1;
+      // Fit is a press, not feedback: the span the user asked to see is
+      // the width follow-live keeps sliding if it is still running.
+      userXWidthRef.current = max - start;
+      applyXAll(start, max, null);
       setResetYEpoch((n) => n + 1);
       bumpXEpoch();
     },

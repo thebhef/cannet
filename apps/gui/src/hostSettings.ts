@@ -79,8 +79,8 @@ export interface Settings {
   /// the trace, by-id, signal and transmit/RBS views.
   view_refresh_interval_ms: number;
   /// Width of a plot's follow-live x-window before the user has set one
-  /// by zooming or panning. Milliseconds on the wire, seconds in the
-  /// settings view.
+  /// by zooming, panning or fitting. Milliseconds on the wire, seconds in
+  /// the settings view.
   follow_window_ms: number;
   /// How many recently-opened BLFs the File menu lists.
   recent_blfs_limit: number;

@@ -109,6 +109,215 @@ on-show list.
 
 ## Status log
 
+### 2026-08-14 — F1: the follow-live window follows the user's width, not its own last slide
+
+Branch `task63f-follow-window-fix` off `task63e-hidden-rows-solo-paging`
+(`5f8109d`). One code commit (`0f6783a`) plus this log and its
+measurement reports.
+
+Fixes the incidental defect F1 recorded in the item-4 phase-1 log below,
+and gathers the data the owner needs to decide whether the ADR-0031
+frontend baseline has to move.
+
+#### The fix
+
+`followXWindow` took the width it slides from the *current* x window
+(`xMax - xMin`), and the panel's own `applyXAll` writes that window on
+every programmatic slide. From the second slide onward the panel was
+therefore honouring its own output as if it were a gesture. The first
+slide lands a few hundred ms after connect, while the capture is still
+far shorter than `follow_window_ms` — the "window grows until the
+capture catches up" branch, which returns `[windowStart, ext]` — so the
+width that got latched was a fraction of a second, and the window never
+grew again.
+
+The width now lives in its own ref, `PlotPanel.userXWidthRef`: `null`
+until the user asks for a width, and read by `followXWindow` as its
+`userWidth` parameter. The shared window ref keeps doing what it did
+(it is what an area re-pins its uPlot to, and what tells a real user
+pan from a programmatic echo); `followXWindow` still takes `xMax` from
+it, but only for the "no window has been set yet" restore-fit branch,
+which is a question about the *window*, not the width.
+
+#### Write-site classification
+
+`xSyncRef.current.{xMin,xMax}` has exactly one writer — `applyXAll` —
+plus the re-anchor reset. So the classification is of `applyXAll`'s
+four callers:
+
+| call site | gesture? | writes the user width? |
+| --- | --- | --- |
+| `onUserXChange` — drag-select zoom, wheel zoom, shift-pan, h-pan | yes | **yes** |
+| `onUserXChange` via `PlotArea`'s `setScale` hook (a scale change that escaped the suppress window) | trusted as yes | **yes** |
+| `fitToRange` — Fit Data, All data | yes (a press) | **yes** |
+| `slideXWindow` — follow-live's own slide | **no** | no — this was the loop |
+| `gotoNote` / the cross-panel goto listener | yes, but a *move* | no — `centerWindowOn` preserves the displayed width and drops follow-live; it chooses a position, not a width |
+| the `winStart` re-anchor effect (Clear / Stop→Start) | n/a | no — it clears the *window*; the user's chosen width is not something a re-anchor revokes, and `followXWindow`'s "keeps a chosen zoom width when the capture is shorter than it" branch is only reachable in the assembled panel because the width now survives it |
+
+The `setScale`-hook row is the one honest soft spot: that path also
+catches a programmatic change that missed its suppress window (a uPlot
+re-fit on create / resize / `setData`). It is classified as a gesture
+because the code already places exactly that trust in it — it drops
+follow-live there — so recording the width does not extend the trust,
+it matches it. Unlike the slide loop, it is not self-feeding: a slide
+that lands where `applyXAll` put it is rejected by the equality check
+above it.
+
+#### The loop-closing test
+
+`followWindow.test.ts` cannot see this defect — every case passes the
+window in directly, so the feedback edge through `applyXAll` is outside
+the unit. Those tests stay (they own the pure function; their first
+argument is now the width). The guard is a new panel-level DOM test,
+`PlotPanel follow-live window width`, where the read and the write sit
+in the same component and the slides are the panel's own:
+
+- *"grows to the default width instead of freezing at the width of its
+  first slide"* — a running panel whose capture starts at 0.4 s, several
+  slides while it is still shorter than the window, then the capture
+  outgrows it. Against the pre-fix code this failed at **0.10 s** —
+  the same number the app itself reported.
+- *"keeps a width the user zoomed to across later programmatic slides"*
+  — the other half of the edge: a real zoom to 3 s survives every slide
+  after it. It passed pre-fix too, and is there so the fix cannot be
+  "throw the width away".
+
+#### Docs
+
+`follow_window_ms`'s help text and its frontend mirror said "until you
+set a width by zooming or panning"; Fit Data / All data sets one too,
+so both now say "by zooming, panning or fitting". The rest of the help
+text described the intended behaviour all along — it was the code that
+disagreed with it.
+
+#### Measurement
+
+All runs 2026-08-14 on one machine, back to back, release builds
+(`tauri build --no-bundle`), 60 s captures. Rig is the phase-1
+hardware-free one: a temporary vbus-bound copy of `examples/ev-zonal`
+(same DBCs, same saved layout, same RBS; the two bindings re-pointed at
+in-process `local-vbus://` buses). `fps.rx` reads 0 on that rig by
+construction — a `SharedBus` participant does not self-receive — so
+**`rx_fps_*` and `rx_gap_*` are rig artifacts in every vbus column, not
+measurements**. One post-fix run was taken on the PEAK hardware rig
+(dongles were free) so there is a like-for-like column against the
+committed baseline, which is a hardware run.
+
+**Window width actually followed** (`winw`, the panel's own gauge):
+
+| build | scenario | winw mean | winw max / last |
+| --- | --- | --- | --- |
+| pre-fix `5f8109d` | gate scenario (`--perf-interact scrub`) | 0.0 | 0.0 |
+| post-fix `0f6783a` | gate scenario (`scrub`) ×3 | 0.0 | 0.0 |
+| post-fix `0f6783a` | gate scenario (`scrub`, PEAK) | 0.0 | 0.0 |
+| pre-fix `5f8109d` | **gestureless** | 0.10 | 0.10 |
+| post-fix `0f6783a` | **gestureless** | **9.41** | **10.0** |
+
+The gestureless pair is the A/B that shows the fix: 0.10 s → a window
+that grows to the 10 s setting and holds there, which is the documented
+contract exactly.
+
+**The gate scenario does not move, and here is why.** `--perf-interact
+scrub` opens with a 32-notch zoom-in warm-up at `ZOOM_STEP` 1.15 —
+93× — dispatched as real wheel events. Its own comment assumes it
+starts from the project's saved ~170 s window and lands at a couple of
+seconds; but on a self-driving capture the plot is following live when
+the warm-up fires, so it starts from the follow-live window (a few
+seconds of freshly-connected capture) and lands at ~0.05 s. Post-fix
+that sliver is a width the *user* (the harness) genuinely asked for, so
+the panel honours it. Pre-fix the panel arrived at a sliver of the same
+order by accident. Same window, same load, same numbers — which is why
+the plot-tier metrics below did **not** move, contrary to the
+expectation this phase was set up with. The expectation was wrong about
+the scenario, not about the fix.
+
+**Full gated frontend metrics.** `rx_*` rows struck through in the vbus
+columns per the rig note above.
+
+| metric | committed baseline (hw) | pre-fix control (vbus) | post-fix ×3 mean (vbus) | post-fix ×3 worst (vbus) | post-fix (PEAK hw) |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 1.30 | 0.00 | 0.50 | 1.50 | 0.00 |
+| longtask_ms_per_s_p95 | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 |
+| lag_ms_max | 27.1 | 1.5 | 5.3 | 11.3 | 5.7 |
+| jank_fraction | 0.0167 | 0.0000 | 0.0056 | 0.0167 | 0.0000 |
+| rx_fps_overall | 1606.7 | ~~0~~ | ~~0~~ | ~~0~~ | 1610.8 |
+| rx_fps_retention | 0.999 | ~~0~~ | ~~0~~ | ~~0~~ | 1.000 |
+| tx_fps_overall | 1607.6 | 1607.8 | 1609.3 | 1607.6 | 1614.2 |
+| tx_fps_retention | 0.999 | 1.000 | 1.000 | 0.9995 | 1.000 |
+| jsheap_mb_peak | 71.6 | 73.5 | 74.0 | 76.2 | 84.7 |
+| jsheap_mb_drift_per_min | 5.69 | 5.76 | 7.99 | 9.10 | 8.34 |
+| renderer_mb_peak | 319.3 | 304.4 | 303.7 | 304.4 | 305.0 |
+| renderer_mb_drift_per_min | 50.8 | 47.1 | 48.7 | 49.3 | 43.7 |
+| host_mb_peak | 58.4 | 55.9 | 55.1 | 55.7 | 58.2 |
+| tree_mb_peak | 743.3 | 727.3 | 727.1 | 728.4 | 731.4 |
+| tree_mb_drift_per_min | 80.1 | 76.4 | 77.2 | 78.1 | 74.0 |
+| flush_ms_mean | 4.32 | 2.93 | 2.88 | 3.06 | 3.21 |
+| tx_late_ms_mean | 6.89 | 3.69 | 4.25 | 5.46 | 3.30 |
+| flush_ms_max | 15.18 | 8.36 | 8.77 | 10.80 | 9.21 |
+| tx_late_ms_max | 75.9 | 7.4 | 32.7 | 82.1 | 8.7 |
+| rx_gap_p95_ratio_worst | 1.196 | ~~0~~ | ~~0~~ | ~~0~~ | 1.134 |
+| rx_gap_short_frac_worst | 0.0055 | ~~0~~ | ~~0~~ | ~~0~~ | 0.0010 |
+
+Nothing here separates pre-fix from post-fix beyond run-to-run spread.
+The one row that looks like an outlier — `tx_late_ms_max` 82.1 ms in
+post-fix vbus run 3 — is a single scheduler stall in one run (the same
+run carries the only non-zero `longtask` and `jank_fraction` of the
+three), against a baseline value of 75.9 ms and a gate limit of
+176.9 ms; the pre-fix control on the same rig reads 7.4 ms and post-fix
+runs 1 and 2 read 8.9 / 7.2 ms.
+
+**Informational `check` verdict** (run once, on the post-fix PEAK run —
+the only column comparable to the committed hardware baseline; **not a
+gate claim**):
+
+```text
+check passed (31 metrics gated)
+```
+
+Every frontend row `ok`, with the largest current-vs-limit margins
+unchanged in character from the last close-out. The three host modes
+re-ran green as part of the same invocation.
+
+Reports committed under `docs/performance-measurements/frontend/`:
+`2026-08-14-5f8109d-task63f-prefix-control.json`,
+`…-0f6783a-task63f-postfix-run{1,2,3}.json`,
+`…-0f6783a-task63f-postfix-hw.json`, and the gestureless A/B pair
+`…-5f8109d-task63f-prefix-gestureless.json` /
+`…-0f6783a-task63f-postfix-gestureless.json`. No baseline file was
+touched.
+
+#### OWNER DECISION NEEDED: re-baseline?
+
+**Recommendation: no re-baseline.** The evidence:
+
+- The gated numbers did not move. `check` against the committed
+  baseline passes on the post-fix hardware run, all 31 metrics, with no
+  row near its limit.
+- They did not move because the gate scenario never measured a
+  realistic follow window and still doesn't: its warm-up zooms 93× into
+  a live window, so it renders a ~0.05 s slice both before and after
+  the fix. What the fix changed is the *reason* the slice is that
+  narrow — from a defect to the harness's own gesture.
+
+The real question this uncovered is therefore a scenario question, not
+a baseline question, and it is the owner's to take:
+
+1. **Leave the gate as it is** (recommended for this task). The `scrub`
+   script is a zoom/pan/scroll load probe; that it ends up at a very
+   narrow window makes it a *stress* case, not an invalid one. Nothing
+   to re-baseline, and this branch lands green.
+2. **Fix the warm-up so the gate measures a realistic window**, e.g.
+   fewer notches, or zooming to a target span instead of a fixed count.
+   That genuinely changes the workload — a 10 s window fetches and
+   decimates far more than a 0.05 s one — so it **would** require a
+   deliberate re-baseline, and it is its own task with its own
+   before/after. Worth noting that under option 1 no committed capture
+   has ever exercised the plot at a realistic window, which is the gap
+   the phase-1 F1 note first flagged.
+
+Option 2 is not taken here: it is out of this phase's scope, and a
+baseline moves only by deliberate owner decision.
+
 ### 2026-08-14 — items 3 and 5: hidden rows compact, solo paging drops off-page rows
 
 Branch `task63e-hidden-rows-solo-paging` off `task63d-collapse-reclaims-space`
