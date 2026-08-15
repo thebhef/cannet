@@ -62,6 +62,33 @@ facts; the renderer styles segments). Expected cost is O(window
 points) beside a serve that is already O(window points) — no major
 adverse perf impact expected; the exit-criteria gate verifies.
 
+**Styling ruling (2026-08-14, owner picks off the prototype bench —
+supersedes "groomed here"):**
+
+- **Lines and hlines**: extrapolated stretches render dashed,
+  pattern **[6, 4]** (px on/off), same color and width as the solid
+  data-backed stroke. Applies to interior >10×-gap stretches, the
+  past-the-end tail, and both wings of a one-sample hline.
+- **Lane tiles**: the extrapolated stretch keeps its normal fill
+  (colormap tint or default) with diagonal stripes in the **app
+  background color** over it, at a **20 px horizontal period, exact
+  50 % duty**. Geometry note from the prototype: a 45° stroke's
+  horizontal footprint is lineWidth·√2, so even bands need
+  `lineWidth = period / (2·√2)` — a naive `period/2` makes the
+  stroked color eat ~71 % of each period.
+- **Labels**: an enum label overlapping a striped stretch gets a
+  background-color shadow (stacked passes toward opacity); the
+  light theme needs roughly double the dark theme's strength
+  (owner call after side-by-side).
+- A tile only partially extrapolated stripes only the stale
+  sub-stretch; the label sits wherever the tile's normal label rule
+  puts it.
+- Ratified on canvas mockups drawn with the real `theme.ts`
+  palettes — the final composite (dash [6,4], 20 px stripes,
+  theme-tuned shadow) was confirmed by the owner **on both themes
+  as rendered**; the implementation phase still delivers true
+  renderer screenshots for final sign-off.
+
 In-scope companions from the same attributions (Task 70 phase 6):
 
 - The measured extent overdraw (a lane drawn to its axis's last
