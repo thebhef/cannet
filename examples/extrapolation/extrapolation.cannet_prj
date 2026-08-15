@@ -1,0 +1,273 @@
+{
+  "schema_version": 7,
+  "project_id": "7d0e1c9a-4b52-49f8-9d3b-2f6a1e0c72b4",
+  "layout": {
+    "activeGroup": "1",
+    "grid": {
+      "height": 1000,
+      "orientation": "HORIZONTAL",
+      "root": {
+        "data": [
+          {
+            "data": {
+              "activeView": "plot-extrapolation",
+              "id": "1",
+              "views": ["plot-extrapolation"]
+            },
+            "size": 1600,
+            "type": "leaf"
+          }
+        ],
+        "size": 1000,
+        "type": "branch"
+      },
+      "width": 1600
+    },
+    "panels": {
+      "plot-extrapolation": {
+        "contentComponent": "plot",
+        "id": "plot-extrapolation",
+        "params": {
+          "areas": [
+            {
+              "id": "shapes",
+              "primarySignalKey": null,
+              "signals": [
+                {
+                  "busId": "fixture",
+                  "color": "#60a5fa",
+                  "extended": false,
+                  "messageId": 256,
+                  "messageName": "RefRamp",
+                  "signalName": "RefLevel",
+                  "unit": "%"
+                },
+                {
+                  "busId": "fixture",
+                  "color": "#f472b6",
+                  "extended": false,
+                  "messageId": 257,
+                  "messageName": "StoppedRamp",
+                  "signalName": "StoppedLevel",
+                  "unit": "%"
+                },
+                {
+                  "busId": "fixture",
+                  "color": "#34d399",
+                  "extended": false,
+                  "messageId": 258,
+                  "messageName": "StalledRamp",
+                  "signalName": "StalledLevel",
+                  "unit": "%"
+                },
+                {
+                  "busId": "fixture",
+                  "color": "#fbbf24",
+                  "extended": false,
+                  "messageId": 259,
+                  "messageName": "OneShot",
+                  "signalName": "OneShotLevel",
+                  "unit": "%"
+                },
+                {
+                  "busId": "fixture",
+                  "color": "#a78bfa",
+                  "extended": false,
+                  "messageId": 512,
+                  "messageName": "DenseState",
+                  "signalName": "DenseMode",
+                  "unit": ""
+                },
+                {
+                  "busId": "fixture",
+                  "color": "#22d3ee",
+                  "extended": false,
+                  "messageId": 513,
+                  "messageName": "StoppedState",
+                  "signalName": "StoppedMode",
+                  "unit": ""
+                },
+                {
+                  "busId": "fixture",
+                  "color": "#fb7185",
+                  "extended": false,
+                  "messageId": 514,
+                  "messageName": "StalledState",
+                  "signalName": "StalledMode",
+                  "unit": ""
+                }
+              ],
+              "yAxisMode": "per-unit"
+            }
+          ],
+          "cursorMode": "x",
+          "cursorX": { "a": null, "b": null },
+          "cursorYByArea": {},
+          "elementId": "extrapolation",
+          "followLive": true,
+          "maxRateHz": 15,
+          "measEnabled": false,
+          "measKeys": ["a", "b", "dt", "freq", "valA", "valB", "delta"],
+          "showDiag": false,
+          "showPoints": "auto",
+          "signalsWidthPx": 300
+        },
+        "title": "Extrapolation"
+      }
+    }
+  },
+  "elements": [
+    {
+      "id": "extrapolation",
+      "kind": "plot",
+      "name": "Extrapolation",
+      "sources": ["fixture"],
+      "config": {
+        "areas": [
+          {
+            "id": "shapes",
+            "primarySignalKey": null,
+            "signals": [
+              {
+                "busId": "fixture",
+                "color": "#60a5fa",
+                "extended": false,
+                "messageId": 256,
+                "messageName": "RefRamp",
+                "signalName": "RefLevel",
+                "unit": "%"
+              },
+              {
+                "busId": "fixture",
+                "color": "#f472b6",
+                "extended": false,
+                "messageId": 257,
+                "messageName": "StoppedRamp",
+                "signalName": "StoppedLevel",
+                "unit": "%"
+              },
+              {
+                "busId": "fixture",
+                "color": "#34d399",
+                "extended": false,
+                "messageId": 258,
+                "messageName": "StalledRamp",
+                "signalName": "StalledLevel",
+                "unit": "%"
+              },
+              {
+                "busId": "fixture",
+                "color": "#fbbf24",
+                "extended": false,
+                "messageId": 259,
+                "messageName": "OneShot",
+                "signalName": "OneShotLevel",
+                "unit": "%"
+              },
+              {
+                "busId": "fixture",
+                "color": "#a78bfa",
+                "extended": false,
+                "messageId": 512,
+                "messageName": "DenseState",
+                "signalName": "DenseMode",
+                "unit": ""
+              },
+              {
+                "busId": "fixture",
+                "color": "#22d3ee",
+                "extended": false,
+                "messageId": 513,
+                "messageName": "StoppedState",
+                "signalName": "StoppedMode",
+                "unit": ""
+              },
+              {
+                "busId": "fixture",
+                "color": "#fb7185",
+                "extended": false,
+                "messageId": 514,
+                "messageName": "StalledState",
+                "signalName": "StalledMode",
+                "unit": ""
+              }
+            ],
+            "yAxisMode": "per-unit"
+          }
+        ],
+        "cursorMode": "x",
+        "cursorX": { "a": null, "b": null },
+        "cursorYByArea": {},
+        "followLive": true,
+        "maxRateHz": 15,
+        "measEnabled": false,
+        "measKeys": ["a", "b", "dt", "freq", "valA", "valB", "delta"],
+        "showDiag": false,
+        "showPoints": "auto",
+        "signalsWidthPx": 300
+      }
+    },
+    {
+      "id": "cm-dense-mode",
+      "kind": "colormap",
+      "name": "Dense mode",
+      "busId": null,
+      "extended": false,
+      "messageId": 512,
+      "signalName": "DenseMode",
+      "rules": [
+        { "color": "#6b7280", "min": 0, "max": 0 },
+        { "color": "#f59e0b", "min": 1, "max": 1 },
+        { "color": "#22c55e", "min": 2, "max": 2 },
+        { "color": "#3b82f6", "min": 3, "max": 3 },
+        { "color": "#ef4444", "min": 4, "max": 4 }
+      ]
+    },
+    {
+      "id": "cm-stopped-mode",
+      "kind": "colormap",
+      "name": "Stopped mode",
+      "busId": null,
+      "extended": false,
+      "messageId": 513,
+      "signalName": "StoppedMode",
+      "rules": [
+        { "color": "#6b7280", "min": 0, "max": 0 },
+        { "color": "#22c55e", "min": 1, "max": 1 }
+      ]
+    },
+    {
+      "id": "cm-stalled-mode",
+      "kind": "colormap",
+      "name": "Stalled mode",
+      "busId": null,
+      "extended": false,
+      "messageId": 514,
+      "signalName": "StalledMode",
+      "rules": [
+        { "color": "#6b7280", "min": 0, "max": 0 },
+        { "color": "#f59e0b", "min": 1, "max": 1 },
+        { "color": "#3b82f6", "min": 2, "max": 2 }
+      ]
+    }
+  ],
+  "buses": [
+    {
+      "id": "fixture",
+      "name": "Fixture",
+      "speed_bps": 500000,
+      "fd": false,
+      "color": "#60a5fa"
+    }
+  ],
+  "interface_bindings": [],
+  "dbcs": [
+    {
+      "path": "extrapolation.dbc",
+      "buses": ["fixture"]
+    }
+  ],
+  "remote_address": null,
+  "local_virtual_buses": [],
+  "transmit_frames": []
+}

@@ -528,6 +528,50 @@ mod tests {
         assert!(p.dbcs.iter().any(|d| d.path == "dbc/zonal.dbc"));
     }
 
+    /// The extrapolation screenshot fixture's project must stay
+    /// openable: one bus, one relative-path DBC ref scoped to it, and a
+    /// plot element whose single per-unit area carries all seven series
+    /// — the four numeric shapes on one unit and the three enum lanes.
+    /// A capture run opens this file and photographs that one panel, so
+    /// an area that lost a signal is a picture missing a ruled state.
+    #[test]
+    fn parses_the_checked_in_extrapolation_example_project() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../examples/extrapolation/extrapolation.cannet_prj");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let p = parse_project(&text).expect("fixture project must parse");
+        assert_eq!(p.buses.len(), 1);
+        assert_eq!(p.dbcs.len(), 1);
+        assert_eq!(p.dbcs[0].path, "extrapolation.dbc");
+        assert_eq!(p.dbcs[0].buses, vec!["fixture".to_string()]);
+        let plot = p
+            .elements
+            .iter()
+            .find(|e| e.get("kind").and_then(serde_json::Value::as_str) == Some("plot"))
+            .expect("the fixture carries a plot element");
+        let areas = plot
+            .get("config")
+            .and_then(|c| c.get("areas"))
+            .and_then(serde_json::Value::as_array)
+            .expect("the plot element carries areas");
+        assert_eq!(areas.len(), 1, "every shape shares one area, and one frame");
+        assert_eq!(
+            areas[0]
+                .get("yAxisMode")
+                .and_then(serde_json::Value::as_str),
+            Some("per-unit"),
+            "the shared enum-lanes axis only exists in per-unit mode",
+        );
+        assert_eq!(
+            areas[0]
+                .get("signals")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(7),
+        );
+    }
+
     #[test]
     fn parse_defaults_the_optional_fields() {
         let p = parse_project(r#"{"schema_version": 7, "layout": {"grid": {}, "panels": {}}}"#)
