@@ -1153,6 +1153,7 @@ mod tests {
                 group_name: group_name.map(Into::into),
                 name: name.into(),
                 unit: unit.into(),
+                value_table: Vec::new(),
             },
             sample_count: 7,
             latest: None,

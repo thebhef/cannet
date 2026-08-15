@@ -192,6 +192,7 @@ fn file_backed_signals_come_back_verbatim() {
         name: name.to_owned(),
         unit: unit.map(ToOwned::to_owned),
         conversion: None,
+        value_table: Vec::new(),
         timestamps_ns: (0..12u64).map(|i| START_NS + i * step).collect(),
         values: (0..12).map(|i| f64::from(i) * scale - 3.25).collect(),
     };
@@ -235,6 +236,52 @@ fn file_backed_signals_come_back_verbatim() {
         assert_eq!(got.timestamps_ns, signal.timestamps_ns);
         assert_eq!(got.values, signal.values);
     }
+}
+
+/// A coded signal is its codes plus the table that labels them, and the
+/// file is the only place that table exists — the decoding tool's
+/// database is not this project's. Writing the codes without the labels
+/// would throw the half away that says what they mean.
+#[test]
+fn a_coded_signals_value_table_survives_the_write() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let dest = dir.path().join("coded.mf4");
+    let table = vec![
+        (0, "Startup".to_owned()),
+        (1, "Idle".to_owned()),
+        (7, "Fault".to_owned()),
+        (-2, "Undefined".to_owned()),
+    ];
+    let signal = FileSignal {
+        name: "CurrentBMSState".to_owned(),
+        unit: None,
+        conversion: None,
+        value_table: table.clone(),
+        timestamps_ns: (0..6u64).map(|i| START_NS + i * 10_000_000).collect(),
+        values: vec![0.0, 1.0, 1.0, 7.0, -2.0, 1.0],
+    };
+
+    let mut writer = MdfCaptureWriter::create(
+        &dest,
+        MdfCaptureLayout {
+            start_time_ns: START_NS,
+            max_payload_len: 8,
+        },
+    )
+    .expect("writer opens");
+    writer.add_signal(Some("BMS".to_owned()), signal.clone());
+    writer.finish().expect("writer finishes");
+
+    let source = MdfCanFrameSource::open(&dest).expect("opens");
+    let groups = source.signal_groups();
+    assert_eq!(groups.len(), 1);
+    let got = &groups[0].signals[0];
+    assert_eq!(got.value_table, table, "every code keeps its label");
+    assert_eq!(
+        got.values, signal.values,
+        "the codes are still the series — the labels ride beside them"
+    );
+    assert_eq!(got.conversion.as_deref(), Some("ValueToText"));
 }
 
 #[test]

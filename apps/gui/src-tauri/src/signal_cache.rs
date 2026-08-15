@@ -191,6 +191,15 @@ pub struct FileSignalInfo {
     pub name: String,
     /// Engineering unit, verbatim from the file (empty when it has none).
     pub unit: String,
+    /// The channel's value→text table, when it carries one — a coded
+    /// channel's enumerators, read from its conversion block at import.
+    /// This is the file-backed counterpart of a DBC signal's `VAL_`
+    /// table, and it is served as one ([`crate::ipc::ValueTableEntryRecord`]),
+    /// so a view labels either kind the same way. Empty for a plain
+    /// numeric series. `#[serde(default)]` so a manifest written before
+    /// the table was carried still restores.
+    #[serde(default)]
+    pub value_table: Vec<crate::ipc::ValueTableEntryRecord>,
 }
 
 impl FileSignalInfo {
@@ -5150,6 +5159,7 @@ mod tests {
             group_name: Some("Analog".into()),
             name: name.to_string(),
             unit: "rpm".into(),
+            value_table: Vec::new(),
         }
     }
 

@@ -172,6 +172,7 @@ fn signals() -> Vec<(Option<String>, FileSignal)> {
         name: name.to_owned(),
         unit: (!unit.is_empty()).then(|| unit.to_owned()),
         conversion: None,
+        value_table: Vec::new(),
         timestamps_ns: (0..20u64).map(|i| START_NS + i * step).collect(),
         values: (0..20).map(|i| base + f64::from(i) * slope).collect(),
     };

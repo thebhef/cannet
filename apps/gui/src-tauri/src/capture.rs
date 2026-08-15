@@ -22,7 +22,7 @@ use cannet_core::{CanFrame as CoreCanFrame, CanId};
 use cannet_mdf::MdfCanFrameSource;
 
 use crate::app_state::AppState;
-use crate::ipc::{ImportMdfResult, LogFinished, OpenLogResult};
+use crate::ipc::{ImportMdfResult, LogFinished, OpenLogResult, ValueTableEntryRecord};
 use crate::notes::{self, Note};
 use crate::sampling::off_async_workers;
 use crate::signal_cache::{FileSignalEntry, FileSignalInfo, SignalCacheStore};
@@ -631,6 +631,11 @@ pub(crate) fn write_mdf_capture(
                 name: info.name.clone(),
                 unit: (!info.unit.is_empty()).then(|| info.unit.clone()),
                 conversion: None,
+                value_table: info
+                    .value_table
+                    .iter()
+                    .map(|e| (e.raw, e.label.clone()))
+                    .collect(),
                 timestamps_ns: points.iter().map(|p| sample_ns(p.t_seconds)).collect(),
                 values: points.iter().map(|p| p.value).collect(),
             },
@@ -1085,6 +1090,14 @@ pub(crate) fn fill_file_backed_signals(
                 group_name: group.name.clone(),
                 name: signal.name.clone(),
                 unit: signal.unit.clone().unwrap_or_default(),
+                value_table: signal
+                    .value_table
+                    .iter()
+                    .map(|(raw, label)| ValueTableEntryRecord {
+                        raw: *raw,
+                        label: label.clone(),
+                    })
+                    .collect(),
             };
             samples += points.len() as u64;
             signals += 1;
