@@ -143,6 +143,23 @@ discipline: failing test reproducing the continued scroll first,
 then the fix, and the walk records what happened to the original
 guard.
 
+## Owner ruling on the catch-up fix shapes (2026-08-15)
+
+Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
+
+- **Shape 1 — batch the chunk scan across a serve's groups** — lands
+  as this task's phase 5: one shared scan pass feeds every group's
+  cursor per serve, so per-group throughput no longer divides by the
+  area's group count. Contained; ADR 0049's budget semantics keep
+  their meaning.
+- **Shape 3 — move catch-up off the serve path** — is
+  architecture-scale and opens as **Task 77** (background decode
+  progression independent of view fetches), slotted after task 76;
+  it must not gate this task's closure.
+- Shape 2 (scale the budget with group count) is rejected — it
+  preserves the redundant scanning and grows serve latency with
+  signal count.
+
 ## Status log
 
 - **2026-08-15, phase 1 (`task72-p1-hover-points`, branched off
@@ -248,8 +265,8 @@ guard.
   - _History (pickaxe, per the task's lead)._ `git log --follow` over
     `followWindow.ts` gives five commits. `git log -S "followLive &&
     running"` / `-S "runningRef"` surface `81178fbf` (PR #63) — "only
-    slide the trailing x-window while running" — which is a *stopped
-    trace* guard, still intact, and not this. The disconnect guard is in
+    slide the trailing x-window while running" — which is a _stopped
+    trace_ guard, still intact, and not this. The disconnect guard is in
     `24803ea8`, whose `advanceLiveEdge` carried, verbatim:
 
     > Advancing here is what made a disconnected trace keep sliding —
