@@ -494,6 +494,71 @@ hands the sidecar that launch.
 action at all on a row like this, which is what made an ordinary
 transient row read as an unremovable mystery.
 
+### 2026-08-14 — item 3 leg (b): an action on every row
+
+**Observation.** Owner: "I also can't forget it or change the token."
+Both affordances are _absent_ on the row, not failing.
+
+**Attribution (from `ServersPanel.tsx`, before the change).** Two
+conditions, each gated on what the trust store happens to hold:
+
+- `{row.fingerprint !== null && <button …>Token…</button>}`
+- `{stored && <button …>Forget</button>}`, where
+  `stored = fingerprint || hasToken || insecure || manual`.
+
+A sidecar row holds none of them, so neither button is rendered. The
+same gates cost more than the owner's row: a server with a **token
+stored but no pin** (a real state — `server_list.rs`'s
+`a_stored_token_on_its_own_is_not_trust` pins it) renders _Forget_ but
+not _Token…_, so the credential in `servers.json` cannot be replaced or
+cleared except by dropping everything.
+
+**Change.** Both buttons render on every row. The store's contents now
+decide only wording, never whether the action exists. Because a _Forget_
+that drops nothing must not be a button that visibly does nothing, the
+panel answers instead: `nothingStoredNote(row)` (in `serverList.ts`)
+names what is keeping the row in the list — it is advertising, or a
+session is connected to it and the row leaves when that session ends.
+Those are the only two possibilities: a stored entry is never empty
+(`update_server` removes an emptied one), so a row the store does not
+hold came from one of the merge's other two sources.
+
+**The security rule this leans on is the host's, and now has a test.**
+Offering the token field on a row reached in the clear could look like
+a way to put a credential on an unencrypted channel. It is not:
+`connect_flow::plan` returns `Attempt::Plaintext` for a loopback address
+and for an accepted-unprotected one _whatever the entry holds_, and
+`Attempt::Plaintext` carries no token —
+`a_token_stored_against_an_address_reached_in_the_clear_is_never_carried`
+now pins that in the plan, which is where ADR 0041 §S7's rule belongs
+rather than in which buttons a panel draws.
+
+**Tests (the two that encoded the overruled assumption were rewritten,
+and failed first — 4 failing / 2094 passing before the change).**
+
+- `asks nothing about a server it reaches without asking, but still acts
+  on it` (was `offers no trust actions …`) — _Trust…_ is still absent on
+  a loopback row (there is no identity to accept), _Token…_ and _Forget_
+  are not.
+- `forgets a server` (was `forgets a server, and offers that only where
+  something is stored`) — and asserts no note appears when something
+  _was_ stored.
+- `changes the token on a row that has one without a pin` — the trap
+  above, clearing the token through the field.
+- `says what keeps a row in the list when forgetting it stored nothing`
+  — the owner's row exactly (`127.0.0.1:65476`, trusted, nothing
+  advertising it, a clock from the live session): _Forget_ invokes
+  `forget_server` and the panel says a session is connected to it.
+- `says an advertising row is held by the network, not the store`.
+- Three unit tests over `nothingStoredNote` in `serverList.test.ts`.
+
+README's Servers-panel paragraph gains both facts in the same commit:
+that every row carries both actions, and that a
+`127.0.0.1:<high port>` row nobody typed in is the app's own sidecar.
+
+Host: 647 passed / 6 ignored, clippy clean. Frontend: 160 files / 2101
+tests, `pnpm build` clean.
+
 ## Blockers / side effects
 
 - **Latent, out of scope for item 1: the by-id / signal window scan on

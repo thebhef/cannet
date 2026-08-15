@@ -325,6 +325,27 @@ export function trustLabel(row: ServerRow): string {
   }
 }
 
+/// What a *Forget* left to say when the trust store held nothing for the
+/// row — `null` when it held something, which is the ordinary case and
+/// needs no explanation.
+///
+/// A row the store does not hold is held by one of the merge's other two
+/// sources, and the row itself says which: it is advertising, or a
+/// session is connected to it (an entry the store keeps is never empty —
+/// the host removes an emptied one — so there is no third case). Without
+/// this, forgetting such a row is a button that does nothing, which is
+/// how the app's own sidecar — dialled at `127.0.0.1:<ephemeral>` for
+/// local hardware, stored nowhere — reads as an unremovable mystery.
+export function nothingStoredNote(row: ServerRow): string | null {
+  if (row.fingerprint !== null || row.hasToken || row.insecure || row.manual) {
+    return null;
+  }
+  const why = row.online
+    ? "it is advertising on this network"
+    : "a session is connected to it, and it leaves the list when that session ends";
+  return `Nothing was stored for ${row.address} — ${why}.`;
+}
+
 /// What the panel says when the list is empty, given what the browse
 /// task reported. Never inferred from the list being empty — every
 /// branch here is a state the host observed.

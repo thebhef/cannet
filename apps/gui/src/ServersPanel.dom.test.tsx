@@ -177,20 +177,18 @@ describe("the merged server list", () => {
     expect(open).toHaveTextContent("connects without protection");
   });
 
-  it("offers no trust actions on a server that is reached without asking", async () => {
-    // The host reaches loopback in the clear and never asks about it,
-    // so its row is trusted with nothing stored: there is no identity
-    // to accept, no token that would ever be presented, and nothing to
-    // forget.
+  it("asks nothing about a server it reaches without asking, but still acts on it", async () => {
+    // The host reaches loopback in the clear, so there is no identity
+    // to accept and the row wears no *Trust…*. Every other action is
+    // still on it: a row the user can see is a row the user can act on,
+    // whatever the store happens to hold for it.
     snapshot = list([row({ address: "127.0.0.1:50051", trust: "trusted" })]);
     renderPanel();
     await screen.findByText("127.0.0.1:50051");
     const local = within(rowFor("127.0.0.1:50051"));
     expect(local.queryByRole("button", { name: /^trust/ })).not.toBeInTheDocument();
-    expect(
-      local.queryByRole("button", { name: /^set token/ }),
-    ).not.toBeInTheDocument();
-    expect(local.queryByRole("button", { name: /^forget/ })).not.toBeInTheDocument();
+    expect(local.getByRole("button", { name: /^set token/ })).toBeInTheDocument();
+    expect(local.getByRole("button", { name: /^forget/ })).toBeInTheDocument();
   });
 
   it("keeps two servers of the same name apart on their own rows", async () => {
@@ -480,13 +478,10 @@ describe("the trust lifecycle from a row", () => {
     );
   });
 
-  it("forgets a server, and offers that only where something is stored", async () => {
+  it("forgets a server", async () => {
     snapshot = list([BENCH, PINNED]);
     renderPanel();
     await screen.findByText("rippy:50051");
-    expect(
-      within(rowFor("192.168.1.10:50051")).queryByRole("button", { name: /forget/i }),
-    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("forget rippy:50051"));
     await waitFor(() =>
       expect(
@@ -495,6 +490,71 @@ describe("the trust lifecycle from a row", () => {
         ),
       ).toBe(true),
     );
+    expect(screen.queryByText(/Nothing was stored/)).not.toBeInTheDocument();
+  });
+
+  it("changes the token on a row that has one without a pin", async () => {
+    // A token stored against a server whose certificate was never
+    // accepted: the store holds a credential, and gating the token
+    // field on the fingerprint left no way to replace or clear it.
+    snapshot = list([row({ address: "rippy:50051", hasToken: true })]);
+    renderPanel();
+    await screen.findByText("rippy:50051");
+    fireEvent.click(screen.getByLabelText("set token for rippy:50051"));
+    fireEvent.change(await screen.findByLabelText("access token for rippy:50051"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByLabelText("save token for rippy:50051"));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.cmd === "set_server_token" &&
+            c.args.address === "rippy:50051" &&
+            c.args.token === "",
+        ),
+      ).toBe(true),
+    );
+  });
+
+  it("says what keeps a row in the list when forgetting it stored nothing", async () => {
+    // The GUI's own sidecar: a session dialled 127.0.0.1:<ephemeral>,
+    // and that session is the only thing holding the row. Forgetting is
+    // offered — no row is a dead end — and it answers rather than
+    // silently doing nothing.
+    snapshot = list([
+      row({
+        address: "127.0.0.1:65476",
+        name: null,
+        host: null,
+        version: null,
+        online: false,
+        trust: "trusted",
+        clock: { offsetNs: 739_200_000, warn: true, stale: false },
+      }),
+    ]);
+    renderPanel();
+    await screen.findByText("127.0.0.1:65476");
+    fireEvent.click(screen.getByLabelText("forget 127.0.0.1:65476"));
+    await waitFor(() =>
+      expect(
+        calls.some(
+          (c) =>
+            c.cmd === "forget_server" && c.args.address === "127.0.0.1:65476",
+        ),
+      ).toBe(true),
+    );
+    const note = await screen.findByText(/Nothing was stored for 127.0.0.1:65476/);
+    expect(note).toHaveTextContent(/session is connected to it/);
+  });
+
+  it("says an advertising row is held by the network, not the store", async () => {
+    snapshot = list([BENCH]);
+    renderPanel();
+    await screen.findByText("192.168.1.10:50051");
+    fireEvent.click(screen.getByLabelText("forget 192.168.1.10:50051"));
+    const note = await screen.findByText(/Nothing was stored for 192.168.1.10:50051/);
+    expect(note).toHaveTextContent(/advertising on this network/);
   });
 
   it("reports a refused write instead of pretending it landed", async () => {

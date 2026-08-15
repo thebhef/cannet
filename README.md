@@ -702,10 +702,21 @@ directory ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)),
 never in the project file, so a project shared with a colleague carries
 no credential. The **Servers** panel is where that store is managed:
 each row shows the same fingerprint string, whether a token is stored,
-and a *Forget* button that makes the next connection ask again. A
+a *Token…* field that replaces or clears the stored credential, and a
+*Forget* button that makes the next connection ask again. Both are on
+every row, whatever the store holds for it: a row that is listed for
+another reason answers instead of doing nothing — *Forget* says that
+nothing was stored and names what is keeping the row there. A
 trusted server that is switched off stays in the list, greyed, so it
 can be forgotten without waiting for it to come back. Moving a server
 to a different address or port is a new entry, and prompts again.
+
+Two things put a row in this list besides the trust store: a server
+advertising on the network, and a session connected to one. The second
+is why a row can appear at `127.0.0.1:<some high port>` that nobody
+typed in — that is the GUI's own python-can sidecar, which binds a port
+the OS picks and is dialled for any bus bound to local hardware. Nothing
+is stored for it, and the row goes when the session does.
 
 A server on another subnet, or one started `--no-mdns`, advertises
 nowhere this machine can hear, so it never appears in the browsed list.
