@@ -14,12 +14,13 @@
 //!
 //! ## What "trusted" is allowed to mean
 //!
-//! Exactly what [`crate::connect_flow::plan`] does with the same entry:
-//! a row is [`TrustState::Trusted`] when a stored decision — a pin, or
-//! an explicit unprotected choice — carries the next connection through
-//! without a question, and [`TrustState::New`] otherwise. A stored
-//! token on its own is not trust; the connection would still stop at
-//! the certificate.
+//! Exactly what [`crate::connect_flow::plan`] does with the same
+//! address and entry: a row is [`TrustState::Trusted`] when the next
+//! connection goes through without a question — a pin, an explicit
+//! unprotected choice, or a loopback address, which is reached in the
+//! clear and never asked about — and [`TrustState::New`] otherwise. A
+//! stored token on its own is not trust; the connection would still
+//! stop at the certificate.
 //!
 //! [`TrustState::FingerprintChanged`] is the one state that cannot be
 //! read off the store, because it is a comparison against what a server
@@ -172,7 +173,7 @@ fn offline_row(address: &str, entry: &TrustEntry) -> ServerRow {
         host: None,
         version: None,
         online: false,
-        trust: trust_state(entry),
+        trust: trust_state(address, entry),
         fingerprint: entry.fingerprint.clone(),
         has_token: entry.token.is_some(),
         insecure: entry.insecure,
@@ -180,13 +181,17 @@ fn offline_row(address: &str, entry: &TrustEntry) -> ServerRow {
     }
 }
 
-/// Trusted exactly when a stored decision carries the next connection
-/// through — the same test [`crate::connect_flow::plan`] applies.
-fn trust_state(entry: &TrustEntry) -> TrustState {
-    if entry.fingerprint.is_some() || entry.insecure {
-        TrustState::Trusted
-    } else {
+/// Trusted exactly when the next connection goes through without a
+/// question — [`crate::connect_flow::needs_trust`]'s answer, not a
+/// second reading of the store. A pin and an accepted unprotected
+/// choice are stored decisions; a loopback address needs no decision at
+/// all, and a row for one must not invite a question that will never be
+/// asked.
+fn trust_state(address: &str, entry: &TrustEntry) -> TrustState {
+    if crate::connect_flow::needs_trust(address, entry) {
         TrustState::New
+    } else {
+        TrustState::Trusted
     }
 }
 
@@ -333,6 +338,23 @@ mod tests {
         );
         assert_eq!(rows[0].trust, TrustState::New);
         assert!(rows[0].has_token);
+    }
+
+    #[test]
+    fn a_loopback_server_is_trusted_with_nothing_stored() {
+        // `plan` reaches loopback in the clear and asks nothing, so a
+        // row for one must not wear a badge inviting a decision that is
+        // never going to be asked for — and Connection Management must
+        // be able to offer its interfaces like any other trusted
+        // server's.
+        let rows = merged(
+            &[discovered("proxy", "127.0.0.1:50051")],
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
+        assert_eq!(rows[0].trust, TrustState::Trusted);
+        assert_eq!(rows[0].fingerprint, None);
+        assert!(!rows[0].has_token);
     }
 
     #[test]

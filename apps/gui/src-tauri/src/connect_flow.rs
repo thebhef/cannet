@@ -129,6 +129,36 @@ pub fn plan(address: &str, trust: &TrustEntry) -> Attempt {
     Attempt::Probe
 }
 
+/// Whether reaching `address` still needs an answer from the user: the
+/// next attempt would be a [`Attempt::Probe`], refused at the
+/// certificate, with the question raised from there.
+///
+/// Exactly [`plan`]'s answer, so no other surface has to re-derive
+/// which addresses are reached without asking — a pin, an accepted
+/// unprotected choice, and the loopback path all carry a connection
+/// through, and only the first two are visible in the trust store.
+#[must_use]
+pub fn needs_trust(address: &str, trust: &TrustEntry) -> bool {
+    matches!(plan(address, trust), Attempt::Probe)
+}
+
+/// Which of `addresses` cannot be reached without asking the user
+/// first. Connection Management flags the buses bound to them, rather
+/// than letting a project opened on a machine that has not accepted the
+/// server fail silently at connect time.
+///
+/// The host answers because the rules are the host's: a trust store it
+/// owns, plus address rules ([`is_local`]) that must not be guessed at
+/// in the `WebView`.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn addresses_needing_trust(app: AppHandle, addresses: Vec<String>) -> Vec<String> {
+    addresses
+        .into_iter()
+        .filter(|address| needs_trust(address, &crate::server_trust::trust_for(&app, address)))
+        .collect()
+}
+
 /// Plan and build the connection configuration for `address` in one
 /// step — what a call site with a single attempt and no retry loop
 /// needs. Failures still go through [`classify`] at the call site.
@@ -401,6 +431,32 @@ mod tests {
     #[test]
     fn a_routable_address_with_nothing_stored_is_a_first_use_probe() {
         assert_eq!(plan("bench:50051", &TrustEntry::default()), Attempt::Probe,);
+    }
+
+    #[test]
+    fn needs_trust_is_exactly_the_probe_case() {
+        // What a bus row is flagged by. A loopback proxy is never asked
+        // about, so a project bound to one must not be told to go and
+        // trust it — the question would never come.
+        assert!(needs_trust("bench:50051", &TrustEntry::default()));
+        assert!(!needs_trust("127.0.0.1:50051", &TrustEntry::default()));
+        assert!(!needs_trust("localhost:50051", &TrustEntry::default()));
+        assert!(!needs_trust("bench:50051", &pinned("SHA256:aaa", None)));
+        assert!(!needs_trust(
+            "bench:50051",
+            &TrustEntry {
+                insecure: true,
+                ..TrustEntry::default()
+            }
+        ));
+        // A stored token alone still stops at the certificate.
+        assert!(needs_trust(
+            "bench:50051",
+            &TrustEntry {
+                token: Some("tok".into()),
+                ..TrustEntry::default()
+            }
+        ));
     }
 
     #[test]

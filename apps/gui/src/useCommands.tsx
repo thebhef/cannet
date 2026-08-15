@@ -32,7 +32,6 @@ import {
   PROJECT_GRAPH_PANEL_ID,
   PROJECT_PANEL_COMPONENT,
   PROJECT_PANEL_ID,
-  SERVERS_PANEL_COMPONENT,
   SERVERS_PANEL_ID,
   SETTINGS_PANEL_COMPONENT,
   SETTINGS_PANEL_ID,
@@ -43,6 +42,7 @@ import {
   elementPanelComponent,
   isTabMiddlePress,
   panelKindForFocus,
+  showServersPanel as showServersPanelIn,
   validateLayout,
 } from "./dockLayout";
 import {
@@ -325,15 +325,12 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       }),
     [showSingletonPanel],
   );
-  const showServersPanel = useCallback(
-    () =>
-      showSingletonPanel({
-        id: SERVERS_PANEL_ID,
-        component: SERVERS_PANEL_COMPONENT,
-        title: "Servers",
-      }),
-    [showSingletonPanel],
-  );
+  // Not `showSingletonPanel`: the bus row's "Manage servers…" opens the
+  // same panel from outside this hook, and both go through one helper.
+  const showServersPanel = useCallback(() => {
+    const api = dockApiRef.current;
+    if (api) showServersPanelIn(api);
+  }, [dockApiRef]);
 
   // --- command handlers + key dispatch (ADR 0018) ---
   const activePanelRef = useRef(activePanel);

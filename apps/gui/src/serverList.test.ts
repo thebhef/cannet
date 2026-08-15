@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   browseNotice,
   matchServerRows,
+  serverLabel,
   trustLabel,
+  trustedServers,
   type ServerRow,
 } from "./serverList";
 
@@ -107,5 +109,29 @@ describe("what an empty list is allowed to mean", () => {
   it("covers the states before and after a browse runs", () => {
     expect(browseNotice({ state: "starting" })).toContain("Looking");
     expect(browseNotice({ state: "stopped" })).toContain("stopped");
+  });
+});
+
+describe("which servers a bus can be bound to", () => {
+  it("offers the trusted ones and nothing else", () => {
+    // A merely-advertising server is not a source: it is accepted in
+    // the Servers panel first, which is where that decision lives.
+    expect(trustedServers(ROWS).map((r) => r.address)).toEqual([
+      "bench.example.com:50051",
+    ]);
+  });
+
+  it("keeps a trusted server that is switched off — its section still shows", () => {
+    const offline = row({ address: "dead:50051", online: false, trust: "trusted" });
+    expect(trustedServers([offline])).toEqual([offline]);
+  });
+
+  it("drops a server whose identity changed: that is a question, not a source", () => {
+    expect(trustedServers([row({ trust: "fingerprintChanged" })])).toEqual([]);
+  });
+
+  it("names a server by what it advertises, falling back to its address", () => {
+    expect(serverLabel(row({ name: "bench-rig" }))).toBe("bench-rig");
+    expect(serverLabel(row({ name: null, address: "dead:50051" }))).toBe("dead:50051");
   });
 });

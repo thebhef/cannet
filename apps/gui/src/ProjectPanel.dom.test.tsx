@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 //
-// Tests for the per-bus interface combo and the inline "Add server…"
-// form that together replace the old standalone "Interface bindings"
-// section. The rest of `ProjectPanel` (project actions, element list,
-// DBC scoping) is covered by the project / element-registry tests.
+// Tests for the per-bus interface combo — the one place a bus's source
+// is picked, offering the local driver's interfaces, the trusted
+// servers' interfaces grouped per server, and the project's virtual
+// buses. The rest of `ProjectPanel` (project actions, element list, DBC
+// scoping) is covered by the project / element-registry tests.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -28,15 +29,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 import type { IDockviewPanel } from "dockview";
 
 import { ElementRow } from "./ProjectPanel";
-import {
-  AddServerInline,
-  BusInterfaceCombo,
-  LocalInterfaceList,
-  uniqueRemoteServers,
-} from "./ConnectionManagement";
+import { BusInterfaceCombo, LocalInterfaceList } from "./ConnectionManagement";
 import { hydrateSettings } from "./hostSettings";
+import type { ServerRow } from "./serverList";
 import { LOCAL_SERVER } from "./types";
-import type { Bus, InterfaceBinding, InterfaceRecord, ProjectElement } from "./types";
+import type { Bus, InterfaceRecord, ProjectElement } from "./types";
 
 const BUS1: Bus = { id: "b1", name: "Bus 1" };
 // The live address the sidecar is bound to *this* session. Discovery
@@ -53,74 +50,6 @@ afterEach(async () => {
   await hydrateSettings();
 });
 
-/// Put one setting in the frontend's settings cache, the way the app
-/// fills it: through a `get_settings` answer.
-async function withSetting(patch: Record<string, unknown>): Promise<void> {
-  invokeMock.mockImplementationOnce((async () => patch) as never);
-  await hydrateSettings();
-}
-
-describe("uniqueRemoteServers", () => {
-  it("returns first-seen distinct server addresses", () => {
-    const bindings: InterfaceBinding[] = [
-      { server: "10.0.0.1:50051", interface: "can0", bus_id: "b1" },
-      { server: "10.0.0.2:50051", interface: "can0", bus_id: "b2" },
-      { server: "10.0.0.1:50051", interface: "can1", bus_id: "b3" },
-    ];
-    expect(uniqueRemoteServers(bindings, null)).toEqual([
-      "10.0.0.1:50051",
-      "10.0.0.2:50051",
-    ]);
-  });
-
-  it("hides the local-sidecar binding (it has its own dedicated row)", () => {
-    const bindings: InterfaceBinding[] = [
-      { server: LOCAL_SERVER, interface: "vector:ch0", bus_id: "b1" },
-      { server: "10.0.0.1:50051", interface: "can0", bus_id: "b2" },
-    ];
-    expect(uniqueRemoteServers(bindings, LIVE_LOCAL)).toEqual([
-      "10.0.0.1:50051",
-    ]);
-  });
-
-  it("treats a 127.0.0.1:<port> binding as a stale remote, not local", () => {
-    // A binding that persisted a concrete sidecar `host:port` (rather
-    // than the `"local"` sentinel) renders under a stale remote-server
-    // row (showing as offline) until the user re-picks the interface
-    // from the live Local group.
-    const bindings: InterfaceBinding[] = [
-      { server: "127.0.0.1:43891", interface: "vector:ch0", bus_id: "b1" },
-    ];
-    expect(uniqueRemoteServers(bindings, LIVE_LOCAL)).toEqual([
-      "127.0.0.1:43891",
-    ]);
-  });
-
-  it("excludes local-virtual-bus bindings (URL scheme — in-process)", () => {
-    // Vbus bindings store `local-vbus://<id>` in `server`; that URL
-    // is the host's session-map index, not a remote address, so it
-    // mustn't surface in the Connection panel's remote-server list.
-    const bindings: InterfaceBinding[] = [
-      {
-        kind: "local-virtual-bus",
-        server: "local-vbus://vbus1",
-        interface: "bus",
-        bus_id: "b1",
-      },
-      {
-        kind: "local-virtual-bus",
-        server: "local-vbus://vbus1",
-        interface: "bus",
-        bus_id: "b2",
-      },
-      { server: "10.0.0.1:50051", interface: "can0", bus_id: "b3" },
-    ];
-    expect(uniqueRemoteServers(bindings, null)).toEqual([
-      "10.0.0.1:50051",
-    ]);
-  });
-});
-
 const REMOTE = "10.0.0.5:50051";
 
 const REC_CAN0: InterfaceRecord = {
@@ -134,14 +63,39 @@ const REC_VCAN0: InterfaceRecord = {
   fd_capable: false,
 };
 
+/// A trusted server as the host's merged list hands it over.
+function serverRow(patch: Partial<ServerRow> & { address: string }): ServerRow {
+  return {
+    name: null,
+    host: null,
+    version: null,
+    online: true,
+    trust: "trusted",
+    fingerprint: null,
+    hasToken: false,
+    insecure: false,
+    prompt: null,
+    ...patch,
+  };
+}
+
+const BENCH = serverRow({
+  address: REMOTE,
+  name: "bench-rig",
+  host: "bench-rig.local",
+  version: "v0.8.1",
+  fingerprint: "SHA256:aaa",
+  hasToken: true,
+});
+
 const NO_OPS = {
   onPick: () => {},
-  onAddServer: () => {},
+  onManageServers: () => {},
   onAddVirtualBus: () => {},
 };
 
 describe("BusInterfaceCombo", () => {
-  it("renders '— no interface —', local options, server optgroups, and '+ Add server…'", () => {
+  it("renders '— no interface —', local options, a group per trusted server, and 'Manage servers…'", () => {
     render(
       <BusInterfaceCombo
         bus={BUS1}
@@ -151,6 +105,7 @@ describe("BusInterfaceCombo", () => {
           [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0, REC_VCAN0] },
           [REMOTE]: { status: "ok", interfaces: [REC_CAN0] },
         }}
+        servers={[BENCH]}
         localVirtualBuses={[]}
         {...NO_OPS}
       />,
@@ -161,11 +116,82 @@ describe("BusInterfaceCombo", () => {
     expect(optionTexts).toContain("— no interface —");
     expect(optionTexts).toContain("Local / can0");
     expect(optionTexts).toContain("Local / vcan0");
-    expect(optionTexts).toContain(`${REMOTE} / can0`);
-    expect(optionTexts).toContain("+ Add server…");
+    // The server's interfaces sit under a header naming the server, so
+    // the row itself is just the interface.
+    expect(optionTexts).toContain("can0");
+    expect(screen.getByText("bench-rig")).toBeInTheDocument();
+    expect(optionTexts).toContain("Manage servers…");
+    // The bus row no longer knows how to add a server.
+    expect(optionTexts).not.toContain("+ Add server…");
   });
 
-  it("calls onPick with kind:remote on a hardware-interface selection", async () => {
+  it("offers nothing from a server this machine has not trusted", () => {
+    // The caller passes the trusted rows only; a merely-advertising
+    // server is trusted in the Servers panel first.
+    render(
+      <BusInterfaceCombo
+        bus={BUS1}
+        binding={null}
+        sidecarAddress={LIVE_LOCAL}
+        discoveries={{
+          [LIVE_LOCAL]: { status: "ok", interfaces: [] },
+          [REMOTE]: { status: "ok", interfaces: [REC_CAN0] },
+        }}
+        servers={[]}
+        localVirtualBuses={[]}
+        {...NO_OPS}
+      />,
+    );
+    openCombobox(screen.getByLabelText("bus b1 interface"));
+    expect(screen.queryByText("bench-rig")).not.toBeInTheDocument();
+    expect(comboboxOptionLabels()).not.toContain("can0");
+  });
+
+  it("calls onPick with the server's address on a remote-interface selection", async () => {
+    const onPick = vi.fn();
+    render(
+      <BusInterfaceCombo
+        bus={BUS1}
+        binding={null}
+        sidecarAddress={LIVE_LOCAL}
+        discoveries={{
+          [LIVE_LOCAL]: { status: "ok", interfaces: [] },
+          [REMOTE]: { status: "ok", interfaces: [REC_CAN0] },
+        }}
+        servers={[BENCH]}
+        localVirtualBuses={[]}
+        {...NO_OPS}
+        onPick={onPick}
+      />,
+    );
+    await pickCombobox(
+      screen.getByLabelText("bus b1 interface"),
+      `${REMOTE}\x00can0`,
+    );
+    expect(onPick).toHaveBeenCalledWith({
+      kind: "remote",
+      server: REMOTE,
+      iface: "can0",
+    });
+  });
+
+  it("shows a trusted server that is switched off as (offline), with nothing to pick", () => {
+    render(
+      <BusInterfaceCombo
+        bus={BUS1}
+        binding={null}
+        sidecarAddress={LIVE_LOCAL}
+        discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [] } }}
+        servers={[serverRow({ address: REMOTE, name: "bench-rig", online: false })]}
+        localVirtualBuses={[]}
+        {...NO_OPS}
+      />,
+    );
+    openCombobox(screen.getByLabelText("bus b1 interface"));
+    expect(screen.getByText("(offline)")).toBeInTheDocument();
+  });
+
+  it("calls onPick with kind:remote on a local-interface selection", async () => {
     const onPick = vi.fn();
     render(
       <BusInterfaceCombo
@@ -175,10 +201,10 @@ describe("BusInterfaceCombo", () => {
         discoveries={{
           [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0] },
         }}
+        servers={[]}
         localVirtualBuses={[]}
+        {...NO_OPS}
         onPick={onPick}
-        onAddServer={() => {}}
-        onAddVirtualBus={() => {}}
       />,
     );
     const combo = screen.getByLabelText("bus b1 interface");
@@ -198,10 +224,10 @@ describe("BusInterfaceCombo", () => {
         binding={null}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [] } }}
+        servers={[]}
         localVirtualBuses={[{ id: "vbus1", name: "Bench" }]}
+        {...NO_OPS}
         onPick={onPick}
-        onAddServer={() => {}}
-        onAddVirtualBus={() => {}}
       />,
     );
     const combo = screen.getByLabelText("bus b1 interface");
@@ -224,9 +250,9 @@ describe("BusInterfaceCombo", () => {
         binding={null}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [] } }}
+        servers={[]}
         localVirtualBuses={[]}
-        onPick={() => {}}
-        onAddServer={() => {}}
+        {...NO_OPS}
         onAddVirtualBus={onAddVirtualBus}
       />,
     );
@@ -234,24 +260,27 @@ describe("BusInterfaceCombo", () => {
     expect(onAddVirtualBus).toHaveBeenCalledTimes(1);
   });
 
-  it("calls onAddServer (not onPick) when '+ Add server…' is chosen", async () => {
+  it("calls onManageServers (not onPick) when 'Manage servers…' is chosen", async () => {
+    // The bus keeps whatever it was bound to: this option is a jump to
+    // the panel, not a source.
     const onPick = vi.fn();
-    const onAddServer = vi.fn();
+    const onManageServers = vi.fn();
     render(
       <BusInterfaceCombo
         bus={BUS1}
         binding={null}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0] } }}
+        servers={[]}
         localVirtualBuses={[]}
+        {...NO_OPS}
         onPick={onPick}
-        onAddServer={onAddServer}
-        onAddVirtualBus={() => {}}
+        onManageServers={onManageServers}
       />,
     );
     const combo = screen.getByLabelText("bus b1 interface");
-    await pickCombobox(combo, "__add_server__");
-    expect(onAddServer).toHaveBeenCalledTimes(1);
+    await pickCombobox(combo, "__manage_servers__");
+    expect(onManageServers).toHaveBeenCalledTimes(1);
     expect(onPick).not.toHaveBeenCalled();
   });
 
@@ -268,17 +297,17 @@ describe("BusInterfaceCombo", () => {
         }}
         sidecarAddress={LIVE_LOCAL}
         discoveries={{ [LIVE_LOCAL]: { status: "ok", interfaces: [REC_CAN0] } }}
+        servers={[]}
         localVirtualBuses={[]}
+        {...NO_OPS}
         onPick={onPick}
-        onAddServer={() => {}}
-        onAddVirtualBus={() => {}}
       />,
     );
     await pickCombobox(screen.getByLabelText("bus b1 interface"), "");
     expect(onPick).toHaveBeenCalledWith(null);
   });
 
-  it("shows a (discovering…) placeholder when a server has no discovery yet", () => {
+  it("shows a (discovering…) placeholder when a trusted server has no discovery yet", () => {
     render(
       <BusInterfaceCombo
         bus={BUS1}
@@ -288,6 +317,7 @@ describe("BusInterfaceCombo", () => {
           [LIVE_LOCAL]: { status: "ok", interfaces: [] },
           [REMOTE]: { status: "pending" },
         }}
+        servers={[BENCH]}
         localVirtualBuses={[]}
         {...NO_OPS}
       />,
@@ -309,6 +339,7 @@ describe("BusInterfaceCombo", () => {
         }}
         sidecarAddress={NEW_LIVE}
         discoveries={{ [NEW_LIVE]: { status: "ok", interfaces: [REC_CAN0] } }}
+        servers={[]}
         localVirtualBuses={[]}
         {...NO_OPS}
       />,
@@ -336,6 +367,7 @@ describe("BusInterfaceCombo", () => {
           [LIVE_LOCAL]: { status: "ok", interfaces: [] },
           [REMOTE]: { status: "err", error: "connection refused" },
         }}
+        servers={[]}
         localVirtualBuses={[]}
         {...NO_OPS}
       />,
@@ -344,83 +376,6 @@ describe("BusInterfaceCombo", () => {
     expect(
       screen.getByRole("option", { name: `${REMOTE} / can0 (offline)` }),
     ).toBeInTheDocument();
-  });
-});
-
-describe("AddServerInline", () => {
-  // The form makes two different host calls now — the interface pull
-  // below, and the browsed-server list it reads on mount — so these
-  // mocks answer by command name rather than by call order. The
-  // browse list itself is covered in
-  // `AddServerInline.discovery.dom.test.tsx`.
-  const emptyHost = () => {
-    invokeMock.mockReset();
-    invokeMock.mockImplementation(async () => []);
-  };
-  beforeEach(emptyHost);
-  afterEach(emptyHost);
-
-  it("discovers interfaces and forwards onPick with the selection", async () => {
-    invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "refresh_interfaces" ? [REC_CAN0, REC_VCAN0] : [],
-    );
-    const onPick = vi.fn();
-    render(
-      <AddServerInline
-        busLabel="Bus 1"
-        onCancel={() => {}}
-        onPick={onPick}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
-    // Wait one microtask for the resolved invoke + state update.
-    await Promise.resolve();
-    await Promise.resolve();
-
-    const ifaceSelect = await screen.findByLabelText("interface id");
-    expect(comboboxValue(ifaceSelect)).toBe("can0");
-    await pickCombobox(ifaceSelect, "vcan0");
-    fireEvent.click(screen.getByRole("button", { name: "Bind to Bus 1" }));
-    expect(onPick).toHaveBeenCalledWith({ server: "127.0.0.1:50051", iface: "vcan0" });
-  });
-
-  it("starts at the configured default server address", async () => {
-    // The address the form opens filled with is a *default*: it seeds
-    // the box and the user still types over it.
-    await withSetting({ default_server_address: "10.9.9.9:60000" });
-    render(<AddServerInline busLabel="Bus 1" onCancel={() => {}} onPick={() => {}} />);
-    expect(screen.getByLabelText("server address")).toHaveValue("10.9.9.9:60000");
-  });
-
-  it("surfaces the error and stays open when Discover throws", async () => {
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "refresh_interfaces") throw new Error("nope");
-      return [];
-    });
-    render(
-      <AddServerInline
-        busLabel="Bus 1"
-        onCancel={() => {}}
-        onPick={() => {}}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Discover" }));
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(screen.getByText(/nope/)).toBeInTheDocument();
-  });
-
-  it("Cancel triggers onCancel", () => {
-    const onCancel = vi.fn();
-    render(
-      <AddServerInline
-        busLabel="Bus 1"
-        onCancel={onCancel}
-        onPick={() => {}}
-      />,
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
 

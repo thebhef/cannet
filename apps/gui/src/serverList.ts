@@ -9,7 +9,7 @@
 // one — those are model facts, and re-deriving any of them here would
 // be a second authority.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Fzf } from "fzf";
@@ -92,14 +92,14 @@ export function useServerList(): ServerList {
     void (async () => {
       try {
         const initial = await invoke<ServerList>("get_server_list");
-        if (!cancelled && initial) setList(initial);
+        if (!cancelled && Array.isArray(initial?.servers)) setList(initial);
       } catch {
         // Host without the command (older build, dev shell): fall
         // through to the listener and stay empty if none comes.
       }
       try {
         unlisten = await listen<ServerList>(SERVER_LIST_CHANGED_EVENT, (e) => {
-          if (!cancelled && e.payload) setList(e.payload);
+          if (!cancelled && Array.isArray(e.payload?.servers)) setList(e.payload);
         });
       } catch {
         // Same fallback: stay on whatever snapshot we have.
@@ -113,6 +113,86 @@ export function useServerList(): ServerList {
   }, []);
 
   return list;
+}
+
+/// The identity the host files a server under: the address without a
+/// `scheme://`, lower-cased. Mirrors `server_trust::server_key`, so a
+/// binding's spelling of an address finds the row the host keyed by it.
+export function serverKey(address: string): string {
+  const i = address.indexOf("://");
+  return (i < 0 ? address : address.slice(i + 3)).toLowerCase();
+}
+
+/// How a server is named where it is picked from: the instance name it
+/// advertises, or its address when nothing has answered to name it.
+export function serverLabel(row: ServerRow): string {
+  return row.name ?? row.address;
+}
+
+/// The servers a bus can be bound to: the ones the host reaches without
+/// stopping to ask (ADR 0041). A server that is only *discovered* is
+/// not one of them — it is trusted in the Servers panel first, which is
+/// where that decision belongs.
+export function trustedServers(rows: readonly ServerRow[]): ServerRow[] {
+  return rows.filter((r) => r.trust === "trusted");
+}
+
+/// Which of `addresses` the host cannot reach without an answer from
+/// the user. The host decides — the trust store and the address rules
+/// that make a loopback proxy plaintext are both its, and a view that
+/// guessed at either would be a second authority.
+///
+/// Re-asked whenever the address set changes and whenever the merged
+/// list moves, which is what a trust write does.
+export function useAddressesNeedingTrust(
+  addresses: readonly string[],
+): ReadonlySet<string> {
+  const [needing, setNeeding] = useState<ReadonlySet<string>>(() => new Set());
+  // Stable shape of the address set, so the subscription effect doesn't
+  // tear down on every render.
+  const key = useMemo(() => [...addresses].sort().join("|"), [addresses]);
+  const latest = useRef(addresses);
+  latest.current = addresses;
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: UnlistenFn | undefined;
+
+    const ask = async () => {
+      const list = [...latest.current];
+      if (list.length === 0) {
+        setNeeding(new Set());
+        return;
+      }
+      try {
+        const answer = await invoke<string[]>("addresses_needing_trust", {
+          addresses: list,
+        });
+        if (!cancelled && Array.isArray(answer)) setNeeding(new Set(answer));
+      } catch {
+        // Host without the command (older build, dev shell): nothing is
+        // flagged, which is the pre-existing behaviour.
+      }
+    };
+
+    void (async () => {
+      await ask();
+      try {
+        unlisten = await listen(SERVER_LIST_CHANGED_EVENT, () => {
+          void ask();
+        });
+      } catch {
+        // Same fallback: stay on the answer we have.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, [key]);
+
+  return needing;
 }
 
 /// What a query is matched against: everything that identifies the
@@ -163,7 +243,7 @@ export function browseNotice(browse: BrowseStatus): string | null {
     case "running":
       return null;
     case "failed":
-      return `Discovery is not running — the mDNS browser could not start (${browse.detail}). Servers can still be reached by typing their address.`;
+      return `Discovery is not running — the mDNS browser could not start (${browse.detail}). Only servers already accepted on this machine are listed.`;
     case "degraded":
       return `Discovery may be blocked — the mDNS browser reported an error (${browse.detail}). Check that UDP 5353 is allowed inbound, and on macOS that cannet is permitted to find devices on the local network.`;
     case "stopped":
@@ -172,7 +252,7 @@ export function browseNotice(browse: BrowseStatus): string | null {
 }
 
 /// What an empty list means under a browse that is running normally:
-/// genuinely nothing on this subnet, which a typed address still
-/// reaches.
+/// genuinely nothing on this subnet — and nothing accepted here
+/// either, so no bus has a server to bind to yet.
 export const NOTHING_ADVERTISING =
-  "No servers are advertising on this network, and none have been accepted on this machine. A server on another subnet won't appear here — reach it by typing its address on a bus.";
+  "No servers are advertising on this network, and none have been accepted on this machine. A server on another subnet won't appear here — discovery is multicast, so it has to advertise somewhere this machine can hear it.";

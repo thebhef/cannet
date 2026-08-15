@@ -1,4 +1,4 @@
-import type { SerializedDockview } from "dockview";
+import type { DockviewApi, SerializedDockview } from "dockview";
 
 import type { ProjectElementKind } from "./types";
 import type { FocusedPanelKind } from "./commands";
@@ -88,6 +88,23 @@ export const SHORTCUTS_PANEL_ID = "shortcuts";
 /// this machine makes once (ADR 0041), not a per-project one, so there
 /// is one instance and it is opened from the command palette.
 export const SERVERS_PANEL_ID = "servers";
+
+/// Show-or-focus the Servers panel: bring the one instance forward if
+/// it is open, otherwise add it. One implementation for both ways in —
+/// the `panel.show.servers` command and the bus row's "Manage
+/// servers…" — so a bus row cannot open a second copy of a singleton.
+export function showServersPanel(api: DockviewApi): void {
+  const existing = api.panels.find((p) => p.id === SERVERS_PANEL_ID);
+  if (existing) {
+    existing.api.setActive();
+    return;
+  }
+  api.addPanel({
+    id: SERVERS_PANEL_ID,
+    component: SERVERS_PANEL_COMPONENT,
+    title: "Servers",
+  });
+}
 
 /// What `CommandContext.focusedPanelKind` should report for the
 /// active dockview panel: element-backed panels report their element

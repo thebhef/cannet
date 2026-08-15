@@ -19,24 +19,37 @@ import { useSidecarStatus } from "./sidecarStatus";
 import { useUndoGesture } from "./undoGesture";
 import type { Bus, ProjectElement, ProjectElementKind } from "./types";
 import { elementKindLabel, elementLabel } from "./elementLabel";
-import { localVbusBinding, localVbusId, resolveServer } from "./types";
+import {
+  isLocalBinding,
+  localVbusBinding,
+  localVbusId,
+  resolveServer,
+} from "./types";
 import {
   PROJECT_GRAPH_PANEL_COMPONENT,
   PROJECT_GRAPH_PANEL_ID,
   elementPanelComponent,
+  showServersPanel,
 } from "./dockLayout";
+import {
+  trustedServers,
+  useAddressesNeedingTrust,
+  useServerList,
+} from "./serverList";
 import { defaultBusColor } from "./busColor";
 import { useThemeName } from "./theme";
 import {
-  AddServerInline,
   BusHardwareConfig,
   BusInterfaceCombo,
+  BusServerTrustNotice,
   LocalInterfacesRow,
-  RemoteServerRow,
+  ServerSection,
   VirtualBusRow,
+  bindingsForServer,
+  busServerTrust,
   samePick,
-  uniqueRemoteServers,
   useInterfaceDiscovery,
+  useServerSections,
   type ComboPick,
 } from "./ConnectionManagement";
 
@@ -155,26 +168,61 @@ export function ProjectPanel(props: IDockviewPanelProps) {
   // would otherwise loop trying to connect to a non-existent server).
   const sidecarAddress =
     sidecar.phase === "ready" ? sidecar.address : null;
+  // The servers this machine talks to are the host's merged list, not
+  // the project's: a bus binds to one, it does not configure it
+  // (ADR 0041). Only the trusted ones are a source — the rest are
+  // managed in the Servers panel.
+  const serverList = useServerList();
+  const trusted = useMemo(
+    () => trustedServers(serverList.servers),
+    [serverList.servers],
+  );
   const knownServers = useMemo(() => {
     const set = new Set<string>();
     if (sidecarAddress) set.add(sidecarAddress);
+    // A trusted server that is answering is watched whether or not the
+    // project uses it yet — its section and the bus combos are the
+    // offer, so they need its interfaces before anything is bound.
+    for (const row of trusted) {
+      if (row.online) set.add(row.address);
+    }
     for (const b of p.interfaceBindings) {
       if (localVbusId(b) !== null) continue;
       const resolved = resolveServer(b.server, sidecarAddress);
       if (resolved) set.add(resolved);
     }
     return [...set];
-  }, [sidecarAddress, p.interfaceBindings]);
+  }, [sidecarAddress, trusted, p.interfaceBindings]);
 
   const discovery = useInterfaceDiscovery(knownServers);
+  // Which of the servers this project names cannot be reached without
+  // an answer from the user. The host decides — a bus row only renders
+  // what it is told (ADR 0041).
+  const boundServers = useMemo(
+    () => [
+      ...new Set(
+        p.interfaceBindings
+          .filter((b) => !isLocalBinding(b) && localVbusId(b) === null)
+          .map((b) => b.server),
+      ),
+    ],
+    [p.interfaceBindings],
+  );
+  const needingTrust = useAddressesNeedingTrust(boundServers);
+  // A server's section stands open while one of its interfaces is
+  // chosen; the hook keeps a manual fold until that answer moves.
+  const chosenServers = useMemo(() => {
+    const chosen: Record<string, boolean> = {};
+    for (const row of trusted) {
+      chosen[row.address] =
+        bindingsForServer(p.interfaceBindings, row.address).length > 0;
+    }
+    return chosen;
+  }, [trusted, p.interfaceBindings]);
+  const sections = useServerSections(chosenServers);
   // Connection state is the host's model, not ours: we subscribe and
   // render, never derive.
   const connStates = useConnectionStates();
-
-  // Inline "Add server…" form per bus: `addingForBus === bus.id` means
-  // the bus row shows the new-server form. `null` = no row is in the
-  // adding state.
-  const [addingForBus, setAddingForBus] = useState<string | null>(null);
 
   const panelFor = (id: string): IDockviewPanel | undefined =>
     containerApi.panels.find(
@@ -235,11 +283,6 @@ export function ProjectPanel(props: IDockviewPanelProps) {
     [p],
   );
 
-  const remoteServers = uniqueRemoteServers(
-    p.interfaceBindings,
-    sidecarAddress,
-  );
-
   return (
     <div className="project-panel">
       <CollapsibleSection title="Project" {...fold(SECTION_PROJECT)}>
@@ -290,7 +333,6 @@ export function ProjectPanel(props: IDockviewPanelProps) {
         {p.buses.length === 0 && <div className="project-empty">No buses.</div>}
         {p.buses.map((bus, i) => {
           const binding = p.interfaceBindings.find((b) => b.bus_id === bus.id);
-          const adding = addingForBus === bus.id;
           const pendingHwConfig = p.busesWithPendingHwConfig.includes(bus.id);
           // Local virtual buses have no controller behind them (the
           // host owns their arbitration timing). Hide the hardware
@@ -358,9 +400,10 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   binding={binding ?? null}
                   sidecarAddress={sidecarAddress}
                   discoveries={discovery.entries}
+                  servers={trusted}
                   localVirtualBuses={p.localVirtualBuses}
                   onPick={(pick) => setBusInterface(bus, pick)}
-                  onAddServer={() => setAddingForBus(bus.id)}
+                  onManageServers={() => showServersPanel(containerApi)}
                   onAddVirtualBus={() => {
                     const id = newVbusId(p.localVirtualBuses.map((v) => v.id));
                     const name = `Virtual ${p.localVirtualBuses.length + 1}`;
@@ -370,26 +413,21 @@ export function ProjectPanel(props: IDockviewPanelProps) {
                   }}
                 />
               </div>
+              <BusServerTrustNotice
+                bus={bus}
+                state={busServerTrust(
+                  binding ?? null,
+                  serverList.servers,
+                  needingTrust,
+                )}
+                onManageServers={() => showServersPanel(containerApi)}
+              />
               {!isLocalVbus && (
                 <BusHardwareConfig
                   bus={bus}
                   onSetSpeed={(v) => p.onUpdateBus(bus.id, { speed_bps: v })}
                   onSetFd={(v) => p.onUpdateBus(bus.id, { fd: v })}
                   onSetFdDataSpeed={(v) => p.onUpdateBus(bus.id, { fd_data_speed_bps: v })}
-                />
-              )}
-              {adding && (
-                <AddServerInline
-                  busLabel={bus.name}
-                  onCancel={() => setAddingForBus(null)}
-                  onPick={(pick) => {
-                    setBusInterface(bus, {
-                      kind: "remote",
-                      server: pick.server,
-                      iface: pick.iface,
-                    });
-                    setAddingForBus(null);
-                  }}
                 />
               )}
             </div>
@@ -461,23 +499,20 @@ export function ProjectPanel(props: IDockviewPanelProps) {
             if (sidecarAddress) void discovery.refresh(sidecarAddress);
           }}
         />
-        {remoteServers.map((server) => {
-          const state = discovery.entries[server];
-          const isConnected = p.connectedAddresses.includes(server);
-          return (
-            <RemoteServerRow
-              key={server}
-              server={server}
-              connected={isConnected}
-              bindings={p.interfaceBindings}
-              buses={p.buses}
-              state={state}
-              discoveries={discovery.entries}
-              connStates={connStates}
-              onRefresh={() => void discovery.refresh(server)}
-            />
-          );
-        })}
+        {trusted.map((server) => (
+          <ServerSection
+            key={server.address}
+            server={server}
+            connected={p.connectedAddresses.includes(server.address)}
+            bindings={p.interfaceBindings}
+            buses={p.buses}
+            discoveries={discovery.entries}
+            connStates={connStates}
+            expanded={sections.expanded(server.address)}
+            onToggle={() => sections.toggle(server.address)}
+            onRefresh={() => void discovery.refresh(server.address)}
+          />
+        ))}
         {p.interfaceBindings.length === 0 ? (
           <div className="project-empty">
             No interfaces selected. Pick one on a logical bus above to enable
