@@ -46,6 +46,35 @@ jobs:
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+  mdf-export-oracle:
+    name: MDF export (asammdf oracle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      # asammdf is the ecosystem's reference MDF implementation and this
+      # is the one place cannet asks its opinion: a file the writer just
+      # produced is opened by an outside reader and compared, field for
+      # field, against what went into it. Deliberately its own job — the
+      # `rust` job's `cargo test --workspace` stays Python-free, so the
+      # default suite never needs an interpreter.
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          version: "0.9.21"
+
+      - name: Write a sample capture
+        run: cargo run -p cannet-mdf --example export_sample -- "${RUNNER_TEMP}/sample.mf4"
+
+      - name: Validate it with asammdf
+        run: |
+          uv run --with asammdf --with numpy python \
+            crates/cannet-mdf/tests/fixtures/validate_export.py "${RUNNER_TEMP}/sample.mf4"
+
   frontend:
     name: Frontend (vitest + build)
     runs-on: ubuntu-latest

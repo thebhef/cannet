@@ -132,6 +132,11 @@ pub(crate) struct Mdf4File {
     /// relative to.
     pub(crate) start_time_ns: u64,
     pub(crate) unfinalized: bool,
+    /// `hd_ev_first` — head of the file's event (`##EV`) chain, `0` when it
+    /// carries none.
+    pub(crate) first_event_addr: u64,
+    /// `hd_at_first` — head of the file's attachment (`##AT`) chain.
+    pub(crate) first_attachment_addr: u64,
     pub(crate) groups: Vec<Group>,
     data_groups: Vec<DataGroup>,
 }
@@ -222,9 +227,28 @@ impl Mdf4File {
             bytes,
             start_time_ns: header.start_time_ns,
             unfinalized,
+            first_event_addr: header.first_event_addr,
+            first_attachment_addr: header.first_attachment_addr,
             groups,
             data_groups,
         })
+    }
+
+    /// The file from `addr` on, for a block parser to read its header and
+    /// body out of.
+    pub(crate) fn slice_at(&self, addr: u64) -> Result<&[u8], MdfSourceError> {
+        slice_at(&self.bytes, addr)
+    }
+
+    /// Whether the block at `addr` carries the four-byte id `id`.
+    pub(crate) fn is_block(&self, addr: u64, id: [u8; 4]) -> bool {
+        is_block(&self.bytes, addr, id)
+    }
+
+    /// The text of the `##TX` block at `addr`, or `None` for a null link
+    /// or a block of another kind.
+    pub(crate) fn text_at(&self, addr: u64) -> Result<Option<String>, MdfSourceError> {
+        read_text(&self.bytes, addr)
     }
 
     /// The whole file, for the `mdf4-rs` decoders that resolve links

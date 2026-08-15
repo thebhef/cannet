@@ -133,7 +133,7 @@ use cannet_core::CanFrameSource;
 #[cfg(test)]
 use cannet_dbc::Database;
 #[cfg(test)]
-use capture::write_capture;
+use capture::write_blf_capture;
 use capture::{
     clear_trace_store, import_mdf, open_log, restore_scratch_capture, save_capture,
     scan_blf_channels, scan_mdf_channels,

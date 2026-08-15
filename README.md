@@ -63,9 +63,13 @@ crates/
                  FD, error + remote frames, DZ-compressed data. Follows
                  the `cn_composition` link `mdf4-rs` does not, which is
                  what turns a channel group into frames. Also exposes the
-                 file's message-independent signal groups, skips
+                 file's message-independent signal groups, its `##EV`
+                 timeline markers and its `##AT` attachments, skips
                  per-message DBC-decoded ones, and rejects pre-decoded
-                 signal files outright.
+                 signal files outright. `MdfCaptureWriter` is the inverse
+                 for Save Capture: sorted, finalized MDF 4.10 with the
+                 bus-logging composition written out by hand, plus signal
+                 groups, events and embedded databases.
   cannet-dbc/    `Database::parse(text)` + `decode(frame)` + `signals()`
                  (the message/signal list a plot panel picks from).
                  Hand-rolled bit extraction (LE / Motorola sequential
@@ -750,7 +754,7 @@ historical trace so nothing is lost. It is wiped when you replace it —
 **Start** a new capture or **Clear** — or, opt-in, on a clean exit
 (**Settings → clear scratch cache on exit**, off by default). This
 scratch is ephemeral working storage, not an archive: to keep a capture
-permanently, use **Save Capture** to write a durable `.blf`.
+permanently, use **Save Capture** to write a durable `.blf` or `.mf4`.
 
 By default the scratch is **unbounded** (limited only by free disk). To
 cap it, set a byte limit in **Settings**; over the cap the store drops
@@ -1589,9 +1593,36 @@ labelled with their source channel group — and never in the trace
 views, which list frames. Loading, reloading or removing a DBC leaves
 them exactly as they are, in the session and across a relaunch.
 
-Saving such a capture as BLF drops them: BLF carries frames and has
-nowhere to put a signal series. The save still happens, and names in
-System Messages what will not be in the file.
+**Save Capture writes BLF or MDF.** One gesture, one host command; the
+save dialog's filter list offers **Vector BLF (`.blf`)** and **ASAM MDF
+(`.mf4`)**, and the filter you pick travels to the host as an explicit
+format — nothing is inferred from the path, so a "save as MDF" can
+never produce a BLF wearing an `.mf4` name.
+
+| | BLF | MDF |
+| --- | --- | --- |
+| frames (classic / FD / remote / error) | yes | yes |
+| logical bus assignment | channel number | `CAN_DataFrame.BusChannel` |
+| notes / event markers | `GLOBAL_MARKER` | `##EV` blocks |
+| file-backed signals | **dropped** | signal channel groups |
+| the project's DBCs | no | embedded `##AT` attachments |
+
+Saving a capture that holds file-backed signals as BLF drops them: BLF
+carries frames and has nowhere to put a signal series. The save still
+happens, and names in System Messages what will not be in the file.
+MDF is the full-fidelity save — import → save → re-import gives back the
+same frames (payloads, DLC, FD flags, remote and error frames), the same
+absolute nanosecond timestamps, the same buses, the same markers and the
+same signal series, and the DBCs the capture was decoded against ride
+inside the file ([ADR 0010](docs/adr/0010-no-sidecar-files.md)). What it
+deliberately does *not* write is DBC-decoded signals as channels: the
+frames plus the attached DBC already say all of that, and writing both
+would double-count every signal on re-import.
+
+The MDF a save writes is always **sorted and finalized**, uncompressed
+`##DT`. Timestamps are `f64` seconds against the capture's own
+`hd_start_time_ns`, which reproduces absolute nanoseconds exactly for
+any capture spanning less than about 26 days.
 
 **Per-bus DBC scoping**. Each DBC entry in the project panel grows a
 row of checkboxes — one per defined logical bus — that control which
@@ -2053,6 +2084,24 @@ uv run --with asammdf --with numpy python gen_fixtures.py
 It rewrites every fixture and expectation, then re-reads each result
 through asammdf and checks it against the JSON it just wrote; a
 non-zero exit means the corpus does not match its own ground truth.
+
+### Validating an MDF export against asammdf
+
+The MDF **writer** is proved against `cannet-mdf`'s own reader by the
+default suite. asammdf — the ecosystem's reference implementation — is
+the independent second opinion, and it runs as its own CI job so
+`cargo test --workspace` stays Python-free. Locally:
+
+```sh
+cargo run -p cannet-mdf --example export_sample -- /tmp/sample.mf4
+uv run --with asammdf --with numpy python \
+    crates/cannet-mdf/tests/fixtures/validate_export.py /tmp/sample.mf4
+```
+
+The example writes a deterministic capture plus a `sample.json` listing
+exactly what went into it; the script opens the `.mf4` with asammdf and
+compares the two — the bus-logging map, every frame field for field, the
+signal groups, the events and the embedded attachment.
 asammdf is a dev-time oracle only — never a runtime dependency.
 
 ### Pre-commit hook

@@ -1,8 +1,9 @@
 # Demo trace fixture
 
 A small but feature-complete CAN log for exercising `cannet-blf`,
-`cannet-dbc`, and the GUI end-to-end. Open `cannet-demo.blf` in the
-GUI and attach `cannet-demo.dbc` as the database.
+`cannet-mdf`, `cannet-dbc`, and the GUI end-to-end. Open
+`cannet-demo.blf` (or `cannet-demo.mf4` — the same traffic in the other
+format) in the GUI and attach `cannet-demo.dbc` as the database.
 
 Two example *projects* live alongside this trace fixture:
 
@@ -19,6 +20,8 @@ Two example *projects* live alongside this trace fixture:
 | `cannet-demo.dbc` | DBC database — message and signal definitions. |
 | `cannet-demo.blf` | 10 s of generated CAN/CAN FD traffic, 1810 frames. |
 | `generate_blf.py` | Deterministic generator for the BLF (seeded RNG). |
+| `cannet-demo.mf4` | The same 10 s as ASAM MDF 4.10, plus event markers and message-independent signals. |
+| `generate_mdf.py` | Deterministic generator for the MF4 (reads the BLF; seeded RNG). |
 
 ## What the trace covers
 
@@ -42,6 +45,26 @@ Coverage checklist:
 - [x] Mix of clean periodic, periodic-plus-noise, and discrete waveforms.
 - [x] Five distinct cadences from 10 ms to 1 s.
 
+## What the MDF adds
+
+`cannet-demo.mf4` carries the same 1810 frames — same ids, same
+payloads, same cadences, decodable against the same `cannet-demo.dbc` —
+in a `CAN_DataFrame` bus-logging channel group, plus the two kinds of
+content a BLF has nowhere to put:
+
+| Content | In the file | On import |
+|---|---|---|
+| CAN / CAN FD traffic | `CAN_DataFrame` structure channel group, `BusChannel` 1 | frames, one channel to map onto a bus |
+| Event markers | four `##EV` blocks (`run start`, `gear shift`, `GPS fix`, `run end`) | session notes, ids and colors intact |
+| Message-independent signals | `Ambient` (`AmbientTemp` degC, `CabinHumidity` %) and `Charger` (`ChargerPower` kW) | three file-backed signals |
+
+Coverage checklist:
+
+- [x] MDF 4.10, sorted, finalized, `##DZ`-compressed data blocks.
+- [x] Bus-logging composition (one `##CN` per structure member).
+- [x] Timeline events with cannet's `common_properties` id and color.
+- [x] Message-independent signal channel groups with units.
+
 ## Regenerating
 
 ```sh
@@ -49,7 +72,15 @@ pip install python-can cantools
 python3 examples/generate_blf.py
 ```
 
-The script seeds its RNG so the BLF is byte-identical across runs.
+```sh
+uv run --with asammdf --with numpy --with python-can \
+    examples/generate_mdf.py
+```
+
+Both scripts seed their RNG — and the MDF generator pins the one field
+asammdf would otherwise stamp with the wall clock — so each fixture is
+byte-identical across runs. Regenerate the BLF first if you change it:
+the MDF generator reads its frames from it.
 
 ## Verifying
 
