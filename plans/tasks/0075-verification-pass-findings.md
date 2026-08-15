@@ -53,6 +53,26 @@ task 72 §3–4.)
    emits (or fails to emit) the refresh signal streaming gets from
    `trace-grew`; the transient hlines are that stall made visible
    through the one-sample rule.
+   **New observation (2026-08-14 ~22:27 local, log-attributed): a
+   full hang on launch, same seam.** The owner launched onto an
+   ~18.5-hour restored capture (57.7 M frames) and the UI hung until
+   the process was killed (~17 min later); the relaunch restored the
+   same session in 685 ms and was healthy. `cannet.log` for the hung
+   launch (02:27:28 UTC): startup reached interactive in 2744 ms,
+   restore completed in 642 ms (pyramids reused — no cold rebuild),
+   **no errors or warnings after that**, and the host's health
+   sampler ran normally to the kill (fps=0 — not connected —
+   trace_len frozen, rss ~80–103 MB, one renderer spike 265→534 MB
+   at 02:42 that recovered). No WebView2 crashpad dump. So the host
+   was alive and the restore path fast; the hang was
+   frontend/webview-side, after restore, with nothing logged. The
+   investigation must find what the frontend does on first paint of
+   a very large restored session that can wedge it (and why it is
+   invisible to the log — a frontend-hang watchdog/log line may be a
+   fix candidate). Distinct symptom from the slow-restore
+   observation above (that one was a cold rebuild; this one reused
+   pyramids) — same boot-restore seam, so it lives in this item's
+   investigation.
    **Owner rulings (2026-08-14) on the legs:** the refresh behavior
    in that condition "should be understood and improved" —
    confirmed as this item's remaining work. The transient hlines
