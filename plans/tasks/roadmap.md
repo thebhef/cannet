@@ -34,10 +34,17 @@ the order below is the order of work, top first.
    MAJOR item — order is the owner's to adjust.
 3. [Task 71 — Perf Grooming](0071-perf-grooming.md)
    — the two unattributed perf questions from Task 70's closeout
-   gates: the run-1 `rx_gap_short_frac_worst` failure (isolating
-   experiment never run) and the four-gate `renderer_mb_drift_per_min`
-   rise now at 93 % of its limit. Opened by owner ruling 2026-08-14;
-   position in the order is the owner's to adjust.
+   gates: the run-1 `rx_gap_short_frac_worst` failure and the
+   `renderer_mb_drift_per_min` rise. Opened by owner ruling
+   2026-08-14. **Investigation done** — both attributed to the
+   measurement environment (neither is the build; every nominated
+   lever falsified over fourteen runs on one constant binary), and
+   the gate procedure amended in ADR 0031 / README so a lone breach
+   is re-run rather than explained. **Outstanding: one owner
+   decision** on how the gate should treat drift metrics whose
+   session-to-session spread exceeds their limit's margin — median
+   the gate's runs, widen the limits, or leave them now that the
+   trend is known to be an artifact. Closes on that ruling.
 4. [Task 72 — Extrapolation-Aware Plot Rendering + Enum Leading-Edge
    Lag](0072-extrapolation-rendering.md) — investigation-first: the
    proportional leading-edge lag on a growing full-trace view

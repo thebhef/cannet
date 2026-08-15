@@ -382,6 +382,21 @@ window) was in scope only if the data tied it to the same mechanism.
 Nothing here does: it is a whole-capture-length effect, and every run
 in this task was 60 s. It stays where task 70 left it, unattributed.
 
+### 2026-08-14 — exit-criteria walk
+
+| criterion | state |
+| --- | --- |
+| Run-1 anomaly attributed with the isolating experiment's data | **met** — experiment 1, ten runs, all named levers falsified; attributed to environment, carrier unidentified and recorded as such |
+| Gate procedure amended so a first-run failure is never ambiguous (no-repro leg) | **met** — ADR 0031 consequence + README self-driving section: quiet machine, compare within a session, re-run a lone breach |
+| Renderer-drift rise attributed with data | **met** — measurement artifact, shown by the same binary spanning the whole trend twice over |
+| Either a fix lands or the gate's expectation is re-grounded by owner ruling | **open** — no fix is warranted (no growth); the re-grounding is a **queued owner decision**, stated above and not actioned |
+| No baseline promoted to make anything pass | **met** — no baseline read, written, promoted or edited; `docs/performance-measurements/baseline.json` untouched |
+| Findings in this status log, prediction before data | **met** — predictions committed (`0ebad0c7`) before the first measured run |
+| Report sets committed under the established naming | **met** — 14 task-71 reports plus the six task-75 gate reports the finding rests on |
+
+The task closes on the queued owner decision; nothing else is
+outstanding.
+
 ## Blockers / side effects
 
 - **Experiment 2 (synthetic machine load) is closed by owner veto, not
