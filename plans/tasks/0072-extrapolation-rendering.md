@@ -792,10 +792,58 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     `git show --ignore-cr-at-eol`). Same character, written as an
     escape.
 
+  - _Screenshot scenario, stale step (`267c3e08`, orchestrator
+    addendum)._ The visual-parity walk aborted at step 02 with `no dock
+    tab "DBC"`. The rename to "Database" is only half of it: a
+    singleton's title is a constant of the build that the app normalizes
+    a restored layout against, so a step that clicks a tab title is a
+    function of the rename history **and** of the project — `ev-demo`'s
+    saved layout carries the Database and Settings panels, `ev-zonal`'s
+    carries neither, so fixing the string alone would have left the walk
+    aborting on the other example. Steps 02 and 03 now use the app's
+    show-or-focus commands (activate when open, add when not), which is
+    the same picture on a project that has them, and the now-unused
+    `tab` helper goes with them. Guarded by
+    `the_scenario_drives_labels_the_frontend_still_defines`: every label
+    the scenario clicks must exist in the frontend source that defines it
+    (`commands.ts` for palette labels, `App.tsx` for toolbar ones) —
+    verified red against the old label. The rest of the scenario's labels
+    were checked against the frontend and are current. Nothing else in
+    the build tied the two sides together, which is how this rotted.
+
+  - _Extrapolation screenshots: **NOT added — recorded as a blocker
+    instead**, per the addendum's bound._ The scenario photographs an
+    **idle** app (no `--connect-on-start`, no frames), and a plot can
+    only show a dashed tail, an interior >10× stall, a one-sample hline
+    or a striped lane if the session holds a capture with those shapes.
+    Getting one in front of the lens needs, in order: a fixture capture
+    carrying a stopped series, a stalled series, a one-sample series and
+    a sparse enum; a DBC defining them; an example project whose
+    per-unit plot area curates them; a way for the harness to import it
+    without a native file dialog; and a deterministic x window. Each
+    step is buildable — the most promising import route is that
+    `handleImportTrace(presetPath)` already takes a path (that is how
+    the toolbar's **Recent** menu opens one) and the recents list is a
+    user-scope setting (`recent_blfs`), i.e. seedable into the profile
+    the capture already owns and seeds `theme` into, after which the
+    step is "click Recent, click the path" the way a user does. What
+    stops it here is verification, not feasibility: none of that chain
+    can be exercised without a `tauri build --no-bundle` of the current
+    tip, which this phase was instructed not to run, and an unverified
+    interactive step **aborts the whole capture run** — which is exactly
+    the failure that was just fixed. Recommended slice for whoever
+    sanctions the build: fixture + example project first (its own
+    reviewable commit, since it also changes what `01-saved-layout`
+    photographs if it lands in an existing project — prefer a project of
+    its own), then the seeded-recents step, verified against a fresh
+    build before it joins the shared scenario.
+
   - Host: `cargo test -p cannet-gui` 663 passed / 6 ignored (from 661 at
-    phase 4 — the two new tests); clippy `--all-targets` clean; `cargo
-    fmt --check` clean. Frontend untouched by the catch-up commit;
-    162 test files / 2148 tests passed after the housekeeping one.
+    phase 4 — the two new tests); `cargo test -p cannet-perf-measurement`
+    40 lib tests passed (from 39 — the new scenario guard); clippy
+    `--all-targets` clean on both; `cargo fmt --check` clean. Frontend
+    untouched by the catch-up commit; 162 test files / 2148 tests passed
+    after the housekeeping one.
     **This change is on the data path the ADR-0031 gate measures** — the
     gate is the orchestrator's task-end run, not this phase's.
 
@@ -815,14 +863,25 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   by there being one mechanism instead of two competing ones. See phase
   4's status entry.
 - **The screenshot set for owner sign-off was not produced** — the only
-  release binary in the tree predates this phase's feature commits by
-  about ten hours, and photographing it would show the pre-feature
-  rendering. It needs a `tauri build --no-bundle` of the current tip,
-  which phase 4 was instructed not to run. The harness's isolation gap
-  is fixed and tested, so the set is that build plus two `screenshot
-  --theme dark|light` runs. Correctness does not ride on it (the DOM and
-  canvas tests do), but the ruling's "the implementation phase still
-  delivers true renderer screenshots for final sign-off" is outstanding.
+  release binary in the tree predates the feature commits, and
+  photographing it would show the pre-feature rendering. It needs a
+  `tauri build --no-bundle` of the current tip, which neither phase 4 nor
+  phase 5 was allowed to run. The harness's isolation gap is fixed and
+  tested and its stale scenario step is fixed (phase 5, `267c3e08`), so
+  the set is that build plus two `screenshot --theme dark|light` runs.
+  Correctness does not ride on it (the DOM and canvas tests do), but the
+  ruling's "the implementation phase still delivers true renderer
+  screenshots for final sign-off" is outstanding.
+- **The scenario cannot photograph the extrapolation rendering at all**
+  — and this is the larger half of the gap above. The walk runs an idle
+  app, so every plot in it is empty; a dashed tail, an interior >10×
+  stall, a one-sample hline and a striped lane need a capture with those
+  shapes loaded. Phase 5 scoped the work (fixture capture + DBC + an
+  example project curating them, a dialog-free import via seeded
+  `recent_blfs` and the toolbar's Recent menu, a deterministic x window)
+  and stopped there: none of it can be verified without a release build,
+  and an unverified interactive step aborts the whole capture run. See
+  phase 5's status entry for the recommended slice.
 - **`max_points == 0` still run-reduces a categorical window**, where
   the numeric serve of the same request returns the raw slice. Left
   as-is: no plot fetch reaches it (`MIN_DECIMATION_POINTS = 200` is
