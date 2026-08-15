@@ -110,6 +110,15 @@ cargo run -p cannet-perf-measurement -- check         # exit non-zero on regress
 cargo run -p cannet-perf-measurement -- \
     --frontend-report <render-report.json> \
     --expected-rx-fps 1608 --expected-tx-fps 1608 check
+
+# `--frontend-report` repeats: hand every run in a gate to one `check`
+# invocation (the canonical gate form) rather than checking each report
+# alone. Every metric keeps its per-report worst-run verdict except the
+# memory-drift family, which gates on the *median* across the given
+# reports instead (ADR 0031) — a single report still behaves exactly as
+# before.
+cargo run -p cannet-perf-measurement -- check \
+    --frontend-report run1.json --frontend-report run2.json --frontend-report run3.json
 ```
 
 ### Per-mode flags
@@ -224,7 +233,7 @@ rate gates below are what close that blind spot.
 | `rx_fps_retention` / `tx_fps_retention` | ≥ 90 % of baseline, absolute floor 0.80 |
 | `rx_fps_expected` / `tx_fps_expected` | within ±15 % of `--expected-{rx,tx}-fps` |
 | `jsheap_mb_peak` / `renderer_mb_peak` / `host_mb_peak` / `tree_mb_peak` | ≤ 2× baseline + 64 MB |
-| `jsheap_mb_drift_per_min` / `renderer_mb_drift_per_min` / `tree_mb_drift_per_min` | ≤ 2× baseline + 5 MB/min |
+| `jsheap_mb_drift_per_min` / `renderer_mb_drift_per_min` / `tree_mb_drift_per_min` | ≤ 2× baseline + 5 MB/min, judged on the **median** across every `--frontend-report` given (worst-run per report if only one is given) |
 | `flush_ms_mean` | ≤ 25 ms (absolute) |
 | `tx_late_ms_mean` | ≤ 18 ms (absolute) |
 | `flush_ms_max` / `tx_late_ms_max` | ≤ 2× baseline + 25 ms (inert until a baseline carries them) |
@@ -245,6 +254,18 @@ baseline lacking the fields gates nothing, so they arm on the next
 regeneration. Drift only reads as signal over a representative-length
 capture (a multi-minute `--perf-capture-secs`, not the smoke-test span), so
 capture a memory baseline at scenario length.
+
+**The three `*_drift_per_min` rows gate the median across the given
+reports, not each report's own worst run** (ADR 0031). A least-squares
+slope over a 60 s window is a property of where in a memory ramp the
+window landed — measured swinging up to 5.6× on one unchanged binary
+between sessions, wider than the 2.1× margin a gate's limit leaves over
+its baseline, so the worst-run rule could fail an unchanged build and
+pass a regressed one. Pass `--frontend-report` once per run in the
+gate and `check` computes the median per drift metric before gating
+it; every other frontend metric is unaffected and still judged per
+report. With exactly one `--frontend-report`, the median of one run is
+that run, so single-report behavior is unchanged.
 
 The `flush_ms` / `tx_late_ms` rows gate **host append-lock contention** (ADR
 0031): the periodic `TraceStore::flush` holds the append lock, so its

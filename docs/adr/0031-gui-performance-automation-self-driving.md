@@ -142,6 +142,19 @@ the decision to touch interfaces, and the decision to record.
   before this flag existed under a customised profile. And each
   directory is its own profile: reuse one across the runs being
   compared, and a run that needs a server pinned pins it there once.
+
+  Default settings includes **default window geometry**, and that one
+  needs correcting rather than accepting: every baseline captured before
+  isolated profiles existed measured the operator's own ~2450×2080
+  window, and Tauri's default size gives the plot canvas a materially
+  lighter render workload than that. So the run procedure copies the
+  operator profile's `.window-state.json` — `%APPDATA%\dev.cannet.app\.window-state.json`
+  on Windows, `~/Library/Application Support/dev.cannet.app/.window-state.json`
+  on macOS, `~/.config/dev.cannet.app/.window-state.json` on Linux — into the
+  fresh `--app-data-dir` before its first run, the same one-time-per-directory
+  treatment as pinning a server. A plain file copy, not a symlink, so the
+  isolation still holds: the run can read the operator's real geometry but
+  can never write back to it.
 - **A capture measures the machine as much as the build, so the run
   procedure is part of the measurement.** Repeated runs of one
   unchanged release binary move the gated metrics by more than the
@@ -173,7 +186,22 @@ the decision to touch interfaces, and the decision to record.
   slope over a 60 s window is a property of where in a memory ramp the
   window landed, so its worst run across a gate is a noisier statistic
   than a latency maximum, which at least corresponds to something a
-  user felt.
+  user felt. Measured on one unchanged binary, the drift metrics'
+  session-to-session spread (5.6×, one build) is wider than the margin
+  a gate's limit leaves over its baseline (2.1×) — wide enough that the
+  worst-run rule can fail a build that has not changed and pass one
+  that has. So the drift family
+  (`jsheap_mb_drift_per_min` / `renderer_mb_drift_per_min` /
+  `tree_mb_drift_per_min`) is gated on the **median across a gate's
+  runs** instead: `cannet-perf-measurement check` takes `--frontend-report`
+  repeated once per run in the gate
+  (`check --frontend-report run1.json --frontend-report run2.json …`),
+  and judges the drift family's median against the same limit as
+  before — every other metric keeps the worst-run rule above. This
+  multi-report form is the canonical way to run `check` against a gate
+  from here; a single `--frontend-report` still works exactly as it did
+  (the median of one run is that run). The limits themselves are
+  unchanged — only the statistic gated against them moved.
 - The capture includes a **memory tier**. The frontend already reports
   the JS heap (`jsheap_mb`); while a capture is armed the host stamps its
   own process-memory split onto each per-second sample — host RSS
