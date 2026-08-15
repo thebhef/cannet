@@ -6,6 +6,7 @@ import {
   groupScaleRanges,
   mergeSeries,
   recordSignalKey,
+  sampleColumns,
   signalKey,
   splitExtrapolatedRows,
 } from "./plotData";
@@ -401,6 +402,55 @@ describe("splitExtrapolatedRows", () => {
     const segs = splitExtrapolatedRows(merged[0] as number[], rows, series);
     expect(rows[0]).toEqual([5, 6, 7]);
     expect(segs[0]).toEqual([]);
+  });
+});
+
+describe("sampleColumns", () => {
+  it("reports only the columns a series has a sample of, not the ones it is held across", () => {
+    // The merged grid is the union of every series' timestamps, so a
+    // sparse series is carried across all of a dense neighbour's columns
+    // by the sample-and-hold. Those columns are the neighbour's readings,
+    // not this series'.
+    const series = [
+      { t: [0, 1, 2, 3, 4], v: [1, 2, 3, 4, 5] },
+      { t: [0, 2, 4], v: [10, 20, 30] },
+    ];
+    const merged = mergeSeries(series);
+    const cols = sampleColumns(merged[0] as number[], series);
+    expect(cols[0]).toEqual([0, 1, 2, 3, 4]);
+    expect(cols[1]).toEqual([0, 2, 4]);
+  });
+
+  it("gives a one-sample series exactly one column, however far it is held", () => {
+    // `mergeSeries` draws a one-sample series as a horizontal line
+    // through every column — the hline of ADR 0026. Every column of it
+    // but one is drawn, and only one of them was measured.
+    const series = [
+      { t: [0, 5, 10, 15, 20], v: [1, 2, 3, 4, 5] },
+      { t: [10], v: [7], extrapolated: [[0, 10] as const, [10, 20] as const] },
+    ];
+    const merged = mergeSeries(series);
+    const cols = sampleColumns(merged[0] as number[], series);
+    expect(cols[1]).toEqual([2]);
+    expect((merged[2] as (number | null)[]).filter((v) => v != null)).toHaveLength(5);
+  });
+
+  it("claims no column inside an extrapolated stretch, including the one minted for it", () => {
+    // The midpoint column exists to be blanked out of the stroke; it is
+    // nobody's sample. An interior stall's two *ends* are samples and
+    // keep their markers — the stretch is what has nothing behind it, not
+    // the readings that bound it.
+    const series = [{ t: [0, 1, 9, 10], v: [1, 2, 3, 4], extrapolated: [[1, 9] as const] }];
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    expect(xs).toEqual([0, 1, 5, 9, 10]);
+    expect(sampleColumns(xs, series)[0]).toEqual([0, 1, 3, 4]);
+  });
+
+  it("reports nothing for a series with no samples in the window", () => {
+    const series = [{ t: [0, 1], v: [1, 2] }, { t: [], v: [] }];
+    const merged = mergeSeries(series);
+    expect(sampleColumns(merged[0] as number[], series)[1]).toEqual([]);
   });
 });
 
