@@ -385,6 +385,28 @@ describe("drawEnumTiles extrapolation hatching", () => {
     expect(markerTimes(ops)).toEqual(stopped.t);
   });
 
+  it("keeps every marker of a lane that really is arriving", () => {
+    // The control, from the other side of the same axis: `DenseMode`
+    // has a sample at every one of its columns, so the honest answer for
+    // it is the one the lane already drew.
+    const stopped = { ...laneSeries(0.5, 6), extrapolated: [[6, 20] as const] };
+    const dense = laneSeries(0.2, 20, 0, 2);
+    const merged = mergeSeries([stopped, dense]);
+    const xs = merged[0] as number[];
+    const { ctx, ops } = recorder();
+    const u = fakeU([xs, merged[1] as (number | null)[], merged[2] as (number | null)[]], [{}, {}]);
+    drawEnumTiles(
+      ctx,
+      u,
+      tileOpts({
+        seriesIdx: 2,
+        sampleMarkers: true,
+        sampleColumns: sampleColumns(xs, [stopped, dense])[1],
+      }),
+    );
+    expect(markerTimes(ops)).toEqual(dense.t);
+  });
+
   it("marks no sample inside a lane's stalled stretch, and both readings that bound it", () => {
     // The fixture's `StalledMode`: 200 ms throughout except 7 → 15 s,
     // which the host classifies as extrapolation. The stall's two ends

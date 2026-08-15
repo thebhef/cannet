@@ -164,6 +164,21 @@ from one held through none. So a tile axis turns the point layer off
 and marks its own served samples, over the tiles, capped at the same
 flat marker budget.
 
+**A marker sits only on a sample.** The merged x grid is the union of
+every series on the axis and the sample-and-hold gives every series a
+value at every column of it, so a marker selected from the grid marks a
+series wherever its *neighbours* were read — most densely exactly where
+it has least data: across a stopped series' held tail, across the
+interior of a stall, and along the whole window a one-sample hline is
+drawn over. Both marker renderers — uPlot's point layer for a line, the
+lane's own pass for a tile axis — therefore select from the columns
+whose x is one of that series' own raw timestamps, and from nothing
+else. Neither consults the extrapolated spans, and neither needs to: a
+stretch has no sample in it by construction, while the readings that
+bound one (a stall's two ends, the last frame before a series stopped)
+keep their markers, which is what makes the dashed stretch beside them
+legible.
+
 **Vertical space is fit-to-panel, with draggable splitters.** The
 derived axes of a panel always fit its height — no stack-scrolling
 once N axes exceed it. Each axis carries a **weight** (flex-grow,
