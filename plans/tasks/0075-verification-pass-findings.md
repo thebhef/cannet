@@ -342,3 +342,20 @@ render loop from a thread blocked on IPC without attaching a profiler.
 capturing and, on the next hang, read `plot.userXChange` and
 `userx.setscale-hook` — a non-zero delta with no user input names the
 ring directly.
+
+## Blockers / side effects
+
+- **Latent, out of scope for item 1: the by-id / signal window scan on
+  a large stopped capture.** `useByIdView` and `useSignalView` pass
+  `scanEnd = winEnd` whenever the trace is stopped, and
+  `latest_in_window_where` only takes its O(keys) fast path while
+  `end == raw.len()`. On a _fresh_ restore those are equal, which is
+  why this is not the launch-hang mechanism (see the status log). But
+  the moment the window stops covering the tip — a Clear, a Start, a
+  re-anchor — a stopped 57.7 M-frame capture takes a full O(buffer)
+  pass **holding the trace-store append mutex**, blocking every other
+  command and the health sampler with it. It is once per descriptor
+  change by design, but the design was sized before captures this
+  long. Noted here rather than fixed: it is not item 1's defect, and
+  the fix (chunk it, or bound the snapshot the way the pyramid
+  catch-up is bounded by ADR 0049) is its own piece of work.
