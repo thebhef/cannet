@@ -61,7 +61,24 @@ a byte-identical file.
 - `project::tests::parses_the_checked_in_extrapolation_example_project`
   keeps the project openable and its one area whole.
 
-## Opening it
+## Photographing it
+
+The `cannet-perf-measurement` screenshot harness drives the whole thing —
+import included — and writes the sign-off PNGs:
+
+```sh
+cargo run -p cannet-perf-measurement -- screenshot --scenario extrapolation \
+    --gui-binary <ABS>/target/release/cannet-gui.exe \
+    --project    <ABS>/examples/extrapolation/extrapolation.cannet_prj \
+    --capture    <ABS>/examples/extrapolation/extrapolation.blf \
+    --out-dir    <ABS>/shots --prefix dark- --theme dark
+```
+
+Repeat with `--theme light`. See
+[the harness README](../../crates/cannet-perf-measurement/README.md#visual-parity-screenshot--screenshot-diff)
+for what the scenario clicks and why.
+
+## Opening it by hand
 
 Open `extrapolation.cannet_prj`, then import `extrapolation.blf`
 (**Import trace…**, or the toolbar's **Recent** menu once it has been
