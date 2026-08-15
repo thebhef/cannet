@@ -169,9 +169,14 @@ pub struct ServerList {
     pub browse: BrowseStatus,
 }
 
-/// Merge the three sources into the rows the panel renders. Each of
-/// them can put a row in the list on its own: something stored, something
-/// advertising, or a question the host is waiting on.
+/// Merge the sources into the rows the panel renders. A row comes from
+/// something stored or something advertising — the list is what this
+/// machine has accepted plus what is on the subnet, and nothing else.
+///
+/// A pending question is a fact *about* a row, never what holds one: a
+/// refused attempt stores nothing, so an address dialled by hand and
+/// left unanswered is in neither source and has no row. Dismissing the
+/// question leaves nothing behind; the address is typed again to retry.
 ///
 /// Keyed by [`server_key`] throughout, because that is what the trust
 /// store files entries under: a browsed `192.168.1.10:50051` and an
@@ -210,17 +215,9 @@ pub fn merge(
         .iter()
         .map(|(address, prompt)| (server_key(address), prompt))
         .collect();
-    // A question the host is waiting on is a fact about a server too,
-    // and for an address that was dialled by hand it is the only one:
-    // nothing is stored for it yet and nothing is advertising it, so
-    // without a row of its own the question could not be answered.
-    for key in by_key.keys() {
-        rows.entry(key.clone())
-            .or_insert_with(|| offline_row(key, &TrustEntry::default()));
-    }
-    // A live session's clock record is a fact about a server too, and —
-    // like a pending prompt — can be the only thing known about an
-    // address dialled by hand before its first `ListInterfaces` answers.
+    // A live session's clock record is a fact about a server too, and
+    // can be the only thing known about an address dialled by hand
+    // before its first `ListInterfaces` answers.
     for key in clocks.keys() {
         rows.entry(key.clone())
             .or_insert_with(|| offline_row(key, &TrustEntry::default()));
@@ -396,12 +393,14 @@ fn split_host_port(address: &str) -> Option<(&str, &str)> {
 /// server — refused at the certificate, with the question left against
 /// the address this returns.
 ///
-/// **A refused attempt stores nothing.** The pin the operator accepts
-/// in the dialog is the store's first record of the server; until then
-/// the pending question is what holds its row. The one exception is a
-/// server that is reached with no question asked — a loopback proxy —
-/// which is recorded as [`crate::server_trust::TrustEntry::manual`],
-/// because nothing else would keep it in the list.
+/// **A refused attempt stores nothing, and leaves no row.** The pin the
+/// operator accepts in the dialog is the store's first record of the
+/// server, and what puts it in the list; a question they wave away
+/// leaves the address in nothing at all, and reaching it is typing it
+/// again. The one exception is a server that is reached with no
+/// question asked — a loopback proxy — which is recorded as
+/// [`crate::server_trust::TrustEntry::manual`], because nothing else
+/// would keep it in the list.
 #[tauri::command]
 pub async fn add_server(app: AppHandle, address: String) -> Result<String, String> {
     let address = checked_address(&address)?;
@@ -656,11 +655,12 @@ mod tests {
     }
 
     #[test]
-    fn an_address_the_host_is_waiting_on_gets_a_row_of_its_own() {
-        // How a server that advertises nowhere reaches the panel: it is
-        // dialled by hand, the attempt is refused at the certificate, and
-        // the question that leaves is the only thing anyone knows about
-        // the address. Without a row there is nothing to answer it from.
+    fn an_unanswered_question_is_not_a_row() {
+        // The list is what is advertising plus what has been accepted
+        // here. An address dialled by hand and refused at the
+        // certificate is neither: nothing is stored for it until the
+        // operator accepts the identity, and a question they wave away
+        // leaves nothing behind — the address is typed again to retry.
         let prompts = BTreeMap::from([(
             "bench.example.com:50051".to_string(),
             TrustPrompt::AcceptIdentity {
@@ -668,18 +668,7 @@ mod tests {
             },
         )]);
         let rows = merged(&[], &BTreeMap::new(), &prompts);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].address, "bench.example.com:50051");
-        assert_eq!(rows[0].trust, TrustState::New);
-        assert!(!rows[0].online, "nothing is advertising it");
-        assert_eq!(rows[0].name, None);
-        assert_eq!(
-            rows[0].prompt,
-            Some(TrustPrompt::AcceptIdentity {
-                observed: "SHA256:bbb".into(),
-            }),
-        );
-        assert_eq!(rows[0].fingerprint, None, "nothing has been stored for it");
+        assert!(rows.is_empty(), "{rows:?}");
     }
 
     #[test]

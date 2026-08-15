@@ -26,8 +26,11 @@
 // - **An address can be added by hand**, because discovery is multicast
 //   and a server on another subnet advertises nowhere this machine can
 //   hear. "Add server…" is the same act as a row's "Trust…" for an
-//   address that has no row yet: the host checks it, dials it, and the
-//   question that comes back is what the row is made of.
+//   address that has no row yet: the host checks it and dials it, and
+//   the question that comes back is put to the user by the app-wide
+//   trust dialog. Accepting it is what stores something, which is what
+//   makes the row; a question waved away leaves nothing behind, and the
+//   address is typed again to retry.
 
 import { useCallback, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -95,10 +98,10 @@ export function ServersPanel(_props: IDockviewPanelProps) {
   }, []);
 
   /// Add the typed address. The host does the adding — it checks the
-  /// address, dials it, and leaves whatever question that raised on the
-  /// row it returns the address of, which is the row this then opens the
-  /// dialog over. Only two things are decided here: that the text looks
-  /// like an address at all, and that the list does not already have it.
+  /// address and dials it, and whatever question that raised is asked by
+  /// the app-wide trust dialog. Only two things are decided here: that
+  /// the text looks like an address at all, and that the list does not
+  /// already have it.
   const add = useCallback(async () => {
     const shape = addressShapeError(typed);
     if (shape !== null) {
@@ -120,8 +123,10 @@ export function ServersPanel(_props: IDockviewPanelProps) {
       setAddNote(null);
       setTyped("");
       setAdding(false);
+      // Points at the row if the dial went through with no question —
+      // a loopback proxy, which the host records as manual. An address
+      // that raised one has no row until the identity is accepted.
       setHighlight(added);
-      setDialogFor(added);
     } catch (err) {
       setAddError(String(err));
       setAddNote(null);

@@ -282,11 +282,13 @@ describe("adding a server by address", () => {
     fireEvent.click(screen.getByLabelText("add this server"));
   }
 
-  it("dials the typed address and answers the question that comes back", async () => {
+  it("dials the typed address and leaves nothing behind until it is accepted", async () => {
     // Discovery is multicast, so a server on another subnet reaches the
-    // panel only this way: the address is dialled, the attempt is
-    // refused at the certificate, and the question it raised is what the
-    // host puts on the new row.
+    // panel only this way: the address is dialled and the attempt is
+    // refused at the certificate. The question that raised is the trust
+    // dialog's (it is mounted app-wide, over every question the host is
+    // waiting on) — the list stays what is advertising plus what has
+    // been accepted, so an unanswered address is in neither.
     invokeMock.mockImplementation(
       async (cmd: string, args: Record<string, unknown>) => {
         calls.push({ cmd, args: args ?? {} });
@@ -308,6 +310,19 @@ describe("adding a server by address", () => {
         ),
       ).toBe(true),
     );
+    emit(SERVER_LIST_CHANGED_EVENT, list([BENCH]));
+    expect(screen.queryByText("bench.example.com:50051")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // …and the field is clear, because retrying is typing it again.
+    fireEvent.click(screen.getByRole("button", { name: /add server/i }));
+    expect(await screen.findByLabelText("server address")).toHaveValue("");
+  });
+
+  it("shows the server once its identity has been accepted", async () => {
+    // Accepting the question the dial raised is what stores anything,
+    // and the store is what the row is made of.
+    renderPanel();
+    await screen.findByText("192.168.1.10:50051");
     emit(
       SERVER_LIST_CHANGED_EVENT,
       list([
@@ -318,13 +333,14 @@ describe("adding a server by address", () => {
           host: null,
           version: null,
           online: false,
-          prompt: { kind: "acceptIdentity", observed: "SHA256:ccc" },
+          trust: "trusted",
+          fingerprint: "SHA256:ccc",
         }),
       ]),
     );
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("SHA256:ccc");
-    expect(dialog).toHaveTextContent("bench.example.com:50051");
+    const added = rowFor("bench.example.com:50051");
+    expect(added).toHaveTextContent("trusted");
+    expect(added).toHaveTextContent("SHA256:ccc");
   });
 
   it("says what went wrong when the address could not be added", async () => {
