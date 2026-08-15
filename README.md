@@ -806,6 +806,7 @@ the app, then run the binary directly:
 pnpm --dir apps/gui tauri build --no-bundle       # release host + production bundle
 ./target/release/cannet-gui \
   --project /abs/path/to/examples/ev-zonal/ev-zonal.cannet_prj \
+  --app-data-dir /abs/path/to/perf-app-data \
   --connect-on-start \
   --perf-capture-secs 60 \
   --perf-interact scrub \
@@ -825,6 +826,14 @@ report is written.
 
 - `--project <path>` opens a project deterministically (ahead of the
   last-opened pointer). Usable on its own to just open a project.
+- `--app-data-dir <path>` puts everything the app keeps per user —
+  trust store, recents and project registry, settings, window geometry
+  — under `<path>` for this launch, so a measurement never writes the
+  state you use day to day. **Use it for every performance run.** The
+  rolling log and crash records are not moved; they stay where a bug
+  report expects them. A fresh directory starts from default settings,
+  so keep one directory for the runs you compare against each other
+  (and pin any server the run must reach in it, once).
 - `--connect-on-start` fires the same connect a user clicks, once the
   project's bindings (and, for a local binding, the sidecar) are ready.
   Paired with `--perf-capture-secs`, a failed connect is retried a

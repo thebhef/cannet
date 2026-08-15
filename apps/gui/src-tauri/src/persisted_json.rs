@@ -293,9 +293,62 @@ fn write_object_if_changed(
     write_json_atomic(path, after)
 }
 
+/// A per-run replacement for the user-scope config directory, managed
+/// as Tauri state so every reader goes through [`config_dir`] as before.
+///
+/// `None` — every ordinary launch — leaves the per-OS location alone.
+/// `Some` is what a self-driving performance run
+/// ([ADR 0031](../../../../docs/adr/0031-gui-performance-automation-self-driving.md))
+/// is launched with: a measurement must not write the operator's trust
+/// store, recents, settings or window geometry, and pointing the whole
+/// user scope at a run-owned directory is the one seam that covers all
+/// of them at once — no read path anywhere else has to know a
+/// measurement is running.
+pub struct ConfigDirOverride(pub Option<PathBuf>);
+
+/// The window-state plugin's document, and the name it is given when
+/// nothing redirects it (the plugin's own default).
+const WINDOW_STATE_FILE: &str = ".window-state.json";
+
+/// Parse `--app-data-dir <path>` out of `args` (typically
+/// `std::env::args()`, whose first element is the program path and is
+/// skipped). A flag with no value after it is no override, rather than
+/// an empty path the session would then write into.
+#[must_use]
+pub(crate) fn config_dir_override(args: impl IntoIterator<Item = String>) -> Option<PathBuf> {
+    let mut it = args.into_iter();
+    it.next(); // argv[0] — the program path
+    while let Some(arg) = it.next() {
+        if arg == "--app-data-dir" {
+            return it.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+/// The file name to hand `tauri-plugin-window-state`.
+///
+/// The plugin resolves its document as `app_config_dir().join(name)`,
+/// and offers no way to set the directory — but an absolute `name`
+/// replaces that join outright, which is how the window geometry follows
+/// [`ConfigDirOverride`] along with everything else the run persists.
+pub(crate) fn window_state_filename(override_dir: Option<&Path>) -> String {
+    override_dir.map_or_else(
+        || WINDOW_STATE_FILE.to_string(),
+        |dir| dir.join(WINDOW_STATE_FILE).to_string_lossy().into_owned(),
+    )
+}
+
 /// Resolve the per-OS config directory (`$XDG_CONFIG_HOME/<id>`,
-/// `%APPDATA%\<id>`, `~/Library/Application Support/<id>`).
+/// `%APPDATA%\<id>`, `~/Library/Application Support/<id>`) — or the
+/// [`ConfigDirOverride`] this launch was given instead.
 pub(crate) fn config_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    if let Some(dir) = app
+        .try_state::<ConfigDirOverride>()
+        .and_then(|o| o.0.clone())
+    {
+        return Ok(dir);
+    }
     app.path()
         .app_config_dir()
         .map_err(|e| format!("no config dir: {e}"))
@@ -329,6 +382,64 @@ pub(crate) fn parse_versioned<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use serde::Deserialize;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn a_normal_launch_has_no_config_dir_override() {
+        assert_eq!(config_dir_override(args(&["cannet"])), None);
+        assert_eq!(
+            config_dir_override(args(&["cannet", "--project", "p.cannet_prj"])),
+            None,
+        );
+        // argv[0] is skipped, so a program path that happens to be
+        // spelled like the flag is not one.
+        assert_eq!(config_dir_override(args(&["--app-data-dir"])), None);
+        // And a flag with nothing after it overrides nothing rather
+        // than pointing the session at an empty path.
+        assert_eq!(
+            config_dir_override(args(&["cannet", "--app-data-dir"])),
+            None
+        );
+    }
+
+    #[test]
+    fn the_override_is_the_path_the_flag_names() {
+        assert_eq!(
+            config_dir_override(args(&[
+                "cannet",
+                "--project",
+                "p.cannet_prj",
+                "--app-data-dir",
+                "/tmp/run-1",
+                "--perf-capture-secs",
+                "60",
+            ])),
+            Some(PathBuf::from("/tmp/run-1")),
+        );
+    }
+
+    #[test]
+    fn the_window_state_document_follows_the_override_and_nothing_else() {
+        // The plugin joins the name it is given onto `app_config_dir`,
+        // and an absolute name replaces that join — which is the only
+        // lever it offers. A run without the flag must keep the plain
+        // name, or every install starts writing somewhere new.
+        assert_eq!(window_state_filename(None), WINDOW_STATE_FILE);
+        // An absolute directory in this platform's spelling, since
+        // "absolute" is what makes the plugin's `join` a replacement.
+        let dir = std::env::temp_dir().join("cannet-run-1");
+        let redirected = window_state_filename(Some(&dir));
+        let path = Path::new(&redirected);
+        assert!(path.is_absolute(), "{redirected}");
+        assert_eq!(path.parent(), Some(dir.as_path()));
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some(WINDOW_STATE_FILE),
+        );
+    }
 
     #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
     struct Sample {

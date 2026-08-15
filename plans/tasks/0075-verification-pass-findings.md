@@ -559,6 +559,64 @@ that every row carries both actions, and that a
 Host: 647 passed / 6 ignored, clippy clean. Frontend: 160 files / 2101
 tests, `pnpm build` clean.
 
+### 2026-08-14 — item 3 leg (c): a performance run gets its own user scope
+
+The owner's standing ruling, implemented even though leg (a) cleared the
+harness of writing the pin it was suspected of: a measurement must not
+write the operator's state at all.
+
+**The seam.** Everything the app keeps per user goes through one
+function — `persisted_json::config_dir` — and a grep over `apps/` and
+`crates/` finds exactly one call to Tauri's `app_config_dir()`, inside
+it. So one override covers the trust store, the project registry and
+recents, both scoped settings files and user-scope UI state at once, and
+no read path anywhere else learns that a run is under way. `--app-data-dir
+<path>` sets it; `ConfigDirOverride` carries it as managed state,
+registered on the builder so it is in place before `setup` resolves the
+project directory.
+
+Window geometry rides along by a narrower route: `tauri-plugin-window-
+state` resolves its document as `app_config_dir().join(name)` and offers
+no way to set the directory — but an absolute `name` replaces that join,
+so `window_state_filename` hands it a full path under the override.
+The launch creates the directory up front, because the plugin creates a
+parent for the real location only.
+
+**Explicitly not done — no special case in the trust logic.** "A
+loopback connection doesn't pin" was rejected by the owner and stays
+rejected: it would change what the product does to suit a test rig.
+`connect_flow` is untouched by this phase.
+
+**Deliberately not moved: the rolling log and crash records.** They are
+the run's evidence, and ADR 0031's own troubleshooting instructions
+(and every bug report) expect them in the usual place.
+
+**Tests (written first).** `a_normal_launch_has_no_config_dir_override`
+(no flag, an unrelated flag, argv[0] spelled like the flag, and the flag
+with no value — the last must not point the session at an empty path),
+`the_override_is_the_path_the_flag_names`, and
+`the_window_state_document_follows_the_override_and_nothing_else` (which
+failed first on Windows for the right reason: a `/tmp`-rooted path is
+not _absolute_ there, so the plugin's join would not have been
+replaced — the assertion now builds the path in the platform's own
+spelling).
+
+**What is verified, and what is not.** The parsing and the filename
+mapping are unit-tested; that one override reaches every user-scope file
+rests on the single-call-site grep above. A launch of the app with the
+flag was **not** run: if the override failed, the run would write the
+owner's real state, which this phase is forbidden to do — and the first
+harness run after merge is the check, at zero risk (a flag that did
+nothing would leave the isolated directory empty).
+
+ADR 0031 gains the flag in its flag list and a consequence recording the
+rule, the two things to run with (a fresh directory starts from default
+settings; reuse one directory across runs being compared), and why the
+log stays put. README's self-driving section puts `--app-data-dir` in
+the example invocation and says to use it for every run.
+
+Host: 650 passed / 6 ignored, workspace clippy clean.
+
 ## Blockers / side effects
 
 - **Latent, out of scope for item 1: the by-id / signal window scan on
@@ -575,3 +633,25 @@ tests, `pnpm build` clean.
   long. Noted here rather than fixed: it is not item 1's defect, and
   the fix (chunk it, or bound the snapshot the way the pyramid
   catch-up is bounded by ADR 0049) is its own piece of work.
+
+- **The screenshot harness still launches the GUI against real user
+  state** (item 3 leg (c), out of this phase's reading of the ruling).
+  `cannet-perf-measurement`'s eyeball-review capture spawns the app
+  itself (`screenshot.rs::spawn_gui`, `--project` only), so it writes
+  recents, the project registry and the last-opened pointer for every
+  run. Passing `--app-data-dir` there is five lines, but it is not a
+  free change: an isolated profile starts from **default settings**,
+  and the theme those captures are taken in is a user-scope setting —
+  so the dark/light run pair would need the theme set inside the
+  isolated profile before the flag can go in. Left for whoever owns
+  that tool's determinism story; the ADR-0031 self-driving run, which
+  is what the ruling named, is isolated.
+- **The Servers panel lists the app's own sidecar while a local capture
+  is connected** (item 3 leg (a), recorded rather than changed). It is
+  a real session against a real address and the row is honest about it
+  — it even carries the clock offset the session measured — but it is
+  an implementation detail of local-hardware access appearing among the
+  servers a user manages, at an address that changes every launch. The
+  panel now explains it (leg (b)) and README names it. Whether such a
+  row should be there at all is a product question for the owner, not
+  something to decide inside a defect fix.

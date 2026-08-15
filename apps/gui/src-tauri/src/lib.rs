@@ -439,6 +439,19 @@ pub fn run() -> ! {
     // webview fetches the result via `diag_autostart` on boot. `None` on a
     // normal launch leaves boot behaviour untouched.
     let autostart = diag::AutomationConfig::from_args(std::env::args());
+    // `--app-data-dir <path>`: put this launch's whole user scope — trust
+    // store, recents, settings, window geometry — in a directory it owns,
+    // so a self-driving performance run (ADR 0031) measures without
+    // writing the operator's state. Created up front because the
+    // window-state plugin writes its document without creating a parent.
+    let config_override = persisted_json::config_dir_override(std::env::args());
+    if let Some(dir) = &config_override {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            tracing::warn!(dir = %dir.display(), error = %e, "could not create the app data directory this launch was pointed at");
+        }
+        tracing::info!(dir = %dir.display(), "user-scope state redirected for this launch");
+    }
+    let window_state_file = persisted_json::window_state_filename(config_override.as_deref());
     // Where an `AppHandle::exit(code)` request is caught on its way past
     // (see `final_exit_code`). Written by the `ExitRequested` arm below,
     // read after the event loop returns.
@@ -452,6 +465,7 @@ pub fn run() -> ! {
         // whose restored position landed off every connected monitor.
         .plugin(
             tauri_plugin_window_state::Builder::default()
+                .with_filename(window_state_file)
                 .with_state_flags(
                     tauri_plugin_window_state::StateFlags::SIZE
                         | tauri_plugin_window_state::StateFlags::POSITION
@@ -460,6 +474,7 @@ pub fn run() -> ! {
                 )
                 .build(),
         )
+        .manage(persisted_json::ConfigDirOverride(config_override))
         .manage(diag::HostMetrics::default())
         .manage(sidecar::SidecarState::default())
         .manage(interfaces::InterfacesState::default())
