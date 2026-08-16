@@ -5903,13 +5903,18 @@ mod tests {
         // pyramids that came back off disk take no part in it. Their
         // cursors already sit at the tip, and `scan_chunk` decodes only the
         // names of targets a frame is still ahead of.
+        //
+        // Counting the walk's chunks is only meaningful over a serve that
+        // runs it to the end, so the store is the unbounded one: under the
+        // shipping wall-clock budget a slow enough machine stops the serve
+        // mid-walk and the count measures the machine, not the sharing.
         let root = TempDir::new().unwrap();
         let v = validity("capture-a", 0);
         let n = CATCH_UP_CHUNK_FRAMES + 500;
         let len = build_and_persist_ab(root.path(), &v, &dbc_ab(1), n);
 
         let after = dbc_ab(2);
-        let reopened = SignalCacheStore::new(root.path());
+        let reopened = SignalCacheStore::new_unbounded(root.path());
         assert_eq!(reopened.restore(&v, &scopes(&after), len).rebuilt, 1);
 
         let dbs: &[&Database] = &[&after];

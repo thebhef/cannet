@@ -418,3 +418,31 @@ B-row budget.
   before the next screenshot run: `--features custom-protocol` is what
   embeds the frontend, and is much faster than the full `tauri build`
   because it skips the sidecar freeze and server staging.
+
+## Exit-criteria walk (2026-08-15, orchestrator, at the cycle tip `f21aa13f`)
+
+1. **The inventory table lands in the status log — MET.** Phase 1:
+   26 rows, each with location, classification, default state, unused
+   cost, and evidence (code path or measurement).
+2. **Harness-only machinery flag-gated off or measured-free;
+   fixes test-first — MET.** Phase 2: C1–C8 moved to class A behind
+   `--diag` (off = not scheduled: zero observer constructions, no Map
+   traffic, no automation surface, one relaxed load on the atomics,
+   dev-log lines behind the default filter), each with its named
+   test; C9 (one-time O(argc) argv scans at boot) recorded as left
+   with the argument no gate metric can see it. The armed path is
+   proven working by the phase's own ADR-0031 capture.
+3. **Product-feature instrumentation cost stated and owner-accepted —
+   STATED, acceptance PENDING.** The budget rows: 20 s health sampler
+   (full process-table refresh + `signal_caches.usage()` under the
+   plot-serve mutex), 1 Hz UI heartbeat (one IPC round-trip/s,
+   deliberately unconditional), ~22 MB WebView memory when diag is
+   armed (A/B-measured; paid only when asked). Owner ruling closes
+   this criterion at the consolidated review.
+4. **README/ADR-0031 document the flag surface — MET.** README's
+   instrumentation-surface table (always-on vs what turns each flag
+   on); ADR 0031 records `--diag` and the binding "off means not
+   scheduled" property.
+
+Verdict: **3 of 4 MET; criterion 3 stated and awaiting the owner's
+acceptance ruling** — the walk closes with that ruling recorded here.

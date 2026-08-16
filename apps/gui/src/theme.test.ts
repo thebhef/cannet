@@ -128,6 +128,24 @@ describe("themes", () => {
     expect(THEMES.lighthk.laneLabelBoxOpacity).toBe(1);
   });
 
+  it("ask for halo passes only where their box does not already carry the label", () => {
+    // The two lane-label tokens are not independent (ADR 0026): a solid
+    // box is already an opaque plate between the glyphs and the stripes,
+    // so the halo is never spent over one. A theme that carried both a
+    // box and a pass count would be stating a number nothing can reach —
+    // which is exactly what the light themes did until this was pinned.
+    for (const t of Object.values(THEMES)) {
+      expect(t.laneLabelShadowPasses, t.name).toBeGreaterThanOrEqual(0);
+      expect(Number.isInteger(t.laneLabelShadowPasses), t.name).toBe(true);
+      if (t.laneLabelBoxOpacity === 1) {
+        expect(t.laneLabelShadowPasses, `${t.name} boxed`).toBe(0);
+      } else {
+        expect(t.laneLabelShadowPasses, `${t.name} unboxed`).toBeGreaterThan(0);
+      }
+    }
+    expect(THEMES.dark.laneLabelShadowPasses).toBe(2);
+  });
+
   it("key every theme object by its own name", () => {
     for (const [name, t] of Object.entries(THEMES)) expect(t.name).toBe(name);
   });
