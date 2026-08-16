@@ -99,6 +99,7 @@ import {
 import { useFirstSampleWait } from "./useFirstSampleWait";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { theme, useThemeName } from "./theme";
+import { laneLabelInk } from "./laneLabelInk";
 
 const ZOOM_STEP = 1.15;
 /** Line width (CSS px) for a *selected* series, against 1 for the rest.
@@ -925,6 +926,10 @@ export function drawEnumTiles(
     // ~65-85% fills keep the stepped line faintly visible underneath.
     const fill = mapColor ? colorMapLaneFill(mapColor) : theme().laneFillDefault;
     const accent = mapColor ?? o.accent;
+    // The label's ink is measured against the ground this tile paints,
+    // not assumed to be the accent: the fill is a tint of the accent, so
+    // on a light theme the two collapse into each other (ADR 0026).
+    const { ink, halo } = laneLabelInk(fill, accent, theme());
     ctx.fillStyle = fill;
     ctx.fillRect(visStart, o.bandTop, segW, bandH);
     // Hatch the stale part of the tile, and only that part: a tile that
@@ -962,17 +967,20 @@ export function drawEnumTiles(
     ctx.strokeRect(visStart + 0.5, o.bandTop + 0.5, segW - 1, bandH - 1);
     if (labelX != null) {
       const ly = Math.round((o.bandTop + o.bandBot) / 2);
-      ctx.fillStyle = accent;
+      ctx.fillStyle = ink;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
       // Stripes cut straight through the glyphs, so a label over them
-      // gets a halo of the same background color first. Canvas shadow
-      // alpha tops out at one pass, so the strength is stacked passes;
-      // how many is a per-theme number (`theme.ts`), because a light
-      // theme's stripes carry far more contrast and swallow a single one.
+      // gets a halo first — the background color, which is what the
+      // stripes are painted in, except where the ink itself landed on
+      // that side of the luminance axis and the halo has to oppose it.
+      // Canvas shadow alpha tops out at one pass, so the strength is
+      // stacked passes; how many is a per-theme number (`theme.ts`),
+      // because a light theme's stripes carry far more contrast and
+      // swallow a single one.
       if (striped) {
         ctx.save();
-        ctx.shadowColor = theme().background;
+        ctx.shadowColor = halo;
         ctx.shadowBlur = 3 * o.ratio;
         for (let i = 0; i < theme().laneLabelShadowPasses; i++) {
           ctx.fillText(lbl, labelX, ly);

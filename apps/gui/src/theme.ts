@@ -87,13 +87,16 @@ export interface Theme extends ThemeColors {
   /// Strokes and chips only, so the threshold is WCAG 1.4.11 non-text
   /// (≥ 3:1) against this theme's background.
   busWheel: readonly string[];
-  /// How many stacked background-color shadow passes a lane label gets
-  /// where it overlaps an extrapolation-striped stretch (ADR 0026).
+  /// How many stacked shadow passes a lane label gets where it overlaps
+  /// an extrapolation-striped stretch (ADR 0026).
   ///
   /// The stripes are drawn in `background` and cut straight through the
-  /// glyphs, so a label needs a halo of the same color to stay readable.
-  /// Canvas shadow alpha does not go past what one pass paints, so
-  /// strength is bought by repeating the pass rather than by a number.
+  /// glyphs, so a label needs a halo to stay readable. *Which* color
+  /// that halo is is measured per tile against the ink the label ended
+  /// up in (`laneLabelInk`) — normally `background`, the striping color
+  /// itself; this is only how hard it is laid down. Canvas shadow alpha
+  /// does not go past what one pass paints, so strength is bought by
+  /// repeating the pass rather than by a number.
   /// A **light theme needs about double** a dark one: its stripes carry
   /// far more contrast against the tile fill, so a single pass is lost
   /// under them. Owner call after a side-by-side.
