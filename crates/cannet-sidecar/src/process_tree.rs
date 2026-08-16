@@ -78,7 +78,11 @@ fn killer(pid: u32) -> Command {
 fn killer(pid: u32) -> Command {
     let mut cmd = Command::new("kill");
     // A negated pid names the *process group* — the one the child leads
-    // because it was spawned as its leader.
-    cmd.args(["-KILL", &format!("-{pid}")]);
+    // because it was spawned as its leader. The `--` is load-bearing:
+    // without it, procps kill (3.3.17) misreads the negative operand
+    // and delivers the signal to the *caller's own* process group —
+    // sparing the sidecar tree and killing the supervisor, and in CI
+    // the test harness and the runner agent above it.
+    cmd.args(["-KILL", "--", &format!("-{pid}")]);
     cmd
 }
