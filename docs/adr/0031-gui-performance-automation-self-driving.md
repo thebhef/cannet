@@ -29,6 +29,9 @@ Two halves make this work:
   - `--perf-capture-secs <n>` / `--perf-out <path>` — after connect
     settles, auto-capture for `n` seconds and write the `RenderReport`,
     then exit (`--perf-label <text>` names the scenario in the report);
+  - `--app-data-dir <path>` — put this launch's whole user scope in a
+    directory the run owns, so the measurement leaves the operator's
+    state alone;
   - `--perf-interact <script>` — drive synthetic gestures at the heavy
     views for the length of the run. The saved project supplies the
     *views*, but not what a user does to them, and most of the render
@@ -120,6 +123,25 @@ the decision to touch interfaces, and the decision to record.
 - The self-driving flags are an automation surface on the shipping
   binary. They default off (a normal launch is unaffected) and are
   additive; the manual console capture remains for interactive use.
+- **A run must not write the operator's state.** Everything the app
+  persists per user — the trust store, the project registry and
+  recents, settings, window geometry — lives under one directory, and
+  `--app-data-dir <path>` moves that directory for the launch. It is
+  the whole isolation mechanism: no behaviour is special-cased for a
+  measurement (a rule that said, for instance, "a loopback connection
+  doesn't record anything" would change the product to suit the rig),
+  and no read path elsewhere has to know a run is under way. The
+  rolling log and crash records deliberately stay where they always
+  are — they are the run's evidence, and a bug report wants them in
+  the usual place.
+
+  Two consequences to run with rather than around. A fresh directory
+  starts from **default settings**, so a run measures the shipped
+  configuration rather than whatever the operator's has drifted to —
+  which makes runs comparable to each other but not to a capture taken
+  before this flag existed under a customised profile. And each
+  directory is its own profile: reuse one across the runs being
+  compared, and a run that needs a server pinned pins it there once.
 - The capture includes a **memory tier**. The frontend already reports
   the JS heap (`jsheap_mb`); while a capture is armed the host stamps its
   own process-memory split onto each per-second sample — host RSS

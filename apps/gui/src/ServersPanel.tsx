@@ -41,6 +41,7 @@ import {
   addressShapeError,
   browseNotice,
   matchServerRows,
+  nothingStoredNote,
   serverKey,
   trustLabel,
   useServerList,
@@ -54,6 +55,9 @@ export function ServersPanel(_props: IDockviewPanelProps) {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // What the last action had to say when it changed nothing — a Forget
+  // on a row the trust store never held. Cleared by the next action.
+  const [note, setNote] = useState<string | null>(null);
   // Which row's trust dialog is open, and which row's token field is
   // showing — both view-local, both addressed by the row's identity so
   // a list that moves underneath cannot leave them on the wrong server.
@@ -72,6 +76,7 @@ export function ServersPanel(_props: IDockviewPanelProps) {
 
   const run = useCallback(async (address: string, action: () => Promise<void>) => {
     setBusy(address);
+    setNote(null);
     try {
       await action();
       setError(null);
@@ -212,6 +217,11 @@ export function ServersPanel(_props: IDockviewPanelProps) {
         </p>
       )}
       {error !== null && <p className="servers-error">{error}</p>}
+      {note !== null && (
+        <p className="servers-notice" role="status">
+          {note}
+        </p>
+      )}
       {servers.length === 0 ? (
         browse.state === "running" && <p className="servers-empty">{NOTHING_ADVERTISING}</p>
       ) : matches.length === 0 ? (
@@ -235,7 +245,12 @@ export function ServersPanel(_props: IDockviewPanelProps) {
                   setTokenFor(null);
                 })
               }
-              onForget={() => void run(row.address, () => forgetServer(row.address))}
+              onForget={() =>
+                void run(row.address, async () => {
+                  await forgetServer(row.address);
+                  setNote(nothingStoredNote(row));
+                })
+              }
             />
           ))}
         </div>
@@ -276,14 +291,14 @@ function ServerRowView({
   onForget,
 }: ServerRowViewProps) {
   const [token, setToken] = useState("");
-  // Everything stored for a server is dropped together, so the button
-  // appears whenever there is anything to drop — which is not the same
-  // as the row being trusted: a loopback server is reached in the clear
-  // and has nothing stored behind it, unless it was added by hand, which
-  // is a row that has to be removable again.
-  const stored =
-    row.fingerprint !== null || row.hasToken || row.insecure || row.manual;
+  // Whether the trust store holds anything for this row. It decides
+  // wording, never whether an action is offered: a row the user can see
+  // is a row the user can act on, and a store that happens to be empty
+  // for it is an answer the action gives, not a reason to withhold the
+  // action. (Hiding them is what left the app's own sidecar — trusted,
+  // advertising nowhere, storing nothing — with no affordance at all.)
   const credentials = row.fingerprint !== null || row.hasToken || row.insecure;
+  const stored = credentials || row.manual;
   return (
     <div
       className={`server-row${row.online ? "" : " offline"}${highlighted ? " highlight" : ""}`}
@@ -309,33 +324,35 @@ function ServerRowView({
             {row.trust === "fingerprintChanged" ? "Review identity…" : "Trust…"}
           </button>
         )}
-        {row.fingerprint !== null && (
-          <button
-            type="button"
-            disabled={busy}
-            aria-label={`set token for ${row.address}`}
-            title="Replace the access token stored for this server. The server prints the current one each time it starts."
-            onClick={onToggleToken}
-          >
-            Token…
-          </button>
-        )}
-        {stored && (
-          <button
-            type="button"
-            className="danger"
-            disabled={busy}
-            aria-label={`forget ${row.address}`}
-            title={
-              credentials
-                ? "Forget this server's fingerprint and token. The next connection to it asks again."
-                : "Take this address back out of the list. Nothing is stored for it."
-            }
-            onClick={onForget}
-          >
-            Forget
-          </button>
-        )}
+        <button
+          type="button"
+          disabled={busy}
+          aria-label={`set token for ${row.address}`}
+          title={
+            row.hasToken
+              ? "Replace the access token stored for this server. The server prints the current one each time it starts."
+              : "Store an access token for this server. The server prints it each time it starts."
+          }
+          onClick={onToggleToken}
+        >
+          Token…
+        </button>
+        <button
+          type="button"
+          className="danger"
+          disabled={busy}
+          aria-label={`forget ${row.address}`}
+          title={
+            credentials
+              ? "Forget this server's fingerprint and token. The next connection to it asks again."
+              : stored
+                ? "Take this address back out of the list. Nothing is stored for it."
+                : "Drop whatever is stored for this server. Nothing is, so the panel will say what is keeping the row here."
+          }
+          onClick={onForget}
+        >
+          Forget
+        </button>
       </span>
       {row.fingerprint !== null && (
         <code className="server-fingerprint">{row.fingerprint}</code>

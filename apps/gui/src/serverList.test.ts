@@ -5,6 +5,7 @@ import {
   browseNotice,
   formatClockOffset,
   matchServerRows,
+  nothingStoredNote,
   serverLabel,
   serverLabels,
   trustLabel,
@@ -227,5 +228,36 @@ describe("formatClockOffset", () => {
   it("keeps the sign so ahead and behind read at a glance", () => {
     expect(formatClockOffset(500_000_000)).toMatch(/^\+/);
     expect(formatClockOffset(-500_000_000)).toMatch(/^-/);
+  });
+});
+
+describe("what a Forget that dropped nothing has to say", () => {
+  it("stays quiet whenever the store held something", () => {
+    for (const held of [
+      { fingerprint: "SHA256:aaa" },
+      { hasToken: true },
+      { insecure: true },
+      { manual: true },
+    ]) {
+      expect(nothingStoredNote(row(held))).toBeNull();
+    }
+  });
+
+  it("names the network as what holds an advertising row", () => {
+    const note = nothingStoredNote(row({ online: true }));
+    expect(note).toContain("192.168.1.10:50051");
+    expect(note).toContain("advertising on this network");
+  });
+
+  it("names the session as what holds a row nothing advertises", () => {
+    // The app's own sidecar, dialled at 127.0.0.1:<ephemeral> for local
+    // hardware: nothing is stored and nothing advertises it, so the
+    // session is the only thing keeping the row — and it goes with it.
+    const note = nothingStoredNote(
+      row({ address: "127.0.0.1:65476", name: null, online: false, trust: "trusted" }),
+    );
+    expect(note).toContain("127.0.0.1:65476");
+    expect(note).toContain("session is connected to it");
+    expect(note).toContain("leaves the list when that session ends");
   });
 });

@@ -702,10 +702,21 @@ directory ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)),
 never in the project file, so a project shared with a colleague carries
 no credential. The **Servers** panel is where that store is managed:
 each row shows the same fingerprint string, whether a token is stored,
-and a *Forget* button that makes the next connection ask again. A
+a *Token…* field that replaces or clears the stored credential, and a
+*Forget* button that makes the next connection ask again. Both are on
+every row, whatever the store holds for it: a row that is listed for
+another reason answers instead of doing nothing — *Forget* says that
+nothing was stored and names what is keeping the row there. A
 trusted server that is switched off stays in the list, greyed, so it
 can be forgotten without waiting for it to come back. Moving a server
 to a different address or port is a new entry, and prompts again.
+
+Two things put a row in this list besides the trust store: a server
+advertising on the network, and a session connected to one. The second
+is why a row can appear at `127.0.0.1:<some high port>` that nobody
+typed in — that is the GUI's own python-can sidecar, which binds a port
+the OS picks and is dialled for any bus bound to local hardware. Nothing
+is stored for it, and the row goes when the session does.
 
 A server on another subnet, or one started `--no-mdns`, advertises
 nowhere this machine can hear, so it never appears in the browsed list.
@@ -795,6 +806,7 @@ the app, then run the binary directly:
 pnpm --dir apps/gui tauri build --no-bundle       # release host + production bundle
 ./target/release/cannet-gui \
   --project /abs/path/to/examples/ev-zonal/ev-zonal.cannet_prj \
+  --app-data-dir /abs/path/to/perf-app-data \
   --connect-on-start \
   --perf-capture-secs 60 \
   --perf-interact scrub \
@@ -814,6 +826,14 @@ report is written.
 
 - `--project <path>` opens a project deterministically (ahead of the
   last-opened pointer). Usable on its own to just open a project.
+- `--app-data-dir <path>` puts everything the app keeps per user —
+  trust store, recents and project registry, settings, window geometry
+  — under `<path>` for this launch, so a measurement never writes the
+  state you use day to day. **Use it for every performance run.** The
+  rolling log and crash records are not moved; they stay where a bug
+  report expects them. A fresh directory starts from default settings,
+  so keep one directory for the runs you compare against each other
+  (and pin any server the run must reach in it, once).
 - `--connect-on-start` fires the same connect a user clicks, once the
   project's bindings (and, for a local binding, the sidecar) are ready.
   Paired with `--perf-capture-secs`, a failed connect is retried a

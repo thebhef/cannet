@@ -35,6 +35,18 @@ expensive at 90 minutes — `longtask_ms_per_s` mean 95.4,
 `jank_fraction` 0.439 at a 5401 s window — superlinear in window
 length somewhere, unattributed.
 
+## Data points from later gates (accumulating)
+
+- **2026-08-15, task75-p1 gate (build 9eac7f5, three runs, all
+  passed):** `rx_gap_short_frac_worst` 0.002 / 0.001 / 0.003 — and
+  run 1 was again the first capture after a fresh link (cold-ish
+  cache) but with **no watcher shells polling** this time, and it
+  measured clean. One cell of the isolation matrix, observed for
+  free: cold-cache-alone did not reproduce the 0.120; the polling
+  leg remains untested. `renderer_mb_drift_per_min` worst-to-worst
+  trend extends: 92.6 → 97.6 → 97.6 → 99.4 → **100.7** against the
+  106.605 limit (94 %) — the creep continues across builds.
+
 ## Exit criteria (draft — firm at grooming)
 
 - The run-1 anomaly attributed with the isolating experiment's data;

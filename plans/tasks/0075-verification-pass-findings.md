@@ -407,6 +407,216 @@ Commits: `983068d7` (host cancellation path), `d21f969c` (frontend
 persistence + cancel + wording). Host: 645 passed / 6 ignored, clippy
 clean. Frontend: 160 files / 2095 tests, `pnpm build` clean.
 
+### 2026-08-14 — item 3 leg (a): the mystery row is the GUI's own sidecar
+
+Branch `task75-p3-trust-row`, off `task75-p2-trace-open-feedback`.
+
+**Observation (raw).** Owner's Servers panel carries
+`trusted | not advertising | 127.0.0.1:65476`, an address never typed
+in. Two leads were on file: an ADR-0031 perf-gate run writing a pin into
+the real trust store, and the owner's own reading that 65476 smells like
+a _client_-side ephemeral port — a peer address recorded as if it were a
+server identity.
+
+**Evidence read (read-only) from the owner's real state.**
+
+- `%APPDATA%\dev.cannet.app\servers.json` holds **exactly one entry**,
+  `10.10.10.50:50051` (a routable LAN server, pinned with a token). No
+  loopback key of any kind. File mtime `2026-08-14 09:07:03 -0700`.
+- `%LOCALAPPDATA%\dev.cannet.app\logs\cannet.log` contains 14 lines
+  naming 65476. The first is
+  `2026-08-15T01:45:35.215Z INFO sidecar:python-can: listening on
+  127.0.0.1:65476`, eleven lines after
+  `01:45:33.815 … starting sidecar via frozen binary`. The rest are
+  `connection: connecting to / connected to / clock offset vs /
+  disconnected from 127.0.0.1:65476` between 02:17:59Z and 02:24:26Z.
+- The same log carries **104 distinct** `listening on 127.0.0.1:<port>`
+  lines — one per launch, all in the Windows ephemeral range.
+- Machine local time is UTC-7, so the launch that bound 65476 was
+  **2026-08-14 18:45:33 local** — the ~18:40 build of the owner's
+  verification pass.
+
+**Hypothesis.** The row is the GUI's own python-can sidecar: it binds
+`127.0.0.1:<OS-assigned port>`, a bus bound to local hardware dials it,
+and the resulting session is what puts the address in the panel — with
+nothing stored behind it.
+
+**Experiment.** Read the three sources `server_list::build` merges and
+test the one that can hold a loopback address with an empty store. New
+unit test
+`a_live_session_against_a_loopback_sidecar_mints_a_trusted_row_storing_nothing`
+feeds `merge` a clock summary for `127.0.0.1:65476` and _nothing else_
+— no discovery, no trust entry, no prompt — and asserts the whole row.
+Falsifiable: if a session could not mint a row, or if such a row were
+`new` rather than `trusted`, the assertion fails and the hypothesis
+dies.
+
+**Data.** The row comes out `address 127.0.0.1:65476`, `trust trusted`,
+`name None` (which the panel renders as the literal string
+"not advertising"), `online false`, `fingerprint None`,
+`has_token false`, `insecure false`, `manual false` — character for
+character what the owner is looking at. The mechanism is `merge`'s third
+source: `for key in clocks.keys() { rows.entry(key).or_insert_with(||
+offline_row(key, &TrustEntry::default())) }`, and `trust_state` returns
+`Trusted` for it because `connect_flow::needs_trust` is false on a
+loopback address (`plan` → `Attempt::Plaintext`, ADR 0041's local path).
+
+**Conclusion (attributed).** The row is the app's own sidecar, held in
+the list by a live capture session against it, storing nothing. It is
+**transient**: `session.rs` unregisters the session when the pump exits
+or the user disconnects, and `clock_status`'s 1 Hz poll republishes the
+list the moment the summary map changes, so the row leaves with the
+session and comes back — at a _different_ port — on the next local
+capture.
+
+**Both recorded leads are refuted, with the data that kills each.**
+
+1. _Harness pin._ `servers.json` has no loopback entry at all, and its
+   mtime (09:07 local) predates the 18:45 launch that bound 65476 by
+   nine hours — nothing was written for it. Nor could it have been: the
+   only writers are the trust dialog's commands and `add_server`'s
+   `manual` flag, and a loopback connect reaches neither (no question is
+   raised, and the harness never calls `add_server`). A
+   `--connect-on-start` run mints the same _transient_ row an operator's
+   click does, and persists nothing. **Harness connects do not write
+   pins, and no code change is needed to keep it that way.**
+2. _Client-side ephemeral port._ `sidecar:python-can: listening on
+   127.0.0.1:65476` is the sidecar announcing its own **listen** socket
+   (it binds port 0, hence the ephemeral range), and the host then dials
+   that address. No socket's local end is being mistaken for a peer's.
+
+**What the owner should do about their row: nothing.** There is nothing
+stored to delete, and the address is dead the moment that session ended.
+It reappears on every local-hardware capture, at whatever port the OS
+hands the sidecar that launch.
+
+**What is left as this item's defect** is leg (b): the panel offers no
+action at all on a row like this, which is what made an ordinary
+transient row read as an unremovable mystery.
+
+### 2026-08-14 — item 3 leg (b): an action on every row
+
+**Observation.** Owner: "I also can't forget it or change the token."
+Both affordances are _absent_ on the row, not failing.
+
+**Attribution (from `ServersPanel.tsx`, before the change).** Two
+conditions, each gated on what the trust store happens to hold:
+
+- `{row.fingerprint !== null && <button …>Token…</button>}`
+- `{stored && <button …>Forget</button>}`, where
+  `stored = fingerprint || hasToken || insecure || manual`.
+
+A sidecar row holds none of them, so neither button is rendered. The
+same gates cost more than the owner's row: a server with a **token
+stored but no pin** (a real state — `server_list.rs`'s
+`a_stored_token_on_its_own_is_not_trust` pins it) renders _Forget_ but
+not _Token…_, so the credential in `servers.json` cannot be replaced or
+cleared except by dropping everything.
+
+**Change.** Both buttons render on every row. The store's contents now
+decide only wording, never whether the action exists. Because a _Forget_
+that drops nothing must not be a button that visibly does nothing, the
+panel answers instead: `nothingStoredNote(row)` (in `serverList.ts`)
+names what is keeping the row in the list — it is advertising, or a
+session is connected to it and the row leaves when that session ends.
+Those are the only two possibilities: a stored entry is never empty
+(`update_server` removes an emptied one), so a row the store does not
+hold came from one of the merge's other two sources.
+
+**The security rule this leans on is the host's, and now has a test.**
+Offering the token field on a row reached in the clear could look like
+a way to put a credential on an unencrypted channel. It is not:
+`connect_flow::plan` returns `Attempt::Plaintext` for a loopback address
+and for an accepted-unprotected one _whatever the entry holds_, and
+`Attempt::Plaintext` carries no token —
+`a_token_stored_against_an_address_reached_in_the_clear_is_never_carried`
+now pins that in the plan, which is where ADR 0041 §S7's rule belongs
+rather than in which buttons a panel draws.
+
+**Tests (the two that encoded the overruled assumption were rewritten,
+and failed first — 4 failing / 2094 passing before the change).**
+
+- `asks nothing about a server it reaches without asking, but still acts
+  on it` (was `offers no trust actions …`) — _Trust…_ is still absent on
+  a loopback row (there is no identity to accept), _Token…_ and _Forget_
+  are not.
+- `forgets a server` (was `forgets a server, and offers that only where
+  something is stored`) — and asserts no note appears when something
+  _was_ stored.
+- `changes the token on a row that has one without a pin` — the trap
+  above, clearing the token through the field.
+- `says what keeps a row in the list when forgetting it stored nothing`
+  — the owner's row exactly (`127.0.0.1:65476`, trusted, nothing
+  advertising it, a clock from the live session): _Forget_ invokes
+  `forget_server` and the panel says a session is connected to it.
+- `says an advertising row is held by the network, not the store`.
+- Three unit tests over `nothingStoredNote` in `serverList.test.ts`.
+
+README's Servers-panel paragraph gains both facts in the same commit:
+that every row carries both actions, and that a
+`127.0.0.1:<high port>` row nobody typed in is the app's own sidecar.
+
+Host: 647 passed / 6 ignored, clippy clean. Frontend: 160 files / 2101
+tests, `pnpm build` clean.
+
+### 2026-08-14 — item 3 leg (c): a performance run gets its own user scope
+
+The owner's standing ruling, implemented even though leg (a) cleared the
+harness of writing the pin it was suspected of: a measurement must not
+write the operator's state at all.
+
+**The seam.** Everything the app keeps per user goes through one
+function — `persisted_json::config_dir` — and a grep over `apps/` and
+`crates/` finds exactly one call to Tauri's `app_config_dir()`, inside
+it. So one override covers the trust store, the project registry and
+recents, both scoped settings files and user-scope UI state at once, and
+no read path anywhere else learns that a run is under way. `--app-data-dir
+<path>` sets it; `ConfigDirOverride` carries it as managed state,
+registered on the builder so it is in place before `setup` resolves the
+project directory.
+
+Window geometry rides along by a narrower route: `tauri-plugin-window-
+state` resolves its document as `app_config_dir().join(name)` and offers
+no way to set the directory — but an absolute `name` replaces that join,
+so `window_state_filename` hands it a full path under the override.
+The launch creates the directory up front, because the plugin creates a
+parent for the real location only.
+
+**Explicitly not done — no special case in the trust logic.** "A
+loopback connection doesn't pin" was rejected by the owner and stays
+rejected: it would change what the product does to suit a test rig.
+`connect_flow` is untouched by this phase.
+
+**Deliberately not moved: the rolling log and crash records.** They are
+the run's evidence, and ADR 0031's own troubleshooting instructions
+(and every bug report) expect them in the usual place.
+
+**Tests (written first).** `a_normal_launch_has_no_config_dir_override`
+(no flag, an unrelated flag, argv[0] spelled like the flag, and the flag
+with no value — the last must not point the session at an empty path),
+`the_override_is_the_path_the_flag_names`, and
+`the_window_state_document_follows_the_override_and_nothing_else` (which
+failed first on Windows for the right reason: a `/tmp`-rooted path is
+not _absolute_ there, so the plugin's join would not have been
+replaced — the assertion now builds the path in the platform's own
+spelling).
+
+**What is verified, and what is not.** The parsing and the filename
+mapping are unit-tested; that one override reaches every user-scope file
+rests on the single-call-site grep above. A launch of the app with the
+flag was **not** run: if the override failed, the run would write the
+owner's real state, which this phase is forbidden to do — and the first
+harness run after merge is the check, at zero risk (a flag that did
+nothing would leave the isolated directory empty).
+
+ADR 0031 gains the flag in its flag list and a consequence recording the
+rule, the two things to run with (a fresh directory starts from default
+settings; reuse one directory across runs being compared), and why the
+log stays put. README's self-driving section puts `--app-data-dir` in
+the example invocation and says to use it for every run.
+
+Host: 650 passed / 6 ignored, workspace clippy clean.
+
 ## Blockers / side effects
 
 - **Latent, out of scope for item 1: the by-id / signal window scan on
@@ -423,3 +633,25 @@ clean. Frontend: 160 files / 2095 tests, `pnpm build` clean.
   long. Noted here rather than fixed: it is not item 1's defect, and
   the fix (chunk it, or bound the snapshot the way the pyramid
   catch-up is bounded by ADR 0049) is its own piece of work.
+
+- **The screenshot harness still launches the GUI against real user
+  state** (item 3 leg (c), out of this phase's reading of the ruling).
+  `cannet-perf-measurement`'s eyeball-review capture spawns the app
+  itself (`screenshot.rs::spawn_gui`, `--project` only), so it writes
+  recents, the project registry and the last-opened pointer for every
+  run. Passing `--app-data-dir` there is five lines, but it is not a
+  free change: an isolated profile starts from **default settings**,
+  and the theme those captures are taken in is a user-scope setting —
+  so the dark/light run pair would need the theme set inside the
+  isolated profile before the flag can go in. Left for whoever owns
+  that tool's determinism story; the ADR-0031 self-driving run, which
+  is what the ruling named, is isolated.
+- **The Servers panel lists the app's own sidecar while a local capture
+  is connected** (item 3 leg (a), recorded rather than changed). It is
+  a real session against a real address and the row is honest about it
+  — it even carries the clock offset the session measured — but it is
+  an implementation detail of local-hardware access appearing among the
+  servers a user manages, at an address that changes every launch. The
+  panel now explains it (leg (b)) and README names it. Whether such a
+  row should be there at all is a product question for the owner, not
+  something to decide inside a defect fix.
