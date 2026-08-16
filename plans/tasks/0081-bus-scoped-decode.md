@@ -27,6 +27,17 @@ contributing DBC's bus scoping (recorded as "conservative today,
 still correct if the path is fixed"), so pyramids invalidate correctly
 when this lands.
 
+Third seam, added by owner ruling 2026-08-16 ("we shouldn't have
+duplicate data. A signal should include the entire path though since
+it may be different per bus, so maybe that gets fixed when we resolve
+that"): the retention pool can hold two parked entries for one signal
+(each park records the fingerprint it left with). Bus-scoping the
+decode identity resolves the cross-bus half of that ambiguity; when
+it lands, revisit the pool key so a signal's parked entries are keyed
+by the full identity — and decide whether the same-identity
+two-fingerprint case (a definition edited A → B and back) still earns
+two entries or collapses.
+
 ## Exit criteria (draft — firm at grooming)
 
 - The pyramid decode consults the same `dbc_applies` scoping as every

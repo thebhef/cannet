@@ -12,10 +12,10 @@
       }
     },
     "metrics": {
-      "ingest_fps_overall": 25000.113974331784,
-      "fps_retention": 0.9999903264107658,
-      "append_ms_max": 3.0642,
-      "scan_ms_max": 0.21919999999999998
+      "ingest_fps_overall": 25000.101518070078,
+      "fps_retention": 0.9999903162462954,
+      "append_ms_max": 2.493,
+      "scan_ms_max": 0.4835
     }
   },
   "grpc": {
@@ -29,10 +29,10 @@
       }
     },
     "metrics": {
-      "ingest_fps_overall": 2853.805356239923,
-      "fps_retention": 0.998334468394513,
-      "append_ms_max": 0.8327,
-      "scan_ms_max": 0.06760000000000001
+      "ingest_fps_overall": 2929.3816771300662,
+      "fps_retention": 1.0051280094554849,
+      "append_ms_max": 0.7713000000000001,
+      "scan_ms_max": 0.13349999999999998
     }
   },
   "hardware_peak": {
@@ -47,36 +47,36 @@
       }
     },
     "metrics": {
-      "ingest_fps_overall": 999.6301268567618,
-      "fps_retention": 0.999849580086036,
-      "append_ms_max": 0.5630000000000001,
-      "scan_ms_max": 0.031900000000000005
+      "ingest_fps_overall": 999.8923215958874,
+      "fps_retention": 1.0002005453899416,
+      "append_ms_max": 0.4532,
+      "scan_ms_max": 0.0707
     }
   },
   "frontend": {
-    "label": "ev-zonal release build, synthetic scroll/pan/zoom",
+    "label": "cycle-final-r1",
     "metrics": {
-      "longtask_ms_per_s_mean": 1.3,
+      "longtask_ms_per_s_mean": 0.0,
       "longtask_ms_per_s_p95": 0.0,
-      "lag_ms_max": 27.09999990463257,
-      "jank_fraction": 0.016666666666666666,
-      "rx_fps_overall": 1606.7016666666666,
-      "rx_fps_retention": 0.9990523371191466,
-      "tx_fps_overall": 1607.5516666666665,
-      "tx_fps_retention": 0.9989534069195344,
-      "jsheap_mb_peak": 71.6,
-      "jsheap_mb_drift_per_min": 5.692873481387529,
-      "renderer_mb_peak": 319.2578125,
-      "renderer_mb_drift_per_min": 50.802250136879394,
-      "host_mb_peak": 58.40234375,
-      "tree_mb_peak": 743.26171875,
-      "tree_mb_drift_per_min": 80.1166051767644,
-      "flush_ms_mean": 4.316800000000001,
-      "tx_late_ms_mean": 6.893898333333331,
-      "flush_ms_max": 15.1759,
-      "tx_late_ms_max": 75.9469,
-      "rx_gap_p95_ratio_worst": 1.1963909851635095,
-      "rx_gap_short_frac_worst": 0.0055091819699499165
+      "lag_ms_max": 10.5,
+      "jank_fraction": 0.0,
+      "rx_fps_overall": 1600.3266666666666,
+      "rx_fps_retention": 0.9983974459033932,
+      "tx_fps_overall": 1606.5483333333332,
+      "tx_fps_retention": 1.000716076647184,
+      "jsheap_mb_peak": 70.3,
+      "jsheap_mb_drift_per_min": 9.547052799406558,
+      "renderer_mb_peak": 299.36328125,
+      "renderer_mb_drift_per_min": 40.16806152239051,
+      "host_mb_peak": 59.2265625,
+      "tree_mb_peak": 714.05078125,
+      "tree_mb_drift_per_min": 67.11987117357951,
+      "flush_ms_mean": 5.211279999999999,
+      "tx_late_ms_mean": 7.600223333333334,
+      "flush_ms_max": 23.772,
+      "tx_late_ms_max": 65.6954,
+      "rx_gap_p95_ratio_worst": 1.1987783171027708,
+      "rx_gap_short_frac_worst": 0.008030784674585912
     }
   }
 }

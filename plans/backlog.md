@@ -440,6 +440,15 @@ next pass on this surface can address them as one piece.
   Most survivors now hang off a stable ADR clause (`ADR 0002 DS-8 /
   6d`), so the sweep is mostly dropping the trailing step number rather
   than reconstructing rationale. One commit, so it doesn't drag.
+  A 2026-08-14 re-sweep (task 70, all pre-existing) named more
+  phase-number / `plans/` references to fold into the same pass:
+  `crates/cannet-blf/Cargo.toml:12,21`,
+  `crates/cannet-dbc/src/calc.rs:25`, `crates/cannet-mdf/Cargo.toml:13`,
+  `crates/cannet-server/src/auth.rs:42`,
+  `apps/gui/src/index.css:1136,3992`,
+  `apps/gui/src/DatabasePanel.tsx:263`,
+  `apps/gui/src-tauri/src/tests.rs:1907`, and several under
+  `servers/cannet-python-can/`.
 - `[idea]` `cannet-gui` disk-spill eviction (task 0018 Step 6): **pin
   note-bearing regions against eviction.** The windowed-ring cap drops the
   oldest frames purely by age; a section the user annotated with a note is
@@ -841,6 +850,15 @@ next planning pass.
   re-baseline in the same change.
   Changing the gate scenario is a baseline decision — take it
   deliberately.
+  Owner note 2026-08-16 on how to measure the wide-window regime
+  without hours of wall clock (the 5400 s live run this grew out of
+  measured longtask 95 ms/s / jank 0.44 vs ~0 at a 10 s window —
+  superlinear somewhere past 300 s): **generate a BLF spanning hours
+  of timestamps and import it** — the window-width cost is a property
+  of the data's span, not elapsed time, so import + Fit Data
+  reproduces it in minutes. For the live-edge half, seed with the
+  generated file and attach the vbus rig for a short live tail; only
+  real-time *currency* measurements need real elapsed time.
 - `[feat]` **DBC-carried generator rules (`Cannet*` database-level
   `BA_`).** The shipped regex generators store their rules
   project-side; the

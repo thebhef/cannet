@@ -2519,13 +2519,35 @@ fn the_demo_mdf_imports_frames_signals_and_markers() {
         None,
         "demo.mf4",
     );
-    assert_eq!(signals, 3);
+    assert_eq!(signals, 4);
     assert!(samples > 0);
     let listed = state.signal_caches.file_signals();
     let names: Vec<&str> = listed.iter().map(|e| e.info.name.as_str()).collect();
-    assert_eq!(names, ["AmbientTemp", "CabinHumidity", "ChargerPower"]);
+    assert_eq!(
+        names,
+        [
+            "AmbientTemp",
+            "CabinHumidity",
+            "ChargerPower",
+            "ContactorState"
+        ]
+    );
     assert_eq!(listed[0].info.unit, "degC");
     assert_eq!(listed[0].info.group_name.as_deref(), Some("Ambient"));
+
+    // The coded channel arrives with its value→text table — the demo's
+    // one file-backed enum lane, labels intact.
+    let contactor = &listed[3].info;
+    assert_eq!(contactor.group_name.as_deref(), Some("Charger"));
+    let table: Vec<(i64, &str)> = contactor
+        .value_table
+        .iter()
+        .map(|e| (e.raw, e.label.as_str()))
+        .collect();
+    assert_eq!(table, [(0, "Open"), (1, "Precharge"), (2, "Closed")]);
+    for analog in &listed[..3] {
+        assert!(analog.info.value_table.is_empty());
+    }
 
     // And what it puts in the notes store.
     let mut synthetic_idx = 0u64;

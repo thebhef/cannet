@@ -11,8 +11,8 @@ through a BLF import leaves the frontend's trace view empty while the
 host store refills: status line "Open a BLF log or connect to a server
 to begin" against a host log reading a fully-imported store, pyramids
 wiped. A user reaches it by reopening the app and then importing a
-trace. Attributed in `plans/tasks/0078-instrumentation-cost-audit.md`
-(phase 1, 31-run experiment, p ≈ 0.00065): the screenshot-scenario
+trace. Attributed by task 78's phase 1 (task file retired — see its
+status log in git history; 31-run experiment, p ≈ 0.00065): the screenshot-scenario
 empty-plot flake was this defect photographed — **fit x axis** then
 falls back to its `max = start + 1` degenerate axis. The fix shape
 recorded there is the starting point; the harness guard landed in

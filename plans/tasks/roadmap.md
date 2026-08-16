@@ -17,125 +17,91 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 70 — Live-Pass Findings on the 63–68 Batch](0070-live-pass-findings.md)
-   — owner live pass 2026-08-14 over the completed stack: two
-   regressions (BLF-open dialog latency/reentrancy, project-view
-   label alignment), an enum leading-edge lag to re-investigate,
-   build-provenance verification for the "still not fixed" items,
-   disclosure-ink sizing, task-file retirement, and the
-   MDF-decoded-groups scope question. Groom, then work through.
-2. [Task 75 — Verification-Pass Findings on the Task-70
-   Chain](0075-verification-pass-findings.md) — the owner's manual
-   pass over the shipped chain: the MAJOR boot-restore
-   slowness/non-updating-plot investigation, trace-open feedback
-   round 2 (persist, cancel, rename), the un-forgettable mystery
-   trust row, recents popup stickiness, recents-in-palette verdict.
-   Opened 2026-08-14; slotted first among the follow-ups for the
-   MAJOR item — order is the owner's to adjust.
-3. [Task 71 — Perf Grooming](0071-perf-grooming.md)
-   — the two unattributed perf questions from Task 70's closeout
-   gates: the run-1 `rx_gap_short_frac_worst` failure and the
-   `renderer_mb_drift_per_min` rise. Opened by owner ruling
-   2026-08-14. **Investigation done** — both attributed to the
-   measurement environment (neither is the build; every nominated
-   lever falsified over fourteen runs on one constant binary), and
-   the gate procedure amended in ADR 0031 / README so a lone breach
-   is re-run rather than explained. The drift ruling landed
-   (median-of-runs gating, 2026-08-15, implemented in the p2 slice
-   with the window-geometry seeding step). **Complete** — retires
-   at cycle housekeeping.
-4. [Task 72 — Extrapolation-Aware Plot Rendering + Enum Leading-Edge
-   Lag](0072-extrapolation-rendering.md) — investigation-first: the
-   proportional leading-edge lag on a growing full-trace view
-   (hours-scale, owner-observed, rig-unreproduced at 5400 s), then
-   the ruled differentiated rendering for extrapolated stretches
-   (lines, hlines, enum lanes), lane sample-marker visibility, and
-   the hover-over-a-lane points regression reported 2026-08-14.
-   Opened by owner rulings 2026-08-14.
-5. [Task 73 — MDF Ingestion Round 2](0073-mdf-ingestion-round-2.md)
-   — signal-only MF4 import and decoded-enum value labels; both
-   ruled yes 2026-08-14, building on the task-70 ingestion work.
-6. [Task 74 — Trust-Flow Rework](0074-trust-flow-rework.md)
-   — identity/token changes surface as indicators (project view +
-   Servers panel), modal only for a directly blocked connect, one
-   dialog implementation total. Opened by owner rulings 2026-08-14.
-7. [Task 76 — Per-Signal Cache Validity + Retention](0076-per-signal-cache-validity.md)
-   — replace the whole-DBC-set pyramid validity stamp with per-signal
-   encoding fingerprints (a touched-but-unchanged DBC rebuilds
-   nothing; one changed signal rebuilds one pyramid) plus a bounded
-   MRU retention pool for unreferenced caches. Opened by owner ruling
-   2026-08-14; groomed and worked in the same cycle as 71–75.
-8. [Task 78 — Automation-Instrumentation Cost Audit](0078-instrumentation-cost-audit.md)
-   — inventory every measurement/automation hook in the shipping
-   binary; harness-only machinery is flag-gated off or measured-free,
-   product instrumentation's cost stated and owner-accepted. Opened
-   by owner ruling 2026-08-15.
-9. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
+1. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
    — the user-reachable empty-view defect Task 78 phase 1 attributed
    (restore a prior capture, then import: the view stays empty while
    the store refills), plus making `--app-data-dir` isolate the
    capture scratch as ADR 0031 claims. Opened by owner ruling
    2026-08-15.
-10. [Task 80 — Plot Resample Churn Over a Stopped
+2. [Task 80 — Plot Resample Churn Over a Stopped
    Capture](0080-stopped-capture-resample.md) — investigation-first:
    ~30 Hz resample + follow-slide held over a stopped, fully imported
    capture (trace still reads RUNNING after import). Opened by owner
    ruling 2026-08-15.
-11. [Task 81 — Bus-Scoped Decode Identity](0081-bus-scoped-decode.md)
+3. [Task 81 — Bus-Scoped Decode Identity](0081-bus-scoped-decode.md)
    — the pyramid decode path ignores DBC bus scoping (same-named
    signals on two buses can be different instances); scope it through
    `dbc_applies` like every other consumer, and scope
    `list_value_tables` with it. Opened by owner ruling 2026-08-15.
-12. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
+4. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
+   — the health sampler's process-family metrics move to the web
+   engine's own bookkeeping (WebView2 `GetProcessInfos`) as the
+   de-jure source; per-platform matrix (the macOS ppid walk silently
+   excludes WKWebView's launchd-parented helpers), the
+   `unsafe`/`webview2-com` adoption rulings, costs re-measured.
+   Opened by owner ruling 2026-08-15.
+5. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
+   — the small findings the retiring 70–78 task files recorded in
+   passing, collected as one groomable pass: the project-command test
+   harness gap, the rebuild-chip rough edges, the unattributed
+   launch-hang lead, frameless-import time ranges, and the
+   untrusted-row token editor. Opened by owner ruling 2026-08-16.
+6. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
+   — an imported MDF's embedded DBC decodes for the session but
+   survives no reopen; make it durable (extraction or a durable
+   project reference), then revisit name-matching file-backed
+   signals on top. Needs grilling before implementation. Opened by
+   owner ruling 2026-08-16.
+7. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
    — shape 3 of Task 72 phase 3's attributed enum-lag fix (owner
    ruling 2026-08-15): decode cursors advance independently of view
    fetches, serves read what the cursors reached. Amends ADR 0049;
    gated on Task 72 phase 5's batched scan landing first.
-13. [Task 69 — Extension Architecture](0069-extension-architecture.md)
+8. [Task 69 — Extension Architecture](0069-extension-architecture.md)
    — implement ADR 0051: out-of-process, GUI-host-supervised
    extensions on a new `ExtensionHost` service in `cannet.proto`
    (filtered frame subscription, manifest-gated transmit, sandboxed
    contributed webviews, `.cannet-extension` packaging) plus an
    in-repo Python reference extension. Design groomed 2026-08-13;
    adopted onto the roadmap same day.
-14. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
+9. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
    — the two data-named cuts from the 2026-08-08 ingest profiling: the
    disk-spill segment write (43 % of the release per-frame budget)
    and `bus_id: Option<String>` interning (~15 %). Opened by owner
    ruling 2026-08-09.
-15. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+10. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
    — crash on exit (wry/WebKit layer-tree teardown race) and missing
    Spotlight bundle metadata. Independently-shippable macOS fixes.
-16. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
+11. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — the remaining argument-taking commands (go-to-row / -time,
    set-visible-range) and the shared input-prompt UI, on top of the
    command / palette framework. Save-with-picker (`capture.save`), the
    close commands, and a list-select go-to-event palette shipped with
    Task 37; what's left is the typed-argument prompt infrastructure.
-17. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+12. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the hardware/virtual-bus verify-and-fix pass (post-clear negative
    timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
    plot-color bug and the `decimatePoints` dead-code removal.
-18. [Task 22 — CANopen](0022-canopen.md)
+13. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-19. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+14. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
    — triggers, math channels, per-series offset / gain, export.
    (Drag-a-plot-area-between-panels shipped separately, 2026-08-08.)
-20. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
+15. [Task 27 — Live Disk-Watch for Project & RBS Files](0027-project-rbs-disk-watch.md)
     — generalize the DBC auto-reload watcher to project (`.cannet_prj`)
     and RBS (`.cannet_rbs`) files so external edits are picked up
     automatically.
-21. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+16. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
     — cannet connects out to a value-source server that streams sparse
     `(signal, value)` updates by name; RBS applies them as overrides and
     keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
     (e.g. an EV drive cycle) drive the RBS.
-22. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+17. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
     — staged: pcapng import (CAN linktypes, no model change), step/hold
     plot semantics for on-change series, then the multi-protocol trace
     model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
     Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-23. [Task 40 — bridge_client / cannet-client Session-Machinery
+18. [Task 40 — bridge_client / cannet-client Session-Machinery
     Consolidation](0040-bridge-client-consolidation.md) — gated on
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else

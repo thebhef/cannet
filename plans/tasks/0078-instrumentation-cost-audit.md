@@ -544,16 +544,18 @@ justifies on the evidence available. The owner's call.
    with the argument no gate metric can see it. The armed path is
    proven working by the phase's own ADR-0031 capture.
 3. **Product-feature instrumentation cost stated and owner-accepted —
-   STATED, acceptance PENDING.** The budget rows: 20 s health sampler
-   (full process-table refresh + `signal_caches.usage()` under the
-   plot-serve mutex), 1 Hz UI heartbeat (one IPC round-trip/s,
-   deliberately unconditional), ~22 MB WebView memory when diag is
-   armed (A/B-measured; paid only when asked). Owner ruling closes
-   this criterion at the consolidated review.
+   MET (owner ruling 2026-08-16).** The budget rows: 20 s health
+   sampler (full process-table refresh + `signal_caches.usage()`
+   under the plot-serve mutex, ~0.14 % of one core), 1 Hz UI
+   heartbeat (one IPC round-trip/s, deliberately unconditional),
+   ~22 MB WebView memory when diag is armed (A/B-measured; paid only
+   when asked). Owner: "given 0082 and the behavior I'm observing I'm
+   OK with it" — accepted as the product budget, with task 82 as the
+   improvement home. README's always-on paragraph carries the
+   accepted-budget statement.
 4. **README/ADR-0031 document the flag surface — MET.** README's
    instrumentation-surface table (always-on vs what turns each flag
    on); ADR 0031 records `--diag` and the binding "off means not
    scheduled" property.
 
-Verdict: **3 of 4 MET; criterion 3 stated and awaiting the owner's
-acceptance ruling** — the walk closes with that ruling recorded here.
+Verdict: **4 of 4 MET** — the task closes.

@@ -61,7 +61,7 @@ content a BLF has nowhere to put:
 |---|---|---|
 | CAN / CAN FD traffic | `CAN_DataFrame` structure channel group, `BusChannel` 1 | frames, one channel to map onto a bus |
 | Event markers | four `##EV` blocks (`run start`, `gear shift`, `GPS fix`, `run end`) | session notes, ids and colors intact |
-| Message-independent signals | `Ambient` (`AmbientTemp` degC, `CabinHumidity` %) and `Charger` (`ChargerPower` kW) | three file-backed signals |
+| Message-independent signals | `Ambient` (`AmbientTemp` degC, `CabinHumidity` %) and `Charger` (`ChargerPower` kW, `ContactorState` coded 0=Open / 1=Precharge / 2=Closed) | four file-backed signals, the coded one with its value table |
 
 Coverage checklist:
 
@@ -69,6 +69,8 @@ Coverage checklist:
 - [x] Bus-logging composition (one `##CN` per structure member).
 - [x] Timeline events with cannet's `common_properties` id and color.
 - [x] Message-independent signal channel groups with units.
+- [x] A coded channel whose conversion block is a value→text table
+      (`ContactorState`), so a file-backed enum lane renders labels.
 
 ## Regenerating
 
