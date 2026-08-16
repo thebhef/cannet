@@ -193,6 +193,45 @@ describe("the merged server list", () => {
     expect(local.queryByRole("button", { name: /^forget/ })).not.toBeInTheDocument();
   });
 
+  it("keeps two servers of the same name apart on their own rows", async () => {
+    // Ambiguity is not acceptable: DNS name, address and fingerprint
+    // are all on the row, so two servers advertising one name are still
+    // two rows saying which is which.
+    snapshot = list([
+      row({
+        address: "10.0.0.1:50051",
+        name: "bench-rig",
+        host: "bench-a.local",
+        trust: "trusted",
+        fingerprint: "SHA256:aaa",
+      }),
+      row({
+        address: "10.0.0.2:50051",
+        name: "bench-rig",
+        host: "bench-b.local",
+        trust: "trusted",
+        fingerprint: "SHA256:bbb",
+      }),
+    ]);
+    renderPanel();
+    await screen.findByText("10.0.0.1:50051");
+    expect(screen.getAllByText("bench-rig")).toHaveLength(2);
+    const first = rowFor("10.0.0.1:50051");
+    const second = rowFor("10.0.0.2:50051");
+    expect(first).not.toBe(second);
+    expect(first).toHaveTextContent("bench-a.local");
+    expect(first).toHaveTextContent("SHA256:aaa");
+    expect(second).toHaveTextContent("bench-b.local");
+    expect(second).toHaveTextContent("SHA256:bbb");
+    // …and every action on a row is addressed by that row's server.
+    expect(
+      within(first).getByRole("button", { name: "forget 10.0.0.1:50051" }),
+    ).toBeInTheDocument();
+    expect(
+      within(second).getByRole("button", { name: "forget 10.0.0.2:50051" }),
+    ).toBeInTheDocument();
+  });
+
   it("filters with a fuzzy search over names, host names, and addresses", async () => {
     renderPanel();
     await screen.findByText("192.168.1.10:50051");
@@ -243,11 +282,13 @@ describe("adding a server by address", () => {
     fireEvent.click(screen.getByLabelText("add this server"));
   }
 
-  it("dials the typed address and answers the question that comes back", async () => {
+  it("dials the typed address and leaves nothing behind until it is accepted", async () => {
     // Discovery is multicast, so a server on another subnet reaches the
-    // panel only this way: the address is dialled, the attempt is
-    // refused at the certificate, and the question it raised is what the
-    // host puts on the new row.
+    // panel only this way: the address is dialled and the attempt is
+    // refused at the certificate. The question that raised is the trust
+    // dialog's (it is mounted app-wide, over every question the host is
+    // waiting on) — the list stays what is advertising plus what has
+    // been accepted, so an unanswered address is in neither.
     invokeMock.mockImplementation(
       async (cmd: string, args: Record<string, unknown>) => {
         calls.push({ cmd, args: args ?? {} });
@@ -269,6 +310,19 @@ describe("adding a server by address", () => {
         ),
       ).toBe(true),
     );
+    emit(SERVER_LIST_CHANGED_EVENT, list([BENCH]));
+    expect(screen.queryByText("bench.example.com:50051")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // …and the field is clear, because retrying is typing it again.
+    fireEvent.click(screen.getByRole("button", { name: /add server/i }));
+    expect(await screen.findByLabelText("server address")).toHaveValue("");
+  });
+
+  it("shows the server once its identity has been accepted", async () => {
+    // Accepting the question the dial raised is what stores anything,
+    // and the store is what the row is made of.
+    renderPanel();
+    await screen.findByText("192.168.1.10:50051");
     emit(
       SERVER_LIST_CHANGED_EVENT,
       list([
@@ -279,13 +333,14 @@ describe("adding a server by address", () => {
           host: null,
           version: null,
           online: false,
-          prompt: { kind: "acceptIdentity", observed: "SHA256:ccc" },
+          trust: "trusted",
+          fingerprint: "SHA256:ccc",
         }),
       ]),
     );
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("SHA256:ccc");
-    expect(dialog).toHaveTextContent("bench.example.com:50051");
+    const added = rowFor("bench.example.com:50051");
+    expect(added).toHaveTextContent("trusted");
+    expect(added).toHaveTextContent("SHA256:ccc");
   });
 
   it("says what went wrong when the address could not be added", async () => {

@@ -18,7 +18,13 @@ import { Combobox, type ComboboxOption } from "./Combobox";
 import { describeBusConnState } from "./connectionStates";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { hostSettings } from "./hostSettings";
-import { formatClockOffset, serverKey, serverLabel, type ServerRow } from "./serverList";
+import {
+  formatClockOffset,
+  serverKey,
+  serverLabel,
+  serverLabels,
+  type ServerRow,
+} from "./serverList";
 import { describeSidecarStatus } from "./sidecarStatus";
 import type {
   Bus,
@@ -378,6 +384,8 @@ export function BusInterfaceCombo({
         : encodeOption(binding.server, binding.interface);
   }
 
+  const heads = serverLabels(servers);
+
   const localList: InterfaceRecord[] =
     sidecarAddress &&
     discoveries[sidecarAddress]?.status === "ok"
@@ -417,7 +425,10 @@ export function BusInterfaceCombo({
     // server. The closed-state label keeps the server's name beside the
     // interface's, so a bound bus still says where its source is.
     ...servers.flatMap((row): ComboboxOption[] => {
-      const head = serverLabel(row);
+      // Two servers advertising one name would otherwise share a
+      // header, and the interfaces under it would say nothing about
+      // which machine they are on.
+      const head = heads.get(row.address) ?? serverLabel(row);
       const state = discoveries[row.address];
       if (!row.online) {
         return [

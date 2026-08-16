@@ -177,6 +177,70 @@ describe("BusInterfaceCombo", () => {
     });
   });
 
+  it("keeps two servers of the same name apart, header and closed label alike", () => {
+    // Ambiguity is not acceptable here: an interface picked under the
+    // wrong "bench-rig" binds the bus to another machine. The group
+    // header carries whatever tells the two apart — the machine each
+    // runs on first, and its address when even that is shared.
+    const twin = "10.0.0.6:50051";
+    render(
+      <BusInterfaceCombo
+        bus={BUS1}
+        binding={{ kind: "remote", bus_id: "b1", server: twin, interface: "can0" }}
+        sidecarAddress={LIVE_LOCAL}
+        discoveries={{
+          [LIVE_LOCAL]: { status: "ok", interfaces: [] },
+          [REMOTE]: { status: "ok", interfaces: [REC_CAN0] },
+          [twin]: { status: "ok", interfaces: [REC_CAN0] },
+        }}
+        servers={[
+          serverRow({ address: REMOTE, name: "bench-rig", host: "bench-a.local" }),
+          serverRow({ address: twin, name: "bench-rig", host: "bench-b.local" }),
+        ]}
+        localVirtualBuses={[]}
+        {...NO_OPS}
+      />,
+    );
+    const combo = screen.getByLabelText("bus b1 interface");
+    // Closed, the bound bus says which of the two it is bound to.
+    expect(combo).toHaveTextContent("bench-rig (bench-b.local) / can0");
+    openCombobox(combo);
+    const headers = Array.from(document.querySelectorAll(".combobox-group")).map(
+      (el) => el.textContent,
+    );
+    expect(headers).toContain("bench-rig (bench-a.local)");
+    expect(headers).toContain("bench-rig (bench-b.local)");
+    expect(headers.filter((h) => h?.startsWith("bench-rig"))).toHaveLength(2);
+  });
+
+  it("falls back to the address when two same-named servers share a machine", () => {
+    const twin = `${REMOTE.split(":")[0]}:50052`;
+    render(
+      <BusInterfaceCombo
+        bus={BUS1}
+        binding={null}
+        sidecarAddress={LIVE_LOCAL}
+        discoveries={{
+          [LIVE_LOCAL]: { status: "ok", interfaces: [] },
+          [REMOTE]: { status: "ok", interfaces: [REC_CAN0] },
+          [twin]: { status: "ok", interfaces: [REC_CAN0] },
+        }}
+        servers={[
+          serverRow({ address: REMOTE, name: "bench-rig", host: "bench.local" }),
+          serverRow({ address: twin, name: "bench-rig", host: "bench.local" }),
+        ]}
+        localVirtualBuses={[]}
+        {...NO_OPS}
+      />,
+    );
+    openCombobox(screen.getByLabelText("bus b1 interface"));
+    const headers = Array.from(document.querySelectorAll(".combobox-group")).map(
+      (el) => el.textContent,
+    );
+    expect(headers).toContain(`bench-rig (${REMOTE})`);
+    expect(headers).toContain(`bench-rig (${twin})`);
+  });
+
   it("shows a trusted server that is switched off as (offline), with nothing to pick", () => {
     render(
       <BusInterfaceCombo

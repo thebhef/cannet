@@ -716,7 +716,9 @@ compare the fingerprint in. Accepting it pins the identity, and the
 server becomes a row like any other, greyed while it is not
 advertising. Nothing is stored for an address that could not be
 reached; the panel says what the attempt hit and the list is left
-alone. The panel also says which kind of empty it is looking at: it
+alone. The same goes for a question dismissed rather than answered —
+nothing is stored, so nothing is added to the list, and reaching that
+server is typing its address again. The panel also says which kind of empty it is looking at: it
 distinguishes a network with nothing on it from a browse that could
 not start at all, and reports the error when the mDNS browser itself
 complains, which is what a blocked UDP 5353 usually looks like.
@@ -1590,7 +1592,9 @@ schema (v6) carries three source kinds on each binding:
 Each logical bus has a single combo on its row that lists every
 source available to it — the local driver's interfaces, the
 interfaces of each server this machine trusts (grouped under that
-server), and the project's virtual buses — plus *+ Add virtual bus*
+server; when two servers advertise the same name, each group header
+carries what tells them apart — the machine it runs on, or its
+address), and the project's virtual buses — plus *+ Add virtual bus*
 and *Manage servers…*. Picking from the combo writes the binding.
 Step 6's multi-client fan-out means the same source may be picked
 for many logical buses; the GUI no longer hides "in use" options.

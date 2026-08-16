@@ -1218,6 +1218,81 @@ document; their location travels only in phase prompts.
   is untouched. Recorded under Blockers / side effects below in case
   the owner meant the broader reading.
 
+- **2026-08-14, phase 9 (`task70-p9-servers-panel`, branched off
+  `task70-p8-secure-defaults`):** item 13 plus the ratified
+  pending-prompt drop.
+  - `b5e58af` fix(gui): two servers of one name are never one group
+    (item 13). **The ambiguity was in the bus combo only; the Servers
+    panel already separated them.**
+    - _What was ambiguous._ `BusInterfaceCombo` heads each trusted
+      server's interfaces with `serverLabel(row)` (`name ?? address`),
+      and `Combobox` emits a group header only when an option's `path`
+      differs from the previous one's — so two servers advertising one
+      instance name produced **one** header over both machines'
+      interfaces, whose rows carry the interface name alone. The
+      closed-state label (`selectedLabel`) had the same hole: a bound
+      bus said `bench-rig / can0` without saying which `bench-rig`.
+    - _Fix._ `serverLabels(rows)` in `serverList.ts` names every row
+      distinctly, keyed by address: a name only one server answers to is
+      left alone (so nothing changes on an ordinary list), and a shared
+      one carries what tells them apart — the machine it runs on
+      (`bench-rig (bench-a.local)`), falling back to the address
+      (`bench-rig (10.0.0.5:50051)`) when the host name is shared or
+      absent. The address is the row's identity, so the fallback always
+      separates them and the fingerprint is never needed as a
+      differentiator; it is on the panel row already, where comparing it
+      is the security check. A row nothing advertises is already named
+      by its address and is never wrapped twice.
+    - _The panel needed no change, and that is the finding._ A row
+      renders the DNS name, the machine, the address, the version and
+      the fingerprint in their own cells, is keyed by address, and
+      aria-labels every action with it (`forget 10.0.0.1:50051`). The
+      collision is pinned there by a test rather than restyled —
+      repeating the address inside the name cell would only duplicate
+      the column beside it.
+    - _Tests, written first._ Four unit tests over the label rule
+      (unique name left alone; two machines told apart by host name;
+      the address fallback for same-name-same-host and for a null host;
+      and a five-row mixture where every label is distinct), plus a DOM
+      test per surface forcing the collision — two `bench-rig`s on
+      different machines (asserting two headers, not one, and the
+      closed label naming the bound one) and two on one machine at
+      different ports. All six failed first (`serverLabels is not a
+      function`, then `expected [ 'bench-rig' ] to contain 'bench-rig
+      (bench-a.local)'`). README's combo paragraph records the rule.
+    - Frontend: 158 test files / 2089 tests passed; build clean.
+  - `029125e` fix(gui): an unanswered trust question is not a row
+    (the ratified pending-prompt disposition).
+    - _What was removed._ `merge`'s third row source — the loop that
+      gave every pending prompt a row of its own — and, with it, the
+      only way an address could sit in the panel storing nothing. The
+      panel's post-add `setDialogFor(added)` went too: with no row for
+      an unanswered address, `dialogRow` can never resolve, so the call
+      was dead the moment the host stopped minting one. Three doc
+      claims that described the old behaviour went with the code
+      (`merge`'s and `add_server`'s rustdoc, the panel's module
+      header), and README's add-by-address paragraph gained what a
+      dismissed question leaves.
+    - _Why the add-by-address flow still works._ The question a refused
+      dial raises is not carried by the row: `ServerTrustDialogs` is
+      mounted app-wide in `App.tsx` over `useServerPrompts()`, keyed by
+      address, and asks it whether or not anything is in the list.
+      Accepting writes the pin, and the store is what makes the row —
+      exactly what README already described. Dismissing stores nothing
+      and leaves nothing, which is the ruling.
+    - _Test-first._ `an_unanswered_question_is_not_a_row` replaces
+      `an_address_the_host_is_waiting_on_gets_a_row_of_its_own` and
+      failed against the old merge with the phantom row printed in the
+      assertion message. The panel's add test now asserts the typed
+      address leaves no row, no dialog, and a cleared field to retype;
+      a sibling test asserts the row appearing once the identity is
+      accepted. Dismissal itself was already covered in
+      `ServerTrustDialog.dom.test.tsx` ("stops asking a question the
+      user waved away").
+    - Host: `cargo test -p cannet-gui` 640 passed / 6 ignored,
+      `cargo clippy -p cannet-gui --all-targets` clean. Frontend: 158
+      test files / 2090 tests passed; build clean.
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
@@ -1406,6 +1481,48 @@ document; their location travels only in phase prompts.
   replay`/`debug vbus` also auto-enable TLS+token on a routable bind,
   bringing ADR 0041's coverage to every gRPC endpoint the binary can
   serve rather than just the production one?
+
+- **The pending-prompt drop was read as "a question never holds a row",
+  not "a row never carries a question"** (phase 9, recorded because it
+  is a judgment call on a ratified ruling). What the ratification
+  quotes as the presented behaviour is _"the unanswered trust question
+  is what holds the row"_, and that is what was removed in full — no
+  row source, no legacy path, nothing vestigial behind it.
+  `ServerRow.prompt` stays, on rows that exist for their own reason,
+  because two things ride it that the ruling does not touch and the
+  store cannot supply: the **identity-changed badge**, which is a
+  refused connection's observation (`server_list.rs`'s own module doc
+  calls it the one state that cannot be read off the trust store), and
+  the panel's **re-raise** of a question this window already dismissed
+  (the app-wide dialog deliberately stops asking a dismissed one, so
+  _Review identity…_ would otherwise have nothing to show). Removing
+  the field would have deleted both, neither of which the owner
+  dispositioned. **Owner decision, if the broader reading was
+  intended**: should a row stop carrying its pending question too —
+  accepting that the identity-changed badge and the panel's re-raise go
+  with it?
+- **A bus bound to an unaccepted server now reads "unknown server"
+  rather than "not trusted"** (phase 9 side effect, recorded because it
+  changes wording nobody asked about). `busServerTrust` distinguishes
+  the two by whether the address has a row: with a pending prompt no
+  longer minting one, a hand-typed address that was dialled and refused
+  falls to `unknown` until it is accepted. Both notices name the
+  address and send the user to the same place ("trust it in the Servers
+  panel"), and both disappear the moment the identity is accepted.
+- **Trusting from the Servers panel raises two identical dialogs**
+  (phase 9, pre-existing, found by reading the code in scope and left
+  alone). The panel renders its own `ServerTrustDialog` for the row's
+  prompt while `App.tsx` renders `ServerTrustDialogs` over the same
+  pending question, so a fresh question — one the window has not
+  dismissed — is on screen twice, one modal over the other. The two are
+  not redundant in general (the panel's is the only way to re-raise a
+  question already waved away), which is why this is a design question
+  rather than a deletion: either the panel's dialog defers to the
+  app-wide one and re-raising becomes "un-dismiss", or the app-wide one
+  skips questions a panel is already showing. **Not verified against a
+  running GUI** — the phase forbids launching it — and not changed,
+  because nothing in item 13 or the pending-prompt disposition touches
+  it.
 
 ## Exit criteria (draft — firm at grooming)
 

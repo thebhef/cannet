@@ -182,6 +182,45 @@ export function serverLabel(row: ServerRow): string {
   return row.name ?? row.address;
 }
 
+/// How each of `rows` is named where servers are picked from, keyed by
+/// address — {@link serverLabel}, made distinct.
+///
+/// Two servers may advertise the same instance name, and where the name
+/// is all a surface shows (a combo's group header), that leaves a
+/// choice nobody can make correctly: picking an interface under the
+/// wrong one binds a bus to another machine. So a name that more than
+/// one server answers to carries what tells them apart — the machine it
+/// runs on, and its address when even that is shared. The address is
+/// the row's identity, so the fallback always separates them.
+///
+/// A row nothing advertises is already named by its address and is left
+/// alone.
+export function serverLabels(
+  rows: readonly ServerRow[],
+): ReadonlyMap<string, string> {
+  const tally = (key: (row: ServerRow) => string) => {
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(key(row), (counts.get(key(row)) ?? 0) + 1);
+    return (row: ServerRow) => (counts.get(key(row)) ?? 0) > 1;
+  };
+  // A newline separates the fields, because no name or host name can
+  // contain one — so two rows can never collide by running theirs
+  // together.
+  const nameShared = tally(serverLabel);
+  const hostShared = tally((row) => `${serverLabel(row)}\n${row.host ?? ""}`);
+  const labels = new Map<string, string>();
+  for (const row of rows) {
+    const base = serverLabel(row);
+    if (!nameShared(row)) {
+      labels.set(row.address, base);
+      continue;
+    }
+    const apart = row.host !== null && !hostShared(row) ? row.host : row.address;
+    labels.set(row.address, `${base} (${apart})`);
+  }
+  return labels;
+}
+
 /// The servers a bus can be bound to: the ones the host reaches without
 /// stopping to ask (ADR 0041). A server that is only *discovered* is
 /// not one of them — it is trusted in the Servers panel first, which is

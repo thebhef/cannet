@@ -6,6 +6,7 @@ import {
   formatClockOffset,
   matchServerRows,
   serverLabel,
+  serverLabels,
   trustLabel,
   trustedServers,
   type ServerRow,
@@ -137,6 +138,54 @@ describe("which servers a bus can be bound to", () => {
   it("names a server by what it advertises, falling back to its address", () => {
     expect(serverLabel(row({ name: "bench-rig" }))).toBe("bench-rig");
     expect(serverLabel(row({ name: null, address: "dead:50051" }))).toBe("dead:50051");
+  });
+});
+
+describe("naming servers that answer to the same name", () => {
+  it("leaves a name alone when only one server answers to it", () => {
+    const labels = serverLabels(ROWS);
+    expect(labels.get("192.168.1.10:50051")).toBe("bench-rig");
+    expect(labels.get("192.168.1.44:50051")).toBe("dyno-cell");
+    // A row with nothing advertising it is already named by its
+    // address — the differentiator must not be added twice.
+    expect(labels.get("bench.example.com:50051")).toBe("bench.example.com:50051");
+  });
+
+  it("tells two servers of the same name apart by the machine each runs on", () => {
+    const alike = [
+      row({ address: "10.0.0.1:50051", name: "proxy", host: "bench.local" }),
+      row({ address: "10.0.0.2:50051", name: "proxy", host: "spare.local" }),
+    ];
+    const labels = serverLabels(alike);
+    expect(labels.get("10.0.0.1:50051")).toBe("proxy (bench.local)");
+    expect(labels.get("10.0.0.2:50051")).toBe("proxy (spare.local)");
+  });
+
+  it("falls back to the address when the machine name does not tell them apart", () => {
+    // Two servers on one machine, or one whose SRV target never
+    // resolved: the address is the row's identity, so it always can.
+    const alike = [
+      row({ address: "10.0.0.1:50051", name: "proxy", host: "bench.local" }),
+      row({ address: "10.0.0.1:50052", name: "proxy", host: "bench.local" }),
+      row({ address: "10.0.0.3:50051", name: "proxy", host: null }),
+    ];
+    const labels = serverLabels(alike);
+    expect(labels.get("10.0.0.1:50051")).toBe("proxy (10.0.0.1:50051)");
+    expect(labels.get("10.0.0.1:50052")).toBe("proxy (10.0.0.1:50052)");
+    expect(labels.get("10.0.0.3:50051")).toBe("proxy (10.0.0.3:50051)");
+  });
+
+  it("gives every server a label, and never the same label twice", () => {
+    const alike = [
+      row({ address: "10.0.0.1:50051", name: "proxy", host: "bench.local" }),
+      row({ address: "10.0.0.2:50051", name: "proxy", host: "bench.local" }),
+      row({ address: "10.0.0.3:50051", name: "proxy", host: "spare.local" }),
+      row({ address: "10.0.0.4:50051", name: "dyno", host: "spare.local" }),
+      row({ address: "10.0.0.5:50051", name: null, host: null }),
+    ];
+    const labels = serverLabels(alike);
+    expect(labels.size).toBe(alike.length);
+    expect(new Set(labels.values()).size).toBe(alike.length);
   });
 });
 
