@@ -728,6 +728,260 @@ document; their location travels only in phase prompts.
       phase moved; every render-path timing metric is far under both the
       limit and the recorded baseline.
 
+- **2026-08-14, phase 6 (`task70-p6-enum-leading-edge`, branched off
+  `task70-p5-filebacked-signals`):** item 3, investigation-first.
+
+  **Verdict on observation 1 — the reported signature does not
+  reproduce. At the reproduction length the enum lane's leading edge is
+  the most current series on the panel; the serve that lagged was the
+  _numeric_ one.** That lag is real, was measured across two pyramid
+  shapes and four point budgets, and is fixed here.
+
+  **Verdict on observation 2 — extent overdraw, not marker rendering.**
+  A lane is drawn to its _axis's_ last merged column, not to its own
+  last sample.
+
+  - _Reproduction tooling._ Task 63's rig: a hardware-free copy of
+    `examples/ev-zonal` kept outside the repository, its two
+    `interface_bindings` re-pointed at in-process `local-vbus://` buses
+    (PEAK dongles untouched), driven by the ADR-0031 self-driving flags.
+    The plotted area is the owner's stated composition — sixteen module
+    cell-voltage numerics over eight messages, a current and an SOC
+    estimate, and four enum lanes — in `per-unit` mode, so
+    `deriveAxesForArea` splits it into the shared enum-lanes axis and
+    three numeric axes. The RBS gives the plotted enums (and a numeric
+    control) ADR-0028 `counter` specs, because a static override leaves
+    a lane one segment for the whole capture and measures nothing.
+    `follow_window_ms` is raised in the copy's `.cannet/settings.json`
+    so the follow window grows to the whole capture — the regime where
+    decimation engages at all. Temporary per-axis probes ride the
+    existing `RenderReport` gauges: served leading edge per axis
+    (`snapshot.lastT` minus each series' newest served sample), the
+    merged x column set's own last value, the per-signal currency on
+    the lane axis, and the window width. All removed before the phase
+    landed.
+
+  - _Experiment A (the serve, isolated)._ Before spending 90 minutes of
+    wall clock on a live run, the question "does the serve reach the
+    live edge at 5400 s" was answered where it is decidable in
+    milliseconds: build `SignalCache`s directly at the reproduction
+    length and read both reductions. Five series shapes — a 100 Hz
+    varying numeric, a 10 Hz numeric ramp, a 10 Hz code series held in
+    400 s runs, a 10 Hz code series stepping every third sample, and a
+    100 Hz code series stepping every frame — each at four point
+    budgets. Lag is `newest sample − newest served point`.
+
+    | series | budget | min/max lag | runs lag |
+    | --- | --- | --- | --- |
+    | 100 Hz varying numeric | 2248 | 0.96 s | **0.000 s** |
+    | 100 Hz varying numeric | 720 | 4.30 s | **0.000 s** |
+    | 100 Hz varying numeric | 256 | 20.01 s | **0.000 s** |
+    | 100 Hz varying numeric | 64 | 114.26 s | **0.000 s** |
+    | 10 Hz code, long runs | 2248 | 0.70 s | **0.000 s** |
+    | 10 Hz code, long runs | 720 / 256 | 11.10 s | **0.000 s** |
+    | 10 Hz code, steps every 3rd | 2248 | 3.80 s | **0.000 s** |
+    | 10 Hz code, steps every 3rd | 720 / 256 | 23.00 s | **0.000 s** |
+    | 100 Hz code, steps every frame | 2248 | 2.21 s | **0.000 s** |
+    | 100 Hz code, steps every frame | 64 | 157.07 s | **0.000 s** |
+    | 10 Hz numeric ramp | 2248 | 1.60 s | **0.000 s** |
+
+    **Twenty measurements, and the categorical serve is exact in every
+    one.** The code explains it: `reduce_transitions` always appends the
+    input's last point, and `window_categorical` reads through
+    `level_points`, which splices each finer level's un-folded tail. The
+    min/max serve read `window_slice` off the chosen level directly, so
+    it stopped at that level's last _folded_ bucket — a tail whose
+    wall-clock length is the level's bucket span and therefore grows
+    with capture length and with how coarse the read is. This is
+    task 63 phase 2's recorded asymmetry, now with a number on it.
+
+  - _Experiment B (cold catch-up — the one mechanism that does produce a
+    window-fraction lag)._ A bounded serve (`CATCH_UP_SERVE_BUDGET`)
+    answers with what it has decoded, so a cold cache trails the store.
+    Does it trail the enum axis further than the numeric one? Two query
+    sets over one 264 000-frame store in the rig's composition (three
+    message groups on the enum axis, eight on the numeric), served
+    alternately.
+
+    | serve | budget 0 (chunk at a time) | real 150 ms budget |
+    | --- | --- | --- |
+    | 1 | enum 112.599 s / numeric 112.599 s | enum 0.099 s (complete) / numeric 112.599 s |
+    | 2 | enum 105.199 s / numeric 105.199 s | both 0.099 s, complete |
+    | 3–8 | identical, decaying 7.5 s per serve | both 0.099 s, complete |
+
+    **Under a bounded budget the two axis kinds trail by bit-identical
+    amounts**, because `catch_up_keys` guarantees every message group a
+    whole chunk before the deadline is consulted. Cold-serve lag is a
+    shared transient (94 % of the window on serve 1), not an
+    enum-specific one — and where the two _do_ differ, the smaller axis
+    (the enums) finishes first. So catch-up cannot make enums lag
+    numerics; it makes them lead.
+
+  - _Fix (`cc8c1f7` `fix(gui): both reductions serve to the capture's
+    live edge`)._ Read both reductions through `level_points`. Written
+    test-first: `a_served_window_reaches_the_newest_sample_at_long_
+    capture_length` asserts the property for both reductions over both
+    pyramid shapes at three budgets and at 5400 s, and failed on the
+    min/max half alone (`left: 5379.98, right: 5399.99` — 20.01 s short)
+    while passing on the categorical one. `decimate_min_max` already
+    forces its last bucket's final sample into the output, so the
+    spliced edge survives the decimation; the splice costs fewer than
+    `PYRAMID_BRANCH` points per level below the one read (measured
+    4218 → 4222 points at a 2248 budget, 87 → 104 at 64). Host: 635
+    tests passed / 6 ignored, `cargo clippy -p cannet-gui --all-targets`
+    clean.
+
+  - _Observation 2, attributed (deterministic controlled set)._ Four
+    renders of `mergeSeries` + `enumSegments` — the two functions
+    between the served series and a drawn tile — differing only in how
+    the lanes' served data ends.
+
+    | case | lane's served last sample | last tile's right edge | overdraw |
+    | --- | --- | --- | --- |
+    | A: lane 0's message stopped at t=10, lane 1 live to t=100 | 10 | 100 | **90** |
+    | A: lane 1 (the live one) | 100 | 100 | 0 |
+    | B: one-sample lane (t=40) beside a live one | 40 | drawn `[0, 100]` | **60 after, 40 _before_ its only sample** |
+    | D (control): both lanes current | 99.9 | 100 | 0.1 |
+
+    **The lane's drawn extent is the axis's, not the series'.**
+    `mergeSeries` sample-and-holds a value forward with no trailing
+    `null` (the leading `null` has no counterpart), and `enumSegments`
+    ends its final segment at the last x column — which is the union
+    over every series on the axis. So a lane whose own data ends early
+    is drawn across the gap to whatever its neighbours have. Reading A
+    (markers) is the same picture from the other side: on an enum lane
+    the markers cannot show where the samples actually are, because in
+    `auto` the lane axis's merged column count puts uPlot's density rule
+    well past marking, and where markers _are_ drawn `drawEnumTiles`
+    runs in the `draw` hook — which uPlot fires _after_ `drawOrder`
+    renders the series (`uPlot.cjs.js`: `drawOrder.forEach(fn => fn());
+    fire("draw")`) — and paints a 0.65–0.75-alpha tile over the band the
+    interior codes' markers sit in. The two readings the owner could not
+    separate are one situation: the lane asserts a held state over
+    ground it has no sample for, and nothing in the render says so.
+    Both carriers are recorded under _Blockers / side effects_ rather
+    than changed here — see there for why.
+
+  - _Experiment C — the assembled system at full length._ A 5400 s
+    self-driving run on the fixed release build, the owner's
+    composition, the follow window grown to the whole capture
+    (`winw` last 5401.4 s, `ext` 5402.5 s, 8 692 218 frames stored,
+    `tx_fps` 1609.7 with 0.9999 retention). Leading edge per axis, in
+    milliseconds behind the window's own last-frame time — negative
+    means the served series reaches _past_ it, which the deliberate
+    fetch margin (ADR 0024) produces.
+
+    | axis | worst signal on it | best signal on it | drawn extent vs served | growth |
+    | --- | --- | --- | --- | --- |
+    | **enum lanes** (4 lanes) | mean **−39.3 ms**, max **+19.3 ms** | mean −84.3 ms | **0.000 ms** | −0.17 ms/min |
+    | numeric `V` (16 cell voltages) | mean **+86.9 ms**, max **+179.3 ms** | mean −73.4 ms | 0.000 ms | −0.22 ms/min |
+    | numeric `A` | mean −80.9 ms | mean −80.9 ms | 0.000 ms | −0.12 ms/min |
+    | numeric `%` | mean −80.9 ms | mean −80.9 ms | 0.000 ms | −0.19 ms/min |
+
+    **The enum lanes are the most current thing on the panel, and the
+    numeric axis is the laggard** — the opposite of the report, and the
+    same direction as experiments A and B. The worst enum-to-numeric gap
+    is 126 ms, comfortably inside one serve cadence (the loop runs at
+    ~11 Hz), so the exit criterion is met with two orders of margin. As
+    a fraction of the window the enum lag is 39 ms of 5401 s =
+    **0.0007 %**, against the reported two thirds — a factor of ~90 000.
+    Every slope is negative and noise-level, so nothing here grows with
+    trace length. Per-signal: `PackState` and `PackEnableRequest` (10 ms
+    messages) −0.082 s, `MainPositiveState` / `MainNegativeState`
+    (100 ms message) −0.055 s.
+
+    Two readings fall out of the same table. First, **what per-axis
+    currency actually tracks is the axis's slowest message**, not its
+    render mode: the `V` axis's +87 ms mean / +179 ms max is the module
+    messages' 200 ms `GenMsgCycleTime` showing through, exactly as task
+    63 phase 1 found ("currency tracks the message, not the axis kind").
+    Second, **`over` is 0.000 on every axis** — no lane was drawn past
+    its own data here, because all four enum lanes stayed equally
+    current. That is the control for the overdraw above: the defect
+    needs one lane to end earlier than its axis-mates, which a rig whose
+    enums all transmit continuously never produces.
+
+  - _Experiment D — what a lane's leading edge is actually made of._
+    Experiments A–C all say the serve is current, which leaves the
+    question the report still deserves an answer to: **what _can_ put a
+    lane's leading edge a large fraction of a window behind in the
+    shipped build?** The answer C hints at (per-axis currency tracks the
+    axis's slowest message) is testable directly: same rig, 600 s, one
+    extra lane on `ImdSelfTest` with its RBS `period_ms` overridden to
+    **6667 ms**, everything else untouched.
+
+    | lane (its message's period) | leading-edge lag |
+    | --- | --- |
+    | `SelfTestState` (**6667 ms**) | mean **+3.282 s**, max **+6.600 s** |
+    | `MainPositiveState` / `MainNegativeState` (100 ms) | −0.036 s |
+    | `PackState` / `PackEnableRequest` (10 ms) | −0.079 s |
+
+    Four lanes on one axis, one serve, one reduction — and the slow
+    lane trails by **its own message period and nothing more** (6.600 s
+    measured against a 6.667 s period), while its axis-mates are ahead
+    of the live edge. The axis's worst-lane gauge is entirely that lane
+    (mean 3276.2 ms, max 6590.9 ms). **A lane's leading edge is its
+    message's newest frame**, so what the lag is a _fraction_ of is
+    whatever follow window is in use: at the shipped `follow_window_ms`
+    default of 10 s, a 6.7 s message period is two thirds of the window
+    — the reported magnitude, from a pipeline that is behaving
+    correctly at every seam. Whether the owner's balancing-state
+    messages are that slow is a one-line check against their DBC's
+    `GenMsgCycleTime`, and it is the first thing to look at before
+    treating the report as a defect.
+
+    (Caveat on this run: `winw` grew to 600.8 s rather than holding the
+    10 s the copy's workspace `follow_window_ms` asked for, so the
+    _fraction_ was not reproduced directly — only the absolute lag,
+    which is the part that is a measurement. The fraction is arithmetic
+    from it.)
+
+    The same run shows observation 2's overdraw live, which experiment
+    C's rig could not produce: the slow lane's served data ends 3.36 s
+    (up to 6.67 s) behind the merged x column set the axis draws to, so
+    that lane's last tile is drawn across the whole gap — the 90-unit
+    controlled case above, at rig scale.
+
+  - _Verification._ Host `cargo test -p cannet-gui` **635 passed / 6
+    ignored** (+1: the new serve test), `cargo clippy -p cannet-gui
+    --all-targets` clean. Frontend `pnpm --dir apps/gui test` **157 test
+    files / 2075 tests passed**, `pnpm --dir apps/gui build` clean.
+    All probes and scratch experiments removed; the diff that landed is
+    one line of serve code, its rustdoc, and one test.
+
+  - **Perf gate (ADR 0031, release build at `cc8c1f7`), two runs,
+    gated with `--expected-rx-fps/--expected-tx-fps 1608`: both passed,
+    33 / 33 metrics, no baseline promoted.** The serve path changed, so
+    the gate was mandatory.
+    - Run 1 (`docs/performance-measurements/frontend/2026-08-14-cc8c1f7-task70-p6-run1.json`):
+      rx 1607.1 fps, tx 1608.1 fps, 60 samples over 59.0 s.
+      longtask_ms_per_s_mean 0.000 (limit 12.600), lag_ms_max 1.700
+      (74.200), jank_fraction 0.000 (0.083), jsheap_mb_peak 83.1
+      (207.2), jsheap_mb_drift_per_min 13.332 (16.386), renderer_mb_peak
+      355.2 (702.5), renderer_mb_drift_per_min 83.7 (106.6),
+      host_mb_peak 58.5 (180.8), tree_mb_peak 779.1 (1550.5),
+      tree_mb_drift_per_min 113.1 (165.2), flush_ms_mean 3.049 (25.000),
+      tx_late_ms_mean 5.324 (18.000), flush_ms_max 8.289 (55.352),
+      tx_late_ms_max 82.475 (176.894), rx_gap_p95_ratio_worst 1.158
+      (2.893), rx_gap_short_frac_worst 0.005 (0.041), rx/tx_fps_retention
+      0.994 / 1.000 (0.800). Host tiers: tracebuffer 25000.1 fps, grpc
+      2866.3, hardware-peak 999.7, all ok.
+    - Run 2 (`...-task70-p6-run2.json`): rx 1594.2 fps, tx 1601.9 fps.
+      longtask_ms_per_s_mean 0.000, lag_ms_max 4.600, jank_fraction
+      0.000, jsheap_mb_peak 81.3, jsheap_mb_drift_per_min 13.258,
+      renderer_mb_peak 372.3, renderer_mb_drift_per_min 97.6,
+      host_mb_peak 58.3, tree_mb_peak 793.6, tree_mb_drift_per_min
+      127.1, flush_ms_mean 3.468, tx_late_ms_mean 7.235, flush_ms_max
+      17.649, tx_late_ms_max 115.379, rx_gap_p95_ratio_worst 1.248,
+      rx_gap_short_frac_worst 0.017.
+    - Worst-to-worst the two memory-drift metrics again sit closest to
+      their limits (renderer 97.6 of 106.6, tree 127.1 of 165.2) — the
+      same shape phase 5 and the batch's close-out runs record, not
+      something this phase moved. Every render-path timing metric is far
+      under its limit, and the serve change costs nothing measurable
+      here because the gated scenario's follow window keeps the read at
+      level 0, where the splice is a no-op.
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
@@ -771,6 +1025,79 @@ document; their location travels only in phase prompts.
   degenerate case, and item 3's second observation is about lane extent
   running ahead of served data. Narrow — it fires only at exactly one
   sample — but item 3's investigation should know it is there.
+  **Ruled IN, phase 6, and left standing.** Measured: a one-sample lane
+  (its sample at t=40) beside a live neighbour is drawn `[0, 100]` — 60
+  units past its sample and, worse, **40 units _before_ it**, over
+  ground where the leading `null` rule has always said a step signal
+  has nothing to assert. Phase 5's own comment reasons about the case
+  where the union collapses to one column; the `s.t.length === 1` branch
+  fills unconditionally, so it fires on a lane axis whose other series
+  supply plenty of columns. Not changed here: the owner's item-11 (a)
+  ruling ("a series with a single point draws a horizontal line through
+  that value") is satisfied exactly as implemented, and narrowing it to
+  lone-series axes would be landing a divergence from a ruling.
+  **Owner decision needed**: does the hline apply to a lane drawn
+  _beside_ live series, where it necessarily back-dates a held state?
+
+- **A lane's drawn extent is its axis's, not its own** (phase 6, item 3
+  observation 2 — attributed, deliberately not changed). Measured: two
+  enum lanes on one axis, lane 0's message stopping at t=10 while lane 1
+  runs to t=100, and lane 0's last tile is drawn to **t=100 — 90 units
+  past its newest sample**. `mergeSeries` sample-and-holds forward with
+  no trailing `null` (only a leading one), and `enumSegments` ends its
+  final segment at the last merged x column, which is the union over
+  every series on the axis. Whether that is a defect is a **design
+  question for the owner, not an implementation choice**: for a step
+  signal that is still transmitting, holding the last state forward is
+  the correct semantics and the reason the trailing hold exists at all —
+  cutting every series at its own last sample would open a visible gap
+  at the live edge on every slow signal beside a fast one. It is only
+  dishonest where the message has _stopped_, and the render has no way
+  to tell the two apart today. Options, if the owner wants it fixed:
+  (a) end a lane's last tile at its own last sample and accept the gap;
+  (b) draw the held-past-data stretch differently (hatched, faded) so it
+  reads as "still held, not confirmed"; (c) cut it after some multiple
+  of the message's own observed period, which the host already
+  estimates. Not started — no ruling.
+
+- **Enum lanes cannot show where their samples are** (phase 6, same
+  investigation, same recommendation). The owner's alternative reading —
+  "the point markers aren't rendering on enum signals" — is also true,
+  by two independent mechanisms. In `auto` (the shipped default) uPlot's
+  density rule measures the axis's merged column count, which on a lane
+  axis over a long window is far past marking; and where markers do
+  draw, `drawEnumTiles` runs in uPlot's `draw` hook, which fires
+  **after** `drawOrder` has rendered the series, painting a
+  0.65–0.75-alpha tile over the band the interior codes' markers sit in
+  (the extreme codes' positions fall outside the central 60 % tile and
+  stay visible, which is why the effect reads as inconsistent). So a
+  lane that is drawing past its data also cannot say so. Fixing this is
+  the same owner decision as the entry above.
+
+- **A lane's leading edge is its message's cadence, and nothing in the
+  view says which message a lane rides** (phase 6, the standing
+  explanation for item 3's observation 1 — no change made). Measured:
+  four lanes on one axis, the one whose message ticks every 6667 ms
+  trails by 6.600 s while its neighbours sit 0.036–0.079 s _ahead_ of
+  the live edge. That is correct behaviour at every seam, but it is
+  indistinguishable, on screen, from the defect the owner reported —
+  and as a fraction of the shipped 10 s default follow window a 6.7 s
+  period _is_ two thirds. **Before treating item 3's observation 1 as a
+  live defect, check the `GenMsgCycleTime` of the owner's
+  balancing-state messages.** If they are slow, the open question is a
+  product one (should a lane show its own sample cadence — markers, a
+  tick strip, a per-lane "last seen" readout?), not a serve one.
+
+- **The whole-capture follow window is expensive at 90 minutes**
+  (phase 6 rig observation, outside the gated scenario). The 5400 s
+  confirmation run held `follow_window_ms` at 6 000 000 so the window
+  grew to the entire 5401 s capture over 22 signals — a regime the
+  shipped defaults never enter, but Fit Data over a long capture does.
+  It measured `longtask_ms_per_s` mean 95.4 / p95 340.1 / max 623 and
+  `jank_fraction` 0.439, against 0.000 / 0.000 in the gated 10 s-window
+  scenario. Not attributed and not this item's defect — recorded because
+  it was measured and because task 63 phase 2 drove the same gauges to
+  zero at 300 s, so the cost is superlinear in window length somewhere.
 
 - **A blocked trace-open is silent, by design** (phase 3 side effect).
   With the guard in place, invoking Import trace from the palette or
