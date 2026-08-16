@@ -48,13 +48,26 @@ const JANK_THRESHOLD_MS: f64 = 50.0;
 ///
 /// Managed as Tauri state: the flusher and scheduler threads record into
 /// it; [`diag_push`] drains it.
+///
+/// Recording is **armed by a capture** ([`diag_capture_start`]) and
+/// disarmed when it finishes. Nothing else ever drains these maxima, so
+/// outside a capture the recording would be pure waste — and this is
+/// instrumentation that ships in the product binary, which must cost
+/// nothing when it isn't being used. Unarmed, a `record_*` call is one
+/// relaxed load and a return; no atomic is written.
 #[derive(Default)]
 pub struct HostMetrics {
+    armed: std::sync::atomic::AtomicBool,
     flush_ms_max: AtomicU64,
     tx_late_ms_max: AtomicU64,
 }
 
 impl HostMetrics {
+    /// Arm or disarm recording. Called by the capture bracket.
+    fn set_armed(&self, on: bool) {
+        self.armed.store(on, Ordering::Relaxed);
+    }
+
     /// Raise `slot` to `ms` if larger (a lock-free max).
     fn record(slot: &AtomicU64, ms: f64) {
         let want = ms.to_bits();
@@ -67,13 +80,21 @@ impl HostMetrics {
         }
     }
 
-    /// Record a `TraceStore::flush` duration (ms).
+    /// Record a `TraceStore::flush` duration (ms). No-op unless a capture
+    /// is armed.
     pub fn record_flush_ms(&self, ms: f64) {
+        if !self.armed.load(Ordering::Relaxed) {
+            return;
+        }
         Self::record(&self.flush_ms_max, ms);
     }
 
-    /// Record a transmit-scheduler wake lateness (ms).
+    /// Record a transmit-scheduler wake lateness (ms). No-op unless a
+    /// capture is armed.
     pub fn record_tx_late_ms(&self, ms: f64) {
+        if !self.armed.load(Ordering::Relaxed) {
+            return;
+        }
         Self::record(&self.tx_late_ms_max, ms);
     }
 
@@ -505,8 +526,10 @@ pub fn diag_capture_start(
     cap.mem = Some(crate::crash::MemSampler::new());
     cap.store_len_at_start = app_state.trace_store.len();
     // Discard any max accrued before the capture so the first sample isn't
-    // inflated by a pre-capture flush / scheduler stall.
+    // inflated by a pre-capture flush / scheduler stall, then start
+    // recording (the flusher and scheduler skip the atomics until armed).
     let _ = metrics.drain();
+    metrics.set_armed(true);
 }
 
 /// Record one per-second sample. Ignored unless a capture is armed, so
@@ -543,9 +566,11 @@ pub fn diag_push(
 #[allow(clippy::needless_pass_by_value)]
 pub fn diag_capture_finish(
     state: State<'_, DiagState>,
+    metrics: State<'_, HostMetrics>,
     app_state: State<'_, crate::app_state::AppState>,
     path: Option<String>,
 ) -> Result<FinishedCapture, String> {
+    metrics.set_armed(false);
     let (label, samples, store_len_at_start) = {
         let mut cap = state.inner.lock().expect("diag mutex poisoned");
         cap.active = false;
@@ -684,6 +709,52 @@ impl AutomationConfig {
         }
         seen.then_some(cfg)
     }
+}
+
+/// Whether this launch arms the frontend's diagnostic machinery — the
+/// per-event counters and gauges, their burst logger, the `longtask`
+/// observer, the 1 Hz console line, and the `window.__cannetPerf` capture
+/// entry point (`diag.ts`).
+///
+/// **Off unless asked for.** All of it exists to be measured with, and a
+/// normal launch is not being measured: it would pay Map traffic on every
+/// render, an observer registration, and a console line a second for
+/// nothing. `--diag` asks for it outright; the capture flags imply it,
+/// because a capture's payload *is* those counters. `--project` /
+/// `--app-data-dir` / `--connect-on-start` do not — they open and connect,
+/// they don't record.
+#[must_use]
+pub fn diag_enabled_from_args(args: impl IntoIterator<Item = String>) -> bool {
+    let mut on = false;
+    let mut it = args.into_iter();
+    it.next(); // argv[0] — the program path
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--diag" => on = true,
+            "--perf-capture-secs" | "--perf-out" | "--perf-label" | "--perf-interact" => {
+                it.next(); // the flag's value, which is data — not a flag
+                on = true;
+            }
+            // Value-taking flags that don't arm anything: skip their value
+            // so a project path of `--diag` stays a path.
+            "--project" | "--app-data-dir" => {
+                it.next();
+            }
+            _ => {}
+        }
+    }
+    on
+}
+
+/// Managed wrapper for [`diag_enabled_from_args`]'s verdict.
+pub struct DiagEnabled(pub bool);
+
+/// Whether the frontend should arm its diagnostic machinery. The webview
+/// calls this once, from the effect that starts the 1 Hz reporter.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn diag_enabled(state: State<'_, DiagEnabled>) -> bool {
+    state.0
 }
 
 /// Managed wrapper so the parsed [`AutomationConfig`] (or its absence) can
@@ -930,6 +1001,81 @@ mod tests {
 
     fn args(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn diag_is_off_on_a_plain_launch() {
+        // The binding property: nothing a normal launch does arms the
+        // frontend's diagnostic machinery. `--project` / `--app-data-dir`
+        // are harness flags too, but they open a project — they don't ask
+        // for measurement, so they don't turn the counters on either.
+        assert!(!diag_enabled_from_args(args(&["cannet"])));
+        assert!(!diag_enabled_from_args(args(&[
+            "cannet",
+            "--some-other-flag"
+        ])));
+        assert!(!diag_enabled_from_args(args(&[
+            "cannet",
+            "--project",
+            "demo.cannet_prj",
+            "--app-data-dir",
+            "/tmp/scope",
+            "--connect-on-start",
+        ])));
+    }
+
+    #[test]
+    fn diag_is_armed_by_its_own_flag() {
+        assert!(diag_enabled_from_args(args(&["cannet", "--diag"])));
+    }
+
+    #[test]
+    fn a_capture_run_arms_diag_without_asking() {
+        // The capture's payload *is* the counters, so every flag that
+        // brackets or shapes a capture implies them — otherwise every
+        // harness invocation would have to remember a second flag.
+        for flag in [
+            "--perf-capture-secs",
+            "--perf-out",
+            "--perf-label",
+            "--perf-interact",
+        ] {
+            assert!(
+                diag_enabled_from_args(args(&["cannet", flag, "x"])),
+                "{flag} must arm diag"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flag_value_that_looks_like_diag_does_not_arm_it() {
+        // `--project --diag` names a project called `--diag`; the value of
+        // a value-taking flag is data, not a flag.
+        assert!(!diag_enabled_from_args(args(&[
+            "cannet",
+            "--project",
+            "--diag"
+        ])));
+    }
+
+    #[test]
+    fn host_metrics_record_nothing_until_a_capture_arms_them() {
+        // C7: the max-recorders are drained only by `diag_push`, so on a
+        // plain launch the flusher's and scheduler's calls must not reach
+        // the atomics at all.
+        let m = HostMetrics::default();
+        m.record_flush_ms(42.0);
+        m.record_tx_late_ms(17.0);
+        assert_eq!(m.drain(), (0.0, 0.0), "unarmed metrics must stay empty");
+
+        m.set_armed(true);
+        m.record_flush_ms(42.0);
+        m.record_tx_late_ms(17.0);
+        assert_eq!(m.drain(), (42.0, 17.0));
+
+        m.set_armed(false);
+        m.record_flush_ms(99.0);
+        assert_eq!(m.drain(), (0.0, 0.0), "disarming stops the recording");
     }
 
     #[test]

@@ -739,6 +739,9 @@ pub fn gui_args(cfg: &CaptureConfig) -> Vec<String> {
         cfg.project.to_string_lossy().into_owned(),
         "--app-data-dir".to_string(),
         cfg.app_data_dir.to_string_lossy().into_owned(),
+        // The app's diagnostic counters ship off; this run's console tap
+        // (`PRELUDE_JS`) exists to read them, so ask for them.
+        "--diag".to_string(),
     ]
 }
 
@@ -1612,6 +1615,17 @@ mod tests {
             dir.join("profile").to_str()
         );
         assert!(args.contains(&"--project".to_string()));
+    }
+
+    /// The console tap in `PRELUDE_JS` reads the app's own `[diag]`
+    /// counters back into every run's notes — which the app only emits
+    /// when the launch armed them. Without the flag a screenshot run
+    /// records nothing but its pictures, and a frame that came out wrong
+    /// can only be re-run, not explained.
+    #[test]
+    fn a_capture_arms_the_apps_diagnostic_counters() {
+        let dir = std::env::temp_dir().join("cannet-shot-diag");
+        assert!(gui_args(&cfg(&dir, "dark")).contains(&"--diag".to_string()));
     }
 
     /// A capture must not share the operator's **browser** profile

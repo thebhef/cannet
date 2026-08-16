@@ -334,6 +334,21 @@ pub fn bridge_wire_log(
     bus.push(&msg.source, level, msg.message.clone())
 }
 
+/// The dev-stderr filter used when `RUST_LOG` is unset.
+///
+/// `info` overall, with the chatty transport crates dropped to `warn`
+/// (see [`init_tracing_subscriber`]) — and the two transmit dev-log
+/// targets off. `tx-flush` and `tx-sched` go to stderr alone: unlike the
+/// app's own messages they are not fanned out to the System Messages
+/// panel or the rolling log, so on a normal launch — a windowed process
+/// with nothing attached to stderr — the line a second they format
+/// reaches no reader. They are a diagnostic pair for a stall hunt, so
+/// they are opt-in: any `RUST_LOG` value that enables them (`info`, or
+/// `tx-flush=info,tx-sched=info` for just these) brings them back, since
+/// `RUST_LOG` replaces this filter wholesale.
+const DEFAULT_LOG_FILTER: &str = "info,tonic=warn,h2=warn,hyper=warn,hyper_util=warn,\
+     tower=warn,tx-flush=off,tx-sched=off";
+
 /// Initialise the global `tracing` subscriber once at process start.
 /// The fan-out from the [`info!`] / [`warn!`] / [`error!`] macros emits
 /// a `tracing::event!` *and* pushes into the ring; this subscriber is
@@ -354,9 +369,8 @@ pub fn bridge_wire_log(
 /// stderr never hides an in-app message.
 pub fn init_tracing_subscriber() {
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        EnvFilter::new("info,tonic=warn,h2=warn,hyper=warn,hyper_util=warn,tower=warn")
-    });
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
     let _ = tracing_subscriber::registry()
         .with(filter)
         .with(fmt::layer())
@@ -414,6 +428,44 @@ macro_rules! sys_error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Record the target of every event a filter lets through.
+    struct TargetSpy(std::sync::Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TargetSpy {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(event.metadata().target().to_string());
+        }
+    }
+
+    #[test]
+    fn the_default_filter_drops_the_transmit_dev_lines_but_keeps_the_apps_own() {
+        // `tx-flush` / `tx-sched` are a diagnostic pair for reading a
+        // stall off one stderr capture. They are routed to stderr alone —
+        // no `emit_system_log` fan-out — so on a normal launch they reach
+        // no reader at all, and the default filter excludes their targets
+        // rather than formatting a line a second into a handle nobody is
+        // holding. `RUST_LOG` replaces the whole filter, so any value that
+        // enables them brings them back.
+        use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry()
+            .with(EnvFilter::new(DEFAULT_LOG_FILTER))
+            .with(TargetSpy(std::sync::Arc::clone(&seen)));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "tx-flush", "flush_ms=1.0");
+            tracing::info!(target: "tx-sched", "wakes=1");
+            tracing::info!(target: "cannet", "something the app said");
+        });
+        assert_eq!(*seen.lock().unwrap(), vec!["cannet".to_string()]);
+    }
 
     #[test]
     fn every_declared_level_name_maps_to_a_level_in_ladder_order() {

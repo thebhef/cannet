@@ -448,6 +448,10 @@ pub fn run() -> ! {
     // webview fetches the result via `diag_autostart` on boot. `None` on a
     // normal launch leaves boot behaviour untouched.
     let autostart = diag::AutomationConfig::from_args(std::env::args());
+    // `--diag` (implied by the capture flags): arm the frontend's
+    // diagnostic counters for this launch. Off otherwise — see
+    // `diag::diag_enabled_from_args`.
+    let diag_on = diag::diag_enabled_from_args(std::env::args());
     // `--app-data-dir <path>`: put this launch's whole user scope — trust
     // store, recents, settings, window geometry — in a directory it owns,
     // so a self-driving performance run (ADR 0031) measures without
@@ -492,6 +496,7 @@ pub fn run() -> ! {
         .manage(server_browse::DiscoveredServers::default())
         .manage(diag::DiagState::default())
         .manage(diag::AutomationState(autostart))
+        .manage(diag::DiagEnabled(diag_on))
         .invoke_handler(tauri::generate_handler![
             open_log,
             scan_blf_channels,
@@ -601,6 +606,7 @@ pub fn run() -> ! {
             diag::diag_push,
             diag::diag_capture_finish,
             diag::diag_autostart,
+            diag::diag_enabled,
             diag::exit_process,
             report_js_heap,
             signal_generator::validate_signal_generator,

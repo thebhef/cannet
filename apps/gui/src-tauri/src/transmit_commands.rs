@@ -331,7 +331,9 @@ impl SchedDiag {
 
     /// Emit and reset once the window reaches a second. Skips the log line
     /// (but still rolls the window) when nothing fired, so an idle
-    /// scheduler stays silent.
+    /// scheduler stays silent. The `tx-sched` target is off in the default
+    /// log filter (`system_log.rs`) — the line goes to stderr and nowhere
+    /// else, so it is opt-in via `RUST_LOG`.
     fn maybe_emit(&mut self, now: std::time::Instant, metrics: &diag::HostMetrics) {
         if now.duration_since(self.window_start) < Duration::from_secs(1) {
             return;
