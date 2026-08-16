@@ -1035,6 +1035,21 @@ export function drawEnumTiles(
     ctx.strokeRect(visStart + 0.5, o.bandTop + 0.5, segW - 1, bandH - 1);
     if (labelX != null) {
       const ly = Math.round((o.bandTop + o.bandBot) / 2);
+      // A plate behind the label, in the chip fill and with the chip
+      // geometry the cursor and Δ labels already use (ADR 0026). How
+      // solid it is is a per-theme number: a light theme's tinted tiles
+      // collapse into their own accent and its labels are read off the
+      // plate; a dark theme's don't and it takes 0, which paints
+      // nothing — so this is one draw path on every theme rather than a
+      // branch, and the theme that reads well is left pixel-identical.
+      // Never taller than the band, so a plate on a thin lane cannot
+      // erase its neighbours.
+      const boxH = Math.min(13 * o.ratio, bandH);
+      ctx.save();
+      ctx.globalAlpha = theme().laneLabelBoxOpacity;
+      ctx.fillStyle = theme().canvasChipFill;
+      ctx.fillRect(labelX - padX, ly - boxH / 2, tw + padX * 2, boxH);
+      ctx.restore();
       ctx.fillStyle = ink;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
@@ -1045,8 +1060,11 @@ export function drawEnumTiles(
       // Canvas shadow alpha tops out at one pass, so the strength is
       // stacked passes; how many is a per-theme number (`theme.ts`),
       // because a light theme's stripes carry far more contrast and
-      // swallow a single one.
-      if (striped) {
+      // swallow a single one. A solid box has already put an opaque
+      // plate between the glyphs and the stripes, so there the passes
+      // would paint background over background and fringe past the
+      // box's edge — the box *is* the halo on such a theme.
+      if (striped && theme().laneLabelBoxOpacity < 1) {
         ctx.save();
         ctx.shadowColor = halo;
         ctx.shadowBlur = 3 * o.ratio;

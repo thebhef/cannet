@@ -103,8 +103,24 @@ export interface Theme extends ThemeColors {
   ///
   /// A per-theme number rather than a branch on `name`, so adding a
   /// theme stays "add a `Theme` to `THEMES`" and no consumer grows a
-  /// list of which themes count as light.
+  /// list of which themes count as light. A theme whose
+  /// {@link laneLabelBoxOpacity} is 1 never spends them: the box is
+  /// already between the label and the stripes.
   laneLabelShadowPasses: number;
+  /// How opaque the box behind a lane label is (ADR 0026), filled in
+  /// {@link ThemeColors.canvasChipFill} — 0 for no box at all, 1 for a
+  /// solid plate.
+  ///
+  /// A light theme's tinted tiles collapse into their own accent, so its
+  /// labels are read off a plate instead of off the tile; a dark theme's
+  /// don't, and it takes **0**, which paints nothing — a source-over
+  /// composite at alpha 0 leaves the canvas exactly as it was, so the
+  /// draw path is the same on every theme without a branch, and so is
+  /// the ground `laneLabelInk` measures against.
+  ///
+  /// Same idiom as {@link laneLabelShadowPasses}: a number a theme
+  /// carries, not a list of which themes count as light.
+  laneLabelBoxOpacity: number;
 }
 
 const DARK: Theme = {
@@ -127,6 +143,7 @@ const DARK: Theme = {
   graphNeutralEdge: "#94a3b8",
   graphBusNodeBase: "#11161f",
   laneLabelShadowPasses: 2,
+  laneLabelBoxOpacity: 0,
   signalWheel: [
     "#c6f24e",
     "#4ecbff",
@@ -185,6 +202,7 @@ const LIGHT: Theme = {
   graphNeutralEdge: "#5b6879",
   graphBusNodeBase: "#eef1f6",
   laneLabelShadowPasses: 4,
+  laneLabelBoxOpacity: 1,
   signalWheel: [
     "#5a760f",
     "#0873a0",
@@ -239,6 +257,7 @@ const LIGHTHK: Theme = {
   graphNeutralEdge: "#be2d58",
   graphBusNodeBase: "#fdd8e3",
   laneLabelShadowPasses: 4,
+  laneLabelBoxOpacity: 1,
   signalWheel: [
     "#6f690e",
     "#2356f3",
