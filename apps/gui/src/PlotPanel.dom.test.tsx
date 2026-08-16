@@ -208,6 +208,31 @@ const mockSampleRebuild = { on: false, served: 0, of: 0 };
 /// in what the plot draws rather than only in the request. Prefixed
 /// `mock` for the hoisted factory.
 const mockFileBackedSignals = new Set<string>();
+/// The host's categorical reduction, modelled so a lane's serve carries
+/// what the real one carries: an **over-budget** window comes back as
+/// its run boundaries (plus the series' last point, so the final tile
+/// has an end); a window that already fits the point budget is served
+/// whole, because the reduction exists to fit a budget and the sample
+/// positions inside a run are what a renderer marks and a cursor snaps
+/// to. Mirrors `signal_cache.rs::window_categorical`. Prefixed `mock`
+/// for the hoisted factory.
+function mockReduceRuns(s: { t: number[]; v: number[] }, maxPoints: number) {
+  if (maxPoints === 0 || s.t.length <= maxPoints) return s;
+  const t: number[] = [];
+  const v: number[] = [];
+  s.t.forEach((ts, i) => {
+    if (i === 0 || s.v[i] !== s.v[i - 1]) {
+      t.push(ts);
+      v.push(s.v[i]);
+    }
+  });
+  const last = s.t.length - 1;
+  if (t[t.length - 1] !== s.t[last]) {
+    t.push(s.t[last]);
+    v.push(s.v[last]);
+  }
+  return { t, v };
+}
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
@@ -224,12 +249,14 @@ vi.mock("@tauri-apps/api/core", () => ({
           mockSampleRebuild.of > 0 && n >= mockSampleRebuild.of,
         );
       }
+      const req = args as { categorical?: boolean; maxPoints?: number } | undefined;
       return encodeSample(
         (args?.signals ?? []).map((s) => {
           const q = s as { signalName?: string; fileBacked?: boolean };
           const name = q.signalName ?? "";
           if (mockFileBackedSignals.has(name) && !q.fileBacked) return { t: [], v: [] };
-          return mockSampleSeries[name] ?? { t: [0, 1, 2], v: [10, 20, 15] };
+          const series = mockSampleSeries[name] ?? { t: [0, 1, 2], v: [10, 20, 15] };
+          return req?.categorical ? mockReduceRuns(series, req.maxPoints ?? 0) : series;
         }),
       );
     }
@@ -2212,6 +2239,36 @@ describe("PlotArea y-normalisation", () => {
           .map((a) => [a.signals[0].signalName, a.categorical === true] as const);
         expect(modes).toContainEqual(["EngineSpeed", true]);
         expect(modes).toContainEqual(["EngineTemp", false]);
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("enum lanes: a within-budget window draws a column per sample, not per transition", async () => {
+    // Regression guard. The categorical serve reduces an over-budget
+    // window to its run boundaries; run-reducing one that already fits
+    // as well left a lane whose whole drawn content was its transitions
+    // — four columns for twelve samples. Everything that shows *where
+    // the samples are* rides on those columns: the point markers, and
+    // the per-series hover point, which snaps to the nearest column.
+    // Held codes, so the runs are far fewer than the samples.
+    mockValueTables.EngineSpeed = ENUM3;
+    mockValueTables.EngineTemp = ENUM3;
+    const held = { t: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], v: [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2] };
+    mockSampleSeries.EngineSpeed = held;
+    mockSampleSeries.EngineTemp = held;
+    const restore = stubSize();
+    try {
+      renderPanel();
+      await addSignals(["EngineSpeed", "EngineTemp"], "per-unit");
+      await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+      await waitForData((data) => {
+        // Every sample, not the four run boundaries the reduction keeps.
+        expect(data[0]).toEqual(held.t);
+        // …and each lane holds a value at every one of them.
+        expect(data[1]?.length).toBe(held.t.length);
+        expect(data[1]?.every((y) => y != null)).toBe(true);
       });
     } finally {
       restore();

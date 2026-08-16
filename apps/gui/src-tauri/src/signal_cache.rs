@@ -428,12 +428,22 @@ impl SignalCache {
     /// `O(max_points)` read, but the level is chosen from the *fine* end
     /// and the reduction is [`signal_sampler::reduce_transitions`]:
     ///
+    /// - **A window that already fits the budget is served raw, with no
+    ///   reduction at all.** The reduction is how an over-budget window
+    ///   is made to fit; run-reducing one that already fits buys no
+    ///   points and costs the only record of *where the samples are* —
+    ///   the positions a renderer marks and a hovering cursor snaps to.
+    ///   The runs are recoverable from the samples, so nothing that
+    ///   draws held states loses anything. This is the numeric serve's
+    ///   rule too ([`signal_sampler::decimate_min_max`] returns its
+    ///   input unchanged below the budget), and it is the case a live
+    ///   plot is in until the window holds more samples than the
+    ///   renderer has pixels.
     /// - **Read the finest level whose in-window count fits the read
     ///   budget** ([`PYRAMID_BRANCH`] × `max_points`, the same order the
     ///   numeric serve reads). A window that fits at level 0 is answered
     ///   from the raw samples, so every code and every transition time is
-    ///   exact — which is the case a live plot is in until the window
-    ///   holds more than a few `max_points` of samples.
+    ///   exact.
     /// - **Above that, resolution degrades but codes do not vanish.** A
     ///   level-`k` point summarises `n / count_k` raw samples, and the
     ///   chosen level holds more than `max_points` points wherever a
@@ -468,6 +478,13 @@ impl SignalCache {
         }
         if max_points == 0 {
             return signal_sampler::reduce_transitions(&window_slice(&self.levels[0], from, to));
+        }
+        // Nothing to reduce: the raw window already fits. `window_slice`
+        // widens by two points each side, which the count has to allow
+        // for. Counting first keeps this O(log n) on the window that
+        // does *not* fit, rather than materializing a whole capture.
+        if window_count(&self.levels[0], from, to).saturating_add(4) <= max_points {
+            return window_slice(&self.levels[0], from, to);
         }
         let read_budget = max_points.saturating_mul(PYRAMID_BRANCH);
         let mut chosen = 0;
@@ -1167,11 +1184,13 @@ pub enum Reduction {
     /// survives ([`signal_sampler::decimate_min_max`]).
     #[default]
     MinMax,
-    /// Categorical: the window's run boundaries, so every held code and
-    /// its transition survive ([`signal_sampler::reduce_transitions`]).
-    /// A min/max envelope over a code series keeps the two extreme codes
-    /// of each bucket and discards the rest — the held state disappears
-    /// rather than being drawn late.
+    /// Categorical: an over-budget window reduces to its run
+    /// boundaries, so every held code and its transition survive
+    /// ([`signal_sampler::reduce_transitions`]). A min/max envelope over
+    /// a code series keeps the two extreme codes of each bucket and
+    /// discards the rest — the held state disappears rather than being
+    /// drawn late. Like the numeric reduction, this one applies only
+    /// when the window does not already fit.
     Runs,
 }
 
@@ -2600,6 +2619,64 @@ mod tests {
             .into_iter()
             .map(|p| (p.t_seconds, p.value as u32))
             .collect()
+    }
+
+    /// A categorical window that **already fits the point budget** is
+    /// served raw — every sample, not just the run boundaries.
+    ///
+    /// The run reduction exists to fit an over-budget window; applied to
+    /// one that already fits it buys nothing and costs the only record
+    /// of *where the samples are*. A renderer marks sample positions and
+    /// a hovering cursor snaps to them, so a lane served as four run
+    /// boundaries can only ever show four — the numeric serve of the
+    /// same window keeps every sample ([`decimate_min_max`] returns its
+    /// input unchanged below the budget), and the two reductions must
+    /// agree about what a window that needs no reduction contains.
+    #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    fn a_categorical_window_within_the_budget_keeps_every_sample() {
+        // Three held runs of 100 samples: 300 samples, four run
+        // boundaries (three transitions plus the series' last point),
+        // served at a budget twice the window's sample count.
+        const HOLD: u64 = 100;
+        const RUNS: u64 = 3;
+        let store = TraceStore::new();
+        let mut n = 0u64;
+        for run in 0..RUNS {
+            for _ in 0..HOLD {
+                store.append(val_frame(n * S, run as u16));
+                n += 1;
+            }
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+
+        let served = categorical_serve(&cache, f64::MIN, f64::MAX, 600, &store, dbs);
+        assert_eq!(
+            served.len(),
+            (HOLD * RUNS) as usize,
+            "a window inside the budget was reduced anyway; sample positions lost",
+        );
+        // Every sample time, in order, and the codes still read as held
+        // runs — the reduction's answer is recoverable from this one.
+        assert_eq!(
+            served.iter().map(|&(t, _)| t).collect::<Vec<_>>(),
+            (0..HOLD * RUNS)
+                .map(|i| (i * S) as f64 / 1e9)
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            served.iter().map(|&(_, v)| v).collect::<Vec<_>>(),
+            (0..HOLD * RUNS)
+                .map(|i| (i / HOLD) as u32)
+                .collect::<Vec<_>>(),
+        );
     }
 
     /// The categorical serve's reason to exist, at the serve seam: above

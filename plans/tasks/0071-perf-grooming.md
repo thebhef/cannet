@@ -405,3 +405,30 @@ outstanding.
   `short_frac` carrier is ever worth pinning down, it needs a rig the
   owner is not sitting at, or a load shape that does not monopolise
   the desktop.
+
+## Owner rulings (2026-08-15, closing review)
+
+- **On the synthetic-load leg (addendum to the veto):** the machine
+  was never anywhere near 100 % utilization across 32 logical cores
+  when the two real gate failures occurred, so a breach induced
+  under that load was to be expected and carries **no evidentiary
+  weight** for the real failures' carrier ("I would be shocked if
+  we didn't reproduce _some_ performance degradation"). The H7
+  route is closed for evidentiary irrelevance at that magnitude,
+  not only for workstation usability.
+- **Drift-metric gating: option 1 adopted** — the gate judges drift
+  metrics (`renderer_mb_drift_per_min`, `tree_mb_drift_per_min`,
+  `jsheap_mb_drift_per_min`) on the **median** of a gate's runs
+  rather than the worst; limits unchanged. Implementation slice
+  queued (cannet-perf-measurement `check` grows multi-report
+  awareness for the drift family; ADR-0031/README updated with it).
+  Until it lands, operators apply the ADR's re-run disposition.
+  Task 71 retires from the roadmap once the slice lands.
+- **Seed the isolated profile's window geometry from the
+  operator's real profile** (owner ruling, same review): a fresh
+  `--app-data-dir` opens the default-sized window, giving the
+  measured plot canvas a lighter render workload than the real
+  2450×2080 instance every pre-isolation baseline measured. The
+  run procedure copies the operator profile's `.window-state.json`
+  into the isolated dir before launch; ADR-0031/README get the
+  step in the same slice. Applies to every gate run from now on.

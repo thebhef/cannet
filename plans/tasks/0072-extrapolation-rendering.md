@@ -143,6 +143,105 @@ discipline: failing test reproducing the continued scroll first,
 then the fix, and the walk records what happened to the original
 guard.
 
+## Status log
+
+- **2026-08-15, phase 1 (`task72-p1-hover-points`, branched off
+  `task71-p1-perf-isolation`):** §3, the hover-points regression.
+
+  **Verdict: the introducing change is `61379f88` (PR #282,
+  "feat(gui): serve categorical signals by runs, not by extremes") —
+  the 63–68 batch, _not_ the task-70 chain.** Neither prime suspect is
+  implicated: the auto point-marker floor and the lane over-paint are
+  what the surviving markers ride on, not what removed the missing
+  ones.
+
+  - _Observation (raw)._ Owner: the underlying signal plot's
+    per-sample points on hover are gone; what still renders is points
+    at the transition points only, across every enum lane.
+
+  - _Hypothesis._ Nothing in the frontend renders points as a function
+    of hover except uPlot's own per-series cursor point, which is
+    placed at the merged x column nearest the pointer
+    (`uPlot.esm.js`: `closestIdx(valAtPosX, data[0], i0, i1)`), for
+    every series at once. "Per-sample points, on hover, on all lanes"
+    and "transition points only, on all lanes" are therefore the same
+    mechanism seen before and after a change to **what the lane's x
+    columns are** — i.e. the serve stopped carrying a point per
+    sample. Falsifiable: if the enum-lane serve still carried one
+    point per sample, no change to the columns would exist to see.
+
+  - _Experiment (bisect by pickaxe, not by build)._ `git diff
+    68252eb1..HEAD` (pre-task-70 batch tip → task-70 chain tip) over
+    the marker/hover seams — `PlotArea.tsx`, `plotPoints.ts`,
+    `plotData.ts`, `index.css` — carries exactly two marker-relevant
+    changes, both additive (`applyAutoPointFloor`; the one-sample
+    hline in `mergeSeries`) and neither able to remove a column. The
+    same walk over the 63–68 batch surfaced `61379f88`, which routes
+    an enum-lane fetch to `SignalCache::window_categorical` →
+    `signal_sampler::reduce_transitions`. Reading the two reducers
+    side by side: `decimate_min_max` returns its input **unchanged**
+    when `n <= max_buckets`, while `window_categorical` ran
+    `reduce_transitions` unconditionally — so the same window that a
+    numeric axis gets whole, a lane axis gets as run boundaries.
+
+  - _Data._ Serve-seam test, written first, three held runs of 100
+    samples at a 600-point budget (`signal_cache.rs`,
+    `a_categorical_window_within_the_budget_keeps_every_sample`):
+    **`left: 4, right: 300`** — four points (three transitions plus
+    the series' last) where 300 samples were served before `61379f88`.
+    Renderer-seam falsification, same shape from the other side: with
+    the panel suite's fake host modelling the unconditional reduction,
+    the lane's drawn x columns are **`[0, 4, 8, 11]`** against the
+    twelve sample times.
+
+  - _Fix (`188ef0bc`)._ `window_categorical` returns the raw window
+    when it already fits `max_points` — the reduction is how an
+    over-budget window is made to fit, and applied to one that already
+    fits it buys no points while costing the only record of where the
+    samples are. Counting the window before slicing keeps the
+    not-fitting case `O(log n)` rather than materializing a whole
+    capture. `61379f88`'s reason to exist is untouched: above the
+    budget the reduction still runs, and its three tests
+    (`..._keeps_every_code_and_transition_above_the_budget`,
+    `..._coarsens_a_huge_window_without_losing_held_codes`,
+    `..._coarsens_when_transitions_exceed_the_budget`) are unchanged
+    and green. Task 70 phase 5's auto point floor and phase 6's
+    attribution are untouched — nothing here reverts them, and the
+    markers they govern are the ones the owner still sees.
+    Rustdoc corrected in the same commit where it claimed the run
+    boundaries are "the whole of what such a renderer draws"
+    (`signal_sampler.rs` module doc, `Reduction::Runs`,
+    `window_categorical`).
+
+  - _Guard (`cb36f25c`)._ The panel suite's fake host now models the
+    real reduction (whole window below the budget, run boundaries
+    above it) — test-fixture honesty in the phase-5 sense, without
+    which a lane served as four boundaries is invisible in what the
+    plot draws — plus a DOM test that a within-budget lane window
+    draws a column per sample.
+
+  - Host: `cargo test -p cannet-gui` 657 passed / 6 ignored; clippy
+    `--all-targets` clean; `cargo fmt --check` clean. Frontend: 161
+    test files / 2117 tests passed; `tsc --noEmit` and `pnpm build`
+    clean.
+
+## Blockers / side effects
+
+- **Marker _visibility_ on a lane axis is still governed by uPlot's
+  density rule.** Phase 1 restored the per-sample columns; whether a
+  marker is painted on them is a separate gate — uPlot's `auto` rule
+  reads the axis's merged column count, `applyAutoPointFloor` only
+  rescues a series of at most 32 samples, and `drawEnumTiles` paints
+  0.65–0.75-alpha tiles over whatever markers do land in the band.
+  A lane dense enough to lose the density test therefore still shows
+  no sample positions. That is the separate exit criterion "enum lanes
+  show their sample positions (markers or equivalent)" and belongs to
+  the §2 phase; it is recorded here so the two are not confused.
+- **`max_points == 0` still run-reduces a categorical window**, where
+  the numeric serve of the same request returns the raw slice. Left
+  as-is: no plot fetch reaches it (`MIN_DECIMATION_POINTS = 200` is
+  the floor `PlotArea` asks with), and changing it is outside §3.
+
 ## Exit criteria (draft — firm at grooming)
 
 - The proportional leading-edge lag reproduced (or its
