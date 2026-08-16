@@ -23,8 +23,9 @@
 //! them from the raw frames.
 //!
 //! A file with no bus-logging group at all is a *signal file* — a
-//! post-processed measurement, not a capture. Opening one fails with
-//! [`MdfSourceError::SignalFile`] rather than yielding an empty capture.
+//! post-processed measurement rather than a recording of bus traffic. It
+//! is read like any other: no frames come out of it, and its signal
+//! groups are its content.
 //!
 //! ## Timestamps
 //!
@@ -133,13 +134,15 @@ impl std::fmt::Debug for MdfCanFrameSource {
 }
 
 impl MdfCanFrameSource {
-    /// Open `path` as an MDF 4.x bus-logging file.
+    /// Open `path` as an MDF 4.x file.
+    ///
+    /// A file with no bus-logging channel group at all opens like any
+    /// other and emits no frames: its content is signal groups, which
+    /// [`Self::signal_groups`] serves.
     ///
     /// # Errors
     ///
-    /// [`MdfSourceError::SignalFile`] if the file carries no bus-logging
-    /// channel group — a pre-decoded measurement rather than a capture.
-    /// Otherwise the block-parsing and I/O errors of a malformed file.
+    /// The block-parsing and I/O errors of a malformed file.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, MdfSourceError> {
         let file = Mdf4File::open(path.as_ref())?;
         let decoded = collect_decoded(&file);
@@ -157,13 +160,6 @@ impl MdfCanFrameSource {
                 next: None,
             });
         }
-        if heads.is_empty() {
-            return Err(MdfSourceError::SignalFile {
-                signal_groups: file.groups.len(),
-                decoded_groups: decoded.len(),
-            });
-        }
-
         let mut source = Self {
             file,
             heads,
@@ -318,14 +314,6 @@ pub enum MdfSourceError {
     /// The block graph does not describe itself — a bad link, a truncated
     /// block, an address past the end of the file.
     Malformed(String),
-    /// The file carries no bus-logging channel group: it is a
-    /// pre-decoded signal file, not a capture.
-    SignalFile {
-        /// How many channel groups it does have.
-        signal_groups: usize,
-        /// How many of those are per-message DBC-decoded groups.
-        decoded_groups: usize,
-    },
     /// A group treated as bus-logging turned out to have no frame
     /// structure channel.
     NotABusGroup(usize),
@@ -350,16 +338,6 @@ impl std::fmt::Display for MdfSourceError {
             Self::Io(e) => write!(f, "mdf read error: {e}"),
             Self::Block(e) => write!(f, "mdf block error: {e:?}"),
             Self::Malformed(what) => write!(f, "malformed mdf file: {what}"),
-            Self::SignalFile {
-                signal_groups,
-                decoded_groups,
-            } => write!(
-                f,
-                "this MF4 file holds pre-decoded signals, not bus traffic: \
-                 {signal_groups} channel group(s), {decoded_groups} of them \
-                 per-message DBC-decoded, and no CAN_DataFrame / \
-                 CAN_ErrorFrame / CAN_RemoteFrame group to import"
-            ),
             Self::NotABusGroup(group) => {
                 write!(f, "channel group {group} carries no CAN frame structure")
             }

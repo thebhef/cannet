@@ -409,9 +409,9 @@ def base_doc(name, *, sorted_, finalized, data_block, rec_id_size=0, unfin_flags
         "hd_tz_offset_min": 0,
         "id_unfin_flags": unfin_flags,
         "mdf_version": "4.10",
-        # "logger" = at least one raw bus-logging group, so the file imports.
-        # "signal_file" = pre-decoded channels only, which import must reject
-        # rather than read as an empty capture.
+        # "logger" = at least one raw bus-logging group, so the file has
+        # frames. "signal_file" = pre-decoded channels only, which imports
+        # through the signal path with no frames behind it.
         "shape": shape,
         "sorted": sorted_,
         "timestamp_rule": "master channel is f64 seconds; t_abs_ns = hd_start_time_ns + round(t_raw * 1e9)",

@@ -912,8 +912,8 @@ pub(crate) async fn import_mdf(
     let import_signals = import_signals.unwrap_or(true);
     let import_messages = import_messages.unwrap_or(true);
     // Open (and, for an unsorted/unfinalized CANedge file, finalize +
-    // sort) before returning, so a bad path or a signal-shape file
-    // fails immediately rather than behind a spawned thread.
+    // sort) before returning, so a bad path fails immediately rather
+    // than behind a spawned thread.
     let source = match MdfCanFrameSource::open(&mdf_path) {
         Ok(s) => s,
         Err(e) => {
@@ -1295,9 +1295,9 @@ pub struct MdfScanResult {
 /// the-file cost model (ADR 0046), routed through [`cannet_mdf::scan_mdf`]
 /// instead of `cannet_blf::scan_blf`.
 ///
-/// A signal-shape file (no bus-logging group) fails with a clear,
-/// typed message rather than scanning as an empty capture — the same
-/// error [`import_mdf`] itself would surface.
+/// A signal-shape file (no bus-logging group) scans like any other,
+/// reporting no channels and no frames: its content is signals, and
+/// the dialog offers that content alone.
 #[tauri::command]
 pub(crate) async fn scan_mdf_channels(
     app: AppHandle,

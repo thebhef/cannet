@@ -2977,24 +2977,53 @@ fn mdf_import_of_a_pure_logger_file_fills_no_file_backed_signals() {
     );
 }
 
-/// Signal-shape MF4 files (pre-decoded measurements, no bus-logging
-/// group) are detected and rejected with a clear, typed message — the
-/// same error both `scan_mdf_channels` and `import_mdf` surface as
-/// `Err(String)` to the frontend. Exit criterion: not misread as an
-/// empty capture.
+/// A signal-shape MF4 (a post-processed measurement with no bus-logging
+/// group at all) imports through the signals path. The scan reports no
+/// channels and no frames — so the dialog offers Signals and no
+/// CAN-messages content — the file's series land file-backed, and the
+/// session origin comes from the earliest sample, there being no first
+/// frame to take it from.
 #[test]
-fn mdf_signal_file_scan_reports_a_clear_error_not_an_empty_capture() {
+fn mdf_signal_only_file_imports_through_the_signals_path() {
     let path = mdf_fixture_path("signal_only");
 
-    let scan_err = cannet_mdf::scan_mdf(&path).unwrap_err();
-    let open_err = cannet_mdf::MdfCanFrameSource::open(&path).unwrap_err();
+    let scan = cannet_mdf::scan_mdf(&path).unwrap();
+    assert!(scan.channels.is_empty(), "no frames, so no wire channels");
+    assert_eq!(scan.frame_count, 0);
+    assert_eq!(scan.signal_groups.len(), 2);
+    assert_eq!(
+        scan.signal_groups
+            .iter()
+            .map(|g| g.signal_count)
+            .sum::<usize>(),
+        3,
+    );
 
-    for msg in [scan_err.to_string(), open_err.to_string()] {
-        assert!(
-            msg.contains("pre-decoded signals") && msg.contains("no CAN_DataFrame"),
-            "expected a message that names the shape mismatch, got: {msg}"
-        );
-    }
+    let source = cannet_mdf::MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+    let dir = tempfile::TempDir::new().unwrap();
+    let caches = SignalCacheStore::new(dir.path());
+    let (signals, samples) =
+        capture::fill_file_backed_signals(&caches, &groups, None, None, &path.to_string_lossy());
+    assert_eq!((signals, samples), (3, 72), "every channel of both groups");
+    assert_eq!(
+        caches
+            .file_signals()
+            .iter()
+            .map(|e| (e.info.name.clone(), e.info.group_label()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("AxleTorque".to_string(), "Powertrain".to_string()),
+            ("DriveState".to_string(), "Powertrain".to_string()),
+            ("BatteryVolts".to_string(), "Electrical".to_string()),
+        ],
+    );
+
+    // The leg `import_mdf` takes when no frames are imported (ADR 0024).
+    assert_eq!(
+        capture::signal_origin_ns(&groups, None, None),
+        Some(1_709_294_400_000_000_000),
+    );
 }
 
 /// `write_blf_capture` re-channels each frame by its `bus_id`'s

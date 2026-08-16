@@ -78,8 +78,9 @@ crates/
                  file's signal groups — message-independent and
                  per-message DBC-decoded alike, each tagged with which it
                  is — its `##EV` timeline markers and its `##AT`
-                 attachments, and rejects pre-decoded signal files
-                 outright. `MdfCaptureWriter` is the inverse
+                 attachments. A file with no bus-logging group at all
+                 reads as exactly that: signals, no frames.
+                 `MdfCaptureWriter` is the inverse
                  for Save Capture: sorted, finalized MDF 4.10 with the
                  bus-logging composition written out by hand, plus signal
                  groups, events and embedded databases.
@@ -1972,9 +1973,9 @@ messages is unticked. An import that brings in signals and no frames
 still gets a timeline: with no first frame to anchor it, the earliest
 sample the import lands becomes the session's start
 ([ADR 0024](docs/adr/0024-trace-like-view-timing.md)). A signal-shape MF4 (a
-post-processed measurement with no bus-logging group at all) is
-detected and rejected with a message naming the mismatch, rather than
-opening as an empty capture.
+post-processed measurement with no bus-logging group at all) imports
+that way too — the dialog offers *Signals* and no *CAN messages*
+checkbox, there being no frames to offer.
 
 **Databases the capture carries** (`##AT` attachments — what every
 Save Capture to MDF embeds) are streamed straight into the loaded DBC
