@@ -123,6 +123,9 @@ measured free yet, so none is closed.
 | C8 | `tx-flush` / `tx-sched` dev-log lines | `emitters.rs:274`, `transmit_commands.rs:341` | diagnostic | one formatted `tracing::info!` line per flush that moved (≈0.5 Hz) and per scheduler-second with wakes (1 Hz). Routed **only** to the stderr `fmt` layer — `init_tracing_subscriber` registers `filter + fmt::layer()` and nothing else (`system_log.rs:355-364`) — so these do **not** reach the System Messages ring or `cannet.log` | leave as is, or put both behind an `EnvFilter` target opt-out. Docs note: their stderr-only routing is written down nowhere |
 | C9 | `AutomationConfig::from_args` and `config_dir_override` argv scans | `lib.rs:450`, `lib.rs:456` | harness-only | two full `argv` walks at boot on every launch | none needed — a boot-time constant. Listed for completeness |
 
+*Every row in this section is dispositioned in the phase-2 entry below;
+C1–C8 are now flag-gated off, C9 is argued and left.*
+
 #### Phase-2 fix list (rows failing both tests)
 
 C1, C2, C3, C4, C5 — one flag closes all five, and they are the only
@@ -264,6 +267,109 @@ a fraction of those go wrong.
   harness-side root of the nondeterminism, and it is a real gap against
   ADR 0031's isolation claim.
 
+### Phase 2 — the gate fixes (2026-08-15)
+
+Branch `task78-p2-gate-hooks` off `task78-p1-inventory` (`6abb5686`).
+The working tree was clean at start, so there is no carry-forward
+commit.
+
+**The shape of the fix.** Phase 1 found one flag closes C1–C5, and it
+closes C6 with them: `--diag`, parsed host-side
+(`diag::diag_enabled_from_args`) and served to the webview through a new
+`diag_enabled` command, which `App` asks in the same effect that starts
+the reporter. The four `--perf-*` flags **imply** it — a capture's
+payload *is* those counters, so no measurement invocation has to
+remember a second flag — while `--project` / `--connect-on-start` /
+`--app-data-dir` do not: they open and connect, they don't record.
+Disarmed, `diagCount` / `diagGauge` return before touching a Map,
+`diagTime` returns the promise it was handed, no `PerformanceObserver`
+is constructed, no line is logged, and nothing is installed on `window`.
+The reporter's 1 Hz timer stays unconditional because it carries B2, the
+UI-liveness heartbeat.
+
+Two consumers had to keep working, and both are covered by tests. The
+screenshot harness launches with `--diag` (`gui_args`) — its console tap
+exists to read those counters into each run's notes. And the frontend
+suite arms them in a `vitest.setup.ts`, because ~10 test files assert
+render / rebuild counts through `diagCounts()` and would otherwise
+compare 0 against 0 forever; `diag.gate.test.ts` disarms explicitly to
+test the shipped default.
+
+#### Per-row disposition
+
+| Row | Fix | Test | New class |
+|---|---|---|---|
+| C1 reporter console line + delta build | the delta / clone / stringify / log half of the tick is behind `enabled`; the heartbeat above it is not | `diag.gate.test.ts` — "registers no longtask observer and logs no console line" and "still beats the UI-liveness heartbeat every second" | **A** (flag-gated off) |
+| C2 `longtask` observer + probe line | observer moved to module scope, constructed by `setDiagEnabled(true)` and disconnected on disarm; the probe line moved with it | same test asserts **zero** `PerformanceObserver` constructions (a fake global records every construction) | **A** |
+| C3 `diagCount` | `if (!enabled) return` ahead of the Map traffic | "counts nothing, so no Map traffic reaches a render path" | **A** |
+| C4 burst logger | same guard — the clone / stringify / log is inside `diagCount` | "does not fire the burst logger" (12 000 counts, `console.log` never called) | **A** |
+| C5 `diagGauge` / `diagTime` | same guard; disarmed, `diagTime` returns the promise without the two `performance.now()` reads | "records no gauges, and times nothing around an invoke" (spies on `performance.now`) | **A** |
+| C6 `window.__cannetPerf` | installed by `setDiagEnabled(true)`, deleted on disarm — so the surface is absent on a plain launch. `beginDiagCapture` arms diag itself, so the automation path (which calls it directly) is unaffected and a manual capture can never reduce to a report of zeros | "puts no capture entry point on window"; "takes the observer and the window surface back down when disarmed"; "arms itself when a capture starts" | **A** |
+| C7 `HostMetrics` max-recorders | `armed: AtomicBool`, set by `diag_capture_start` and cleared by `diag_capture_finish`. Nothing but `diag_push` ever drains these maxima, so outside a capture the CAS was pure waste; unarmed a `record_*` call is one relaxed load and a return | `host_metrics_record_nothing_until_a_capture_arms_them` (diag.rs) | **A** |
+| C8 `tx-flush` / `tx-sched` | **gated, not kept.** Phase 1 established they reach stderr and nothing else — no System Messages ring, no `cannet.log` — so on a windowed launch they format ~1.5 lines a second for no reader. The default filter is now a named constant with both targets `off`; any `RUST_LOG` value brings them back (it replaces the filter wholesale), so the stall-hunt pair is intact | `the_default_filter_drops_the_transmit_dev_lines_but_keeps_the_apps_own` — a recording layer behind `EnvFilter::new(DEFAULT_LOG_FILTER)`. Verified on the release binary too: 0 lines across four 150 s runs, 20 + 38 lines in a 45 s run under `RUST_LOG=info,…` | **A** |
+| C9 argv scans | **left, argued.** Now three walks of `argv` at boot rather than two (`--diag` parses separately, so the automation config's shape is untouched). It is a one-time O(argc) cost before the window exists; the gate has no metric that can see it, so no measurement is claimed | none | left (boot-time constant) |
+
+#### The measurement
+
+One session, one machine, the tip (`3fb20d7e`) built with
+`pnpm --dir apps/gui tauri build --no-bundle` — the operator's own app
+was closed for the whole run set, and nothing else was driven.
+
+**The gate's own instrument cannot see its own absence.** A
+`RenderReport` is produced by the machinery under test: with the
+counters disarmed there is no capture to compare. So the A/B is taken on
+the instrument that exists in *both* configurations — the health
+sampler's 20 s line in `cannet.log`, whose `fps` (host receive
+throughput), `webview_mb`, `rss_mb` and `jsheap_mb` are the same
+quantities the gate's `rx_fps` and `mem.*` gauges report. Four 150 s
+runs of the `ev-zonal` project under `--connect-on-start`, ABBA
+(off, on, on, off) so run order cancels to first order, means over the
+five steady-state samples of each run (the first two are boot and
+connect settle):
+
+| | off1 | on1 | on2 | off2 | **off** | **on** | Δ |
+|---|---|---|---|---|---|---|---|
+| `fps` | 3204.8 | 3327.2 | 3223.2 | 3208.6 | **3206.7** | **3275.2** | +2.1% *armed* |
+| frames received in 150 s | 436 032 | 434 676 | 432 132 | 436 348 | **436 190** | **433 404** | −0.6% armed |
+| `webview_mb` | 751.8 | 773.0 | 770.8 | 748.6 | **750.2** | **771.9** | +2.9% armed |
+| `rss_mb` (host) | 63.4 | 63.2 | 63.6 | 63.4 | **63.4** | **63.4** | 0 |
+| `jsheap_mb` | 60.2 | 54.8 | 71.6 | 54.2 | **57.2** | **63.2** | noise (per-run readings span 32–91) |
+
+Read: **throughput cannot see the machinery.** The two throughput
+measures disagree in sign — armed runs read 2.1% *more* frames per
+second and 0.6% fewer frames overall — which is what "below the noise
+floor" looks like, and host RSS is identical to the megabyte. The one
+consistent signal is WebView memory: both armed runs sit above both
+disarmed ones, ~+22 MB (+2.9%), which is the counter Map, the per-second
+delta and gauge objects, and the console line's retained strings. With
+n=2 per arm that is suggestive rather than conclusive, and it is a cost
+the product now only pays when a measurement asked for it.
+
+**The armed path is unregressed.** The ADR-0031 capture at the tip
+(60 s, `ev-zonal`, `--connect-on-start --perf-capture-secs 60`, i.e.
+`--diag` implied) produced a full report — 17 counters, 19 gauges,
+`flush_ms` mean 4.85 / max 14.55 and `tx_late_ms` mean 7.19 / max 31.02
+proving the newly-armed `HostMetrics` records — with `rx_fps.overall`
+1604.7 (retention 0.99), `lag` mean 0.0083 / max 3.0, `longtask` 0, jank
+0. The most recent committed frontend report (`ea9646a`, task 75 p5
+run 3, a different session, so a weaker comparison per ADR 0031) reads
+`rx_fps.overall` 1607.2 (retention 0.995), `lag` mean 0.0083 / max 4.6,
+`longtask` 0. No baseline was promoted.
+
+#### B rows: the health sampler's `signal_caches.usage()`
+
+Looked at, **not implemented**, per the phase brief's condition. Keeping
+the numbers without the plot-serve mutex is not a trivial
+behaviour-preserving swap: `usage()` returns eight fields, and three of
+them (`unread`, `unread_bytes`, and `live`) are derived by *filtering
+and summing over the live map* at read time — `unread_bytes` calls
+`bytes()` per unread pyramid. A relaxed-atomic mirror would have to be
+maintained at every mutation site that creates, reads-from, parks,
+revives or evicts a cache, and each of those is a place the mirror can
+drift from the map it claims to describe. That is a real change with its
+own test burden, not a seam. Left for the owner with the rest of the
+B-row budget.
+
 ## Blockers / side effects
 
 - **`--app-data-dir` does not isolate the capture scratch.** As above:
@@ -284,6 +390,26 @@ a fraction of those go wrong.
   after a file import ends. Noticed while instrumenting, not chased —
   but it is unused cost of exactly the kind this task exists to find,
   and it is on the render hot path.
+- **`signal_cache::tests::the_invalidated_subset_rebuilds_in_one_walk_of_its_message`
+  is machine-speed dependent** (phase 2, pre-existing). It failed on the
+  untouched `task78-p1-inventory` tree at the start of the phase-2
+  session — before any edit — passed on the next full run, then failed
+  three runs in a row while the machine was busy with release builds,
+  and passes every time when run alone. The mechanism is in the code it
+  exercises: the catch-up scan stops on a wall-clock budget
+  (`ServeLimit::Deadline`, `signal_cache.rs:2677`, checked at `:1686`),
+  so on a slow moment it does one chunk where the test asserts two
+  (`fetches` 1 vs `len.div_ceil(CATCH_UP_CHUNK_FRAMES)` = 2). It is a
+  test that measures the machine, and it gates the pre-commit hook — two
+  commits in this phase needed a retry to land. Not fixed here: it is
+  outside this task's scope and the fix is a decision about how that
+  test should pin the chunk count without a clock.
+- **A capture cannot measure its own absence.** The `RenderReport` is
+  produced by the machinery under test, so with the counters disarmed
+  there is no report to compare — the phase-2 A/B had to be taken on the
+  health sampler's line instead. Worth knowing before anyone asks the
+  gate to prove a future instrumentation cost is zero: the gate can
+  compare two armed configurations, and nothing else.
 - **The release binary in `target/` was not a `tauri build`.** The
   first reproduction attempt spent a 90 s boot timeout on it: a plain
   `cargo build --release -p cannet-gui` has no embedded frontend, comes
