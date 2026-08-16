@@ -268,6 +268,12 @@ struct SignalCache {
     /// whether catch-up fills the series at all, whether a DBC-set
     /// change discards it, and how views label it.
     file: Option<FileSignalInfo>,
+    /// Set when this cache was **reopened** from disk by
+    /// [`SignalCacheStore::restore`] rather than built here. Its cursor
+    /// therefore already sits where the prior session left it, which is no
+    /// evidence about the signals that same restore judged *out* — so
+    /// [`SignalCacheStore::rebuilding`] leaves it out of the answer.
+    restored: bool,
 }
 
 impl SignalCache {
@@ -285,6 +291,7 @@ impl SignalCache {
             lo: f64::INFINITY,
             hi: f64::NEG_INFINITY,
             file,
+            restored: false,
         }
     }
 
@@ -757,6 +764,7 @@ impl SignalCache {
             lo,
             hi,
             file: p.file.clone(),
+            restored: true,
         }
     }
 
@@ -1173,13 +1181,11 @@ fn wipe_dir_except(dir: &Path, keep: &[SignalKey]) {
 /// it is only valid against ([`PyramidManifest`]).
 const MANIFEST_FILE: &str = "pyramids.json";
 
-/// What a persisted pyramid set is provably a pyramid *of*. A set left on
-/// disk by a prior session is reused only when every component matches the
-/// session asking for it; any difference means the samples on disk are not
-/// the samples the current model would decode, so the pyramid rebuilds.
-///
-/// The three components are the three ways a pyramid can stop describing
-/// the model without the pyramid itself changing:
+/// What a persisted pyramid set is provably a pyramid *of*, **for the
+/// whole set**: the two facts that say whether the frames underneath it
+/// are the same frames. A mismatch in either means no pyramid on disk
+/// describes anything this session holds, so the set is discarded whole
+/// (ADR 0047).
 ///
 /// - **`capture_id`** — capture identity. Minted whenever a capture starts
 ///   (`TraceStore::write_scratch_identity`, beside the project identity
@@ -1187,21 +1193,41 @@ const MANIFEST_FILE: &str = "pyramids.json";
 ///   scratch, so it survives a relaunch of the *same* capture and differs
 ///   for any other. Frame indices, and therefore the pyramid's decode
 ///   cursor, are only meaningful within one capture.
-/// - **`dbcs`** — the loaded DBC set, fingerprinted over each database's
-///   path, bus scoping, and file identity. A pyramid holds *decoded*
-///   samples; a different DBC set decodes different values, or decodes a
-///   signal the old set couldn't (ADR 0033).
 /// - **`low_water`** — the raw store's windowed-ring eviction mark (ADR
 ///   0002 DS-8). The pyramid is front-trimmed to follow it, so a pyramid
 ///   trimmed to one mark does not describe a capture retained to another.
+///
+/// What a pyramid was *decoded with* is **not** here: that is a per-signal
+/// fact, carried by each [`PersistedSignal`]'s encoding fingerprint
+/// ([`crate::signal_fingerprint`]) and judged row by row on restore. A
+/// whole-set DBC stamp used to sit beside these two and discard every
+/// pyramid whenever any database's file metadata moved — a copy, a
+/// checkout, a backup tool rewriting a modification time — for decodes
+/// that had not changed by a bit.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 pub struct PyramidValidity {
     /// Identity of the capture the pyramids were decoded from.
     pub capture_id: String,
-    /// Fingerprint of the DBC set they were decoded against.
-    pub dbcs: String,
     /// Raw-store windowed-ring low-water mark they were trimmed to.
     pub low_water: u64,
+}
+
+/// What a [`SignalCacheStore::restore`] did with the set it was offered:
+/// how many pyramids came back off disk, and how many the session now owes
+/// a rebuild of. The two together are the restore's reuse — the fact the
+/// launch log reports, and the phase-1 half of ADR 0047's
+/// "saving time or wasting disk" accounting.
+///
+/// `rebuilt` counts only DBC-backed rows: they are the ones a decode can
+/// reproduce. A file-backed row that is not reopened is simply gone (its
+/// capture is), and nothing will rebuild it.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct RestoreOutcome {
+    /// Signals whose persisted pyramid was adopted, both provenances.
+    pub reopened: usize,
+    /// DBC-backed signals whose pyramid was discarded, to be decoded again
+    /// from the raw frames on the next serve.
+    pub rebuilt: usize,
 }
 
 /// One persisted pyramid level: the two numbers [`SampleSeq::reopen`]
@@ -1232,13 +1258,14 @@ struct PersistedSignal {
     /// Fingerprint of the encoding these samples were decoded under
     /// ([`crate::signal_fingerprint`]) — for a DBC-backed row its
     /// candidate chain through the loaded set, for a file-backed one the
-    /// source it was imported from.
+    /// source it was imported from. This is what
+    /// [`SignalCacheStore::restore`] judges the row by, alone.
     ///
     /// `#[serde(default)]` so a manifest written before fingerprints
-    /// existed still restores; such a row simply says nothing about its
-    /// encoding, and the whole-set [`PyramidValidity`] is what speaks for
-    /// it. Written and read back, but not yet *judged*: restore is still
-    /// gated by [`PyramidValidity`] alone.
+    /// existed still reads. Such a DBC-backed row cannot be judged — the
+    /// model it was decoded against is not in the row — so it rebuilds; a
+    /// file-backed one is judged by its own fields either way, so the
+    /// absence costs it nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     encoding: Option<String>,
     next_index: u64,
@@ -1726,89 +1753,144 @@ impl SignalCacheStore {
         }
     }
 
-    /// Adopt the staged pyramid set if it provably describes the capture
-    /// that has just been restored, and discard it otherwise. Returns how
-    /// many signals came back.
+    /// Adopt what the staged pyramid set can prove about itself, **one
+    /// signal at a time**, and discard the rest. `dbcs` is the loaded set,
+    /// in load order — what each DBC-backed row's encoding fingerprint is
+    /// judged against.
     ///
-    /// Beyond the [`PyramidValidity`] match, one bound is checked here
-    /// rather than keyed: no cache may have read *past* `store_len`. The
-    /// pyramids are persisted on their own cadence, so a crash between the
-    /// raw store's last flush and the pyramid's can leave a decode cursor
-    /// ahead of the frames the store comes back with — and a cursor ahead
-    /// of the tip never revisits the frames it skipped.
+    /// Two gates stay whole-set, because they are facts about the *frames*
+    /// and no signal can be right about them on its own: the
+    /// [`PyramidValidity`] pair, `capture_id` and `low_water`. A mismatch
+    /// in either discards everything.
     ///
-    /// Rejection is all-or-nothing **within a provenance**: a level file
-    /// that doesn't answer to its manifest row means the directory is not
-    /// what the manifest says, and trusting the rest of it on that
-    /// evidence would be guessing.
+    /// Past them, each row answers for itself:
     ///
-    /// The two provenances are judged separately, because they are valid
-    /// against different things. A DBC-backed row is only reusable when
-    /// the whole [`PyramidValidity`] matches — it holds *decoded* samples,
-    /// so a different DBC set or a different eviction mark makes it a
-    /// pyramid of something else. A file-backed row holds samples read
-    /// out of the capture file itself: nothing but the capture's own
-    /// identity bears on it, so it comes back whenever `capture_id`
-    /// matches, and a DBC change between sessions leaves it untouched
-    /// exactly as a DBC change within one does.
-    pub fn restore(&self, validity: &PyramidValidity, store_len: usize) -> usize {
+    /// - **A DBC-backed row** carries the fingerprint of the encoding its
+    ///   samples were decoded under ([`crate::signal_fingerprint`]). It is
+    ///   recomputed here against the model now loaded, and the row is
+    ///   reopened only if it matches — so a DBC edit that re-encodes one
+    ///   signal rebuilds that signal, and a DBC that was merely copied,
+    ///   checked out or touched rebuilds nothing. A row with no
+    ///   fingerprint at all (a manifest written before they existed)
+    ///   cannot be judged: the model it was decoded against is not in the
+    ///   row, so it rebuilds.
+    /// - **A file-backed row** holds samples read out of a capture file at
+    ///   import, so no DBC bears on it — its fingerprint is over the
+    ///   source it came from, every field of which the row itself carries.
+    ///   Capture identity is the only thing that was ever external to it,
+    ///   and that is the global gate above. So a DBC-set change leaves it
+    ///   where it is, exactly as a DBC change within one session does —
+    ///   and it must, because nothing rebuilds one: the samples were read
+    ///   once, from a file that may be long gone.
+    ///
+    /// One bound is checked rather than keyed, per row: no cache may have
+    /// read *past* `store_len`. The pyramids are persisted on their own
+    /// cadence, so a crash between the raw store's last flush and the
+    /// pyramid's can leave a decode cursor ahead of the frames the store
+    /// comes back with — and a cursor ahead of the tip never revisits the
+    /// frames it skipped. File-backed rows have no cursor into the store.
+    ///
+    /// **Reopening**, as against judging, stays all-or-nothing within a
+    /// provenance: a level file that doesn't answer to its manifest row
+    /// means the directory is not what the manifest says, and trusting the
+    /// rest of it on that evidence would be guessing.
+    ///
+    /// What the invalidated subset then costs is one shared scan, not one
+    /// per signal: the rebuilt caches come back empty, so the next serve
+    /// over their message groups walks each group's frames once for all of
+    /// them, and the reopened caches sitting at the tip are skipped frame
+    /// by frame ([`scan_chunk`]).
+    pub fn restore(
+        &self,
+        validity: &PyramidValidity,
+        dbcs: &[DbcScope<'_>],
+        store_len: usize,
+    ) -> RestoreOutcome {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let Some(manifest) = caches.staged.take() else {
-            return 0;
+            return RestoreOutcome::default();
         };
-        let (file_rows, dbc_rows): (Vec<PersistedSignal>, Vec<PersistedSignal>) =
-            manifest.signals.into_iter().partition(|s| s.file.is_some());
-        // The pyramids are persisted on their own cadence, so a crash
-        // between the raw store's last flush and the pyramid's can leave a
-        // decode cursor ahead of the frames the store comes back with —
-        // and a cursor ahead of the tip never revisits the frames it
-        // skipped. File-backed rows have no cursor into the store.
-        let dbc_usable = manifest.validity == *validity
-            && dbc_rows.iter().all(|s| s.next_index <= store_len as u64);
-        let file_usable = manifest.validity.capture_id == validity.capture_id;
-        let restored_dbc = dbc_usable
-            .then(|| reopen_set(&caches.root, &dbc_rows))
-            .flatten();
-        let restored_file = file_usable
-            .then(|| reopen_set(&caches.root, &file_rows))
-            .flatten();
-        // A DBC-backed set that was offered and not taken is the cold
+        let same_capture = manifest.validity.capture_id == validity.capture_id;
+        let same_window = manifest.validity.low_water == validity.low_water;
+        let offered = manifest.signals.len();
+        let mut dbc_rows: Vec<PersistedSignal> = Vec::new();
+        let mut file_rows: Vec<PersistedSignal> = Vec::new();
+        let mut rebuilt = 0usize;
+        for row in manifest.signals {
+            if row.file.is_some() {
+                if same_capture {
+                    file_rows.push(row);
+                }
+                continue;
+            }
+            let judged = same_capture
+                && same_window
+                && row.next_index <= store_len as u64
+                && row.encoding.as_deref()
+                    == Some(
+                        signal_fingerprint::dbc_encoding(
+                            dbcs,
+                            row.bus_id.as_deref(),
+                            row.message_id,
+                            row.extended,
+                            &row.signal,
+                        )
+                        .as_str(),
+                    );
+            if judged {
+                dbc_rows.push(row);
+            } else {
+                rebuilt += 1;
+            }
+        }
+        let restored_dbc = reopen_set(&caches.root, &dbc_rows);
+        let restored_file = reopen_set(&caches.root, &file_rows);
+        if restored_dbc.is_none() {
+            // The batch reopen failed, so every row it covered is owed a
+            // rebuild after all.
+            rebuilt += dbc_rows.len();
+        }
+        // A DBC-backed row that was offered and not taken is the cold
         // rebuild this session is about to pay for, one plotted signal
         // at a time. Recorded here because this is the only place that
         // knows a set *existed* — the wipe below leaves no trace of it.
         // Frames have to have come back for there to be anything to
         // decode: over an empty store there is no rebuild.
-        caches.rebuild_pending = !dbc_rows.is_empty() && restored_dbc.is_none() && store_len > 0;
+        caches.rebuild_pending = rebuilt > 0 && store_len > 0;
         caches.generation += 1;
-        let offered = dbc_rows.len() + file_rows.len();
         let mut by_key: HashMap<SignalKey, SignalCache> = HashMap::new();
         by_key.extend(restored_dbc.into_iter().flatten());
         by_key.extend(restored_file.into_iter().flatten());
-        let n = by_key.len();
+        let reopened = by_key.len();
         let keep: Vec<SignalKey> = by_key.keys().cloned().collect();
         caches.by_key = by_key;
         if keep.is_empty() {
             caches.dirty = false;
             wipe_dir(&caches.root);
-        } else if n < offered {
-            // A rejected half leaves its files behind and makes the
+        } else if reopened < offered {
+            // A rejected row leaves its files behind and makes the
             // manifest describe pyramids that are no longer live, so it
             // owes a rewrite. A clean restore owes nothing.
             caches.dirty = true;
             wipe_dir_except(&caches.root, &keep);
         }
-        n
+        RestoreOutcome { reopened, rebuilt }
     }
 
     /// Whether the restored capture is still owed a **cold rebuild** of
     /// its signal pyramids — the fact the frontend announces while it
     /// runs, and the reason it offers to drop the capture instead.
     ///
-    /// True from the moment [`Self::restore`] discards a persisted set
-    /// until the DBC-backed caches that replace it have decoded up to
-    /// `store_len`. Before any plot has served there are no DBC-backed
-    /// caches at all, which is still "owed": the samples are gone and
+    /// True from the moment [`Self::restore`] discards part or all of a
+    /// persisted set until the DBC-backed caches that replace it have
+    /// decoded up to `store_len`. Before any plot has served there are no
+    /// such caches at all, which is still "owed": the samples are gone and
     /// the first serve over any of them re-decodes the capture.
+    ///
+    /// The pyramids the same restore *reopened* are not evidence either
+    /// way — their cursors came back at the tip, and answering with them
+    /// would say a rebuild had finished before it started — so they are
+    /// left out.
     ///
     /// The answer is latched off, not recomputed: once the caches have
     /// caught up the session is no longer rebuilding anything, and a
@@ -1823,7 +1905,7 @@ impl SignalCacheStore {
         let mut any = false;
         let mut behind = false;
         for (key, cache) in &caches.by_key {
-            if key.file_backed {
+            if key.file_backed || cache.restored {
                 continue;
             }
             any = true;
@@ -4797,7 +4879,7 @@ mod tests {
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         // Something already built, so the manifest write has work to do.
         let _ = cache.slice(None, 512, false, "Y", f64::MIN, f64::MAX, 0, &store, dbs);
-        let v = validity("cap", "dbcs", 0);
+        let v = validity("cap", 0);
         let store_len = 3 * CATCH_UP_CHUNK_FRAMES;
 
         let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
@@ -4816,14 +4898,53 @@ mod tests {
 
     // ---- Persistence across restore ---------------------------------
 
-    /// The validity key a persisted pyramid set is reused against, with
-    /// each component nameable so a test can change exactly one.
-    fn validity(capture: &str, dbcs: &str, low_water: u64) -> PyramidValidity {
+    /// The **global** gates a persisted pyramid set is reused against,
+    /// with each component nameable so a test can change exactly one.
+    fn validity(capture: &str, low_water: u64) -> PyramidValidity {
         PyramidValidity {
             capture_id: capture.to_string(),
-            dbcs: dbcs.to_string(),
             low_water,
         }
+    }
+
+    /// The loaded set as the per-signal fingerprints see it: `db` alone,
+    /// scoped to every bus.
+    fn scopes(db: &Database) -> Vec<DbcScope<'_>> {
+        vec![DbcScope { db, buses: &[] }]
+    }
+
+    /// Message 256 with two signals — `A` in bytes 0-1 at unit scale and
+    /// `B` in bytes 2-3 at `b_factor`, the one input the re-encoding tests
+    /// move.
+    fn dbc_ab_text(b_factor: u32) -> String {
+        format!(
+            "{DBC_HEADER}\nBO_ 256 Msg: 8 Vector__XXX\n \
+             SG_ A : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n \
+             SG_ B : 16|16@1+ ({b_factor},0) [0|0] \"\" Vector__XXX\n"
+        )
+    }
+
+    fn dbc_ab(b_factor: u32) -> Database {
+        Database::parse(&dbc_ab_text(b_factor)).unwrap()
+    }
+
+    /// Build pyramids for both signals of [`dbc_ab`] over an `n`-frame
+    /// capture and persist them against `v`, decoded against `db`.
+    /// Returns the store length they are consistent with.
+    #[allow(clippy::cast_possible_truncation)]
+    fn build_and_persist_ab(root: &Path, v: &PyramidValidity, db: &Database, n: usize) -> usize {
+        let store = TraceStore::new();
+        for i in 0..n {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let dbs: &[&Database] = &[db];
+        let cache = SignalCacheStore::new_unbounded(root);
+        for signal in ["A", "B"] {
+            let built = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
+            assert_eq!(built.len(), n, "{signal} built");
+        }
+        assert!(cache.persist(v, &scopes(db), Harden::All));
+        store.len()
     }
 
     /// A store of `n` frames that **no** DBC decodes, so anything a serve
@@ -4848,7 +4969,7 @@ mod tests {
         let cache = SignalCacheStore::new(root);
         let built = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(built.len(), 200);
-        cache.persist(v, &[], Harden::All);
+        cache.persist(v, &scopes(&db), Harden::All);
         store.len()
     }
 
@@ -4872,7 +4993,7 @@ mod tests {
             db: &db,
             buses: &[],
         }];
-        assert!(cache.persist(&validity("capture-a", "dbc-a", 0), &scopes, Harden::All));
+        assert!(cache.persist(&validity("capture-a", 0), &scopes, Harden::All));
 
         let manifest: PyramidManifest =
             read_json(&root.path().join(MANIFEST_FILE)).expect("manifest reads back");
@@ -4901,14 +5022,231 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_without_encodings_still_restores() {
-        // Manifests written before the fingerprint existed carry no
-        // `encoding` at all. Such a row says nothing about what decoded
-        // it; it must still parse and come back under the whole-set gate
-        // it was written against.
+    fn a_touched_but_unchanged_dbc_reopens_every_pyramid() {
+        // The case the per-signal fingerprint exists for: a copy, a
+        // checkout or a backup tool rewrites a DBC's modification time
+        // without changing a byte of it. Nothing it decodes moved, so
+        // nothing rebuilds — where the whole-set stamp this replaced
+        // discarded every pyramid on exactly this evidence.
+        let dbc_dir = TempDir::new().unwrap();
+        let path = dbc_dir.path().join("a.dbc");
+        std::fs::write(&path, dbc_ab_text(1)).unwrap();
+        let read_back = || Database::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
-        let store_len = build_and_persist(root.path(), &v);
+        let v = validity("capture-a", 0);
+        let len = build_and_persist_ab(root.path(), &v, &read_back(), 200);
+
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let touched = before + std::time::Duration::from_hours(1);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(touched)
+            .unwrap();
+        assert!(
+            std::fs::metadata(&path).unwrap().modified().unwrap() > before,
+            "the fixture really did touch the file"
+        );
+
+        let reloaded = read_back();
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(
+            reopened.restore(&v, &scopes(&reloaded), len),
+            RestoreOutcome {
+                reopened: 2,
+                rebuilt: 0,
+            },
+        );
+        assert!(!reopened.rebuilding(len), "and nothing is announced");
+        // Every sample came off disk: these frames decode to nothing.
+        let cold = undecodable_store(len);
+        let dbs: &[&Database] = &[&reloaded];
+        for signal in ["A", "B"] {
+            let served =
+                reopened.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &cold, dbs);
+            assert_eq!(served.len(), 200, "{signal} served from disk");
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn an_encoding_change_rebuilds_that_signal_and_reopens_the_rest() {
+        // Each row is judged alone: `B` is re-encoded (its factor doubles)
+        // and `A` is not, so `B`'s pyramid is discarded and `A`'s comes
+        // back. Which is which is provable over a store whose frames
+        // decode to nothing — `A`'s samples are on disk, `B`'s would have
+        // to be decoded again.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", 0);
+        let len = build_and_persist_ab(root.path(), &v, &dbc_ab(1), 200);
+
+        let after = dbc_ab(2);
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(
+            reopened.restore(&v, &scopes(&after), len),
+            RestoreOutcome {
+                reopened: 1,
+                rebuilt: 1,
+            },
+        );
+        assert!(
+            reopened.rebuilding(len),
+            "one signal is owed a rebuild, and that is announced"
+        );
+
+        let cold = undecodable_store(len);
+        let dbs: &[&Database] = &[&after];
+        let a = reopened.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &cold, dbs);
+        assert_eq!(a.len(), 200, "A came back off disk");
+        assert_eq!(a[7].value, 7.0);
+        assert_eq!(
+            reopened
+                .slice(None, 256, false, "B", f64::MIN, f64::MAX, 0, &cold, dbs)
+                .len(),
+            0,
+            "B's pyramid was discarded",
+        );
+        // …and its files with it, so nothing stale is left to accumulate.
+        let live: Vec<String> = std::fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        let kept = key_prefix(&SignalKey::dbc(None, 256, false, "A".into()));
+        let dropped = key_prefix(&SignalKey::dbc(None, 256, false, "B".into()));
+        assert!(
+            live.iter().any(|n| n.starts_with(&kept)),
+            "A's levels: {live:?}"
+        );
+        assert!(
+            !live.iter().any(|n| n.starts_with(&dropped)),
+            "B's levels are gone: {live:?}",
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation, clippy::float_cmp)]
+    fn the_invalidated_subset_rebuilds_in_one_walk_of_its_message() {
+        // The rebuild of what a restore judged out is a *shared* scan: one
+        // walk of the message for the whole invalidated subset, and the
+        // pyramids that came back off disk take no part in it. Their
+        // cursors already sit at the tip, and `scan_chunk` decodes only the
+        // names of targets a frame is still ahead of.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", 0);
+        let n = CATCH_UP_CHUNK_FRAMES + 500;
+        let len = build_and_persist_ab(root.path(), &v, &dbc_ab(1), n);
+
+        let after = dbc_ab(2);
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(reopened.restore(&v, &scopes(&after), len).rebuilt, 1);
+
+        let dbs: &[&Database] = &[&after];
+        let fetches = std::cell::Cell::new(0usize);
+        let keys = catch_up_through(
+            &reopened,
+            &[query_on(256, "A"), query_on(256, "B")],
+            len,
+            dbs,
+            |_, _, from, to| {
+                fetches.set(fetches.get() + 1);
+                (from..to)
+                    .map(|i| (i, ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16)))
+                    .collect()
+            },
+        );
+        assert_eq!(
+            fetches.get(),
+            len.div_ceil(CATCH_UP_CHUNK_FRAMES),
+            "one walk of the message, not one per invalidated signal",
+        );
+        // `A` is exactly the pyramid that was persisted — the walk neither
+        // re-read nor re-appended it.
+        assert_eq!(
+            with_cache(&reopened, &keys[0], |c| (c.levels[0].len(), c.next_index)),
+            (n, len),
+        );
+        assert_eq!(
+            with_cache(&reopened, &keys[0], |c| c.levels[0].get(7).1),
+            7.0
+        );
+        // `B` was rebuilt, at the encoding that invalidated it.
+        assert_eq!(
+            with_cache(&reopened, &keys[1], |c| (c.levels[0].len(), c.next_index)),
+            (n, len),
+        );
+        assert_eq!(
+            with_cache(&reopened, &keys[1], |c| c.levels[0].get(7).1),
+            14.0,
+            "twice the raw value, as the new factor says",
+        );
+
+        // The mechanism, at the seam the shared walk runs through: a target
+        // the scan is behind contributes decode work, one already past the
+        // frames contributes none.
+        let targets = [
+            GroupTarget {
+                bus_id: None,
+                signal_name: "A",
+                next_index: 10,
+            },
+            GroupTarget {
+                bus_id: None,
+                signal_name: "B",
+                next_index: 0,
+            },
+        ];
+        let mut out = vec![Vec::new(), Vec::new()];
+        let scanned = scan_chunk(
+            256,
+            false,
+            &targets,
+            0..10,
+            dbs,
+            &|_, _, from, to| {
+                (from..to)
+                    .map(|i| (i, ab_frame(i as u64 * S, 1, 2)))
+                    .collect()
+            },
+            &mut out,
+        );
+        assert_eq!(scanned, 10, "the frames were walked once");
+        assert!(out[0].is_empty(), "the caught-up target decoded nothing");
+        assert_eq!(out[1].len(), 10, "the one behind decoded every frame");
+    }
+
+    #[test]
+    fn a_manifest_row_without_a_fingerprint_rebuilds_unless_it_is_file_backed() {
+        // Manifests written before per-signal fingerprints existed carry no
+        // `encoding` at all, and the two provenances answer differently.
+        //
+        // A DBC-backed row's fingerprint is a fact about the *model* it was
+        // decoded against, which the row itself does not carry — absent,
+        // there is nothing to judge it by, so it rebuilds (the safe
+        // direction, and the raw frames are still there).
+        //
+        // A file-backed row's fingerprint is a function of the row's own
+        // fields (source path, group index, channel name), so its absence
+        // hides nothing — re-deriving it is exact. And there is nothing to
+        // rebuild one from: its samples were read once, at import, from a
+        // file that may be long gone. It comes back on the capture identity
+        // that has always been all it depended on.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", 0);
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        {
+            let cache = SignalCacheStore::new(root.path());
+            let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+            cache.fill_file_backed(&file_info(7, "Speed"), &ramp(10));
+            assert!(cache.persist(&v, &scopes(&db), Harden::All));
+        }
 
         let path = root.path().join(MANIFEST_FILE);
         let mut json: serde_json::Value =
@@ -4923,9 +5261,16 @@ mod tests {
 
         let reopened = SignalCacheStore::new(root.path());
         assert_eq!(
-            reopened.restore(&v, store_len),
+            reopened.restore(&v, &scopes(&db), store.len()),
+            RestoreOutcome {
+                reopened: 1,
+                rebuilt: 1,
+            },
+        );
+        assert_eq!(
+            reopened.file_signals().len(),
             1,
-            "an encoding-less row still restores"
+            "the file-backed row is the one that came back",
         );
     }
 
@@ -4942,7 +5287,7 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
 
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(cache.unflushed() > 0, "a fresh pyramid owes its pages");
@@ -4978,7 +5323,7 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
 
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         let owed = cache.unflushed();
@@ -5011,11 +5356,15 @@ mod tests {
         // against a store whose frames *cannot* decode — a rebuild would
         // return nothing, so every point served came off disk.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let len = build_and_persist(root.path(), &v);
 
         let reopened = SignalCacheStore::new(root.path());
-        assert_eq!(reopened.restore(&v, len), 1, "one signal's pyramid");
+        assert_eq!(
+            reopened.restore(&v, &scopes(&load_dbc()), len).reopened,
+            1,
+            "one signal's pyramid"
+        );
         let store = undecodable_store(len);
         let db = load_dbc();
         let dbs: &[&Database] = &[&db];
@@ -5031,21 +5380,20 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_of_key_mismatch_rebuilds() {
-        // The validity discipline: a persisted pyramid is reused only when
-        // the capture, the DBC set, and the eviction low-water all match.
-        // Change any one and the set is discarded, files and all.
-        let good = validity("capture-a", "dbc-a", 0);
-        for changed in [
-            validity("capture-b", "dbc-a", 0),
-            validity("capture-a", "dbc-b", 0),
-            validity("capture-a", "dbc-a", 64),
-        ] {
+    fn every_kind_of_global_gate_mismatch_discards_the_whole_set() {
+        // The two gates that stay whole-set: they say whether the *frames*
+        // are the same frames, which no per-signal encoding can make up
+        // for. Change either and every pyramid goes, files and all. (The
+        // DBC set is no longer among them — it is judged per signal, in
+        // `an_encoding_change_rebuilds_that_signal_and_reopens_the_rest`.)
+        let good = validity("capture-a", 0);
+        for changed in [validity("capture-b", 0), validity("capture-a", 64)] {
             let root = TempDir::new().unwrap();
             let len = build_and_persist(root.path(), &good);
+            let db = load_dbc();
             let reopened = SignalCacheStore::new(root.path());
             assert_eq!(
-                reopened.restore(&changed, len),
+                reopened.restore(&changed, &scopes(&db), len).reopened,
                 0,
                 "{changed:?} must not reuse"
             );
@@ -5059,7 +5407,6 @@ mod tests {
             for i in 0..200u64 {
                 store.append(val_frame(i * S, (i % 50) as u16));
             }
-            let db = load_dbc();
             let dbs: &[&Database] = &[&db];
             let rebuilt = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
             assert_eq!(rebuilt.len(), 200);
@@ -5073,10 +5420,14 @@ mod tests {
         // comes back with. Reusing it would skip the frames in between
         // forever, so the set is rejected.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let len = build_and_persist(root.path(), &v);
         let reopened = SignalCacheStore::new(root.path());
-        assert_eq!(reopened.restore(&v, len - 1), 0);
+        assert_eq!(
+            reopened.restore(&v, &scopes(&load_dbc()), len - 1).rebuilt,
+            1,
+            "the row whose cursor outran the store rebuilds"
+        );
     }
 
     // ---- Announcing a cold rebuild ----------------------------------
@@ -5086,10 +5437,10 @@ mod tests {
         // The fast path is silent: the samples came back off disk, so
         // there is nothing for the user to be told about.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let len = build_and_persist(root.path(), &v);
         let reopened = SignalCacheStore::new(root.path());
-        assert_eq!(reopened.restore(&v, len), 1);
+        assert_eq!(reopened.restore(&v, &scopes(&load_dbc()), len).reopened, 1);
         assert!(!reopened.rebuilding(len));
     }
 
@@ -5100,7 +5451,10 @@ mod tests {
         // ordinary first-use cost — not a rebuild of something lost.
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
-        assert_eq!(cache.restore(&validity("capture-a", "dbc-a", 0), 200), 0);
+        assert_eq!(
+            cache.restore(&validity("capture-a", 0), &scopes(&load_dbc()), 200),
+            RestoreOutcome::default()
+        );
         assert!(!cache.rebuilding(200));
     }
 
@@ -5112,9 +5466,14 @@ mod tests {
         // discarded — before any serve has run — and off once the caches
         // it left empty have reached the capture's tip.
         let root = TempDir::new().unwrap();
-        let len = build_and_persist(root.path(), &validity("capture-a", "dbc-a", 0));
+        let len = build_and_persist(root.path(), &validity("capture-a", 0));
         let reopened = SignalCacheStore::new(root.path());
-        assert_eq!(reopened.restore(&validity("capture-b", "dbc-a", 0), len), 0);
+        assert_eq!(
+            reopened
+                .restore(&validity("capture-b", 0), &scopes(&load_dbc()), len)
+                .reopened,
+            0
+        );
         assert!(
             reopened.rebuilding(len),
             "a discarded set announces itself before anything serves"
@@ -5140,9 +5499,14 @@ mod tests {
         // being announced, because there is no longer anything to
         // rebuild. `clear` is the same call a fresh open makes.
         let root = TempDir::new().unwrap();
-        let len = build_and_persist(root.path(), &validity("capture-a", "dbc-a", 0));
+        let len = build_and_persist(root.path(), &validity("capture-a", 0));
         let reopened = SignalCacheStore::new(root.path());
-        assert_eq!(reopened.restore(&validity("capture-b", "dbc-a", 0), len), 0);
+        assert_eq!(
+            reopened
+                .restore(&validity("capture-b", 0), &scopes(&load_dbc()), len)
+                .reopened,
+            0
+        );
         assert!(reopened.rebuilding(len));
 
         reopened.clear();
@@ -5162,12 +5526,16 @@ mod tests {
         // recorded DBC set is about to be checked — so the DBC-change
         // invalidation must not pre-empt that check.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let len = build_and_persist(root.path(), &v);
 
         let reopened = SignalCacheStore::new(root.path());
         reopened.invalidate_dbcs();
-        assert_eq!(reopened.restore(&v, len), 1, "the staged set survived");
+        assert_eq!(
+            reopened.restore(&v, &scopes(&load_dbc()), len).reopened,
+            1,
+            "the staged set survived"
+        );
 
         // Once the set is live, a DBC change drops it exactly as before.
         reopened.invalidate_dbcs();
@@ -5185,7 +5553,7 @@ mod tests {
         // before the restore has run must not write over the candidate it
         // has not looked at yet.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let len = build_and_persist(root.path(), &v);
 
         let reopened = SignalCacheStore::new(root.path());
@@ -5199,11 +5567,11 @@ mod tests {
         let dbs: &[&Database] = &[&db];
         let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(
-            !reopened.persist(&validity("capture-b", "dbc-a", 0), &[], Harden::All),
+            !reopened.persist(&validity("capture-b", 0), &[], Harden::All),
             "nothing is written while a candidate is unjudged",
         );
         // …so the candidate is still there to be judged.
-        assert_eq!(reopened.restore(&v, len), 1);
+        assert_eq!(reopened.restore(&v, &scopes(&load_dbc()), len).reopened, 1);
     }
 
     #[test]
@@ -5211,12 +5579,12 @@ mod tests {
         // Clear / start-a-new-capture discards the prior trace, so the
         // pyramids over it go with it — before any restore can adopt them.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let len = build_and_persist(root.path(), &v);
         let reopened = SignalCacheStore::new(root.path());
         reopened.clear();
         assert_eq!(std::fs::read_dir(root.path()).unwrap().flatten().count(), 0);
-        assert_eq!(reopened.restore(&v, len), 0);
+        assert_eq!(reopened.restore(&v, &scopes(&load_dbc()), len).reopened, 0);
     }
 
     #[test]
@@ -5240,11 +5608,11 @@ mod tests {
         // in: the decode cursor sits at the persisted tip, so frames that
         // arrive after the restore are caught up incrementally.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let len = build_and_persist(root.path(), &v);
 
         let reopened = SignalCacheStore::new(root.path());
-        assert_eq!(reopened.restore(&v, len), 1);
+        assert_eq!(reopened.restore(&v, &scopes(&load_dbc()), len).reopened, 1);
         // A store standing in for the reloaded capture: the restored frames
         // don't decode (so nothing is re-read), the new tail does.
         let store = undecodable_store(len);
@@ -5263,7 +5631,7 @@ mod tests {
         // Front-trimmed levels have lost their leading segment files; the
         // persisted low-water is what lets them map back.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let store = TraceStore::new();
         for i in 0..2000u64 {
             store.append(val_frame(i * S, (i % 50) as u16));
@@ -5273,10 +5641,15 @@ mod tests {
         let cache = SignalCacheStore::new(root.path());
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         cache.evict_below(1000.0);
-        cache.persist(&v, &[], Harden::All);
+        cache.persist(&v, &scopes(&db), Harden::All);
 
         let reopened = SignalCacheStore::new(root.path());
-        assert_eq!(reopened.restore(&v, store.len()), 1);
+        assert_eq!(
+            reopened
+                .restore(&v, &scopes(&load_dbc()), store.len())
+                .reopened,
+            1
+        );
         let cold = undecodable_store(store.len());
         let served = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &cold, dbs);
         assert_eq!(served.len(), 1000, "only the live tail came back");
@@ -5548,13 +5921,15 @@ mod tests {
 
     #[test]
     fn a_file_backed_series_comes_back_after_a_dbc_change_across_sessions() {
-        // The same rule across a relaunch. The DBC-backed half of a
-        // persisted set is only reusable when the whole validity key
-        // matches; the file-backed half depends on nothing but the
-        // capture's identity, so a different DBC set brings it back
-        // anyway and rebuilds only what was decoded.
+        // The same rule across a relaunch, and an exit criterion of the
+        // per-signal judgement: a file-backed row fingerprints against the
+        // source it was imported from, so no DBC-set change can invalidate
+        // it. Here the database that defined the decoded signal is swapped
+        // for one that does not define it at all — the harshest DBC-set
+        // change there is — and the imported series comes back regardless,
+        // while the decoded one rebuilds.
         let root = TempDir::new().unwrap();
-        let v = validity("capture-a", "dbc-a", 0);
+        let v = validity("capture-a", 0);
         let store = TraceStore::new();
         for i in 0..200u64 {
             store.append(val_frame(i * S, (i % 50) as u16));
@@ -5570,14 +5945,18 @@ mod tests {
                 200
             );
             cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
-            assert!(cache.persist(&v, &[], Harden::All));
+            assert!(cache.persist(&v, &scopes(&db), Harden::All));
         }
 
         let reopened = SignalCacheStore::new(root.path());
-        let changed = validity("capture-a", "dbc-b", 0);
+        // A set in which nothing defines `X` any more.
+        let changed = dbc_ab(1);
         assert_eq!(
-            reopened.restore(&changed, store.len()),
-            1,
+            reopened.restore(&v, &scopes(&changed), store.len()),
+            RestoreOutcome {
+                reopened: 1,
+                rebuilt: 1,
+            },
             "only the file-backed series is reusable",
         );
         let listed = reopened.file_signals();
@@ -5600,7 +5979,12 @@ mod tests {
         // A different capture takes both halves with it.
         {
             let cache = SignalCacheStore::new(root.path());
-            assert_eq!(cache.restore(&validity("capture-b", "dbc-a", 0), 200), 0);
+            assert_eq!(
+                cache
+                    .restore(&validity("capture-b", 0), &scopes(&load_dbc()), 200)
+                    .reopened,
+                0
+            );
             assert!(cache.file_signals().is_empty());
         }
     }
@@ -5721,7 +6105,6 @@ mod tests {
         let cache = SignalCacheStore::new_unbounded(pyramids.path());
         let validity = PyramidValidity {
             capture_id: "bench-capture".into(),
-            dbcs: "bench-dbcs".into(),
             low_water: 0,
         };
 
@@ -5840,6 +6223,10 @@ mod tests {
             .collect();
         let db = Database::parse(&dbc).unwrap();
         let dbs: &[&Database] = &[&db];
+        // The set the persisted rows are fingerprinted against, and the
+        // restore judges them by — the real one, so the restore arm pays
+        // what a launch pays.
+        let bench_scopes = scopes(&db);
         // The view's signals, in the order a plot fetch would name them.
         let names: Vec<String> = (0..per_message).map(|s| format!("X{s}")).collect();
         let queries: Vec<CacheQuery<'_>> = (0..signals)
@@ -5944,20 +6331,25 @@ mod tests {
         let paced = Arc::new(SignalCacheStore::new_unbounded(paced_root.path()));
         let paced_v = PyramidValidity {
             capture_id: "bench-capture".into(),
-            dbcs: "bench-dbcs".into(),
             low_water: 0,
         };
         let stop = Arc::new(AtomicBool::new(false));
         let flusher = {
             let (cache, v, stop) = (Arc::clone(&paced), paced_v.clone(), Arc::clone(&stop));
+            // The thread outlives this scope, so it parses its own copy of
+            // the same DBC rather than borrowing the one above; the
+            // fingerprints it writes are the same either way.
+            let dbc = dbc.clone();
             std::thread::spawn(move || {
+                let db = Database::parse(&dbc).unwrap();
+                let scopes = scopes(&db);
                 let (mut ticks, mut spent) = (0u32, 0f64);
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(std::time::Duration::from_secs(2));
                     let at = std::time::Instant::now();
                     // The store is not growing during a rebuild, so this
                     // is the budget the flusher would actually use here.
-                    if cache.needs_persist() && cache.persist(&v, &[], Harden::idle_budget()) {
+                    if cache.needs_persist() && cache.persist(&v, &scopes, Harden::idle_budget()) {
                         spent += at.elapsed().as_secs_f64();
                         ticks += 1;
                     }
@@ -6000,12 +6392,12 @@ mod tests {
         let drain_at = std::time::Instant::now();
         for _ in 0..drain_ticks {
             paced.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
-            paced.persist(&paced_v, &[], Harden::idle_budget());
+            paced.persist(&paced_v, &bench_scopes, Harden::idle_budget());
         }
         let drain_secs = drain_at.elapsed().as_secs_f64();
         paced.evict_below(f64::NEG_INFINITY);
         let drained_exit_at = std::time::Instant::now();
-        assert!(paced.persist(&paced_v, &[], Harden::All));
+        assert!(paced.persist(&paced_v, &bench_scopes, Harden::All));
         let drained_exit_secs = drained_exit_at.elapsed().as_secs_f64();
         drop(paced);
         println!(
@@ -6061,12 +6453,11 @@ mod tests {
         // store directly and not the host.
         let validity = PyramidValidity {
             capture_id: "bench-capture".into(),
-            dbcs: "bench-dbcs".into(),
             low_water: 0,
         };
         let persist_at = std::time::Instant::now();
         assert!(
-            cache.persist(&validity, &[], Harden::All),
+            cache.persist(&validity, &bench_scopes, Harden::All),
             "the manifest is written"
         );
         let persist_secs = persist_at.elapsed().as_secs_f64();
@@ -6078,15 +6469,15 @@ mod tests {
         // behind the periodic flusher actually pays.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         let again_at = std::time::Instant::now();
-        assert!(cache.persist(&validity, &[], Harden::All));
+        assert!(cache.persist(&validity, &bench_scopes, Harden::All));
         let again_secs = again_at.elapsed().as_secs_f64();
         drop(cache);
 
         let reopened = SignalCacheStore::new_unbounded(pyramids.path());
         let restore_at = std::time::Instant::now();
-        let restored = reopened.restore(&validity, store.len());
+        let restored = reopened.restore(&validity, &bench_scopes, store.len());
         let restore_secs = restore_at.elapsed().as_secs_f64();
-        assert_eq!(restored, signals, "every pyramid came back");
+        assert_eq!(restored.reopened, signals, "every pyramid came back");
         let served_at = std::time::Instant::now();
         let back: usize = reopened
             .slice_many(

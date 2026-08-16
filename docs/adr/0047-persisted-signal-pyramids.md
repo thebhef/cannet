@@ -1,6 +1,8 @@
 # ADR 0047 — Persisted signal pyramids
 
-Status: accepted (2026-08-08)
+Status: accepted (2026-08-08); amended (2026-08-15) — validity is judged
+per signal (global capture gates + a per-signal encoding fingerprint)
+rather than by one whole-set key
 
 ## Context
 
@@ -39,10 +41,13 @@ level's `(len, first_slot)`. That is all a level needs to be mapped back:
 the segment chain's geometry is deterministic in its length, so no level
 carries a manifest of its own.
 
-Reuse is gated on a **validity key**, recorded in the manifest and
-recomputed by the session that wants to adopt it. It has three
-components, one for each way a pyramid can stop describing the model
-without the pyramid itself changing:
+Reuse is gated at **two levels**, and the split is the point: the
+capture the frames came from is a fact about the whole set, while what a
+sample *is* is a fact about one signal.
+
+**Global gates**, recorded in the manifest and recomputed by the session
+that wants to adopt it. A mismatch in either discards every pyramid,
+files and all:
 
 - **Capture identity.** A `capture_id` minted whenever a capture starts,
   stored beside the project identity that already gates the raw reload
@@ -50,26 +55,58 @@ without the pyramid itself changing:
   capture — nothing rewrites the identity on reload — and distinct for
   the next one. A pyramid's decode cursor is a frame index, and a frame
   index is only meaningful within one capture.
-- **DBC set.** A fingerprint over each loaded database's path, its bus
-  scoping, and its load position (which is decode priority), plus the
-  file's size and modification time. A pyramid holds *decoded* samples;
-  a changed set decodes different values, or decodes a signal the old
-  set could not ([ADR 0033](0033-model-layer-build-order.md)).
 - **Eviction low-water.** The raw store's windowed-ring mark (DS-8). The
   pyramid is front-trimmed to follow it, so a pyramid trimmed to one
   mark does not describe a capture retained to another.
 
-Plus one bound checked rather than keyed: **no decode cursor may sit
-past the restored store's tip.** The pyramids are persisted on their own
-cadence, so a crash between the raw store's last flush and the pyramid's
-can leave a cursor ahead of the frames the store comes back with — and a
-cursor ahead of the tip never revisits the frames it skipped.
+**A per-signal encoding fingerprint**, carried by each manifest row and
+recomputed against the model now loaded. It is what makes a row's
+samples reusable or not, and it is judged **alone**: a match reopens
+that pyramid, a mismatch rebuilds that signal and only that signal.
 
-Anything that does not match, and any level file that does not answer to
-its manifest row, discards the whole set — files and all — and the next
-serve rebuilds exactly as before. **Rejection is the safe direction and
-is always available**, which is what makes an aggressive reuse rule
-tolerable: the raw frames remain the source of truth.
+- For a **DBC-backed** row the fingerprint is over that signal's
+  *candidate chain*: every loaded database that defines it in that
+  message, in load order, each contributing the fields a decode actually
+  reads — start bit, length, byte order, sign, factor, offset, float
+  kind, mux arm, the message's mux gate — plus its bus scoping. Nothing
+  about the files the databases were parsed from enters it. The chain,
+  rather than a nominated winner, because resolution is per *frame*: the
+  decode path takes the first database that yields the name for the
+  payload in hand, so a database that loses one frame can win the next.
+  A database that defines nothing about the signal contributes nothing,
+  which is what makes loading, unloading or re-prioritising an unrelated
+  database invalidate nothing.
+- For a **file-backed** row it is over the source the samples were
+  imported from — path, signal channel group, channel name. No DBC bears
+  on such a series, so no DBC-set change may touch it; and none can,
+  because every input to its fingerprint is carried in the row itself.
+  That matters beyond tidiness: nothing rebuilds one. Its samples were
+  read once, at import, from a file that may be long gone.
+- A row with **no fingerprint at all** — a manifest written before they
+  existed — rebuilds if it is DBC-backed (the model it was decoded
+  against is not in the row, so there is nothing to judge it by) and
+  reopens if it is file-backed (its fingerprint is a function of the row,
+  so its absence hides nothing).
+
+Plus one bound checked rather than keyed, per row: **no decode cursor may
+sit past the restored store's tip.** The pyramids are persisted on their
+own cadence, so a crash between the raw store's last flush and the
+pyramid's can leave a cursor ahead of the frames the store comes back
+with — and a cursor ahead of the tip never revisits the frames it
+skipped.
+
+**Reopening**, as against judging, stays all-or-nothing within a
+provenance: a level file that does not answer to its manifest row means
+the directory is not what the manifest says, and trusting the rest of it
+on that evidence would be guessing. **Rejection is the safe direction and
+is always available** — for a decoded pyramid the raw frames remain the
+source of truth — which is what makes an aggressive reuse rule tolerable.
+
+What the invalidated subset then costs is **one shared scan**, not one
+per signal. The rebuilt caches come back empty, so the next serve over
+their message groups walks each group's frames once for all of them, and
+the reopened caches — whose cursors are already at the tip — are skipped
+frame by frame and never re-decoded.
 
 **A rejection is announced, and the user may decline to pay for it.**
 Reuse being the normal case is what makes the exception worth saying out
@@ -164,14 +201,23 @@ Two lifecycle rules complete it:
   append-only mmap'd runs like the rest); it was the absence of a
   validity key.
 - **A key beats a heuristic.** "Reuse if the file looks recent" or "if
-  the frame count matches" would be guesses. Naming the three inputs a
-  pyramid depends on makes reuse a proof rather than a bet, and makes
-  each rejection explicable.
+  the frame count matches" would be guesses. Naming the inputs a pyramid
+  depends on makes reuse a proof rather than a bet, and makes each
+  rejection explicable.
 - **The failure mode of getting it wrong is silent and bad.** A stale
   pyramid does not crash; it draws a plausible wrong plot, or a plot
-  that is quietly missing a range of history. That is why the key is
-  conservative (a cosmetic DBC edit invalidates, a crash-truncated store
-  invalidates) and why rejection is all-or-nothing.
+  that is quietly missing a range of history. That is why every gate is
+  conservative in the same direction: a fingerprint covers every decode
+  input and a few that only *might* be one (a re-scoped database whose
+  frames this path does not filter by, a `0.0` → `-0.0` edit), a
+  crash-truncated store invalidates, and an unjudgeable row rebuilds.
+- **The whole-set stamp was the wrong grain.** It read each database's
+  path, size and modification time, so a copy, a checkout or a backup
+  tool discarded every pyramid in the session for a decode that had not
+  changed by a bit — minutes of re-decoding, on evidence about files
+  rather than about samples. Naming what a *sample* depends on costs a
+  fingerprint per row and answers the question that was actually being
+  asked.
 
 ## Alternatives considered
 
@@ -184,11 +230,25 @@ Two lifecycle rules complete it:
   different captures of the same length collide, and it says nothing
   about the DBC set.
 - **Key on the DBC file *contents* rather than path + size + mtime.**
-  More precise — a cosmetic edit would not invalidate — but it needs the
-  parsed model's decode-relevant surface exposed for hashing, and the
-  gain is avoiding a rebuild after an edit that changed nothing. Not
-  worth the API surface today; the fingerprint is a single function to
-  revisit if it proves too eager.
+  Considered and deferred when this ADR was first written, then adopted:
+  it does need the parsed model's decode-relevant surface exposed for
+  hashing (`Database::signal_decode_specs`), and that turned out to be
+  the cheap half. Hashing whole file contents would still be the wrong
+  answer — it invalidates on a comment or a `VAL_` relabel, neither of
+  which changes a sample. What the fingerprint hashes is the *decode
+  spec*, per signal.
+- **One fingerprint over the whole parsed set, still whole-set.** Fixes
+  the touched-file case and nothing else: an edit to one signal's scaling
+  still discards every other signal's pyramid, which on a large session
+  is the same minutes for the same reason.
+- **Nominate a winning database per signal and fingerprint its spec.**
+  What this ADR's own risk register originally asked for, and not
+  expressible: resolution is per frame, so there is no single winner to
+  nominate (a multiplexor arm that does not match, or a payload too
+  short, hands the signal to the next database for that frame only). The
+  ordered candidate chain has the property the nomination was after — a
+  priority change that cannot change any frame's decode moves nothing —
+  without pretending to a winner.
 - **Persist the pyramid inside the raw store's own manifest.** Couples
   two families with genuinely different write cadences: the pyramids
   move when a plot is served, the raw store when frames arrive. A
@@ -209,12 +269,16 @@ Two lifecycle rules complete it:
 - The scratch keeps the pyramid bytes between sessions. They are inside
   DS-8's cap like everything else in `cache/`, and the windowed-ring
   eviction trims them with the raw store.
-- Every rejection path costs exactly what today costs: a wipe and a
-  rebuild on the next serve. There is no half-adopted state.
-- A rejection is visible: the restore's system-log line says the caches
-  did not match, and the status line carries a rebuild chip with a
-  discard action until the caches have caught up. The fast path stays
-  silent — a reuse says nothing, which is the point of it.
+- Every rejection path costs exactly what it did before: a wipe of the
+  rejected rows' files and a rebuild on the next serve. What has changed
+  is how much of a set one rejection takes with it.
+- A rejection is visible: the restore's system-log line says how many
+  caches did not match, its breakdown line carries the reopened-vs-rebuilt
+  split, and the status line carries a rebuild chip with a discard action
+  until the rebuilt caches have caught up. The pyramids the same restore
+  reopened are not evidence about that — their cursors came back at the
+  tip — so they are left out of the answer. The fast path stays silent: a
+  reuse says nothing, which is the point of it.
 - Exit hardens the pyramid scratch alongside the trace store's own
   synchronous shutdown flush (DS-2), and what it costs falls as the
   cadence works through the sealed segments — to milliseconds for a

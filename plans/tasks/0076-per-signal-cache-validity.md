@@ -253,6 +253,119 @@ Design choices worth carrying into phase 2:
   still decides everything. `#[serde(default)]` means a manifest written
   before this phase restores exactly as it did.
 
+### 2026-08-15 — phase 2: restore judges each signal alone
+
+Branch `task76-p2-selective-restore`, off `task76-p1-signal-fingerprints`.
+
+| Commit | What landed |
+| --- | --- |
+| `bb7ec33` | the gate split, the per-signal judgement, the restore breakdown's reopened/rebuilt split, ADR 0047's amendment |
+
+Tests: `cannet-gui` 684 → **686** (four new restore-judgement tests; one
+whole-set-stamp test deleted with the stamp, one compat test rewritten),
+`cannet-dbc` unchanged at 109, frontend unchanged at 2215 in 164 files
+(nothing under `apps/gui/src` was touched). `cargo clippy --all-targets`
+clean, `cargo fmt --check` clean.
+
+#### The gate split, as landed
+
+`PyramidValidity` is now `{ capture_id, low_water }` — the two facts
+about the *frames*, whole-set, discarding everything on a mismatch. Past
+them each `PersistedSignal` answers for itself:
+
+| Row | Judged by |
+| --- | --- |
+| DBC-backed | its `encoding` fingerprint recomputed against the loaded set, **plus** its own cursor ≤ `store_len` |
+| file-backed | nothing beyond the global gates — see below |
+
+The **cursor bound went per row** (it was "any row past the tip rejects
+every DBC row"). It is a property of one cache — a cursor ahead of the
+tip never revisits the frames it skipped — so judging it per row rebuilds
+exactly the affected signal. Crash-truncation normally moves every row at
+once, so this is a refinement, not a behaviour the tests could tell apart
+before.
+
+**Reopening stays all-or-nothing within a provenance.** A level file that
+does not answer to its manifest row is evidence about the *directory*,
+not about one encoding, and `reopen_set` maps the whole batch in one
+parallel open. Judging is per signal; file-level trust is not.
+
+#### The manifest-compatibility choice
+
+A row with no `encoding` (a manifest written before phase 1):
+
+- **DBC-backed → rebuild.** The fingerprint is a fact about the model the
+  samples were decoded against, and that model is *not* in the row. There
+  is nothing to judge it by, and the raw frames can always produce it
+  again.
+- **File-backed → reopen.** Its fingerprint is a function of the row's own
+  fields (`source_path`, group index, channel name), so re-deriving it is
+  exact and its absence hides nothing. And "rebuild" is not on offer:
+  those samples were read once, at import, from a file that may be long
+  gone — treating the absent fingerprint as a mismatch would delete
+  imported data outright to protect against a judgement that could not
+  have failed. This is the "strictly better faithful option" the phase
+  brief left open, and it is confined to the provenance that has it.
+
+Which is why the file-backed fingerprint is not compared on restore even
+when present: every input to it travels in the row, so the comparison is
+a tautology. It is written for phase 3's retention pool, where a revival
+*does* match a cache against a definition that arrived separately.
+
+#### The old whole-set stamp: retired, not kept
+
+`PyramidValidity.dbcs` and `app_state::dbc_fingerprint` are **gone**, not
+left write-only. What the stamp covered, the candidate chain covers
+better: a database added, removed, re-scoped, re-ordered, or edited all
+move the chain (or provably cannot change the decode, which is the
+point). What it covered *worse* is the whole reason for the task — it
+read file metadata, so a copy or a `touch` discarded everything. Keeping
+a field nothing judges would leave the next reader to work out which of
+two stamps decides. Old manifests still restore: serde ignores the
+retired key, and their rows are judged on their own fingerprints.
+
+#### One scan, not one per signal
+
+Structurally there was nothing to build: the rebuilt rows are simply
+absent from `by_key`, so the next serve creates them cold and
+`catch_up_keys` batches them with everything else on their
+`(message_id, extended)` group. The group scans from its *minimum*
+cursor, and `scan_chunk` builds its decode name list per frame from the
+targets that frame is still ahead of — so a reopened neighbour sitting at
+the tip is neither fetched for nor decoded. `the_invalidated_subset_
+rebuilds_in_one_walk_of_its_message` pins both halves: the fetch count
+over a capture longer than a chunk is one walk (not one per signal), and
+`scan_chunk` called directly with a caught-up target and a behind one
+produces decode output only for the latter.
+
+#### The tests were checked by falsification
+
+Each new assertion was confirmed load-bearing by breaking the code under
+it and watching it fail:
+
+| Sabotage | Failed |
+| --- | --- |
+| judgement always matches | the encoding-change, file-backed, compat and one-walk tests (4) |
+| judgement never matches | those plus the touched-DBC and every reuse test (9) |
+| `rebuilding` counts reopened caches | the encoding-change test's announcement assertion |
+
+#### Metrics: counts now, bytes deferred
+
+The breakdown line reports `pyramids {ms} (N reopened, M rebuilt)`, and
+the rebuild notice says how many caches did not match. **Bytes reused vs
+re-decoded are not here**: the only honest byte figure is live slots ×
+slot size, and `ENTRY_BYTES` is private to `cannet-spill` — exposing it
+(or adding a per-row byte accessor) is accounting plumbing, which this
+phase's brief reserves for phase 3.
+
+#### Exit criteria this phase owns
+
+| Criterion | Where |
+| --- | --- |
+| a DBC touch that changes no encoding invalidates nothing | `a_touched_but_unchanged_dbc_reopens_every_pyramid` — a real file, a real `set_modified`, every pyramid reopened and served off disk |
+| an encoding change rebuilds exactly that signal | `an_encoding_change_rebuilds_that_signal_and_reopens_the_rest` — 1 reopened / 1 rebuilt, proved over an undecodable store, and the rebuilt row's level files are gone |
+| file-backed pyramids survive DBC-set changes | `a_file_backed_series_comes_back_after_a_dbc_change_across_sessions`, now restoring against a set in which nothing defines the decoded signal |
+
 ## Blockers / side effects
 
 - **The pyramid decode path does not honour DBC bus scoping** (found
@@ -285,3 +398,40 @@ Design choices worth carrying into phase 2:
   internals at this granularity (`signal_cache.rs` itself is absent from
   it). ADR 0047 is deliberately left alone — it is amended in phase 2,
   with the behaviour change.
+
+### Phase 2
+
+- **`SignalCacheStore::restore` gained a parameter and changed its return
+  type** — `(&PyramidValidity, &[DbcScope], store_len) -> RestoreOutcome`.
+  One production call site (`capture::restore_scratch_capture`), which now
+  takes the DBC lock before the signal-cache lock, the order
+  `persist_pyramids` and `sample_signals` already establish. The two of
+  them share `app_state::dbc_scopes` for the borrow.
+- **`app_state::dbc_fingerprint` is deleted**, with `PyramidValidity`'s
+  `dbcs` field and the `the_dbc_fingerprint_moves_with_everything_that_
+  changes_a_decode` test that pinned it. Nothing else read it. Phase 1's
+  `a_touched_but_unchanged_dbc_moves_no_signals_fingerprint` lost its
+  contrast half (it compared the two stamps); it keeps the mtime fixture
+  and now asserts the touch really happened, and the contrast is made at
+  the restore level instead, where it is a behaviour rather than a hash.
+- **Old manifests**: a `pyramids.json` written before this phase carries a
+  `validity.dbcs` key that no longer deserialises into anything — serde
+  ignores it — and rows whose `encoding` is absent, judged as above. A
+  manifest written *after* it cannot be read by an older build (its
+  `PyramidValidity` requires `dbcs`); the scratch is per-project cache
+  state a downgrade already rebuilds, so this is not gated.
+- **The system-log rebuild notice now counts** ("N persisted signal
+  cache(s) did not match this capture"), because with a partial rebuild
+  the old wording claimed more than happened. The frontend chip reads
+  `pyramids_rebuilding`, unchanged.
+- **The ignored first-use benchmark now persists and restores against the
+  real DBC set** rather than an empty one, so its restore arm pays the
+  per-row fingerprint recompute a launch pays. Its paced-flusher thread
+  parses its own copy of the same DBC text (it outlives the borrow).
+- The bus-scoping divergence recorded above is **untouched**, as the phase
+  required. The judgement is correct under either resolution: scoping
+  joins each contributing database's fingerprint either way.
+- Concurrently with this phase, another session left an uncommitted edit
+  in `plans/tasks/0072-extrapolation-rendering.md` (a post-closeout owner
+  ruling on lane-label styling). It is not part of this work and was left
+  in the working tree, uncommitted.

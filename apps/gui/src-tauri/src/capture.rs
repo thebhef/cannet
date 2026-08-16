@@ -1517,8 +1517,16 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
     // over them re-decodes the whole history. A rejected set is wiped here
     // and rebuilt on demand, exactly as before.
     let pyramids_at = std::time::Instant::now();
-    let pyramids = crate::app_state::pyramid_validity(&state)
-        .map_or(0, |v| state.signal_caches.restore(&v, count));
+    let pyramids = crate::app_state::pyramid_validity(&state).map_or_else(Default::default, |v| {
+        // Lock order: the DBC set before the signal caches, as every
+        // other path that needs both takes them (`persist_pyramids`,
+        // `sample_signals`). The set is what each persisted signal's
+        // encoding fingerprint is judged against.
+        let dbcs = state.databases();
+        state
+            .signal_caches
+            .restore(&v, &crate::app_state::dbc_scopes(&dbcs), count)
+    });
     let pyramids_ms = pyramids_at.elapsed().as_secs_f64() * 1000.0;
     // A rejection used to be invisible from here: the capture came back
     // fast and then every plot over it spent minutes re-decoding, with
@@ -1550,14 +1558,17 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         &app,
         "project",
         "restore: {breakdown} notes {notes_ms:.0} \
-         pyramids {pyramids_ms:.0} ({pyramids} signals) command {total_ms:.0}"
+         pyramids {pyramids_ms:.0} ({} reopened, {} rebuilt) command {total_ms:.0}",
+        pyramids.reopened,
+        pyramids.rebuilt
     );
     if pyramids_rebuilding {
         sys_info!(
             &app,
             "project",
-            "the persisted signal caches did not match this capture — \
-             rebuilding them by re-decoding its frames"
+            "{} persisted signal cache(s) did not match this capture — \
+             rebuilding them by re-decoding its frames",
+            pyramids.rebuilt
         );
     }
     // Whatever the restore adopted (or rejected) is the file-backed set
