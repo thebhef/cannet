@@ -60,7 +60,10 @@
 //! `(message_id, extended)` fetch that message's frames once between
 //! them and decode each frame once, then take their own signal's value
 //! out of the result. Bus scoping, decode provenance and the decode
-//! cursor stay per series through it ([`catch_up_group_chunked`]).
+//! cursor stay per series through it
+//! ([`SignalCacheStore::catch_up_keys`]). The batch's groups advance
+//! **together**, a chunk each per round, so what the serve's budget buys
+//! does not divide by how many messages the batch covers.
 //!
 //! A serve is also **bounded in time** (ADR 0049): it catches up for at most
 //! [`CATCH_UP_SERVE_BUDGET`] and then answers with what has decoded,
@@ -134,9 +137,11 @@ const CATCH_UP_CHUNK_FRAMES: usize = 16_384;
 /// is the plotted message: a chunk of a rare message decodes almost
 /// nothing, and a fixed chunk budget would make such a rebuild take
 /// hundreds of round-trips to advance through a capture it could scan in
-/// seconds. The deadline is checked *between* chunks, so a serve overruns
-/// it by at most one chunk and always makes progress — a serve that
-/// decoded nothing would never finish the rebuild.
+/// seconds. The deadline is checked *between rounds* — one chunk for each
+/// message group the serve carries — so a serve overruns it by at most a
+/// round and always makes progress on every group it touched. A round
+/// materializes about one chunk of capture, since the groups' frames are
+/// disjoint slices of the same span.
 ///
 /// 150 ms is about a plot's resample period: short enough that the first
 /// points appear promptly and the picture visibly grows, long enough that
@@ -760,6 +765,25 @@ struct GroupTarget<'a> {
     next_index: usize,
 }
 
+/// One `(message_id, extended)` group's place in a batched catch-up: the
+/// series it covers, their cursors as last applied, the scratch its chunks
+/// decode into, and how far the group has been scanned.
+///
+/// A serve's batch holds one of these per group and advances them a chunk
+/// at a time in rotation, so the whole batch moves at one group's pace
+/// rather than the first group's ([`SignalCacheStore::catch_up_keys`]).
+struct GroupCatchUp<'a> {
+    message_id: u32,
+    extended: bool,
+    keys: Vec<&'a SignalKey>,
+    targets: Vec<GroupTarget<'a>>,
+    /// Scratch, index-parallel with `keys`, reused across rounds so the
+    /// rotation allocates nothing per chunk.
+    samples: Vec<Vec<ChunkSample>>,
+    /// Next store frame index this group's scan starts at.
+    cursor: usize,
+}
+
 /// One decoded sample waiting for the cache lock: the store frame index
 /// it came from, so the append can re-apply the per-target cursor gate
 /// against the cursor as it stands *then*, and the point itself.
@@ -791,6 +815,9 @@ struct ChunkSample {
 ///
 /// `out` is index-parallel with `targets` and cleared here, so the
 /// caller reuses one set of buffers across the whole scan.
+///
+/// Returns how many store frames the chunk materialized — what the scan
+/// spent, and so what a serve's budget is charged ([`ServeLimit`]).
 fn scan_chunk(
     message_id: u32,
     extended: bool,
@@ -799,10 +826,11 @@ fn scan_chunk(
     dbs: &[&Database],
     fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     out: &mut [Vec<ChunkSample>],
-) {
+) -> usize {
     for samples in out.iter_mut() {
         samples.clear();
     }
+    let mut scanned = 0;
     // Scratch reused across frames so the per-frame loop allocates
     // nothing: which targets want a value from the frame in hand, the
     // names to decode for them, and the values that came back.
@@ -810,6 +838,7 @@ fn scan_chunk(
     let mut wanted: Vec<&str> = Vec::with_capacity(targets.len());
     let mut values: Vec<Option<f64>> = Vec::with_capacity(targets.len());
     for (index, frame) in fetch(message_id, extended, chunk.start, chunk.end) {
+        scanned += 1;
         pending.clear();
         wanted.clear();
         for (i, t) in targets.iter().enumerate() {
@@ -844,6 +873,7 @@ fn scan_chunk(
             }
         }
     }
+    scanned
 }
 
 /// Smallest live slot `k` in `[first_slot, level.len())` whose `t_seconds`
@@ -1351,6 +1381,43 @@ fn group_keys(keys: &[SignalKey]) -> HashMap<(u32, bool), Vec<&SignalKey>> {
     groups
 }
 
+/// What stops one serve's catch-up (ADR 0049), charged between rounds of
+/// scanning.
+///
+/// Production is a wall clock — the budget is *time*, not work, because a
+/// chunk of a rare message decodes almost nothing and a work budget would
+/// make such a rebuild take hundreds of round-trips (see
+/// [`CATCH_UP_SERVE_BUDGET`]). `None` is the unbounded catch-up, i.e. a
+/// budget longer than the clock can express.
+///
+/// A test may instead cap the **frames the scan materializes**, which is
+/// the quantity the wall clock is measuring (fetching and decoding a frame
+/// is what a chunk spends its time on) and is deterministic — so an
+/// assertion about how far a serve gets doesn't race the machine.
+enum ServeLimit {
+    Deadline(Option<Instant>),
+    #[cfg(test)]
+    Frames(std::cell::Cell<usize>),
+}
+
+impl ServeLimit {
+    /// Charge `frames` of scanning against the budget and report whether
+    /// the serve has run out of it.
+    fn spend(&self, frames: usize) -> bool {
+        match self {
+            Self::Deadline(deadline) => {
+                let _ = frames;
+                deadline.is_some_and(|d| Instant::now() >= d)
+            }
+            #[cfg(test)]
+            Self::Frames(left) => {
+                left.set(left.get().saturating_sub(frames));
+                left.get() == 0
+            }
+        }
+    }
+}
+
 /// Read one chunk of a `(message_id, extended)` group's frames out of the
 /// trace store — the production form of [`scan_chunk`]'s `fetch` seam.
 fn store_fetch(
@@ -1848,50 +1915,124 @@ impl SignalCacheStore {
     /// same capture length; `fetch` is the seam each group's chunks are
     /// materialized through.
     ///
-    /// `deadline` bounds the whole batch ([`CATCH_UP_SERVE_BUDGET`]) —
-    /// but every group still scans at least one chunk, so a signal listed
-    /// after an expensive one always makes *some* progress rather than
-    /// none on a budget an earlier group has already spent.
+    /// **The batch advances as one.** The serve's budget (`limit`,
+    /// [`CATCH_UP_SERVE_BUDGET`]) is spent in *rounds*: every group that
+    /// is still behind the tip scans one [`CATCH_UP_CHUNK_FRAMES`] chunk,
+    /// and only then is the budget checked. So a batch's per-group
+    /// catch-up throughput does not divide by its group count — a serve
+    /// carrying sixteen message groups walks each of them as many chunks
+    /// as a serve carrying one, because the frames a round materializes
+    /// are the frames of that chunk of capture however many groups they
+    /// are shared between (each group's `fetch` is index-driven, so it
+    /// touches only its own message's frames, and the groups' frames are
+    /// disjoint). Spending the budget group by group instead — letting
+    /// the first group run chunks until the deadline — left every group
+    /// after the one that spent it advancing a single chunk per serve,
+    /// which a capture growing by more than a chunk between two serves
+    /// outruns forever: the caller sees ADR 0049's incomplete answer on
+    /// every serve and a viewer sees a series whose newest sample is a
+    /// growing fraction of the window old.
     ///
-    /// That floor is one chunk per serve, and it is a floor rather than a
-    /// guarantee of currency. The budget is spent group by group, so once
-    /// a batch holds more groups than the deadline can carry, every group
-    /// after the one that spends it advances [`CATCH_UP_CHUNK_FRAMES`]
-    /// frames per serve and no further — a batch's per-group catch-up
-    /// throughput falls as its group count rises. A capture growing by
-    /// more than a chunk between two serves of the same batch therefore
-    /// leaves those groups falling further behind on every serve, which
-    /// the caller sees as ADR 0049's incomplete answer and a viewer sees
-    /// as a series whose newest sample is a growing fraction of the
-    /// window old.
+    /// Groups sitting at different cursors — a signal added to a panel
+    /// whose other signals have been decoding for a while — each scan
+    /// from their own cursor, so the straggler is not held back by the
+    /// frontier and the frontier is not dragged back to the straggler.
+    /// A group that reaches `store_len` drops out of the rotation, which
+    /// hands the rest of the serve's budget to whoever is still behind.
+    ///
+    /// Rounds rather than chunks cost one extra `by-id` range lookup and
+    /// one lock round-trip per group per round, both `O(log n)` or less
+    /// beside the chunk's decoding.
     fn catch_up_keys(
         &self,
         keys: &[SignalKey],
         store_len: usize,
         dbs: &[&Database],
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
-        deadline: Option<Instant>,
+        limit: &ServeLimit,
     ) {
-        for ((message_id, extended), group) in group_keys(keys) {
-            self.catch_up_group(
-                message_id, extended, &group, store_len, dbs, fetch, deadline,
-            );
+        let (generation, mut batch) = self.plan_batch(keys);
+        loop {
+            let mut scanned = 0;
+            let mut advanced = false;
+            for group in &mut batch {
+                if group.cursor >= store_len {
+                    continue;
+                }
+                let Some(frames) = self.advance_group(group, store_len, dbs, fetch, generation)
+                else {
+                    return;
+                };
+                scanned += frames;
+                advanced = true;
+            }
+            if !advanced || limit.spend(scanned) {
+                return;
+            }
         }
     }
 
-    /// The deadline a serve's catch-up stops at, or `None` when the
-    /// configured budget is longer than the clock can express (the
-    /// unbounded catch-up the tests that assert on a finished series use).
-    fn serve_deadline(&self) -> Option<Instant> {
-        Instant::now().checked_add(self.serve_budget)
+    /// Read the batch's per-group decode state under **one** hold of the
+    /// cache lock: the generation the cursors belong to, and one
+    /// [`GroupCatchUp`] per `(message_id, extended)` group in a stable
+    /// order (the groups come out of a hash map, and a serve that is the
+    /// same work in a different order is harder to reason about than one
+    /// that isn't).
+    ///
+    /// A group whose caches have gone from under the batch is left out:
+    /// it is the same mid-serve `clear` seen a moment later, and the rest
+    /// of the batch still has a serve to answer.
+    fn plan_batch<'a>(&self, keys: &'a [SignalKey]) -> (u64, Vec<GroupCatchUp<'a>>) {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut groups: Vec<((u32, bool), Vec<&SignalKey>)> =
+            group_keys(keys).into_iter().collect();
+        groups.sort_unstable_by_key(|(id, _)| *id);
+        let mut batch = Vec::with_capacity(groups.len());
+        for ((message_id, extended), keys) in groups {
+            let mut targets = Vec::with_capacity(keys.len());
+            for key in &keys {
+                let Some(cache) = caches.by_key.get(*key) else {
+                    targets.clear();
+                    break;
+                };
+                targets.push(GroupTarget {
+                    bus_id: key.bus_id.as_deref(),
+                    signal_name: key.signal.as_str(),
+                    next_index: cache.next_index,
+                });
+            }
+            // The group scans from its *minimum* cursor, so a series
+            // joining a message that is already plotted reads the whole
+            // history in the same pass.
+            let Some(cursor) = targets.iter().map(|t| t.next_index).min() else {
+                continue;
+            };
+            batch.push(GroupCatchUp {
+                message_id,
+                extended,
+                samples: (0..keys.len()).map(|_| Vec::new()).collect(),
+                keys,
+                targets,
+                cursor,
+            });
+        }
+        (caches.generation, batch)
     }
 
-    /// Catch one `(message_id, extended)` group up to `store_len`,
-    /// **taking the cache lock only to plan a chunk and to apply it**
-    /// (ADR 0048). Each turn of the loop:
+    /// The budget one serve's catch-up may spend ([`ServeLimit`]): the
+    /// configured wall-clock deadline, or `None` when that budget is
+    /// longer than the clock can express (the unbounded catch-up the tests
+    /// that assert on a finished series use).
+    fn serve_limit(&self) -> ServeLimit {
+        ServeLimit::Deadline(Instant::now().checked_add(self.serve_budget))
+    }
+
+    /// Scan **one** chunk of one `(message_id, extended)` group, taking
+    /// the cache lock only to apply it (ADR 0048):
     ///
-    /// 1. *plan* — under the lock, read every target's decode cursor and
-    ///    the generation they belong to;
+    /// 1. *plan* — the group's cursors, read under the lock when the
+    ///    batch was planned ([`Self::plan_batch`]) and refreshed by every
+    ///    apply since;
     /// 2. *scan* — off the lock, fetch the chunk's frames and decode them
     ///    once for the whole group ([`scan_chunk`]);
     /// 3. *apply* — under the lock, append what decoded, advance the
@@ -1904,88 +2045,60 @@ impl SignalCacheStore {
     /// Two cold areas now decode in parallel, because the decode — the
     /// expensive part — holds nothing.
     ///
-    /// The cursor read in step 1 is only a hint by step 3, so the append
+    /// The cursor from step 1 is only a hint by step 3, so the append
     /// re-applies the gate against the live cursor: a sample whose frame
     /// index another pass has already covered is dropped rather than
     /// appended twice. A generation change between the two means the
     /// caches were replaced (cleared, re-rooted, restored) and the whole
-    /// pass is abandoned — its samples describe a set that is gone.
+    /// serve is abandoned — its samples describe a set that is gone —
+    /// which is what `None` reports.
     ///
-    /// The loop also stops at `deadline` — after a whole chunk has been
-    /// applied, so the cursors always advance and the caller always gets
-    /// more than it had. What it left undone is visible to the caller as
-    /// a decode cursor short of `store_len`.
-    #[allow(clippy::too_many_arguments)]
-    fn catch_up_group(
+    /// Returns the frames the chunk materialized, which is what the
+    /// serve's budget is charged.
+    fn advance_group(
         &self,
-        message_id: u32,
-        extended: bool,
-        keys: &[&SignalKey],
+        group: &mut GroupCatchUp<'_>,
         store_len: usize,
         dbs: &[&Database],
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
-        deadline: Option<Instant>,
-    ) {
-        let (generation, mut targets) = {
-            let caches = self.caches.lock().expect("signal cache mutex poisoned");
-            let mut targets = Vec::with_capacity(keys.len());
-            for key in keys {
-                let Some(cache) = caches.by_key.get(*key) else {
-                    return;
-                };
-                targets.push(GroupTarget {
-                    bus_id: key.bus_id.as_deref(),
-                    signal_name: key.signal.as_str(),
-                    next_index: cache.next_index,
-                });
-            }
-            (caches.generation, targets)
-        };
-        // The scan starts at the group's *minimum* cursor, so a series
-        // joining a message that is already plotted reads the whole
-        // history in the same pass.
-        let Some(start) = targets.iter().map(|t| t.next_index).min() else {
-            return;
-        };
-        let mut cursor = start;
-        let mut samples: Vec<Vec<ChunkSample>> = (0..keys.len()).map(|_| Vec::new()).collect();
-        while cursor < store_len {
-            let to = cursor.saturating_add(CATCH_UP_CHUNK_FRAMES).min(store_len);
-            scan_chunk(
-                message_id,
-                extended,
-                &targets,
-                cursor..to,
-                dbs,
-                fetch,
-                &mut samples,
-            );
-            let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-            if caches.generation != generation {
-                return;
-            }
-            for (i, key) in keys.iter().enumerate() {
-                let Some(cache) = caches.by_key.get_mut(*key) else {
-                    continue;
-                };
-                for s in &samples[i] {
-                    if s.index < cache.next_index {
-                        continue;
-                    }
-                    cache.push_sample(s.t_seconds, s.value);
-                }
-                // Never *lower* a cursor that started ahead of the group's.
-                cache.next_index = cache.next_index.max(to);
-                cache.fold();
-                targets[i].next_index = cache.next_index;
-            }
-            caches.dirty = true;
-            drop(caches);
-            cursor = to;
-            if deadline.is_some_and(|d| Instant::now() >= d) {
-                return;
-            }
+        generation: u64,
+    ) -> Option<usize> {
+        let to = group
+            .cursor
+            .saturating_add(CATCH_UP_CHUNK_FRAMES)
+            .min(store_len);
+        let scanned = scan_chunk(
+            group.message_id,
+            group.extended,
+            &group.targets,
+            group.cursor..to,
+            dbs,
+            fetch,
+            &mut group.samples,
+        );
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        if caches.generation != generation {
+            return None;
         }
+        for (i, key) in group.keys.iter().enumerate() {
+            let Some(cache) = caches.by_key.get_mut(*key) else {
+                continue;
+            };
+            for s in &group.samples[i] {
+                if s.index < cache.next_index {
+                    continue;
+                }
+                cache.push_sample(s.t_seconds, s.value);
+            }
+            // Never *lower* a cursor that started ahead of the group's.
+            cache.next_index = cache.next_index.max(to);
+            cache.fold();
+            group.targets[i].next_index = cache.next_index;
+        }
+        caches.dirty = true;
+        drop(caches);
+        group.cursor = to;
+        Some(scanned)
     }
 
     /// Catch the signal's cache up to the trace store's current tip,
@@ -2054,14 +2167,18 @@ impl SignalCacheStore {
     /// the catch-up rather than the serve: the queries sharing a
     /// `(message_id, extended)` are caught up in **one** pass over that
     /// message's frames, decoding each frame once for all of them
-    /// ([`catch_up_group_chunked`]). Sampling sixteen signals of one
+    /// ([`Self::catch_up_keys`]). Sampling sixteen signals of one
     /// message one at a time re-fetched and re-decoded the same frames
     /// sixteen times, throwing away fifteen values each pass.
     ///
     /// The catch-up is bounded by [`CATCH_UP_SERVE_BUDGET`], so this
     /// returns in about that long however cold the caches are, and says
     /// through [`ServedWindows::complete`] whether the windows are the
-    /// whole answer or a prefix of it.
+    /// whole answer or a prefix of it. The bound is on the *serve*, not
+    /// on each message it covers: the batch's groups share the budget by
+    /// taking a chunk each in turn, so an area carrying many messages
+    /// keeps up with the capture as well as one carrying a single
+    /// message.
     ///
     /// `reduction` is the caller's render mode — the one input to the
     /// serve that is a fact about the *view* rather than about the series
@@ -2090,7 +2207,7 @@ impl SignalCacheStore {
             store_len,
             dbs,
             &store_fetch(store),
-            self.serve_deadline(),
+            &self.serve_limit(),
         );
         let caches = self.caches.lock().expect("signal cache mutex poisoned");
         let mut series = Vec::with_capacity(keys.len());
@@ -2170,7 +2287,7 @@ impl SignalCacheStore {
             store.len(),
             dbs,
             &store_fetch(store),
-            self.serve_deadline(),
+            &self.serve_limit(),
         );
         let caches = self.caches.lock().expect("signal cache mutex poisoned");
         keys.iter()
@@ -3498,6 +3615,200 @@ mod tests {
         assert_eq!(served.series[1].len(), CATCH_UP_CHUNK_FRAMES / 2);
     }
 
+    /// A DBC defining signal `X` on each of `ids` — one plotted signal per
+    /// message, i.e. one catch-up group per message.
+    fn dbc_with_messages(ids: &[u32]) -> Database {
+        use std::fmt::Write as _;
+        let mut text = String::from(DBC_HEADER);
+        for id in ids {
+            write!(
+                text,
+                "\nBO_ {id} Msg{id}: 8 Vector__XXX\n \
+                 SG_ X : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n"
+            )
+            .expect("writing to a String cannot fail");
+        }
+        Database::parse(&text).unwrap()
+    }
+
+    /// The message a synthetic capture's frame `i` carries in the
+    /// many-group fixture below: one **dense** message on every second
+    /// frame, seven **sparse** ones sharing a slot 128 frames apart, and
+    /// traffic nothing plots in between.
+    fn many_group_message_at(i: usize) -> Option<u32> {
+        if i.is_multiple_of(2) {
+            return Some(MANY_GROUP_DENSE_ID);
+        }
+        let slot = (i / 2) % 128;
+        #[allow(clippy::cast_possible_truncation)]
+        (slot < MANY_GROUP_SPARSE).then(|| 512 + slot as u32)
+    }
+
+    const MANY_GROUP_DENSE_ID: u32 = 256;
+    const MANY_GROUP_SPARSE: usize = 7;
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_many_group_batch_converges_on_a_capture_growing_faster_than_a_chunk() {
+        // The lag an operator sees as enum lanes drawn a growing fraction
+        // of the window stale: per-unit mode pulls every enum onto **one**
+        // lanes axis, so that area's serve carries many message groups —
+        // and a serve's budget is one area's.
+        //
+        // The capture grows by more than one [`CATCH_UP_CHUNK_FRAMES`]
+        // chunk between two serves of the area (a fast bus, and the panel's
+        // most expensive area gets the longest idle time between serves).
+        // Whatever the budget buys, it has to buy it for *every* group:
+        // a batch whose groups each advance one chunk per serve loses
+        // `growth − chunk` frames per group per serve, forever.
+        //
+        // Deterministic by construction: the budget is a count of frames
+        // the scan may materialize, which is what the shipping wall-clock
+        // budget is spending, so the arithmetic below is exact and nothing
+        // here depends on how fast the machine decodes.
+        let ids: Vec<u32> = std::iter::once(MANY_GROUP_DENSE_ID)
+            .chain((0..MANY_GROUP_SPARSE).map(|k| 512 + k as u32))
+            .collect();
+        let db = dbc_with_messages(&ids);
+        let dbs: &[&Database] = &[&db];
+        let queries: Vec<CacheQuery<'_>> = ids.iter().map(|id| query_on(*id, "X")).collect();
+        let fetch = |id: u32, _extended: bool, from: usize, to: usize| {
+            (from..to)
+                .filter(|&i| many_group_message_at(i) == Some(id))
+                .map(|i| {
+                    (
+                        i,
+                        dummy(i as u64 * S, id, vec![(i % 251) as u8, 0, 0, 0, 0, 0, 0, 0]),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // One round of the batch materializes one chunk's worth of the
+        // capture: 8192 dense frames plus 64 of each sparse message.
+        let per_round =
+            CATCH_UP_CHUNK_FRAMES / 2 + MANY_GROUP_SPARSE * (CATCH_UP_CHUNK_FRAMES / 256);
+        // A budget of two rounds, against a capture growing by one and a
+        // half chunks per serve — so a batch that shares the budget gains
+        // half a chunk on the tip each serve and a batch that gives each
+        // group one chunk loses half a chunk.
+        let budget = 2 * per_round;
+        let growth = CATCH_UP_CHUNK_FRAMES + CATCH_UP_CHUNK_FRAMES / 2;
+        let mut store_len = 2 * CATCH_UP_CHUNK_FRAMES;
+
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let keys = cache.ensure_caches(&queries);
+        let mut lags = Vec::new();
+        for _ in 0..4 {
+            store_len += growth;
+            cache.catch_up_keys(
+                &keys,
+                store_len,
+                dbs,
+                &fetch,
+                &ServeLimit::Frames(std::cell::Cell::new(budget)),
+            );
+            let cursors: Vec<usize> = keys
+                .iter()
+                .map(|k| with_cache(&cache, k, |c| c.next_index))
+                .collect();
+            assert!(
+                cursors.iter().all(|c| *c == cursors[0]),
+                "the groups advanced by different amounts: {cursors:?}",
+            );
+            lags.push(store_len - cursors.iter().min().unwrap());
+        }
+
+        assert!(
+            lags.windows(2).all(|w| w[1] < w[0]),
+            "the batch is not converging on the tip: {lags:?}",
+        );
+        assert_eq!(
+            lags.last(),
+            Some(&0),
+            "the batch never reached the tip: {lags:?}",
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_straggler_takes_the_budget_the_caught_up_groups_no_longer_need() {
+        // The other half of the rotation: a signal added to a panel whose
+        // other signals have been decoding for a while starts at frame
+        // zero while they sit at the tip. It scans from its own cursor —
+        // the rotation is not a common frontier that would drag them back
+        // — and, because a group that has reached the tip drops out of the
+        // rotation, it gets the whole serve rather than one chunk of it.
+        let ids: [u32; 4] = [256, 512, 513, 514];
+        let db = dbc_with_messages(&[256, 512, 513, 514, 515]);
+        let dbs: &[&Database] = &[&db];
+        let asked = std::cell::RefCell::new(Vec::new());
+        let fetch = |id: u32, _extended: bool, from: usize, to: usize| {
+            asked.borrow_mut().push(id);
+            // Four incumbent messages round-robin over the capture, and
+            // the newcomer's rides the same cadence in the fifth slot.
+            (from..to)
+                .filter(|&i| i % 5 == (id as usize % 5))
+                .map(|i| {
+                    (
+                        i,
+                        dummy(i as u64 * S, id, vec![(i % 251) as u8, 0, 0, 0, 0, 0, 0, 0]),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let store_len = 4 * CATCH_UP_CHUNK_FRAMES;
+        let incumbents: Vec<CacheQuery<'_>> = ids.iter().map(|id| query_on(*id, "X")).collect();
+        let settled = cache.ensure_caches(&incumbents);
+        cache.catch_up_keys(
+            &settled,
+            store_len,
+            dbs,
+            &fetch,
+            &ServeLimit::Deadline(None),
+        );
+
+        // A fifth signal joins the area. One round costs the newcomer its
+        // own fifth of a chunk, and nothing else — so a three-round budget
+        // buys three chunks of *its* history.
+        let per_round = CATCH_UP_CHUNK_FRAMES / 5;
+        asked.borrow_mut().clear();
+        let joined = cache.ensure_caches(&[query_on(515, "X")]);
+        cache.catch_up_keys(
+            &joined
+                .iter()
+                .chain(settled.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
+            store_len,
+            dbs,
+            &fetch,
+            &ServeLimit::Frames(std::cell::Cell::new(3 * per_round)),
+        );
+
+        assert_eq!(
+            with_cache(&cache, &joined[0], |c| c.next_index),
+            3 * CATCH_UP_CHUNK_FRAMES,
+            "the straggler should have had the whole serve, not one chunk of it",
+        );
+        for key in &settled {
+            assert_eq!(
+                with_cache(&cache, key, |c| c.next_index),
+                store_len,
+                "a caught-up group must keep its place",
+            );
+        }
+        assert_eq!(
+            asked.into_inner(),
+            vec![515, 515, 515],
+            "only the group that is behind should be scanned",
+        );
+    }
+
     #[test]
     #[allow(clippy::cast_possible_truncation)]
     fn a_serve_stays_bounded_while_the_capture_is_still_growing() {
@@ -3729,7 +4040,7 @@ mod tests {
         fetch: impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     ) -> Vec<SignalKey> {
         let keys = store.ensure_caches(queries);
-        store.catch_up_keys(&keys, store_len, dbs, &fetch, store.serve_deadline());
+        store.catch_up_keys(&keys, store_len, dbs, &fetch, &store.serve_limit());
         keys
     }
 

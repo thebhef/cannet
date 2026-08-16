@@ -1,6 +1,7 @@
 # ADR 0049 — A serve is bounded; a partial answer is first-class
 
-Status: accepted (2026-08-09)
+Status: accepted (2026-08-09); amended (2026-08-15) — the budget is spent
+in *rounds* across the batch's message groups, not group by group
 
 ## Context
 
@@ -40,10 +41,18 @@ is the whole answer.**
   almost nothing, so a fixed chunk budget would need hundreds of
   round-trips to walk a capture it could scan in seconds. Time
   self-adapts: cheap chunks, many per serve.
-- **Check the deadline between steps, never inside one, and always take
-  at least one step.** A serve overruns its budget by at most one chunk
-  and always advances every cursor it touched, so no series starves —
-  including one listed behind another that spent the budget.
+- **Spend the budget across the batch, not down it.** A serve's step is a
+  *round*: every message group that is still behind the tip scans one
+  chunk, and only between rounds is the budget checked. So a serve
+  overruns by at most a round, always advances every cursor it touched,
+  and — the part a per-group spend got wrong — advances them *equally*.
+  A batch's per-group throughput must not divide by its group count:
+  the frames a round materializes are the frames of that chunk of
+  capture however many groups they are shared between, so a serve
+  carrying sixteen messages walks each as far as a serve carrying one.
+  Spending group by group instead pinned every group after the one that
+  exhausted the budget to a single chunk per serve, which a capture
+  growing faster than a chunk per serve outruns forever.
 - **Carry a completeness token in the response, and make it the only
   evidence of completeness.** A non-empty result never means "finished":
   under ADR 0048 a caller can observe a series mid-rebuild anyway. The
@@ -94,6 +103,17 @@ is the whole answer.**
   and widens as the rebuild advances, exactly as it does while a live
   capture grows. It carries no token of its own: it rides the same
   round-trip as the window that does.
+- An area holding many message groups keeps up with a live capture as
+  well as an area holding one. That is what a per-unit panel needs: its
+  enum lanes all share a single axis, so the lanes area is structurally
+  the one with the most groups on the panel, and it is also the one the
+  panel's pacing leaves longest between serves.
+- A group that has reached the tip leaves the rotation, so the rest of
+  the serve goes to whichever groups are behind — a signal added to an
+  area that is already current gets the whole budget for its backfill
+  rather than a chunk of it.
+- Rounds cost one extra index lookup and lock round-trip per group per
+  round, both `O(log n)` or less beside the chunk's decoding.
 - Every future derived-state serve inherits the rule. A command that
   cannot answer inside its budget answers partially and says so; it does
   not make the caller wait.

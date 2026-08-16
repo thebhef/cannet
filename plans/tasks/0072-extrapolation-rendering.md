@@ -692,18 +692,170 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     Frontend: 162 test files / 2148 tests passed (from 161 / 2117 at
     phase 1); `tsc --noEmit` and `pnpm build` clean.
 
+- **2026-08-15, phase 5 (`task72-p5-batched-catchup`, branched off
+  `task72-p4-extrapolation-rendering`):** the owner's **shape 1** — batch
+  the chunk scan across a serve's groups.
+
+  **Delivered: a serve's budget is spent in _rounds_ across the batch's
+  message groups instead of down the list, so per-group catch-up
+  throughput no longer divides by an area's group count. ADR 0049
+  amended to say so.** Shape 3 (task 77) is untouched and the seam for
+  it is unchanged: the rotation lives entirely inside `catch_up_keys`,
+  which is still the one place a serve catches its caches up.
+
+  - _What the redundancy actually was._ Phase 3's attribution called the
+    per-group passes a re-scan of "the same store rows". Read at the
+    seam, that half is wrong and worth correcting: `fetch` is
+    `TraceStore::matching_frames_indexed`, which jumps through the
+    always-on by-id index, so a group materializes **only its own
+    message's frames** and two groups' fetches over one chunk range are
+    disjoint. There was no duplicated fetching to remove. The defect was
+    entirely in **allocation**: `catch_up_keys` ran group after group,
+    each looping chunks until the shared deadline, so the first group
+    (whose own frames are a fraction of the span, hence cheap per chunk)
+    could run dozens of chunks while every group after the one that
+    exhausted the budget got the guaranteed single chunk — and one chunk
+    per serve is what a capture growing faster than a chunk outruns
+    forever.
+
+  - _The fix (`880eb5f9`)._ The batch is planned once, under one lock
+    hold (`plan_batch`, groups in `(message_id, extended)` order rather
+    than hash order), and then advanced in rounds: every group still
+    behind the tip scans one `CATCH_UP_CHUNK_FRAMES` chunk
+    (`advance_group` — the same plan/scan/apply interleave ADR 0048
+    pins, now one chunk per call), and the budget is checked **between
+    rounds**. Per-group throughput is then independent of group count,
+    because the frames a round materializes are the frames of that chunk
+    of capture however many groups they are split between. The
+    completeness token is untouched and still truthful: it is computed
+    the same way, by comparing each queried cursor with the tip this
+    serve read, and a partial catch-up still reports `complete: false`.
+    Serve time stays bounded — the overrun is one round rather than one
+    chunk, and a round materializes about one chunk's frames.
+
+  - _Straggler policy (pinned by its own test)._ Each group scans from
+    **its own** cursor, so the rotation is not a common frontier: a
+    signal joining an area whose other signals are current does not drag
+    them back, and they do not hold it at the frontier. A group that
+    reaches the tip **drops out of the rotation**, so the rest of the
+    serve flows to whoever is behind —
+    `a_straggler_takes_the_budget_the_caught_up_groups_no_longer_need`
+    asserts the newcomer takes three chunks of a three-round budget
+    (not one), that the caught-up groups keep their place, and that the
+    serve issued fetches for the straggler's message only.
+
+  - _Regression test, written first and watched fail
+    (`a_many_group_batch_converges_on_a_capture_growing_faster_than_a_chunk`)._
+    Phase 3's experiment B in minimal deterministic form: eight message
+    groups on one area (one dense message carrying half the capture,
+    seven sparse ones — the shape a lanes axis has), a capture growing
+    by 1.5 chunks per serve, and a per-serve budget of two rounds. It is
+    deterministic because the budget is expressed in **frames the scan
+    materializes** — the quantity the shipping wall clock is spending —
+    through a test-only `ServeLimit::Frames`; production still builds
+    `ServeLimit::Deadline` off `CATCH_UP_SERVE_BUDGET`, so ADR 0049's
+    "time, not work" reason is intact.
+
+    | serve | tip | cursors before the fix | worst lag | cursors after |
+    | --- | --- | --- | --- | --- |
+    | 1 | 57 344 | 49 152 / 57 344 / 16 384 ×6 | **40 960** | 32 768 (all eight) |
+    | 2 | 81 920 | 81 920 ×5 / 32 768 ×3 | **49 152** | 65 536 (all eight) |
+    | 3 | 106 496 | 106 496 ×8 | 0 | 98 304 (all eight) |
+    | 4 | 131 072 | 131 072 ×8 | 0 | 131 072 (all eight) |
+
+    Before the fix the starved groups advance exactly one chunk (16 384)
+    per serve against 24 576 of growth, so the worst group's lag **grows
+    8 192 per serve** while the budget drains the front of the list one
+    group at a time; the groups sit at four different cursors after the
+    first serve. After it, all eight sit on the same cursor after every
+    serve and the lag falls by exactly `budget − growth` = 8 192 a
+    serve — 24 576 → 16 384 → 8 192 → 0. The test asserts all three:
+    equal cursors, strictly decreasing lag, tip reached.
+
+  - _ADR 0049 amended._ "Check the deadline between steps… always take at
+    least one step" described the per-group spend whose floor was one
+    chunk; it now reads as the round, with the anti-starvation rule
+    stated as the property that was actually violated (a batch's
+    per-group throughput must not divide by its group count) and the
+    consequences for a per-unit panel's lanes axis, for a joining
+    signal, and for the per-round overhead. `catch_up_keys`' rustdoc
+    carries the same in the code, replacing phase 3's correction; the
+    module doc and `slice_many`'s doc say the budget is the serve's, not
+    each message's. Two rotted intra-doc links to a
+    `catch_up_group_chunked` that has not existed for some time are
+    fixed to the function that does the work.
+
+  - _Housekeeping (`feeb998f`)._ `plotEnumLanes.ts` carried a raw NUL as
+    the tile-label cache key separator, which made `grep`, `file` and
+    git treat the file as binary (and skip eol normalization — hence the
+    one-time CRLF→LF churn in that commit; read it with
+    `git show --ignore-cr-at-eol`). Same character, written as an
+    escape.
+
+  - _Screenshot scenario, stale step (`267c3e08`, orchestrator
+    addendum)._ The visual-parity walk aborted at step 02 with `no dock
+    tab "DBC"`. The rename to "Database" is only half of it: a
+    singleton's title is a constant of the build that the app normalizes
+    a restored layout against, so a step that clicks a tab title is a
+    function of the rename history **and** of the project — `ev-demo`'s
+    saved layout carries the Database and Settings panels, `ev-zonal`'s
+    carries neither, so fixing the string alone would have left the walk
+    aborting on the other example. Steps 02 and 03 now use the app's
+    show-or-focus commands (activate when open, add when not), which is
+    the same picture on a project that has them, and the now-unused
+    `tab` helper goes with them. Guarded by
+    `the_scenario_drives_labels_the_frontend_still_defines`: every label
+    the scenario clicks must exist in the frontend source that defines it
+    (`commands.ts` for palette labels, `App.tsx` for toolbar ones) —
+    verified red against the old label. The rest of the scenario's labels
+    were checked against the frontend and are current. Nothing else in
+    the build tied the two sides together, which is how this rotted.
+
+  - _Extrapolation screenshots: **NOT added — recorded as a blocker
+    instead**, per the addendum's bound._ The scenario photographs an
+    **idle** app (no `--connect-on-start`, no frames), and a plot can
+    only show a dashed tail, an interior >10× stall, a one-sample hline
+    or a striped lane if the session holds a capture with those shapes.
+    Getting one in front of the lens needs, in order: a fixture capture
+    carrying a stopped series, a stalled series, a one-sample series and
+    a sparse enum; a DBC defining them; an example project whose
+    per-unit plot area curates them; a way for the harness to import it
+    without a native file dialog; and a deterministic x window. Each
+    step is buildable — the most promising import route is that
+    `handleImportTrace(presetPath)` already takes a path (that is how
+    the toolbar's **Recent** menu opens one) and the recents list is a
+    user-scope setting (`recent_blfs`), i.e. seedable into the profile
+    the capture already owns and seeds `theme` into, after which the
+    step is "click Recent, click the path" the way a user does. What
+    stops it here is verification, not feasibility: none of that chain
+    can be exercised without a `tauri build --no-bundle` of the current
+    tip, which this phase was instructed not to run, and an unverified
+    interactive step **aborts the whole capture run** — which is exactly
+    the failure that was just fixed. Recommended slice for whoever
+    sanctions the build: fixture + example project first (its own
+    reviewable commit, since it also changes what `01-saved-layout`
+    photographs if it lands in an existing project — prefer a project of
+    its own), then the seeded-recents step, verified against a fresh
+    build before it joins the shared scenario.
+
+  - Host: `cargo test -p cannet-gui` 663 passed / 6 ignored (from 661 at
+    phase 4 — the two new tests); `cargo test -p cannet-perf-measurement`
+    40 lib tests passed (from 39 — the new scenario guard); clippy
+    `--all-targets` clean on both; `cargo fmt --check` clean. Frontend
+    untouched by the catch-up commit; 162 test files / 2148 tests passed
+    after the housekeeping one.
+    **This change is on the data path the ADR-0031 gate measures** — the
+    gate is the orchestrator's task-end run, not this phase's.
+
 ## Blockers / side effects
 
-- **The enum leading-edge lag is attributed but NOT fixed** — phase 3
-  stopped at the attribution because the fix is a budget/scheduling
-  decision against ADR 0049's bounded-serve contract, not an
-  investigation-phase edit. The mechanism, the confirming data and
-  three candidate fix shapes (batch the chunk scan across a serve's
-  groups; scale the budget with the group count; move catch-up off the
-  serve path) are in phase 3's status entry. It needs a phase of its
-  own and an owner call on which shape. Until then a per-unit panel
-  with many enum lanes on a fast, long capture draws those lanes a
-  growing fraction of the window stale.
+- ~~**The enum leading-edge lag is attributed but NOT fixed.**~~ **Fixed
+  in phase 5** (`880eb5f9`), by the owner's shape 1: the serve's budget
+  is spent in rounds across the batch's message groups, so an area's
+  per-group catch-up throughput no longer divides by its group count.
+  Shape 3 (background decode progression, task 77) remains the
+  architecturally right answer and is unaffected by this. See phase 5's
+  status entry.
 - ~~**Marker _visibility_ on a lane axis is still governed by uPlot's
   density rule.**~~ **Fixed in phase 4** (`1b8913b6`): a tile axis turns
   uPlot's point layer off and draws its own markers over the tiles, so
@@ -711,14 +863,25 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   by there being one mechanism instead of two competing ones. See phase
   4's status entry.
 - **The screenshot set for owner sign-off was not produced** — the only
-  release binary in the tree predates this phase's feature commits by
-  about ten hours, and photographing it would show the pre-feature
-  rendering. It needs a `tauri build --no-bundle` of the current tip,
-  which phase 4 was instructed not to run. The harness's isolation gap
-  is fixed and tested, so the set is that build plus two `screenshot
-  --theme dark|light` runs. Correctness does not ride on it (the DOM and
-  canvas tests do), but the ruling's "the implementation phase still
-  delivers true renderer screenshots for final sign-off" is outstanding.
+  release binary in the tree predates the feature commits, and
+  photographing it would show the pre-feature rendering. It needs a
+  `tauri build --no-bundle` of the current tip, which neither phase 4 nor
+  phase 5 was allowed to run. The harness's isolation gap is fixed and
+  tested and its stale scenario step is fixed (phase 5, `267c3e08`), so
+  the set is that build plus two `screenshot --theme dark|light` runs.
+  Correctness does not ride on it (the DOM and canvas tests do), but the
+  ruling's "the implementation phase still delivers true renderer
+  screenshots for final sign-off" is outstanding.
+- **The scenario cannot photograph the extrapolation rendering at all**
+  — and this is the larger half of the gap above. The walk runs an idle
+  app, so every plot in it is empty; a dashed tail, an interior >10×
+  stall, a one-sample hline and a striped lane need a capture with those
+  shapes loaded. Phase 5 scoped the work (fixture capture + DBC + an
+  example project curating them, a dialog-free import via seeded
+  `recent_blfs` and the toolbar's Recent menu, a deterministic x window)
+  and stopped there: none of it can be verified without a release build,
+  and an unverified interactive step aborts the whole capture run. See
+  phase 5's status entry for the recommended slice.
 - **`max_points == 0` still run-reduces a categorical window**, where
   the numeric serve of the same request returns the raw slice. Left
   as-is: no plot fetch reaches it (`MIN_DECIMATION_POINTS = 200` is
