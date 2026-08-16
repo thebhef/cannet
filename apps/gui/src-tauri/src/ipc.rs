@@ -607,9 +607,17 @@ pub struct SignalDescriptorRecord {
     pub file_backed: bool,
 }
 
-/// One row of a signal's `VAL_` table — mirrors
+/// One row of a signal's value table — mirrors
 /// [`cannet_dbc::ValueTableEntry`] for the wire.
-#[derive(serde::Serialize, Clone, Debug)]
+///
+/// A DBC signal's rows come from its `VAL_` table; a file-backed
+/// signal's come from the channel's own value-to-text conversion, held
+/// on [`crate::signal_cache::FileSignalInfo`]. Both reach a view as this
+/// record, through the same command, so nothing downstream has to know
+/// which kind of signal it is labelling. `Deserialize` because the
+/// file-backed side is persisted with the pyramid manifest and restored
+/// from it.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ValueTableEntryRecord {
     pub raw: i64,
     pub label: String,

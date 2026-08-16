@@ -33,12 +33,19 @@ pub struct FileSignal {
     /// values below already have it applied, so this is provenance
     /// rather than something to re-apply.
     pub conversion: Option<String>,
+    /// The channel's own value→text table as `(code, label)` pairs, in
+    /// the conversion's order — a coded signal's enumerators, and empty
+    /// for every other channel. A DBC's `VAL_` table plays this part for
+    /// a signal decoded here; for one decoded before the file was
+    /// written, the conversion block is the only place it exists.
+    pub value_table: Vec<(i64, String)>,
     /// Absolute sample times (ns since the UNIX epoch), ascending.
     pub timestamps_ns: Vec<u64>,
     /// Physical values, one per timestamp — with one exception the
     /// channel's own conversion forces: where that conversion maps values
     /// to *text* (a coded signal), the stored code is kept, since the
-    /// series is numeric and the text is its label. A sample whose
+    /// series is numeric and the text is its label — the labels are in
+    /// [`FileSignal::value_table`]. A sample whose
     /// invalidation bit is set, or that has no numeric reading at all
     /// (a genuine text channel), is dropped along with its timestamp
     /// rather than guessed at.
@@ -150,6 +157,7 @@ pub(crate) fn signal_groups(file: &Mdf4File) -> Vec<SignalChannelGroup> {
                     .conversion
                     .as_ref()
                     .map(|c| format!("{:?}", c.conversion_type)),
+                value_table: decode::value_table(file, &channel.block),
                 timestamps_ns,
                 values,
             });

@@ -2651,6 +2651,7 @@ fn file_backed_state() -> AppState {
             group_name: Some("Analog".into()),
             name: name.into(),
             unit: unit.into(),
+            value_table: Vec::new(),
         };
         let points: Vec<(u64, f64)> = (0..10u64)
             .map(|i| {
@@ -2775,6 +2776,124 @@ fn fetch_signal_page_serves_file_backed_rows_marked_by_source() {
             .unwrap();
     assert_eq!(picked.len(), 1);
     assert_eq!(picked[0].signal_name, "EngineSpeed");
+}
+
+/// A capture holding one coded file-backed series: three enumerators
+/// and one sample of each, newest last. `EngineSpeed` rides along on
+/// the same group index a DBC message would use for a different signal,
+/// which is what keeps the two namespaces honest.
+fn coded_file_backed_state() -> AppState {
+    let state = test_state();
+    let ts = 1_700_000_000_000_000_000u64;
+    let table = |rows: &[(i64, &str)]| -> Vec<ipc::ValueTableEntryRecord> {
+        rows.iter()
+            .map(|(raw, label)| ipc::ValueTableEntryRecord {
+                raw: *raw,
+                label: (*label).to_string(),
+            })
+            .collect()
+    };
+    for (name, rows) in [
+        (
+            "CurrentState",
+            table(&[(0, "Startup"), (1, "Idle"), (7, "Fault")]),
+        ),
+        ("AtRest", Vec::new()),
+    ] {
+        let info = signal_cache::FileSignalInfo {
+            source_path: "coded.mf4".into(),
+            group: 4,
+            group_name: Some("BMS".into()),
+            name: name.into(),
+            unit: String::new(),
+            value_table: rows,
+        };
+        let points: Vec<(u64, f64)> = [0.0, 1.0, 7.0]
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (ts + i as u64 * 1_000_000_000, *v))
+            .collect();
+        state.signal_caches.fill_file_backed(&info, &points);
+    }
+    state
+}
+
+/// The labels of a coded file-backed channel are served through the
+/// same command a DBC signal's `VAL_` table goes out on — the frontend
+/// has one value-table path and both kinds of signal reach it.
+#[test]
+fn a_coded_file_backed_signals_table_is_served_like_a_dbc_signals() {
+    let state = coded_file_backed_state();
+    assert_eq!(
+        state
+            .signal_caches
+            .file_signal_value_table(4, "CurrentState"),
+        vec![
+            ipc::ValueTableEntryRecord {
+                raw: 0,
+                label: "Startup".into()
+            },
+            ipc::ValueTableEntryRecord {
+                raw: 1,
+                label: "Idle".into()
+            },
+            ipc::ValueTableEntryRecord {
+                raw: 7,
+                label: "Fault".into()
+            },
+        ],
+    );
+    // A series with no conversion behind it has no table, and neither
+    // has a group/name pair no file-backed series answers to.
+    assert!(state
+        .signal_caches
+        .file_signal_value_table(4, "AtRest")
+        .is_empty());
+    assert!(state
+        .signal_caches
+        .file_signal_value_table(9, "CurrentState")
+        .is_empty());
+}
+
+/// A coded file-backed signal reads as an enum wherever a DBC-backed
+/// one does: the catalog marks it, and the signal view's value column
+/// shows the label beside the code instead of the code alone.
+#[test]
+fn a_coded_file_backed_signal_carries_its_label_into_the_values_views() {
+    let state = coded_file_backed_state();
+    let descriptors: Vec<ipc::SignalDescriptorRecord> = state
+        .signal_caches
+        .file_signals()
+        .into_iter()
+        .map(signal_snapshot::file_backed_descriptor)
+        .collect();
+    assert_eq!(
+        descriptors
+            .iter()
+            .map(|d| (d.signal_name.as_str(), d.is_enum))
+            .collect::<Vec<_>>(),
+        vec![("AtRest", false), ("CurrentState", true)],
+    );
+
+    let sel = SignalSelection {
+        keys: vec![],
+        patterns: vec!["^//BMS/".to_string()],
+    };
+    let rows = signal_snapshot::select_file_backed(&state.signal_caches.file_signals(), &sel, None)
+        .unwrap();
+    let coded = rows
+        .iter()
+        .find(|r| r.signal_name == "CurrentState")
+        .unwrap();
+    assert!(coded.is_enum);
+    assert_eq!(coded.value, Some(7.0), "the newest sample of the series");
+    assert_eq!(
+        coded.label.as_deref(),
+        Some("Fault"),
+        "the code's own label, looked up by the model",
+    );
+    let plain = rows.iter().find(|r| r.signal_name == "AtRest").unwrap();
+    assert!(!plain.is_enum && plain.label.is_none());
 }
 
 /// A view wired to specific buses excludes file-backed signals for the
@@ -3024,6 +3143,86 @@ fn mdf_signal_only_file_imports_through_the_signals_path() {
         capture::signal_origin_ns(&groups, None, None),
         Some(1_709_294_400_000_000_000),
     );
+}
+
+/// Writes a one-signal MF4 into `dir` whose channel carries a
+/// value-to-text conversion — the shape a tool writes a DBC enumeration
+/// as, synthesised here rather than taken from any recording.
+fn coded_signal_mdf(dir: &std::path::Path, table: &[(i64, String)]) -> std::path::PathBuf {
+    let dest = dir.join("coded.mf4");
+    let start_ns = 1_709_294_400_000_000_000u64;
+    let mut writer = cannet_mdf::MdfCaptureWriter::create(
+        &dest,
+        cannet_mdf::MdfCaptureLayout {
+            start_time_ns: start_ns,
+            max_payload_len: 8,
+        },
+    )
+    .unwrap();
+    writer.add_signal(
+        Some("BMS".to_owned()),
+        cannet_mdf::FileSignal {
+            name: "CurrentState".to_owned(),
+            unit: None,
+            conversion: None,
+            value_table: table.to_vec(),
+            timestamps_ns: (0..4u64).map(|i| start_ns + i * 10_000_000).collect(),
+            values: vec![0.0, 1.0, 7.0, 1.0],
+        },
+    );
+    writer.finish().unwrap();
+    dest
+}
+
+/// A coded channel's labels are in the file and nowhere else — the DBC
+/// it was decoded against is the recording tool's. The import has to
+/// carry the table onto the file-backed series, and saving the session
+/// back out has to write it again, or the round trip loses the half of
+/// the signal that says what its codes mean.
+#[test]
+fn mdf_import_carries_a_coded_channels_value_table_onto_the_series() {
+    use cannet_mdf::MdfCanFrameSource;
+
+    let table = vec![
+        (0, "Startup".to_owned()),
+        (1, "Idle".to_owned()),
+        (7, "Fault".to_owned()),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let path = coded_signal_mdf(dir.path(), &table);
+
+    let source = MdfCanFrameSource::open(&path).unwrap();
+    let groups = source.signal_groups();
+    let state = test_state();
+    let (signals, samples) = capture::fill_file_backed_signals(
+        &state.signal_caches,
+        &groups,
+        None,
+        None,
+        &path.to_string_lossy(),
+    );
+    assert_eq!((signals, samples), (1, 4));
+
+    let held = state.signal_caches.file_signals();
+    assert_eq!(held.len(), 1);
+    let pairs = |info: &signal_cache::FileSignalInfo| {
+        info.value_table
+            .iter()
+            .map(|e| (e.raw, e.label.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        pairs(&held[0].info),
+        table,
+        "the enumerators travel with the series",
+    );
+
+    // ... and back out again: a save that dropped them would hand the
+    // next reader codes with nothing to read them by.
+    let dest = dir.path().join("saved.mf4");
+    capture::write_mdf_capture(dest.to_str().unwrap(), &state, &[], &[]).unwrap();
+    let saved = MdfCanFrameSource::open(&dest).unwrap();
+    assert_eq!(saved.signal_groups()[0].signals[0].value_table, table);
 }
 
 /// `write_blf_capture` re-channels each frame by its `bus_id`'s

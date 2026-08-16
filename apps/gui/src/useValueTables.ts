@@ -1,5 +1,5 @@
 /**
- * Shared value-table (`VAL_`) fetch for signal-carrying panels.
+ * Shared value-table fetch for signal-carrying panels.
  *
  * Several panels need a signal's enum labels — the plot panel (enum
  * detection + the side-panel `<label> (<raw>)` readout), the colormap
@@ -9,6 +9,11 @@
  * table, omitting signals the host has no table for. It re-fetches
  * when the signal-list identity changes; callers that build the list
  * inline should `useMemo` it so the effect doesn't re-run every render.
+ *
+ * A DBC-backed signal's table is its `VAL_` rows; a file-backed one's
+ * is the value-to-text conversion its channel carried into the capture.
+ * Both come back through this one fetch, in the same shape, so a panel
+ * labels either kind without knowing which it has.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -24,6 +29,12 @@ export interface ValueTableSignal {
   messageId: number;
   extended: boolean;
   signalName: string;
+  /// Which namespace `messageId` is in: a CAN id for a DBC-backed
+  /// signal, the source file's signal channel group index for a
+  /// file-backed one. The host needs it to know which table to look
+  /// up — a coded MDF channel's labels come from its own conversion,
+  /// not from any DBC.
+  fileBacked?: boolean;
 }
 
 /** Fetch each signal's `VAL_` table, keyed by canonical `signalKey`.
@@ -46,7 +57,7 @@ export function useValueTables(
   const signalsKey = useMemo(
     () =>
       signals
-        .map((s) => signalKey(s.busId, s.messageId, s.extended, s.signalName))
+        .map((s) => signalKey(s.busId, s.messageId, s.extended, s.signalName, s.fileBacked))
         .sort()
         .join("|"),
     [signals],
@@ -64,9 +75,13 @@ export function useValueTables(
             messageId: s.messageId,
             extended: s.extended,
             signalName: s.signalName,
+            fileBacked: s.fileBacked ?? false,
           });
           if (rows.length > 0) {
-            accum.set(signalKey(s.busId, s.messageId, s.extended, s.signalName), rows);
+            accum.set(
+              signalKey(s.busId, s.messageId, s.extended, s.signalName, s.fileBacked),
+              rows,
+            );
           }
         } catch {
           /* signal stays numeric */

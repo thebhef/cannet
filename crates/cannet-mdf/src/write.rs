@@ -56,9 +56,9 @@ use std::path::{Path, PathBuf};
 
 use cannet_core::{CanFrame, CanFramePayload, Direction};
 use mdf4_rs::blocks::{
-    AttachmentBlock, BlockHeader, ChannelBlock, ChannelGroupBlock, DataGroupBlock, DataType,
-    EventBlock, EventCause, EventSyncType, EventType, FileHistoryBlock, HeaderBlock,
-    IdentificationBlock, MetadataBlock, SourceBlock, TextBlock,
+    AttachmentBlock, BlockHeader, ChannelBlock, ChannelGroupBlock, ConversionBlock, ConversionType,
+    DataGroupBlock, DataType, EventBlock, EventCause, EventSyncType, EventType, FileHistoryBlock,
+    HeaderBlock, IdentificationBlock, MetadataBlock, SourceBlock, TextBlock,
 };
 
 use crate::attachments::MdfAttachment;
@@ -519,9 +519,13 @@ impl MdfCaptureWriter {
     /// One directly recorded series as its own channel group: master
     /// seconds at byte 0, the physical value as an `f64` at byte 8.
     ///
-    /// The values go out as they came in — already physical — so the
-    /// channel carries no conversion block. A `cc_type` a source file once
-    /// applied is provenance, not something to re-apply.
+    /// The values go out as they came in — already physical — so a
+    /// numeric conversion is not written back: a `cc_type` a source file
+    /// once applied is provenance, not something to re-apply. A **value
+    /// table** is the exception, because it was never applied to the
+    /// values in the first place: the series is codes and the table says
+    /// what they mean, so a coded signal's channel carries a `cc_type` 7
+    /// block holding it. Dropping it would write out half a signal.
     fn signal_group(
         &self,
         t: &mut Trailer,
@@ -540,8 +544,10 @@ impl MdfCaptureWriter {
             Some(unit) => t.tx(unit),
             None => 0,
         };
+        let conversion_addr = t.value_to_text(&signal.value_table)?;
         let value_cn = ChannelBlock {
             unit_addr,
+            conversion_addr,
             ..channel(name_addr, DataType::FloatLE, 8, 64)
         };
         let value_addr = t.put(&value_cn.to_bytes()?);
@@ -686,6 +692,39 @@ impl Trailer {
             ..channel(self.time_name, DataType::FloatLE, MASTER_OFFSET, 64)
         };
         Ok(self.put(&cn.to_bytes()?))
+    }
+
+    /// A `cc_type` 7 (value-to-text) conversion block holding `table`,
+    /// or `0` for a channel with no table — a channel whose values need
+    /// no conversion links to none.
+    ///
+    /// The links run one `##TX` per entry followed by a NIL default, the
+    /// layout the standard gives `cc_ref` for this type: a code the
+    /// table does not name falls through to the default, and a NIL one
+    /// leaves it unlabelled rather than mislabelled.
+    fn value_to_text(&mut self, table: &[(i64, String)]) -> Result<u64, MdfWriteError> {
+        if table.is_empty() {
+            return Ok(0);
+        }
+        // `cc_ref_count` and `cc_val_count` are 16-bit, so the format
+        // itself caps the table at 65534 entries plus the default. No
+        // enumeration comes near that; a table that somehow did is
+        // written short rather than with counts its links contradict.
+        let table = &table[..table.len().min(usize::from(u16::MAX) - 1)];
+        let mut refs: Vec<u64> = table.iter().map(|(_, label)| self.tx(label)).collect();
+        refs.push(0);
+        #[allow(clippy::cast_precision_loss)]
+        let values: Vec<f64> = table.iter().map(|(code, _)| *code as f64).collect();
+        let counts = |n: usize| u16::try_from(n).expect("the table was capped to fit the counts");
+        let cc = ConversionBlock {
+            conversion_type: ConversionType::ValueToText,
+            ref_count: counts(refs.len()),
+            value_count: counts(values.len()),
+            refs,
+            values,
+            ..ConversionBlock::identity()
+        };
+        Ok(self.put(&cc.to_bytes()?))
     }
 
     fn can_bus_source(&mut self) -> Result<u64, MdfWriteError> {

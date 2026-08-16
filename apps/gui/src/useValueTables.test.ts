@@ -68,6 +68,32 @@ describe("useValueTables", () => {
     expect(result.current).toBe(first);
   });
 
+  it("asks in the signal's own namespace, so a file-backed table is fetched and keyed as one", async () => {
+    // A file-backed signal's `messageId` is its source file's signal
+    // channel group index, not a CAN id; the host needs the flag to
+    // know which of the two it was handed.
+    mockInvoke.mockImplementation(async (_cmd, args) => {
+      const a = args as { fileBacked: boolean };
+      return a.fileBacked ? [{ raw: 0, label: "Startup" }, { raw: 1, label: "Idle" }] : [];
+    });
+    const coded: ValueTableSignal = { ...sig("CurrentState"), busId: null, fileBacked: true };
+    const { result } = renderHook(() => useValueTables([coded, sig("Mode")]));
+    await waitFor(() => expect(result.current.size).toBe(1));
+    expect(result.current.get(signalKey(null, 100, false, "CurrentState", true))).toHaveLength(2);
+    expect(mockInvoke).toHaveBeenCalledWith("list_value_tables", {
+      messageId: 100,
+      extended: false,
+      signalName: "CurrentState",
+      fileBacked: true,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("list_value_tables", {
+      messageId: 100,
+      extended: false,
+      signalName: "Mode",
+      fileBacked: false,
+    });
+  });
+
   it("an empty signal list never invokes and returns an empty map — the gate panels use to skip non-enum signals", async () => {
     const { result } = renderHook(() => useValueTables([]));
     expect(result.current.size).toBe(0);

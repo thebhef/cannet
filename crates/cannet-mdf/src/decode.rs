@@ -5,7 +5,7 @@
 //! from `mdf4-rs`; this module is the adapter that hands it the record and
 //! turns the result into the shape the caller wants.
 
-use mdf4_rs::blocks::ChannelBlock;
+use mdf4_rs::blocks::{ChannelBlock, ConversionBlock, ConversionType};
 use mdf4_rs::parsing::decoder::decode_channel_value_with_validity;
 use mdf4_rs::DecodedValue;
 
@@ -96,9 +96,111 @@ fn numeric_sample(converted: Option<&DecodedValue>, raw: &DecodedValue) -> Optio
         .or_else(|| raw.as_f64())
 }
 
+/// The channel's value→text table as `(code, label)` pairs, in the
+/// conversion's own order — empty for a channel whose conversion labels
+/// nothing.
+///
+/// This is the other half of [`as_signal_f64`]: that keeps the stored
+/// code where the conversion yields text, and this reads the table that
+/// says what each code means. The labels are asked of the conversion
+/// itself rather than read out of its links, so a table whose entries
+/// chain through further blocks resolves exactly as a sample of that
+/// value would.
+pub(crate) fn value_table(file: &Mdf4File, block: &ChannelBlock) -> Vec<(i64, String)> {
+    let Some(conversion) = block.conversion.as_ref() else {
+        return Vec::new();
+    };
+    labelled_codes(conversion)
+        .into_iter()
+        .filter_map(|code| {
+            match block.apply_conversion_value(DecodedValue::SignedInteger(code), file.bytes()) {
+                Ok(DecodedValue::String(label)) => Some((code, label)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The codes a text-table conversion labels one at a time.
+///
+/// `ValueToText` states them directly. `RangeToText` — the shape a tool
+/// writes a DBC enumeration as — states `[min, max]` pairs, and only a
+/// pair that is a single value names a code; a range spanning several
+/// values labels a band rather than a code, and a value table has no way
+/// to say that. Anything else is a numeric conversion with no labels in
+/// it at all.
+// A range is a single value when its two bounds are the *same stored
+// number*, which is what an exact comparison asks: these are the file's
+// own bytes, not the result of arithmetic, so there is no rounding for a
+// tolerance to absorb.
+#[allow(clippy::float_cmp)]
+fn labelled_codes(conversion: &ConversionBlock) -> Vec<i64> {
+    let keys: Vec<f64> = match conversion.conversion_type {
+        ConversionType::ValueToText => conversion.values.clone(),
+        ConversionType::RangeToText => conversion
+            .values
+            .chunks_exact(2)
+            .filter(|range| range[0] == range[1])
+            .map(|range| range[0])
+            .collect(),
+        _ => return Vec::new(),
+    };
+    keys.into_iter().filter_map(exact_code).collect()
+}
+
+/// A key read as the integer code it is, or `None` when it is not one —
+/// a code is what a coded signal stores, and nothing else can be one.
+fn exact_code(key: f64) -> Option<i64> {
+    #[allow(clippy::cast_possible_truncation)]
+    (key.fract() == 0.0 && key.abs() < 9.0e15).then_some(key as i64)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{numeric_sample, DecodedValue};
+    use super::{labelled_codes, numeric_sample, ConversionBlock, ConversionType, DecodedValue};
+
+    fn conversion(conversion_type: ConversionType, values: Vec<f64>) -> ConversionBlock {
+        ConversionBlock {
+            conversion_type,
+            values,
+            ..ConversionBlock::identity()
+        }
+    }
+
+    #[test]
+    fn a_value_to_text_conversion_labels_each_of_its_values() {
+        let cc = conversion(ConversionType::ValueToText, vec![0.0, 1.0, 7.0]);
+        assert_eq!(labelled_codes(&cc), vec![0, 1, 7]);
+    }
+
+    #[test]
+    fn a_range_to_text_conversion_labels_the_ranges_that_are_single_values() {
+        // The shape a DBC enumeration takes on the way into MDF: one
+        // `[code, code]` range per enumerator.
+        let cc = conversion(
+            ConversionType::RangeToText,
+            vec![0.0, 0.0, 1.0, 1.0, -2.0, -2.0],
+        );
+        assert_eq!(labelled_codes(&cc), vec![0, 1, -2]);
+    }
+
+    #[test]
+    fn a_range_spanning_more_than_one_value_has_no_single_code_to_label() {
+        let cc = conversion(ConversionType::RangeToText, vec![0.0, 0.0, 1.0, 10.0]);
+        assert_eq!(labelled_codes(&cc), vec![0]);
+    }
+
+    #[test]
+    fn a_fractional_key_is_not_a_code() {
+        let cc = conversion(ConversionType::ValueToText, vec![0.5, 2.0]);
+        assert_eq!(labelled_codes(&cc), vec![2]);
+    }
+
+    #[test]
+    fn a_numeric_conversion_labels_nothing() {
+        let cc = conversion(ConversionType::Linear, vec![0.0, 0.1]);
+        assert!(labelled_codes(&cc).is_empty());
+    }
 
     #[test]
     fn a_numeric_conversion_wins_over_the_stored_code() {

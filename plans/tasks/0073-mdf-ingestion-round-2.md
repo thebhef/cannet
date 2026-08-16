@@ -29,6 +29,24 @@ pick during grooming/implementation. Whatever carries the labels must
 survive the paged serve — the lane renderer gets labels the same way
 it does for DBC-backed enums.
 
+**Grooming ruling (2026-08-15): the value table lives on the
+file-backed signal model.** `FileSignal` gains a value table read from
+the MDF conversion block, and the host serves it the way it serves a
+DBC signal's table — the lane renderer's label path is already
+generic over `(raw, label)` tables, so labels reach lanes and values
+views through the existing plumbing. Rejected: synthesizing database
+entries (fabricates entries with false provenance in the Database
+panel, entangles bus-scoping and DBC management with signals that are
+in no DBC).
+
+**Owner amendment (2026-08-15):** name-matching a file-backed signal
+against a loaded DBC is **not** rejected — it is **later scope**,
+deferred until the DBC can be gotten out of the MDF itself (its
+embedded/external attachments). As things stand it fails exactly when
+the recording tool's DBC is not in the project, so it is not the
+mechanism this phase builds; the value table on the file-backed signal
+model is.
+
 ## Test data
 
 The owner's example capture files stay out of the repository — in
@@ -127,6 +145,112 @@ build` clean.
   session origin intact. Nothing derived from the owner's files was
   written into the repository, and no file of theirs is named here.
 
+### 2026-08-15 — §2 decoded enum channels carry their value labels
+
+Branch `task73-p2-enum-labels`, off `task73-p1-signal-only-mf4`.
+
+**`2b25f6e0` `docs(task73): record the label-mechanism ruling`** — the
+working tree's pending §2 grooming ruling, committed verbatim as the
+branch's opening commit.
+
+**`083807eb` `docs(task73): record the owner amendment deferring DBC
+name-matching`** — the owner's 2026-08-15 amendment: name-matching a
+file-backed signal against a loaded DBC is later scope (it waits on
+getting the DBC out of the MDF's own attachments), not a rejected
+alternative. Synthesising database entries stays rejected; the
+mechanism this phase builds is unchanged.
+
+**`a5c44f43` `feat(mdf): a coded channel keeps the table that labels its
+codes`** — the read/write half, in `cannet-mdf` and the host model.
+`FileSignal` gained `value_table: Vec<(i64, String)>`, filled from the
+channel's conversion block. The labels are asked of the conversion
+itself (`apply_conversion_value` per code) rather than read out of its
+`cc_ref` links, so an entry chaining through further blocks resolves
+exactly as a sample of that value would. Both text-table types are
+read: `ValueToText` states its codes directly, and `RangeToText` — the
+shape the sampled files use — contributes each range whose bounds are
+the same single value. The table then rides `FileSignalInfo`
+(`serde(default)`, so an older pyramid manifest still restores) and is
+written back out on save: `MdfCaptureWriter` emits a `cc_type` 7 block
+per coded channel. That last part is not scope creep but the crate's
+own invariant — its rustdoc promises what it writes it reads back field
+for field, so a new field on `FileSignal` with no writer support would
+break it.
+
+Tests: `cannet-mdf` 41 → 47 (five unit tests over the pure
+code-extraction rule and one writer round-trip, all written first and
+watched fail); `cannet-gui` 665 → 666
+(`mdf_import_carries_a_coded_channels_value_table_onto_the_series`,
+which builds a coded MF4 in-test, imports it and saves it back out).
+
+**`805a7397` `feat(gui): an imported enum labels its values like a DBC
+enum does`** — the serve half. `list_value_tables` — the one command
+every value-table consumer goes through — took a `file_backed` flag
+saying which namespace its `message_id` is in; a DBC-backed request is
+unchanged, a file-backed one is answered from
+`SignalCacheStore::file_signal_value_table`. `useValueTables` passes the
+flag and keys its map with it, which is all the frontend needed: the
+map key is `signalKey(…, fileBacked)`, byte-for-byte what
+`signalRefKey` produces, so the plot's enum detection, symbolic axis,
+lane tiles and side-panel readout reach an imported enum through the
+plumbing they already had. No second label path was added.
+`file_backed_descriptor` and `select_file_backed` stopped hard-coding
+`is_enum: false` / `label: None`: the enum verdict is the table's size
+(the rule `cannet_dbc::is_enum` applies) and the newest sample's label
+is looked up host-side, both in the model rather than in JS.
+
+Tests: `cannet-gui` 666 → 668
+(`a_coded_file_backed_signals_table_is_served_like_a_dbc_signals`,
+`a_coded_file_backed_signal_carries_its_label_into_the_values_views`);
+frontend 2198 → 2199 across 163 files (`useValueTables` asks in the
+signal's own namespace and keys by it — written first, watched fail on
+the map coming back empty). README's MDF section, which stopped at
+"the code is what lands in the series", now says where the table shows
+up and that a save keeps it. Both crates clippy-clean with
+`--all-targets`, `cargo fmt --check` clean, `pnpm --dir apps/gui build`
+clean.
+
+#### End-to-end verification against the owner's example files
+
+- *Observation.* A probe over three of the sampled files (built, run
+  and deleted — never committed) reports the same shape in each: 60-61
+  signal groups, 171-172 signals, 139 of them per-message decoded, and
+  **68 channels carrying a value-to-text conversion, every one of them
+  `RangeToText`** with degenerate `[code, code]` ranges. Before this
+  change all 68 tables were dropped at the seam.
+- *Data.* Of the 68, **38 are enumerations** (two or more
+  enumerators — 2, 6, 7 and 9 entries; the largest is a nine-state
+  machine) and all 38 are in per-message decoded groups. The task's
+  "~39 decoded enum channels" was this set.
+- *A shape the phase did not anticipate.* The other **30 are
+  single-entry sentinel tables** on otherwise numeric channels — one
+  code meaning "Invalid"/"Not Configured" with a default conversion
+  behind it for every other value (`32767`, `65535`, `4294967295`).
+  Hypothesis: these would wrongly flip a voltage or temperature channel
+  into enum rendering. Experiment: traced the gates. Data:
+  `is_enum`/`isEnumValueTable`/`enumMode`/the lane-axis membership set
+  and the colormap rule builder all require **two or more** entries —
+  the same rule `cannet_dbc::is_enum` has always applied to a `VAL_`
+  table — so a one-entry table labels its sentinel where it occurs and
+  changes nothing else. Conclusion: refuted; no special case needed,
+  and the rule earns its keep on real data rather than only on DBCs.
+- *Experiment (host serve).* A throwaway `#[ignore]` test in
+  `cannet-gui` (run, then removed) ran one sampled file through the
+  real import and serve path: `signal_groups` →
+  `fill_file_backed_signals` → `file_signals` →
+  `file_backed_descriptor` / `select_file_backed` /
+  `file_signal_value_table`.
+- *Data.* 172 file-backed signals over 44,214 samples; **38
+  descriptors marked as enums**; 38 of the served signal rows read
+  `is_enum` with a label on each, plus one more labelled row where a
+  sentinel channel's newest sample happened to *be* the sentinel.
+  Example rows: a nine-state machine reading `Fault` at code 7, and
+  three two-state interlocks reading `Connected`/`Disconnected`.
+- *Conclusion.* The labels come out of the real files, through the
+  model, and onto the served records that the lane renderer and the
+  values views read. Nothing derived from the owner's files was written
+  into the repository, and no file of theirs is named here.
+
 ## Blockers / side effects
 
 - **The exit criterion's "verified end-to-end against the owner's
@@ -147,3 +271,22 @@ build` clean.
   always whole-file even though `import_mdf` would honour a range on
   the signal fill. Out of §1's scope (which is the rejection and the
   contents checkboxes), recorded rather than fixed.
+- **§2's rendering change was not verified visually.** The phase
+  changes what an imported enum lane draws (labels instead of codes),
+  and the sanctioned screenshot harness has one committed scenario,
+  built on the extrapolation fixture, whose enums are DBC-backed —
+  there is no file-backed enum in it to photograph, and adding a
+  scenario for this alone would be scope creep. What *was* verified:
+  the labels arrive on the served records for the owner's real files
+  (status log above), and the frontend join is pinned at both ends —
+  `useValueTables` keys a file-backed table by
+  `signalKey(…, fileBacked)` and `signalRefKey`, the key the lane
+  renderer looks tables up by, produces the same string. What was
+  **not** verified is a rendered lane tile carrying a file-backed
+  label. An eyeball pass would close it.
+- **A file-backed signal's value table is not bus-scoped, and neither
+  is a DBC signal's.** `list_value_tables` takes no `bus_id` on either
+  branch, so two buses whose DBCs define the same
+  `(message_id, signal_name)` still share whichever table the first
+  loaded DBC answers with — pre-existing, unchanged here, and noted
+  only because the file-backed branch was added beside it.
