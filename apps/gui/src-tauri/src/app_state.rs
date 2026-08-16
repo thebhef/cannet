@@ -307,65 +307,35 @@ pub(crate) fn invalidate_derived_caches(state: &AppState) {
     refresh_mux_extractor(state);
 }
 
-/// The key the current model would reuse a persisted signal-pyramid set
-/// against (ADR 0047), or `None` when the scratch holds no identified
-/// capture — nothing is persisted or restored then, because there is
-/// nothing to prove the samples belong to.
+/// The **whole-set** gates the current model would reuse a persisted
+/// signal-pyramid set against (ADR 0047), or `None` when the scratch holds
+/// no identified capture — nothing is persisted or restored then, because
+/// there is nothing to prove the samples belong to.
 ///
-/// The three locks are taken one at a time and released, so this adds no
-/// edge to the documented lock order.
+/// What each signal was decoded *with* is judged per signal, against the
+/// fingerprints the manifest carries ([`crate::signal_fingerprint`]), so
+/// no DBC state is read here.
 pub(crate) fn pyramid_validity(state: &AppState) -> Option<crate::signal_cache::PyramidValidity> {
     let capture_id = state.trace_store.scratch_capture_id()?;
-    let dbcs = dbc_fingerprint(&state.databases());
     let (low_water, _) = state.trace_store.low_water();
     Some(crate::signal_cache::PyramidValidity {
         capture_id: capture_id.to_string(),
-        dbcs,
         low_water: low_water as u64,
     })
 }
 
-/// Fingerprint the loaded DBC set as it bears on decoding: each database's
-/// path and bus scoping **in load order** (the order is the "first DBC that
-/// decodes wins" priority, so it changes what a signal decodes to), plus
-/// each file's size and modification time — a DBC edited between two
-/// sessions parses to a different database under the same path, and only
-/// the file's own metadata can see that from here.
-///
-/// A file that cannot be stat'd contributes a marker that no readable file
-/// produces, so a DBC that has gone missing since it was loaded fingerprints
-/// differently from one that is there.
-pub(crate) fn dbc_fingerprint(dbcs: &[LoadedDbc]) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut mix = |bytes: &[u8]| {
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    };
-    for d in dbcs {
-        mix(d.path.as_bytes());
-        mix(&[0]);
-        for bus in &d.buses {
-            mix(bus.as_bytes());
-            mix(&[0]);
-        }
-        mix(&[1]);
-        match std::fs::metadata(&d.path) {
-            Ok(m) => {
-                mix(&m.len().to_le_bytes());
-                let mtime = m
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_nanos());
-                mix(&mtime.to_le_bytes());
-            }
-            Err(_) => mix(b"<unreadable>"),
-        }
-        mix(&[2]);
-    }
-    format!("{h:016x}")
+/// The loaded set as the per-signal fingerprints see it: each database
+/// with the buses it is scoped to, **in load order** (the order is the
+/// "first DBC that decodes wins" priority, so it is part of what a signal
+/// decodes to). Borrowed from the guard the caller holds, so the set
+/// cannot move under the fingerprints taken from it.
+pub(crate) fn dbc_scopes(dbcs: &[LoadedDbc]) -> Vec<crate::signal_fingerprint::DbcScope<'_>> {
+    dbcs.iter()
+        .map(|d| crate::signal_fingerprint::DbcScope {
+            db: d.db.as_ref(),
+            buses: &d.buses,
+        })
+        .collect()
 }
 
 /// (Re)install the trace store's multiplexor-selector extractor from

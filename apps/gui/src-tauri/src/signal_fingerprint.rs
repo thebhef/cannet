@@ -261,7 +261,7 @@ pub fn file_source(info: &FileSignalInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_state::{dbc_fingerprint, LoadedDbc};
+    use crate::app_state::LoadedDbc;
     use crate::signal_cache::FileSignalInfo;
     use crate::signal_sampler;
     use crate::trace_store::RawTraceFrame;
@@ -489,18 +489,19 @@ mod tests {
     fn a_touched_but_unchanged_dbc_moves_no_signals_fingerprint() {
         // The case the whole task exists for: a copy, a checkout or a
         // backup tool rewrites a DBC's modification time without
-        // changing a byte of it.
+        // changing a byte of it. The whole-set stamp this replaced could
+        // not tell that from an edit, and discarded every pyramid for it.
+        // A fingerprint over the parsed model cannot see it at all.
         let dir = std::env::temp_dir().join(format!("cannet-fp-touch-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("a.dbc");
         let text = message(&[PLAIN]);
         std::fs::write(&path, &text).unwrap();
-        let loaded = vec![LoadedDbc {
+        let loaded = [LoadedDbc {
             path: path.to_string_lossy().into_owned(),
             db: Arc::new(parse(&text)),
             buses: Vec::new(),
         }];
-        let before_global = dbc_fingerprint(&loaded);
         let before_signal = dbc_encoding(
             &[scope(&loaded[0].db, &loaded[0].buses)],
             None,
@@ -509,19 +510,19 @@ mod tests {
             "S",
         );
 
-        let touched = std::time::SystemTime::now() + std::time::Duration::from_hours(1);
+        let before_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let touched = before_mtime + std::time::Duration::from_hours(1);
         std::fs::File::options()
             .write(true)
             .open(&path)
             .unwrap()
             .set_modified(touched)
             .unwrap();
-
-        assert_ne!(
-            before_global,
-            dbc_fingerprint(&loaded),
-            "the whole-set stamp cannot tell a touch from an edit"
+        assert!(
+            std::fs::metadata(&path).unwrap().modified().unwrap() > before_mtime,
+            "the fixture really did touch the file"
         );
+
         assert_eq!(
             before_signal,
             dbc_encoding(
