@@ -42,14 +42,12 @@ const knobs = {
 /// singleton rather than an element-backed one: element-backed tab
 /// titles are re-synced from the model name (ADR 0019), so a marker
 /// title would not survive on one.
-function layoutWithTab(title: string): unknown {
+function layoutWithTab(title: string, id = "p1"): unknown {
   return {
     grid: {
       root: {
         type: "branch",
-        data: [
-          { type: "leaf", data: { views: ["p1"], activeView: "p1", id: "1" }, size: 100 },
-        ],
+        data: [{ type: "leaf", data: { views: [id], activeView: id, id: "1" }, size: 100 }],
         size: 100,
       },
       width: 100,
@@ -57,8 +55,8 @@ function layoutWithTab(title: string): unknown {
       orientation: "HORIZONTAL",
     },
     panels: {
-      p1: {
-        id: "p1",
+      [id]: {
+        id,
         contentComponent: "shortcuts",
         tabComponent: "props.defaultTabComponent",
         title,
@@ -293,6 +291,27 @@ describe("boot layout restore", () => {
     await boot();
     expect(openProjectCalls).toEqual(["C:/fake/last.cannet_prj"]);
     expect(tabTitles()).toContain("Project Layout");
+  });
+
+  it("heals a singleton's stale tab title on both restore paths", async () => {
+    // A singleton panel's title is code-defined, not state — so a
+    // workspace saved before the panel was renamed must come back
+    // wearing the current name, not the one in the blob. The stand-in
+    // here is the shortcuts panel (a singleton with an inert mount);
+    // `dockLayout.dom.test.ts` covers the retitle itself, on the panel
+    // that was actually renamed.
+    knobs.savedLayout = layoutWithTab("Shortcut Keys", "shortcuts");
+    knobs.projectLayout = null;
+    await hydrateState();
+    await boot();
+    expect(tabTitles()).toEqual(["Keyboard shortcuts"]);
+
+    cleanup();
+    knobs.savedLayout = null;
+    knobs.projectLayout = layoutWithTab("Shortcut Keys", "shortcuts");
+    await hydrateState();
+    await boot();
+    expect(tabTitles()).toEqual(["Keyboard shortcuts"]);
   });
 
   it("persists the layout once a project is open", async () => {

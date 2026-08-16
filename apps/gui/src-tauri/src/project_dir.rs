@@ -536,6 +536,31 @@ mod tests {
     }
 
     #[test]
+    fn leaving_a_project_lands_on_the_unsaved_directory_not_the_projects() {
+        // What closing a project re-roots onto (ADR 0042 §1/§7): an
+        // unsaved project is a project in a directory cannet chose, and
+        // it has a workspace scope of its own — so what the session
+        // records from here on (recent captures, the layout snapshot,
+        // channel maps) stops landing in the project just left.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_root = tmp.path().join("cache-root");
+        let file = tmp.path().join("job/a.cannet_prj");
+        let project = create_at(&tmp.path().join("job"), &cache_root);
+        std::fs::write(&file, "{}").unwrap();
+        assert_eq!(
+            resolve(Some(&file), &cache_root),
+            project,
+            "the project it leaves"
+        );
+
+        let unsaved = resolve(None, &cache_root);
+
+        assert!(unsaved.is_auto_located());
+        assert_ne!(unsaved.workspace_dir(), project.workspace_dir());
+        assert_ne!(unsaved.cache_dir(), project.cache_dir());
+    }
+
+    #[test]
     fn reopening_the_same_project_file_lands_on_the_same_directory_and_cache() {
         // What makes a capture survive: the same project resolves to the
         // same cache directory every time.

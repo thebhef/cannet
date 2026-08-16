@@ -90,6 +90,51 @@ export const SHORTCUTS_PANEL_ID = "shortcuts";
 /// is one instance and it is opened from the command palette.
 export const SERVERS_PANEL_ID = "servers";
 
+/// The tab title of every singleton panel, keyed by its fixed dockview
+/// id. A singleton's title is code-defined — it carries no model-owned
+/// name the way an element-backed panel does (ADR 0019) and cannot be
+/// renamed — so this table is the only place any of them is spelled,
+/// and it is what a restored layout is normalized against
+/// (see [`normalizeSingletonTitles`]).
+export const SINGLETON_PANEL_TITLES: Readonly<Record<string, string>> = {
+  [PROJECT_PANEL_ID]: "Project",
+  [PROJECT_GRAPH_PANEL_ID]: "Graph",
+  [SYSTEM_MESSAGES_PANEL_ID]: "System messages",
+  [DBC_PANEL_ID]: "Database",
+  [SETTINGS_PANEL_ID]: "Settings",
+  [ABOUT_PANEL_ID]: "About",
+  [EVENTS_PANEL_ID]: "Events",
+  [SHORTCUTS_PANEL_ID]: "Keyboard shortcuts",
+  [SERVERS_PANEL_ID]: "Servers",
+};
+
+/**
+ * Retitle every singleton panel in a serialized layout to its current
+ * code-defined title, leaving every other panel untouched.
+ *
+ * Dockview titles a restored panel from the blob, so a workspace saved
+ * before a panel was renamed keeps showing the old name on its tab
+ * forever. A singleton's title is not state — it is a constant of the
+ * build — so restoring one from persisted data is wrong on its face;
+ * every restore path runs the saved layout through here and existing
+ * workspaces heal on their next open. Element-backed titles are the
+ * opposite case (a model-owned name, ADR 0019) and are left alone.
+ */
+export function normalizeSingletonTitles(layout: SerializedDockview): SerializedDockview {
+  let changed = false;
+  const panels: SerializedDockview["panels"] = {};
+  for (const [id, panel] of Object.entries(layout.panels ?? {})) {
+    const title = SINGLETON_PANEL_TITLES[id];
+    if (title !== undefined && panel.title !== title) {
+      panels[id] = { ...panel, title };
+      changed = true;
+    } else {
+      panels[id] = panel;
+    }
+  }
+  return changed ? { ...layout, panels } : layout;
+}
+
 /// Show-or-focus the Servers panel: bring the one instance forward if
 /// it is open, otherwise add it. One implementation for both ways in —
 /// the `panel.show.servers` command and the bus row's "Manage

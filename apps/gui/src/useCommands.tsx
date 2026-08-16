@@ -696,18 +696,23 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   // color map), not just the ones currently on screen. Labels are the
   // model-owned element names (ADR 0019), same as the tabs.
   const gotoViews = useMemo(() => {
-    const views: { id: string; label: string; open: () => void }[] = [];
+    const views: { id: string; label: string; keywords?: string; open: () => void }[] = [];
     for (const entry of registry) {
       // Element views keyed exactly as `gotoViews`'s openers expect
       // (`elementViewEntries` filters out panel-less kinds like `filter`).
       const [view] = elementViewEntries([entry.element]);
       if (view) views.push({ ...view, open: () => openElementView(entry.element) });
     }
-    const singleton = (id: string, label: string, open: () => void) =>
-      views.push({ id, label, open });
+    // `keywords` are folded into the palette's fuzzy-match text without
+    // being displayed — a view renamed since the user learned it stays
+    // findable by the old name, exactly as a renamed *command* does.
+    const singleton = (id: string, label: string, open: () => void, keywords?: string) =>
+      views.push({ id, label, keywords, open });
     singleton(PROJECT_PANEL_ID, "Project", showProjectPanel);
     singleton(PROJECT_GRAPH_PANEL_ID, "Graph", showProjectGraphPanel);
-    singleton(DBC_PANEL_ID, "Database", showDbcPanel);
+    // It was the "DBC panel" before it grew every other signal-defining
+    // format (ADR 0052).
+    singleton(DBC_PANEL_ID, "Database", showDbcPanel, "DBC panel");
     singleton(SYSTEM_MESSAGES_PANEL_ID, "System messages", showSystemMessagesPanel);
     singleton(SETTINGS_PANEL_ID, "Settings", showSettingsPanel);
     singleton(ABOUT_PANEL_ID, "About", showAboutPanel);
@@ -730,7 +735,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   ]);
   const gotoPaletteItems: PaletteItem[] = useMemo(() => {
     if (openPalette !== "goto") return [];
-    return gotoViews.map((v) => ({ id: v.id, label: v.label }));
+    return gotoViews.map((v) => ({ id: v.id, label: v.label, keywords: v.keywords }));
   }, [openPalette, gotoViews]);
   // Go-to-event palette: every timeline event by label, hinted with its
   // time relative to the session start. Selecting one broadcasts the same
