@@ -23,6 +23,10 @@ jobs:
   rust:
     name: Rust (test + clippy)
     runs-on: ubuntu-latest
+    # A wedged test run fails here, with logs, instead of idling out the
+    # 6-hour default. Green runs take 2-7 minutes (observed across cache
+    # states); 20 is ~3x the worst of those.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -43,7 +47,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: cargo test --workspace
+      # The workspace's tests manage real process trees (the sidecar
+      # supervisor kills process groups), so the suite runs under its own
+      # session: a stray group-directed signal stops at this boundary —
+      # the step fails and keeps its logs — instead of reaching the
+      # runner agent, which loses the job *and* the logs that would have
+      # explained it.
+      - run: setsid --wait cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   mdf-export-oracle:

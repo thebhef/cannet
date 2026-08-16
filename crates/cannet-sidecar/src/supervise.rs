@@ -639,7 +639,7 @@ mod tests {
             // before the announcement so a test that has seen "ready"
             // knows the whole tree is up.
             "ignore-eof" => {
-                fake_sidecar_command("leaf")
+                fake_descendant_command("leaf")
                     .stdin(Stdio::null())
                     .spawn()
                     .expect("the stand-in sidecar must be able to start its own child");
@@ -673,6 +673,19 @@ mod tests {
     /// only valid for a child that went out through
     /// [`crate::process_tree::spawn_as_group_leader`].
     fn fake_sidecar_command(mode: &str) -> Command {
+        let mut cmd = fake_descendant_command(mode);
+        crate::process_tree::spawn_as_group_leader(&mut cmd);
+        cmd
+    }
+
+    /// The same re-exec with no group of its own — how every
+    /// *descendant* of a real sidecar comes into being. On Unix,
+    /// [`crate::process_tree::kill_tree`] reaches exactly the processes
+    /// still in the sidecar's group, so a stand-in descendant made a
+    /// group leader would escape the very kill the tree tests exist to
+    /// observe, and the test would wait forever on the pipe the escapee
+    /// still holds.
+    fn fake_descendant_command(mode: &str) -> Command {
         let mut cmd = Command::new(std::env::current_exe().expect("this test binary's own path"));
         // libtest names a test by its module path minus the crate.
         let module = module_path!()
@@ -681,7 +694,6 @@ mod tests {
         cmd.arg(format!("{module}::fake_sidecar_process"))
             .args(["--exact", "--nocapture"])
             .env(FAKE_SIDECAR_MODE, mode);
-        crate::process_tree::spawn_as_group_leader(&mut cmd);
         cmd
     }
 

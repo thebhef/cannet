@@ -830,7 +830,70 @@ describe("PlotPanel", () => {
       await act(async () => {
         growTrace(30);
       });
-      expect(sampleCalls()).toBeGreaterThan(before);
+      // Polled, not asserted synchronously: when the window change lands
+      // while a fetch is still on the wire, the trigger hits the resample
+      // busy-guard and the follow-up fetch arrives only after the
+      // in-flight one completes. A synchronous read here raced that on
+      // loaded CI runners. The mid-flight interleaving itself is pinned
+      // deterministically by the next test.
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(before));
+    });
+  });
+
+  it("a stopped plot's window change survives landing mid-fetch", async () => {
+    // The timing hole behind the test above's CI flake, pinned
+    // deterministically: the window moves while a fetch is still on the
+    // wire, so the `winEnd` trigger fires into the resample busy-guard.
+    // A stopped panel has no loop behind it — the contract is that the
+    // change is still served afterward, with the window as it stands
+    // now, not silently dropped leaving the stale slice on screen.
+    await withSizedCanvas(async () => {
+      const registry = makeRegistry({
+        id: "el-stopped",
+        trace: { start: 0, end: 60, isPaused: false },
+      });
+      const { growTrace } = renderPanel({ params: { elementId: "el-stopped" }, registry });
+      addFocusedSignal("EngineSpeed");
+      // Reach quiescence first: the mount fetch and the restored trace's
+      // one-shot full-span fit both land, so neither can supply the
+      // follow-up fetch below and mask a dropped trigger.
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const before = sampleCalls();
+
+      // First window change fetches — and the fetch stalls on the wire.
+      mockSampleStall.on = true;
+      await act(async () => {
+        growTrace(45);
+      });
+      await waitFor(() => expect(sampleCalls()).toBe(before + 1));
+
+      // Second window change lands while it is still in flight (a Clear
+      // racing a slow serve): the trigger fires into the busy-guard.
+      await act(async () => {
+        growTrace(30);
+      });
+
+      // Land the stalled fetch. The trigger already fired into the
+      // guard; what must follow is a fresh fetch for the newest window,
+      // from the panel's own completion path.
+      mockSampleStall.on = false;
+      await act(async () => {
+        for (const resolve of mockSampleStall.pending.splice(0))
+          resolve(encodeSample([{ t: [0, 1, 2], v: [10, 20, 15] }]));
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(before + 1));
+      // Counting fetches is not enough: the panel must have asked for
+      // the window as it stands *now*, not the one the stalled fetch
+      // was serving.
+      const lastWindowEnd = () => {
+        const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === "sample_signals");
+        return (calls[calls.length - 1]?.[1] as { windowEnd?: number })?.windowEnd;
+      };
+      await waitFor(() => expect(lastWindowEnd()).toBe(30));
     });
   });
 
