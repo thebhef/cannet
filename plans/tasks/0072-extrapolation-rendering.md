@@ -225,6 +225,124 @@ guard.
     test files / 2117 tests passed; `tsc --noEmit` and `pnpm build`
     clean.
 
+- **2026-08-15, phase 2 (`task72-p2-scroll-disconnect`, branched off
+  `task71-p2-median-gating`):** §4, the scroll-after-disconnect
+  regression.
+
+  **Verdict: the original guard was never deleted — it was widened.**
+  `24803ea8` (PR #120) froze the follow-live clock when the data edge
+  stopped ("the clock holds when the data stops rather than
+  extrapolating past a dead stream"), and its regression test was named
+  for this exact case. `c6b7ab3b` (PR #123) replaced the freeze with a
+  `maxLagSeconds` prediction ceiling — for a real reason — and relaxed
+  that test in the same commit to permit the coast the ceiling allows.
+  The test has passed ever since while the live surface disagreed with
+  what the owner remembers being fixed. Fixed at the ceiling
+  (`17b24533`).
+
+  - _Observation (raw)._ Owner: "the plot panel continues scrolling
+    after disconnect. I _know_ we bugfixed that one at some point and
+    I'm guessing something got deleted." Reproduced on the ~18:40 build
+    carrying the full task-70 chain.
+
+  - _History (pickaxe, per the task's lead)._ `git log --follow` over
+    `followWindow.ts` gives five commits. `git log -S "followLive &&
+    running"` / `-S "runningRef"` surface `81178fbf` (PR #63) — "only
+    slide the trailing x-window while running" — which is a *stopped
+    trace* guard, still intact, and not this. The disconnect guard is in
+    `24803ea8`, whose `advanceLiveEdge` carried, verbatim:
+
+    > Advancing here is what made a disconnected trace keep sliding —
+    > the clock gained elapsed time each update while the pull only
+    > clawed back a fraction, so the window crept to equilibrium
+    > instead of stopping.
+
+    with `if (ext === edge.lastExt) return { ...edge, wallMs: nowMs };`
+    — a hard freeze — and the test `"stops dead when the data edge
+    stops"` ("Disconnect with the trace still running… the window must
+    not move at all"). `git diff 24803ea8 c6b7ab3b` over the test file
+    shows the whole trade: the freeze re-anchored `wallMs`, discarding
+    the elapsed time since the previous call, which _rewound_ the edge
+    once per extra plot area per tick — so `c6b7ab3b` replaced it with
+    a `maxLagSeconds` ceiling and rewrote the test to
+    `"stops dead once the data edge has stopped"`, asserting only that
+    the coast is `<= maxLagSeconds` and then exact. Nothing was
+    deleted; the assertion was widened past the symptom.
+
+  - _Hypothesis._ Nothing else in the panel moves the window on a dead
+    stream: `runningRef`/`followXWindow`'s `running` guard is intact,
+    the host's live edge is a running max (`RawStore::max_ts`,
+    `c6b7ab3b`) that cannot advance without frames, and the "unchanged"
+    fetch path still reports to `onAreaResampled`. So the continued
+    scroll is `advanceLiveEdge`'s forward prediction spending its
+    `maxLagSeconds` budget, and the window should come to rest
+    `maxLagSeconds - targetLagSeconds` past the last frame.
+    Falsifiable: if the panel's applied right edge stopped inside a
+    tick or two of the last frame, the mechanism would be elsewhere.
+
+  - _Data (panel-level DOM measurement, test written first and watched
+    fail)._ One area, follow-live, capture growing with real time, then
+    the frames stopped. Last frame at **60.385 s**. The right edges the
+    panel pushed into uPlot from +500 ms to +1000 ms after the stop:
+    **60.585 → 60.653 → 60.723 → 60.788 → 60.858 → 60.925 → 60.993 →
+    61.061** — 0.068 s per 67 ms tick, i.e. **0.95–1.0 s per second, at
+    full scrolling rate, already 0.2 s past the newest frame at the
+    start of the sample and still climbing.** Ceiling arithmetic for
+    the shipping tuning: `ext - targetLag(0.3) + maxLag(2)` = **1.7 s
+    past the last frame**, reached after ~2 s of continued scroll.
+    Hypothesis confirmed, magnitude attributed.
+
+  - _Fix (`17b24533`)._ The forward prediction stops at the newest
+    frame there is (`predicted <= ext`), not at `maxLagSeconds` past
+    the data. `maxLagSeconds` goes back to its one job — the tolerance
+    for a clock that has fallen _behind_, where a generous value is
+    right because the alternative is a visible resync jump — and the
+    lead the smoothing filter may hold _while data is arriving_ is
+    untouched (that is the other clamp, on the data-carrying path; it
+    keeps `maxLagSeconds`, and the "smooths jittery arrival" /
+    "never strands the window ahead of the data" tests pin it). The
+    window now comes to rest with the last frame on its right edge —
+    the resting place, not a budget. Task 75 phase 1's `catchingUp`
+    latch is untouched: it gates the _resample loop_, this gates where
+    the _window_ may slide to, and a catch-up serve still fills the
+    window while it holds.
+
+  - _Guard._ `"comes to rest on the last frame instead of sliding on
+    past it"` (`PlotPanel.dom.test.tsx`) — panel-level, because "the
+    plot keeps scrolling" is a claim about the window the panel pushes
+    into uPlot, not about the clock's arithmetic. It watches the
+    applied right edges over half a second after the frames stop and
+    requires every one of them to be the same value _and_ to sit no
+    further out than the last frame. Verified red against the
+    pre-fix `followWindow.ts` (0.067 s of drift inside the sample) and
+    green after. It is harder to widen than the unit test that was
+    widened before it: the unit test's assertion was a tolerance
+    (`<= maxLagSeconds`), which relaxes by editing a number, while this
+    one is "these values are all equal, and none is past the data" —
+    there is no tolerance in it to grow. The unit test
+    `"stops dead once the data edge has stopped"` is tightened back in
+    the same commit, from a `maxLagSeconds` budget to the resting place
+    (`toBeCloseTo(10, 9)` on the newest frame), with a realistic
+    non-zero target lag.
+
+  - _Side effect found and fixed in the same commit (fixture
+    honesty)._ Two fetch-cadence tests grew the window's last timestamp
+    (`mockSampleBounds.last`) without growing the session frame count.
+    Only the count reaches the fetch key as "there are frames you have
+    not seen" (`useDecimatedRange`'s `windowKey`), so with the window
+    at rest those fixtures left every tick on the memo's unchanged fast
+    path: `"backs the fetch loop off…"` measured **0 real fetches and 0
+    accumulated render cost** in its measurement second, and
+    `"grows to the default width…"` never saw its step from 0.4 s to
+    60 s at all. Both now grow the count too, as a frame append does.
+    Worth recording as a property of the fix: the window's forward
+    motion is now driven entirely by frames arriving, and in the app
+    the frame count and the live edge move together, so a fetch that
+    would reveal nothing new is one the memo is right to skip.
+
+  - Frontend: 161 test files / 2118 tests passed; `tsc --noEmit` and
+    `pnpm build` clean. No host code touched.
+
 ## Blockers / side effects
 
 - **Marker _visibility_ on a lane axis is still governed by uPlot's

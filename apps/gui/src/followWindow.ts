@@ -15,10 +15,11 @@ export interface LiveEdge {
 
 /// Tuning for the follow-live clock. See [`advanceLiveEdge`].
 export interface LiveEdgeTuning {
-  /// How far the clock may drift from the data in either direction
-  /// before it stops nudging: behind by this much and it resyncs hard
-  /// (a stalled loop, a backgrounded tab); ahead by this much and it
-  /// stops predicting (a stream that has gone quiet).
+  /// How far the clock may fall *behind* the data before it gives up
+  /// nudging and resyncs hard — a stalled loop, a backgrounded tab.
+  /// It bounds nothing in the forward direction: what the prediction
+  /// may never run past is the newest frame itself (see
+  /// [`advanceLiveEdge`]).
   maxLagSeconds: number;
   /// Time constant of the pull toward the data edge.
   tauSeconds: number;
@@ -65,8 +66,9 @@ export function liveEdgeAt(edge: LiveEdge, nowMs: number): number {
 /// same instant — once per plot area, which is what the panel does —
 /// converges to the same answer instead of over-correcting once per area.
 ///
-/// The edge never moves backwards, so a quiet bus coasts to a bounded
-/// offset and holds rather than scrolling into open space. Two cases
+/// The edge never moves backwards, and it never predicts past the
+/// newest frame it has seen, so a quiet bus coasts to rest *on* its own
+/// last frame rather than scrolling into open space. Two cases
 /// still resync hard, because no amount of nudging would catch up:
 /// - `ext` moved **backwards** — the capture re-anchored (a buffer clear).
 /// - the clock fell more than `maxLagSeconds` **behind** the data — a
@@ -93,29 +95,42 @@ export function advanceLiveEdge(
   // The clock fell far behind the data — a stalled loop or a
   // backgrounded tab. No amount of nudging catches up.
   if (target > predicted + tuning.maxLagSeconds) return anchor(ext);
-  // The clock may never predict more than `maxLagSeconds` *past* the
-  // data. On a live bus that is slack it never uses. On a stream that
-  // has gone quiet it is what stops the window sliding on into empty
-  // space — and it needs no "has it stopped?" timer, which would have
-  // to be longer than the deepest arrival dip and shorter than anyone's
-  // patience.
-  const ceiling = target + tuning.maxLagSeconds;
   if (ext === edge.lastExt) {
     // No new data: another plot area reporting the same tick
-    // milliseconds later, or a stopped stream. Keep predicting and let
-    // the ceiling decide —
-    // an *exact* no-op, because re-anchoring `wallMs` here discards the
+    // milliseconds later, or a stopped stream. Keep predicting — an
+    // *exact* no-op, because re-anchoring `wallMs` here discards the
     // elapsed time since the last call, which rewinds the displayed
     // edge by that much, once per extra axis, every tick.
-    if (predicted <= ceiling) return edge;
-    return { ...edge, sessionT: ceiling, wallMs: nowMs };
+    //
+    // The prediction may never run past the newest frame there is. On a
+    // live bus that ceiling is slack it never uses: the edge tracks
+    // `targetLagSeconds` behind the data, so the prediction has that
+    // whole lag as headroom to cover the gaps between fetches with. On
+    // a stream that has gone quiet it is what stops the window sliding
+    // on into empty space, bringing it to rest with the last frame on
+    // its right edge — and it needs no "has it stopped?" timer, which
+    // would have to be longer than the deepest arrival dip and shorter
+    // than anyone's patience.
+    //
+    // `maxLagSeconds` is not that ceiling. It is the tolerance for a
+    // clock that has fallen *behind* the data, sized generously because
+    // the alternative — a hard resync — is a visible jump. Used
+    // forwards it let a disconnected trace keep scrolling at real-time
+    // rate for that whole budget and come to rest well past its own
+    // last frame: measured at the panel, 2 s of continued scroll
+    // ending 1.7 s out in the blank strip.
+    if (predicted <= ext) return edge;
+    return { ...edge, sessionT: ext, wallMs: nowMs };
   }
   const dt = Math.max(0, (nowMs - edge.wallMs) / 1000);
   const corrected = predicted + (target - predicted) * (1 - Math.exp(-dt / tuning.tauSeconds));
   // Re-anchoring every update keeps `sessionT` the currently displayed
-  // edge, so the `max` is simply "never go backwards".
+  // edge, so the `max` is simply "never go backwards". The `min` is the
+  // other side of it: smoothing a lurching arrival means the filter may
+  // lead the data edge a little, and `maxLagSeconds` is how much of a
+  // lead is allowed to stand while data is still arriving.
   return {
-    sessionT: Math.min(ceiling, Math.max(edge.sessionT, corrected)),
+    sessionT: Math.min(target + tuning.maxLagSeconds, Math.max(edge.sessionT, corrected)),
     wallMs: nowMs,
     lastExt: ext,
   };

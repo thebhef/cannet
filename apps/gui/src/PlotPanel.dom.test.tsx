@@ -5531,14 +5531,29 @@ describe("PlotPanel follow-live window width", () => {
   }
 
   /// A running panel with one signal, past its post-mount uPlot rebuild,
-  /// with the capture starting `startExt` seconds long.
-  async function runningPanel(startExt: number): Promise<FakeUPlotInst> {
+  /// with the capture starting `startExt` seconds long. `grow` moves the
+  /// capture on: both halves of it, because a frame append moves the
+  /// session frame count *and* the window's last timestamp, and the
+  /// windowed source's descriptor memo keys on the count — a fixture
+  /// that moved only the timestamp would leave the panel with no reason
+  /// to make the round-trip that would show it.
+  async function runningPanel(startExt: number): Promise<{
+    inst: FakeUPlotInst;
+    grow: (ext: number) => void;
+  }> {
     mockSampleBounds.last = startExt;
-    renderPanel();
+    const panel = renderPanel();
     addFocusedSignal("EngineSpeed");
     await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
     await new Promise((r) => setTimeout(r, 400));
-    return liveInstanceIn("Area 1");
+    let count = traceData.count;
+    return {
+      inst: liveInstanceIn("Area 1"),
+      grow: (ext: number) => {
+        mockSampleBounds.last = ext;
+        panel.growTrace((count += 100));
+      },
+    };
   }
 
   it("grows to the default width instead of freezing at the width of its first slide", async () => {
@@ -5550,12 +5565,12 @@ describe("PlotPanel follow-live window width", () => {
     // width the user zoomed to". Measured in the app: a 0.02-0.1 s
     // window against a 10 s setting, for the whole session.
     await withSizedCanvas(async () => {
-      const inst = await runningPanel(0.4);
+      const { inst, grow } = await runningPanel(0.4);
       // Several slides while the capture is still shorter than the
       // window — this is where the sliver used to get latched.
       await outsideAct(() => new Promise((r) => setTimeout(r, 300)));
       // The capture outgrows the window.
-      mockSampleBounds.last = 60;
+      grow(60);
       inst.xCalls.length = 0;
       await outsideAct(() => new Promise((r) => setTimeout(r, 500)));
 
@@ -5570,7 +5585,7 @@ describe("PlotPanel follow-live window width", () => {
     // width away with the feedback. A real zoom sets it; the panel's own
     // slides must neither overwrite nor erase it.
     await withSizedCanvas(async () => {
-      const inst = await runningPanel(20);
+      const { inst, grow } = await runningPanel(20);
       await outsideAct(() => new Promise((r) => setTimeout(r, 200)));
       // uPlot moves its own scale, then tells us — a user zoom to 3 s
       // wide, over the t=0 half, so follow-live survives it.
@@ -5581,11 +5596,80 @@ describe("PlotPanel follow-live window width", () => {
       const follow = screen.getByRole("checkbox", { name: /follow live/i });
       if (!(follow as HTMLInputElement).checked) fireEvent.click(follow);
 
-      mockSampleBounds.last = 80;
+      grow(80);
       inst.xCalls.length = 0;
       await outsideAct(() => new Promise((r) => setTimeout(r, 500)));
 
       expect(lastWidth(inst)).toBeCloseTo(3, 1);
+    });
+  });
+});
+
+// What follow-live does when the frames stop — a disconnect with the
+// trace still running, which is the state the app leaves the panel in
+// (nothing stops a trace on disconnect; the capture stays, it just
+// stops growing). The unit tests own `advanceLiveEdge`'s arithmetic;
+// what this describe owns is the panel's whole loop — fetch, report,
+// clock, slide — because "the plot keeps scrolling" is a statement
+// about the window the panel pushes into uPlot, not about the clock.
+describe("PlotPanel follow-live after the frames stop", () => {
+  /// Every x window the panel pushed into `inst` since it was last
+  /// cleared, right edge only.
+  const rightEdges = (inst: FakeUPlotInst) => inst.xCalls.map((c) => c.max);
+
+  /// A running follow-live panel with one signal, past its post-mount
+  /// uPlot rebuild, whose capture is `startExt` seconds long and then
+  /// grows with real time until `stop()` — both halves of a frame
+  /// append, the window's last timestamp *and* the session frame count,
+  /// because the fetch key carries the count as "there are frames you
+  /// have not seen" (`useDecimatedRange`). Growing only the timestamp
+  /// would model a bus nobody can see, not a live one.
+  async function growingPanel(startExt: number): Promise<{
+    inst: FakeUPlotInst;
+    stop: () => void;
+  }> {
+    mockSampleBounds.last = startExt;
+    const panel = renderPanel();
+    addFocusedSignal("EngineSpeed");
+    await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 400));
+    const t0 = Date.now();
+    let count = traceData.count;
+    const timer = setInterval(() => {
+      mockSampleBounds.last = startExt + (Date.now() - t0) / 1000;
+      panel.growTrace((count += 10));
+    }, 20);
+    return { inst: liveInstanceIn("Area 1"), stop: () => clearInterval(timer) };
+  }
+
+  it("comes to rest on the last frame instead of sliding on past it", async () => {
+    // THE REGRESSION. Disconnect leaves the trace running, so the
+    // resample loop keeps ticking and keeps feeding the follow-live
+    // clock the same live edge. The clock is allowed to *predict*
+    // forward between data updates — that is what keeps the motion
+    // smooth — and the ceiling on that prediction is what decides
+    // where it stops once the data stops. Owner-reported symptom: the
+    // plot panel keeps scrolling after disconnect.
+    await withSizedCanvas(async () => {
+      const { inst, stop } = await growingPanel(60);
+      // A live capture, following its edge.
+      await outsideAct(() => new Promise((r) => setTimeout(r, 400)));
+      // Disconnect: the frames stop. This is the newest one there will
+      // ever be — the trace stays running, so the loop keeps ticking.
+      stop();
+      const lastFrame = mockSampleBounds.last;
+
+      // Give it longer than any prediction headroom to settle...
+      await outsideAct(() => new Promise((r) => setTimeout(r, 500)));
+      inst.xCalls.length = 0;
+      // ...and then watch: a window that has come to rest pushes the
+      // same right edge every tick.
+      await outsideAct(() => new Promise((r) => setTimeout(r, 500)));
+      const edges = rightEdges(inst);
+      expect(edges.length).toBeGreaterThan(2);
+      for (const e of edges) expect(e).toBeCloseTo(edges[0], 9);
+      // And it rests *on* the data, not out in the blank strip past it.
+      expect(edges[0]).toBeLessThanOrEqual(lastFrame + 0.05);
     });
   });
 });
@@ -5719,13 +5803,22 @@ describe("PlotPanel diagnostic readouts", () => {
     // is ~4 ticks a second and no idle at all; paced it is 1000 ms of
     // idle per tick, so at most one or two land in the second.
     await withSizedCanvas(async () => {
-      renderPanel();
+      const panel = renderPanel();
       addFocusedSignal("EngineSpeed");
       await act(async () => {
         await new Promise((r) => setTimeout(r, 400));
       });
+      // A capture that grows the way a frame append grows one: the
+      // window's last timestamp *and* the session frame count. The count
+      // is what the fetch key carries as "there are frames you have not
+      // seen" (`useDecimatedRange`), so a fixture that moved only the
+      // timestamp leaves every tick on the memo's unchanged fast path —
+      // no `setData`, and so none of the synchronous render work this
+      // test is pacing against.
+      let count = traceData.count;
       const growing = setInterval(() => {
         mockSampleBounds.last += 0.05;
+        panel.growTrace((count += 10));
       }, 20);
       const clock = costlyRenderClock(250);
       try {
