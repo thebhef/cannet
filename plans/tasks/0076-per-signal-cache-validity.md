@@ -661,3 +661,44 @@ to carry `DbcScope` — a data-path change for a 2-second window.
   there is nothing in the model that says it was unreferenced.
 - The bus-scoping divergence recorded above is **untouched**, as the
   phase required.
+
+## Exit-criteria walk (2026-08-15, orchestrator, at the cycle tip `f21aa13f`)
+
+1. **A DBC touch that changes no encoding invalidates nothing — MET.**
+   The fingerprint is over the parsed model only (phase 1's audit puts
+   path/size/mtime deliberately out); phase 2's restore-judgement
+   tests pin that an identical decode reopens every pyramid.
+2. **An encoding change to one signal rebuilds exactly that signal —
+   MET.** Phase 1: per-signal fingerprint movement pinned input by
+   input; phase 2: the judged-out row rebuilds alone in one batched
+   scan while its neighbours reopen untouched (fetch-count and
+   mixed-cursor tests).
+3. **File-backed pyramids survive DBC-set changes — MET.** Phase 1
+   fingerprints them against source identity; phase 2's provenance
+   rule reopens them regardless of the DBC set, tested.
+4. **Decode-input audit recorded; every input a fingerprint-moves
+   test — MET.** Phase 1's status-log table, one named test per row
+   (13 verified), including the negatives (mtime, load-order
+   no-winner-change, labels-not-baked confirmed by experiment).
+5. **Retention pool: bounded, evict-oldest, revival on match; bound
+   visible — MET.** Phase 3: `pyramid_retention_bytes` (default
+   16 GB) beside the cache knobs; hard gates checked before any park
+   or revive; sabotage checks (park-wipes / evict-newest /
+   pool-survives-hard-gate) all caught by the intended tests.
+6. **Usage metrics answer "saving time or wasting disk" from a log —
+   MET.** Restore line: reopened/revived/rebuilt with reused vs
+   re-decoded bytes; health sample: live/unread(+bytes)/
+   retained(+bytes)/cap/revivals/evictions; never-read visibility via
+   per-session read marks.
+7. **ADR 0047 amended — MET.** Phase 2 (two-level validity, candidate
+   chain) and phase 3 (retention pool) in the same commits as the
+   behavior.
+8. **ADR-0031 gate on the final build — MET.** Cycle-final gate at
+   `f21aa13f` (contains all task-76 code): 69/69, three settled runs,
+   median drift form, seeded geometry, no baseline promoted.
+
+Verdict: **all eight criteria MET** — none waived. For the
+consolidated review: the pyramid-decode bus-scoping divergence
+(pre-existing, surfaced by phase 1, fix changes decoded values) and
+the health sampler's `usage()` lock (stated under task 78's product
+budget) are owner decisions.
