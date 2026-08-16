@@ -98,7 +98,7 @@ test refuses.
 
 | # | Hook | Where | Default state | Cost per tick | Evidence |
 |---|---|---|---|---|---|
-| B1 | **Health sampler** | `crash.rs:317`, spawned unconditionally at `lib.rs:672` | on, every **20 000 ms** (`settings.rs:566`); `0` switches it off, with a 5 s re-check poll (`crash.rs:99/342`) | a **full system process-table refresh** (`ProcessesToUpdate::All`, `crash.rs:475-481`) plus `refresh_memory`, then a tree walk classifying WebView children; plus `trace_store.len / buffer_seconds / frames_per_second / scratch_breakdown()`; plus **`signal_caches.usage()`** (`signal_cache.rs:1966` — takes the signal-cache mutex, the same lock a plot serve takes, and iterates every live pyramid summing `bytes()`); then one `sys_debug!` System Message into the ring, the panel and the rolling log | `crash.rs:339-398` |
+| B1 | **Health sampler** | `crash.rs:317`, spawned unconditionally at `lib.rs:672` | on, every **20 000 ms** (`settings.rs:566`); `0` switches it off, with a 5 s re-check poll (`crash.rs:99/342`) | a **full system process-table refresh** (`ProcessesToUpdate::All`, `crash.rs:475-481`), then a tree walk classifying WebView children — **measured 2026-08-15 at ~28 ms per tick** (Windows, 746 processes), i.e. **0.14% of one core** at the 20 s cadence, of which ~90% is the one `NtQuerySystemInformation` listing call and the memory reads are free (see the B1 measurement below; narrowing the PID set saves 8.6%, and doing it in two passes costs 1.9× — implemented, measured, reverted); plus `refresh_memory` at ~0.2 ms; plus `trace_store.len / buffer_seconds / frames_per_second / scratch_breakdown()`; plus **`signal_caches.usage()`** (`signal_cache.rs:1966` — takes the signal-cache mutex, the same lock a plot serve takes, and iterates every live pyramid summing `bytes()`); then one `sys_debug!` System Message into the ring, the panel and the rolling log | `crash.rs:339-398` |
 | B2 | **UI liveness heartbeat** | `diag.ts:192` → `report_js_heap` (`lib.rs:220` → `crash.rs:151`) | on, 1 Hz, unconditional and deliberately so — the call's *arrival* is the only way a wedged renderer reaches `cannet.log` (`diag.ts:181-187`) | one IPC round-trip and one relaxed atomic store per second | `diag.ts:188-192`, `crash.rs:151` |
 | B3 | 1 Hz diagnostic reporter tick | `diag.ts:140`, mounted unconditionally at `App.tsx:295` | on, one `setInterval(…, 1000)` | carries B2. Everything on the tick that is *not* B2 is row C1 | `App.tsx:295` |
 | B4 | `trace-grew` emitter | `emitters.rs:139`, spawned `lib.rs:673` | on, **100 ms** (`settings.rs:561`); skips the emit when count / fps / session-start are unchanged | one `status_snapshot()` lock acquisition per tick; the tail decode only on a tick that emits | `emitters.rs:139-175` |
@@ -369,6 +369,117 @@ revives or evicts a cache, and each of those is a place the mirror can
 drift from the map it claims to describe. That is a real change with its
 own test burden, not a seam. Left for the owner with the rest of the
 B-row budget.
+
+### B1 — the health sampler's process refresh, measured (2026-08-15)
+
+Commissioned as "the sampler should read memory only for our own
+process family" — the owner's _"we should just be able to keep track of
+the processes we spawn."_ **The reduction was implemented, measured,
+and reverted: on Windows it is a ~2× regression, because the premise it
+rests on is false there.** No product code changed. What follows is the
+evidence, because it amends this row's budget from an estimate to a
+number.
+
+#### The premise, checked against the crate source
+
+The inventory's B1 row calls the tick "a full system process-table
+refresh". True as written, but it implies the _memory reads_ are the
+cost. On Windows they are not. `sysinfo` 0.33.1 services the whole
+refresh from **one** `NtQuerySystemInformation(SystemProcessInformation)`
+call (`src/windows/system.rs:245`), and the per-process work is:
+
+| Refresh kind | What it costs on Windows | Source |
+|---|---|---|
+| pid / ppid | free — fields of the returned buffer (`UniqueProcessId`, `InheritedFromUniqueProcessId`) | `windows/system.rs:324-331` |
+| `.with_memory()` | **free** — `self.memory = pi.WorkingSetSize` is a struct field copy from the same buffer; no syscall, no handle | `windows/process.rs:287-290` |
+| `.with_cmd(OnlyIfNotSet)` | the expensive one — `NtQueryInformationProcess` + `ReadProcessMemory` into the target PEB, but **only** for a process with no cached command line | `windows/process.rs:651-664`, gate at `:642-649` |
+
+So on Windows the sampler was never paying for whole-machine _memory_
+reads. It pays for the listing, which it needs regardless.
+
+Crucially, **`ProcessesToUpdate::Some` does not avoid the listing.** The
+syscall is issued unconditionally and the PID filter only decides which
+returned entries get parsed into the map (`windows/system.rs:222-232`
+selects `real_filter`; the `NtQuerySystemInformation` loop at `:236`
+runs either way). Linux is the same shape — `read_dir("/proc")` always
+runs, the filter gates the per-process file reads
+(`unix/linux/process.rs:744-756`).
+
+#### The measurement of the refresh arms
+
+Windows 11, 746 processes, family = 1 (a test process with no `WebView`
+children); best of 7 per arm, three runs, throwaway `#[ignore]` bench
+against a warmed `System`:
+
+| Arm | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| `All` + `nothing()` (discovery only) | 27.77 ms | 31.73 ms | 27.45 ms |
+| `All` + `.with_memory()` | 27.82 ms | 31.47 ms | 27.57 ms |
+| `All` + `.with_memory().with_cmd(OnlyIfNotSet)` — **today** | 28.01 ms | 28.50 ms | 27.53 ms |
+| `Some(family)` + `.with_memory().with_cmd(…)` | 25.11 ms | 25.33 ms | 25.63 ms |
+| `refresh_memory()` (system totals) | 0.17 ms | 0.16 ms | 0.22 ms |
+
+Adding memory to the whole-table refresh costs **nothing measurable**
+(rows 1 vs 2), which is what the source predicted. Narrowing the PID set
+to one process saves **~2.4 ms of ~28 ms (8.6%)** — the listing is ~90%
+of the tick and is not avoidable through this API.
+
+The two-pass shape the reduction requires (discovery pass, then targeted
+pass) therefore pays the dominant syscall **twice**. Measured end to end
+on the implemented version: **old steady 30.0 ms → new steady 57.2 ms**,
+a 1.9× regression. That is the falsifying datum; the branch's code
+change was reverted on it.
+
+#### The budget, as a number
+
+Today's tick costs **~28 ms of CPU every 20 000 ms = 0.14% of one core**
+for the process pass, plus ~0.2 ms for `refresh_memory`. Scales with the
+machine's process count, not with capture size or session length.
+
+#### Why the owner's preferred shape is blocked
+
+`ICoreWebView2Environment8::GetProcessInfos` would remove the listing
+entirely, and `webview2-com` 0.38.2 is already in the tree (transitively,
+via `tauri` 2.11.1 / `wry` 0.55.1) with the binding present
+(`webview2-com-sys-0.38.2/src/bindings.rs:15740`). It is unreachable
+without two decisions that are not this slice's to make:
+
+1. **The workspace forbids `unsafe`** (`Cargo.toml:11`,
+   `unsafe_code = "forbid"`), and every windows-rs COM method is
+   `unsafe fn`. Verified rather than assumed: a probe with an explicit
+   `#[allow(unsafe_code)]` fails to compile —
+   `error[E0453]: allow(unsafe_code) incompatible with previous forbid`,
+   `note: 'forbid' lint level was set on command line ('-F unsafe_code')`.
+   A `forbid` set this way cannot be relaxed by an attribute.
+2. It would make `webview2-com` a **direct** dependency of `cannet-gui`,
+   which needs a `plans/technology-inventory.md` entry and an owner
+   decision.
+
+There is also a thread-affinity wall behind those: the environment is
+reached through `tauri`'s `with_webview` (`PlatformWebview::controller`,
+`tauri-2.11.1/src/webview/mod.rs:180`) on the main thread, while the
+sampler runs on `cannet-health-recorder` — so it would need a cached PID
+set refreshed from a main-thread hook. Worth noting it buys less than it
+appears to: the family is already exact today. The sidecar is spawned by
+`std::process::Command` (`cannet-sidecar/src/launch.rs:146-185`), so it
+is a direct child and the ppid walk already includes it.
+
+#### What did land
+
+One test, `crash::tests::read_memory_reports_our_own_process_and_the_machine`.
+`read_memory` had **no** coverage, so a refresh that stopped populating
+the per-process figures would have reported zeros instead of failing.
+
+#### The open question for the owner
+
+On **Linux** the premise does hold — `.with_memory()` there is a real
+`/proc/<pid>/statm` open+read per process
+(`unix/linux/process.rs:636-638`), so the two-pass split would trade
+~735 `statm` reads for one extra `/proc` readdir. Landing it would mean
+a `cfg`-split sampler: single-pass on Windows, two-pass elsewhere. Not
+done — the Linux win is unmeasured (no Linux box in this session), and a
+platform-split sampler is more machinery than a 0.14%-of-a-core tick
+justifies on the evidence available. The owner's call.
 
 ## Blockers / side effects
 

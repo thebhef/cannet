@@ -964,6 +964,28 @@ mod tests {
     }
 
     #[test]
+    fn read_memory_reports_our_own_process_and_the_machine() {
+        // `read_memory` had no coverage at all, so a refresh that quietly
+        // stopped populating the per-process figures would report zeros
+        // rather than fail. Pin it on the one process every run is
+        // guaranteed to have — this one — and on the system totals, which
+        // come from a different call than the process pass.
+        let mut sys = System::new();
+        let sample = read_memory(&mut sys, sysinfo::get_current_pid().ok());
+        assert!(
+            sample.sys_total.is_some_and(|t| t > 0),
+            "system memory is read independently of the process pass"
+        );
+        let host = sample.host.expect("the test process is in its own family");
+        assert!(host > 0, "the refresh must fill in memory, got {host}");
+        assert!(
+            sample.tree.is_some_and(|t| t >= host),
+            "the tree includes the host: {:?} vs {host}",
+            sample.tree
+        );
+    }
+
+    #[test]
     fn panic_block_carries_all_fields() {
         let block = format_panic_block(
             42,
