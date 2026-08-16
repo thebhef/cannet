@@ -147,10 +147,13 @@ because a 45° stroke's horizontal footprint is `lineWidth·√2`, even
 bands need `lineWidth = period / (2·√2)` and the naive `period / 2`
 paints ~71 % of each period. A tile only partly stale stripes only the
 stale part. A label over stripes gets a halo, stacked passes toward
-opacity, about twice as many on a light theme as on a dark one — its
-stripes carry far more contrast and swallow a single pass — except
-where the theme draws a solid label box, which is already an opaque
-plate between the glyphs and the stripes and does the halo's job.
+opacity, as many as the theme asks for — a light theme drawn without a
+box would want about twice a dark one, its stripes carrying far more
+contrast and swallowing a single pass — except where the theme draws a
+solid label box, which is already an opaque plate between the glyphs
+and the stripes and does the halo's job. Such a theme asks for **no**
+passes: its count is 0, so the count and the box agree instead of the
+box quietly overriding a number.
 
 **A tile label is drawn on a box whose opacity the theme carries.** The
 box is filled in the canvas chip color — effectively the canvas color,

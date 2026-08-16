@@ -97,15 +97,21 @@ export interface Theme extends ThemeColors {
   /// itself; this is only how hard it is laid down. Canvas shadow alpha
   /// does not go past what one pass paints, so strength is bought by
   /// repeating the pass rather than by a number.
-  /// A **light theme needs about double** a dark one: its stripes carry
-  /// far more contrast against the tile fill, so a single pass is lost
-  /// under them. Owner call after a side-by-side.
+  ///
+  /// **0 wherever {@link laneLabelBoxOpacity} is 1**, which is what both
+  /// shipping light themes carry. The box is already an opaque plate
+  /// between the glyphs and the stripes, so no halo is spent over one:
+  /// the passes would paint background over background and their blur
+  /// would fringe past the box's edge. The two tokens are chosen
+  /// together — a boxed theme asking for passes would be stating a
+  /// number nothing can reach.
   ///
   /// A per-theme number rather than a branch on `name`, so adding a
   /// theme stays "add a `Theme` to `THEMES`" and no consumer grows a
-  /// list of which themes count as light. A theme whose
-  /// {@link laneLabelBoxOpacity} is 1 never spends them: the box is
-  /// already between the label and the stripes.
+  /// list of which themes count as light. A theme that does want the
+  /// halo says how hard: dark takes 2, and a light theme drawn without a
+  /// box would want about double — its stripes carry far more contrast
+  /// against the tile fill, so a single pass is lost under them.
   laneLabelShadowPasses: number;
   /// How opaque the box behind a lane label is (ADR 0026), filled in
   /// {@link ThemeColors.canvasChipFill} — 0 for no box at all, 1 for a
@@ -201,7 +207,7 @@ const LIGHT: Theme = {
   busUnset: "#98a3b3",
   graphNeutralEdge: "#5b6879",
   graphBusNodeBase: "#eef1f6",
-  laneLabelShadowPasses: 4,
+  laneLabelShadowPasses: 0,
   laneLabelBoxOpacity: 1,
   signalWheel: [
     "#5a760f",
@@ -256,7 +262,7 @@ const LIGHTHK: Theme = {
   busUnset: "#d98ca3",
   graphNeutralEdge: "#be2d58",
   graphBusNodeBase: "#fdd8e3",
-  laneLabelShadowPasses: 4,
+  laneLabelShadowPasses: 0,
   laneLabelBoxOpacity: 1,
   signalWheel: [
     "#6f690e",

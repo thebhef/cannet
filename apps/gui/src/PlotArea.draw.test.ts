@@ -464,6 +464,12 @@ describe("drawEnumTiles extrapolation hatching", () => {
     // between the two, so the passes would paint background over
     // background — and their blur would fringe out past the box's edge
     // onto the tile. Dark, which draws no box, keeps its passes exactly.
+    //
+    // Two things hold a boxed theme at zero: this draw guard, and the
+    // theme's own count, which `theme.test.ts` pins at 0 wherever the box
+    // is solid. So what this asserts is the drawn outcome, not which of
+    // the two produced it; the guard is the rule for a theme that set
+    // both.
     const passes = (name: ThemeName) => {
       const before = theme().name;
       setActiveTheme(name);

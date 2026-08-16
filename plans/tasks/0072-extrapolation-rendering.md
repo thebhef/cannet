@@ -1484,7 +1484,9 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     recording: `laneLabelShadowPasses` is now inert on both shipping
     light themes (their 4 is unreachable while their box is solid); the
     number stays because it is what a theme with a translucent box or
-    none would spend, and its rustdoc says so.
+    none would spend, and its rustdoc says so. **Superseded by the
+    2026-08-15 cycle cleanup below** — the owner called the inert
+    number rather than the guard, and both light themes now carry 0.
 
   - _Verification: two real builds, four capture sets._ `pnpm --dir
     apps/gui tauri build --no-bundle` at `888ed86e` (before) and
@@ -1532,6 +1534,61 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     draw-tier halo-flip case that moved to the unit tier where it is
     still reachable; three existing cases were re-pointed at the new
     ground). `pnpm build` clean. No host code touched, so no Rust run;
+    no perf-gate run.
+
+- **2026-08-15, cycle cleanup (`cycle-cleanup-flaky-shadow`, branched
+  off `task78-p2-gate-hooks`):** the owner's call at the consolidated
+  review on phase 10's recorded side effect — "clean up the unused
+  shadow pass param". Both light themes carried
+  `laneLabelShadowPasses: 4` that nothing could reach, because phase
+  10's guard (`striped && laneLabelBoxOpacity < 1`) skips the halo
+  wherever the box is solid, and both their boxes are.
+
+  - _What changed._ The light themes' number is now **0** — what they
+    actually spend. The guard is untouched: it is ADR 0026's ratified
+    rule ("the box supersedes it where there is one") and stays as the
+    rule for a theme that sets both. The cleanup is on the side that
+    was lying, not the side that was ratified.
+
+  - _Why not the other shapes._ Deleting the token was not open — dark
+    genuinely spends 2. Deriving the count from the box was not
+    simpler: dark's 2 is an owner number from a side-by-side, not
+    something the box opacity implies. Doc-only was not a cleanup, and
+    the rustdoc already carried the caveat while the number stayed
+    wrong.
+
+  - _The relationship is now pinned, which is what let it drift._
+    Nothing checked the two tokens against each other, so an
+    unreachable number could sit there through a whole phase. A new
+    `theme.test.ts` case asserts it for every theme in `THEMES`: box
+    opacity 1 ⇒ 0 passes, otherwise > 0 passes, integers throughout.
+    Written first and watched fail on exactly the drift it is for
+    (`light boxed: expected 4 to be +0`).
+
+  - _No pixel moves, on any theme._ Dark's tokens are untouched, so its
+    draw sequence is byte-identical and phase 10's dark pin
+    (`passes("dark") === THEMES.dark.laneLabelShadowPasses`) holds
+    unmodified. The light path drew zero passes before (the guard was
+    false) and draws zero now (the guard is false _and_ the count is
+    0), so `passes("light") === 0` holds unmodified too. Both phase-10
+    draw tests are green with their assertions untouched; only a
+    comment was added, recording that the boxed-theme zero is now held
+    by two things and that the test therefore asserts the drawn
+    outcome rather than which of them enforced it. Because nothing
+    drawn changes, no rebuild-and-shoot was needed to confirm it.
+
+  - _Docs in the same commit._ The `laneLabelShadowPasses` rustdoc
+    leads with the 0-under-a-solid-box rule and keeps the owner's
+    "about double" finding as guidance for a light theme drawn
+    _without_ a box, rather than as a claim about a shipping one. ADR
+    0026's halo sentence gains the same: such a theme's count is 0, so
+    the count and the box agree instead of the box quietly overriding
+    a number. Phase 10's side-effect note above is marked superseded.
+
+  - Frontend: 165 test files / **2231** tests (from 2230 — one new
+    theme-token case, nothing removed). `pnpm build` clean. `cargo test
+    -p cannet-gui` 699 unchanged, `cargo clippy -p cannet-gui
+    --all-targets` and `cargo fmt --check` clean. No host code touched;
     no perf-gate run.
 
 ## Blockers / side effects
