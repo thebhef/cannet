@@ -1585,6 +1585,17 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   `03`/`04` pair in three runs against the new binary, correct on the
   re-run — so it is not a function of the two hover steps either, and
   the sample is now nine runs across three binaries.
+  **Attributed in task 78 phase 1**, and the suspicion above is wrong —
+  the fit is a bystander. The flake needs a boot-time **scratch
+  restore**: a launch that restores a prior session's capture and is
+  then driven through the scenario's import leaves the frontend's trace
+  view empty while the host store refills. Over 31 runs, 7 of 13
+  restoring launches produced an empty frame and 0 of 18 non-restoring
+  ones did. The empty *fit* is the last link, not the first:
+  `fitToRange` has no extent to fit and falls back to `start + 1`.
+  The product defect is task 78 phase 2's; the harness now fails such a
+  run instead of photographing it (`65e27674`). See task 78's status
+  log for the data.
 - **The lane hover marker's legibility over a tile is an owner call.**
   It is a disc in the signal's color with a background-colored ring,
   drawn over tiles that are 65–75 % opaque and sometimes striped. The

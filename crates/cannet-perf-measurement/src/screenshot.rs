@@ -121,6 +121,26 @@ pub const MASK_CSS: &str = "\
 /// scripts stay short. Driving is done the way a user drives: clicking
 /// the real toolbar buttons, dock tabs and palette rows.
 const PRELUDE_JS: &str = r#"
+/* Console tap. The app logs one `[diag]` line a second carrying its own
+   counters and gauges; keeping them where the run can read them back is
+   what lets a frame that came out wrong be explained rather than only
+   re-run. Installed once — the prelude is re-evaluated before each step
+   — and bounded, so a long walk can't grow it without limit. */
+if (!window.__shotLog) {
+  window.__shotLog = [];
+  const passthrough = console.log.bind(console);
+  console.log = (...a) => {
+    try {
+      window.__shotLog.push(
+        a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "),
+      );
+      if (window.__shotLog.length > 4000) window.__shotLog.shift();
+    } catch (e) {
+      /* the tap must never be able to break the app it is watching */
+    }
+    passthrough(...a);
+  };
+}
 window.__shot = {
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
   settle: async () => {
@@ -228,6 +248,15 @@ window.__shot = {
     b.click();
     await window.__shot.settle();
   },
+  /* What the app says about itself right now, in text a run can put in
+     its notes: the status line (which carries the frame count, so an
+     empty plot over a full buffer is distinguishable from an import
+     that never landed) and the plot panel's own text, readouts
+     included. */
+  state: () => ({
+    status: (document.querySelector(".status") || {}).textContent || "",
+    plot: (document.querySelector(".plot-panel") || {}).innerText || "",
+  }),
   /* True while no trace import is running. The toolbar's import button
      is the app's own statement about it: it says "Loading trace…"
      from the first byte of the census to the pump's `log-finished`. */
@@ -585,6 +614,7 @@ fn capture_with(cfg: &CaptureConfig) -> Result<CaptureOutcome, String> {
     )?;
 
     let mut files = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
     let mut shots: Vec<(&str, Vec<u8>)> = Vec::new();
     for step in cfg.steps {
         cdp.eval(PRELUDE_JS)?;
@@ -608,9 +638,33 @@ fn capture_with(cfg: &CaptureConfig) -> Result<CaptureOutcome, String> {
         let path = cfg.out_dir.join(format!("{}{}.png", cfg.prefix, step.name));
         std::fs::write(&path, &png).map_err(|e| format!("writing {}: {e}", path.display()))?;
         println!("captured {}", path.display());
+        // What the app said about itself at the shutter, beside the
+        // frame it went with. A capture is eyeballed, and "the plot is
+        // empty" on its own does not say whether the buffer was empty
+        // too — this does, without a re-run.
+        let state = cdp
+            .eval("JSON.stringify(window.__shot.state(), null, 1)")
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string));
+        notes.push(format!(
+            "== {} ==\n{}\n",
+            step.name,
+            state.as_deref().unwrap_or("<unavailable>")
+        ));
+        if cfg.capture.is_some() {
+            let parsed = state
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .unwrap_or(Value::Null);
+            if let Some(complaint) = empty_capture_complaint(step.name, &parsed) {
+                write_notes(cfg, &mut cdp, &notes);
+                return Err(complaint);
+            }
+        }
         files.push(path);
         shots.push((step.name, png));
     }
+    write_notes(cfg, &mut cdp, &notes);
     // Every step changes what is on screen, so two identical captures
     // mean a driving script did nothing — the failure mode that hid a
     // no-op tab click behind nine plausible-looking PNGs.
@@ -618,6 +672,47 @@ fn capture_with(cfg: &CaptureConfig) -> Result<CaptureOutcome, String> {
         return Err(dup);
     }
     Ok(CaptureOutcome { files })
+}
+
+/// The app's own words for "there is nothing loaded". Matched against
+/// the status line rather than the plot's readouts, because a readout
+/// reads `— %` for honest reasons too — a hover where a series has no
+/// sample is one of this scenario's own frames.
+const EMPTY_CAPTURE_STATUS: &str = "Open a BLF log or connect to a server to begin";
+
+/// Complain if `state` — one step's [`window.__shot.state()`] readout —
+/// shows the app reporting an empty buffer.
+///
+/// Only meaningful for a scenario that was given a capture: those
+/// photograph a session with data in it, so an empty buffer means the
+/// frame is of the wrong thing. A `state` the probe could not read is
+/// not a complaint; a run is not failed for a probe that didn't answer.
+#[must_use]
+pub fn empty_capture_complaint(step: &str, state: &Value) -> Option<String> {
+    let status = state.get("status")?.as_str()?;
+    status.contains(EMPTY_CAPTURE_STATUS).then(|| {
+        format!(
+            "step {step} was photographed with an empty capture — the app's status line reads \
+             {status:?}. A scenario given a capture must photograph one; re-running masks this."
+        )
+    })
+}
+
+/// Write the run's notes — the per-step readout of what the app said
+/// about itself, then the console stream the tap collected — beside the
+/// PNGs. Best-effort: a run that produced its frames is not failed for
+/// failing to write the commentary on them.
+fn write_notes(cfg: &CaptureConfig, cdp: &mut Cdp, notes: &[String]) {
+    let log = cdp
+        .eval("(window.__shotLog || []).join('\\n')")
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let path = cfg.out_dir.join(format!("{}notes.txt", cfg.prefix));
+    let body = format!("{}\n== console ==\n{log}\n", notes.concat());
+    if let Err(e) = std::fs::write(&path, body) {
+        eprintln!("could not write {}: {e}", path.display());
+    }
 }
 
 /// Report the first pair of byte-identical captures, if any.
@@ -1312,6 +1407,32 @@ mod tests {
         );
         let e = scenario_by_name("nope").err().expect("unknown");
         assert!(e.contains("panels") && e.contains("extrapolation"), "{e}");
+    }
+
+    /// A scenario given a capture photographs a session with data in
+    /// it, so a frame taken while the app is reporting an empty buffer
+    /// is a failed run rather than a picture. This is the guard for the
+    /// empty-plot flake: it reached three sign-off sets before anyone
+    /// noticed, because only a human eyeballing the frames catches it
+    /// and an unattended gate would have taken it.
+    #[test]
+    fn an_empty_capture_frame_is_a_failed_run_not_a_picture() {
+        let full = json!({
+            "status": "871 frames · 0:20 elapsed. DBC: x.dbc.",
+            "plot": "RefLevel\n72.18 %\n",
+        });
+        assert_eq!(empty_capture_complaint("02-x", &full), None);
+
+        let empty = json!({
+            "status": "Open a BLF log or connect to a server to begin. DBC: x.dbc.",
+            "plot": "RefLevel\n— %\n",
+        });
+        let e = empty_capture_complaint("02-x", &empty).expect("an empty buffer is a failure");
+        assert!(e.contains("02-x"), "{e}");
+
+        // A state the probe could not read says nothing either way — a
+        // run is not failed for a probe that did not answer.
+        assert_eq!(empty_capture_complaint("02-x", &Value::Null), None);
     }
 
     #[test]
