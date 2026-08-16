@@ -1094,6 +1094,14 @@ export function App() {
   const [scanningBlfPath, setScanningBlfPath] = useState<string | null>(null);
   const [scanningMdfPath, setScanningMdfPath] = useState<string | null>(null);
 
+  // Pick → census → mapping dialog is one gesture, and only one of it
+  // runs at a time: a second launch while the census walks would walk
+  // its own and hand back its own dialog behind the first. The
+  // pick-and-scan stretch is a ref because the guard has to close
+  // synchronously, on the call, before any render; the dialog-is-up
+  // stretch is the pending state itself, which cannot go stale.
+  const traceOpenInFlight = useRef(false);
+
   // "Import trace…": one file-open dialog for both formats,
   // routed by the picked path's extension (`importFormatFor`) to the
   // format's own scan command — the host still never sniffs the file,
@@ -1102,49 +1110,55 @@ export function App() {
   // dialog.
   const handleImportTrace = useCallback(
     async (presetPath?: string) => {
-      const selected =
-        typeof presetPath === "string" && presetPath.length > 0
-          ? presetPath
-          : await open({ multiple: false, filters: IMPORT_TRACE_FILTERS });
-      if (typeof selected !== "string") return;
+      if (traceOpenInFlight.current || pendingBlf !== null || pendingMdf !== null) return;
+      traceOpenInFlight.current = true;
+      try {
+        const selected =
+          typeof presetPath === "string" && presetPath.length > 0
+            ? presetPath
+            : await open({ multiple: false, filters: IMPORT_TRACE_FILTERS });
+        if (typeof selected !== "string") return;
 
-      // The census walks the whole file, which is seconds on a large
-      // capture and all of it before the mapping dialog exists. Say
-      // so, or the pick lands on an app that looks like it did
-      // nothing.
-      if (importFormatFor(selected) === "mdf") {
-        setScanningMdfPath(selected);
+        // The census walks the whole file, which is seconds on a large
+        // capture and all of it before the mapping dialog exists. Say
+        // so, or the pick lands on an app that looks like it did
+        // nothing.
+        if (importFormatFor(selected) === "mdf") {
+          setScanningMdfPath(selected);
+          try {
+            const scan = await invoke<MdfScanResult>("scan_mdf_channels", {
+              mdfPath: selected,
+            });
+            setPendingMdf({ mdfPath: selected, scan });
+          } catch (err) {
+            setState({ kind: "error", message: String(err) });
+            // If we tried to open a recent file and it failed (path
+            // moved, file deleted), drop it from the recents list so
+            // it doesn't keep being offered.
+            if (presetPath) dropRecentCapture(presetPath);
+          } finally {
+            setScanningMdfPath(null);
+          }
+          return;
+        }
+
+        setScanningBlfPath(selected);
         try {
-          const scan = await invoke<MdfScanResult>("scan_mdf_channels", {
-            mdfPath: selected,
+          const scan = await invoke<BlfScanResult>("scan_blf_channels", {
+            blfPath: selected,
           });
-          setPendingMdf({ mdfPath: selected, scan });
+          setPendingBlf({ blfPath: selected, scan });
         } catch (err) {
           setState({ kind: "error", message: String(err) });
-          // If we tried to open a recent file and it failed (path
-          // moved, file deleted), drop it from the recents list so
-          // it doesn't keep being offered.
           if (presetPath) dropRecentCapture(presetPath);
         } finally {
-          setScanningMdfPath(null);
+          setScanningBlfPath(null);
         }
-        return;
-      }
-
-      setScanningBlfPath(selected);
-      try {
-        const scan = await invoke<BlfScanResult>("scan_blf_channels", {
-          blfPath: selected,
-        });
-        setPendingBlf({ blfPath: selected, scan });
-      } catch (err) {
-        setState({ kind: "error", message: String(err) });
-        if (presetPath) dropRecentCapture(presetPath);
       } finally {
-        setScanningBlfPath(null);
+        traceOpenInFlight.current = false;
       }
     },
-    [dropRecentCapture],
+    [dropRecentCapture, pendingBlf, pendingMdf],
   );
 
   // Confirm the BLF channel mapping and actually start the pump.
@@ -3007,12 +3021,20 @@ export function App() {
     | "connection"
     | "recentCaptures"
     | "systemMessages"
-    | { id: string; label: string; disabled?: boolean };
+    | { id: string; label: string; disabled?: boolean; busy?: boolean };
+  // The capture whose census is walking right now, in whichever format
+  // — one trace-open at a time, so at most one of the two is set.
+  const scanningTracePath = scanningBlfPath ?? scanningMdfPath;
   const toolbarItems: ToolbarItem[] = [
     { id: "project.open", label: "Open project…" },
     { id: "project.save", label: "Save project" },
     "sep",
-    { id: "trace.import", label: "Import trace…" },
+    // A census running is the one thing the user is waiting on, so the
+    // button that started it says so rather than sitting there looking
+    // idle — which is what got clicked through repeatedly.
+    scanningTracePath !== null
+      ? { id: "trace.import", label: "Scanning…", disabled: true, busy: true }
+      : { id: "trace.import", label: "Import trace…" },
     "recentCaptures",
     { id: "dbc.add", label: "Add DBC…" },
     "sep",
@@ -3108,7 +3130,12 @@ export function App() {
       );
     }
     return (
-      <button key={item.id} onClick={() => runCommand(item.id)} disabled={item.disabled}>
+      <button
+        key={item.id}
+        onClick={() => runCommand(item.id)}
+        disabled={item.disabled}
+        aria-busy={item.busy ? true : undefined}
+      >
         {item.label}
       </button>
     );
@@ -3122,6 +3149,11 @@ export function App() {
           className="status"
           title="buffered frames · frame rate · elapsed capture · resident memory (app + WebView) · disk-spill cache on disk"
         >
+          {/* Indeterminate — the walk's length is the file's length,
+              and there is no progress to report until it ends. Same
+              affordance the plot uses while its first sample builds;
+              the status text alongside it names the file. */}
+          {scanningTracePath !== null && <span className="trace-scan-bar" aria-hidden="true" />}
           {status}
         </div>
       </header>

@@ -452,6 +452,78 @@ document; their location travels only in phase prompts.
       -p cannet-gui --all-targets` clean. README's project-directory
       paragraph records the New-project behavior.
 
+- **2026-08-14, phase 3 (`task70-p3-blf-dialog`, branched off
+  `task70-p2-state-persistence`):**
+  - `85ccba6` fix(gui): one trace-open at a time, with a launcher that
+    says so (item 2 (a) + (b)). **The queue reproduces exactly as
+    reported.** Six tests written first
+    (`App.importTraceGuard.dom.test.tsx`), all six failing against the
+    old flow; the symptom test is the owner's sequence — stall the
+    census, launch twice more, release the walks one at a time,
+    dismiss the first dialog and the next one arrives (`expected 1 to
+    be +0`).
+    - _Entry points._ Three reach the flow — the toolbar button, the
+      command palette (`trace.import`), and the Recent-captures list —
+      and all three call the one `handleImportTrace`, so one check
+      covers them. There is no drag-drop path to guard: `tauri.conf
+      .json` sets `dragDropEnabled: false` (dockview's HTML5 tab drag
+      and Tauri's OS drop handler are incompatible on WebView2), so
+      files only ever arrive through the dialog plugin.
+    - _Guard._ The pick-and-scan stretch is a ref, because the guard
+      has to close on the synchronous call before any render; the
+      dialog-is-up stretch is the `pendingBlf`/`pendingMdf` state
+      itself, which cannot go stale and cannot leak the guard if a
+      close path is ever missed. A seventh test pins that the guard
+      releases: a second open after the first finishes still scans.
+    - _Feedback._ The status-label change stays, and two stronger
+      signals join it: the toolbar button that launched it becomes a
+      disabled `aria-busy` "Scanning…" (full contrast, progress
+      cursor — styled so it reads as working rather than unavailable),
+      and an indeterminate sliding chip appears in the status line —
+      the same affordance the plot already shows while its first
+      sample builds, reused rather than reinvented.
+    - Frontend: 157 test files / 2059 tests passed; build clean.
+  - `b7f3d65` fix(gui): left-align the BLF map modal's markers
+    disclosure — the latent duplicate phase 1 recorded, fixed in the
+    dialog this phase was already touching. Same one-line
+    `justify-content: flex-start` override, same declared-CSS guard
+    test idiom (`declarations()` over `index.css?raw`), written first
+    and confirmed failing. Frontend: 157/2060 passed; build clean.
+  - `32b238b` docs(gui): put the measured census throughput in
+    `scan_blf_channels` (item 2 (c)). **Verdict: not a defect —
+    release-build latency is what the work costs, and no speculative
+    optimization was built.**
+    - _Observation._ Owner's second look: release load time is "much
+      better than `tauri dev`'s", "not as far off as I thought."
+    - _Experiment._ A release-compiled Rust timing harness (built
+      outside the repository, against the real `cannet_blf::scan_blf`
+      — the exact function the command calls) over two large example
+      BLFs, three runs each. No GUI launched.
+    - _Data._ A 46 MB example log (6.5 M messages, 1 channel):
+      0.716 s cold, 0.546 / 0.540 s warm. A 470 MB example log
+      (57.8 M messages, 1 channel): 5.926 s cold, 5.664 / 5.630 s
+      warm. That is ~83 MB/s and ~10 M messages/s, linear in file
+      size; the page cache is worth ~1.5 % of it.
+    - _Attribution._ The scan is the whole of the file-size-dependent
+      latency, and it is a single pass: the frontend issues exactly
+      one `scan_blf_channels` per open (now pinned by the guard
+      tests), and `open_log` re-opens header-only and pumps rather
+      than walking the file a second time — no accidental double
+      scan. Everything downstream of the scan is bounded by channel
+      count plus marker count (that is the entire serialized payload),
+      not by file size, so the dialog-mount half does not scale with
+      the capture.
+    - _Why the dev build felt so much worse._ `tauri dev` builds the
+      host unoptimized, and the census is an inflate loop — precisely
+      the shape debug builds punish. The rustdoc's own dev-build
+      figure (20 s at the reference scale) against 5.7 s release at
+      470 MB is consistent with that.
+    - _Doc fix in the same commit._ The rustdoc claimed "a couple of
+      seconds on a several-hundred-megabyte log" — optimistic by ~3x
+      at that size. Replaced with the measured rate and both figures.
+    - Verification: `cargo test -p cannet-gui` 634 passed / 6 ignored;
+      `cargo clippy -p cannet-gui --all-targets` clean.
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
@@ -482,6 +554,15 @@ document; their location travels only in phase prompts.
   view — but it will visibly mis-center the same way if exercised.
   Left as a candidate for a future pass; the task file (not
   `plans/backlog.md`, per this phase's hard rules) is the record.
+  **Closed 2026-08-14 in phase 3** (`b7f3d65`), fed forward into the
+  phase that was already in that dialog.
+
+- **A blocked trace-open is silent, by design** (phase 3 side effect).
+  With the guard in place, invoking Import trace from the palette or
+  the Recent-captures list while a census is walking does nothing at
+  all — no error, no queued open. The busy launcher and the status
+  line are what say why, which is the point of strengthening them; but
+  it is a behavior change nobody asked about, so it is recorded here.
 
 ## Exit criteria (draft — firm at grooming)
 

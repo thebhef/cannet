@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import css from "./index.css?raw";
 
 import { BlfChannelMapModal } from "./BlfChannelMapModal";
 import type { BlfScanResult, Bus } from "./types";
@@ -21,6 +22,17 @@ const buses: Bus[] = [
   { id: "p", name: "Powertrain" },
   { id: "c", name: "Chassis" },
 ];
+
+/// The declarations of the first top-level rule for `selector` (the
+/// `index.css?raw` idiom `DisclosureToggle.dom.test.tsx` establishes —
+/// jsdom does no layout, so alignment is asserted against the declared
+/// CSS text rather than a rendered box).
+function declarations(selector: string): string {
+  const start = css.indexOf(`\n${selector} {`);
+  expect(start, `no \`${selector}\` rule in index.css`).toBeGreaterThan(-1);
+  const open = css.indexOf("{", start);
+  return css.slice(open + 1, css.indexOf("}", open));
+}
 
 function scanFixture(overrides: Partial<BlfScanResult> = {}): BlfScanResult {
   return {
@@ -127,6 +139,18 @@ describe("BlfChannelMapModal", () => {
       />,
     );
     expect(screen.queryByText(/Markers/)).not.toBeInTheDocument();
+  });
+
+  it("left-aligns the markers disclosure label instead of centering it", () => {
+    // Regression guard, same defect the project panel's section
+    // headers had: `.disclosure-toggle`'s base rule centers its flex
+    // content (right for an icon-only glyph), and a full-width header
+    // must override that main-axis position explicitly — its own
+    // `text-align: left` has no effect on a flex container's item
+    // placement.
+    expect(declarations(".blf-map-markers-toggle")).toMatch(
+      /\bjustify-content:\s*flex-start\b/,
+    );
   });
 
   it("markers gridview starts collapsed and expands on toggle", () => {
