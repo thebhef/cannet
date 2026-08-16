@@ -46,7 +46,13 @@
 //!   healthy samples. The report is issued from the renderer's main
 //!   thread, so a stalled one stops beating; past
 //!   [`UI_HEARTBEAT_STALL_MS`] the recorder says so once at `warn`, and
-//!   once more when it comes back.
+//!   once more when it comes back. A disk-backed session adds the
+//!   scratch's per-family byte split (ADR 0002 DS-8) and, beside it,
+//!   what the signal-pyramid family is *earning* (ADR 0047): live
+//!   pyramids, how many of them this session has never read and what
+//!   they hold, and the retention pool's occupancy, bound, revivals and
+//!   evictions — the trail that answers "are we saving time or wasting
+//!   disk" without any instrumentation of its own.
 //!
 //! Memory is read via the `sysinfo` crate (the workspace forbids
 //! `unsafe`, so a crate is needed to wrap the per-OS process APIs). The
@@ -67,6 +73,7 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 use tauri::{AppHandle, Manager};
 
 use crate::app_state::AppState;
+use crate::signal_cache::CacheUsage;
 use crate::sys_debug;
 use crate::system_log::{LogLevel, SystemMessage};
 
@@ -353,6 +360,7 @@ pub fn spawn_health_recorder(app: AppHandle) {
                 LAST_APP_RSS.store(rss, Ordering::Relaxed);
             }
             let breakdown = state.trace_store.scratch_breakdown();
+            let usage = state.signal_caches.usage();
             let ui_age = ui_heartbeat_age_ms();
             sys_debug!(
                 &app,
@@ -364,6 +372,7 @@ pub fn spawn_health_recorder(app: AppHandle) {
                     fps,
                     &mem,
                     breakdown.as_ref(),
+                    usage,
                     ui_age
                 )
             );
@@ -599,7 +608,12 @@ fn descendant_pids(links: &[(u32, Option<u32>)], root: u32) -> std::collections:
 /// `sys_total_mb` the machine-wide figures that reveal an OOM. `breakdown`
 /// (when disk-backed) adds the on-disk scratch cache split by family
 /// (ADR 0002 DS-8) — frames vs pyramids vs other (by-id/filter/JSON), the
-/// segment-file count, and the deepest pyramid. `ui_age_ms` is how long
+/// segment-file count, and the deepest pyramid — and `usage` says what
+/// that pyramid family is *earning* (ADR 0047): how much of it this
+/// session has never read, how much is held for a definition that may
+/// return, and whether that retention is paying off or churning. Both are
+/// gated on the scratch being disk-backed, since neither describes
+/// anything without files. `ui_age_ms` is how long
 /// ago the frontend last reported in ([`ui_heartbeat_age_ms`]) — the one
 /// field that says whether the *window* is still alive, since every
 /// other number here is the host describing itself.
@@ -609,19 +623,30 @@ fn format_health_message(
     fps: f64,
     mem: &MemorySample,
     breakdown: Option<&crate::trace_store::ScratchBreakdown>,
+    usage: CacheUsage,
     ui_age_ms: Option<u64>,
 ) -> String {
     let mb =
         |b: Option<u64>| b.map_or_else(|| "?".to_string(), |v| (v / (1024 * 1024)).to_string());
     let cache = match breakdown {
         Some(b) => format!(
-            " cache_mb={}[frames={} pyramid={} other={} pages={} pyr_depth={}]",
+            " cache_mb={}[frames={} pyramid={} other={} pages={} pyr_depth={}]\
+             \u{20}pyramids=[live={} unread={}/{}MB retained={}/{}MB cap={}MB \
+             revived={} evicted={}]",
             mb(Some(b.total_bytes)),
             mb(Some(b.frames_bytes)),
             mb(Some(b.pyramid_bytes)),
             mb(Some(b.other_bytes)),
             b.frames_files + b.pyramid_files + b.other_files,
             b.pyramid_depth,
+            usage.live,
+            usage.unread,
+            mb(Some(usage.unread_bytes)),
+            usage.retained,
+            mb(Some(usage.retained_bytes)),
+            mb(Some(usage.retention_cap_bytes)),
+            usage.revivals,
+            usage.evictions,
         ),
         None => String::new(),
     };
@@ -738,13 +763,29 @@ mod tests {
             sys_total: Some(34_359_738_368),
         };
         assert_eq!(
-            format_health_message(180_000, 392.5, 440.4, &mem, None, Some(940)),
+            format_health_message(
+                180_000,
+                392.5,
+                440.4,
+                &mem,
+                None,
+                CacheUsage::default(),
+                Some(940)
+            ),
             "trace_len=180000 buffer_s=392.5 fps=440 rss_mb=2048 tree_mb=6144 \
              webview_mb=4096[browser=512 renderer=1024 gpu=2048 other=512] \
              jsheap_mb=256 ui_last_ms=940 sys_avail_mb=1024 sys_total_mb=32768"
         );
         assert_eq!(
-            format_health_message(0, 0.0, 0.0, &MemorySample::default(), None, None),
+            format_health_message(
+                0,
+                0.0,
+                0.0,
+                &MemorySample::default(),
+                None,
+                CacheUsage::default(),
+                None
+            ),
             "trace_len=0 buffer_s=0.0 fps=0 rss_mb=? tree_mb=? \
              webview_mb=?[browser=? renderer=? gpu=? other=?] \
              jsheap_mb=? ui_last_ms=? sys_avail_mb=? sys_total_mb=?"
@@ -765,13 +806,22 @@ mod tests {
             0.0,
             &MemorySample::default(),
             None,
+            CacheUsage::default(),
             Some(1_042),
         );
         assert!(line.contains(" ui_last_ms=1042 "), "{line}");
         // A frontend that has never reported one (a `WebView` without
         // `performance.memory` — the non-Chromium hosts) is unknown, not
         // stalled.
-        let never = format_health_message(0, 0.0, 0.0, &MemorySample::default(), None, None);
+        let never = format_health_message(
+            0,
+            0.0,
+            0.0,
+            &MemorySample::default(),
+            None,
+            CacheUsage::default(),
+            None,
+        );
         assert!(never.contains(" ui_last_ms=? "), "{never}");
     }
 
@@ -806,12 +856,60 @@ mod tests {
             other_files: 5,
             total_bytes: 71 * 1024 * 1024,
         };
-        let line =
-            format_health_message(180_000, 1.0, 0.0, &MemorySample::default(), Some(&b), None);
+        let line = format_health_message(
+            180_000,
+            1.0,
+            0.0,
+            &MemorySample::default(),
+            Some(&b),
+            CacheUsage::default(),
+            None,
+        );
         assert!(
-            line.ends_with(" cache_mb=71[frames=40 pyramid=25 other=6 pages=142 pyr_depth=4]"),
+            line.contains(" cache_mb=71[frames=40 pyramid=25 other=6 pages=142 pyr_depth=4]"),
             "{line}"
         );
+    }
+
+    #[test]
+    fn health_message_says_what_the_pyramid_cache_is_earning() {
+        // ADR 0047's ongoing accounting: enough to answer "are we saving
+        // time or wasting disk" from a log alone — how much of the cache
+        // nothing has read, how much is held for a definition that may
+        // return, and whether that pool is paying off or churning.
+        use crate::trace_store::ScratchBreakdown;
+        let usage = CacheUsage {
+            live: 12,
+            unread: 3,
+            unread_bytes: 7 * 1024 * 1024,
+            retained: 2,
+            retained_bytes: 48 * 1024 * 1024,
+            retention_cap_bytes: 16 * 1024 * 1024 * 1024,
+            revivals: 5,
+            evictions: 1,
+        };
+        let line = format_health_message(
+            0,
+            1.0,
+            0.0,
+            &MemorySample::default(),
+            Some(&ScratchBreakdown::default()),
+            usage,
+            None,
+        );
+        assert!(
+            line.ends_with(
+                " pyramids=[live=12 unread=3/7MB retained=2/48MB cap=16384MB \
+                 revived=5 evicted=1]"
+            ),
+            "{line}"
+        );
+
+        // Without a disk scratch there is no pyramid on disk to account
+        // for, so the whole cache group stays off the line.
+        let ram = format_health_message(0, 1.0, 0.0, &MemorySample::default(), None, usage, None);
+        assert!(!ram.contains("pyramids="), "{ram}");
+        assert!(!ram.contains("cache_mb="), "{ram}");
     }
 
     #[test]

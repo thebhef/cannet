@@ -290,3 +290,38 @@ clean.
   `(message_id, signal_name)` still share whichever table the first
   loaded DBC answers with — pre-existing, unchanged here, and noted
   only because the file-backed branch was added beside it.
+
+## Exit-criteria walk (2026-08-15, orchestrator, at `task73-p2-enum-labels`)
+
+1. **Signal-only MF4 imports; dialog offers Signals and no
+   CAN-messages checkbox; rejection gone with docs and tests — MET.**
+   Phase 1 (`1da58119`, `87e171d2`): both entry points open a
+   frameless file, the census drives the dialog, and
+   `MdfSourceError::SignalFile` is removed with its `Display` arm,
+   rustdoc, README claims, and rejection tests. Session origin comes
+   from the earliest in-range sample via the existing leg.
+2. **Decoded enum labels visible wherever DBC-backed labels are,
+   regression-tested with a synthetic fixture — MET.** Phase 2
+   (`a5c44f43`, `805a7397`): `FileSignal.value_table` read from the
+   conversion block, served through the one `list_value_tables`
+   command with a namespace flag, keyed byte-for-byte with
+   `signalRefKey` — lanes, symbolic axis, enum detection, and the
+   side-panel readout all label through existing plumbing. Fixtures
+   carry `ValueToText` and `RangeToText` conversions; the ≥2-entry
+   enum rule keeps single-entry sentinels numeric, tested.
+3. **Both verified end-to-end against the owner's example files,
+   recorded generically — MET, with §1's caveat recorded.** §2
+   verified directly (38 enum descriptors, 38 served label tables on
+   a sampled file). §1's file shape does not occur in the owner's set
+   (every file carries bus groups); the closest faithful verification
+   — a frameless rewrite of one file, derived outside the repo,
+   through the real seam — is recorded in the status log. If a real
+   frameless capture appears, the same probe closes the residual gap.
+
+Verdict: **all three criteria MET** — none waived. FYI items for the
+consolidated review: a rendered file-backed enum lane has not been
+eyeballed (serve-level verification stands; owner can glance at a
+lane on next import, or a harness scenario can be sanctioned); the
+frameless import offers no time-range inputs (modal gates them on
+frame timestamps — recorded, out of scope); `list_value_tables` is
+not bus-scoped on either branch (pre-existing).

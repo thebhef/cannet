@@ -69,6 +69,7 @@ const SETTINGS_FILE: &str = "settings.json";
 /// is what keeps this table from drifting away from the struct.
 pub(crate) const SCOPES: ScopeTable = &[
     ("scratch_cap_bytes", Scope::UserOverridable),
+    ("pyramid_retention_bytes", Scope::UserOverridable),
     ("clear_scratch_on_exit", Scope::UserOverridable),
     ("autosave_on_exit", Scope::UserOverridable),
     ("keybindings", Scope::UserOverridable),
@@ -135,6 +136,19 @@ pub struct Settings {
     /// history is dropped — the windowed-ring cap (ADR 0002). `None` (the
     /// default) means unbounded: the scratch grows with the capture.
     pub scratch_cap_bytes: Option<u64>,
+    /// Bytes of **unreferenced** signal pyramids this project may keep on
+    /// disk against their definition returning — the retention pool's
+    /// bound (ADR 0047). Default
+    /// [`DEFAULT_RETENTION_BYTES`](crate::signal_cache::DEFAULT_RETENTION_BYTES),
+    /// 16 GiB; `0` keeps none, which is what the cache did before the
+    /// pool existed.
+    ///
+    /// Absolute rather than a share of `scratch_cap_bytes`, because the
+    /// two bound different things: the scratch cap bounds the *live*
+    /// capture and its derived state, while this bounds what is kept for
+    /// a session that may never come. Over the bound, the oldest park is
+    /// given up first.
+    pub pyramid_retention_bytes: u64,
     /// Whether to wipe the disk-spill scratch on a clean exit. Default
     /// `false`: a prior session is kept and reloads on the next launch
     /// (ADR 0002 DS-7).
@@ -529,6 +543,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             scratch_cap_bytes: None,
+            pyramid_retention_bytes: crate::signal_cache::DEFAULT_RETENTION_BYTES,
             clear_scratch_on_exit: false,
             autosave_on_exit: false,
             keybindings: None,
@@ -1002,7 +1017,7 @@ pub fn set_settings(app: tauri::AppHandle, settings: Settings) -> Result<Setting
     })?;
     // Apply the windowed-ring scratch cap (ADR 0002 DS-8) to the live store
     // so a changed cap takes effect on the next flush, not just next launch.
-    crate::apply_scratch_cap(&app);
+    crate::apply_cache_caps(&app);
     Ok(settings)
 }
 
@@ -1045,6 +1060,7 @@ mod tests {
     fn sample() -> Settings {
         Settings {
             scratch_cap_bytes: Some(8 * 1024 * 1024 * 1024),
+            pyramid_retention_bytes: 4 * 1024 * 1024 * 1024,
             clear_scratch_on_exit: true,
             autosave_on_exit: true,
             keybindings: Some(vec![

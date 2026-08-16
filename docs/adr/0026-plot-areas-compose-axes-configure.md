@@ -148,7 +148,19 @@ bands need `lineWidth = period / (2·√2)` and the naive `period / 2`
 paints ~71 % of each period. A tile only partly stale stripes only the
 stale part. A label over stripes gets a halo, stacked passes toward
 opacity, about twice as many on a light theme as on a dark one — its
-stripes carry far more contrast and swallow a single pass.
+stripes carry far more contrast and swallow a single pass — except
+where the theme draws a solid label box, which is already an opaque
+plate between the glyphs and the stripes and does the halo's job.
+
+**A tile label is drawn on a box whose opacity the theme carries.** The
+box is filled in the canvas chip color — effectively the canvas color,
+the same backing the cursor and Δ chips take — with the chips' own
+geometry: the measured text plus its 4 px padding, 13 px tall (never
+taller than the lane band), centred on the label. How solid it is is a
+per-theme number, 0 for no box and 1 for a plate. A composite at alpha
+0 leaves the canvas as it was, so this is one draw path on every theme
+rather than a branch on which themes count as light, and a theme whose
+labels already read against the tile is left pixel-identical.
 
 **A tile label's ink is measured, not assumed.** The label used to be
 drawn in the tile's accent — the colormap tint, or the series color
@@ -156,10 +168,14 @@ where no colormap claims the value — and the tile's fill is a *tint of
 that same accent*. On a dark theme the two separate, because the accent
 is light and the fill darkens it; on a light theme they collapse, and
 the label is drawn a hair off the plate it sits on. So the ink is
-chosen per tile by WCAG contrast against the ground the tile actually
-paints (its fill composited over the app background): the accent
-wherever it clears **3:1**, and otherwise the extreme (black or white)
-**opposite the theme's background**.
+chosen per tile by WCAG contrast against the ground that is actually
+under the label — the tile's fill composited over the app background,
+and then the label box composited over that: the accent wherever it
+clears **3:1**, and otherwise the extreme (black or white) **opposite
+the theme's background**. A box therefore does not just make the label
+legible, it decides what "legible" measures against: on a near-white
+plate the stronger tints keep their own color and only the pale ones
+fall back.
 
 Three things about that rule are deliberate. The threshold is 3 rather
 than 4.5 because a tile label is a short word on a colored plate
@@ -182,6 +198,8 @@ wherever the background reads against the ink — which is the striping
 color, and is what every case on all three shipping themes takes — and
 the opposing extreme where the ink itself landed on the background's
 side, since a near-white halo around a white glyph is no halo at all.
+It is only *spent* on a theme with no solid box; the box supersedes it
+where there is one.
 
 **An enum lane draws its own sample markers.** uPlot's point layer
 cannot serve a lane: its `auto` rule reads the density of the *axis*,
@@ -535,7 +553,9 @@ below:
   `drawEnumTiles(band)` helper. The single-enum axis reuses the same
   helper with one full-height centered band. Pure `enumSegments()`
   walks the (t, v) arrays; segments narrower than the label width draw
-  the colored tile without text. Tile labels centre on the midpoint of
+  the colored tile without text — and without a box, since a plate with
+  no text on it is just a hole in the tile's color. Tile labels centre
+  on the midpoint of
   the tile's **visible** part (`tileLabelX`), rounded to whole pixels so
   glyphs aren't re-rasterised at a new subpixel phase each frame.
   Centring on the tile's *own* midpoint is rigid against the tile and so

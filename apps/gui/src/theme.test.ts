@@ -113,6 +113,21 @@ describe("themes", () => {
     }
   });
 
+  it("each say how solid the lane-label box behind their tile labels is", () => {
+    // A number per theme rather than a branch on the name (ADR 0026),
+    // same idiom as `laneLabelShadowPasses`: the dark theme's labels read
+    // against the tile itself and its box paints nothing, the light
+    // themes label on a solid plate. A theme added without a value here
+    // would draw a box nobody chose.
+    for (const t of Object.values(THEMES)) {
+      expect(t.laneLabelBoxOpacity, t.name).toBeGreaterThanOrEqual(0);
+      expect(t.laneLabelBoxOpacity, t.name).toBeLessThanOrEqual(1);
+    }
+    expect(THEMES.dark.laneLabelBoxOpacity).toBe(0);
+    expect(THEMES.light.laneLabelBoxOpacity).toBe(1);
+    expect(THEMES.lighthk.laneLabelBoxOpacity).toBe(1);
+  });
+
   it("key every theme object by its own name", () => {
     for (const [name, t] of Object.entries(THEMES)) expect(t.name).toBe(name);
   });

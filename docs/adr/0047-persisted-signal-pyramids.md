@@ -2,7 +2,8 @@
 
 Status: accepted (2026-08-08); amended (2026-08-15) — validity is judged
 per signal (global capture gates + a per-signal encoding fingerprint)
-rather than by one whole-set key
+rather than by one whole-set key; amended (2026-08-15) — a pyramid whose
+definition has gone is retained in a bounded pool rather than deleted
 
 ## Context
 
@@ -171,6 +172,67 @@ cadence has not reached yet. That is the trade this ADR makes on
 purpose — the wait belongs on the path the user has already decided to
 leave, not on the one where frames are arriving.
 
+**A pyramid nothing references any more is parked, not deleted.** The
+judgement above says whether a pyramid describes what is loaded now; it
+says nothing about whether it will again. A database unloaded for an
+afternoon, a signal edited and edited back, a project reopened against
+last week's DBC set — in each the samples on disk are exactly what the
+returning definition would decode, and deleting them buys back disk at
+the price of re-decoding a capture. So a pyramid whose fingerprint no
+longer answers to the loaded set moves to a **retention pool**:
+
+- **Bounded in bytes, evict-oldest.** `pyramid_retention_bytes` in
+  `settings.json`, default 16 GiB. The unit of parking is not one signal
+  but a session's worth of them — unloading a database unreferences every
+  pyramid it decoded at once, ~1.6 GB on the reference workload — so a
+  bound that holds only one such set would evict the previous set every
+  time, which is the case the pool exists for. Oldest first, because the
+  pool is a bet on a definition returning and an old park is a bet that
+  has been losing for a while. `0` keeps nothing, which is what this ADR
+  specified before.
+- **Parking renames, it does not copy.** A parked pyramid must not sit
+  under the file-name base a rebuild of the same signal would append
+  into, so its level files are renamed aside and renamed back on revival.
+  Nothing is read or written but directory entries.
+- **A revival is the same proof as a reopen.** The pool hands a pyramid
+  back exactly when the fingerprint it was parked with matches the set
+  now loaded — the judgement is not weakened for being made later, and a
+  key that is already live is never displaced by one.
+- **The hard gates stay hard.** The pool is discarded whole on a
+  `capture_id` or `low_water` change, and a row whose decode cursor sits
+  past the restored tip is discarded rather than parked. Those are facts
+  about the *frames*: no returning definition can make such a pyramid
+  valid again, so keeping it would be keeping something that can only
+  ever be thrown away.
+- **This applies in-session too.** A DBC-set change judges the live
+  pyramids the same way a restore judges persisted ones: one whose
+  candidate chain has not moved keeps decoding, one whose has is parked,
+  and one the pool can answer for is revived — all in the one call. A
+  live cache created since the last manifest write carries no
+  fingerprint (nothing has held it and a loaded set at the same moment),
+  so it is discarded, which is the safe direction and the behaviour every
+  cache had before.
+
+**What the cache is doing is answerable from a log.** Reuse this
+aggressive is only worth having if "are we saving time or wasting disk"
+can be answered without instrumenting anything, so both halves of it are
+reported through the two seams that already exist — no new telemetry
+channel:
+
+- **Per restore**, in its breakdown line: signals reopened, revived and
+  rebuilt, plus the **bytes** reused and the bytes owed. Counts alone do
+  not answer the question — one reopened pyramid over a long capture and
+  one over a short capture are the same count and wildly different
+  savings — and the honest byte figure is the samples themselves, live
+  slots at the stored slot size.
+- **Ongoing**, in the health sample's cache accounting: live pyramids,
+  how many of them this session has **never read** and what they hold,
+  the pool's occupancy against its bound, and the session's revivals and
+  evictions. Never-read is the one that catches the failure this
+  retention could cause — disk kept for signals nobody looks at — and
+  revivals against evictions is what says whether the pool is paying for
+  itself or churning.
+
 Two lifecycle rules complete it:
 
 - **A new capture wipes the pyramids**, including anything a prior
@@ -249,6 +311,19 @@ Two lifecycle rules complete it:
   ordered candidate chain has the property the nomination was after — a
   priority change that cannot change any frame's decode moves nothing —
   without pretending to a winner.
+- **Bound the retention pool as a share of the scratch cap.** Ties two
+  budgets that bound different things: the scratch cap bounds the capture
+  being worked on, the pool bounds what is kept for a session that may
+  never come. A user who raises the cap to hold a longer capture has said
+  nothing about how much they want to keep for a database they might
+  reload, and an unbounded-scratch project (the default) would have no
+  share to take.
+- **Keep unreferenced pyramids under their live file names and refuse to
+  rebuild over them.** The collision is real — a rebuild of a parked
+  signal opens the same `key_prefix` files — and "refuse" would mean a
+  signal whose definition changed could never be decoded again while its
+  old samples were retained. Renaming aside costs a directory entry and
+  keeps both.
 - **Persist the pyramid inside the raw store's own manifest.** Couples
   two families with genuinely different write cadences: the pyramids
   move when a plot is served, the raw store when frames arrive. A
@@ -269,12 +344,18 @@ Two lifecycle rules complete it:
 - The scratch keeps the pyramid bytes between sessions. They are inside
   DS-8's cap like everything else in `cache/`, and the windowed-ring
   eviction trims them with the raw store.
+- The scratch can now hold pyramids **no loaded model references** — up
+  to `pyramid_retention_bytes` of them — so a project's cache footprint
+  no longer falls when a database is unloaded. That is the trade, it is
+  bounded and settable, and what it is buying is visible in the health
+  sample beside it.
 - Every rejection path costs exactly what it did before: a wipe of the
   rejected rows' files and a rebuild on the next serve. What has changed
   is how much of a set one rejection takes with it.
 - A rejection is visible: the restore's system-log line says how many
-  caches did not match, its breakdown line carries the reopened-vs-rebuilt
-  split, and the status line carries a rebuild chip with a discard action
+  caches did not match, its breakdown line carries the
+  reopened-vs-revived-vs-rebuilt split with the bytes on each side, and
+  the status line carries a rebuild chip with a discard action
   until the rebuilt caches have caught up. The pyramids the same restore
   reopened are not evidence about that — their cursors came back at the
   tip — so they are left out of the answer. The fast path stays silent: a

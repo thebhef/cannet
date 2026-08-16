@@ -366,6 +366,182 @@ phase's brief reserves for phase 3.
 | an encoding change rebuilds exactly that signal | `an_encoding_change_rebuilds_that_signal_and_reopens_the_rest` — 1 reopened / 1 rebuilt, proved over an undecodable store, and the rebuilt row's level files are gone |
 | file-backed pyramids survive DBC-set changes | `a_file_backed_series_comes_back_after_a_dbc_change_across_sessions`, now restoring against a set in which nothing defines the decoded signal |
 
+### 2026-08-15 — phase 3: the retention pool and the usage metrics
+
+Branch `task76-p3-retention-metrics`, off `task72-p10-label-box`.
+
+| Commit | What landed |
+| --- | --- |
+| `7c310e6` | `cannet-spill` publishes what a stored sample costs — the bytes seam phase 2 deferred |
+| `d11bcef` | the bounded retention pool, the `pyramid_retention_bytes` knob, the in-session judgement, the restore line's bytes, ADR 0047's amendment, README |
+| `ecabdcc` | the health sample's pyramid accounting (never-read + pool) |
+
+Tests: `cannet-gui` 686 → **693** (six retention/metrics tests in
+`signal_cache`, one health-line test in `crash`), `cannet-spill` 68 →
+**69**, `cannet-dbc` unchanged at 109, frontend unchanged at 2220 in 164
+files (`hostSettings.ts` gained the knob's type and default; no
+behaviour). `cargo clippy --all-targets` clean on both touched crates,
+`cargo fmt --check` clean. Release build clean at `ecabdcc`.
+
+#### The bytes-accounting seam
+
+Phase 2 deferred bytes because "the only honest byte figure is live
+slots × slot size, and `ENTRY_BYTES` is private to `cannet-spill`". Two
+items are now public, because the accounting asks the question in two
+different situations:
+
+- **`SampleSeq::live_bytes()`** — for a run that is mapped (a live
+  pyramid's levels). The arithmetic lives beside the layout rather than
+  being re-stated by a caller.
+- **`cannet_spill::SAMPLE_ENTRY_BYTES`** — for a run that is *not*
+  mapped, known only as the `(len, first_slot)` pair a manifest row
+  carries. That is the case for every rejected and every parked row, so
+  a per-run accessor alone would not have covered it.
+
+Both report **live** slots, so a front-trimmed pyramid is charged what
+it kept. Its rustdoc says what it is not: the stored size of the
+samples, not the on-disk footprint (segments are geometric and lazily
+created — that number is what a directory walk measures, and the health
+sample already has it as `pyramid=`).
+
+#### The counter set, settled
+
+Grooming the set was part of the phase. What it came to, and why each
+one is in rather than beside it:
+
+**Per restore** — the breakdown log line
+(`pyramids {ms} (N reopened, R revived, M rebuilt; reused X MB,
+re-decoding Y MB)`):
+
+| Counter | Answers |
+| --- | --- |
+| `reopened` | how much of the offered set was proved reusable |
+| `revived` | how much of that the **pool** supplied — the only number that says whether keeping bytes paid off, and it is a strict subset of `reopened` |
+| `rebuilt` | what this launch owes, which is what the rebuild chip is about |
+| `reused_bytes` | what the reuse was *worth*. Counts do not answer it: one reopened pyramid over a 6 M-frame capture and one over a 200-frame capture are the same count and different by four orders of magnitude |
+| `rebuilt_bytes` | what the rejection costs, in the same unit, so the two are comparable on one line |
+
+**Ongoing** — the health sample's cache accounting
+(`pyramids=[live=… unread=…/…MB retained=…/…MB cap=…MB revived=… evicted=…]`):
+
+| Counter | Answers |
+| --- | --- |
+| `live` | how many pyramids the session is carrying |
+| `unread` / `unread_bytes` | **disk that has not earned its keep** — pyramids restored or built and never served from. This is the failure retention itself could cause, so it is the counter the phase most needed |
+| `retained` / `retained_bytes` | the pool's occupancy |
+| `cap` | its bound, so an idling pool reads differently from one thrashing against its budget — `retained ≈ cap` with a rising `evicted` is the "wasting disk" signature |
+| `revived` / `evicted` | session-lifetime pool outcomes. Revivals without evictions is the pool working; evictions without revivals is it paying for nothing |
+
+**Deliberately not counted.** Park *events* (a park is visible as a
+`retained` step and as a `rebuilt` on the line that caused it); a hit
+rate (two counters a reader can divide are more informative than one
+ratio that hides both); per-signal read counts (the question is
+"anything at all", and a count per signal is a per-serve write on the
+hot path for a distinction nobody asks); anything the existing
+`cache_mb=[… pyramid=…]` split already reports — the pool's footprint
+is inside it, and this group says what *kind* of bytes those are.
+
+Read marks are **per session and not persisted**: "has anything looked
+at this since launch" is the question, and a persisted mark would
+answer a different one (whether it was ever looked at, ever) that
+nothing acts on.
+
+#### Parking renames; it does not copy
+
+The design problem the pool had to solve is that `key_prefix` is
+deterministic in the key: a parked pyramid and a *rebuild of the same
+signal* would open the same level files, and the rebuild would append
+into the retained samples. So parking renames the files to
+`park.{seq:08x}.{live base}` and a revival renames them back — directory
+entries only, no bytes read or written, and the live name is left clean
+for the rebuild that is about to happen.
+
+`the_invalidated_subset_rebuilds_in_one_walk_of_its_message` is what
+pins it: it parks `B`, rebuilds it, and asserts the rebuilt level 0 is
+`n` long at the *new* encoding's values. Appending into the parked run
+would make it `2n`.
+
+The sequence number keeps two parks of one signal apart — a definition
+that changed twice leaves two candidates and either may be the one that
+returns — and a restore resumes numbering above the highest base the
+prior session left, so a park can never land on one.
+
+#### Revival against the hard gates
+
+`capture_id` and `low_water` are checked **before anything is parked or
+revived**, and a mismatch in either discards the pool whole (its files
+are simply absent from the keep list, so the restore's wipe takes them).
+The reasoning is that those two are facts about the *frames*: no
+returning definition can make a pyramid of another capture, or of the
+same capture trimmed to another mark, valid again — so retaining one
+would be retaining something that can only ever be thrown away. A row
+whose decode cursor sits past the restored tip (crash truncation) is
+discarded for the same reason rather than parked.
+
+Only a **fingerprint** mismatch parks. That is exactly the "the
+definition disappeared or was edited away" case the scope names, and it
+is the only rejection a later session can undo.
+
+Within the pool, a revival is the same proof a reopen is — the parked
+row's recorded fingerprint against the set now loaded — plus one guard:
+a key that is already live is never displaced, since the live cache is
+the current decode and two pyramids cannot share one key or one set of
+files.
+
+#### The in-session half, and what fell out of it
+
+`invalidate_dbcs` now takes the new loaded set and judges each live
+DBC-backed cache against it, which is the same judgement `restore`
+makes. Three outcomes: chain unchanged → **stays live**; chain moved →
+parked; no fingerprint → discarded.
+
+The first is a behaviour change beyond "park instead of delete", and it
+is emergent rather than added: parking everything and immediately
+reviving whatever matched would produce the same set of live caches, by
+a disk round-trip. Keeping them live is strictly better than that —
+it preserves samples appended since the last manifest write, which a
+round-trip through the persisted row would drop and re-decode. So a
+DBC-set change no longer discards pyramids it cannot have changed,
+which is the touched-DBC waste of phase 1 and 2, one session earlier.
+
+The third is the cost of stamping at persist time. A cache's
+fingerprint is recorded when the manifest is written (and carried in
+when a row is reopened), because that is when a loaded set and the
+cache are in hand together; by the time `invalidate_dbcs` runs the set
+it was decoded against is gone. A cache created since the last write
+therefore has no stamp, cannot prove what it was decoded with, and is
+discarded — the safe direction, and exactly what every cache got before
+this phase. The flush cadence is 2 s by default, so the window is
+small, and it costs a rebuild rather than a wrong answer.
+
+Considered and rejected: stamping at catch-up instead. The serve path
+carries `&[&Database]` without bus scoping, and `dbc_encoding` needs
+the scoping, so it would mean widening the hot serve path's signature
+to carry `DbcScope` — a data-path change for a 2-second window.
+
+#### Exit criteria this phase owns
+
+| Criterion | Where |
+| --- | --- |
+| unreferenced caches retained up to the byte bound | `an_unreferenced_pyramid_is_parked_and_revived_when_its_definition_returns`, `the_retention_pool_evicts_the_oldest_park_at_its_byte_bound` |
+| evicted oldest-first | the same eviction test — the pool is bounded at exactly one park's bytes, a second park is made, and the *first* signal is the one whose files go |
+| revived on a fingerprint match | the park/revive test across two sessions (proved over a store whose frames decode to nothing, so anything served came off disk) and `a_dbc_change_parks_what_it_re_encoded_and_leaves_the_rest_live` in-session |
+| the bound visible in the health sample | `health_message_says_what_the_pyramid_cache_is_earning` (`cap=16384MB`) |
+| the restore line carries reopened/rebuilt with bytes | `a_restore_reports_the_bytes_it_reused_and_the_bytes_it_owes` for the figures; the line itself in `capture.rs` |
+| pool revivals/evictions/retained bytes in the accounting | the health-line test, over a `CacheUsage` with all of them |
+| never-read visibility | `the_usage_report_names_the_pyramids_nothing_has_read` — two restored, one served, one still unread with its bytes |
+| task-wide: mtime-touch invalidates nothing | `a_touched_but_unchanged_dbc_reopens_every_pyramid`, unchanged and still green |
+| task-wide: one signal's change rebuilds one | `an_encoding_change_rebuilds_that_signal_and_reopens_the_rest`, unchanged but for the parked-not-deleted assertion |
+
+#### The tests were checked by falsification
+
+| Sabotage | Failed |
+| --- | --- |
+| `park` always wipes instead of renaming | the park/revive, eviction, hard-gate, in-session, staged-set and encoding-change tests (6) |
+| evict newest instead of oldest | the eviction test alone |
+| the pool survives a `capture_id` / `low_water` change | the hard-gate test alone |
+| a serve never sets its read mark | the never-read test alone |
+
 ## Blockers / side effects
 
 - **The pyramid decode path does not honour DBC bus scoping** (found
@@ -435,3 +611,53 @@ phase's brief reserves for phase 3.
   in `plans/tasks/0072-extrapolation-rendering.md` (a post-closeout owner
   ruling on lane-label styling). It is not part of this work and was left
   in the working tree, uncommitted.
+
+### Phase 3
+
+- **`SignalCacheStore::invalidate_dbcs` gained a parameter** — the new
+  loaded set as `&[DbcScope]`. One production call site
+  (`app_state::invalidate_derived_caches`), which now takes the DBC lock
+  before the signal-cache lock; that is the order `persist_pyramids`,
+  `restore` and `sample_signals` already establish, so no new edge in the
+  lock order.
+- **A DBC-set change no longer drops every DBC-backed pyramid.** One
+  whose candidate chain has not moved keeps decoding. This is an
+  in-session behaviour change beyond "park instead of delete" — see the
+  status log for why it falls out of park-then-revive rather than being
+  added to it — and it means the *footprint* after a DBC change is now
+  higher than before in two ways: live pyramids that used to be dropped,
+  and parked ones that used to be deleted. Both are visible in the health
+  sample; only the second is bounded.
+- **A live cache created since the last manifest write is still
+  discarded** by a DBC change, because nothing has ever held it and a
+  loaded set at the same moment, so what it was decoded with is
+  unprovable. The flush cadence is 2 s, so the window is small, and it
+  costs a rebuild rather than a wrong answer.
+- **`apply_scratch_cap` is now `apply_cache_caps`** and pushes both
+  on-disk bounds (the scratch cap onto the trace store, the retention
+  budget onto the signal cache). Three call sites, all internal.
+- **`format_health_message` gained a `CacheUsage` parameter**, and the
+  whole `cache_mb=…`/`pyramids=…` group is gated on the scratch being
+  disk-backed as before. The line is longer by one bracketed group per
+  disk-backed sample; `log_rotation_bytes` bounds the file regardless.
+- **Old manifests** read unchanged: `retained` is `#[serde(default)]`, so
+  a `pyramids.json` written before this phase restores as a set with
+  nothing parked. A manifest written *after* it is readable by a phase-2
+  build, which ignores `retained` — and would then leave the parked level
+  files on disk with nothing referencing them until the next wipe. The
+  scratch is per-project cache state a downgrade already rebuilds, so
+  this is not gated.
+- **The pool can hold two entries for one signal** when its definition
+  changed twice (each park records the fingerprint it was parked with,
+  and either may be the one that returns). Only the matching one is
+  revived; the other ages out through the bound. Deliberate — deduping
+  by key would throw away a candidate that is still reachable — and it
+  is why parked names carry a serial.
+- **No per-signal "stop plotting" drop path exists**, so the scope's
+  "or that the model no longer references" clause has exactly one seam
+  in the code today: the fingerprint judgement (a definition edited away
+  or gone leaves the empty chain, which never matches). A pyramid whose
+  signal is merely removed from every plot stays live and is not parked —
+  there is nothing in the model that says it was unreferenced.
+- The bus-scoping divergence recorded above is **untouched**, as the
+  phase required.

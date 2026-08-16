@@ -44,11 +44,19 @@ function recorder() {
     font: "10px mono",
     shadowColor: "",
     shadowBlur: 0,
+    globalAlpha: 1,
     textAlign: "left",
     textBaseline: "middle",
   };
   const saved: (typeof state)[] = [];
-  const push = (op: string, ...args: unknown[]) =>
+  // A call made at `globalAlpha` 0 is recorded as what it is: nothing. A
+  // source-over composite at alpha 0 leaves every pixel exactly as it
+  // was, so a draw made under it is indistinguishable — in a screenshot
+  // and here — from one that never happened. That is what lets the
+  // label box take a single unconditional draw path across themes.
+  const inked = () => state.globalAlpha !== 0;
+  const push = (op: string, ...args: unknown[]) => {
+    if (!inked()) return;
     ops.push({
       op,
       args,
@@ -57,6 +65,7 @@ function recorder() {
       fill: state.fillStyle,
       lineWidth: state.lineWidth,
     });
+  };
   const ctx = {
     get lineWidth() {
       return state.lineWidth;
@@ -88,6 +97,12 @@ function recorder() {
     set shadowBlur(v: number) {
       state.shadowBlur = v;
     },
+    get globalAlpha() {
+      return state.globalAlpha;
+    },
+    set globalAlpha(v: number) {
+      state.globalAlpha = v;
+    },
     font: state.font,
     textAlign: state.textAlign,
     textBaseline: state.textBaseline,
@@ -110,6 +125,7 @@ function recorder() {
     fillRect: (...a: number[]) => push("fillRect", ...a),
     strokeRect: (...a: number[]) => push("strokeRect", ...a),
     fillText: (t: string, x: number, y: number) => {
+      if (!inked()) return;
       ops.push({
         op: "fillText",
         args: [t, x, y],
@@ -442,9 +458,12 @@ describe("drawEnumTiles extrapolation hatching", () => {
     expect(times).toEqual(stalled.t);
   });
 
-  it("halos about twice as hard on a light theme as on a dark one", () => {
-    // Owner call after a side-by-side: a light theme's stripes carry far
-    // more contrast against the tile fill and swallow a single pass.
+  it("spends halo passes only where no solid box already carries the label", () => {
+    // The halo exists to keep a label off the stripes. A theme that
+    // draws a solid box behind the label has already put an opaque plate
+    // between the two, so the passes would paint background over
+    // background — and their blur would fringe out past the box's edge
+    // onto the tile. Dark, which draws no box, keeps its passes exactly.
     const passes = (name: ThemeName) => {
       const before = theme().name;
       setActiveTheme(name);
@@ -458,10 +477,9 @@ describe("drawEnumTiles extrapolation hatching", () => {
       return r.ops.filter((o) => o.op === "fillText" && String(o.fill).startsWith("shadow:"))
         .length;
     };
-    const dark = passes("dark");
-    expect(dark).toBeGreaterThan(0);
-    expect(passes("light")).toBe(dark * 2);
-    expect(passes("lighthk")).toBe(dark * 2);
+    expect(passes("dark")).toBe(THEMES.dark.laneLabelShadowPasses);
+    expect(passes("light")).toBe(0);
+    expect(passes("lighthk")).toBe(0);
   });
 });
 
@@ -510,8 +528,17 @@ describe("enum tile label legibility", () => {
     return [...new Set(shadows.map((o) => String(o.fill).slice("shadow:".length)))];
   };
 
-  it("light: replaces an accent that has collapsed into its own tint", () => {
-    for (const tint of ["#6b7280", "#f59e0b", "#22c55e", "#3b82f6", "#ef4444"]) {
+  it("light: keeps the accent the box rescues, and replaces the pale tints", () => {
+    // The label box is what the ink is now measured against, so the
+    // accent survives on the tints that read against a near-white plate
+    // — the tile's color is the signal's identity — and the two pale
+    // ones (amber 2.15:1, green 2.28:1 on `light`) fall back exactly as
+    // the shipped rule already made them.
+    for (const tint of ["#6b7280", "#3b82f6", "#ef4444"]) {
+      expect(inkOf(tintedTile("light", tint, [])), tint).toBe(tint);
+      expect(inkOf(tintedTile("lighthk", tint, [])), tint).toBe(tint);
+    }
+    for (const tint of ["#f59e0b", "#22c55e"]) {
       expect(inkOf(tintedTile("light", tint, [])), tint).toBe("#000000");
       expect(inkOf(tintedTile("lighthk", tint, [])), tint).toBe("#000000");
     }
@@ -537,20 +564,93 @@ describe("enum tile label legibility", () => {
   it("halos in the background wherever the background reads against the ink", () => {
     // The stripes are painted in the background, so a background halo is
     // what stops them cutting the glyphs — and it is what the dark theme
-    // already had.
+    // already had. (Which color the halo takes when the ink lands on the
+    // background's own side is `laneLabelInk`'s, and measured there: no
+    // shipping theme both draws no box and inks that way.)
     const dark = tintedTile("dark", "#3b82f6", [[0, 10]]);
     expect(haloOf(dark)).toEqual([THEMES.dark.background]);
-    const light = tintedTile("light", "#3b82f6", [[0, 10]]);
-    expect(haloOf(light)).toEqual([THEMES.light.background]);
+  });
+});
+
+describe("the lane label's background box", () => {
+  // The owner's call off the phase-9 frames: "having a background box
+  // around the text would be better. Dark doesn't need it but I think
+  // having it for light...". One draw path, a per-theme opacity — so
+  // dark's box is the same call at alpha 0, which paints nothing.
+
+  const TABLE = [{ raw: 1, label: "Running" }];
+
+  /** Draw one untinted tile under `name` and hand back the recorded ops.
+   * `seg` is the tile's own extent and `vis` the plot box's, in the fake
+   * uPlot's 1 unit = 10 px world. */
+  function tile(
+    name: ThemeName,
+    seg: [number, number] = [0, 10],
+    vis: { left: number; width: number } = { left: 0, width: 1000 },
+  ) {
+    const before = theme().name;
+    setActiveTheme(name);
+    const r = recorder();
+    drawEnumTiles(r.ctx, fakeU([seg, [1, 1]], [{}]), {
+      seriesIdx: 1,
+      table: TABLE,
+      target: null,
+      resolveColor: vi.fn(),
+      bandTop: 40,
+      bandBot: 60,
+      accent: "#3b82f6",
+      ratio: 1,
+      ...vis,
+    });
+    setActiveTheme(before);
+    return r.ops;
+  }
+
+  /** The box: a `fillRect` in the theme's chip fill. The tile's own fill
+   * is `laneFillDefault`, so the two never collide. */
+  const boxes = (ops: Op[], name: ThemeName) =>
+    ops.filter((o) => o.op === "fillRect" && o.fill === THEMES[name].canvasChipFill);
+
+  it("light: backs the label with a solid box in the chip fill", () => {
+    const ops = tile("light");
+    // `Running` measures 42 px in the stand-in, centred in a 100 px tile
+    // at x = 29; the box is that plus the label's own 4 px padding
+    // either side, 13 px tall on the band's centre line — the geometry
+    // the canvas chips (cursor labels, Δ readouts) already use.
+    expect(boxes(ops, "light").map((o) => o.args)).toEqual([[25, 43.5, 50, 13]]);
+    // Under the glyph, not over it.
+    const box = boxes(ops, "light")[0];
+    const text = ops.find((o) => o.op === "fillText");
+    expect(ops.indexOf(box)).toBeLessThan(ops.indexOf(text!));
   });
 
-  it("flips the halo when the ink lands on the background's own side", () => {
-    // A near-black tint on a light theme is the one ground a black ink
-    // cannot hold (2.95:1), so the ink goes white — and a near-white halo
-    // around a white glyph would be no halo at all.
-    const ops = tintedTile("light", "#000000", [[0, 10]]);
-    expect(inkOf(ops)).toBe("#ffffff");
-    expect(haloOf(ops)).toEqual(["#000000"]);
+  it("dark: paints no box at all", () => {
+    // The pin, at the draw tier: the theme the owner reads fine is left
+    // holding exactly the calls it held before — one fill for the tile
+    // and one for nothing else.
+    const ops = tile("dark");
+    expect(boxes(ops, "dark")).toEqual([]);
+    expect(ops.filter((o) => o.op === "fillRect")).toHaveLength(1);
+    expect(ops.filter((o) => o.op === "fillText")).toHaveLength(1);
+  });
+
+  it("keeps the box inside the tile's visible part, like the label itself", () => {
+    // A tile running off both edges of a narrow plot box: the label
+    // centres on what is visible (`tileLabelX`), and the box follows it
+    // rather than the tile's own midpoint, which is 90 px to the left.
+    const ops = tile("light", [-10, 10], { left: 20, width: 60 });
+    const [x, , w] = boxes(ops, "light")[0].args as number[];
+    expect(x).toBeGreaterThanOrEqual(20);
+    expect(x + w).toBeLessThanOrEqual(80);
+  });
+
+  it("draws no box on a tile too narrow to label", () => {
+    // A segment narrower than its label draws the colored tile and
+    // nothing else (ADR 0026); a box with no text in it would be a
+    // blank plate over the tile's own color.
+    const ops = tile("light", [0, 3]);
+    expect(ops.filter((o) => o.op === "fillText")).toEqual([]);
+    expect(boxes(ops, "light")).toEqual([]);
   });
 });
 

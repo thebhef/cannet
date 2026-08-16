@@ -296,8 +296,18 @@ impl AppState {
 /// rare, so clear-and-rebuild is cheaper and safer than tracking per-frame
 /// decode dependencies (ADR 0033: build dependent state in order, and
 /// rebuild it when its inputs change).
+///
+/// The **pyramids** are the exception, and judged rather than cleared: each
+/// carries the fingerprint of the encoding it was decoded under (ADR 0047),
+/// so the new set is what decides which of them are stale, which keep
+/// decoding, and which are parked against their definition's return.
 pub(crate) fn invalidate_derived_caches(state: &AppState) {
-    state.signal_caches.invalidate_dbcs();
+    // Lock order: the DBC set before the signal caches, as every other
+    // path that needs both takes them (`persist_pyramids`, `restore`,
+    // `sample_signals`).
+    let dbcs = state.databases();
+    state.signal_caches.invalidate_dbcs(&dbc_scopes(&dbcs));
+    drop(dbcs);
     *state.filter_index() = None;
     // The descriptor universe is derived from the DBC set the same way,
     // and has the same staleness failure: a removed DBC's signals would

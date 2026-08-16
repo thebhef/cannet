@@ -29,7 +29,27 @@ WebView2 DevTools port (must not open unless requested), the
 perf-interact tick scheduler, and any listener the screenshot/hover
 machinery installs unconditionally.
 
-## Exit criteria (draft — firm at grooming)
+## Grooming (2026-08-15, owner-confirmed)
+
+Two phases, investigation-then-fix:
+
+1. **P1 — inventory.** Every measurement/automation hook in the
+   shipping binary enumerated and classified (product feature vs
+   harness-only), with default state, unused cost, and evidence (code
+   path or measurement) per row; the table lands in the status log.
+   No fixes. **Includes** a bounded side-investigation attributing
+   the screenshot-scenario empty-plot flake (recorded in 0072's
+   blockers: ~1 in 3 runs across three binaries, correct on re-run) —
+   it lives in the same harness code the inventory walks.
+2. **P2 — fix.** Anything harness-only that is neither
+   flag-gated-off ("not scheduled at all") nor measured-free at the
+   ADR-0031 gate's sensitivity is fixed test-first; README/ADR-0031
+   gain the flag inventory; product-feature costs come back to the
+   owner as a stated budget for acceptance.
+
+The draft exit criteria below are confirmed as written.
+
+## Exit criteria (firmed at grooming, 2026-08-15)
 
 - The inventory table lands in this file's status log: every hook,
   its classification, its default state, its unused cost, with the

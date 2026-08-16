@@ -329,7 +329,7 @@ pub(crate) fn reroot_session(
     log_project_dir(dest, "session re-rooted");
     // Settings resolve through the new project's `.cannet/`, which may
     // override the scratch cap.
-    apply_scratch_cap(app);
+    apply_cache_caps(app);
 }
 
 /// The open project's workspace-scoped data directory — `.cannet/`
@@ -369,14 +369,22 @@ fn open_trace_store(scratch: &std::path::Path) -> Arc<TraceStore> {
     }
 }
 
-/// Push the windowed-ring scratch cap (ADR 0002 DS-8) from settings onto
-/// the live trace store. Called at launch and after every settings change
-/// so the cap takes effect without a restart.
-pub(crate) fn apply_scratch_cap(app: &AppHandle) {
+/// Push the two on-disk cache bounds from settings onto the live model:
+/// the windowed-ring scratch cap (ADR 0002 DS-8) onto the trace store,
+/// and the signal-pyramid retention budget (ADR 0047) onto the signal
+/// cache. Called at launch and after every settings change so both take
+/// effect without a restart.
+pub(crate) fn apply_cache_caps(app: &AppHandle) {
     // `get_settings` has already refused any below-minimum cap (ADR 0002
     // DS-8) and reported it, so whatever arrives here is honorable as-is.
-    let cap = settings::get_settings(app.clone()).scratch_cap_bytes;
-    app.state::<AppState>().trace_store.set_scratch_cap(cap);
+    let settings = settings::get_settings(app.clone());
+    let state = app.state::<AppState>();
+    state
+        .trace_store
+        .set_scratch_cap(settings.scratch_cap_bytes);
+    state
+        .signal_caches
+        .set_retention_cap(settings.pyramid_retention_bytes);
 }
 
 /// The directory the live filter index roots in: a `filter/` subdir of
@@ -610,7 +618,7 @@ pub fn run() -> ! {
             // `AppState` is managed here rather than on the builder because
             // that resolution needs the handle; no command can run before
             // `setup` returns, so it is in place for every consumer
-            // (including `apply_scratch_cap` and the DBC watcher below).
+            // (including `apply_cache_caps` and the DBC watcher below).
             let project_dir = resolve_project_dir(app);
             let scratch = project_dir.get().cache_dir().to_path_buf();
             let filter_dir = filter_index_dir(&scratch);
@@ -667,7 +675,7 @@ pub fn run() -> ! {
             spawn_clock_status_emitter(app.handle().clone());
             // Apply the persisted windowed-ring scratch cap (ADR 0002 DS-8)
             // so a flush honors it from the first tick.
-            apply_scratch_cap(app.handle());
+            apply_cache_caps(app.handle());
             // The single transmit scheduler thread drives every running
             // periodic. Takes ownership of the command
             // receiver created above.

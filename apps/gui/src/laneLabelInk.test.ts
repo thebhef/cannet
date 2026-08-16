@@ -9,12 +9,18 @@ import {
   relativeLuminance,
 } from "./laneLabelInk";
 import { colorMapLaneFill } from "./colorMap";
-import { THEMES } from "./theme";
+import { THEMES, type Theme, type ThemeName } from "./theme";
 
 /** The tints the committed `examples/extrapolation` colormaps use — the
  * exact grounds the owner read "Idle / Standby / Closed / Arming /
  * Derate / Fault" off in the sign-off frames. */
 const FIXTURE_TINTS = ["#6b7280", "#f59e0b", "#22c55e", "#3b82f6", "#ef4444"];
+
+/** The fixture tints whose accent reads against a light theme's label
+ * box, and the two pale ones that do not (yellow at 2.15:1 and green at
+ * 2.28:1 on `light`, 1.87 and 1.98 on `lighthk`). */
+const KEEPS_ACCENT_ON_A_BOX = ["#6b7280", "#3b82f6", "#ef4444"];
+const FALLS_BACK_ON_A_BOX = ["#f59e0b", "#22c55e"];
 
 /** The composited ground a tinted tile actually paints: the darkened,
  * 0.65-alpha lane fill over the theme's background. */
@@ -24,6 +30,26 @@ function tintGround(tint: string, background: string) {
   if (!fill || !bg) throw new Error("unparseable fixture color");
   return compositeOver(fill, bg);
 }
+
+/** The ground the *label* is read against, which is the tile's only
+ * where nothing is drawn between: the theme's label box composited over
+ * the tile ground at {@link Theme.laneLabelBoxOpacity}. At 0 (dark) that
+ * is the tile ground itself, unchanged. */
+function labelGround(tint: string, t: Theme) {
+  const box = parseCssColor(t.canvasChipFill);
+  if (!box) throw new Error("unparseable chip fill");
+  return compositeOver({ ...box, a: box.a * t.laneLabelBoxOpacity }, tintGround(tint, t.background));
+}
+
+/** The light theme as it would be with no label box — the shape a theme
+ * that keeps the halo treatment has. Its **name is its own**: the memo
+ * inside `laneLabelInk` keys on the theme name, so borrowing `light`'s
+ * would answer out of the real light theme's cache. */
+const LIGHT_NO_BOX: Theme = {
+  ...THEMES.light,
+  name: "light-no-box" as ThemeName,
+  laneLabelBoxOpacity: 0,
+};
 
 describe("parseCssColor", () => {
   it("reads the two spellings the tile fill is written in", () => {
@@ -118,17 +144,43 @@ describe("laneLabelInk", () => {
     }
   });
 
-  it("light: replaces an accent that has collapsed into its own tint", () => {
+  it("dark: measures against the tile, because its box paints nothing", () => {
+    // The box the light themes label on is alpha-0 here, and compositing
+    // at alpha 0 returns the ground untouched — so the theme the owner
+    // reads fine keeps not just its answers but the numbers behind them.
+    const t = THEMES.dark;
+    for (const tint of FIXTURE_TINTS) {
+      expect(labelGround(tint, t), tint).toEqual(tintGround(tint, t.background));
+      expect(laneLabelInk(colorMapLaneFill(tint), tint, t).ink, tint).toBe(tint);
+    }
+  });
+
+  it("light: keeps the accent the box rescues, and falls back only where it doesn't", () => {
+    // The box is what changed the measurement: every one of these tints
+    // had collapsed into its own tile fill (1.03-1.35:1), and on a
+    // near-white plate the stronger three clear the bar in their own
+    // color. Which is the point — the tile's color is the signal's
+    // identity.
     for (const name of ["light", "lighthk"] as const) {
       const t = THEMES[name];
-      for (const tint of FIXTURE_TINTS) {
-        const ground = tintGround(tint, t.background);
-        const before = contrastRatio(parseCssColor(tint)!, ground);
+      for (const tint of KEEPS_ACCENT_ON_A_BOX) {
+        const onTile = contrastRatio(parseCssColor(tint)!, tintGround(tint, t.background));
+        const onBox = contrastRatio(parseCssColor(tint)!, labelGround(tint, t));
+        expect(onTile, `${name} ${tint} on the tile`).toBeLessThan(LANE_LABEL_MIN_CONTRAST);
+        expect(onBox, `${name} ${tint} on the box`).toBeGreaterThanOrEqual(LANE_LABEL_MIN_CONTRAST);
+        expect(laneLabelInk(colorMapLaneFill(tint), tint, t).ink, `${name} ${tint}`).toBe(tint);
+      }
+      for (const tint of FALLS_BACK_ON_A_BOX) {
         const { ink } = laneLabelInk(colorMapLaneFill(tint), tint, t);
-        const after = contrastRatio(parseCssColor(ink)!, ground);
-        expect(before, `${name} ${tint} before`).toBeLessThan(LANE_LABEL_MIN_CONTRAST);
+        expect(
+          contrastRatio(parseCssColor(tint)!, labelGround(tint, t)),
+          `${name} ${tint} on the box`,
+        ).toBeLessThan(LANE_LABEL_MIN_CONTRAST);
         expect(ink, `${name} ${tint}`).not.toBe(tint);
-        expect(after, `${name} ${tint} after`).toBeGreaterThanOrEqual(LANE_LABEL_MIN_CONTRAST);
+        expect(
+          contrastRatio(parseCssColor(ink)!, labelGround(tint, t)),
+          `${name} ${tint} after`,
+        ).toBeGreaterThanOrEqual(LANE_LABEL_MIN_CONTRAST);
       }
     }
   });
@@ -140,21 +192,20 @@ describe("laneLabelInk", () => {
     // margin that means nothing. The theme's own polarity decides.
     for (const name of ["light", "lighthk"] as const) {
       const t = THEMES[name];
-      const inks = FIXTURE_TINTS.map((c) => laneLabelInk(colorMapLaneFill(c), c, t).ink);
+      const inks = FALLS_BACK_ON_A_BOX.map((c) => laneLabelInk(colorMapLaneFill(c), c, t).ink);
       expect(new Set(inks), name).toEqual(new Set(["#000000"]));
     }
   });
 
   it("takes the other extreme only where the theme's own fails the threshold", () => {
     // A near-black tint in a light theme paints a dark ground, and a
-    // black label on it measures 2.95:1 — under the bar. The rule is a
-    // preference, not a constant.
-    const light = THEMES.light;
-    const ground = tintGround("#000000", light.background);
-    expect(contrastRatio(parseCssColor("#000000")!, ground)).toBeLessThan(
-      LANE_LABEL_MIN_CONTRAST,
-    );
-    expect(laneLabelInk(colorMapLaneFill("#000000"), "#000000", light).ink).toBe("#ffffff");
+    // black label on it measures 2.85:1 — under the bar. The rule is a
+    // preference, not a constant. Measured on a light theme with no box,
+    // because that dark ground is exactly what a box covers up.
+    const t = LIGHT_NO_BOX;
+    const ground = tintGround("#000000", t.background);
+    expect(contrastRatio(parseCssColor("#000000")!, ground)).toBeLessThan(LANE_LABEL_MIN_CONTRAST);
+    expect(laneLabelInk(colorMapLaneFill("#000000"), "#000000", t).ink).toBe("#ffffff");
   });
 
   it("halos with the app background whenever the background reads against the ink", () => {
@@ -174,9 +225,9 @@ describe("laneLabelInk", () => {
   it("flips the halo when the ink and the background are the same side", () => {
     // The case the previous rule could not cover: a near-black tint in a
     // light theme takes a white ink, and a near-white halo around a white
-    // glyph is no halo at all.
-    const light = THEMES.light;
-    const { ink, halo } = laneLabelInk(colorMapLaneFill("#000000"), "#000000", light);
+    // glyph is no halo at all. On a theme with no label box, which is
+    // where a halo is what carries the label at all.
+    const { ink, halo } = laneLabelInk(colorMapLaneFill("#000000"), "#000000", LIGHT_NO_BOX);
     expect(ink).toBe("#ffffff");
     expect(halo).toBe("#000000");
     expect(
@@ -188,7 +239,7 @@ describe("laneLabelInk", () => {
     for (const t of Object.values(THEMES)) {
       for (const tint of FIXTURE_TINTS) {
         const { ink, halo } = laneLabelInk(colorMapLaneFill(tint), tint, t);
-        const ground = tintGround(tint, t.background);
+        const ground = labelGround(tint, t);
         expect(
           contrastRatio(parseCssColor(ink)!, ground),
           `${t.name} ${tint} ink vs ground`,

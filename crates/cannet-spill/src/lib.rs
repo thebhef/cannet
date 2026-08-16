@@ -34,7 +34,7 @@ mod seg_chain;
 pub use disk::{is_raw_frame_segment, DiskConfig, DiskRawStore, ReopenStats};
 pub use filter_index::FilterIndex;
 pub use mem::MemRawStore;
-pub use sample_seq::SampleSeq;
+pub use sample_seq::{SampleSeq, SAMPLE_ENTRY_BYTES};
 pub use seg_chain::lower_bound;
 
 // `CandidateSource` is defined below alongside `RawStore`.
