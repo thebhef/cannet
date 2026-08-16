@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type uPlot from "uplot";
 
-import { capPointMarkers, MAX_POINT_MARKERS, showPointsFromRaw, showPointsToUplot } from "./plotPoints";
+import {
+  applyAutoPointFloor,
+  AUTO_POINT_MARKER_FLOOR,
+  capPointMarkers,
+  MAX_POINT_MARKERS,
+  showPointsFromRaw,
+  showPointsToUplot,
+} from "./plotPoints";
 
 /** Minimal stub shaped like the bit of a uPlot instance the filter reads:
  * one visible series with an `idxs` span. */
@@ -70,5 +77,57 @@ describe("capPointMarkers", () => {
     expect(capPointMarkers(fakeU(null, null), 1)).toBeNull();
     const noIdxs = { series: [{}, {}] } as unknown as uPlot;
     expect(capPointMarkers(noIdxs, 1)).toBeNull();
+  });
+});
+
+describe("applyAutoPointFloor", () => {
+  /// A series list shaped like a constructed uPlot's, with uPlot's own
+  /// density answer standing in as a constant.
+  type FakeSeries = { points?: { show?: uPlot.Series.Points["show"] } };
+  const seriesWith = (dense: boolean, n = 2): FakeSeries[] => [
+    {},
+    ...Array.from({ length: n }, () => ({ points: { show: () => !dense } })),
+  ];
+
+  it("keeps markers on a series at or below the floor, however dense the axis", () => {
+    const series = seriesWith(true);
+    applyAutoPointFloor(series, () => AUTO_POINT_MARKER_FLOOR);
+    const show = series[1].points!.show as (...a: unknown[]) => boolean;
+    expect(show(null, 1, 0, 5000)).toBe(true);
+  });
+
+  it("defers to uPlot's own answer above the floor", () => {
+    const series = seriesWith(true);
+    applyAutoPointFloor(series, () => AUTO_POINT_MARKER_FLOOR + 1);
+    const show = series[1].points!.show as (...a: unknown[]) => boolean;
+    expect(show(null, 1, 0, 5000)).toBe(false);
+    // …in both directions: a sparse-on-screen series still gets markers
+    // from uPlot, which is what `auto` has always meant.
+    const sparse = seriesWith(false);
+    applyAutoPointFloor(sparse, () => AUTO_POINT_MARKER_FLOOR + 1);
+    const sparseShow = sparse[1].points!.show as (...a: unknown[]) => boolean;
+    expect(sparseShow(null, 1, 0, 3)).toBe(true);
+  });
+
+  it("asks per series, not once for the axis", () => {
+    const series = seriesWith(true, 2);
+    applyAutoPointFloor(series, (i) => (i === 1 ? 3 : 1000));
+    const s1 = series[1].points!.show as (...a: unknown[]) => boolean;
+    const s2 = series[2].points!.show as (...a: unknown[]) => boolean;
+    expect(s1(null, 1, 0, 5000)).toBe(true);
+    expect(s2(null, 2, 0, 5000)).toBe(false);
+  });
+
+  it("leaves the x series and a forced on/off series alone", () => {
+    const series: FakeSeries[] = [
+      {},
+      { points: { show: true } },
+      { points: { show: false } },
+      {},
+    ];
+    applyAutoPointFloor(series, () => 1);
+    expect(series[1].points!.show).toBe(true);
+    expect(series[2].points!.show).toBe(false);
+    expect(series[0]).toEqual({});
   });
 });

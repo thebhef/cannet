@@ -35,6 +35,50 @@ describe("mergeSeries", () => {
     expect(merged[2]).toEqual([null, 200, 200, 400]);
   });
 
+  it("draws a one-sample series as a line held across every column", () => {
+    // A single point is not a line — nothing is drawn between one
+    // sample and itself. The whole series being one value, holding it
+    // across the window is the honest render of what it says.
+    const merged = mergeSeries([
+      { t: [1, 2, 3], v: [10, 20, 30] },
+      { t: [2], v: [7] },
+    ]);
+    expect(merged[0]).toEqual([1, 2, 3]);
+    expect(merged[1]).toEqual([10, 20, 30]);
+    expect(merged[2]).toEqual([7, 7, 7]);
+  });
+
+  it("gives a lone one-sample series the span's endpoints to draw between", () => {
+    // Nothing else contributes a column, so the union is a single x and
+    // there is no second point to draw to. The visible x-window supplies
+    // the two ends.
+    const merged = mergeSeries([{ t: [5], v: [7] }], { from: 0, to: 10 });
+    expect(merged[0]).toEqual([0, 5, 10]);
+    expect(merged[1]).toEqual([7, 7, 7]);
+  });
+
+  it("leaves the union alone once it already has two columns", () => {
+    const merged = mergeSeries([{ t: [1, 2], v: [1, 2] }], { from: 0, to: 10 });
+    expect(merged[0]).toEqual([1, 2]);
+    expect(merged[1]).toEqual([1, 2]);
+  });
+
+  it("keeps a multi-sample series' leading gap", () => {
+    // The hline is for the degenerate case only: a series that has a
+    // shape still starts where its first sample does.
+    const merged = mergeSeries([
+      { t: [1, 2, 3], v: [10, 20, 30] },
+      { t: [2, 3], v: [7, 8] },
+    ]);
+    expect(merged[2]).toEqual([null, 7, 8]);
+  });
+
+  it("leaves an empty series empty even with a span", () => {
+    const merged = mergeSeries([{ t: [], v: [] }], { from: 0, to: 10 });
+    expect(merged[0]).toEqual([]);
+    expect(merged[1]).toEqual([]);
+  });
+
   it("dedupes shared timestamps", () => {
     const merged = mergeSeries([
       { t: [1, 2], v: [1, 2] },

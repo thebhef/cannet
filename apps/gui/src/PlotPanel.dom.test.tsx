@@ -22,6 +22,12 @@ import { comboboxValue, pickCombobox } from "./comboboxTestKit";
 /// Prefixed `mock` so the hoisted `vi.mock` factory may reference it.
 const mockRenderCost = { perTickMs: 0, accMs: 0 };
 
+/// What the stand-in for uPlot's own density-aware `points.show`
+/// answers. `false` is the dense case — the axis has more columns in
+/// view than there is room for markers — which is what the automatic
+/// minimum-count floor has to override for a sparse *series*.
+const mockUplotPointsShow = { answer: false };
+
 vi.mock("uplot", () => {
   class FakeUPlot {
     // `uPlot.paths.stepped(...)` is consulted at construction to give
@@ -46,6 +52,15 @@ vi.mock("uplot", () => {
     constructor(opts: FakeUPlot["opts"], data: unknown, el: HTMLElement) {
       this.opts = opts;
       this.series = opts.series ?? [];
+      // Real uPlot fills in its density-aware `points.show` during
+      // construction when the caller left it unset. Stand that in with
+      // a constant a test can set, so the auto marker floor's "defer to
+      // uPlot above the floor" half is observable at all.
+      for (let i = 1; i < this.series.length; i++) {
+        const s = this.series[i] as { points?: { show?: unknown } };
+        s.points = { ...(s.points ?? {}) };
+        if (s.points.show === undefined) s.points.show = () => mockUplotPointsShow.answer;
+      }
       this.root = el;
       this.data = data;
       el.appendChild(document.createElement("canvas"));
@@ -185,6 +200,14 @@ const mockSampleStall = { on: false, pending: [] as ((buf: ArrayBuffer) => void)
 /// serve that has decoded nothing yet. Prefixed `mock` for the hoisted
 /// factory.
 const mockSampleRebuild = { on: false, served: 0, of: 0 };
+/// Signal names the fake host holds **only** as file-backed series
+/// (`docs/CONTEXT.md`). The host keys such a series by its provenance,
+/// so a query that asks for it as a DBC-backed signal names an identity
+/// nothing has ever decoded — and gets an empty serve, not the series.
+/// Modelled here so a caller that drops the provenance flag is visible
+/// in what the plot draws rather than only in the request. Prefixed
+/// `mock` for the hoisted factory.
+const mockFileBackedSignals = new Set<string>();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
@@ -202,21 +225,23 @@ vi.mock("@tauri-apps/api/core", () => ({
         );
       }
       return encodeSample(
-        (args?.signals ?? []).map(
-          (s) =>
-            mockSampleSeries[(s as { signalName?: string }).signalName ?? ""] ?? {
-              t: [0, 1, 2],
-              v: [10, 20, 15],
-            },
-        ),
+        (args?.signals ?? []).map((s) => {
+          const q = s as { signalName?: string; fileBacked?: boolean };
+          const name = q.signalName ?? "";
+          if (mockFileBackedSignals.has(name) && !q.fileBacked) return { t: [], v: [] };
+          return mockSampleSeries[name] ?? { t: [0, 1, 2], v: [10, 20, 15] };
+        }),
       );
     }
     if (cmd === "signal_min_max")
       // Host-owned all-time per-signal extent (ADR 0025) — matches the
       // sampled values' min/max so follow-live auto-norm has a range.
-      return (args?.signals ?? []).map(
-        (s) => mockSignalExtents[(s as { signalName?: string }).signalName ?? ""] ?? { lo: 10, hi: 20 },
-      );
+      return (args?.signals ?? []).map((s) => {
+        const q = s as { signalName?: string; fileBacked?: boolean };
+        const name = q.signalName ?? "";
+        if (mockFileBackedSignals.has(name) && !q.fileBacked) return null;
+        return mockSignalExtents[name] ?? { lo: 10, hi: 20 };
+      });
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
     if (cmd === "get_settings") return { ...mockSettings };
     return undefined;
@@ -264,6 +289,7 @@ import { freshTrace } from "./trace";
 import { makeLiveRegistry } from "./registryTestKit";
 import type { ProjectElement } from "./types";
 import { diagCounts } from "./diag";
+import { AUTO_POINT_MARKER_FLOOR } from "./plotPoints";
 import { FIRST_SAMPLE_INDICATOR_MS } from "./useFirstSampleWait";
 import { hydrateSettings, updateSettings } from "./hostSettings";
 import { THEMES, activeTheme, setActiveTheme } from "./theme";
@@ -568,6 +594,8 @@ afterEach(async () => {
   mockSampleRebuild.of = 0;
   mockRenderCost.perTickMs = 0;
   mockRenderCost.accMs = 0;
+  mockFileBackedSignals.clear();
+  mockUplotPointsShow.answer = false;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
   // Awaited: an un-awaited publish here can resolve inside a later
   // test's own `hydrateSettings()` call and clobber settings that
@@ -2169,10 +2197,13 @@ describe("PlotArea y-normalisation", () => {
     // work to do: union to [0, 1, 2], hold each value forward, and leave
     // `null` before a signal's first sample. A null must stay null —
     // normalising one would silently plot a bogus lane position.
+    // (Two samples on the late signal, not one: a one-sample series is
+    // deliberately drawn as a full-width hline instead — see
+    // `mergeSeries` — and would carry no leading gap to test.)
     mockValueTables.EngineSpeed = ENUM3;
     mockValueTables.EngineTemp = ENUM3;
     mockSampleSeries.EngineSpeed = { t: [0, 2], v: [0, 2] };
-    mockSampleSeries.EngineTemp = { t: [1], v: [1] };
+    mockSampleSeries.EngineTemp = { t: [1, 2], v: [1, 1] };
     const restore = stubSize();
     try {
       renderPanel();
@@ -6239,5 +6270,134 @@ describe("PlotPanel rehydration", () => {
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
     const cfg = (control.entries()[0].element as { config?: { areas?: unknown[] } }).config;
     expect(cfg?.areas?.length).toBe(2);
+  });
+});
+
+/// Sparse series: what the plot draws when a signal has so few samples
+/// that an ordinary line render says nothing.
+describe("PlotPanel sparse series", () => {
+  /// Every y value the newest instance in the area currently holds.
+  const drawnValues = (areaLabel: string) =>
+    ((liveInstanceIn(areaLabel).data as (number | null)[][])[1] ?? []);
+
+  it("draws a one-sample series as a horizontal line", async () => {
+    // One point is not a line, and a lone sample renders as nothing at
+    // all with markers off. The value it holds is the whole series, so
+    // it is held across the window.
+    mockSampleSeries.EngineSpeed = { t: [1], v: [12] };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => {
+        const xs = (liveInstanceIn("Area 1").data as (number | null)[][])[0] ?? [];
+        // Two ends to draw between…
+        expect(xs.length).toBeGreaterThan(1);
+        // …and the same value at every one of them (12 normalised by
+        // the host extent 10..20).
+        const ys = drawnValues("Area 1");
+        expect(ys.length).toBe(xs.length);
+        expect([...new Set(ys)]).toEqual([0.2]);
+      });
+    });
+  });
+
+  it("keeps markers on a sparse series in auto mode, however dense the axis", async () => {
+    // The merged x axis is shared, so uPlot's density rule answers for
+    // the *axis*, not the series: a handful-of-samples series plotted
+    // beside a fast one loses its markers and reads as a bare line
+    // through held values. Below the floor the samples are the
+    // information, so they stay marked.
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [10, 20, 15] };
+    mockSampleSeries.EngineTemp = {
+      t: Array.from({ length: AUTO_POINT_MARKER_FLOOR + 40 }, (_, i) => i / 100),
+      v: Array.from({ length: AUTO_POINT_MARKER_FLOOR + 40 }, () => 15),
+    };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+      addFocusedSignal("EngineTemp");
+      await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
+      await waitFor(() => {
+        const inst = liveInstanceIn("Area 1");
+        expect(((inst.data as (number | null)[][])[0] ?? []).length).toBeGreaterThan(1);
+        const show = (i: number) =>
+          (inst.series[i] as { points?: { show?: (...a: unknown[]) => boolean } }).points?.show?.(
+            inst,
+            i,
+            0,
+            5000,
+          );
+        // Three samples of its own → marked, even though uPlot's own
+        // answer for this axis is "too dense".
+        expect(show(1)).toBe(true);
+        // Above the floor → uPlot's answer stands.
+        expect(show(2)).toBe(false);
+      });
+    });
+  });
+});
+
+/// A **file-backed** signal (`docs/CONTEXT.md`) on the plot: imported
+/// from the capture file, carried by no message and decoded by no DBC.
+/// The host keys its series by that provenance, so every query the plot
+/// issues for it has to say so — a fetch that drops the flag names a
+/// DBC identity nothing decodes and comes back empty.
+describe("PlotPanel file-backed signals", () => {
+  /// Drop a **file-backed** row onto the first area, exactly as the
+  /// Database view's file branch does: no bus, the source signal channel
+  /// group index in the message slot, and the provenance flag that keeps
+  /// that number out of the message-id namespace.
+  function dropFileSignal(signalName: string, unit: string) {
+    const MIME = "application/x-cannet-plot-signal";
+    const payload = JSON.stringify({
+      busId: null,
+      messageId: 7,
+      extended: false,
+      signalName,
+      messageName: "Analog",
+      unit,
+      fileBacked: true,
+    });
+    const dt = { types: [MIME], getData: (t: string) => (t === MIME ? payload : ""), dropEffect: "" };
+    const area = screen.getByText("Area 1").closest(".plot-area")!;
+    fireEvent.dragOver(area, { dataTransfer: dt });
+    fireEvent.drop(area, { dataTransfer: dt });
+  }
+
+  /// The `signals` list of the newest `sample_signals` round-trip.
+  const lastSampleQuery = () => {
+    const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === "sample_signals");
+    const args = calls[calls.length - 1]?.[1] as { signals?: Record<string, unknown>[] };
+    return args?.signals ?? [];
+  };
+  /// …and of the newest `signal_min_max` one — the sidecar built from
+  /// the same signal list on the same tick, so the two make a controlled
+  /// pair over one render.
+  const lastExtentQuery = () => {
+    const calls = vi.mocked(invoke).mock.calls.filter((c) => c[0] === "signal_min_max");
+    const args = calls[calls.length - 1]?.[1] as { signals?: Record<string, unknown>[] };
+    return args?.signals ?? [];
+  };
+
+  it("samples one by its provenance, so its points draw", async () => {
+    mockFileBackedSignals.add("AmbientTemp");
+    mockSampleSeries.AmbientTemp = { t: [0, 1, 2], v: [10, 20, 15] };
+    await withSizedCanvas(async () => {
+      renderPanel();
+      dropFileSignal("AmbientTemp", "degC");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+
+      // The window fetch carries the flag…
+      expect(lastSampleQuery()).toEqual([
+        expect.objectContaining({ signalName: "AmbientTemp", fileBacked: true }),
+      ]);
+      // …as the extent sidecar built from the same list already did.
+      expect(lastExtentQuery()).toEqual([
+        expect.objectContaining({ signalName: "AmbientTemp", fileBacked: true }),
+      ]);
+      // And therefore the series reaches the canvas.
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3));
+    });
   });
 });

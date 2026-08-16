@@ -15,9 +15,9 @@ import type { SignalSnapshotRecord } from "./types";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry } from "./projectElements";
 import { DisclosureToggle } from "./DisclosureToggle";
-import { buildColorResolver, type ColorResolver } from "./colorMap";
+import { buildColorResolver, type ColorResolver, type ColorTarget } from "./colorMap";
 import { SignalValueCell } from "./SignalValueCell";
-import { signalKey } from "./plotData";
+import { recordSignalKey, signalKey } from "./plotData";
 import {
   dedupeSignalRefs,
   setSignalDragData,
@@ -796,6 +796,45 @@ function isSignalRow(row: RenderRow): boolean {
   return row.kind.tag === "signal" || row.kind.tag === "filesignal";
 }
 
+/// The canonical identity a row's live value is looked up under, or
+/// `null` for a row that has no value (a bus / DBC / ECU / file /
+/// group container).
+///
+/// One rule for both provenances (ADR 0052), so the key the panel asks
+/// the host for and the key it renders under cannot drift — and a
+/// file-backed signal whose source group index equals some message's id
+/// still keys distinctly, because the provenance is part of the key.
+function valueColumnKey(kind: RenderRow["kind"]): string | null {
+  if (kind.tag === "signal")
+    return signalKey(kind.busId, kind.messageId, kind.extended, kind.signal.name);
+  if (kind.tag === "filesignal")
+    return signalKey(null, kind.group, false, kind.signal.name, true);
+  return null;
+}
+
+/// The colormap identity (ADR 0029) of the row's value cell, or `null`
+/// for a row that has no value. The same shape the signal view's value
+/// column uses for the same row, so the two surfaces tint alike: a
+/// file-backed signal has no bus and carries its source group index in
+/// the message slot.
+function valueColorTarget(kind: RenderRow["kind"]): ColorTarget | null {
+  if (kind.tag === "signal")
+    return {
+      messageId: kind.messageId,
+      extended: kind.extended,
+      signalName: kind.signal.name,
+      busId: kind.busId,
+    };
+  if (kind.tag === "filesignal")
+    return {
+      messageId: kind.group,
+      extended: false,
+      signalName: kind.signal.name,
+      busId: null,
+    };
+  return null;
+}
+
 /// The tree's rows as the gridview's row space: everything above a
 /// signal is a branch (expandable when it has children), a signal is a
 /// plain leaf. "Details" is taller cell content, not a disclosed content
@@ -1047,19 +1086,40 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   /// The on-screen signal rows' descriptor keys — the windowed slice,
   /// not the whole tree, so the host's per-call snapshot work is bounded
   /// by the viewport like every other view over the model.
+  ///
+  /// Both provenances (ADR 0052). A file-backed row is keyed the way it
+  /// is everywhere else — no bus, its source group index in the message
+  /// slot, `fileBacked` keeping that number out of the message-id
+  /// namespace — which is exactly the manual key the host's file-backed
+  /// selection matches on.
   const visibleSignalKeys = useMemo(() => {
     if (!showValues) return [];
-    return visibleRows
-      .filter((r) => r.kind.tag === "signal")
-      .map((r) => {
-        const k = r.kind as Extract<RenderRow["kind"], { tag: "signal" }>;
-        return {
-          busId: k.busId,
-          messageId: k.messageId,
-          extended: k.extended,
-          signalName: k.signal.name,
-        };
-      });
+    return visibleRows.flatMap((r) => {
+      if (r.kind.tag === "signal") {
+        const k = r.kind;
+        return [
+          {
+            busId: k.busId,
+            messageId: k.messageId,
+            extended: k.extended,
+            signalName: k.signal.name,
+          },
+        ];
+      }
+      if (r.kind.tag === "filesignal") {
+        const k = r.kind;
+        return [
+          {
+            busId: null,
+            messageId: k.group,
+            extended: false,
+            signalName: k.signal.name,
+            fileBacked: true,
+          },
+        ];
+      }
+      return [];
+    });
   }, [visibleRows, showValues]);
   /// Latest keys for the poll below to read. Held in a ref so scrolling
   /// (which changes the key set on every wheel notch) re-aims the next
@@ -1106,14 +1166,10 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       })
         .then((page) => {
           if (!live) return;
-          setValuesByKey(
-            new Map(
-              page.rows.map((r) => [
-                signalKey(r.bus_id, r.message_id, r.extended, r.signal_name),
-                r,
-              ]),
-            ),
-          );
+          // `recordSignalKey` reads the row's own provenance, so a
+          // file-backed row cannot collide with a DBC-backed signal
+          // whose message id happens to equal its group index.
+          setValuesByKey(new Map(page.rows.map((r) => [recordSignalKey(r), r])));
         })
         .catch(() => {
           /* best effort — the tree renders without values */
@@ -1284,32 +1340,24 @@ export function DatabasePanel(props: IDockviewPanelProps) {
             role="presentation"
             style={{ transform: `translateY(${offsets[first]}px)` }}
           >
-            {visibleRows.map((row) => (
-              <DbcRow
-                key={row.id}
-                row={row}
-                active={row.id === grid.cursor}
-                selected={grid.selection.has(row.id)}
-                rowDomId={grid.rowDomId}
-                showDetails={showDetails}
-                value={
-                  showValues && row.kind.tag === "signal"
-                    ? valuesByKey.get(
-                        signalKey(
-                          row.kind.busId,
-                          row.kind.messageId,
-                          row.kind.extended,
-                          row.kind.signal.name,
-                        ),
-                      ) ?? null
-                    : undefined
-                }
-                resolveColor={resolveColor}
-                onToggle={setRowExpanded}
-                onClick={handleRowClick}
-                onDragStart={handleDragStart}
-              />
-            ))}
+            {visibleRows.map((row) => {
+              const vk = showValues ? valueColumnKey(row.kind) : null;
+              return (
+                <DbcRow
+                  key={row.id}
+                  row={row}
+                  active={row.id === grid.cursor}
+                  selected={grid.selection.has(row.id)}
+                  rowDomId={grid.rowDomId}
+                  showDetails={showDetails}
+                  value={vk ? valuesByKey.get(vk) ?? null : undefined}
+                  resolveColor={resolveColor}
+                  onToggle={setRowExpanded}
+                  onClick={handleRowClick}
+                  onDragStart={handleDragStart}
+                />
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1450,19 +1498,14 @@ const DbcRow = memo(function DbcRow({
           <span className="dbc-row-chevron" aria-hidden="true" />
         )}
         <DbcRowContent kind={row.kind} />
-        {value !== undefined && row.kind.tag === "signal" && (
+        {value !== undefined && valueColorTarget(row.kind) && (
           <span className="dbc-row-value">
             <SignalValueCell
               value={value?.value}
               unit={value?.unit ?? ""}
               label={value?.label}
               displayHex={value?.display_hex}
-              target={{
-                messageId: row.kind.messageId,
-                extended: row.kind.extended,
-                signalName: row.kind.signal.name,
-                busId: row.kind.busId,
-              }}
+              target={valueColorTarget(row.kind)!}
               resolveColor={resolveColor}
             />
           </span>

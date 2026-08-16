@@ -42,6 +42,55 @@ export function showPointsToUplot(mode: ShowPointsMode): uPlot.Series.Points {
   return {};
 }
 
+/** How few samples a series may hold and still keep its point markers
+ * in `auto` mode, whatever the density of the axis it is drawn on.
+ *
+ * uPlot's automatic rule is about *drawn* density: it compares the
+ * number of x columns in view against the room for markers, and every
+ * series on an axis shares those columns. A series with only a handful
+ * of samples of its own therefore loses its markers the moment it is
+ * plotted beside a fast one — and a line drawn through a handful of
+ * held values says nothing about where the samples actually are. Below
+ * this count the samples *are* the information, so they stay marked.
+ *
+ * Deliberately small: at this count a series' markers are still
+ * countable at a glance, and above it the line already carries the
+ * shape. It is also a rounding error against [`MAX_POINT_MARKERS`], so
+ * the floor can never be the reason a redraw is expensive. */
+export const AUTO_POINT_MARKER_FLOOR = 32;
+
+/** A uPlot series as far as the floor is concerned. */
+interface PointsHost {
+  points?: { show?: uPlot.Series.Points["show"] };
+}
+
+/** Apply {@link AUTO_POINT_MARKER_FLOOR} to a live uPlot instance's
+ * `series` (index 0 is x, and is skipped): a series holding at most
+ * that many samples draws its markers; above it, uPlot's own
+ * density-aware answer stands.
+ *
+ * Applied to the constructed instance rather than to the options
+ * because the above-floor half *is* uPlot's default function, installed
+ * during construction — wrapping it keeps that half exactly as uPlot
+ * defines it, with no copy of its density rule here to drift. A series
+ * whose `show` is not a function (the caller forced markers on or off)
+ * is left alone.
+ *
+ * `sampleCount` is consulted per draw, not once: a series' length
+ * changes with every fetch and the instance is not rebuilt for that. */
+export function applyAutoPointFloor(
+  series: readonly PointsHost[],
+  sampleCount: (seriesIdx: number) => number,
+): void {
+  for (let i = 1; i < series.length; i++) {
+    const points = series[i]?.points;
+    const base = points?.show;
+    if (!points || typeof base !== "function") continue;
+    points.show = (u, seriesIdx, i0, i1, gaps) =>
+      sampleCount(seriesIdx) <= AUTO_POINT_MARKER_FLOOR || base(u, seriesIdx, i0, i1, gaps) === true;
+  }
+}
+
 /** uPlot `points.filter` for the `on` mode: return the data indices to
  * mark, strided down to at most [`MAX_POINT_MARKERS`] across the visible
  * range, or `null` when the in-view points already fit that cap (uPlot
