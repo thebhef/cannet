@@ -160,7 +160,7 @@ describe("BLF census feedback", () => {
     // The census is still walking: the notice is up and the dialog is
     // not — which is exactly the window the user was staring at.
     await waitFor(() => {
-      if (!statusText().includes("Scanning huge-capture.blf"))
+      if (!statusText().includes("Loading huge-capture.blf"))
         throw new Error(`no scan notice, status was: ${statusText()}`);
     });
     expect(
@@ -173,6 +173,6 @@ describe("BLF census feedback", () => {
       releaseScan = null;
     });
     await waitFor(() => findButton("Open"));
-    expect(statusText()).not.toContain("Scanning");
+    expect(statusText()).not.toContain("Loading");
   }, 30_000);
 });

@@ -653,6 +653,7 @@ pub(crate) fn test_state() -> AppState {
         verifier: verification::VerificationState::default(),
         filter_index_dir: Mutex::new(std::env::temp_dir().join("cannet-test-filter")),
         filter_index: Mutex::new(None),
+        import_cancel: Mutex::new(None),
         live_tail_rows: std::sync::atomic::AtomicU64::new(0),
         active_project_id: Mutex::new(None),
     }
@@ -1902,6 +1903,120 @@ fn windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store()
         ],
         "only the in-range frames (boundaries inclusive) reached the trace store",
     );
+}
+
+/// `cancel_import` with nothing importing is a no-op, not a panic — the
+/// busy launcher it backs isn't perfectly synchronized with the pump's
+/// own lifetime (task 75's trace-open feedback, click-to-cancel).
+#[test]
+fn cancel_import_now_is_a_no_op_with_nothing_importing() {
+    let state = test_state();
+    assert!(state.import_cancel().is_none());
+    cancel_import_now(&state); // must not panic
+}
+
+/// `cancel_import` flips whichever flag is registered in
+/// `AppState::import_cancel` — the mechanism `open_log`/`import_mdf`
+/// install before spawning their pump and `run_pump`'s loop checks.
+#[test]
+fn cancel_import_now_flips_the_registered_flag() {
+    let state = test_state();
+    let flag = Arc::new(AtomicBool::new(false));
+    *state.import_cancel() = Some(Arc::clone(&flag));
+
+    cancel_import_now(&state);
+
+    assert!(flag.load(Ordering::Relaxed));
+}
+
+/// The cancellation path end to end at the pump-loop level: a click on
+/// the busy launcher cooperatively cancels the import, and the partial
+/// frames already ingested are exactly the ones read before the flag
+/// was flipped — not zero (the pump doesn't discard what it already
+/// appended) and not the whole file (the loop actually stopped early).
+///
+/// Drives the identical per-frame body `run_pump` runs — the same
+/// pipeline `windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store`
+/// above exercises — with the `if stop.load() { break; }` check
+/// `run_pump`'s loop opens with, against a real BLF and a real
+/// disk-backed `TraceStore`, since the suite has no harness for the
+/// `AppHandle` `run_pump` itself needs.
+#[test]
+fn a_cancelled_import_stops_the_pump_loop_early_leaving_the_frames_already_ingested() {
+    use cannet_blf::BlfCanFrameSource;
+    use cannet_core::CanFrameSource as _;
+
+    const TOTAL_FRAMES: usize = 10;
+    const CANCEL_AFTER: usize = 3;
+
+    let dir = tempfile::tempdir().unwrap();
+    let blf_path = dir.path().join("cancel-import.blf");
+    let ts_base = 1_700_000_000_000_000_000u64;
+    let frame_at = |ts: u64| {
+        cannet_core::CanFrame::classic(
+            ts,
+            0,
+            cannet_core::CanId::standard(0x100).unwrap(),
+            Direction::Rx,
+            vec![1],
+        )
+        .unwrap()
+    };
+    {
+        let mut writer = cannet_blf::BlfCaptureWriter::create(&blf_path).unwrap();
+        for offset_us in 0..TOTAL_FRAMES {
+            writer
+                .append(&frame_at(ts_base + offset_us as u64 * 1_000))
+                .unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    let scratch = tempfile::TempDir::new().unwrap();
+    let store_dir = scratch.path().join("current");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    let store = open_trace_store(&store_dir);
+
+    let state = test_state();
+    let flag = Arc::new(AtomicBool::new(false));
+    *state.import_cancel() = Some(Arc::clone(&flag));
+
+    let mut source = BlfCanFrameSource::open(&blf_path).unwrap();
+    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    let mut ingested = 0usize;
+    loop {
+        if flag.load(Ordering::Relaxed) {
+            break;
+        }
+        let Some(frame) = source.next_frame().unwrap() else {
+            break;
+        };
+        let mut raw = trace_store::RawTraceFrame::from(frame);
+        if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
+            raw.bus_id = bid;
+            store.append(raw);
+            ingested += 1;
+        }
+        // The click that lands mid-stream: the frontend's busy launcher
+        // calling `cancel_import` while the pump is still mid-file.
+        if ingested == CANCEL_AFTER {
+            cancel_import_now(&state);
+        }
+    }
+    // The pump's own end-of-thread cleanup (`open_log`/`import_mdf`),
+    // replicated here since this loop stands in for `run_pump`.
+    *state.import_cancel() = None;
+
+    assert_eq!(
+        ingested, CANCEL_AFTER,
+        "the loop must stop on the next check after the flag flips, not run to EOF",
+    );
+    assert_eq!(store.len(), CANCEL_AFTER);
+    assert!(
+        store.len() < TOTAL_FRAMES,
+        "cancellation must abandon the rest of the file, not finish it",
+    );
+    assert!(state.import_cancel().is_none());
 }
 
 /// Path to one of `cannet-mdf`'s committed phase-1/2 fixtures, shared by

@@ -45,7 +45,7 @@ describe("splitStatus", () => {
       inputs({ state, count: 1000, scanningBlfPath: "/logs/next.blf" }),
     );
     expect(transient).toBeNull();
-    expect(resting).toMatch(/Scanning next\.blf/);
+    expect(resting).toMatch(/Loading next\.blf/);
   });
 
   it("no scan in flight leaves the line alone", () => {
@@ -59,7 +59,7 @@ describe("splitStatus", () => {
       inputs({ state, count: 1000, scanningMdfPath: "/logs/next.mf4" }),
     );
     expect(transient).toBeNull();
-    expect(resting).toMatch(/Scanning next\.mf4/);
+    expect(resting).toMatch(/Loading next\.mf4/);
   });
 
   it("a running BLF stream is resting with the residency line, no transient", () => {

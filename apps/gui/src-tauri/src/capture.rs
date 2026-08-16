@@ -12,7 +12,7 @@
 //! (ADR 0010 — no sidecar files). Clearing/restoring manage the
 //! disk-spill scratch identity (ADR 0002 DS-7).
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -73,6 +73,14 @@ pub struct ChannelBusMapping {
 /// opening a several-hundred-megabyte BLF parses a header and allocates
 /// the reader's buffers, and the command must not hold up the window
 /// while it does.
+///
+/// Cancellable: `cancel_import` flips a stop flag this command installs
+/// into [`AppState::import_cancel`] before spawning the pump, and the
+/// pump loop (`run_pump`) checks it every frame — the same cooperative
+/// shape a live session's disconnect uses. A cancelled pump still ends
+/// through its normal clean-exit path (`log-finished: Ok`); the
+/// frontend is what tells a cancellation apart from a natural finish,
+/// since it is the one that asked for it.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
@@ -143,13 +151,19 @@ pub(crate) async fn open_log(
     // sees a frame outside `[start_ns, end_ns]`.
     let source = cannet_core::WindowedSource::new(source, start_ns, end_ns);
 
+    // The launcher doubles as a Cancel button once the pump is running
+    // (ADR-free — task 75's trace-open feedback refinement): this flag
+    // is what `cancel_import` flips, mirroring `remote_sessions`'s
+    // per-session `stop` flag. Installed before the thread spawns so a
+    // cancel racing the spawn still lands on a flag the pump will see;
+    // cleared back to `None` when the pump ends, whichever way.
+    let cancel = Arc::new(AtomicBool::new(false));
+    *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
+
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("cannet-blf-pump".into())
         .spawn(move || {
-            // The BLF pump ends at end-of-file; nothing signals it to
-            // stop early, so the flag is just a never-set placeholder.
-            //
             // A panic on the ingest path (a hostile BLF) must end the
             // load with a visible error, not a silently dead thread the
             // UI waits on forever. The panic hook has already written
@@ -159,11 +173,14 @@ pub(crate) async fn open_log(
                 run_pump(
                     &app_for_thread,
                     source,
-                    Arc::new(AtomicBool::new(false)),
+                    cancel,
                     channel_to_bus,
                     true, // replay_origin: BLF anchors the session at the first frame's ts
                 );
             }));
+            // This pump is done — cleanly, cancelled, or panicked —
+            // so nothing should be able to cancel it again.
+            *app_for_thread.state::<AppState>().import_cancel() = None;
             if let Err(payload) = result {
                 let msg = format!("load failed: {}", panic_message(payload.as_ref()));
                 sys_error!(&app_for_thread, "blf-import", "{msg}");
@@ -192,6 +209,39 @@ pub(crate) async fn open_log(
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
     Ok(result)
+}
+
+/// Flip whichever import's cancel flag [`AppState::import_cancel`] holds
+/// right now, if any. Factored out from [`cancel_import`] so it's
+/// testable against a plain `AppState` — the command wrapper needs a
+/// live Tauri app to construct its `State`, the suite has no harness
+/// for one (see the module-level tests).
+pub(crate) fn cancel_import_now(state: &AppState) {
+    if let Some(flag) = state.import_cancel().as_ref() {
+        flag.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Cancel the trace-open pump in flight right now (`open_log` /
+/// `import_mdf`), if any. Cooperative, not immediate: it flips the flag
+/// the pump loop (`run_pump`) checks once per frame, so the pump finishes
+/// its current iteration and then exits through its ordinary clean-exit
+/// path — same `log-finished: Ok` a natural end-of-file emits, since the
+/// loop itself cannot tell "stopped because EOF" from "stopped because
+/// asked to". The frontend is the one that knows it asked, and treats
+/// the next `log-finished` as an abandonment: it clears the partial
+/// frames the pump already appended rather than presenting them as a
+/// finished capture.
+///
+/// A no-op, not an error, when nothing is importing — the busy launcher
+/// this backs isn't perfectly synchronized with the pump's own lifetime
+/// (a click can race the pump's natural completion), and a stray call
+/// after the pump has already finished should do nothing rather than
+/// fail.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn cancel_import(state: State<'_, AppState>) {
+    cancel_import_now(&state);
 }
 
 /// The capture file format a save writes. Chosen in the save dialog and
@@ -828,10 +878,11 @@ pub(crate) async fn scan_blf_channels(
 /// The MDF counterpart of [`open_log`]: same shape, same
 /// one-pass-over-the-source pipeline (`run_pump`, generic over
 /// [`cannet_core::CanFrameSource`]), same `WindowedSource` import-range
-/// filter (ADR 0046). The file's `##EV` blocks become session notes, the
-/// part `GLOBAL_MARKER` records play on the BLF path — read up front
-/// rather than through a sink, because MDF events hang off the header
-/// block rather than riding the record stream.
+/// filter (ADR 0046), same [`cancel_import`] cancellation. The file's
+/// `##EV` blocks become session notes, the part `GLOBAL_MARKER` records
+/// play on the BLF path — read up front rather than through a sink,
+/// because MDF events hang off the header block rather than riding the
+/// record stream.
 ///
 /// An MF4 holds two independent kinds of content and the caller says
 /// which it wants. `import_signals` brings in the file's signal channel
@@ -905,6 +956,11 @@ pub(crate) async fn import_mdf(
     // an out-of-range frame never reaches `TraceStore::append`.
     let source = cannet_core::WindowedSource::new(source, start_ns, end_ns);
 
+    // See `open_log`'s identical flag: installed before the thread
+    // spawns, checked by `run_pump`'s loop, cleared once the pump ends.
+    let cancel = Arc::new(AtomicBool::new(false));
+    *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
+
     let app_for_thread = app.clone();
     std::thread::Builder::new()
         .name("cannet-mdf-pump".into())
@@ -918,7 +974,7 @@ pub(crate) async fn import_mdf(
                     run_pump(
                         &app_for_thread,
                         source,
-                        Arc::new(AtomicBool::new(false)),
+                        cancel,
                         channel_to_bus,
                         true, // replay_origin: MDF anchors the session at the first frame's ts
                     );
@@ -973,6 +1029,9 @@ pub(crate) async fn import_mdf(
                     );
                 }
             }));
+            // This pump is done — cleanly, cancelled, or panicked — so
+            // nothing should be able to cancel it again.
+            *app_for_thread.state::<AppState>().import_cancel() = None;
             if let Err(payload) = result {
                 let msg = format!("load failed: {}", panic_message(payload.as_ref()));
                 sys_error!(&app_for_thread, "mdf-import", "{msg}");

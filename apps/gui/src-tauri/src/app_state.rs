@@ -16,6 +16,7 @@
 //! (chained together by `rbs::refresh_all_elements`).
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tauri::{AppHandle, Manager, State};
@@ -148,6 +149,16 @@ pub(crate) struct AppState {
     /// rebuilt on a predicate or capture-session change, extended
     /// incrementally otherwise. `fetch_filtered_trace` serves pages from it.
     pub(crate) filter_index: Mutex<Option<ActiveFilterIndex>>,
+    /// Cooperative cancel flag for the single trace-open pump in flight
+    /// right now (`open_log` / `import_mdf`'s spawned thread), or
+    /// `None` when nothing is importing. Each of those commands installs
+    /// its own flag here before spawning and clears the slot back to
+    /// `None` when its pump thread ends (cleanly, cancelled, or
+    /// panicked) — mirroring `remote_sessions`'s per-session `stop`
+    /// flag, but scoped to the one BLF/MDF import the frontend's own
+    /// guard ever allows to run at a time. `cancel_import` flips
+    /// whichever flag is here; a call with nothing importing is a no-op.
+    pub(crate) import_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// How many trailing frames the frontend wants on each `trace-grew`
     /// (`set_live_tail_rows`). `0` — the startup default — means the
     /// emitter skips the tail collect + decode entirely; only an
@@ -210,6 +221,12 @@ impl AppState {
         self.active_project_id
             .lock()
             .expect("active_project_id mutex poisoned")
+    }
+
+    pub(crate) fn import_cancel(&self) -> MutexGuard<'_, Option<Arc<AtomicBool>>> {
+        self.import_cancel
+            .lock()
+            .expect("import_cancel mutex poisoned")
     }
 
     pub(crate) fn descriptor_snapshot(
