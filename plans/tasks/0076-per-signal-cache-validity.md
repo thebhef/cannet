@@ -542,6 +542,56 @@ to carry `DbcScope` — a data-path change for a 2-second window.
 | the pool survives a `capture_id` / `low_water` change | the hard-gate test alone |
 | a serve never sets its read mark | the never-read test alone |
 
+### 2026-08-15 — cycle cleanup: the rebuild test no longer times the machine
+
+Branch `cycle-cleanup-flaky-shadow`, off `task78-p2-gate-hooks`. Ordered
+at the consolidated review from task 78's blocker: phase 2's
+`the_invalidated_subset_rebuilds_in_one_walk_of_its_message` failed on a
+busy machine and passed when run alone.
+
+**Root cause, by experiment.** The test built its store with
+`SignalCacheStore::new`, i.e. the shipping 150 ms wall-clock serve
+budget, over a capture of `CATCH_UP_CHUNK_FRAMES + 500` frames — two
+chunks. It then counted the walk's chunk fetches. Forcing the worst
+machine (`new_chunk_at_a_time`, a zero-length budget) reproduced the
+recorded failure exactly — `left: 1, right: 2` — which promotes "the
+deadline stops the serve mid-walk" from hypothesis to cause: what the
+count measured was how much decoding fits in 150 ms.
+
+**Fix.** The store is now `new_unbounded`, the existing test-only
+deterministic form for exactly this shape — its rustdoc already reads
+"for tests that assert on a *finished* series over a capture spanning
+several chunks", and the identically-shaped
+`one_group_fetches_each_chunk_once_for_all_its_signals` (same
+`div_ceil` fetch-count assertion) has always used it. `Duration::MAX`
+overflows `Instant::checked_add`, so the limit is `Deadline(None)` and
+`spend` can never end the serve early. The assertion is unchanged and
+now exact rather than machine-dependent: one walk of the message for
+the whole invalidated subset, not one per invalidated signal.
+
+Production behaviour is untouched — `ServeLimit`, `serve_limit()` and
+`CATCH_UP_SERVE_BUDGET` are all as they were; only which test-only
+constructor this test picks changed.
+
+**The siblings were checked, and none needed the same fix.** A serve's
+budget is charged only *between* rounds, so a capture inside one chunk
+cannot stop early whatever the budget. That leaves the tests that both
+run on the production deadline and span more than one chunk:
+
+| Test | Verdict |
+| --- | --- |
+| `a_many_group_batch_converges_on_a_capture_growing_faster_than_a_chunk` | already deterministic — passes `ServeLimit::Frames` explicitly, store budget never consulted |
+| `a_straggler_takes_the_budget_the_caught_up_groups_no_longer_need` | already deterministic — explicit `Deadline(None)` then `Frames` |
+| `a_batch_answers_in_request_order_including_repeats` | multi-chunk on the production budget, but asserts only answer order and repeat-identity — both read the same post-serve state, so how far the serve got cannot move them |
+
+Everything else on `SignalCacheStore::new` runs a 150- or 200-frame
+capture; the rest already use `new_unbounded` or `new_chunk_at_a_time`.
+
+Tests: `cannet-gui` **699**, unchanged (no test added or removed — the
+deliverable is the existing one becoming deterministic); frontend
+unchanged at **2230** in 165 files. `cargo clippy -p cannet-gui
+--all-targets` clean, `cargo fmt --check` clean, `pnpm build` clean.
+
 ## Blockers / side effects
 
 - **The pyramid decode path does not honour DBC bus scoping** (found
