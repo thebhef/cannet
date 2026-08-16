@@ -818,6 +818,27 @@ without the `custom-protocol` feature the tauri CLI passes, the binary
 still points at the Vite dev server, so it comes up with no frontend at
 all (and the run captures nothing).
 
+**Seed the isolated profile's window geometry**, once, before the first
+run in a directory you'll reuse for comparable runs. A fresh
+`--app-data-dir` starts every setting at default — including window
+size — and Tauri's default window is materially smaller than an
+operator's real one (the reference machine runs ~2450×2080), so an
+unseeded run under-loads the plot canvas it's measuring. Copy the
+operator profile's `.window-state.json` into the run's directory before
+launching:
+
+```sh
+mkdir -p /abs/path/to/perf-app-data
+cp "$APPDATA/dev.cannet.app/.window-state.json" \
+   /abs/path/to/perf-app-data/.window-state.json      # Windows (Git Bash)
+```
+
+(`~/Library/Application Support/dev.cannet.app/.window-state.json` on
+macOS; `~/.config/dev.cannet.app/.window-state.json` on Linux.) A plain
+file copy, not a symlink — the run reads the operator's geometry once
+and can never write back to it, so the isolation `--app-data-dir` gives
+every other setting still holds for this one.
+
 Use **absolute** paths for `--project` and `--perf-out`. They are
 resolved against the process's working directory, which is the launch
 directory here but is `apps/gui/src-tauri` under `tauri dev` — a
@@ -889,6 +910,27 @@ canonical `docs/performance-measurements/baseline.json` — promote a
 snapshot to the reference by copying it there. Frontend render reports
 live under `docs/performance-measurements/frontend/`, kept apart from the
 host baseline they feed.
+
+**Hand every run in the gate to one `check` invocation** — repeat
+`--frontend-report` once per run, rather than checking each report on
+its own:
+
+```sh
+cannet-perf-measurement check \
+  --frontend-report run1.json --frontend-report run2.json --frontend-report run3.json
+```
+
+This is the canonical gate form. Every metric except the three
+memory-drift ones (`jsheap_mb_drift_per_min` / `renderer_mb_drift_per_min`
+/ `tree_mb_drift_per_min`) keeps the worst-run rule — one verdict per
+report, any one report's regression fails the gate — but the drift
+family instead gates the **median** of the given reports (ADR 0031: a
+least-squares slope over a short capture window is a noisier per-run
+statistic than a latency maximum, and its session-to-session spread has
+been measured wider than a gate's own limit margin). Limits are
+unchanged, only the statistic gated against them moved. A single
+`--frontend-report` still behaves exactly as before — the median of one
+run is that run.
 
 The window below the toolbar is a dockable panel area. The default
 layout has a **trace panel** and a **project panel** (the project's
