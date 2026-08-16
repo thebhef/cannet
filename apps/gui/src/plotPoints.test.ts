@@ -3,18 +3,18 @@ import type uPlot from "uplot";
 
 import {
   applyAutoPointFloor,
+  applySampleMarkerFilter,
   AUTO_POINT_MARKER_FLOOR,
-  capPointMarkers,
-  laneSampleMarkerIndices,
   MAX_POINT_MARKERS,
+  sampleMarkerColumns,
   showPointsFromRaw,
   showPointsToUplot,
 } from "./plotPoints";
 
-/** Minimal stub shaped like the bit of a uPlot instance the filter reads:
- * one visible series with an `idxs` span. */
-function fakeU(i0: number | null, i1: number | null): uPlot {
-  return { series: [{}, { idxs: [i0, i1] }] } as unknown as uPlot;
+/** Minimal stub shaped like the bit of a uPlot instance the filter
+ * reads: the merged x column grid and the visible x range. */
+function fakeU(xs: number[], from = -Infinity, to = Infinity): uPlot {
+  return { data: [xs], scales: { x: { min: from, max: to } } } as unknown as uPlot;
 }
 
 describe("showPointsFromRaw", () => {
@@ -33,51 +33,9 @@ describe("showPointsToUplot", () => {
     expect(showPointsToUplot("auto")).toEqual({});
     const on = showPointsToUplot("on");
     expect(on.show).toBe(true);
-    // `on` carries the thinning filter so it can't overdraw.
-    expect(typeof on.filter).toBe("function");
-  });
-});
-
-describe("capPointMarkers", () => {
-  it("is a no-op when the in-view points already fit the cap", () => {
-    // Right at the cap: every point is marked (null = draw all).
-    expect(capPointMarkers(fakeU(0, MAX_POINT_MARKERS - 1), 1)).toBeNull();
-  });
-
-  it("strides down to the flat cap when dense, keeping the last point", () => {
-    // 10× the cap visible → stride ≈ 10, output bounded by the cap.
-    const last = MAX_POINT_MARKERS * 10 - 1;
-    const out = capPointMarkers(fakeU(0, last), 1);
-    expect(out).not.toBeNull();
-    const idxs = out as number[];
-    // Bounded by the cap (+1 for the forced last index).
-    expect(idxs.length).toBeLessThanOrEqual(MAX_POINT_MARKERS + 1);
-    expect(idxs.length).toBeGreaterThan(MAX_POINT_MARKERS / 2);
-    // Strided from the first in-view index, last index forced in.
-    expect(idxs[0]).toBe(0);
-    expect(idxs[idxs.length - 1]).toBe(last);
-    // Within the visible span and strictly ascending.
-    expect(idxs.every((v, k) => v >= 0 && v <= last && (k === 0 || v > idxs[k - 1]))).toBe(true);
-  });
-
-  it("is independent of canvas width — a wider plot still caps at the max", () => {
-    // The cap is flat: 100k visible points stride to ~MAX regardless.
-    const out = capPointMarkers(fakeU(0, 100_000), 1) as number[];
-    expect(out.length).toBeLessThanOrEqual(MAX_POINT_MARKERS + 1);
-  });
-
-  it("respects a non-zero start index", () => {
-    const last = 200 + MAX_POINT_MARKERS * 4 - 1;
-    const out = capPointMarkers(fakeU(200, last), 1) as number[];
-    expect(out[0]).toBe(200);
-    expect(out[out.length - 1]).toBe(last);
-    expect(out.every((v) => v >= 200 && v <= last)).toBe(true);
-  });
-
-  it("returns null when the series has no visible range", () => {
-    expect(capPointMarkers(fakeU(null, null), 1)).toBeNull();
-    const noIdxs = { series: [{}, {}] } as unknown as uPlot;
-    expect(capPointMarkers(noIdxs, 1)).toBeNull();
+    // *Which* columns are marked is not this function's call — one
+    // filter, installed on the instance, answers that for every mode.
+    expect(on.filter).toBeUndefined();
   });
 });
 
@@ -133,33 +91,93 @@ describe("applyAutoPointFloor", () => {
   });
 });
 
-describe("laneSampleMarkerIndices", () => {
-  it("marks every served sample inside the view", () => {
-    // The whole point: a lane's tiles show its transitions, so without
-    // a marker per sample there is nothing on screen distinguishing a
-    // state held through many samples from one held through none.
-    expect(laneSampleMarkerIndices([0, 1, 2, 3, 4], 0, 4)).toEqual([0, 1, 2, 3, 4]);
+
+describe("sampleMarkerColumns", () => {
+  // `columns` are the merged columns the series has a *sample* at — the
+  // only columns a marker may sit on. Here the grid is twice as dense as
+  // the series, which is what any shared axis looks like.
+  const xs = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4];
+  const own = [0, 2, 4, 6, 8];
+
+  it("marks every one of the series' own samples inside the view", () => {
+    // The whole point: a marker per reading, and none anywhere else.
+    expect(sampleMarkerColumns(own, xs, 0, 4)).toEqual(own);
+  });
+
+  it("marks nothing at a column the series is merely held across", () => {
+    // The held columns (1, 3, 5, 7) are the neighbour's readings, and on
+    // a stopped or stalled series they are the *only* thing out there.
+    expect(sampleMarkerColumns(own, xs, 0, 4).some((c) => c % 2 === 1)).toBe(false);
+    expect(sampleMarkerColumns([], xs, 0, 4)).toEqual([]);
   });
 
   it("drops samples outside the visible window", () => {
-    // The serve is widened past the window by two boundary points a
-    // side, and those sit off-canvas.
-    expect(laneSampleMarkerIndices([0, 1, 2, 3, 4], 1, 3)).toEqual([1, 2, 3]);
-    expect(laneSampleMarkerIndices([0, 1, 2], 5, 9)).toEqual([]);
-    expect(laneSampleMarkerIndices([], 0, 9)).toEqual([]);
+    // The serve is widened past the window by a couple of boundary
+    // points a side, and those sit off-canvas.
+    expect(sampleMarkerColumns(own, xs, 1, 3)).toEqual([2, 4, 6]);
+    expect(sampleMarkerColumns(own, xs, 9, 10)).toEqual([]);
   });
 
   it("thins to the marker cap and always keeps the newest sample", () => {
-    // A marker per sample costs the same on a lane as on a line, so the
+    // A marker per sample costs the same here as it ever did, so the
     // same flat cap applies. The last in-view sample is kept whatever
-    // the stride lands on, so a lane's leading edge is always marked —
+    // the stride lands on, so a series' leading edge is always marked —
     // it is the one position a reader is checking.
-    const ts = Array.from({ length: 1234 }, (_, i) => i);
-    const out = laneSampleMarkerIndices(ts, 0, 1233);
+    const grid = Array.from({ length: 2468 }, (_, i) => i / 2);
+    const cols = Array.from({ length: 1234 }, (_, i) => i * 2);
+    const out = sampleMarkerColumns(cols, grid, 0, 1233);
     expect(out.length).toBeLessThanOrEqual(MAX_POINT_MARKERS + 1);
     expect(out[0]).toBe(0);
-    expect(out[out.length - 1]).toBe(1233);
+    expect(out[out.length - 1]).toBe(2466);
     // Evenly strided, so the thinning does not bunch the markers.
-    expect(out[1] - out[0]).toBe(Math.ceil(1234 / MAX_POINT_MARKERS));
+    expect(out[1] - out[0]).toBe(2 * Math.ceil(1234 / MAX_POINT_MARKERS));
+  });
+});
+
+describe("applySampleMarkerFilter", () => {
+  type FakeSeries = { points?: { filter?: uPlot.Series.Points["filter"] } };
+  const seriesWith = (n = 2): FakeSeries[] => [
+    {},
+    ...Array.from({ length: n }, () => ({ points: {} as { filter?: uPlot.Series.Points["filter"] } })),
+  ];
+  const call = (s: FakeSeries, u: uPlot, idx: number, show: boolean) => {
+    const f = s.points!.filter;
+    return typeof f === "function" ? f(u, idx, show, null) : f;
+  };
+
+  it("hands uPlot the series' own sample columns", () => {
+    const series = seriesWith();
+    applySampleMarkerFilter(series, (i) => (i === 1 ? [0, 2] : [1]));
+    const u = fakeU([0, 1, 2]);
+    expect(call(series[1], u, 1, true)).toEqual([0, 2]);
+    expect(call(series[2], u, 2, true)).toEqual([1]);
+  });
+
+  it("returns nothing when uPlot's own rule said not to draw", () => {
+    // `drawSeries` draws the point layer when `show || idxs`, so an
+    // index list returned under a false `show` would resurrect the
+    // markers `off` — or the density rule under `auto` — turned down.
+    const series = seriesWith(1);
+    applySampleMarkerFilter(series, () => [0, 1]);
+    expect(call(series[1], fakeU([0, 1]), 1, false)).toBeNull();
+  });
+
+  it("reads the columns per draw, not once at install", () => {
+    // A fetch changes a series' samples without rebuilding the instance.
+    let cols = [0];
+    const series = seriesWith(1);
+    applySampleMarkerFilter(series, () => cols);
+    const u = fakeU([0, 1, 2]);
+    expect(call(series[1], u, 1, true)).toEqual([0]);
+    cols = [0, 1, 2];
+    expect(call(series[1], u, 1, true)).toEqual([0, 1, 2]);
+  });
+
+  it("leaves the x series alone and skips a series with no points spec", () => {
+    const series: FakeSeries[] = [{}, {}, { points: {} }];
+    applySampleMarkerFilter(series, () => [0]);
+    expect(series[0]).toEqual({});
+    expect(series[1]).toEqual({});
+    expect(typeof series[2].points!.filter).toBe("function");
   });
 });

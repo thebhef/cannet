@@ -15,7 +15,9 @@ import { describe, expect, it, vi } from "vitest";
 import type uPlot from "uplot";
 
 import { drawEnumTiles, drawExtrapolatedSegments } from "./PlotArea";
+import { mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
+import { applySampleMarkerFilter } from "./plotPoints";
 import { setActiveTheme, theme, type ThemeName } from "./theme";
 
 /** One recorded canvas operation. */
@@ -312,7 +314,7 @@ describe("drawEnumTiles extrapolation hatching", () => {
     const { ctx, ops } = recorder();
     const ts = [0, 1, 2, 3];
     const u = fakeU([ts, [0, 0, 1, 1]], [{}]);
-    drawEnumTiles(ctx, u, tileOpts({ sampleMarkers: true }));
+    drawEnumTiles(ctx, u, tileOpts({ sampleMarkers: true, sampleColumns: [0, 1, 2, 3] }));
     const rects = ops.filter((o) => o.op === "fillRect");
     // Two tiles (code 0 then code 1), then one marker per sample. Told
     // apart by height: a tile fills the band, a marker is 3 px square.
@@ -330,8 +332,112 @@ describe("drawEnumTiles extrapolation hatching", () => {
   it("draws no sample markers when the panel's show-points is off", () => {
     const { ctx, ops } = recorder();
     const u = fakeU([[0, 1, 2, 3], [0, 0, 1, 1]], [{}]);
-    drawEnumTiles(ctx, u, tileOpts({ sampleMarkers: false }));
+    drawEnumTiles(ctx, u, tileOpts({ sampleMarkers: false, sampleColumns: [0, 1, 2, 3] }));
     expect(ops.filter((o) => o.op === "fillRect" && (o.args[3] as number) === 3)).toHaveLength(0);
+  });
+
+  /** Times `from, from+period, …` up to and including `until`, rounded
+   * the way the fixture's generator rounds them. */
+  function ticks(period: number, until: number, from = 0): number[] {
+    const out: number[] = [];
+    for (let i = 0; from + i * period <= until + 1e-9; i++) {
+      out.push(Number((from + i * period).toFixed(6)));
+    }
+    return out;
+  }
+
+  /** A lane arriving at `period` over `[from, until]`, all one code. */
+  const laneSeries = (period: number, until: number, from = 0, code = 1) => {
+    const t = ticks(period, until, from);
+    return { t, v: t.map(() => code) };
+  };
+
+  /** The x (in the fake uPlot's 1 unit = 10 px world) each sample marker
+   * was centred on. A marker is the 3 px square; a tile fills the band. */
+  const markerTimes = (ops: Op[]) =>
+    ops
+      .filter((o) => o.op === "fillRect" && (o.args[3] as number) === 3)
+      .map((o) => Number((((o.args[0] as number) + 1.5) / 10).toFixed(6)));
+
+  it("marks a lane's own samples, not the columns a dense sibling contributes", () => {
+    // The defect this pins: the markers were selected from `u.data[0]` —
+    // the *merged* column grid — so a 5 Hz sibling on the same lanes axis
+    // put a marker on this lane at every one of its columns, right across
+    // the stretch where this lane had stopped arriving. The fixture's
+    // `StoppedMode` (500 ms, silent after 6 s) beside `DenseMode`
+    // (200 ms, the whole capture).
+    const stopped = { ...laneSeries(0.5, 6), extrapolated: [[6, 20] as const] };
+    const dense = laneSeries(0.2, 20, 0, 2);
+    const merged = mergeSeries([stopped, dense]);
+    const xs = merged[0] as number[];
+    const cols = sampleColumns(xs, [stopped, dense]);
+    const { ctx, ops } = recorder();
+    const u = fakeU([xs, merged[1] as (number | null)[], merged[2] as (number | null)[]], [{}, {}]);
+    drawEnumTiles(
+      ctx,
+      u,
+      tileOpts({
+        sampleMarkers: true,
+        sampleColumns: cols[0],
+        extrapolated: stopped.extrapolated,
+      }),
+    );
+    expect(markerTimes(ops)).toEqual(stopped.t);
+  });
+
+  it("keeps every marker of a lane that really is arriving", () => {
+    // The control, from the other side of the same axis: `DenseMode`
+    // has a sample at every one of its columns, so the honest answer for
+    // it is the one the lane already drew.
+    const stopped = { ...laneSeries(0.5, 6), extrapolated: [[6, 20] as const] };
+    const dense = laneSeries(0.2, 20, 0, 2);
+    const merged = mergeSeries([stopped, dense]);
+    const xs = merged[0] as number[];
+    const { ctx, ops } = recorder();
+    const u = fakeU([xs, merged[1] as (number | null)[], merged[2] as (number | null)[]], [{}, {}]);
+    drawEnumTiles(
+      ctx,
+      u,
+      tileOpts({
+        seriesIdx: 2,
+        sampleMarkers: true,
+        sampleColumns: sampleColumns(xs, [stopped, dense])[1],
+      }),
+    );
+    expect(markerTimes(ops)).toEqual(dense.t);
+  });
+
+  it("marks no sample inside a lane's stalled stretch, and both readings that bound it", () => {
+    // The fixture's `StalledMode`: 200 ms throughout except 7 → 15 s,
+    // which the host classifies as extrapolation. The stall's two ends
+    // *are* readings and keep their markers — what has nothing behind it
+    // is the stretch between them.
+    const before = laneSeries(0.2, 7);
+    const after = laneSeries(0.2, 20, 15);
+    const stalled = {
+      t: [...before.t, ...after.t],
+      v: [...before.v, ...after.v],
+      extrapolated: [[7, 15] as const],
+    };
+    const dense = laneSeries(0.2, 20, 0.1, 2);
+    const merged = mergeSeries([stalled, dense]);
+    const xs = merged[0] as number[];
+    const { ctx, ops } = recorder();
+    const u = fakeU([xs, merged[1] as (number | null)[], merged[2] as (number | null)[]], [{}, {}]);
+    drawEnumTiles(
+      ctx,
+      u,
+      tileOpts({
+        sampleMarkers: true,
+        sampleColumns: sampleColumns(xs, [stalled, dense])[0],
+        extrapolated: stalled.extrapolated,
+      }),
+    );
+    const times = markerTimes(ops);
+    expect(times.filter((t) => t > 7 && t < 15)).toEqual([]);
+    expect(times).toContain(7);
+    expect(times).toContain(15);
+    expect(times).toEqual(stalled.t);
   });
 
   it("halos about twice as hard on a light theme as on a dark one", () => {
@@ -354,5 +460,100 @@ describe("drawEnumTiles extrapolation hatching", () => {
     expect(dark).toBeGreaterThan(0);
     expect(passes("light")).toBe(dark * 2);
     expect(passes("lighthk")).toBe(dark * 2);
+  });
+});
+
+describe("point markers on a numeric axis", () => {
+  // uPlot's own point layer draws the indices its `points.filter`
+  // returns, so which columns a line marks is decided there rather than
+  // in a draw hook. The filter is installed on the constructed instance
+  // (`applySampleMarkerFilter`), which is what this drives.
+
+  function ticks(period: number, until: number, from = 0): number[] {
+    const out: number[] = [];
+    for (let i = 0; from + i * period <= until + 1e-9; i++) {
+      out.push(Number((from + i * period).toFixed(6)));
+    }
+    return out;
+  }
+
+  const ramp = (t: number[]) => ({ t, v: t.map((x) => 50 + x) });
+
+  /** Merge, blank the extrapolated stretches out (as the resample
+   * does), install the filter, and return what it hands uPlot for
+   * series `k` — plus the row uPlot would be drawing markers on. */
+  function markedColumns(series: Parameters<typeof mergeSeries>[0], k: number) {
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    const rows = merged.slice(1) as (number | null)[][];
+    splitExtrapolatedRows(xs, rows, series);
+    const cols = sampleColumns(xs, series);
+    const u = fakeU([xs, ...rows], series.map(() => ({})));
+    const points = series.map(() => ({}) as { filter?: uPlot.Series.Points["filter"] });
+    applySampleMarkerFilter(
+      [{}, ...points.map((p) => ({ points: p }))],
+      (seriesIdx) => cols[seriesIdx - 1] ?? [],
+    );
+    const filter = points[k].filter;
+    const idxs = typeof filter === "function" ? filter(u, k + 1, true, null) : filter;
+    return { xs, row: rows[k], idxs, filter };
+  }
+
+  it("marks a one-sample series once, at its sample, and nowhere along its wings", () => {
+    // The fixture's `OneShotLevel`: one frame at 10 s, drawn as a
+    // horizontal line across the whole window (ADR 0026). The defect
+    // this pins: every column that line runs through carried a value, so
+    // the point layer drew a marker on each — a chain of dots claiming
+    // 400 readings where there was one.
+    const oneShot = {
+      t: [10],
+      v: [12],
+      extrapolated: [[0, 10] as const, [10, 20] as const],
+    };
+    const { xs, row, idxs } = markedColumns([ramp(ticks(0.05, 20)), oneShot], 1);
+    expect(idxs).toHaveLength(1);
+    expect(xs[(idxs as number[])[0]]).toBe(10);
+    // The row is not the source and could not be: even after the wings
+    // are blanked out of the solid stroke it still carries a value at a
+    // column that is nobody's sample (the wing's far end, which is where
+    // the dash starts).
+    expect(row.filter((v) => v != null).length).toBeGreaterThan(1);
+  });
+
+  it("marks no column inside a stalled stretch, and both readings that bound it", () => {
+    // The fixture's `StalledLevel`: 100 ms, silent from 6 s to 13 s, on
+    // an axis a 50 ms series fills with columns. Held values across the
+    // stall are not readings; the samples at its ends are.
+    const stalled = {
+      t: [...ticks(0.1, 6), ...ticks(0.1, 20, 13)],
+      v: [] as number[],
+      extrapolated: [[6, 13] as const],
+    };
+    stalled.v = stalled.t.map((x) => 30 + x);
+    const { xs, idxs } = markedColumns([ramp(ticks(0.05, 20)), stalled], 1);
+    const times = (idxs as number[]).map((i) => xs[i]);
+    expect(times.filter((t) => t > 6 && t < 13)).toEqual([]);
+    expect(times).toEqual(stalled.t);
+  });
+
+  it("keeps every marker of a series that really is dense", () => {
+    // The control. Nothing here is extrapolated and every column of this
+    // series' own is a reading, so the honest answer is the one the plot
+    // already drew.
+    const dense = ramp(ticks(0.05, 20));
+    const sparse = ramp(ticks(1, 20));
+    const { xs, idxs } = markedColumns([dense, sparse], 0);
+    expect((idxs as number[]).map((i) => xs[i])).toEqual(dense.t);
+  });
+
+  it("returns nothing at all when uPlot's own rule said not to draw", () => {
+    // `drawSeries` draws points when `show || idxs`, so an index list
+    // returned while `show` is false resurrects the markers the panel's
+    // `off` mode — or uPlot's density rule under `auto` — just turned
+    // down. The filter narrows what is drawn; it never decides that
+    // something is.
+    const { filter } = markedColumns([ramp(ticks(1, 20))], 0);
+    const u = fakeU([[0, 1], [1, 2]], [{}]);
+    expect(typeof filter === "function" ? filter(u, 1, false, null) : null).toBeNull();
   });
 });

@@ -287,6 +287,48 @@ export function splitExtrapolatedRows(
   });
 }
 
+/**
+ * Which merged columns carry a **genuine sample** of each series: the
+ * columns whose x is one of that series' own timestamps.
+ *
+ * `mergeSeries` materializes a value for a series at columns it never
+ * measured — every column of a dense neighbour's between two of its own
+ * samples, every column of an extrapolated stretch, the midpoint minted
+ * to break an interior stall, and (for a one-sample series) the whole
+ * grid. Held values are what makes the line continuous and the tile
+ * survive; they are not readings, and a marker drawn at one claims a
+ * sample that does not exist. So a marker asks this, never the row.
+ *
+ * **Matched on the series' own timestamps rather than on anything the
+ * merge produced** — that is the seam that cannot regress when the merge
+ * changes. Whatever columns merging mints, holds across, or blanks, a
+ * column is a sample of series `k` exactly when its x came out of
+ * `series[k].t`; a column the merge invents has no such x to match, so a
+ * new materializing rule cannot grow a marker. The alternative seam —
+ * subtracting the extrapolated spans from the row — is a function of the
+ * classification, and would still mark every held column the
+ * classification does not cover (the dense neighbour's, which is most of
+ * them).
+ *
+ * `xs` and each `t` are ascending, so this is one walk over both.
+ * Returns one ascending column list per series, aligned with `series`.
+ */
+export function sampleColumns(
+  xs: readonly number[],
+  series: readonly RawSeries[],
+): number[][] {
+  return series.map((s) => {
+    const out: number[] = [];
+    let i = 0;
+    for (const t of s.t) {
+      while (i < xs.length && xs[i] < t) i++;
+      if (i >= xs.length) break;
+      if (xs[i] === t) out.push(i++);
+    }
+    return out;
+  });
+}
+
 /** Index of the last entry of the ascending `xs` that is `<= x`, or -1. */
 function lastAtOrBefore(xs: readonly number[], x: number): number {
   let lo = 0;

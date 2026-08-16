@@ -993,6 +993,143 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     tests passed (from 2148 — the two clamp cases); `tsc --noEmit` and
     `pnpm build` clean. No release rebuild, no perf-gate run.
 
+- **2026-08-15, phase 7 (`task72-p7-marker-honesty`, branched off
+  `task72-p6-extrapolation-shots`):** the sign-off review's finding —
+  sample markers drawn where there are no samples.
+
+  **Verdict: neither marker renderer ever asked which columns the series
+  it was marking had a sample at. Both selected from the merged x-column
+  grid — the union of every series on the axis — so a series was marked
+  wherever its _neighbours_ were read, most densely exactly where it had
+  no data of its own.** Fixed at one seam for both
+  (`9ae79890`): markers come from the columns whose x is one of the
+  series' own raw timestamps, and from nothing else.
+
+  - _Observation (raw)._ Owner, on the committed `examples/extrapolation`
+    fixture's sign-off frame: the `StoppedMode` lane shows marker dots
+    across its striped stretch; the `StalledMode` lane shows dots across
+    its stalled stretch; `OneShotLevel`'s one-sample hline renders its
+    wing as a chain of thick markers at every column.
+
+  - _Hypothesis._ All three are one mechanism: a marker is placed per
+    **merged column that carries a value**, and `mergeSeries`
+    sample-and-holds a value into every column of the union — so a
+    series' marker count should equal the number of merged columns it is
+    held across, not its sample count, and the excess should be exactly
+    the columns its neighbours contributed. Falsifiable two ways: if the
+    drawn count matched the series' own samples, the mechanism would be
+    elsewhere; and if it were the extrapolation classification leaking
+    into the marker path, a series with no classified span would show the
+    same excess — which it must, under this hypothesis, since holding is
+    not conditional on classification.
+
+  - _Data (draw tier, tests written first and watched fail, on the
+    fixture's own shapes)._
+
+    | shape | merged columns | markers drawn | samples |
+    | --- | --- | --- | --- |
+    | `StoppedMode` (500 ms, silent after 6 s) beside `DenseMode` (200 ms) | 107 | **107** | 13 |
+    | `StalledMode` (200 ms, silent 7 → 15 s) beside a 200 ms sibling | — | **41 inside the stall** | 0 inside it |
+    | `OneShotLevel` (one frame at 10 s) beside `RefLevel` (50 ms) | 401 | every non-null column | 1 |
+
+    The drawn count is the **column** count in every row, never the
+    sample count — the hypothesis' first prediction, exactly. **70 of the
+    stopped lane's 107 markers sit out in the 6 → 20 s stretch the same
+    draw call was hatching as extrapolation**, and one of the stall's 41
+    sits on the column `mergeSeries` mints _solely to break the stroke_
+    (it is nobody's sample by construction). The `OneShotLevel` row
+    carries a value at all 401 columns before blanking; on the build the
+    owner reviewed that left the whole leading wing marked (phase 6's
+    clamp had not landed), and on this tip the clamp leaves **2** non-null
+    columns — of which **1**, column 0 where the dash starts, is still
+    nobody's sample. The honest answer is one marker, at column 200
+    (x = 10 s).
+
+  - _Mechanism, named at both seams._ For a lane, `drawEnumTiles`' marker
+    pass called `laneSampleMarkerIndices(ts, …)` with `ts = u.data[0]` —
+    the merged grid — and a tile axis deliberately keeps its row whole
+    (phase 4), so every column from the lane's first sample onward
+    carries a value and got a dot. For a line, uPlot's point layer marks
+    its whole in-view index span unless a `points.filter` narrows it, and
+    the only filter installed was the `on` mode's `capPointMarkers`,
+    which thins by **stride over an index range** — a density cap, never
+    a sample test. `applyAutoPointFloor` then forces that layer on for
+    any series holding ≤ 32 raw samples, which is precisely the
+    one-sample hline. The second falsification holds too: the excess is
+    not a function of the classification — a series with no span at all
+    is marked at its neighbours' columns just the same, which is why the
+    fix could not live in the extrapolation path.
+
+  - _Fix (`9ae79890`), and why this seam._ `sampleColumns` (`plotData.ts`)
+    walks each series' raw `t` against the merged `xs` and returns the
+    columns that carry one of its own timestamps; both renderers select
+    from that. It is matched on the **series' own timestamps**, not on
+    anything the merge produced, because that is the seam a change to the
+    merge cannot move: whatever new columns merging mints, holds across,
+    or blanks, an invented column has no raw timestamp to match, so it
+    cannot grow a marker. The alternative seam — subtract the
+    extrapolated spans from the row — was rejected on the data above: it
+    is a function of the classification and would still have marked every
+    held column the classification does not cover, which is most of them.
+    The spans are therefore not consulted at all by the marker path, and
+    need not be: a stretch has no sample in it by construction, while the
+    readings that bound one (a stall's two ends, the last frame before a
+    series stopped) keep their markers — which is what makes the dashed
+    stretch beside them legible.
+
+    On the line side this replaces two mechanisms with one:
+    `showPointsToUplot` no longer installs a mode-specific filter, and a
+    single `points.filter` — installed on the constructed instance beside
+    `applyAutoPointFloor`, for the same reason (the columns change with
+    every fetch, which does not rebuild the instance) — narrows the draw
+    to the sample columns and carries the `MAX_POINT_MARKERS` cap that
+    the `on` mode used to carry. `capPointMarkers` goes with the mode it
+    belonged to. **The filter narrows what is drawn and never decides
+    that something is**: uPlot draws the point layer on `show || idxs`,
+    so it returns `null` whenever `show` is false — otherwise it would
+    resurrect the markers the panel's `off` mode, or the density rule
+    under `auto`, had just turned down. That is pinned by its own test.
+    Phase 4's deliberate behaviours are all intact: the auto point floor,
+    the lane drawing its own markers over the tiles, the dash re-stroke.
+
+  - _Cost._ `sampleColumns` is one walk over `xs` plus each series' `t`
+    per resample, allocating one index array per series — a fraction of
+    the merge that precedes it, which allocates a full `xs.length` row
+    per series. The per-draw work is the same shape as before (a strided
+    scan bounded by the cap), over a list that is now shorter.
+
+  - _Guards._ Nineteen new tests, eleven net of the eight the fix
+    orphaned. The eleven that reproduce the defect were written first and
+    watched fail; the unit suites replacing the orphaned ones were
+    written with the code they cover. At the draw tier
+    (`PlotArea.draw.test.ts`, driving the real `mergeSeries` /
+    `splitExtrapolatedRows` on the fixture's shapes): a lane marks its
+    own samples and not a dense sibling's columns; a dense lane keeps
+    every one of its markers (the control); no marker inside a lane's
+    stalled stretch, with both bounding readings kept; the same three for
+    a line through the installed filter, plus the one-sample series
+    marking once; and `show === false` returning `null`. At the unit tier,
+    `sampleColumns` (`plotData.test.ts`) and `sampleMarkerColumns` /
+    `applySampleMarkerFilter` (`plotPoints.test.ts`, replacing the
+    `capPointMarkers` and `laneSampleMarkerIndices` suites the fix
+    orphaned).
+
+  - _ADR 0026 amended (`bc02241c`)._ It said a lane draws its own markers;
+    it did not say where either renderer may put one. "A marker sits only
+    on a sample" is now recorded, with the merged-grid trap and the
+    reason the spans are not consulted.
+
+  - _No screenshot run._ The only release binary predates this fix, so a
+    capture could only re-photograph the defect the owner already
+    reported from it — and phase 6's set is that photograph. The
+    verification here is the draw tier; the re-build and re-shoot are the
+    orchestrator's, and they now cover two fixes (this one and phase 6's
+    leading-wing clamp).
+
+  - Frontend: 162 test files / 2161 tests passed (from 162 / 2150 at
+    phase 6); `tsc --noEmit` and `pnpm build` clean. No host code
+    touched, so no Rust run.
+
 ## Blockers / side effects
 
 - ~~**The enum leading-edge lag is attributed but NOT fixed.**~~ **Fixed
@@ -1027,6 +1164,11 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   now take about a minute each. **This is the owner/orchestrator
   decision left in this task**: sanction the rebuild, or accept the set
   with the leading wing read from the test rather than the picture.
+  **Phase 7 adds a second fix to the same re-shoot** (`9ae79890`): the
+  set was photographed with markers drawn at every merged column, so
+  the striped and dashed stretches in it carry dots that the current
+  code does not draw. Read the four PNGs as the picture of two defects,
+  not one.
 - **`max_points == 0` still run-reduces a categorical window**, where
   the numeric serve of the same request returns the raw slice. Left
   as-is: no plot fetch reaches it (`MIN_DECIMATION_POINTS = 200` is

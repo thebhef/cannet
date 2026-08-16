@@ -30,15 +30,16 @@ export const MAX_POINT_MARKERS = 500;
  * - `auto` → omit `show`, so uPlot's default density-aware filter draws
  *   points only when the sample-to-pixel ratio is low enough.
  * - `off` → `show: false`.
- * - `on` → `show: true` plus a thinning `filter` that caps the drawn
- *   markers to [`MAX_POINT_MARKERS`] across the visible range. Without it,
- *   "always show" draws a marker on every decimated sample, so a wide /
- *   zoomed-out window pays for thousands of overlapping markers per
- *   redraw — the perf cliff this guards. At or below the cap the filter is
- *   a no-op (every in-view point is marked). */
+ * - `on` → `show: true`.
+ *
+ * *Which* columns get a marker is not decided here: every mode goes
+ * through the one filter [`applySampleMarkerFilter`] installs on the
+ * constructed instance, which marks the series' own samples and thins
+ * them to [`MAX_POINT_MARKERS`]. Two mechanisms deciding that is how a
+ * held column came to be marked as if it were a reading. */
 export function showPointsToUplot(mode: ShowPointsMode): uPlot.Series.Points {
   if (mode === "off") return { show: false };
-  if (mode === "on") return { show: true, filter: capPointMarkers };
+  if (mode === "on") return { show: true };
   return {};
 }
 
@@ -59,9 +60,10 @@ export function showPointsToUplot(mode: ShowPointsMode): uPlot.Series.Points {
  * the floor can never be the reason a redraw is expensive. */
 export const AUTO_POINT_MARKER_FLOOR = 32;
 
-/** A uPlot series as far as the floor is concerned. */
+/** A uPlot series as far as the floor and the marker filter are
+ * concerned. */
 interface PointsHost {
-  points?: { show?: uPlot.Series.Points["show"] };
+  points?: { show?: uPlot.Series.Points["show"]; filter?: uPlot.Series.Points["filter"] };
 }
 
 /** Apply {@link AUTO_POINT_MARKER_FLOOR} to a live uPlot instance's
@@ -91,66 +93,89 @@ export function applyAutoPointFloor(
   }
 }
 
-/** uPlot `points.filter` for the `on` mode: return the data indices to
- * mark, strided down to at most [`MAX_POINT_MARKERS`] across the visible
- * range, or `null` when the in-view points already fit that cap (uPlot
- * then marks them all). The visible index span comes from the series'
- * `idxs` (uPlot sets it each draw). The last in-view index is always kept
- * so the series end shows a marker. */
-export function capPointMarkers(u: uPlot, seriesIdx: number): number[] | null {
-  const idxs = u.series[seriesIdx]?.idxs;
-  if (!idxs) return null;
-  const [i0, i1] = idxs;
-  if (i0 == null || i1 == null || i1 < i0) return null;
-  const count = i1 - i0 + 1;
-  if (count <= MAX_POINT_MARKERS) return null;
-  const stride = Math.ceil(count / MAX_POINT_MARKERS);
-  const out: number[] = [];
-  for (let i = i0; i <= i1; i += stride) out.push(i);
-  if (out[out.length - 1] !== i1) out.push(i1);
-  return out;
-}
-
 /**
- * Which of a lane's served samples get a marker drawn at them.
+ * Which of a series' **own sample columns** get a marker drawn at them.
  *
- * A lane's markers cannot ride uPlot's `points` layer. That layer's
- * `auto` rule reads the density of the **axis** — and a shared
- * enum-lanes axis carries every enum's samples in its merged columns, so
- * one fast lane suppresses the markers of every slow one — and
- * {@link AUTO_POINT_MARKER_FLOOR} only rescues a series of a handful of
- * samples. Whatever markers do survive that are then painted over by the
- * value tiles, which are 65–75 % opaque and sit in front of the line by
- * design.
+ * A marker says "there was a reading here", so it may only ever sit on a
+ * column the series has a sample at — `sampleColumns` in `plotData.ts`,
+ * which reads the series' raw timestamps rather than anything the merge
+ * materialized. Everything else in a merged row is sample-and-hold: the
+ * columns a denser neighbour contributed, the stretch past a stopped
+ * series' last frame, the interior of a stall, the whole grid a
+ * one-sample hline is drawn across. Marking those claims samples that do
+ * not exist, and claims them most densely exactly where the plot has the
+ * least data (ADR 0026).
  *
- * But a lane needs its markers *more* than a line does, not less. A
- * line's own shape shows where it was measured; a lane's tiles show only
- * its transitions, so with no markers there is nothing on screen
- * distinguishing a state held through a thousand samples from one held
- * through none — which is exactly the difference between data and
- * extrapolation this view now claims to draw.
+ * The extrapolated stretches need no separate exclusion here, and are
+ * deliberately not consulted: a stretch is extrapolation *because* the
+ * series has no sample in it, so a stretch's interior has no column to
+ * offer. Its two ends do — a stall is bounded by readings, and the last
+ * frame before a series stopped is a reading — and those keep their
+ * markers, which is what makes the dashed stretch beside them legible.
  *
- * So a lane draws its own, over the tiles, at every served sample in
- * view — thinned to `max` the way {@link capPointMarkers} thins the `on`
- * mode, because a marker per sample costs the same here as there. `ts`
- * must be ascending. The last in-view sample is always kept, so a lane's
- * newest sample is always marked.
+ * `columns` is ascending and indexes `xs`; the result is a subset of it,
+ * limited to the visible `[from, to]` and strided down to `max` because a
+ * marker per sample costs the same in a zoomed-out window as it ever did.
+ * The last in-view sample is always kept, so a series' newest reading is
+ * always marked.
  */
-export function laneSampleMarkerIndices(
-  ts: readonly number[],
+export function sampleMarkerColumns(
+  columns: readonly number[],
+  xs: readonly number[],
   from: number,
   to: number,
   max = MAX_POINT_MARKERS,
 ): number[] {
   let i0 = 0;
-  while (i0 < ts.length && ts[i0] < from) i0++;
-  let i1 = ts.length - 1;
-  while (i1 >= 0 && ts[i1] > to) i1--;
+  while (i0 < columns.length && xs[columns[i0]] < from) i0++;
+  let i1 = columns.length - 1;
+  while (i1 >= 0 && xs[columns[i1]] > to) i1--;
   if (i1 < i0) return [];
   const count = i1 - i0 + 1;
   const stride = Math.max(1, Math.ceil(count / Math.max(1, max)));
   const out: number[] = [];
-  for (let i = i0; i <= i1; i += stride) out.push(i);
-  if (out[out.length - 1] !== i1) out.push(i1);
+  for (let i = i0; i <= i1; i += stride) out.push(columns[i]);
+  if (out[out.length - 1] !== columns[i1]) out.push(columns[i1]);
   return out;
+}
+
+/**
+ * Install {@link sampleMarkerColumns} as the `points.filter` of every
+ * series of a live uPlot instance (index 0 is x, and is skipped), so
+ * uPlot's point layer draws markers only where the series has samples.
+ *
+ * Applied to the constructed instance rather than to the options for the
+ * same reason {@link applyAutoPointFloor} is: `sampleColumns` changes
+ * with every fetch and the instance is not rebuilt for that, so the
+ * columns are read per draw through the callback.
+ *
+ * **`show` decides whether markers are drawn; this decides only which.**
+ * uPlot draws the point layer when `show || idxs`, so an index list
+ * returned while `show` is false would resurrect the markers the panel's
+ * `off` mode — or the density rule under `auto` — just turned down.
+ * Hence the early `null`: narrowing, never enabling.
+ *
+ * It also carries the [`MAX_POINT_MARKERS`] cap that the `on` mode used
+ * to install for itself, so a zoomed-out window still pays for a bounded
+ * number of overlapping markers per series.
+ */
+export function applySampleMarkerFilter(
+  series: readonly PointsHost[],
+  sampleColumns: (seriesIdx: number) => readonly number[],
+): void {
+  for (let i = 1; i < series.length; i++) {
+    const points = series[i]?.points;
+    if (!points) continue;
+    points.filter = (u, seriesIdx, show) => {
+      if (!show) return null;
+      const xs = u.data[0] as number[] | undefined;
+      if (!xs) return null;
+      return sampleMarkerColumns(
+        sampleColumns(seriesIdx),
+        xs,
+        u.scales.x?.min ?? -Infinity,
+        u.scales.x?.max ?? Infinity,
+      );
+    };
+  }
 }
