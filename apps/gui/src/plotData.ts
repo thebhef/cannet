@@ -118,7 +118,12 @@ export interface RawSeries {
  * thing on the axis: the union is then a single column, so the window's
  * two ends are added to give the line somewhere to run. It is used for
  * nothing else — a union that already spans two columns is left exactly
- * as the samples made it, so no series is ever drawn past its data.
+ * as the samples made it.
+ *
+ * The one-sample fill itself is unconditional, so on a *shared* axis
+ * such a series is held across whatever columns its neighbours
+ * contributed — after its only sample, and before it. Every other
+ * series is drawn no further than its own data.
  */
 export function mergeSeries(
   series: RawSeries[],

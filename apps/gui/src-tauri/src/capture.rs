@@ -1216,11 +1216,13 @@ pub struct MdfScanResult {
     pub start_unix_nanos: u64,
     pub markers: Vec<Note>,
     pub unfinalized: bool,
-    /// Signal channel groups the file carries — the ones [`import_mdf`]
-    /// brings in as file-backed signals (`docs/CONTEXT.md`), so the
-    /// mapping dialog can say what arrives beyond the frames.
+    /// Signal channel groups the file carries — what [`import_mdf`]
+    /// brings in as file-backed signals (`docs/CONTEXT.md`) when its
+    /// `import_signals` is set, so the mapping dialog can offer the
+    /// choice and say what arrives beyond the frames.
     pub signal_group_count: usize,
-    /// Signals across those groups — the number that actually lands.
+    /// Signals across those groups — the number that lands when signals
+    /// are imported.
     pub signal_count: usize,
     /// The per-message DBC-decoded subset of them. See
     /// [`DecodedMessageGroupInfo`].
