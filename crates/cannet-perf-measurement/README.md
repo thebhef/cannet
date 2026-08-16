@@ -351,9 +351,44 @@ cargo run -p cannet-perf-measurement -- screenshot \
   --out-dir    <ABS>/shots/before --prefix before- --theme dark
 ```
 
-The run gets its own app-data directory (see *Determinism* below), so it
-neither reads nor writes the operator's settings; `--theme` picks the
-theme it is seeded with.
+The run gets its own app-data directory and its own WebView2 profile
+(see *Determinism* below), so it neither reads nor writes the operator's
+settings and does not need the operator's copy of the app to be closed;
+`--theme` picks the theme it is seeded with.
+
+`--scenario` picks what is walked:
+
+| `--scenario` | What it photographs |
+| --- | --- |
+| `panels` (default) | the visual-parity walk — every dock component over an **idle** app |
+| `extrapolation` | a capture's **extrapolated stretches** (ADR 0026): dashed tails and interior stalls, a one-sample hline, striped enum lanes |
+
+`extrapolation` needs data, which is exactly what the parity walk
+deliberately has none of, so it takes a `--capture` to open:
+
+```sh
+cargo run -p cannet-perf-measurement -- screenshot --scenario extrapolation \
+  --gui-binary <ABS>/target/release/cannet-gui.exe \
+  --project    <ABS>/examples/extrapolation/extrapolation.cannet_prj \
+  --capture    <ABS>/examples/extrapolation/extrapolation.blf \
+  --out-dir    <ABS>/shots --prefix dark- --theme dark
+```
+
+The capture is seeded into the run's own profile as its recent-captures
+list, and the scenario opens it from the toolbar's **Recent** menu — the
+file picker is a native dialog the page cannot reach, and Recent runs the
+same import with a path. The fixture
+([`examples/extrapolation`](../../examples/extrapolation/README.md))
+carries one series per ruled shape and is asserted to still do so by a
+`cannet-gui` test, because these captures are eyeballed rather than
+diffed.
+
+Two PNGs come out: `01-capture-imported` is the follow-live window as the
+import leaves it (a zoomed view of the capture's second half — its width
+is the panel's own, not a pinned one), and `02-extrapolated-stretches` is
+the sign-off frame, with **fit x axis** pinning the window to the
+capture's whole extent so every series' last sample is inside it and the
+stretch past it is drawn.
 
 `screenshot-diff` compares two capture sets (or two single PNGs), prints
 the differing-pixel count/percentage per pair, writes a magenta-marked
@@ -385,8 +420,11 @@ throughout.
 ### Determinism, and its limits
 
 A pixel diff is only meaningful if both captures were of the same
-picture, and the app renders live data. Five levers make the scenario
-stand still:
+picture, and the app renders live data. Six levers make the scenario
+stand still (this section is about `--scenario panels`; the
+`extrapolation` scenario is a sign-off set to look at rather than a
+baseline to diff, and its determinism comes from the fixture's fixed
+extent plus **fit x axis**):
 
 - **Idle** — launched without `--connect-on-start`, so nothing connects,
   no frames arrive, and every rate, counter and follow-live window is at
@@ -402,6 +440,15 @@ stand still:
   the theme is a user-scope setting the app reads at boot and the
   shipping app has no flag for it. Capture each theme into its own
   `--out-dir` / `--prefix`.
+- **An isolated WebView2 profile** — the child also gets its own
+  `WEBVIEW2_USER_DATA_FOLDER`, inside that app-data directory. WebView2
+  keys its *browser process* by user data folder, and the app's default
+  folder is a fixed path under the operator's local app data — so with
+  the operator's own copy of the app open, a capture launched into it is
+  served by the browser process already running, which was started
+  without the debugging port. The symptom is a bare
+  `Connection refused` at the attach, on any `--port`, from a harness
+  that worked minutes earlier.
 - **Fixed viewport** — CDP `Emulation.setDeviceMetricsOverride` pins the
   layout to `--width` × `--height` at device-scale 1, so the OS window
   geometry restored from the user's window state cannot move a pixel.

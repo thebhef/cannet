@@ -5,13 +5,18 @@ A small but feature-complete CAN log for exercising `cannet-blf`,
 `cannet-demo.blf` (or `cannet-demo.mf4` — the same traffic in the other
 format) in the GUI and attach `cannet-demo.dbc` as the database.
 
-Two example *projects* live alongside this trace fixture:
+Three example *projects* live alongside this trace fixture:
 
 - [`ev-demo/`](ev-demo/README.md) — a small, realistic EV model; the
   reproducible workload the `cannet-perf-measurement` harness runs.
 - [`ev-zonal/`](ev-zonal/README.md) — a deliberately large two-DBC
   fixture (150+ messages each, one message with 600 multiplexed
   signals) for exercising DBC-view search and scaling.
+- [`extrapolation/`](extrapolation/README.md) — a 20 s synthetic capture
+  and its project, carrying one series per *extrapolated* shape a plot
+  can draw (ADR 0026): a dashed tail, a dashed interior stall, a
+  one-sample hline, and enum lanes striped where their state is held
+  rather than read.
 
 ## Files
 

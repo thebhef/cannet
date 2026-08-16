@@ -342,6 +342,58 @@ describe("splitExtrapolatedRows", () => {
     expect(segs[1]).toEqual([{ i0: 0, i1: 2 }]);
   });
 
+  it("dashes a leading wing that starts before the first drawn column", () => {
+    // The window the plot *asks* for is not the window it gets columns
+    // for: a fetch reaches a little past the visible x range, and no
+    // series has a sample before the capture's first frame. So the
+    // leading span of a one-sample series comes back starting before
+    // column 0 — and the stretch it describes is still drawn, from the
+    // first column to the sample. Clamping is what the far end already
+    // did (a span running past the newest column is drawn to that
+    // column); this is the same rule at the near end.
+    const series = [
+      { t: [0, 5, 10, 15, 20], v: [1, 2, 3, 4, 5] },
+      {
+        t: [10],
+        v: [7],
+        extrapolated: [[-0.5, 10] as const, [10, 20.5] as const],
+      },
+    ];
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    const rows = merged.slice(1);
+    const segs = splitExtrapolatedRows(xs, rows, series);
+    expect(xs).toEqual([0, 5, 10, 15, 20]);
+    // Both wings blanked out of the solid stroke, both re-drawn dashed —
+    // the same answer the sample-on-the-first-column case gives.
+    expect(rows[1]).toEqual([7, null, 7, null, null]);
+    expect(segs[1]).toEqual([
+      { i0: 0, i1: 2 },
+      { i0: 2, i1: 4 },
+    ]);
+  });
+
+  it("adds no ink where a clamped leading wing has nothing drawn", () => {
+    // The same clamp must not resurrect the rule it sits beside: a
+    // multi-sample series is not drawn before its own first sample, so
+    // its leading span — clamped to column 0 or not — has a `null` at
+    // its near end and is skipped whole. And a series whose first
+    // sample *is* column 0 has a leading span covering no column at
+    // all.
+    const series = [
+      { t: [0, 5, 10], v: [1, 2, 3], extrapolated: [[-0.5, 0] as const] },
+      { t: [5, 10], v: [8, 9], extrapolated: [[-0.5, 5] as const] },
+    ];
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    const rows = merged.slice(1);
+    const segs = splitExtrapolatedRows(xs, rows, series);
+    expect(rows[0]).toEqual([1, 2, 3]);
+    expect(segs[0]).toEqual([]);
+    expect(rows[1]).toEqual([null, 8, 9]);
+    expect(segs[1]).toEqual([]);
+  });
+
   it("leaves a series nobody classified exactly as the merge made it", () => {
     const series = [{ t: [0, 1, 2], v: [5, 6, 7] }];
     const merged = mergeSeries(series);

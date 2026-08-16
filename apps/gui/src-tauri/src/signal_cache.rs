@@ -3344,6 +3344,114 @@ mod tests {
         );
     }
 
+    /// The shipped screenshot fixture (`examples/extrapolation/`) exists
+    /// for one reason: to put every ruled extrapolated shape on one plot
+    /// at once, so the sign-off captures show what they claim to. The
+    /// pictures are eyeballed, not diffed, so nothing else in the build
+    /// would notice a fixture that quietly stopped exhibiting one of
+    /// them — and a capture of a plot with no dashes in it looks exactly
+    /// like a capture of a renderer that draws none.
+    ///
+    /// This reads the committed BLF through the real reader, decodes it
+    /// against the committed DBC, and asserts each series' classified
+    /// spans over the window the capture step photographs. Frame
+    /// timestamps are re-based on the first frame so the assertions read
+    /// as the fixture's own times.
+    #[test]
+    fn the_screenshot_fixture_exhibits_every_ruled_extrapolated_shape() {
+        use cannet_core::CanFrameSource as _;
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../examples/extrapolation");
+        let db = Database::parse(
+            &std::fs::read_to_string(dir.join("extrapolation.dbc")).expect("fixture DBC"),
+        )
+        .expect("fixture DBC must parse");
+        let dbs: &[&Database] = &[&db];
+
+        let store = TraceStore::new();
+        let mut src = cannet_blf::BlfCanFrameSource::open(dir.join("extrapolation.blf"))
+            .expect("fixture BLF");
+        let mut origin_ns = None;
+        while let Some(frame) = src.next_frame().expect("fixture BLF reads") {
+            let mut raw = RawTraceFrame::from(frame);
+            let origin = *origin_ns.get_or_insert(raw.timestamp_ns);
+            raw.timestamp_ns -= origin;
+            store.append(raw);
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new_unbounded(tmp.path());
+        // 1600 points is the order the capture's viewport asks for, and
+        // it is well past every series' sample count — so the window is
+        // served raw and the classification sees the fixture's own gaps.
+        let spans = |message_id: u32, signal: &str, reduction: Reduction| {
+            cache
+                .slice_many(
+                    &[query_on(message_id, signal)],
+                    0.0,
+                    20.0,
+                    1600,
+                    reduction,
+                    &store,
+                    dbs,
+                )
+                .extrapolated
+                .pop()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| {
+                    (
+                        (s.from_seconds * 1000.0).round() / 1000.0,
+                        (s.to_seconds * 1000.0).round() / 1000.0,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let none = Vec::<(f64, f64)>::new();
+
+        // The numeric axis (served `MinMax`, as a per-unit numeric group
+        // is).
+        assert_eq!(
+            spans(256, "RefLevel", Reduction::MinMax),
+            none,
+            "RefLevel arrives throughout — it is the series that carries the window's right edge, \
+             and nothing about it may be labelled a guess",
+        );
+        assert_eq!(
+            spans(257, "StoppedLevel", Reduction::MinMax),
+            vec![(8.0, 20.0)],
+            "the dashed tail",
+        );
+        assert_eq!(
+            spans(258, "StalledLevel", Reduction::MinMax),
+            vec![(6.0, 13.0)],
+            "the dashed interior stretch",
+        );
+        assert_eq!(
+            spans(259, "OneShotLevel", Reduction::MinMax),
+            vec![(0.0, 10.0), (10.0, 20.0)],
+            "both wings of the one-sample hline",
+        );
+
+        // The shared enum-lanes axis (served `Runs`).
+        assert_eq!(
+            spans(512, "DenseMode", Reduction::Runs),
+            none,
+            "the dense lane is the solid-tile control, and the lane whose markers show the cadence",
+        );
+        assert_eq!(
+            spans(513, "StoppedMode", Reduction::Runs),
+            vec![(6.0, 20.0)],
+            "the striped tail past a lane's last sample",
+        );
+        assert_eq!(
+            spans(514, "StalledMode", Reduction::Runs),
+            vec![(7.0, 15.0)],
+            "the stale sub-stretch inside one held tile — the partially striped tile",
+        );
+    }
+
     #[test]
     #[allow(clippy::cast_possible_truncation)]
     fn catch_up_never_materializes_more_than_one_chunk_at_a_time() {

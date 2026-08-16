@@ -117,6 +117,18 @@ struct ScreenshotArgs {
     /// the repo root.
     #[arg(long)]
     project: PathBuf,
+    /// Which scenario to walk: `panels` (the visual-parity walk over an
+    /// idle app) or `extrapolation` (import a capture and photograph the
+    /// plot drawing its extrapolated stretches — needs `--capture`).
+    #[arg(long, default_value = "panels")]
+    scenario: String,
+    /// A capture the run seeds into its own profile's recents, so a
+    /// scenario can open it from the toolbar's Recent menu instead of
+    /// the native file dialog a page cannot reach. Absolute. Required by
+    /// `--scenario extrapolation`; unused by `panels`, which
+    /// deliberately photographs an app with no data in it.
+    #[arg(long)]
+    capture: Option<PathBuf>,
     /// Directory the PNGs land in (created if absent). Absolute.
     #[arg(long)]
     out_dir: PathBuf,
@@ -659,9 +671,21 @@ fn run_screenshot(args: ScreenshotArgs) -> Result<ExitCode, String> {
         args.out_dir
             .join(format!("cannet-screenshot-{}", args.theme))
     });
+    let steps = screenshot::scenario_by_name(&args.scenario)?;
+    // Refused up front rather than at the click: a scenario that opens a
+    // capture aborts at its first step without one, minutes into a run
+    // that has already launched the app.
+    if std::ptr::eq(steps, screenshot::EXTRAPOLATION_SCENARIO) && args.capture.is_none() {
+        return Err(format!(
+            "--scenario {} opens a capture, so it needs --capture <trace file>",
+            args.scenario
+        ));
+    }
     let cfg = screenshot::CaptureConfig {
         gui_binary: args.gui_binary,
         project: args.project,
+        steps,
+        capture: args.capture,
         out_dir: args.out_dir,
         prefix: args.prefix,
         port: args.port,

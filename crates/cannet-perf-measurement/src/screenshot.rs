@@ -19,8 +19,10 @@
 //! ## Determinism
 //!
 //! A screenshot diff is only meaningful if the two captures were of the
-//! same picture. The app renders live data, so the scenario is built to
-//! stand still:
+//! same picture. The app renders live data, so [`SCENARIO`] — the
+//! parity walk — is built to stand still. ([`EXTRAPOLATION_SCENARIO`] is
+//! a sign-off set to look at rather than a baseline to diff; it holds
+//! still for its own reasons, recorded there.)
 //!
 //! - **Idle** — the app is launched without `--connect-on-start`, so no
 //!   interface is touched, no frames arrive, and every rate, counter and
@@ -31,6 +33,11 @@
 //!   geometry nor reads them. Reading matters as much as writing here: every
 //!   user-scope setting is an input to the picture, and the theme the
 //!   capture is *for* ([`CaptureConfig::theme`]) is one of them.
+//! - **An isolated `WebView2` profile** — the child also gets its own
+//!   `WEBVIEW2_USER_DATA_FOLDER` inside that directory ([`gui_env`]),
+//!   without which a capture launched while the operator has their own
+//!   copy of the app open is served by the browser process already
+//!   running — and that one carries no debugging port.
 //! - **Fixed viewport** — `Emulation.setDeviceMetricsOverride` pins the
 //!   layout to [`CaptureConfig::width`] × [`CaptureConfig::height`] at
 //!   device-scale 1, so the OS window geometry (restored from the user's
@@ -151,6 +158,52 @@ window.__shot = {
     item.click();
     await window.__shot.settle();
   },
+  /* Poll `fn` until it returns something truthy, or give up saying what
+     was being waited for. A step driving an import waits on the app's
+     own progress, which is seconds of file walking and pumping — a
+     fixed sleep would either be a guess or a tax on every run. */
+  waitFor: async (what, fn, ms) => {
+    const deadline = Date.now() + ms;
+    for (;;) {
+      let v = false;
+      try { v = fn(); } catch (e) { v = false; }
+      if (v) return v;
+      if (Date.now() > deadline) throw new Error("timed out waiting for " + what);
+      await window.__shot.sleep(100);
+    }
+  },
+  /* Open the toolbar's Recent menu and pick its one entry — the capture
+     this run seeded into its own profile's recents. Driven
+     structurally rather than by the path's text, because the path is a
+     property of the machine the run is on. This is the dialog-free way
+     into a capture: the file picker is a native dialog the page cannot
+     reach, and `Recent` calls the same import with a path. */
+  openSeededCapture: async () => {
+    const trigger = document.querySelector(".recent-captures > button");
+    if (!trigger) throw new Error("no Recent menu — this profile's recents were not seeded");
+    trigger.click();
+    await window.__shot.settle();
+    const item = document.querySelector(".recent-captures-menu button");
+    if (!item) throw new Error("the Recent menu is empty");
+    item.click();
+    await window.__shot.settle();
+  },
+  /* Click a modal's button by its exact label. */
+  modal: async (label) => {
+    const b = [...document.querySelectorAll(".modal-buttons button")].find(
+      (e) => e.textContent.trim() === label,
+    );
+    if (!b) throw new Error("no modal button " + JSON.stringify(label));
+    b.click();
+    await window.__shot.settle();
+  },
+  /* True while no trace import is running. The toolbar's import button
+     is the app's own statement about it: it says "Loading trace…"
+     from the first byte of the census to the pump's `log-finished`. */
+  importIdle: () =>
+    ![...document.querySelectorAll(".toolbar button")].some(
+      (e) => e.textContent.trim() === "Loading trace…",
+    ),
 };
 "#;
 
@@ -238,6 +291,85 @@ pub const SCENARIO: &[Step] = &[
     },
 ];
 
+/// The sign-off scenario for the **extrapolation rendering** (ADR
+/// 0026): import a capture that carries every extrapolated shape and
+/// photograph the plot drawing them.
+///
+/// It is its own scenario rather than a step of [`SCENARIO`] because it
+/// needs something [`SCENARIO`] deliberately does not have — data. The
+/// parity walk photographs an *idle* app so that nothing in frame is a
+/// function of when the shutter fell; a plot can only show a dashed
+/// tail, an interior stall, a one-sample hline or a striped lane if the
+/// session holds a capture with those shapes in it. Written against
+/// `examples/extrapolation`, whose project is one plot panel and whose
+/// BLF is the shapes and nothing else.
+///
+/// Determinism comes from the fixture and from **fit x axis**: the
+/// capture is a file, so its extent is fixed, and fitting to it pins the
+/// window to exactly that extent. Follow-live is left on — with a static
+/// capture the newest frame *is* the fixture's last, so the window comes
+/// to rest where the fit put it.
+pub const EXTRAPOLATION_SCENARIO: &[Step] = &[
+    // The import, driven the way a user drives it: Recent → the seeded
+    // path → the channel dialog's own defaults (one BLF channel onto the
+    // project's one bus) → Open. Then wait for the pump, because a
+    // shutter that falls mid-import photographs a partial capture, and a
+    // partial capture's series all end early — which is to say, it would
+    // manufacture the very shape this scenario is here to show.
+    Step {
+        name: "01-capture-imported",
+        script: "(async () => { \
+            await window.__shot.openSeededCapture(); \
+            await window.__shot.waitFor('the channel dialog', \
+                () => document.querySelector('.modal-buttons'), 120000); \
+            await window.__shot.modal('Open'); \
+            await window.__shot.waitFor('the import to finish', \
+                () => window.__shot.importIdle(), 180000); \
+            await window.__shot.sleep(1500); \
+            await window.__shot.settle(); \
+        })()",
+        shows: &["plot"],
+    },
+    // The sign-off frame: the whole capture in the window, so every
+    // series' last sample is inside it and the stretch past it is drawn.
+    Step {
+        name: "02-extrapolated-stretches",
+        script: "(async () => { \
+            await window.__shot.command('Plot: fit x axis'); \
+            await window.__shot.sleep(1500); \
+            await window.__shot.settle(); \
+        })()",
+        shows: &["plot"],
+    },
+];
+
+/// The scenarios a capture run can walk, by their `--scenario` name.
+pub const SCENARIOS: &[(&str, &[Step])] = &[
+    ("panels", SCENARIO),
+    ("extrapolation", EXTRAPOLATION_SCENARIO),
+];
+
+/// Look a scenario up by name, listing the alternatives when it misses.
+///
+/// # Errors
+/// Returns a message naming the known scenarios.
+pub fn scenario_by_name(name: &str) -> Result<&'static [Step], String> {
+    SCENARIOS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| *s)
+        .ok_or_else(|| {
+            format!(
+                "unknown scenario {name:?}; known: {}",
+                SCENARIOS
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+}
+
 /// Union of the scenario's `shows` ledgers, sorted.
 #[must_use]
 pub fn scenario_coverage(steps: &[Step]) -> BTreeSet<&'static str> {
@@ -253,6 +385,15 @@ pub struct CaptureConfig {
     /// Project to open (absolute; the child's working directory is not
     /// the repo root).
     pub project: PathBuf,
+    /// The scenario to walk — one of [`SCENARIOS`].
+    pub steps: &'static [Step],
+    /// A capture file to seed into [`Self::app_data_dir`]'s recents, so
+    /// a scenario that needs data can open one without a native file
+    /// dialog (which a page cannot reach). Absolute: the recents list is
+    /// paths, and the child's working directory is not the repo root.
+    ///
+    /// `None` for a scenario that photographs the idle app.
+    pub capture: Option<PathBuf>,
     /// Directory the PNGs are written to (created if absent).
     pub out_dir: PathBuf,
     /// Prefix on every file name, e.g. `dark-baseline-`.
@@ -292,6 +433,10 @@ pub struct CaptureConfig {
 /// a capture's own app-data directory.
 const SETTINGS_FILE: &str = "settings.json";
 
+/// The recorded-as-it-works document beside it (ADR 0034), which is
+/// where the recent-captures list lives.
+const STATE_FILE: &str = "state.json";
+
 /// The user-scope settings a capture run seeds before launching, as the
 /// JSON the app will read.
 ///
@@ -304,15 +449,39 @@ pub fn seed_settings_json(theme: &str) -> String {
     format!("{{\n  \"theme\": {}\n}}\n", json!(theme))
 }
 
-/// Write [`seed_settings_json`] into `dir`, creating it.
+/// The recorded state a capture run seeds: the one capture the scenario
+/// is to open, as the app's recent-captures list.
+///
+/// This is what makes a data-carrying scenario drivable at all. Import
+/// goes through a **native** file dialog, which lives outside the page
+/// and so outside everything the capture can reach; the toolbar's
+/// Recent menu calls the same import with a path instead. The list is a
+/// persisted-state key, so putting the fixture in it is putting the
+/// fixture one click away — the same click a user makes.
+#[must_use]
+pub fn seed_state_json(capture: &Path) -> String {
+    format!(
+        "{{\n  \"recent_blfs\": [{}]\n}}\n",
+        json!(capture.to_string_lossy())
+    )
+}
+
+/// Write [`seed_settings_json`] — and, when the scenario needs a capture
+/// to open, [`seed_state_json`] — into `dir`, creating it.
 ///
 /// # Errors
-/// Returns a message if the directory or the file can't be written.
-pub fn seed_app_data(dir: &Path, theme: &str) -> Result<(), String> {
+/// Returns a message if the directory or either file can't be written.
+pub fn seed_app_data(dir: &Path, theme: &str, capture: Option<&Path>) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     let path = dir.join(SETTINGS_FILE);
     std::fs::write(&path, seed_settings_json(theme))
-        .map_err(|e| format!("writing {}: {e}", path.display()))
+        .map_err(|e| format!("writing {}: {e}", path.display()))?;
+    if let Some(capture) = capture {
+        let path = dir.join(STATE_FILE);
+        std::fs::write(&path, seed_state_json(capture))
+            .map_err(|e| format!("writing {}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// Result of one capture run.
@@ -363,7 +532,7 @@ fn capture_with(cfg: &CaptureConfig) -> Result<CaptureOutcome, String> {
 
     let mut files = Vec::new();
     let mut shots: Vec<(&str, Vec<u8>)> = Vec::new();
-    for step in SCENARIO {
+    for step in cfg.steps {
         cdp.eval(PRELUDE_JS)?;
         cdp.eval(step.script)
             .map_err(|e| format!("step {}: {e}", step.name))?;
@@ -424,18 +593,53 @@ pub fn gui_args(cfg: &CaptureConfig) -> Vec<String> {
     ]
 }
 
+/// The environment a capture launches the app with. Split out from
+/// [`spawn_gui`] for the same reason [`gui_args`] is: the isolation is
+/// the thing under test, and it is testable without running a GUI.
+///
+/// Both variables are `WebView2`'s own, read by the runtime before the
+/// app sees anything — so there is no automation surface in the shipping
+/// binary, which is the whole premise of this module.
+///
+/// - **`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`** opens the debugging
+///   port the capture talks CDP over.
+/// - **`WEBVIEW2_USER_DATA_FOLDER`** gives the run its own browser
+///   profile. This is not tidiness: `WebView2` keys its *browser
+///   process* by user data folder, and the app's default folder is a
+///   fixed path under the operator's local app data. With the
+///   operator's own copy of the app open, a capture launched into that
+///   folder is served by the browser process **already running** —
+///   which was started without the port, so the argument above is never
+///   applied and the attach fails with a bare connection refusal. The
+///   app profile was given its own directory for the same reason a
+///   layer up: a capture must be a picture of the app, not of what else
+///   is running.
+#[must_use]
+pub fn gui_env(cfg: &CaptureConfig) -> Vec<(String, String)> {
+    vec![
+        (
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS".to_string(),
+            format!("--remote-debugging-port={}", cfg.port),
+        ),
+        (
+            "WEBVIEW2_USER_DATA_FOLDER".to_string(),
+            cfg.app_data_dir
+                .join("webview2")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ]
+}
+
 fn spawn_gui(cfg: &CaptureConfig) -> Result<Child, String> {
     // Seed the profile *before* the launch: the theme is a user-scope
-    // setting read at boot, so writing it afterwards would photograph
-    // the previous run's theme.
-    seed_app_data(&cfg.app_data_dir, &cfg.theme)?;
+    // setting read at boot, and the recents list is read when the
+    // toolbar first renders, so writing either afterwards would
+    // photograph the previous run's.
+    seed_app_data(&cfg.app_data_dir, &cfg.theme, cfg.capture.as_deref())?;
     Command::new(&cfg.gui_binary)
         .args(gui_args(cfg))
-        // `WebView2` reads this env var natively; the app is untouched.
-        .env(
-            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-            format!("--remote-debugging-port={}", cfg.port),
-        )
+        .envs(gui_env(cfg))
         .spawn()
         .map_err(|e| format!("launching {}: {e}", cfg.gui_binary.display()))
 }
@@ -887,12 +1091,12 @@ mod tests {
         assert!(missing.is_empty(), "panels never photographed: {missing:?}");
     }
 
-    /// Every `'label'` the scenario passes to one of the `__shot`
+    /// Every `'label'` any scenario passes to one of the `__shot`
     /// helpers, e.g. `scenario_labels("command")`.
     fn scenario_labels(helper: &str) -> Vec<String> {
         let needle = format!("window.__shot.{helper}('");
         let mut out = Vec::new();
-        for step in SCENARIO {
+        for step in SCENARIOS.iter().flat_map(|(_, steps)| steps.iter()) {
             let mut rest = step.script;
             while let Some(i) = rest.find(&needle) {
                 rest = &rest[i + needle.len()..];
@@ -906,34 +1110,116 @@ mod tests {
         out
     }
 
-    /// The scenario drives the app by the labels the app renders, and
+    /// A scenario drives the app by the labels the app renders, and
     /// those labels live in the frontend — so a rename there silently
     /// turns a step into a run-aborting "no such button" (it did: the
     /// Database panel was called "DBC" when this scenario was written).
     /// Nothing else in the build ties the two together, so the check is
-    /// this: every label the scenario clicks must exist in the source
+    /// this: every label any scenario clicks must exist in the source
     /// that defines it.
+    ///
+    /// Two spellings, because the frontend has two. A command or toolbar
+    /// label is *declared* (`label: "…"`); a modal's button carries its
+    /// text as JSX, where the only stable thing to match is the label on
+    /// a line of its own.
     #[test]
-    fn the_scenario_drives_labels_the_frontend_still_defines() {
+    fn the_scenarios_drive_labels_the_frontend_still_defines() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let read = |rel: &str| {
             std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"))
         };
         let commands = read("apps/gui/src/commands.ts");
         let app = read("apps/gui/src/App.tsx");
-        for (helper, source, file) in [
-            ("command", &commands, "commands.ts"),
-            ("toolbar", &app, "App.tsx"),
+        let blf_modal = read("apps/gui/src/BlfChannelMapModal.tsx");
+        let declared = |src: &str, label: &str| src.contains(&format!("label: \"{label}\""));
+        let jsx_text = |src: &str, label: &str| src.lines().any(|l| l.trim() == label);
+        for (helper, source, file, matches) in [
+            (
+                "command",
+                &commands,
+                "commands.ts",
+                &declared as &dyn Fn(&str, &str) -> bool,
+            ),
+            ("toolbar", &app, "App.tsx", &declared),
+            (
+                "modal",
+                &blf_modal,
+                "BlfChannelMapModal.tsx",
+                &jsx_text as &dyn Fn(&str, &str) -> bool,
+            ),
         ] {
             let labels = scenario_labels(helper);
             assert!(!labels.is_empty(), "no {helper} labels found to check");
             for label in labels {
                 assert!(
-                    source.contains(&format!("label: \"{label}\"")),
-                    "the scenario clicks {label:?}, which {file} no longer defines",
+                    matches(source, &label),
+                    "a scenario clicks {label:?}, which {file} no longer defines",
                 );
             }
         }
+    }
+
+    /// A scenario that opens a capture needs one seeded into the profile
+    /// it runs against, because import goes through a native file
+    /// dialog the page cannot reach. The recents list is the way in, and
+    /// it is a persisted-state key rather than a settings one — so the
+    /// two documents are separate, and a capture-less scenario leaves
+    /// the state file absent entirely.
+    #[test]
+    fn a_capture_scenario_seeds_the_recents_the_import_is_driven_from() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let c = cfg(dir.path(), "dark");
+        let blf = Path::new("/captures/extrapolation.blf");
+
+        seed_app_data(&c.app_data_dir, &c.theme, Some(blf)).unwrap();
+        let v: Value = serde_json::from_str(
+            &std::fs::read_to_string(c.app_data_dir.join(STATE_FILE)).expect("state written"),
+        )
+        .expect("valid JSON");
+        assert_eq!(
+            v.get("recent_blfs").and_then(Value::as_array),
+            Some(&vec![json!(blf.to_string_lossy())]),
+        );
+        // The theme still comes from the settings document beside it.
+        assert!(c.app_data_dir.join(SETTINGS_FILE).exists());
+
+        let idle = tempfile::TempDir::new().unwrap();
+        let c = cfg(idle.path(), "dark");
+        seed_app_data(&c.app_data_dir, &c.theme, None).unwrap();
+        assert!(
+            !c.app_data_dir.join(STATE_FILE).exists(),
+            "a scenario that photographs the idle app must not be given a capture to open",
+        );
+    }
+
+    /// A path with a backslash in every separator is the normal case on
+    /// the only platform this harness runs on, and pasting one into JSON
+    /// unescaped produces either a broken document or a different path.
+    #[test]
+    fn a_seeded_capture_path_is_json_escaped_rather_than_pasted() {
+        let v: Value =
+            serde_json::from_str(&seed_state_json(Path::new(r"C:\c\x.blf"))).expect("valid JSON");
+        assert_eq!(
+            v.get("recent_blfs")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(Value::as_str),
+            Some(r"C:\c\x.blf"),
+        );
+    }
+
+    /// Every scenario is reachable by the name the CLI takes, and an
+    /// unknown one says what the alternatives are rather than silently
+    /// walking the default.
+    #[test]
+    fn scenarios_are_selected_by_name() {
+        assert_eq!(scenario_by_name("panels").unwrap().len(), SCENARIO.len());
+        assert_eq!(
+            scenario_by_name("extrapolation").unwrap().len(),
+            EXTRAPOLATION_SCENARIO.len()
+        );
+        let e = scenario_by_name("nope").err().expect("unknown");
+        assert!(e.contains("panels") && e.contains("extrapolation"), "{e}");
     }
 
     #[test]
@@ -1091,6 +1377,8 @@ mod tests {
             boot_timeout: Duration::from_secs(90),
             app_data_dir: dir.join("profile"),
             theme: theme.to_string(),
+            steps: SCENARIO,
+            capture: None,
         }
     }
 
@@ -1113,6 +1401,34 @@ mod tests {
         assert!(args.contains(&"--project".to_string()));
     }
 
+    /// A capture must not share the operator's **browser** profile
+    /// either. `WebView2` keys its browser process by user data folder,
+    /// so a run launched into the app's default folder while the
+    /// operator has the app open is served by the browser process
+    /// already running — which carries no debugging port, and the
+    /// capture dies at the attach with a connection refusal that says
+    /// nothing about why.
+    #[test]
+    fn a_capture_launches_against_its_own_webview_profile() {
+        let dir = std::env::temp_dir().join("cannet-shot-env");
+        let cfg = cfg(&dir, "dark");
+        let env = gui_env(&cfg);
+        let get = |k: &str| {
+            env.iter().find(|(n, _)| n == k).map_or_else(
+                || panic!("{k} must be set on the child"),
+                |(_, v)| v.clone(),
+            )
+        };
+        assert!(get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS")
+            .contains(&format!("--remote-debugging-port={}", cfg.port)));
+        let folder = PathBuf::from(get("WEBVIEW2_USER_DATA_FOLDER"));
+        assert!(
+            folder.starts_with(&cfg.app_data_dir),
+            "the browser profile must live inside the run's own app-data directory, got {}",
+            folder.display(),
+        );
+    }
+
     /// The theme is read from the profile's settings at boot, so it is
     /// seeded there rather than passed as a flag — the shipping app has
     /// no theme flag, and the harness photographs the shipping app.
@@ -1120,7 +1436,7 @@ mod tests {
     fn the_capture_theme_is_seeded_inside_the_isolated_profile() {
         let dir = tempfile::TempDir::new().unwrap();
         let c = cfg(dir.path(), "light");
-        seed_app_data(&c.app_data_dir, &c.theme).unwrap();
+        seed_app_data(&c.app_data_dir, &c.theme, None).unwrap();
         let written =
             std::fs::read_to_string(c.app_data_dir.join(SETTINGS_FILE)).expect("settings written");
         let v: Value = serde_json::from_str(&written).expect("valid JSON");
