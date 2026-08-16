@@ -137,10 +137,10 @@ use cannet_core::CanFrameSource;
 use cannet_dbc::Database;
 use capture::{
     cancel_import, clear_trace_store, import_mdf, open_log, restore_scratch_capture, save_capture,
-    scan_blf_channels, scan_mdf_channels,
+    scan_blf_channels, scan_mdf_channels, signal_pyramids_rebuilding,
 };
 #[cfg(test)]
-use capture::{cancel_import_now, write_blf_capture};
+use capture::{cancel_import_now, pyramids_rebuilding_now, write_blf_capture};
 use clock_status::spawn_clock_status_emitter;
 #[cfg(test)]
 use dbc_commands::decode_against;
@@ -499,6 +499,7 @@ pub fn run() -> ! {
             fetch_filtered_trace,
             clear_trace_store,
             restore_scratch_capture,
+            signal_pyramids_rebuilding,
             connect_remote_server,
             disconnect_remote_server,
             connection_state::get_connection_states,

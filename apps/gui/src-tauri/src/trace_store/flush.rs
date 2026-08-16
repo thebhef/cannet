@@ -1082,6 +1082,43 @@ mod tests {
     }
 
     #[test]
+    fn discarding_a_restored_session_leaves_nothing_for_the_next_launch() {
+        // The offramp's own exit criterion: when the user drops a restored
+        // capture rather than paying its cold pyramid rebuild, what is left
+        // is a *clean empty session* — not a half-deleted scratch a later
+        // launch can bring a fragment of back from. The drop is the same
+        // `start_session` + restamp a fresh open already runs.
+        let dir = std::env::temp_dir().join(format!("cannet-discard-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid = uuid::Uuid::new_v4();
+        {
+            let store = TraceStore::new_disk(&dir).unwrap();
+            store.start_session(1_000);
+            store.write_scratch_identity(Some(pid));
+            store.append(dummy_on_bus(1_000, 0x100, "pt"));
+            store.append(dummy_on_bus(2_000, 0x100, "pt"));
+            store.flush().unwrap();
+        }
+        let booted = TraceStore::new_disk(&dir).unwrap();
+        assert!(booted.try_reload(pid).is_some());
+        assert_eq!(booted.len(), 2, "the capture is there to be discarded");
+
+        booted.start_session(0);
+        booted.write_scratch_identity(Some(pid));
+        assert_eq!(booted.len(), 0);
+        assert!(booted.latest_since(0).is_empty(), "no derived residue");
+        assert_eq!(booted.session_start_ns(), 0);
+
+        // The next launch over the same scratch: the identity is this
+        // project's, so the gate opens — and finds an empty capture.
+        let relaunched = TraceStore::new_disk(&dir).unwrap();
+        relaunched.try_reload(pid);
+        assert_eq!(relaunched.len(), 0, "nothing was resurrected");
+        assert!(relaunched.latest_since(0).is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn try_reload_leaves_no_false_mux_coverage_over_the_restored_history() {
         // `mux_index_from` promises "every frame at or above me passed
         // through the current extractor". A reload swaps in frames that

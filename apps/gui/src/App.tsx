@@ -227,6 +227,12 @@ const AUTOMATION_CONNECT_RETRY_ATTEMPTS = 3;
 const AUTOMATION_CONNECT_CONFIRM_MS = 3000;
 const AUTOMATION_CONNECT_RETRY_DELAY_MS = 1000;
 
+/// How often the rebuild chip asks the host whether the discarded signal
+/// caches have caught up. Only runs while the chip is up, and the answer
+/// is a couple of map lookups, so a second is generous — the chip is
+/// there for a minutes-long wait, not a millisecond one.
+const REBUILD_POLL_MS = 1000;
+
 /// Dockview panel-component registry, defined at module scope so
 /// dockview never sees a fresh object and re-registers. The
 /// chronological and per-id views are one component now (`TracePanel`,
@@ -294,6 +300,12 @@ export function App() {
   // Absolute ns of the oldest retained frame from `trace-grew` — where the
   // derived truncation marker sits (ADR 0035). `null` until a tick carries it.
   const [firstIndexTsNs, setFirstIndexTsNs] = useState<number | null>(null);
+  // The restore discarded the signal pyramids a prior session persisted
+  // (ADR 0047), so every plotted signal is decoded again from frame zero
+  // — minutes on a large capture, and silent until now. The host says so
+  // (`restore_scratch_capture`'s own answer); the frontend never infers
+  // it from how slow a plot feels.
+  const [rebuildingCaches, setRebuildingCaches] = useState(false);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
   const [bufferSeconds, setBufferSeconds] = useState(0);
   // On-disk scratch footprint from the latest `trace-grew`; `null` when the
@@ -1391,6 +1403,50 @@ export function App() {
     });
   }, [resetSession]);
 
+  /// The rebuild chip's offramp: drop the restored capture rather than
+  /// wait out the re-decode. It is the same session clear Clear runs —
+  /// the host wipes the raw store, the pyramids (abandoning a rebuild in
+  /// flight with them, ADR 0048), the notes and the verification runtime
+  /// — so there is one deletion path, not a second one that could leave
+  /// a half-deleted scratch. What survives is the project: its file, its
+  /// DBCs, the layout, the server/trust configuration. None of that is
+  /// capture-scoped.
+  const handleDiscardRestoredCapture = useCallback(async () => {
+    // Down immediately: the click is the answer, and the host stops
+    // announcing a rebuild that no longer has anything to rebuild.
+    setRebuildingCaches(false);
+    await resetSession({
+      onError: (err) => setState({ kind: "error", message: String(err) }),
+      resetOnClearError: true,
+    });
+    // The restored capture's eviction mark goes with it — an empty
+    // session has no dropped history, so no truncation marker (ADR 0035).
+    setFirstIndex(0);
+    setFirstIndexTsNs(null);
+  }, [resetSession]);
+
+  // The chip's end signal is the host's completeness token, aggregated
+  // over the caches (ADR 0049): ask once a second whether the rebuild is
+  // still owed, and only while the chip is up — an ordinary session
+  // issues no poll at all. A poll rather than an event because the
+  // answer is "where the decode cursors have reached", which no single
+  // moment in the host corresponds to.
+  useEffect(() => {
+    if (!rebuildingCaches) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      void invoke<boolean>("signal_pyramids_rebuilding")
+        .then((still) => {
+          if (!stopped && !still) setRebuildingCaches(false);
+        })
+        .catch(() => {});
+    }, REBUILD_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [rebuildingCaches]);
+
   // Connect to every server that has at least one binding in the
   // project. Each unique `server` in `interfaceBindings` becomes its
   // own `connect_remote_server` call; the host subscribes only to the
@@ -1793,8 +1849,10 @@ export function App() {
             first_index: number;
             first_index_ts_ns: number | null;
             session_start_seconds: number;
+            pyramids_rebuilding?: boolean;
           }>("restore_scratch_capture");
           if (restored.count <= 0) return;
+          setRebuildingCaches(restored.pyramids_rebuilding === true);
           invalidateCache();
           setCount(restored.count);
           setFirstIndex(restored.first_index);
@@ -3230,6 +3288,28 @@ export function App() {
               data has started reaching the plot panel. */}
           {(scanningTracePath !== null || importingTracePath !== null) && (
             <span className="trace-scan-bar" aria-hidden="true" />
+          )}
+          {/* The restore threw the persisted pyramids away and every
+              plotted signal is being decoded again (ADR 0047) — minutes
+              on a large capture, and until now completely silent, which
+              read as the app being broken. Same indeterminate chip the
+              census uses, because it is the same kind of wait: no
+              progress to report, only that something is happening.
+              Beside it the offramp, for the user who would rather have
+              the capture gone than wait for it. */}
+          {rebuildingCaches && (
+            <span className="cache-rebuild">
+              <span className="trace-scan-bar" aria-hidden="true" />
+              Rebuilding signal caches…
+              <button
+                type="button"
+                className="cache-rebuild-discard"
+                title="Drop the restored capture instead of waiting for its signal caches to rebuild. The project, its DBCs and the layout are kept."
+                onClick={() => void handleDiscardRestoredCapture()}
+              >
+                Discard
+              </button>
+            </span>
           )}
           {status}
         </div>

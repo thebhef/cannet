@@ -1279,6 +1279,13 @@ struct Caches {
     /// written. Keeps the flush cadence from rewriting an unchanged
     /// manifest every tick for the life of a stopped session.
     dirty: bool,
+    /// Set by [`SignalCacheStore::restore`] when a persisted set was
+    /// **discarded** over a capture that came back: the samples it held
+    /// have to be decoded again from frame zero, which is minutes on a
+    /// large session and was previously silent. [`SignalCacheStore::
+    /// rebuilding`] turns it into the fact the frontend announces, and
+    /// clears it once the caches have caught up.
+    rebuild_pending: bool,
 }
 
 /// Prepare `root` as a pyramid scratch: create it, and stage whatever a
@@ -1297,6 +1304,7 @@ fn open_root(root: PathBuf) -> Caches {
         generation: 0,
         staged,
         dirty: false,
+        rebuild_pending: false,
     }
 }
 
@@ -1344,6 +1352,10 @@ impl SignalCacheStore {
         caches.generation += 1;
         caches.staged = None;
         caches.dirty = false;
+        // Nothing is left to rebuild, so a cold rebuild announced by a
+        // restore stops being announced — this is the offramp's own
+        // exit as much as the exit path's.
+        caches.rebuild_pending = false;
         wipe_dir(&caches.root);
     }
 
@@ -1529,6 +1541,13 @@ impl SignalCacheStore {
         let restored_file = file_usable
             .then(|| reopen_set(&caches.root, &file_rows))
             .flatten();
+        // A DBC-backed set that was offered and not taken is the cold
+        // rebuild this session is about to pay for, one plotted signal
+        // at a time. Recorded here because this is the only place that
+        // knows a set *existed* — the wipe below leaves no trace of it.
+        // Frames have to have come back for there to be anything to
+        // decode: over an empty store there is no rebuild.
+        caches.rebuild_pending = !dbc_rows.is_empty() && restored_dbc.is_none() && store_len > 0;
         caches.generation += 1;
         let offered = dbc_rows.len() + file_rows.len();
         let mut by_key: HashMap<SignalKey, SignalCache> = HashMap::new();
@@ -1548,6 +1567,41 @@ impl SignalCacheStore {
             wipe_dir_except(&caches.root, &keep);
         }
         n
+    }
+
+    /// Whether the restored capture is still owed a **cold rebuild** of
+    /// its signal pyramids — the fact the frontend announces while it
+    /// runs, and the reason it offers to drop the capture instead.
+    ///
+    /// True from the moment [`Self::restore`] discards a persisted set
+    /// until the DBC-backed caches that replace it have decoded up to
+    /// `store_len`. Before any plot has served there are no DBC-backed
+    /// caches at all, which is still "owed": the samples are gone and
+    /// the first serve over any of them re-decodes the capture.
+    ///
+    /// The answer is latched off, not recomputed: once the caches have
+    /// caught up the session is no longer rebuilding anything, and a
+    /// later cold signal is ordinary first-use cost (ADR 0049), not the
+    /// loss this announces. A restore that reused its set, or had none
+    /// to reuse, never sets the latch in the first place.
+    pub fn rebuilding(&self, store_len: usize) -> bool {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        if !caches.rebuild_pending {
+            return false;
+        }
+        let mut any = false;
+        let mut behind = false;
+        for (key, cache) in &caches.by_key {
+            if key.file_backed {
+                continue;
+            }
+            any = true;
+            behind |= cache.next_index < store_len;
+        }
+        if any && !behind {
+            caches.rebuild_pending = false;
+        }
+        caches.rebuild_pending
     }
 
     /// Front-trim every cached pyramid to the truncation time `ts_seconds`
@@ -4070,6 +4124,81 @@ mod tests {
         let len = build_and_persist(root.path(), &v);
         let reopened = SignalCacheStore::new(root.path());
         assert_eq!(reopened.restore(&v, len - 1), 0);
+    }
+
+    // ---- Announcing a cold rebuild ----------------------------------
+
+    #[test]
+    fn a_reused_pyramid_set_announces_no_cold_rebuild() {
+        // The fast path is silent: the samples came back off disk, so
+        // there is nothing for the user to be told about.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", "dbc-a", 0);
+        let len = build_and_persist(root.path(), &v);
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(reopened.restore(&v, len), 1);
+        assert!(!reopened.rebuilding(len));
+    }
+
+    #[test]
+    fn a_restore_with_nothing_persisted_announces_no_cold_rebuild() {
+        // A capture whose signals were never plotted has no pyramid to
+        // discard. The first plot over it builds one, which is the
+        // ordinary first-use cost — not a rebuild of something lost.
+        let root = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(root.path());
+        assert_eq!(cache.restore(&validity("capture-a", "dbc-a", 0), 200), 0);
+        assert!(!cache.rebuilding(200));
+    }
+
+    #[test]
+    fn a_discarded_pyramid_set_announces_a_cold_rebuild_until_it_catches_up() {
+        // The announcement this exists for: the persisted set did not
+        // answer to the validity key, so every plotted signal is decoded
+        // again from frame zero. It is on from the moment the set is
+        // discarded — before any serve has run — and off once the caches
+        // it left empty have reached the capture's tip.
+        let root = TempDir::new().unwrap();
+        let len = build_and_persist(root.path(), &validity("capture-a", "dbc-a", 0));
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(reopened.restore(&validity("capture-b", "dbc-a", 0), len), 0);
+        assert!(
+            reopened.rebuilding(len),
+            "a discarded set announces itself before anything serves"
+        );
+
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs: &[&Database] = &[&db];
+        let rebuilt = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(rebuilt.len(), 200, "the rebuild ran");
+        assert!(
+            !reopened.rebuilding(store.len()),
+            "the announcement ends when the caches have caught up"
+        );
+    }
+
+    #[test]
+    fn discarding_the_session_ends_the_cold_rebuild_announcement() {
+        // The offramp: dropping the restored capture stops the rebuild
+        // being announced, because there is no longer anything to
+        // rebuild. `clear` is the same call a fresh open makes.
+        let root = TempDir::new().unwrap();
+        let len = build_and_persist(root.path(), &validity("capture-a", "dbc-a", 0));
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(reopened.restore(&validity("capture-b", "dbc-a", 0), len), 0);
+        assert!(reopened.rebuilding(len));
+
+        reopened.clear();
+        assert!(!reopened.rebuilding(len));
+        assert_eq!(
+            std::fs::read_dir(root.path()).unwrap().flatten().count(),
+            0,
+            "and nothing is left half-deleted under the root",
+        );
     }
 
     #[test]
