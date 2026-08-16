@@ -1,11 +1,14 @@
 // The trust-on-first-use dialog and its three siblings (ADR 0041).
 //
 // The host raises a question about one server; this renders it and
-// writes the answer back. It decides nothing: which question appears,
-// and what happens once it is answered, are the host's
+// writes the answer back. It decides nothing about the question itself:
+// what it says, and what happens once it is answered, are the host's
 // (`connect_flow.rs`). The only state here is view-local — what the
-// user has typed, and which questions they have waved away in this
-// window.
+// user has typed.
+//
+// **One implementation, one mount.** Every surface that wants a
+// question asked raises it (`serverTrust.ts`) rather than mounting its
+// own modal, so two dialogs over one question cannot happen.
 //
 // Two rules the markup exists to keep visible:
 //
@@ -21,35 +24,33 @@ import { useEffect, useState } from "react";
 import {
   acceptServerFingerprint,
   acceptServerInsecure,
-  nextPrompt,
+  clearServerTrust,
   promptKey,
   setServerToken,
-  useServerPrompts,
+  useRaisedServerTrust,
   type TrustPrompt,
 } from "./serverTrust";
 
-/// Mount once. Renders at most one dialog — the first pending question
-/// this window has not dismissed — and nothing at all when the host is
-/// waiting on no one.
+/// **Mount once — this is the app's only trust dialog.** Two surfaces
+/// putting their own modal over the same question was a defect; one
+/// implementation with one mount makes it impossible rather than
+/// avoided.
+///
+/// It renders the question a *user action* raised
+/// (`raiseServerTrust` — a connect attempt the question blocked, a
+/// row's *Trust…*, a typed address, a row's *Review…*) and nothing at
+/// all otherwise. A question the host raises on its own is an indicator
+/// on the rows, never a modal in the way.
 export function ServerTrustDialogs() {
-  const prompts = useServerPrompts();
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(
-    () => new Set(),
-  );
-  const pending = nextPrompt(prompts, dismissed);
-  if (pending === null) return null;
+  const raised = useRaisedServerTrust();
+  if (raised === null) return null;
   return (
     <ServerTrustDialog
-      key={promptKey(pending.address, pending.prompt)}
-      address={pending.address}
-      prompt={pending.prompt}
-      onDismiss={() =>
-        setDismissed((prev) => {
-          const next = new Set(prev);
-          next.add(promptKey(pending.address, pending.prompt));
-          return next;
-        })
-      }
+      key={promptKey(raised.address, raised.prompt)}
+      address={raised.address}
+      prompt={raised.prompt}
+      onDismiss={clearServerTrust}
+      onAnswered={clearServerTrust}
     />
   );
 }
@@ -58,16 +59,21 @@ export interface ServerTrustDialogProps {
   address: string;
   prompt: TrustPrompt;
   /// Close without storing anything. The host keeps the question — it
-  /// is still true — but this window stops asking it.
+  /// is still true, and the row still says so — but this window stops
+  /// asking it.
   onDismiss: () => void;
+  /// The answer was stored, so the question is gone.
+  onAnswered: () => void;
 }
 
-/// One trust question. Exported for tests and for any surface that
-/// wants to re-raise a specific question.
+/// One trust question. Exported for tests; every surface that wants a
+/// question asked raises it on {@link ServerTrustDialogs} instead of
+/// mounting this.
 export function ServerTrustDialog({
   address,
   prompt,
   onDismiss,
+  onAnswered,
 }: ServerTrustDialogProps) {
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -82,14 +88,14 @@ export function ServerTrustDialog({
   }, [onDismiss]);
 
   // The host drops the question once the answer is stored, so a
-  // successful write needs no dismissal — the dialog unmounts with the
-  // prompt. A failed one stays put and says why.
+  // successful write closes this. A failed one stays put and says why.
   const run = (action: () => Promise<void>) => {
     setBusy(true);
     void (async () => {
       try {
         await action();
         setError(null);
+        onAnswered();
       } catch (err) {
         setError(String(err));
       }

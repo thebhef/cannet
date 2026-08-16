@@ -4,6 +4,7 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { ServerTrustDialog, ServerTrustDialogs } from "./ServerTrustDialog";
+import { clearServerTrust, raiseServerTrust } from "./serverTrust";
 import type { ServerPrompts, TrustPrompt } from "./serverTrust";
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
@@ -32,14 +33,25 @@ beforeEach(() => {
   listenMock.mockImplementation(async () => () => {});
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  // The raise is module state, so one test's open question must not
+  // leak into the next.
+  clearServerTrust();
+  cleanup();
+});
 
 function renderDialog(prompt: TrustPrompt, address = "bench.example.com:50051") {
   const onDismiss = vi.fn();
+  const onAnswered = vi.fn();
   render(
-    <ServerTrustDialog address={address} prompt={prompt} onDismiss={onDismiss} />,
+    <ServerTrustDialog
+      address={address}
+      prompt={prompt}
+      onDismiss={onDismiss}
+      onAnswered={onAnswered}
+    />,
   );
-  return { onDismiss };
+  return { onDismiss, onAnswered };
 }
 
 describe("the trust-on-first-use dialog", () => {
@@ -184,15 +196,10 @@ describe("the unprotected-connection choice", () => {
 });
 
 describe("the dialog host", () => {
-  /// Render `ServerTrustDialogs` with a host that answers the initial
-  /// snapshot with `prompts` and hands back the change-event pusher.
-  async function renderHost(prompts: ServerPrompts) {
-    let push: ((e: { payload: ServerPrompts }) => void) | undefined;
-    listenMock.mockImplementation((async (name: string, cb: unknown) => {
-      if (name === "server-prompts-changed")
-        push = cb as (e: { payload: ServerPrompts }) => void;
-      return () => {};
-    }) as never);
+  /// Render `ServerTrustDialogs` over a host that is waiting on
+  /// `prompts`. Nothing is pushed at it: a question the host raises on
+  /// its own is not what opens a modal.
+  function renderHost(prompts: ServerPrompts) {
     invokeMock.mockImplementation(
       async (cmd: string, args: Record<string, unknown>) => {
         calls.push({ cmd, args: args ?? {} });
@@ -201,43 +208,84 @@ describe("the dialog host", () => {
       },
     );
     render(<ServerTrustDialogs />);
-    await waitFor(() => expect(push).toBeDefined());
-    return (next: ServerPrompts) => act(() => push!({ payload: next }));
   }
 
-  it("shows nothing when the host is waiting on no one", async () => {
-    await renderHost({});
+  it("shows nothing when the host is waiting on no one", () => {
+    renderHost({});
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("raises the dialog for a question the host pushes", async () => {
-    const push = await renderHost({});
-    push({
-      "bench:50051": { kind: "acceptIdentity", observed: "SHA256:aaa" },
-    });
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText("SHA256:aaa")).toBeInTheDocument();
-  });
-
-  it("stops asking a question the user waved away, but keeps asking a new one", async () => {
-    const push = await renderHost({
-      "bench:50051": { kind: "acceptIdentity", observed: "SHA256:aaa" },
-    });
-    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
-
-    fireEvent.click(screen.getByText("Cancel"));
-    expect(screen.queryByRole("dialog")).toBeNull();
-
-    // A *different* question about the same server is not the one that
-    // was dismissed, so it must reach the user.
-    push({
+  it("never opens itself for a question the host raised on its own", async () => {
+    // The passive case, and the whole point: the host notices a known
+    // server's identity changed while nobody was trying to connect to
+    // it. That is an indicator on the row, not a modal in the way.
+    renderHost({
       "bench:50051": {
         kind: "identityChanged",
         expected: "SHA256:aaa",
         observed: "SHA256:bbb",
       },
     });
+    await waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(0));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("shows the question a user action asked to see", async () => {
+    renderHost({
+      "bench:50051": { kind: "acceptIdentity", observed: "SHA256:aaa" },
+    });
+    await act(async () => {
+      await raiseServerTrust("bench:50051");
+    });
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText("SHA256:bbb")).toBeInTheDocument();
+    expect(screen.getByText("SHA256:aaa")).toBeInTheDocument();
+  });
+
+  it("finds the question however the address was spelled", async () => {
+    // The host keys a question by whatever address the connection was
+    // made with; a row is keyed the way the trust store files it.
+    renderHost({
+      "https://Bench:50051": { kind: "acceptIdentity", observed: "SHA256:aaa" },
+    });
+    await act(async () => {
+      await raiseServerTrust("bench:50051");
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("opens nothing when the attempt raised no question", async () => {
+    // An attempt that failed for some other reason must not leave a
+    // raise armed to catch the next question about that server.
+    renderHost({});
+    await act(async () => {
+      expect(await raiseServerTrust("bench:50051")).toBe(false);
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("stays shut once the user waves it away", async () => {
+    renderHost({
+      "bench:50051": { kind: "acceptIdentity", observed: "SHA256:aaa" },
+    });
+    await act(async () => {
+      await raiseServerTrust("bench:50051");
+    });
+    fireEvent.click(screen.getByText("Cancel"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The host still holds the question — it is still true — and the
+    // row still says so. Nothing re-opens it but the user.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("closes itself once the answer is stored", async () => {
+    renderHost({
+      "bench:50051": { kind: "acceptIdentity", observed: "SHA256:aaa" },
+    });
+    await act(async () => {
+      await raiseServerTrust("bench:50051");
+    });
+    fireEvent.click(screen.getByText("Accept and connect"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.some((c) => c.cmd === "accept_server_fingerprint")).toBe(true);
   });
 });

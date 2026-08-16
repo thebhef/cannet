@@ -102,6 +102,7 @@ import { SignalGeneratorProvider } from "./signalGeneratorContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { ServersPanel } from "./ServersPanel";
 import { ServerTrustDialogs } from "./ServerTrustDialog";
+import { raiseServerTrust } from "./serverTrust";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
 import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
@@ -1624,6 +1625,11 @@ export function App() {
           next.set(address, { kind: "error", message: String(err) });
           return next;
         });
+        // The user asked for this connection, so a trust question that
+        // blocked it is one they are waiting on — the case a modal is
+        // for. `raiseServerTrust` asks the host whether there is one:
+        // a connection that failed for any other reason raises nothing.
+        await raiseServerTrust(address);
       }
     }
   }, [buses, interfaceBindings, sidecarAddress, resetSession]);

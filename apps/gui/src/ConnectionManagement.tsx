@@ -567,7 +567,12 @@ export type BusServerTrust =
   | { kind: "untrusted"; address: string }
   /// It presented a certificate that is not the pinned one, and the
   /// connection was refused.
-  | { kind: "changed"; address: string };
+  | { kind: "changed"; address: string }
+  /// The pin is still good, but the server refused the stored access
+  /// token. The host's trust state cannot carry this — nothing about
+  /// the identity moved — so it is read off the question the host is
+  /// waiting on.
+  | { kind: "tokenRefused"; address: string };
 
 /// What a bus row has to say about its binding's server.
 ///
@@ -576,6 +581,14 @@ export type BusServerTrust =
 /// project names. Nothing here re-derives whether an address is
 /// reachable without asking — the loopback rules alone make that a
 /// question only the host can answer.
+///
+/// **This is where a project notices a trust question raised with
+/// nobody trying to connect.** The host keeps watching servers it
+/// already knows, so it can find a changed identity or a refused token
+/// on its own; that surfaces here and on the server's row rather than
+/// as a modal in the way. A question about *reaching* the server
+/// (`noProtection`) is not one of them — that is the connection state's
+/// to report, not this notice's.
 export function busServerTrust(
   binding: InterfaceBinding | null,
   servers: readonly ServerRow[],
@@ -588,22 +601,33 @@ export function busServerTrust(
   const key = serverKey(address);
   const row = servers.find((r) => serverKey(r.address) === key);
   if (row?.trust === "fingerprintChanged") return { kind: "changed", address };
+  if (row?.prompt?.kind === "tokenRefused") {
+    return { kind: "tokenRefused", address };
+  }
   if (!needingTrust.has(address)) return { kind: "ok" };
   return row ? { kind: "untrusted", address } : { kind: "unknown", address };
 }
 
 /// The notice's wording. Each says what is wrong and where it is fixed;
 /// the Servers panel is the only place any of them is answered.
+///
+/// `unknown` and `untrusted` state the *same fact* — this machine will
+/// not reach that server without an answer — and differ only in the
+/// fix, because an address that is not in the list yet is added rather
+/// than trusted. Calling one of them an "unknown server" made a second
+/// name for one state and hid the fact behind it.
 export function busServerTrustMessage(state: BusServerTrust): string | null {
   switch (state.kind) {
     case "ok":
       return null;
     case "unknown":
-      return `unknown server ${state.address} — trust it in the Servers panel`;
+      return `${state.address} is not trusted on this machine — add it in the Servers panel`;
     case "untrusted":
       return `${state.address} is not trusted on this machine — trust it in the Servers panel`;
     case "changed":
       return `${state.address} presented a different identity — review it in the Servers panel`;
+    case "tokenRefused":
+      return `${state.address} refused the access token stored for it — review it in the Servers panel`;
   }
 }
 

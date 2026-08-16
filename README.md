@@ -692,11 +692,25 @@ fingerprint the server presented:
 From then on, the server's identity is checked on every connection. If
 it ever changes — the certificate was replaced, the machine
 reinstalled, or something is impersonating it — the connection is
-refused and a warning shows both fingerprints, the accepted one and the
-presented one. There is no automatic retry and no fallback to
-plaintext: the only ways forward are *Accept the new identity*, which
-overwrites the pin, and cancel. A token the server refuses is treated
-the same way — asked about once, never retried in a loop.
+refused. There is no automatic retry and no fallback to plaintext: the
+only ways forward are *Accept the new identity*, which overwrites the
+pin, and cancel. A token the server refuses is treated the same way —
+asked about once, never retried in a loop.
+
+**A dialog appears only when you asked for the connection.** cannet
+keeps watching servers it already knows, so it can find a changed
+identity with nobody trying to connect; interrupting the window for
+that would be a nuisance. Such a question shows up as an *indicator*
+instead — the badge on the server's row reads `identity changed`, a
+credential the server stopped accepting turns the row's token cell to
+`token refused`, and every bus bound to that server says so on the bus
+row — and the row's *Review…* puts the same dialog up whenever you are
+ready, showing both fingerprints, the accepted one and the presented
+one. Connecting,
+*Trust…*, and *Add server…* are the acts that open it directly, because
+each is a connection you asked for and the question is what blocked it.
+Waving the dialog away leaves the indicator: the question is still
+true, and the row still says so.
 
 Both are stored per `host:port` in `servers.json` in the GUI's config
 directory ([ADR 0032](docs/adr/0032-machine-local-ui-state-host-side.md)),
@@ -713,11 +727,12 @@ can be forgotten without waiting for it to come back. Moving a server
 to a different address or port is a new entry, and prompts again.
 
 Two things put a row in this list besides the trust store: a server
-advertising on the network, and a session connected to one. The second
-is why a row can appear at `127.0.0.1:<some high port>` that nobody
-typed in — that is the GUI's own python-can sidecar, which binds a port
-the OS picks and is dialled for any bus bound to local hardware. Nothing
-is stored for it, and the row goes when the session does.
+advertising on the network, and a session connected to one — so a row
+can be held by a live connection alone, and leaves when that session
+ends. The GUI's own python-can sidecar is not one of them: it is dialled
+on loopback for any bus bound to local hardware, but it is this app's
+own child rather than a server the operator manages, so it never
+appears here.
 
 A server on another subnet, or one started `--no-mdns`, advertises
 nowhere this machine can hear, so it never appears in the browsed list.
@@ -1706,11 +1721,13 @@ something invisible.
 A project carries only the `host:port` a bus is bound to — never a
 fingerprint or a token — so opening one on a machine that has not
 accepted that server is the ordinary case, not an error. The bus row
-says so in as many words: *unknown server `host:port` — trust it in
-the Servers panel* for an address this machine has no record of, and a
-matching line for a server it can see but has not accepted, or one
-whose identity has changed since it was pinned. Each carries the same
-*Manage servers…* jump. Whether an address needs an answer at all is
+says so in as many words: *`host:port` is not trusted on this machine —
+add it in the Servers panel* for an address this machine has no record
+of, and the same line ending *trust it in the Servers panel* for a
+server it can see but has not accepted. One fact, two fixes. A server
+whose identity has changed since it was pinned, or one that refused the
+token stored for it, gets its own line. Each carries the same *Manage
+servers…* jump. Whether an address needs an answer at all is
 the host's call, so a loopback proxy — reached in the clear and never
 asked about — is not flagged.
 

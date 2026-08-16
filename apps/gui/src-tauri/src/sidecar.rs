@@ -284,6 +284,18 @@ pub fn spawn_sidecar(app: &AppHandle) {
     }
 }
 
+/// The address this app's own sidecar is listening on, when it has
+/// reported one. `None` before the banner is parsed and after the child
+/// exits.
+///
+/// The one way anything else in the host can tell "our sidecar" from a
+/// server at some loopback address: the port is the OS's pick for this
+/// launch, so nothing but the supervisor knows it.
+pub(crate) fn bound_address(app: &AppHandle) -> Option<String> {
+    app.try_state::<SidecarState>()
+        .and_then(|state| state.supervisor.status().address)
+}
+
 /// Tauri command — snapshot the current sidecar status. The
 /// connection panel calls this on mount to pick up the address the
 /// host learned before the panel listened for [`STATUS_EVENT`].

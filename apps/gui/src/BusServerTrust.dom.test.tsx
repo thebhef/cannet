@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
 import { BusServerTrustNotice, busServerTrust } from "./ConnectionManagement";
+import { ServerTrustDialogs } from "./ServerTrustDialog";
 import {
   SERVER_LIST_CHANGED_EVENT,
   useAddressesNeedingTrust,
@@ -101,6 +102,44 @@ describe("what a bus's binding says about its server", () => {
     ).toEqual({ kind: "changed", address: BENCH_ADDRESS });
   });
 
+  it("flags a token the server refused, which the trust state cannot carry", () => {
+    // The pin is still good, so the host's trust state is `trusted` and
+    // says nothing. The question it is waiting on is the fact, and a
+    // bus bound to that server is where the project notices it.
+    expect(
+      busServerTrust(
+        bound(BENCH_ADDRESS),
+        [
+          serverRow({
+            address: BENCH_ADDRESS,
+            trust: "trusted",
+            hasToken: true,
+            prompt: { kind: "tokenRefused" },
+          }),
+        ],
+        new Set(),
+      ),
+    ).toEqual({ kind: "tokenRefused", address: BENCH_ADDRESS });
+  });
+
+  it("says nothing about a question that is only about reaching the server", () => {
+    // A server that is simply not answering is the connection state's
+    // to report, not the trust notice's.
+    expect(
+      busServerTrust(
+        bound(BENCH_ADDRESS),
+        [
+          serverRow({
+            address: BENCH_ADDRESS,
+            trust: "trusted",
+            prompt: { kind: "noProtection", detail: "connection reset" },
+          }),
+        ],
+        new Set(),
+      ),
+    ).toEqual({ kind: "ok" });
+  });
+
   it("matches the address the way the host keys its trust store", () => {
     expect(
       busServerTrust(
@@ -144,13 +183,19 @@ describe("the notice on the bus row", () => {
       />,
     );
     const notice = screen.getByTestId("bus-server-trust-b1");
-    expect(notice).toHaveTextContent(`unknown server ${BENCH_ADDRESS}`);
-    expect(notice).toHaveTextContent(/trust it in the Servers panel/i);
+    expect(notice).toHaveTextContent(
+      `${BENCH_ADDRESS} is not trusted on this machine`,
+    );
+    expect(notice).toHaveTextContent(/add it in the Servers panel/i);
     fireEvent.click(screen.getByRole("button", { name: "Manage servers…" }));
     expect(onManageServers).toHaveBeenCalledTimes(1);
   });
 
-  it("does not call a server it can see unknown", () => {
+  it("states one fact for both, and differs only in what to do about it", () => {
+    // The fact is the same either way — the machine will not reach this
+    // server without an answer. Whether the address is in the list at
+    // all changes the *fix*, not what is wrong, so it belongs in the
+    // instruction and never in a second name for one state.
     render(
       <BusServerTrustNotice
         bus={BUS1}
@@ -159,20 +204,43 @@ describe("the notice on the bus row", () => {
       />,
     );
     const notice = screen.getByTestId("bus-server-trust-b1");
-    expect(notice).toHaveTextContent(/is not trusted on this machine/i);
+    expect(notice).toHaveTextContent(
+      `${BENCH_ADDRESS} is not trusted on this machine`,
+    );
+    expect(notice).toHaveTextContent(/trust it in the Servers panel/i);
     expect(notice).not.toHaveTextContent("unknown server");
   });
 
-  it("says a changed identity has to be looked at", () => {
+  it("says a changed identity has to be looked at, and opens nothing", () => {
+    // The project view's half of the indicator ruling: the bus row says
+    // what happened and points at the panel; the app's one trust dialog
+    // stays shut, because nobody asked for this connection.
+    render(
+      <>
+        <BusServerTrustNotice
+          bus={BUS1}
+          state={{ kind: "changed", address: BENCH_ADDRESS }}
+          onManageServers={() => {}}
+        />
+        <ServerTrustDialogs />
+      </>,
+    );
+    expect(screen.getByTestId("bus-server-trust-b1")).toHaveTextContent(
+      /identity/i,
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("says a refused token has to be looked at", () => {
     render(
       <BusServerTrustNotice
         bus={BUS1}
-        state={{ kind: "changed", address: BENCH_ADDRESS }}
+        state={{ kind: "tokenRefused", address: BENCH_ADDRESS }}
         onManageServers={() => {}}
       />,
     );
     expect(screen.getByTestId("bus-server-trust-b1")).toHaveTextContent(
-      /identity/i,
+      /refused the access token/i,
     );
   });
 

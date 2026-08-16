@@ -21,8 +21,16 @@
 //   the server printed, so the string a user compared once can be
 //   compared again.
 // - **Trusting is always a fresh observation.** "Trust…" dials the
-//   server first and shows the certificate that came back; it never
-//   pins something remembered from an earlier look.
+//   server and shows the certificate that came back; it never pins
+//   something remembered from an earlier look. A row the host is
+//   *already* waiting on carries such an observation — the attempt that
+//   raised the question made it — so "Review…" puts that question up
+//   without dialling again, which is what lets a server that has since
+//   gone quiet still be reviewed.
+// - **The panel owns no dialog.** A row's affordance raises the one
+//   app-wide trust dialog (`ServerTrustDialog.tsx`); a second modal of
+//   the panel's own over the same question is impossible by
+//   construction.
 // - **An address can be added by hand**, because discovery is multicast
 //   and a server on another subnet advertises nowhere this machine can
 //   hear. "Add server…" is the same act as a row's "Trust…" for an
@@ -36,7 +44,6 @@ import { useCallback, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
-import { ServerTrustDialog } from "./ServerTrustDialog";
 import {
   addressShapeError,
   browseNotice,
@@ -48,7 +55,12 @@ import {
   NOTHING_ADVERTISING,
   type ServerRow,
 } from "./serverList";
-import { forgetServer, setServerToken } from "./serverTrust";
+import {
+  forgetServer,
+  raiseServerTrust,
+  setServerToken,
+  type TrustPrompt,
+} from "./serverTrust";
 
 export function ServersPanel(_props: IDockviewPanelProps) {
   const { servers, browse } = useServerList();
@@ -58,10 +70,9 @@ export function ServersPanel(_props: IDockviewPanelProps) {
   // What the last action had to say when it changed nothing — a Forget
   // on a row the trust store never held. Cleared by the next action.
   const [note, setNote] = useState<string | null>(null);
-  // Which row's trust dialog is open, and which row's token field is
-  // showing — both view-local, both addressed by the row's identity so
-  // a list that moves underneath cannot leave them on the wrong server.
-  const [dialogFor, setDialogFor] = useState<string | null>(null);
+  // Which row's token field is showing — view-local, and addressed by
+  // the row's identity so a list that moves underneath cannot leave it
+  // on the wrong server.
   const [tokenFor, setTokenFor] = useState<string | null>(null);
   // The add-by-address field: what has been typed, what the last attempt
   // to add it said, and which row that attempt pointed at.
@@ -72,7 +83,6 @@ export function ServersPanel(_props: IDockviewPanelProps) {
   const [highlight, setHighlight] = useState<string | null>(null);
 
   const matches = useMemo(() => matchServerRows(servers, query), [servers, query]);
-  const dialogRow = servers.find((r) => r.address === dialogFor);
 
   const run = useCallback(async (address: string, action: () => Promise<void>) => {
     setBusy(address);
@@ -86,20 +96,28 @@ export function ServersPanel(_props: IDockviewPanelProps) {
     setBusy(null);
   }, []);
 
-  /// Dial the server so the host sees the certificate it is presenting
-  /// now, then show whatever question that raised. A refusal is the
-  /// expected outcome — it is what produces the fingerprint — so the
-  /// error is not surfaced as a failure.
+  /// Put this row's trust question to the user, in the app-wide dialog.
+  ///
+  /// The host may already be waiting on one: a refused attempt — from a
+  /// connect, or from the background interface watch — leaves a real
+  /// observation behind, and reviewing it must not depend on the server
+  /// still being reachable. Only when the host is waiting on nothing
+  /// does the row dial, because that is what produces a first-contact
+  /// fingerprint. A refusal is the expected outcome of that dial — it
+  /// is what the fingerprint comes from — so it is not surfaced as a
+  /// failure.
   const trust = useCallback(async (address: string) => {
     setBusy(address);
-    try {
-      await invoke("refresh_interfaces", { address });
-    } catch {
-      // The refusal is the point; the question it raised is on the row.
+    if (!(await raiseServerTrust(address))) {
+      try {
+        await invoke("refresh_interfaces", { address });
+      } catch {
+        // The refusal is the point; what it raised is asked below.
+      }
+      await raiseServerTrust(address);
     }
     setBusy(null);
     setError(null);
-    setDialogFor(address);
   }, []);
 
   /// Add the typed address. The host does the adding — it checks the
@@ -132,6 +150,9 @@ export function ServersPanel(_props: IDockviewPanelProps) {
       // a loopback proxy, which the host records as manual. An address
       // that raised one has no row until the identity is accepted.
       setHighlight(added);
+      // Typing an address and pressing Add is direct user input, so
+      // whatever it raised is a question the user is waiting on.
+      await raiseServerTrust(added);
     } catch (err) {
       setAddError(String(err));
       setAddNote(null);
@@ -255,15 +276,33 @@ export function ServersPanel(_props: IDockviewPanelProps) {
           ))}
         </div>
       )}
-      {dialogRow?.prompt != null && (
-        <ServerTrustDialog
-          address={dialogRow.address}
-          prompt={dialogRow.prompt}
-          onDismiss={() => setDialogFor(null)}
-        />
-      )}
     </div>
   );
+}
+
+/// What a row's trust affordance is called. A row the host is already
+/// waiting on is *reviewed* — the question exists and is being looked
+/// at again — while one it has never asked about is *trusted*, which
+/// dials to find out what to ask.
+function trustActionLabel(prompt: TrustPrompt | null): string {
+  if (prompt === null) return "Trust…";
+  switch (prompt.kind) {
+    case "identityChanged":
+      return "Review identity…";
+    case "tokenRefused":
+      return "Review token…";
+    default:
+      return "Review…";
+  }
+}
+
+/// The token cell — the row's indicator for a credential the server
+/// stopped accepting. The host's trust state cannot carry that (the pin
+/// is still good), so the question it is waiting on is what says so,
+/// and it says it where the token is.
+function tokenLabel(row: ServerRow): string {
+  if (row.prompt?.kind === "tokenRefused") return "token refused";
+  return row.hasToken ? "token stored" : "no token";
 }
 
 interface ServerRowViewProps {
@@ -295,8 +334,7 @@ function ServerRowView({
   // wording, never whether an action is offered: a row the user can see
   // is a row the user can act on, and a store that happens to be empty
   // for it is an answer the action gives, not a reason to withhold the
-  // action. (Hiding them is what left the app's own sidecar — trusted,
-  // advertising nowhere, storing nothing — with no affordance at all.)
+  // action.
   const credentials = row.fingerprint !== null || row.hasToken || row.insecure;
   const stored = credentials || row.manual;
   return (
@@ -308,20 +346,26 @@ function ServerRowView({
       <span className="server-host">{row.host ?? ""}</span>
       <span className="server-address">{row.address}</span>
       <span className="server-version">{row.version ?? ""}</span>
-      <span className="server-token">
-        {row.hasToken ? "token stored" : "no token"}
+      <span
+        className={`server-token${row.prompt?.kind === "tokenRefused" ? " refused" : ""}`}
+      >
+        {tokenLabel(row)}
       </span>
       <span className="server-actions">
-        {row.trust !== "trusted" && (
+        {(row.trust !== "trusted" || row.prompt !== null) && (
           <button
             type="button"
             className={row.trust === "fingerprintChanged" ? "danger" : undefined}
             disabled={busy}
-            aria-label={`trust ${row.address}`}
-            title="Connect to this server and show the certificate it presents, to compare against the one it printed."
+            aria-label={`${row.prompt === null ? "trust" : "review"} ${row.address}`}
+            title={
+              row.prompt === null
+                ? "Connect to this server and show the certificate it presents, to compare against the one it printed."
+                : "Look again at the question this server's last connection attempt raised."
+            }
             onClick={onTrust}
           >
-            {row.trust === "fingerprintChanged" ? "Review identity…" : "Trust…"}
+            {trustActionLabel(row.prompt)}
           </button>
         )}
         <button

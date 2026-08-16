@@ -922,6 +922,12 @@ header {
   white-space: nowrap;
 }
 
+/* A credential the server stopped accepting — the row's indicator for
+   a question nothing about the identity carries. */
+.server-token.refused {
+  color: var(--danger-text);
+}
+
 .server-address {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }

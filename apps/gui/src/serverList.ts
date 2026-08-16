@@ -333,9 +333,7 @@ export function trustLabel(row: ServerRow): string {
 /// sources, and the row itself says which: it is advertising, or a
 /// session is connected to it (an entry the store keeps is never empty —
 /// the host removes an emptied one — so there is no third case). Without
-/// this, forgetting such a row is a button that does nothing, which is
-/// how the app's own sidecar — dialled at `127.0.0.1:<ephemeral>` for
-/// local hardware, stored nowhere — reads as an unremovable mystery.
+/// this, forgetting such a row is a button that visibly does nothing.
 export function nothingStoredNote(row: ServerRow): string | null {
   if (row.fingerprint !== null || row.hasToken || row.insecure || row.manual) {
     return null;
