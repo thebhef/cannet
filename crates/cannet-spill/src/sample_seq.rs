@@ -33,6 +33,24 @@ use crate::seg_chain::{
 /// Bytes per entry: two `f64`s (`t_seconds`, `value`).
 const ENTRY_BYTES: usize = 16;
 
+/// [`ENTRY_BYTES`], published — what one stored sample costs.
+///
+/// A caller that keeps sample runs has to be able to say how much disk
+/// they are worth: how much a set it reused was spared producing, how
+/// much a set it discarded will have to be produced again, how much a
+/// retained-but-unreferenced run is holding. The slot size is the only
+/// input to that arithmetic which is not already the caller's — and the
+/// caller often has only a run's `(len, first_slot)` out of its own
+/// manifest, with nothing mapped to ask ([`SampleSeq::live_bytes`]).
+///
+/// It is the *stored* size, not a footprint: segment files are
+/// geometrically sized and lazily created, so a chain's bytes on disk are
+/// this times the slots it has room for, rounded up by segment. Which
+/// number a caller wants depends on the question — "what did these
+/// samples cost to produce" is this one, and the on-disk footprint is
+/// what a directory walk measures.
+pub const SAMPLE_ENTRY_BYTES: usize = ENTRY_BYTES;
+
 /// One append-only run of `(t_seconds, value)` pairs, backed by a geometric
 /// chain of mmap'd segment files named `{prefix}.NNNN` under `dir`.
 pub struct SampleSeq {
@@ -187,6 +205,17 @@ impl SampleSeq {
     /// Count of still-live pairs (those in `[first_slot, len)`).
     pub fn live_len(&self) -> usize {
         self.len - self.first_slot
+    }
+
+    /// Bytes of samples this run still holds — [`Self::live_len`] at
+    /// [`SAMPLE_ENTRY_BYTES`].
+    ///
+    /// The arithmetic is trivial and lives here so the slot size stays a
+    /// fact of the layout rather than one a caller re-states. A run whose
+    /// front has been trimmed reports what it kept: the evicted prefix is
+    /// no longer anybody's to account for.
+    pub fn live_bytes(&self) -> usize {
+        self.live_len() * ENTRY_BYTES
     }
 
     /// Raise the low-water mark to `first_slot`, evicting the slots below it
@@ -401,6 +430,34 @@ mod tests {
         assert_eq!(l1.len(), 1);
         assert_eq!(l1.get(0), (7.0, 9.0));
         assert_eq!(l0.get(50), (50.0, 1.0));
+    }
+
+    #[test]
+    fn live_bytes_counts_the_slots_the_run_still_holds() {
+        // The honest size of a run is its *live* slots at the fixed slot
+        // size — what a caller accounting for the samples it is keeping
+        // (or would have to produce again) has to charge. A front-trimmed
+        // run costs what it kept, not what it ever appended.
+        let dir = TempDir::new().unwrap();
+        let mut seq = SampleSeq::new(dir.path(), "sig.l0");
+        assert_eq!(seq.live_bytes(), 0, "an empty run holds nothing");
+        for i in 0..100u32 {
+            seq.push(f64::from(i), f64::from(i) * 2.0);
+        }
+        assert_eq!(seq.live_bytes(), 100 * SAMPLE_ENTRY_BYTES);
+        seq.evict_below(40);
+        assert_eq!(
+            seq.live_bytes(),
+            60 * SAMPLE_ENTRY_BYTES,
+            "an evicted prefix is not held any more"
+        );
+        // The same arithmetic a caller does over `(len, first_slot)` alone
+        // — the two numbers a manifest carries for a run it has not
+        // mapped.
+        assert_eq!(
+            seq.live_bytes(),
+            (seq.len() - seq.first_slot()) * SAMPLE_ENTRY_BYTES
+        );
     }
 
     #[test]
