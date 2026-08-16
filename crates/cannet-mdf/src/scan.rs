@@ -11,13 +11,17 @@
 //! that first appears in the last record is reported like any other. This
 //! mirrors `cannet_blf::scan_blf`, so the dialog that consumes one
 //! consumes the other.
+//!
+//! The signal side is a *census*, not a read: group names, kinds and
+//! channel counts come off the block graph, so the scan says how much
+//! signal content a file holds without materialising a single series.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::bus::{self, BusGroup};
 use crate::file::Mdf4File;
-use crate::{collect_skipped, MdfSourceError, SkippedDecodedGroup};
+use crate::{collect_decoded, DecodedMessageGroup, MdfSourceError, SignalGroupCensus};
 
 /// What one walk of an MF4 file found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,12 +42,14 @@ pub struct MdfScan {
     pub start_unix_nanos: u64,
     /// Whether the writer left the file unfinalized (`"UnFinMF "`).
     pub unfinalized: bool,
-    /// Names of the message-independent signal channel groups, in file
-    /// order — what [`crate::MdfCanFrameSource::signal_groups`] will
-    /// return the series for.
-    pub signal_group_names: Vec<Option<String>>,
-    /// The per-message DBC-decoded groups import will skip.
-    pub skipped_decoded_groups: Vec<SkippedDecodedGroup>,
+    /// The file's signal channel groups, in file order — what
+    /// [`crate::MdfCanFrameSource::signal_groups`] will return the series
+    /// for, message-independent and per-message DBC-decoded alike.
+    pub signal_groups: Vec<SignalGroupCensus>,
+    /// The per-message DBC-decoded groups, listed on their own. Every one
+    /// of them also appears in `signal_groups`, tagged with its
+    /// `decoded_source`.
+    pub decoded_message_groups: Vec<DecodedMessageGroup>,
     /// The file's timeline markers — its `##EV` blocks, in link order,
     /// with absolute timestamps.
     pub events: Vec<crate::MdfEvent>,
@@ -58,7 +64,7 @@ pub struct MdfScan {
 /// and otherwise the I/O and block-parsing errors of a malformed file.
 pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
     let file = Mdf4File::open(path.as_ref())?;
-    let skipped_decoded_groups = collect_skipped(&file);
+    let decoded_message_groups = collect_decoded(&file);
 
     let bus_groups: Vec<usize> = (0..file.groups.len())
         .filter(|i| bus::frame_structure(&file.groups[*i]).is_some())
@@ -66,7 +72,7 @@ pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
     if bus_groups.is_empty() {
         return Err(MdfSourceError::SignalFile {
             signal_groups: file.groups.len(),
-            decoded_groups: skipped_decoded_groups.len(),
+            decoded_groups: decoded_message_groups.len(),
         });
     }
 
@@ -86,10 +92,7 @@ pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
         }
     }
 
-    let signal_group_names = crate::signals::signal_groups(&file)
-        .into_iter()
-        .map(|g| g.name)
-        .collect();
+    let signal_groups = crate::signals::signal_group_census(&file);
 
     Ok(MdfScan {
         channels: channels.into_iter().collect(),
@@ -98,8 +101,8 @@ pub fn scan_mdf<P: AsRef<Path>>(path: P) -> Result<MdfScan, MdfSourceError> {
         last_timestamp_ns,
         start_unix_nanos: file.start_time_ns,
         unfinalized: file.unfinalized,
-        signal_group_names,
-        skipped_decoded_groups,
+        signal_groups,
+        decoded_message_groups,
         events: crate::events::read_events(&file)?,
     })
 }

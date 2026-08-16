@@ -1,10 +1,8 @@
 // @vitest-environment jsdom
 //
-// MDF import's census walk (`scan_mdf_channels`) has the same
-// whole-file cost as the BLF census (`App.blfScanNotice.dom.test.tsx`,
-// which this mirrors) — seconds on a large file, all of it before the
-// mapping dialog exists. Pinned here the same way: stall the scan
-// command and watch the status line say so.
+// An MF4 holds two independent kinds of content, and the import dialog
+// offers a checkbox per kind. This pins the wire end of that: what the
+// user leaves checked is what `import_mdf` is told to bring in.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -13,11 +11,13 @@ import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react
 type Handler = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Handler[]>();
 
-// Resolved by the test when it wants the census to finish.
-let releaseScan: (() => void) | null = null;
+/// Every `invoke` the render makes, so the test can read back the
+/// arguments the import was launched with.
+const calls: { cmd: string; args: Record<string, unknown> }[] = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => {
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
+    calls.push({ cmd, args: args ?? {} });
     switch (cmd) {
       case "fetch_system_log":
       case "fetch_notes":
@@ -28,21 +28,28 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "get_interfaces":
         return [];
       case "scan_mdf_channels":
-        await new Promise<void>((resolve) => {
-          releaseScan = resolve;
-        });
+        // The owner's file shape: frames *and* signal content, the
+        // second of which is mostly per-message decoded groups.
         return {
           channels: [0],
-          frame_count: 1,
+          frame_count: 15_285,
           first_timestamp_ns: 1_000_000_000,
-          last_timestamp_ns: 1_000_000_000,
+          last_timestamp_ns: 1_080_000_000,
           start_unix_nanos: 1_700_000_000_000_000_000,
           markers: [],
           unfinalized: false,
-          signal_group_count: 0,
-          signal_count: 0,
-          decoded_message_groups: [],
+          signal_group_count: 61,
+          signal_count: 172,
+          decoded_message_groups: [
+            {
+              source_path: "CAN1.CAN_DataFrame.ID=0x310 EXT=False",
+              name: "CAN1 message ID=0x310 EXT=False",
+              signal_count: 24,
+            },
+          ],
         };
+      case "import_mdf":
+        return { mdf_path: "/logs/capture.mf4" };
       case "fetch_filtered_trace":
       case "fetch_by_id_page":
         return { count: 0, start: 0, rows: [] };
@@ -83,7 +90,7 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(async () => "/logs/huge-capture.mf4"),
+  open: vi.fn(async () => "/logs/capture.mf4"),
   save: vi.fn(async () => null),
 }));
 
@@ -131,51 +138,67 @@ function findButton(label: string): HTMLButtonElement {
   return btn;
 }
 
-function statusText(): string {
-  return document.querySelector(".status")?.textContent ?? "";
-}
-
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   localStorage.clear();
   listeners.clear();
-  releaseScan = null;
+  calls.length = 0;
 });
 
 afterEach(() => {
-  releaseScan?.();
   cleanup();
   vi.unstubAllGlobals();
 });
 
-describe("MDF census feedback", () => {
-  it("says it is scanning from the pick until the mapping dialog opens", async () => {
+describe("MDF import contents", () => {
+  async function openTheDialog() {
     render(<App />);
     await waitFor(() => {
       if (!document.querySelector(".trace-panel .trace-status"))
         throw new Error("seeded layout not mounted yet");
     });
-
     await act(async () => {
       fireEvent.click(findButton("Import trace…"));
     });
-
-    // The census is still walking: the notice is up and the dialog is
-    // not — which is exactly the window the user was staring at.
-    await waitFor(() => {
-      if (!statusText().includes("Scanning huge-capture.mf4"))
-        throw new Error(`no scan notice, status was: ${statusText()}`);
-    });
-    expect(
-      Array.from(document.querySelectorAll("button")).some((b) => b.textContent === "Open"),
-    ).toBe(false);
-
-    // Let it finish: the dialog takes over and the notice goes away.
-    await act(async () => {
-      releaseScan?.();
-      releaseScan = null;
-    });
     await waitFor(() => findButton("Open"));
-    expect(statusText()).not.toContain("Scanning");
+  }
+
+  function importArgs(): Record<string, unknown> {
+    const call = calls.find((c) => c.cmd === "import_mdf");
+    if (!call) throw new Error("import_mdf was never invoked");
+    return call.args;
+  }
+
+  function checkbox(label: RegExp): HTMLInputElement {
+    const el = Array.from(document.querySelectorAll<HTMLLabelElement>("label.blf-map-content"))
+      .find((l) => label.test(l.textContent ?? ""));
+    if (!el) throw new Error(`no content checkbox matching ${label}`);
+    return el.querySelector("input") as HTMLInputElement;
+  }
+
+  it("imports the file's signals and leaves its frames alone by default", async () => {
+    await openTheDialog();
+    expect(checkbox(/^Signals/).checked).toBe(true);
+    expect(checkbox(/^CAN messages/).checked).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(findButton("Open"));
+    });
+    await waitFor(() => importArgs());
+    expect(importArgs().importSignals).toBe(true);
+    expect(importArgs().importMessages).toBe(false);
+  }, 30_000);
+
+  it("imports the frames too once the CAN messages box is ticked", async () => {
+    await openTheDialog();
+    await act(async () => {
+      fireEvent.click(checkbox(/^CAN messages/));
+    });
+    await act(async () => {
+      fireEvent.click(findButton("Open"));
+    });
+    await waitFor(() => importArgs());
+    expect(importArgs().importSignals).toBe(true);
+    expect(importArgs().importMessages).toBe(true);
   }, 30_000);
 });

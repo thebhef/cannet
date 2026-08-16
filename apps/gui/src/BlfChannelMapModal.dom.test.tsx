@@ -255,7 +255,7 @@ describe("BlfChannelMapModal", () => {
     expect(screen.getByText("Map MDF channels to logical buses")).toBeInTheDocument();
   });
 
-  it("lists skipped per-message decoded groups when given any, and hides the section otherwise", () => {
+  it("lists per-message decoded groups when given any, and hides the section otherwise", () => {
     const { rerender } = render(
       <BlfChannelMapModal
         blfPath="/tmp/cap.mf4"
@@ -266,7 +266,7 @@ describe("BlfChannelMapModal", () => {
         format="MDF"
       />,
     );
-    expect(screen.queryByText(/already covered/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/decoded by the recording tool/)).not.toBeInTheDocument();
 
     rerender(
       <BlfChannelMapModal
@@ -276,20 +276,20 @@ describe("BlfChannelMapModal", () => {
         onConfirm={noop}
         onCancel={noop}
         format="MDF"
-        skippedDecodedGroups={[
+        decodedMessageGroups={[
           { source_path: "CAN1.CAN_DataFrame.ID=0x100 EXT=False", name: "Engine", signal_count: 2 },
           { source_path: "CAN1.CAN_DataFrame.ID=0x1a5 EXT=False", name: null, signal_count: 1 },
         ]}
       />,
     );
-    expect(screen.getByText(/2 per-message decoded groups/)).toBeInTheDocument();
+    expect(screen.getByText(/2 of those groups are a CAN message decoded by/)).toBeInTheDocument();
     expect(screen.getByText(/Engine \(2 signals\)/)).toBeInTheDocument();
     expect(
       screen.getByText(/CAN1\.CAN_DataFrame\.ID=0x1a5 EXT=False \(1 signal\)/),
     ).toBeInTheDocument();
   });
 
-  it("says signal channel groups arrive as file-backed signals", () => {
+  it("says how many signals arrive as file-backed signals", () => {
     render(
       <BlfChannelMapModal
         blfPath="/tmp/cap.mf4"
@@ -298,11 +298,115 @@ describe("BlfChannelMapModal", () => {
         onConfirm={noop}
         onCancel={noop}
         format="MDF"
-        signalGroupCount={3}
+        signalCount={3}
       />,
     );
     expect(
-      screen.getByText(/3 signal channel groups — imported as file-backed signals/),
+      screen.getByText(/3 signals — imported as file-backed signals/),
     ).toBeInTheDocument();
+  });
+
+  it("offers a checkbox per content, signals on and messages opt-in", () => {
+    const onConfirm = vi.fn();
+    render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.mf4"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={onConfirm}
+        onCancel={noop}
+        format="MDF"
+        signalCount={3}
+      />,
+    );
+    const signals = screen.getByLabelText(/^Signals/) as HTMLInputElement;
+    const messages = screen.getByLabelText(/^CAN messages/) as HTMLInputElement;
+    expect(signals.checked).toBe(true);
+    expect(messages.checked).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(onConfirm).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      signals: true,
+      messages: false,
+    });
+  });
+
+  it("defaults CAN messages on when the file carries no signal content", () => {
+    render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.mf4"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+        format="MDF"
+        signalCount={0}
+      />,
+    );
+    // Nothing to opt out of, so the only content the file has is on —
+    // the dialog never defaults to importing nothing.
+    expect(screen.queryByLabelText(/^Signals/)).not.toBeInTheDocument();
+    expect((screen.getByLabelText(/^CAN messages/) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("hides the CAN messages checkbox when the file has no frames", () => {
+    render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.mf4"
+        scan={scanFixture({ channels: [], frame_count: 0 })}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+        format="MDF"
+        signalCount={3}
+      />,
+    );
+    expect(screen.queryByLabelText(/^CAN messages/)).not.toBeInTheDocument();
+    expect((screen.getByLabelText(/^Signals/) as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("disables the channel mapping and Open while no content is selected", () => {
+    render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.mf4"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={noop}
+        onCancel={noop}
+        format="MDF"
+        signalCount={3}
+      />,
+    );
+    // Messages start off, so the channel -> bus mapping is inert.
+    expect((screen.getByLabelText("channel 0 bus") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByLabelText(/^CAN messages/));
+    expect((screen.getByLabelText("channel 0 bus") as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(screen.getByLabelText(/^Signals/));
+    fireEvent.click(screen.getByLabelText(/^CAN messages/));
+    expect((screen.getByRole("button", { name: "Open" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
+  it("leaves a BLF open with no content checkboxes at all", () => {
+    const onConfirm = vi.fn();
+    render(
+      <BlfChannelMapModal
+        blfPath="/tmp/cap.blf"
+        scan={scanFixture()}
+        buses={buses}
+        onConfirm={onConfirm}
+        onCancel={noop}
+      />,
+    );
+    expect(screen.queryByLabelText(/^Signals/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^CAN messages/)).not.toBeInTheDocument();
+    expect((screen.getByLabelText("channel 0 bus") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(onConfirm).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      signals: false,
+      messages: true,
+    });
   });
 });

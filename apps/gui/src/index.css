@@ -1183,6 +1183,19 @@ header {
   margin: 0 0 0.6rem;
 }
 
+.blf-map-contents {
+  display: flex;
+  gap: 1.2rem;
+  margin-bottom: 0.8rem;
+}
+
+.blf-map-content {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text-primary);
+}
+
 .blf-map-range {
   display: flex;
   gap: 1rem;

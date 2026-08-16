@@ -105,7 +105,11 @@ import { ServerTrustDialogs } from "./ServerTrustDialog";
 import { ClearColorsConfirmModal } from "./ClearColorsConfirmModal";
 import { useThemeName } from "./theme";
 import { SplashOverlay, useSplashVisible } from "./SplashOverlay";
-import { BlfChannelMapModal, type ImportRange } from "./BlfChannelMapModal";
+import {
+  BlfChannelMapModal,
+  type ImportContents,
+  type ImportRange,
+} from "./BlfChannelMapModal";
 import {
   ElementRegistryContext,
   type ElementRegistry,
@@ -1218,7 +1222,7 @@ export function App() {
   // is keyed by path + channel count alone, so it needs no MDF-specific
   // counterpart and is reused as is.
   const handleMdfMapConfirm = useCallback(
-    async (choices: Record<number, string>, range: ImportRange) => {
+    async (choices: Record<number, string>, range: ImportRange, contents: ImportContents) => {
       if (!pendingMdf) return;
       const { mdfPath, scan } = pendingMdf;
       setPendingMdf(null);
@@ -1243,6 +1247,8 @@ export function App() {
           channelBusMapping,
           startNs: range.startNs,
           endNs: range.endNs,
+          importSignals: contents.signals,
+          importMessages: contents.messages,
         });
         setState({ kind: "loading", result });
         rememberRecentCapture(mdfPath);
@@ -3233,8 +3239,8 @@ export function App() {
           onConfirm={handleMdfMapConfirm}
           onCancel={() => setPendingMdf(null)}
           format="MDF"
-          skippedDecodedGroups={pendingMdf.scan.skipped_decoded_groups}
-          signalGroupCount={pendingMdf.scan.signal_group_count}
+          decodedMessageGroups={pendingMdf.scan.decoded_message_groups}
+          signalCount={pendingMdf.scan.signal_count}
         />
       )}
       <ServerTrustDialogs />

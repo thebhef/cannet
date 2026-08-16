@@ -59,10 +59,34 @@ fn census_agrees_with_the_decoded_frames() {
 #[test]
 fn census_reports_the_files_other_content() {
     let scan = scan_mdf(fixture_path("sorted_finalized_mixed")).unwrap();
-    assert_eq!(scan.signal_group_names, vec![Some("Analog".to_owned())]);
-    assert!(scan.skipped_decoded_groups.is_empty());
+    let names: Vec<_> = scan.signal_groups.iter().map(|g| g.name.clone()).collect();
+    assert_eq!(names, vec![Some("Analog".to_owned())]);
+    assert!(scan
+        .signal_groups
+        .iter()
+        .all(|g| g.decoded_source.is_none()));
+    assert!(scan.decoded_message_groups.is_empty());
 
+    // A decoded group is signal content too, so the census counts it —
+    // and says which message it came from.
     let scan = scan_mdf(fixture_path("sorted_finalized_dbcdecoded")).unwrap();
-    assert!(scan.signal_group_names.is_empty());
-    assert_eq!(scan.skipped_decoded_groups.len(), 2);
+    assert_eq!(scan.signal_groups.len(), 2);
+    assert!(scan
+        .signal_groups
+        .iter()
+        .all(|g| g.decoded_source.is_some()));
+    assert_eq!(
+        scan.signal_groups
+            .iter()
+            .map(|g| g.signal_count)
+            .sum::<usize>(),
+        3,
+        "two signals on 0x100, one on 0x1a5"
+    );
+    assert_eq!(scan.decoded_message_groups.len(), 2);
+
+    // A pure logger file holds no signal content at all.
+    let scan = scan_mdf(fixture_path("sorted_finalized_classic")).unwrap();
+    assert!(scan.signal_groups.is_empty());
+    assert!(scan.decoded_message_groups.is_empty());
 }
