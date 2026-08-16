@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
 // The one disclosure-toggle implementation every collapsible section,
-// row, and menu trigger in the GUI shares (task 63 item 1) — owns hit
-// area, ink, rotation, and `aria-expanded`. jsdom does no layout, so the
+// row, and menu trigger in the GUI shares — owns hit area, ink,
+// rotation, and `aria-expanded`. jsdom does no layout, so the
 // hit-area assertion reads the declared CSS as text rather than a
 // rendered box (the established idiom in this repo — see
 // `dockPanelScrolling.test.ts`), and the "click in the padding toggles"
@@ -34,14 +34,17 @@ describe("DisclosureToggle", () => {
     expect(toggle.tagName).toBe("BUTTON");
   });
 
-  it("the default hit area meets the WCAG 2.5.8 24x24 CSS px floor, with the ink smaller inside it", () => {
+  it("the default hit area meets the WCAG 2.5.8 24x24 CSS px floor, with the ink sized to fill it", () => {
     const box = declarations(".disclosure-toggle");
     expect(box).toMatch(/\bmin-width:\s*24px\b/);
     expect(box).toMatch(/\bmin-height:\s*24px\b/);
     const ink = declarations(".disclosure-toggle-glyph");
-    // 0.75rem ink (12px at the default root size) inside a 24px box —
-    // the hit area is real, the glyph just doesn't fill it.
-    expect(ink).toMatch(/\bfont-size:\s*0\.75rem\b/);
+    // One shared size for every site (owner ruling, 2026-08-14): the
+    // glyph fills the box rather than sitting small inside it. 1.1rem
+    // (17.6px at the default root size) reaches close to the 24px
+    // floor while still clearing the smallest compact row height
+    // (`dbcPanelViewport.ts`'s 20px `ROW_HEIGHT`) without clipping.
+    expect(ink).toMatch(/\bfont-size:\s*1\.1rem\b/);
   });
 
   it("the compact variant still reaches the 24px floor in width — only height gives it up, to the row it sits in", () => {

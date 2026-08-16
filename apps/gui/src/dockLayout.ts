@@ -12,8 +12,8 @@ export const TRACE_PANEL_COMPONENT = "trace";
 export const BY_ID_PANEL_COMPONENT = "by-id";
 export const PROJECT_PANEL_COMPONENT = "project";
 export const PLOT_PANEL_COMPONENT = "plot";
-/// The signal view panel (Task-20 latest-per-signal snapshot).
-/// Element-backed, like trace/plot.
+/// The signal view panel (latest-per-signal snapshot). Element-backed,
+/// like trace/plot.
 export const SIGNALS_PANEL_COMPONENT = "signals";
 export const TRANSMIT_PANEL_COMPONENT = "transmit";
 /// Spatial / wiring view onto the project state. Distinct

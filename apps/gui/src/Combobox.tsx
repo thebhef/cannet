@@ -1,6 +1,6 @@
 // The shared fzf-filtered combobox — the one select-like control the
-// GUI uses (task 32.8 convention: any new select/combobox is one of
-// these). Closed, it renders like a `<select>`: a button showing the
+// GUI uses (convention: any new select/combobox is one of these).
+// Closed, it renders like a `<select>`: a button showing the
 // current option's label, carrying the submitted value on `value`.
 // Open, it is a text input that filters the option list through `fzf`
 // (the matcher the Database panel / palette adopted), with arrow-key

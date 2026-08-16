@@ -230,7 +230,7 @@ describe("by-id fold persistence", () => {
   it("keeps the restored fold inside the scroll range", async () => {
     // The anchor/viewport math already sizes an expanded row; a fold
     // restored at mount has to reach it, or the rows below the reopened
-    // one are unreachable (task 48 item 5's defect, in another guise).
+    // one are unreachable (the same defect in another guise).
     vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(2 * ROW_HEIGHT);
     const { container } = renderPanel({ expanded: [gearBoxKey] });
     await waitForRows(container);

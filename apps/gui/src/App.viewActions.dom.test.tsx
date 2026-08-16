@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// View-action commands (Task-35 keys) against the REAL App: layout
-// undo/redo driven through actual Ctrl+Z / Ctrl+Y keydowns with panel
+// View-action commands against the REAL App: layout undo/redo (ADR
+// 0050) driven through actual Ctrl+Z / Ctrl+Y keydowns with panel
 // focus churn and window blur/focus in between, and middle-click
 // closing a tab. Tauri IPC mocked, dockview real.
 

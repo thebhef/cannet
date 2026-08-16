@@ -1,7 +1,7 @@
 /**
  * `PlotArea` — one uPlot canvas plus its side signal panel: the render
- * unit a `PlotPanel` stacks. Split out of PlotPanel.tsx (task 0030) at
- * the natural component seam; the two share the panel↔area interface
+ * unit a `PlotPanel` stacks. Split out of PlotPanel.tsx at the natural
+ * component seam; the two share the panel↔area interface
  * (`PlotAreaProps`, below) and the config model in `plotPanelConfig.ts`.
  *
  * This file owns the imperative uPlot lifecycle (construct / resample /
@@ -2256,7 +2256,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             for (const ev of lr.events) {
               vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }
-            // Task 15 / ADR 0026: the X cursor's time label appears on
+            // ADR 0026: the X cursor's time label appears on
             // every axis (it used to render only on the last area, so
             // adding a plot area visually hid the labels). Format as
             // "<letter> <time>" so a glance at any axis tells you both

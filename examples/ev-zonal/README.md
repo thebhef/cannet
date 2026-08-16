@@ -2,7 +2,7 @@
 
 A deliberately large, realistically named two-DBC fixture for
 exercising the DBC view (search ranking, tree scaling, per-ECU
-grouping) at production-database size. It is the task-33 scaling
+grouping) at production-database size. It is the DBC-scaling
 workload; `examples/ev-demo` stays the performance-baseline project
 and is intentionally untouched by this fixture.
 

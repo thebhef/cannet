@@ -960,8 +960,8 @@ describe("DatabasePanel", () => {
   it("bounds the rendered rows at ev-zonal scale: collapsed by default, match-set-bounded when filtering", async () => {
     // Synthetic content at the ev-zonal fixture's scale: 150
     // messages across 5 ECUs, one message carrying 600 multiplexed
-    // signals. The responsiveness rule (task 33): the unfiltered
-    // tree renders no signal rows (messages stay collapsed); a
+    // signals. The responsiveness rule: the unfiltered tree renders
+    // no signal rows (messages stay collapsed); a
     // narrow filter renders only the match and its ancestor path.
     await mockContent(bigTree(150));
     renderPanel();
@@ -976,8 +976,8 @@ describe("DatabasePanel", () => {
   });
 
   it("renders only a viewport-bounded slice of the row list, however large the tree", async () => {
-    // Task 41's exit criterion: DOM row count tracks the viewport, not
-    // the DBC size. 2,000 messages (+ bus + dbc + 5 ECU rows) is a
+    // DOM row count tracks the viewport, not the DBC size. 2,000
+    // messages (+ bus + dbc + 5 ECU rows) is a
     // 2,007-row list; the DOM holds a screenful.
     await mockContent(bigTree(2000));
     renderPanel();
@@ -988,9 +988,9 @@ describe("DatabasePanel", () => {
   });
 
   it("re-renders only the rows whose props changed when the keyboard cursor moves", async () => {
-    // Task 41's memoisation criterion. Moving the cursor one row down
-    // changes the `active` prop of exactly two rows; without
-    // `memo` on `DbcRow` every row in the window re-executes.
+    // Moving the cursor one row down changes the `active` prop of
+    // exactly two rows; without `memo` on `DbcRow` every row in the
+    // window re-executes.
     await mockContent(bigTree(150));
     renderPanel();
     await screen.findByText("PackMessage001");
@@ -1024,8 +1024,8 @@ describe("DatabasePanel", () => {
   });
 
   it("builds the search index on the first query and reuses it after", async () => {
-    // Task 41: the haystack index (one string per message and signal,
-    // value tables inlined) and fzf's preprocessing of it are only worth
+    // The haystack index (one string per message and signal, value
+    // tables inlined) and fzf's preprocessing of it are only worth
     // paying for once the user searches — and only once.
     await mockContent(bigTree(150));
     const builds = () => diagCounts().get("gridview.filterIndexBuild") ?? 0;

@@ -414,8 +414,8 @@ export function App() {
 
   // The dockview layout API, populated once `onReady` fires.
   const dockApiRef = useRef<DockviewApi | null>(null);
-  // View navigation history + layout undo/redo (Task-35 commands;
-  // pure state in `viewHistory.ts`). `applyingLayoutRef` marks a
+  // View navigation history + layout undo/redo (ADR 0050; pure state
+  // in `viewHistory.ts`). `applyingLayoutRef` marks a
   // programmatic `fromJSON` so the layout-change echo it fires isn't
   // recorded as an undo step. `layoutHistoryRef` stays `null` until
   // the initial restore/seed settles.

@@ -2,8 +2,8 @@
  * Plot-panel measurement UI: the toolbar's measurement-selection menu
  * and the bottom measurement strip (cursor A/B times, Δt/1/Δt, and the
  * per-trace value@A / value@B / Δ / min / max / mean over [A, B]). Split
- * out of PlotPanel.tsx (task 0030); the panel owns the cursor + series
- * state and passes it in.
+ * out of PlotPanel.tsx; the panel owns the cursor + series state and
+ * passes it in.
  */
 import { useState } from "react";
 

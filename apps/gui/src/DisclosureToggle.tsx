@@ -1,14 +1,14 @@
 import type { KeyboardEvent, MouseEvent, ReactNode } from "react";
 
 /// The one hit-area/ink/rotation/`aria-expanded` implementation every
-/// collapsible section, row, and menu trigger in the GUI shares (task
-/// 63 item 1). A too-small disclosure target had recurred at every
-/// site that grew one; this is the fix, not another one-off size bump.
+/// collapsible section, row, and menu trigger in the GUI shares. A
+/// too-small disclosure target had recurred at every site that grew
+/// one; this is the fix, not another one-off size bump.
 ///
-/// The default box meets the WCAG 2.5.8 24x24 CSS px target-size floor
-/// with ~12px ink centered inside it, so a roomy header gets a
-/// comfortably large target without the glyph itself growing.
-/// `compact` trades the floor's *height* for the row's own height,
+/// The default box meets the WCAG 2.5.8 24x24 CSS px target-size
+/// floor, with the ink sized to fill it uniformly rather than sitting
+/// small inside it. `compact` trades the floor's *height* for the
+/// row's own height,
 /// for sites where growing the row would bloat it (a fixed row height
 /// shared with a virtualizer, or a toolbar line whose siblings set the
 /// height) — width still reaches 24px there, since width costs nothing

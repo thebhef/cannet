@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// The virtualization scaffolding shared by TraceView and ByIdTable
-// (task 0030 item #16): observed viewport height drives the
+// The virtualization scaffolding shared by TraceView and ByIdTable:
+// observed viewport height drives the
 // rows-to-render / spacer height / anchor bounds derivation. Each
 // view's own DOM tests (TraceView.signals.dom.test.tsx,
 // ByIdTable.dom.test.tsx) already exercise the hook end to end; this

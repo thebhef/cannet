@@ -431,8 +431,8 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
 
   // The signal right-click menu (configure as counter/CRC) shares the
   // dismiss-on-outside-click + Escape hook with the other floating
-  // menus (task 0030 item #18) — previously this menu closed on *any*
-  // click (including Escape doing nothing at all).
+  // menus — previously this menu closed on *any* click (including
+  // Escape doing nothing at all).
   it("opens the signal context menu on right-click and dismisses on Escape", async () => {
     VIEW = sampleView();
     renderPanel("/tmp/sim.cannet_rbs");

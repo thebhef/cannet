@@ -9,7 +9,7 @@ import type uPlot from "uplot";
  * every plot area in the panel. `auto` defers to uPlot's density-aware
  * default, which only draws points when there's room between samples;
  * `off` forces no points; `on` forces points always (thinned — see
- * [`showPointsToUplot`]). See task 15 / ADR 0026. */
+ * [`showPointsToUplot`]). See ADR 0026. */
 export type ShowPointsMode = "auto" | "off" | "on";
 
 /** Parse a persisted value back to the tri-state, defaulting to `auto`. */

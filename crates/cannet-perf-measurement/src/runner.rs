@@ -166,7 +166,7 @@ impl IngestRecorder {
 /// *opened* against an already-large buffer pays one full scan to
 /// establish its baseline; that one-off is not the steady-state
 /// contention this models. The positional page fetch on scroll / follow
-/// live remains O(buffer) until Task 18's filter index.)
+/// live remains O(buffer) until it gains its own filter index.)
 ///
 /// `hz <= 0` runs scans back to back; a positive value paces to that rate.
 pub fn scan_loop(

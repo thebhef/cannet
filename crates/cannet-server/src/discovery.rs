@@ -46,7 +46,7 @@ impl Advertisement {
     /// teardown is complete.
     ///
     /// RFC 6762 §10.1's goodbye/TTL=1 caching floor measured ~1 s in
-    /// the Task 43 phase-1 spike; a caller that exits the process the
+    /// this crate's mDNS spike; a caller that exits the process the
     /// instant `ServiceDaemon::shutdown()` returns races that window
     /// and can lose the goodbye entirely; awaiting the receiver this
     /// returns waits for the daemon thread's own completion signal,
@@ -139,7 +139,7 @@ mod tests {
     /// permitting multicast loopback, so it is excluded from the
     /// default suite. Run explicitly with
     /// `cargo test -p cannet-server --lib -- --ignored register_and_browse`.
-    /// The Task 43 phase-1 spike exercised this same-host only — it is
+    /// This crate's mDNS spike exercised this same-host only — it is
     /// not evidence of cross-machine reachability, which additionally
     /// needs an inbound UDP 5353 firewall allow (see the README).
     #[tokio::test]

@@ -1,5 +1,5 @@
-//! Regression guard for the filtered-scan contention offender (Task 17
-//! Slice 2): with a filtered chronological view open, per-bus ingest FPS
+//! Regression guard for the filtered-scan contention offender: with a
+//! filtered chronological view open, per-bus ingest FPS
 //! must stay flat as the buffer grows past ~200k. The diagnosed bug — a
 //! scrollbar match-count refresh that re-scanned the whole buffer ~8×/s
 //! under the append mutex — drove `fps_retention` (second-half ÷
