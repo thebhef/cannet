@@ -145,3 +145,150 @@ within one session" rule), at baseline scenario length.
   hover-photograph step changed one harness file and nothing else.
 - No perf-interact interval, no capture timer, and no memory-sampler
   construction without their flags (A3, A4, A5).
+
+### Phase 1 — the screenshot-scenario empty-plot flake, attributed (2026-08-15)
+
+Carried in from task 0072's blockers: the `extrapolation` scenario
+writes an empty `02-extrapolated-stretches` about one run in three —
+x axis 0–1 s, every side readout `— %` — across three binaries and both
+themes, correct on re-run. The recorded suspicion, explicitly untested,
+was that something after the "Loading trace…"-clear wait is not settled
+when **fit x axis** is pressed.
+
+**That suspicion is wrong.** The fit is a bystander.
+
+#### Observation
+
+A frame alone cannot say whether the *buffer* was empty too, so the
+harness was given a probe first (`65e27674`): after each shutter it
+reads back the app's own status line and the plot panel's text, and it
+taps `console.log` so the app's 1 Hz `[diag]` counters and gauges land
+in a `notes.txt` beside the PNGs. Then 31 runs of the scenario against a
+release build of `9eea717c` (`cargo build --release -p cannet-gui
+--features custom-protocol`, i.e. the frontend embedded), each ~27 s.
+
+The first reproduction (run 14, light theme) said this:
+
+- Status line at the shutter: `"Open a BLF log or connect to a server to
+  begin."` — the **frontend** has no capture. All four numeric readouts
+  `— %`; x axis 0.0000–1.0000 s, exactly the recorded symptom.
+- Host at the same moment (`cannet.log`): `trace_len=871 buffer_s=20.0`
+  — the **host store is full**. The import ran and finished
+  (`opened BLF …: 871 objects`, `frame source ended cleanly (871
+  frames)`, `Done: 871 frames`).
+- `pyramids=[live=0 …] pyr_depth=0` — the signal pyramids were wiped
+  and not rebuilt, where a healthy run of the same scenario logs
+  `pyramids=[live=7 …] pyr_depth=4`.
+- No `trace-grew` and no `followwin.slide` in any tapped second; the
+  `count` / `ext` / `winw` gauges are stale readings from before the
+  import.
+- And the one line no healthy run has:
+  `INFO project: restored 871 frames from prior capture in 76 ms`,
+  logged at boot, **before** the scenario's import.
+
+#### Hypothesis
+
+*The flake needs a boot-time scratch restore: a launch that restores a
+prior session's capture and is then driven through a BLF import leaves
+the frontend's trace view empty, while the host store refills.*
+
+#### Experiment
+
+Every run's `cannet.log` block says whether that launch restored. Score
+all 31 runs on (restored at boot?) × (empty frame?). The hypothesis is
+falsified by a single empty frame in a launch that did not restore.
+
+#### Data
+
+| | empty frame | good frame |
+|---|---|---|
+| **restored at boot** | 7 | 6 |
+| **did not restore** | **0** | 18 |
+
+Runs 1–7 shared one profile (alternating restore / no restore); 8–11
+used four separate scratch project directories, so each was cold and
+none restored; 12–25 shared a second profile; 26–31 verified the guard.
+Not one of the 18 non-restoring launches produced an empty frame. On
+the first 25 runs alone (4/10 vs 0/15) the hypergeometric probability of
+all four empties landing in the restore group by chance is
+C(10,4)/C(25,4) ≈ 0.017; over all 31 it is C(13,7)/C(31,7) ≈ 0.00065.
+The last six runs then reproduced the recorded rate exactly — three
+empty in six, alternating with the restore.
+
+#### Conclusion
+
+The mechanism is **restore-then-import**, and it is a product defect,
+not a harness one:
+
+1. The harness ends a run by killing the process tree, leaving a
+   flushed scratch capture behind.
+2. The next launch restores it (`restore_scratch_capture`) — the
+   session comes up holding 871 frames.
+3. The scenario then drives an import of the same BLF. The host clears
+   and refills correctly (`trace_len=871`), but the frontend's trace
+   view is left reporting an empty capture, and the pyramids are wiped
+   without rebuild.
+4. **fit x axis** is then handed nothing to fit, and
+   `PlotPanel.tsx:879` falls back to `max = start + 1` — which, with
+   `sharedStart()` at 0, *is* the recorded 0–1 s axis.
+
+Step 4 is the only part the earlier suspicion saw. With the guard in
+place the run now fails at **step 01**, not 02: the frame was already of
+an empty app one step before the fit. `first_duplicate` never caught it
+because 01 and 02 differ — by exactly the axis the fit collapsed.
+
+The alternation is the reason the rate looks like "about a third": a
+launch that restores and then imports leaves the scratch in a state the
+*next* launch will not restore, so restores land on every other run, and
+a fraction of those go wrong.
+
+#### For phase 2 / the owner
+
+- **The product defect is not fixed here** — a product-binary change is
+  phase 2's, and this one is not small: an import on top of a restored
+  capture leaves the view empty. It is reachable by a user (reopen the
+  app, then import a trace), not only by the harness. Recommended fix
+  shape: make the import path re-anchor the frontend's trace element the
+  same way a fresh session's does, and cover it with a test that
+  restores a capture and then imports over it.
+- **The harness guard landed** (`65e27674`, test-first): a scenario
+  given a capture now fails the run, naming the step, when the app
+  reports an empty buffer at the shutter. This is what phase 8 asked for
+  — "an eyeballed set catches it, an unattended gate would take it."
+- **The scenario cannot isolate its session buffer.** `--app-data-dir`
+  moves the *config* scope only (`persisted_json.rs:347-353`);
+  `resolve_project_dir` reads `app.path().app_cache_dir()` directly
+  (`lib.rs:246`), which the flag does not touch. So every screenshot and
+  perf run shares one capture scratch with the operator's own sessions,
+  and inherits whatever the previous run left in it. That is the
+  harness-side root of the nondeterminism, and it is a real gap against
+  ADR 0031's isolation claim.
+
+## Blockers / side effects
+
+- **`--app-data-dir` does not isolate the capture scratch.** As above:
+  the flag redirects `app_config_dir()` but not `app_cache_dir()`, so a
+  measurement or screenshot run writes its trace segments, filter index,
+  pyramids and notes into the operator's real
+  `%LOCALAPPDATA%\dev.cannet.app\cache\<hash>`, and reads back whatever
+  a previous run left there. ADR 0031 says a run "must not write the
+  operator's state" and names `--app-data-dir` as "the whole isolation
+  mechanism"; the capture scratch is outside it. Not fixed here (it is a
+  product-binary change). It is also why the flake above is reachable at
+  all.
+- **The plot re-samples ~30×/s over a stopped, fully imported
+  capture.** Read off the console tap in every healthy run:
+  `plotarea.resample` 28–30/s and `followwin.slide` 14–16/s, held for
+  the whole run, on an 871-frame BLF that finished importing seconds
+  earlier and is not growing. The trace element still reads `RUNNING`
+  after a file import ends. Noticed while instrumenting, not chased —
+  but it is unused cost of exactly the kind this task exists to find,
+  and it is on the render hot path.
+- **The release binary in `target/` was not a `tauri build`.** The
+  first reproduction attempt spent a 90 s boot timeout on it: a plain
+  `cargo build --release -p cannet-gui` has no embedded frontend, comes
+  up on the dev-server error page, and its health line says so
+  (`jsheap_mb=? ui_last_ms=?` — React never mounted). Worth knowing
+  before the next screenshot run: `--features custom-protocol` is what
+  embeds the frontend, and is much faster than the full `tauri build`
+  because it skips the sidecar freeze and server staging.
