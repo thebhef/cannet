@@ -954,9 +954,15 @@ the render tier), so it's fed in: `cannet-perf-measurement baseline
 fresh run against them. `baseline` writes a dated
 `<date>-<hash>[-dirty].json` snapshot; `check` compares against the
 canonical `docs/performance-measurements/baseline.json` — promote a
-snapshot to the reference by copying it there. Frontend render reports
-live under `docs/performance-measurements/frontend/`, kept apart from the
-host baseline they feed.
+snapshot to the reference by copying it there. During development,
+frontend render reports live under
+`docs/performance-measurements/frontend/`, kept apart from the host
+baseline they feed — but they are working artifacts, not records: when
+a development campaign closes, its final gate is captured back into
+`baseline.json` and the accumulated dated reports are deleted, so the
+directory always holds one baseline describing what ships and the next
+campaign gets a clean A/B reference. (Per-gate numbers survive in the
+task files' status logs in git history.)
 
 **Hand every run in the gate to one `check` invocation** — repeat
 `--frontend-report` once per run, rather than checking each report on

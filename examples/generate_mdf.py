@@ -9,7 +9,8 @@ plus the two things an MDF carries that a BLF cannot:
   cannet imports as session notes;
 * **message-independent signal channel groups** — named value series
   with units and no bus message behind them, which cannet imports as
-  file-backed signals.
+  file-backed signals. One of them is *coded*: its conversion block is
+  a value→text table, so its import carries the labels of an enum lane.
 
 Deterministic: the frames come from the committed BLF, and the extra
 signal series are seeded, so the output is byte-identical across runs.
@@ -125,6 +126,19 @@ def messageless_signals(rnd: random.Random) -> list[tuple[str, list[Signal]]]:
         values = np.array([fn(i * period) for i in range(n)], dtype="f8")
         return Signal(values, t, name=name, unit=unit)
 
+    def coded_series(name, period, fn, table):
+        """A coded channel: raw integer samples plus the value→text
+        conversion (`##CC` type 7, TABX) that names each code — what
+        cannet renders as a file-backed enum lane."""
+        n = int(DURATION_S / period)
+        t = np.array([i * period for i in range(n)], dtype="f8")
+        values = np.array([fn(i * period) for i in range(n)], dtype="u1")
+        conversion = {}
+        for i, (code, label) in enumerate(table):
+            conversion[f"val_{i}"] = code
+            conversion[f"text_{i}"] = label
+        return Signal(values, t, name=name, conversion=conversion)
+
     return [
         (
             "Ambient",
@@ -155,6 +169,14 @@ def messageless_signals(rnd: random.Random) -> list[tuple[str, list[Signal]]]:
                     "kW",
                     0.500,
                     lambda t: max(0.0, 7.4 * math.sin(2 * math.pi * t / 20.0)),
+                ),
+                coded_series(
+                    "ContactorState",
+                    0.500,
+                    # The charge contactor's walk: open, precharge the DC
+                    # link, close for the bulk of the session, reopen.
+                    lambda t: 0 if t < 2.0 else 1 if t < 3.0 else 2 if t < 8.0 else 0,
+                    [(0, "Open"), (1, "Precharge"), (2, "Closed")],
                 ),
             ],
         ),

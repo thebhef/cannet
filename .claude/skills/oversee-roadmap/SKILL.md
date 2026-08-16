@@ -35,6 +35,24 @@ are typical shapes). Sequence phases so each builds on the last;
 investigation phases (root-causing an observation) come before the
 features that depend on their verdict.
 
+**Budget wall clock at grooming.** Any experiment or verification
+whose elapsed time is measured in hours (long live captures,
+length-N gate sets at scale) must be named during grooming with a
+duration estimate, so the owner can schedule it or restructure the
+phase — never discovered mid-phase from a status log. Before
+accepting an hours-long design, look for the cheaper equivalent:
+answer the question at direct-API scale first (build the store or
+cache in-process and measure — minutes, not hours), and for
+wide-window / long-capture regimes use the concrete substitution
+this repo supports: **generate a BLF spanning hours of timestamps
+and import it** — the data's time span substitutes for wall clock,
+so import + Fit Data reproduces the regime in minutes. Where the
+live edge matters, seed with the generated file and attach the
+virtual-bus rig for a short live tail on top. Only measurements of
+real-time currency (how far an edge lags wall clock) genuinely
+require elapsed time; spend hours-long live runs on those alone,
+scheduled, as confirmation.
+
 ## 3. Delegation contract
 
 Each phase is delegated to a **new subagent**. Choose the model per
