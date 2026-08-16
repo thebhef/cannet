@@ -9,6 +9,9 @@ use crate::bitwalk;
 use crate::model::{
     canid_to_message_id, is_enum, value_is_raw_integer, Database, MessageEntry, SignalEntry,
 };
+use crate::view_builders::{
+    float_kind_from_extended, signal_mux_from_indicator, FloatKind, SignalMux,
+};
 
 /// Extract `size` bits from `data` starting at `start_bit`, interpreting
 /// the layout per `byte_order`. Returns `None` if any required bit lies
@@ -66,6 +69,82 @@ impl Database {
         let key = canid_to_message_id(id)?;
         let entry = self.messages.get(&key)?;
         Some(decode_message(entry, data))
+    }
+
+    /// Every **decode spec** this database offers for `signal_name` in
+    /// the message `id` addresses, in `SG_` declaration order — the
+    /// inputs [`decode_signal`] reads, and nothing else.
+    ///
+    /// This is the question "would this signal decode differently?"
+    /// asked without decoding: a consumer that caches decoded samples
+    /// can compare specs to tell an edit that changes its samples from
+    /// one that changes only how they are labelled or described. What is
+    /// deliberately *absent* is everything `decode_signal` never reads —
+    /// the `VAL_` table (labels are resolved where they are displayed),
+    /// the unit, the comment, the declared range, the `BO_` declared
+    /// length (bit extraction bounds-checks the payload it is given, not
+    /// the declaration), and every `BA_` attribute that isn't
+    /// `SIG_VALTYPE_` or a long-symbol rename.
+    ///
+    /// A **vector**, not an `Option`, for the two reasons resolution is
+    /// not a single lookup: a message may declare the same signal name
+    /// more than once (in different multiplexor arms), and
+    /// [`decode_message`] picks between them per payload. Empty when
+    /// this database has no such message, or the message has no such
+    /// signal — the caller then knows this database contributes nothing
+    /// to that signal's decode.
+    #[must_use]
+    pub fn signal_decode_specs(
+        &self,
+        id: cannet_core::CanId,
+        signal_name: &str,
+    ) -> Vec<SignalDecodeSpec> {
+        let Some(key) = canid_to_message_id(id) else {
+            return Vec::new();
+        };
+        let Some(entry) = self.messages.get(&key) else {
+            return Vec::new();
+        };
+        // The gate `decode_message` actually uses: the *first* signal
+        // declared `Multiplexor`. A `MultiplexorAndMultiplexedSignal`
+        // does not match that arm there, so it must not match here.
+        let gate = entry
+            .signals
+            .iter()
+            .find(|s| {
+                matches!(
+                    s.signal.multiplexer_indicator,
+                    MultiplexIndicator::Multiplexor
+                )
+            })
+            .map(|s| MuxGate {
+                start_bit: s.signal.start_bit,
+                size: s.signal.size,
+                big_endian: s.signal.byte_order == ByteOrder::BigEndian,
+            });
+        entry
+            .signals
+            .iter()
+            .filter(|s| s.signal.name == signal_name)
+            .map(|s| SignalDecodeSpec {
+                start_bit: s.signal.start_bit,
+                size: s.signal.size,
+                big_endian: s.signal.byte_order == ByteOrder::BigEndian,
+                signed: s.signal.value_type == ValueType::Signed,
+                factor: s.signal.factor,
+                offset: s.signal.offset,
+                float_kind: float_kind_from_extended(s.extended_type),
+                mux: signal_mux_from_indicator(s.signal.multiplexer_indicator),
+                mux_gate: match s.signal.multiplexer_indicator {
+                    MultiplexIndicator::MultiplexedSignal(_)
+                    | MultiplexIndicator::MultiplexorAndMultiplexedSignal(_) => gate,
+                    // A plain signal and the multiplexor itself are in
+                    // every frame of the message whatever the gate says,
+                    // so the gate is not an input to their decode.
+                    MultiplexIndicator::Plain | MultiplexIndicator::Multiplexor => None,
+                },
+            })
+            .collect()
     }
 
     /// Decode just the multiplexor-selector value from `(id, data)` —
@@ -184,6 +263,57 @@ fn decode_signal<'a>(entry: &'a SignalEntry, data: &[u8]) -> Option<DecodedSigna
         display_hex: entry.display_hex,
         label,
     })
+}
+
+/// What one signal's decode reads, and nothing else — the output of
+/// [`Database::signal_decode_specs`].
+///
+/// Every field here appears in [`decode_signal`]: the four that place and
+/// interpret the bits (`start_bit`, `size`, `big_endian`, `signed`), the
+/// two that scale them (`factor`, `offset`), the `SIG_VALTYPE_` override
+/// that replaces "scaled integer" with an IEEE bit pattern
+/// (`float_kind`), and the two that decide whether the signal is in a
+/// given frame at all (`mux`, `mux_gate`). Two signals with equal specs
+/// decode any payload to the same physical value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignalDecodeSpec {
+    /// `SG_` start bit, in the DBC's own bit numbering (see
+    /// [`bitwalk::walk`]).
+    pub start_bit: u64,
+    /// Signal width in bits.
+    pub size: u64,
+    /// `@0` (big-endian / Motorola) rather than `@1`.
+    pub big_endian: bool,
+    /// `-` (two's-complement) rather than `+`.
+    pub signed: bool,
+    pub factor: f64,
+    pub offset: f64,
+    /// `SIG_VALTYPE_` override. Carried verbatim as declared: it only
+    /// takes effect when it agrees with `size` (32 / 64), and `size` is
+    /// right here to say whether it does.
+    pub float_kind: FloatKind,
+    /// The signal's own multiplexor indicator and, for a multiplexed
+    /// signal, the selector value that admits it.
+    pub mux: SignalMux,
+    /// The message's multiplexor gate — present only when `mux` makes
+    /// this signal conditional on it.
+    pub mux_gate: Option<MuxGate>,
+}
+
+/// The bits a multiplexed signal's gate is read from: what its owning
+/// message's multiplexor signal extracts, which is what
+/// [`decode_message`] compares the signal's selector against.
+///
+/// Only the three extraction inputs, because the comparison is against
+/// the multiplexor's `raw_unsigned` — its scaling, sign and value table
+/// change nothing about which arm a frame carries. Its *name* is absent
+/// for the same reason: the gate is found by indicator, not by name, so
+/// renaming a multiplexor re-decodes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MuxGate {
+    pub start_bit: u64,
+    pub size: u64,
+    pub big_endian: bool,
 }
 
 /// A decoded CAN message: the message's name, its declared and observed

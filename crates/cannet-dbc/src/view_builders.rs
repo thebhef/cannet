@@ -20,7 +20,7 @@ use crate::model::{
 /// Map can-dbc's `MultiplexIndicator` to this crate's [`SignalMux`].
 /// Shared by [`Database::describe_message`] and [`Database::dbc_content`],
 /// which build different descriptor shapes over the same mux facts.
-fn signal_mux_from_indicator(indicator: MultiplexIndicator) -> SignalMux {
+pub(crate) fn signal_mux_from_indicator(indicator: MultiplexIndicator) -> SignalMux {
     match indicator {
         MultiplexIndicator::Plain => SignalMux::Plain,
         MultiplexIndicator::Multiplexor => SignalMux::Multiplexor,
@@ -33,7 +33,7 @@ fn signal_mux_from_indicator(indicator: MultiplexIndicator) -> SignalMux {
 
 /// Map can-dbc's `SignalExtendedValueType` to this crate's [`FloatKind`].
 /// Shared by the two descriptor builders (see [`signal_mux_from_indicator`]).
-fn float_kind_from_extended(extended: SignalExtendedValueType) -> FloatKind {
+pub(crate) fn float_kind_from_extended(extended: SignalExtendedValueType) -> FloatKind {
     match extended {
         SignalExtendedValueType::IEEEfloat32Bit => FloatKind::Float32,
         SignalExtendedValueType::IEEEdouble64bit => FloatKind::Float64,

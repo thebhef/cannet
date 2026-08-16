@@ -1612,3 +1612,83 @@ fn radix_hex_on_a_signal_that_is_not_a_raw_field_warns() {
     assert!(!d("Volts").display_hex);
     assert!(!d("Mode").display_hex);
 }
+
+#[test]
+fn a_signals_decode_spec_is_every_input_its_decode_reads() {
+    // The spec exists so a consumer can fingerprint "would this decode
+    // differently?" without re-deriving the decode. It must therefore
+    // mirror `decode_signal` field for field.
+    let db = Database::parse(SAMPLE_DBC).unwrap();
+    let specs = |raw: u32, extended: bool, name: &str| {
+        let id = if extended {
+            CanId::extended(raw).unwrap()
+        } else {
+            CanId::standard(raw).unwrap()
+        };
+        db.signal_decode_specs(id, name)
+    };
+    let one = |raw: u32, extended: bool, name: &str| {
+        let mut v = specs(raw, extended, name);
+        assert_eq!(v.len(), 1, "{name} is declared once");
+        v.pop().unwrap()
+    };
+
+    // `SG_ EngineSpeed : 0|16@1+ (0.25,0)` — layout, sign, scaling.
+    let engine_speed = one(256, false, "EngineSpeed");
+    assert_eq!(engine_speed.start_bit, 0);
+    assert_eq!(engine_speed.size, 16);
+    assert!(!engine_speed.big_endian);
+    assert!(!engine_speed.signed);
+    assert!((engine_speed.factor - 0.25).abs() < f64::EPSILON);
+    assert!((engine_speed.offset - 0.0).abs() < f64::EPSILON);
+    assert_eq!(engine_speed.float_kind, FloatKind::Integer);
+    assert_eq!(engine_speed.mux, SignalMux::Plain);
+    assert_eq!(engine_speed.mux_gate, None);
+
+    // `SG_ BeSigned : 23|16@0-` — big-endian and signed both land.
+    let be_signed = one(257, false, "BeSigned");
+    assert_eq!(be_signed.start_bit, 23);
+    assert!(be_signed.big_endian);
+    assert!(be_signed.signed);
+
+    // `SIG_VALTYPE_ 513 Lat : 1` — the float override is an input.
+    assert_eq!(one(513, false, "Lat").float_kind, FloatKind::Float32);
+    assert_eq!(one(513, false, "Alt").float_kind, FloatKind::Integer);
+
+    // An extended id is a different message from the same raw number.
+    // `BO_ 2566849794` is the 31-bit-flagged form of an extended id;
+    // the lookup masks it to 29 bits exactly as a frame's id arrives.
+    let ext_declared: u32 = 2_566_849_794;
+    assert_eq!(one(ext_declared & 0x1FFF_FFFF, true, "ExtSig").size, 8);
+    assert!(
+        specs(256, true, "EngineSpeed").is_empty(),
+        "the same raw number as an extended id is a different message"
+    );
+
+    // Mux: the indicator, its selector, and — for a gated signal — the
+    // bits the gate itself is read from (`decode_message` compares the
+    // multiplexor's `raw_unsigned`, so only its extraction matters).
+    let mode0 = one(512, false, "Mode0Field");
+    assert_eq!(mode0.mux, SignalMux::Multiplexed { selector: 0 });
+    assert_eq!(
+        mode0.mux_gate,
+        Some(MuxGate {
+            start_bit: 0,
+            size: 8,
+            big_endian: false,
+        })
+    );
+    assert_eq!(
+        one(512, false, "Mode1Field").mux,
+        SignalMux::Multiplexed { selector: 1 }
+    );
+    // The multiplexor and a plain signal are not gated by anything.
+    assert_eq!(one(512, false, "Mux").mux, SignalMux::Multiplexor);
+    assert_eq!(one(512, false, "Mux").mux_gate, None);
+    assert_eq!(one(512, false, "Always").mux, SignalMux::Plain);
+    assert_eq!(one(512, false, "Always").mux_gate, None);
+
+    // Nothing to say about a message or a name this database lacks.
+    assert!(specs(256, false, "NotASignal").is_empty());
+    assert!(specs(999, false, "EngineSpeed").is_empty());
+}
