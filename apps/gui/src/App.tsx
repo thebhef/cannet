@@ -183,6 +183,7 @@ import {
   diagCount,
   diagGauge,
   endDiagCapture,
+  setDiagEnabled,
   startDiagReporter,
 } from "./diag"; // DIAG
 import {
@@ -292,7 +293,25 @@ export function App() {
   // Dockview ships two of them, so every light-background theme takes
   // the light one.
   const dockTheme = useThemeName() === "dark" ? themeAbyss : themeLight;
-  useEffect(() => startDiagReporter(), []); // DIAG
+  // DIAG. The reporter is unconditional — it carries the host's
+  // UI-liveness heartbeat — but the diagnostic machinery it feeds is
+  // armed only when the launch asked for it (`--diag`, implied by the
+  // perf-capture flags; see `diag::diag_enabled_from_args`).
+  useEffect(() => {
+    const stop = startDiagReporter();
+    let cancelled = false;
+    void invoke<boolean>("diag_enabled")
+      .then((on) => {
+        if (!cancelled && on) setDiagEnabled(true);
+      })
+      .catch(() => {
+        /* no host (tests, dev preview) — stay off */
+      });
+    return () => {
+      cancelled = true;
+      stop();
+    };
+  }, []);
   const [count, setCount] = useState(0);
   // Windowed-ring low-water mark from `trace-grew` (ADR 0002 DS-8): the
   // chronological window clamps its start up to this so truncated rows below

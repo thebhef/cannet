@@ -1,7 +1,7 @@
-// Frontend diagnostic counters. Call sites tagged `// DIAG` across
-// the frontend bump named counters; a 1 Hz reporter logs the
-// per-second delta of every counter to the devtools console, plus two
-// saturation measures:
+// Frontend diagnostic counters, **off unless a launch asks for them**.
+// Call sites tagged `// DIAG` across the frontend bump named counters; a
+// 1 Hz reporter logs the per-second delta of every counter to the
+// devtools console, plus two saturation measures:
 //
 // - `lag`: how late the 1-second interval fired. A healthy loop logs
 //   lag≈0; a flooded loop can't run timers on time, so lag explodes.
@@ -14,12 +14,48 @@
 //
 // Built for (and proven by) the rename-while-streaming lockup hunt —
 // it identified a self-scheduling render loop from an impure
-// `setRegistry` updater — and kept as a standing dev aid: the
-// counters are cheap (a Map write per event), and the next "the GUI
-// feels wedged" report starts from this console stream instead of
+// `setRegistry` updater — and kept as a standing dev aid: the next "the
+// GUI feels wedged" report starts from this console stream instead of
 // from scratch.
+//
+// Cheap is not the same as free, and all of this is measurement
+// equipment shipping in the product binary: a Map read-modify-write on
+// every render, a burst logger that clones and serializes that Map from
+// inside `diagCount`, a `longtask` observer, and a console line a
+// second. So it is armed by the host — `--diag`, which the perf-capture
+// flags imply (see `diag::diag_enabled_from_args`) — and a launch that
+// didn't ask registers, schedules and installs none of it. What stays
+// unconditional is the 1 Hz reporter's *heartbeat*: the host reads the
+// arrival of `report_js_heap` as evidence the renderer's main thread is
+// still turning, so that beat is a product feature, not instrumentation.
 
 import { invoke } from "@tauri-apps/api/core";
+
+// Armed state for everything above. Off until the host says otherwise.
+let enabled = false;
+
+/// Whether the diagnostic machinery is armed.
+export function isDiagEnabled(): boolean {
+  return enabled;
+}
+
+/// Arm (or disarm) the diagnostic machinery. Arming registers the
+/// `longtask` observer and installs the console capture entry point;
+/// disarming takes both back down. Idempotent — the boot path and a
+/// manually started capture may both call it.
+export function setDiagEnabled(on: boolean): void {
+  if (on === enabled) return;
+  enabled = on;
+  if (on) {
+    armLongTasks();
+    if (typeof window !== "undefined") {
+      window.__cannetPerf = { begin: beginDiagCapture, end: endDiagCapture };
+    }
+  } else {
+    disarmLongTasks();
+    if (typeof window !== "undefined") delete window.__cannetPerf;
+  }
+}
 
 const counts = new Map<string, number>();
 
@@ -31,6 +67,7 @@ const counts = new Map<string, number>();
 const gauges = new Map<string, number>();
 
 export function diagGauge(key: string, value: number): void {
+  if (!enabled) return;
   gauges.set(key, value);
 }
 
@@ -39,6 +76,9 @@ export function diagGauge(key: string, value: number): void {
 // host fetch gets slower as the buffer grows. Passes the resolved value
 // (and any rejection) straight through, so it's drop-in around a call.
 export async function diagTime<T>(key: string, p: Promise<T>): Promise<T> {
+  // Disarmed, the wrapper is the promise it was handed — not even the
+  // two `performance.now()` reads.
+  if (!enabled) return p;
   const t0 = performance.now();
   try {
     return await p;
@@ -76,6 +116,7 @@ export function diagCounts(): ReadonlyMap<string, number> {
 }
 
 export function diagCount(key: string, n = 1): void {
+  if (!enabled) return;
   counts.set(key, (counts.get(key) ?? 0) + n);
   totalSinceBurst += n;
   if (totalSinceBurst >= BURST_EVERY) {
@@ -105,6 +146,10 @@ let captureStartMs = 0;
 /// Arm a host-side capture under `label` and start pushing per-second
 /// samples. Returns once the host has armed.
 export async function beginDiagCapture(label: string): Promise<void> {
+  // A capture whose counters were never armed reduces to a report of
+  // zeros that reads like real idle data — arm them rather than let that
+  // shape out (the launch flags normally have already).
+  setDiagEnabled(true);
   await invoke("diag_capture_start", { label });
   captureStartMs = performance.now();
   capturing = true;
@@ -132,49 +177,58 @@ declare global {
   }
 }
 
+// Long-task accounting, armed with the rest of the machinery: the
+// entries are consumed only by the 1 Hz line and the capture, so an
+// unarmed launch registers no observer at all.
+let longTaskMs = 0;
+let po: PerformanceObserver | undefined;
+
+function armLongTasks(): void {
+  if (po) return;
+  let supported = false;
+  try {
+    po = new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) longTaskMs += e.duration;
+    });
+    po.observe({ entryTypes: ["longtask"] });
+    supported = true;
+  } catch {
+    // longtask entries unsupported (e.g. jsdom) — lag still tells
+    // the story.
+    po = undefined;
+  }
+  // One-shot probe: a capture showing `longtask=0ms` is only meaningful
+  // if the observer is actually live. If this logs `false`, treat the
+  // longtask column as absent and read `lag` instead.
+  // eslint-disable-next-line no-console
+  console.log(`${logStamp()} [diag] longtask observer supported: ${supported}`);
+}
+
+function disarmLongTasks(): void {
+  po?.disconnect();
+  po = undefined;
+  longTaskMs = 0;
+}
+
 let running = false;
 
 /// Start the 1 Hz reporter (idempotent). Returns a stop function so
 /// the mounting effect can clean up (tests unmount App; a dangling
 /// interval would keep the runner alive).
+///
+/// The tick always sends the heartbeat; the counter delta, the gauge
+/// snapshot and the console line are built only while armed.
 export function startDiagReporter(): () => void {
   if (running) return () => {};
   running = true;
 
   let last = new Map<string, number>();
   let lastTick = performance.now();
-  let longTaskMs = 0;
-
-  let po: PerformanceObserver | undefined;
-  let longTaskSupported = false;
-  try {
-    po = new PerformanceObserver((list) => {
-      for (const e of list.getEntries()) longTaskMs += e.duration;
-    });
-    po.observe({ entryTypes: ["longtask"] });
-    longTaskSupported = true;
-  } catch {
-    // longtask entries unsupported (e.g. jsdom) — lag still tells
-    // the story.
-  }
-  // One-shot probe: a capture showing `longtask=0ms` is only meaningful
-  // if the observer is actually live. If this logs `false`, treat the
-  // longtask column as absent and read `lag` instead.
-  // eslint-disable-next-line no-console
-  console.log(`${logStamp()} [diag] longtask observer supported: ${longTaskSupported}`);
 
   const interval = window.setInterval(() => {
     const now = performance.now();
     const lag = now - lastTick - 1000;
     lastTick = now;
-    const delta: Record<string, number> = {};
-    for (const [k, v] of counts) {
-      const d = v - (last.get(k) ?? 0);
-      if (d !== 0) delta[k] = d;
-    }
-    last = new Map(counts);
-    const lt = longTaskMs;
-    longTaskMs = 0;
     // Report the renderer's JS-heap size to the host so the crash
     // health log can split a JS leak from native/GPU growth. Chromium-
     // only (`performance.memory`); absent elsewhere (jsdom in tests).
@@ -190,6 +244,18 @@ export function startDiagReporter(): () => void {
     const heap = typeof mem?.usedJSHeapSize === "number" ? mem.usedJSHeapSize : 0;
     if (heap > 0) diagGauge("jsheap_mb", heap / (1024 * 1024));
     void invoke("report_js_heap", { bytes: heap }).catch(() => {});
+    // Everything below is the diagnostic half of the tick: the delta
+    // build, the Map clone, two `JSON.stringify`s and the console line.
+    // Disarmed, the tick is the heartbeat and nothing else.
+    if (!enabled) return;
+    const delta: Record<string, number> = {};
+    for (const [k, v] of counts) {
+      const d = v - (last.get(k) ?? 0);
+      if (d !== 0) delta[k] = d;
+    }
+    last = new Map(counts);
+    const lt = longTaskMs;
+    longTaskMs = 0;
     const g: Record<string, number> = {};
     for (const [k, v] of gauges) g[k] = Math.round(v * 10) / 10;
     // eslint-disable-next-line no-console
@@ -211,12 +277,11 @@ export function startDiagReporter(): () => void {
     }
   }, 1000);
 
-  window.__cannetPerf = { begin: beginDiagCapture, end: endDiagCapture };
-
   return () => {
     window.clearInterval(interval);
-    po?.disconnect();
     running = false;
-    delete window.__cannetPerf;
+    // The machinery exists to feed this reporter, so it goes down with
+    // it — a remount re-arms from the host's answer.
+    setDiagEnabled(false);
   };
 }

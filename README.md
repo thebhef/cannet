@@ -890,12 +890,43 @@ report is written.
   does the zoom and then leaves the view alone, which is the scenario
   the scroll-smoothness gauges are meaningful in (a pan moves the window
   further in one step than a stall would). Omit it for a resting run.
+- `--diag` arms the frontend's diagnostic machinery: the per-event
+  render / resample counters and gauges, their burst logger, the
+  `longtask` observer, the once-a-second `[diag]` console line, and the
+  `window.__cannetPerf` capture entry point. **The four `--perf-*` flags
+  above imply it** — a capture's payload *is* those counters — so a
+  measurement run never needs it spelled out. Ask for it on its own to
+  watch the console stream during an interactive session, or to bracket
+  a capture by hand from the devtools console.
 
 Everything else the run needs is already in the saved project: the panel
 layout (the views under test), the bus bindings (the frame source), and
 the rest-of-bus simulation's run flag (the load, which resumes on
 connect). For a hardware-free run the project should bind to a virtual
 bus. See [ADR 0031](docs/adr/0031-gui-performance-automation-self-driving.md).
+
+**What is running when you don't ask.** Measurement machinery ships in
+the binary, so it is worth being able to see the whole of it in one
+place. Off unless a flag turns it on:
+
+| Machinery | Default | Turned on by |
+|---|---|---|
+| Frontend counters / gauges, burst logger, `longtask` observer, 1 Hz `[diag]` console line, `window.__cannetPerf` | off — nothing registered, nothing counted | `--diag`, or any `--perf-*` flag |
+| Render-tier capture (`RenderReport`), and with it the host's process-memory sampler and the `flush_ms` / `tx_late_ms` max-recorders | off — no capture armed, no sampler, no atomics written | `--perf-capture-secs`, or `window.__cannetPerf.begin()` |
+| Synthetic gesture driving | off — no interval scheduled | `--perf-interact` |
+| Project auto-open / auto-connect / auto-exit | off | `--project`, `--connect-on-start` |
+| User-scope redirection | off — the real profile | `--app-data-dir` |
+| `tx-flush` / `tx-sched` dev-log lines (stderr only; they never reach the System Messages panel or `cannet.log`) | off — the default log filter excludes both targets, so the lines are never formatted | `RUST_LOG=tx-flush=info,tx-sched=info` |
+| WebView DevTools / remote debugging port | closed — the release build has no inspector | the `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` environment variable, read by the WebView2 runtime (what the screenshot harness sets) |
+
+Always on, by design and with the cost accepted as a product budget:
+the **health sampler** (a system process-table refresh and a memory /
+buffer / cache summary into `cannet.log`, every 20 s — set
+`health_sample_ms` to `0` to switch it off), the **UI-liveness
+heartbeat** (one IPC call a second, whose *arrival* is the host's only
+evidence the renderer's main thread is still turning), and the
+background emitters that feed the live views (`trace-grew` at 100 ms,
+the trace flusher at 2 s, clock status at 1 s).
 
 **How to run one so the numbers mean something.** A capture measures
 the machine as much as the build, by more than the margin a gate

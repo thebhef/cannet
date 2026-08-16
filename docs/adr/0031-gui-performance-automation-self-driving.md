@@ -32,6 +32,11 @@ Two halves make this work:
   - `--app-data-dir <path>` — put this launch's whole user scope in a
     directory the run owns, so the measurement leaves the operator's
     state alone;
+  - `--diag` — arm the frontend's diagnostic machinery (the counters and
+    gauges, their burst logger, the `longtask` observer, the 1 Hz console
+    line, and the `window.__cannetPerf` capture entry point). The four
+    `--perf-*` flags imply it, since the capture's payload is those
+    counters;
   - `--perf-interact <script>` — drive synthetic gestures at the heavy
     views for the length of the run. The saved project supplies the
     *views*, but not what a user does to them, and most of the render
@@ -52,7 +57,20 @@ Two halves make this work:
   workload itself falls out of the saved project.
 
 The manual path stays available for ad-hoc use: an operator can bracket
-a capture from the devtools console without the flags.
+a capture from the devtools console — on a launch that armed the
+machinery, which is what `--diag` is for.
+
+**The measurement machinery is off unless a launch asks for it**, and
+"off" means not scheduled, not registered, not installed — not "running
+but doing nothing". This is a binding property of anything added to this
+surface, because all of it ships in the product binary: an unarmed
+launch counts nothing on a render path, registers no observer, logs no
+line, installs nothing on `window`, and writes none of the host-side
+capture atomics. The exceptions are named and budgeted product features
+rather than instrumentation — the health sampler, and the UI-liveness
+heartbeat that rides the reporter's timer (the host reads its arrival as
+proof the renderer's main thread is turning, so it cannot be conditional
+on a measurement flag).
 
 ## Why
 

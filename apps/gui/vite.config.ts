@@ -10,7 +10,12 @@ export default defineConfig(async () => ({
   // makes the stylesheet unreadable from a test. `dockPanelScrolling`
   // asserts declarations that no jsdom rendering test can reach (jsdom
   // does no layout), so let that one file through as text.
-  test: { css: { include: [/index\.css/] } },
+  test: {
+    css: { include: [/index\.css/] },
+    // The diagnostic counters ship off; the suite asserts against them,
+    // so it arms them (see the file).
+    setupFiles: ["./vitest.setup.ts"],
+  },
   server: {
     port: 5173,
     strictPort: true,
