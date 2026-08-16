@@ -29,7 +29,8 @@
 //!   then chains the previous hook so stderr/`tracing` still fire.
 //! - [`spawn_health_recorder`] emits a periodic System Message with
 //!   `{trace_len, buffer_seconds, fps, rss_mb, tree_mb, webview_mb (split
-//!   browser/renderer/gpu/other), jsheap_mb, sys_avail_mb, sys_total_mb}`
+//!   browser/renderer/gpu/other), jsheap_mb, ui_last_ms, sys_avail_mb,
+//!   sys_total_mb}`
 //!   — so it rides the normal logging pipe and lands in the same rolling
 //!   log. That trail is what survives an uncatchable death: `sys_avail_mb`
 //!   diving toward zero before a crash gap means system memory exhaustion
@@ -39,6 +40,13 @@
 //!   native, and the `gpu`/`renderer`/`browser` breakdown names which
 //!   process holds it. `jsheap_mb` is reported by the frontend through
 //!   [`record_js_heap`] (the host can't read another process's V8 heap).
+//!   `ui_last_ms` is the age of that same report, and it is what makes a
+//!   *frontend* hang visible at all: every other number here is the host
+//!   describing itself, so a wedged window leaves a trail of perfectly
+//!   healthy samples. The report is issued from the renderer's main
+//!   thread, so a stalled one stops beating; past
+//!   [`UI_HEARTBEAT_STALL_MS`] the recorder says so once at `warn`, and
+//!   once more when it comes back.
 //!
 //! Memory is read via the `sysinfo` crate (the workspace forbids
 //! `unsafe`, so a crate is needed to wrap the per-OS process APIs). The
@@ -110,10 +118,71 @@ static WRITE_LOCK: Mutex<()> = Mutex::new(());
 /// JS-heap leak from native/GPU growth.
 static LAST_JS_HEAP: AtomicU64 = AtomicU64::new(0);
 
-/// Record the frontend's latest JS-heap size (bytes). Called from the
+/// Unix-ms stamp of the newest frontend report, or `0` for "never". The
+/// frontend's 1 Hz JS-heap push runs on the renderer's *main thread*, so
+/// its arrival is proof that thread is still turning — which makes it a
+/// liveness heartbeat as well as a memory reading, at no extra channel.
+/// A wedged `WebView` cannot issue it, and the host has no other way to
+/// notice: a hung frontend leaves every host-side subsystem healthy and
+/// the log silent, which is precisely what made a reported hang
+/// undiagnosable from `cannet.log`.
+static LAST_UI_HEARTBEAT: AtomicU64 = AtomicU64::new(0);
+
+/// How long the heartbeat may be missing before the host calls the
+/// frontend stalled. Generously above the 1 Hz cadence: a few dropped
+/// seconds is ordinary jank on a loaded machine, and this number is
+/// supposed to name a window that has stopped responding.
+const UI_HEARTBEAT_STALL_MS: u64 = 5_000;
+
+/// Record the frontend's latest JS-heap size (bytes), and stamp the
+/// report as this process's UI liveness heartbeat. Called from the
 /// `report_js_heap` Tauri command.
+///
+/// `0` bytes is "no reading" (a `WebView` without `performance.memory`)
+/// and is not stored — but it still counts as a heartbeat, so the stall
+/// detector doesn't depend on the memory API being present.
 pub fn record_js_heap(bytes: u64) {
-    LAST_JS_HEAP.store(bytes, Ordering::Relaxed);
+    if bytes > 0 {
+        LAST_JS_HEAP.store(bytes, Ordering::Relaxed);
+    }
+    LAST_UI_HEARTBEAT.store(unix_ms(), Ordering::Relaxed);
+}
+
+/// How long ago the frontend last reported in, in ms, or `None` if it
+/// never has.
+fn ui_heartbeat_age_ms() -> Option<u64> {
+    match LAST_UI_HEARTBEAT.load(Ordering::Relaxed) {
+        0 => None,
+        at => Some(unix_ms().saturating_sub(at)),
+    }
+}
+
+/// What a health tick should say about the frontend, beyond the age it
+/// prints every time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiLiveness {
+    /// Nothing to announce — healthy, still stalled and already said so,
+    /// or never heard from at all.
+    Quiet,
+    /// The heartbeat has just gone missing; carries its age in ms.
+    Stalled(u64),
+    /// It came back.
+    Recovered,
+}
+
+/// Judge the frontend from its heartbeat age and whether the stall has
+/// already been announced. Pure, so the once-per-episode rule is
+/// testable without a running app.
+///
+/// A frontend that has *never* reported is `Quiet` in both states: on a
+/// `WebView` with no `performance.memory` there is no heartbeat to miss,
+/// and warning about its absence would cry wolf for the whole session.
+fn ui_liveness(age_ms: Option<u64>, warned: bool) -> UiLiveness {
+    match age_ms {
+        Some(age) if age >= UI_HEARTBEAT_STALL_MS && !warned => UiLiveness::Stalled(age),
+        Some(age) if age < UI_HEARTBEAT_STALL_MS && warned => UiLiveness::Recovered,
+        _ => UiLiveness::Quiet,
+    }
 }
 
 /// Latest whole-application RSS (bytes) — the Rust host plus every
@@ -255,6 +324,9 @@ pub fn spawn_health_recorder(app: AppHandle) {
     // rebuilding, and only the process list + system memory are refreshed.
     let mut sys = System::new();
     let own_pid = sysinfo::get_current_pid().ok();
+    // Whether the frontend's silence has already been announced, so the
+    // stall is named once at each edge rather than every tick.
+    let mut ui_warned = false;
     let _ = std::thread::Builder::new()
         .name("cannet-health-recorder".into())
         .spawn(move || loop {
@@ -281,12 +353,39 @@ pub fn spawn_health_recorder(app: AppHandle) {
                 LAST_APP_RSS.store(rss, Ordering::Relaxed);
             }
             let breakdown = state.trace_store.scratch_breakdown();
+            let ui_age = ui_heartbeat_age_ms();
             sys_debug!(
                 &app,
                 "health",
                 "{}",
-                format_health_message(trace_len, buffer_seconds, fps, &mem, breakdown.as_ref())
+                format_health_message(
+                    trace_len,
+                    buffer_seconds,
+                    fps,
+                    &mem,
+                    breakdown.as_ref(),
+                    ui_age
+                )
             );
+            // The sample above is `debug`; a window that has stopped
+            // responding is not a trend, so it gets its own line at a
+            // level a bug report will not have filtered away.
+            match ui_liveness(ui_age, ui_warned) {
+                UiLiveness::Stalled(age) => {
+                    ui_warned = true;
+                    crate::sys_warn!(
+                        &app,
+                        "health",
+                        "frontend unresponsive: no UI heartbeat for {age} ms \
+                         (host is still running; the window or its renderer is wedged)"
+                    );
+                }
+                UiLiveness::Recovered => {
+                    ui_warned = false;
+                    crate::sys_info!(&app, "health", "frontend responsive again");
+                }
+                UiLiveness::Quiet => {}
+            }
         });
 }
 
@@ -500,13 +599,17 @@ fn descendant_pids(links: &[(u32, Option<u32>)], root: u32) -> std::collections:
 /// `sys_total_mb` the machine-wide figures that reveal an OOM. `breakdown`
 /// (when disk-backed) adds the on-disk scratch cache split by family
 /// (ADR 0002 DS-8) — frames vs pyramids vs other (by-id/filter/JSON), the
-/// segment-file count, and the deepest pyramid.
+/// segment-file count, and the deepest pyramid. `ui_age_ms` is how long
+/// ago the frontend last reported in ([`ui_heartbeat_age_ms`]) — the one
+/// field that says whether the *window* is still alive, since every
+/// other number here is the host describing itself.
 fn format_health_message(
     trace_len: usize,
     buffer_seconds: f64,
     fps: f64,
     mem: &MemorySample,
     breakdown: Option<&crate::trace_store::ScratchBreakdown>,
+    ui_age_ms: Option<u64>,
 ) -> String {
     let mb =
         |b: Option<u64>| b.map_or_else(|| "?".to_string(), |v| (v / (1024 * 1024)).to_string());
@@ -522,10 +625,11 @@ fn format_health_message(
         ),
         None => String::new(),
     };
+    let ui = ui_age_ms.map_or_else(|| "?".to_string(), |v| v.to_string());
     format!(
         "trace_len={trace_len} buffer_s={buffer_seconds:.1} fps={fps:.0} \
          rss_mb={} tree_mb={} webview_mb={}[browser={} renderer={} gpu={} other={}] \
-         jsheap_mb={} sys_avail_mb={} sys_total_mb={}{cache}",
+         jsheap_mb={} ui_last_ms={ui} sys_avail_mb={} sys_total_mb={}{cache}",
         mb(mem.host),
         mb(mem.tree),
         mb(mem.webview),
@@ -634,17 +738,59 @@ mod tests {
             sys_total: Some(34_359_738_368),
         };
         assert_eq!(
-            format_health_message(180_000, 392.5, 440.4, &mem, None),
+            format_health_message(180_000, 392.5, 440.4, &mem, None, Some(940)),
             "trace_len=180000 buffer_s=392.5 fps=440 rss_mb=2048 tree_mb=6144 \
              webview_mb=4096[browser=512 renderer=1024 gpu=2048 other=512] \
-             jsheap_mb=256 sys_avail_mb=1024 sys_total_mb=32768"
+             jsheap_mb=256 ui_last_ms=940 sys_avail_mb=1024 sys_total_mb=32768"
         );
         assert_eq!(
-            format_health_message(0, 0.0, 0.0, &MemorySample::default(), None),
+            format_health_message(0, 0.0, 0.0, &MemorySample::default(), None, None),
             "trace_len=0 buffer_s=0.0 fps=0 rss_mb=? tree_mb=? \
              webview_mb=?[browser=? renderer=? gpu=? other=?] \
-             jsheap_mb=? sys_avail_mb=? sys_total_mb=?"
+             jsheap_mb=? ui_last_ms=? sys_avail_mb=? sys_total_mb=?"
         );
+    }
+
+    #[test]
+    fn health_message_reports_how_stale_the_ui_heartbeat_is() {
+        // The frontend-hang detector's readout. A wedged `WebView` stops
+        // pumping its 1 Hz heartbeat while the host stays healthy, so the
+        // age of the last one is the difference between "the app is idle"
+        // and "the window has stopped responding" — and it must be in
+        // every sample, not only the stalled ones, so the trail shows
+        // when the stall began.
+        let line = format_health_message(
+            180_000,
+            1.0,
+            0.0,
+            &MemorySample::default(),
+            None,
+            Some(1_042),
+        );
+        assert!(line.contains(" ui_last_ms=1042 "), "{line}");
+        // A frontend that has never reported one (a `WebView` without
+        // `performance.memory` — the non-Chromium hosts) is unknown, not
+        // stalled.
+        let never = format_health_message(0, 0.0, 0.0, &MemorySample::default(), None, None);
+        assert!(never.contains(" ui_last_ms=? "), "{never}");
+    }
+
+    #[test]
+    fn the_ui_stall_verdict_fires_once_per_episode_and_clears_on_recovery() {
+        // The log has to name the stall exactly twice — once when the
+        // heartbeat goes quiet and once when it comes back. A per-tick
+        // repeat would bury the sample trail that diagnoses the stall,
+        // and no recovery line would leave a reader unable to tell a
+        // survived hang from the one that ended in a kill.
+        let t = UI_HEARTBEAT_STALL_MS;
+        assert_eq!(ui_liveness(Some(t - 1), false), UiLiveness::Quiet);
+        assert_eq!(ui_liveness(Some(t), false), UiLiveness::Stalled(t));
+        assert_eq!(ui_liveness(Some(t * 9), true), UiLiveness::Quiet);
+        assert_eq!(ui_liveness(Some(0), true), UiLiveness::Recovered);
+        assert_eq!(ui_liveness(Some(0), false), UiLiveness::Quiet);
+        // Never reported at all: nothing to judge, in either state.
+        assert_eq!(ui_liveness(None, false), UiLiveness::Quiet);
+        assert_eq!(ui_liveness(None, true), UiLiveness::Quiet);
     }
 
     #[test]
@@ -660,7 +806,8 @@ mod tests {
             other_files: 5,
             total_bytes: 71 * 1024 * 1024,
         };
-        let line = format_health_message(180_000, 1.0, 0.0, &MemorySample::default(), Some(&b));
+        let line =
+            format_health_message(180_000, 1.0, 0.0, &MemorySample::default(), Some(&b), None);
         assert!(
             line.ends_with(" cache_mb=71[frames=40 pyramid=25 other=6 pages=142 pyr_depth=4]"),
             "{line}"

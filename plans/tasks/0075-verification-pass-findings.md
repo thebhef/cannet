@@ -53,6 +53,26 @@ task 72 §3–4.)
    emits (or fails to emit) the refresh signal streaming gets from
    `trace-grew`; the transient hlines are that stall made visible
    through the one-sample rule.
+   **New observation (2026-08-14 ~22:27 local, log-attributed): a
+   full hang on launch, same seam.** The owner launched onto an
+   ~18.5-hour restored capture (57.7 M frames) and the UI hung until
+   the process was killed (~17 min later); the relaunch restored the
+   same session in 685 ms and was healthy. `cannet.log` for the hung
+   launch (02:27:28 UTC): startup reached interactive in 2744 ms,
+   restore completed in 642 ms (pyramids reused — no cold rebuild),
+   **no errors or warnings after that**, and the host's health
+   sampler ran normally to the kill (fps=0 — not connected —
+   trace_len frozen, rss ~80–103 MB, one renderer spike 265→534 MB
+   at 02:42 that recovered). No WebView2 crashpad dump. So the host
+   was alive and the restore path fast; the hang was
+   frontend/webview-side, after restore, with nothing logged. The
+   investigation must find what the frontend does on first paint of
+   a very large restored session that can wedge it (and why it is
+   invisible to the log — a frontend-hang watchdog/log line may be a
+   fix candidate). Distinct symptom from the slow-restore
+   observation above (that one was a cold rebuild; this one reused
+   pyramids) — same boot-restore seam, so it lives in this item's
+   investigation.
    **Owner rulings (2026-08-14) on the legs:** the refresh behavior
    in that condition "should be understood and improved" —
    confirmed as this item's remaining work. The transient hlines
@@ -141,3 +161,201 @@ task 72 §3–4.)
   a discard action that drops the stale session instead; both
   tested (the discard leaves a clean empty session, not a
   half-deleted scratch).
+
+## Status log
+
+### 2026-08-14 — item 1 leg (b): plots don't refresh during a rebuild
+
+**Observation.** Owner, on a boot restore that cold-rebuilt the
+pyramids: "zooming in and out seems to be necessary to keep things
+actually updating. spamming 'fit data' causes updates. Did not observe
+this unresponsiveness/lagginess during BLF streaming."
+
+**Hypothesis.** The plot's re-request of a partial (ADR 0049) serve is
+carried by the per-area self-paced resample loop, and that loop runs
+only while the trace is _running_. A restored capture is stopped
+(`trace.ts::restoredTrace` → `traceStatus` = `"stopped"` →
+`PlotPanel.tsx:504 const live = trace.status === "running"` = `false`
+→ `PlotArea.tsx` loop effect returns early), so on the restore path
+nothing continues the prefixes a rebuilding cache serves. BLF
+streaming is unaffected because the trace is running throughout.
+
+**Experiment.** Two new component tests in `PlotPanel.dom.test.tsx`,
+against the existing `mockSampleRebuild` fake host (one more point per
+serve, `complete = false` until the last), with the panel's element
+seeded as a **stopped** trace (`{start: 0, end: 60}`) — the shape
+`restoredTrace` produces. No user interaction is performed. Falsifiable:
+if anything continued the catch-up, the drawn point count would reach
+the host's full answer.
+
+- `paints each partial answer on a stopped trace too, with no user
+  interaction` — 30 prefixes on offer.
+- `stops re-sampling a stopped trace once the host reports it caught
+  up` — 3 prefixes, then the round-trip count must go quiet.
+
+**Data.** Before the fix: expected 30 drawn points, **received 2**.
+The second test: expected 3, **received 2**. A stopped panel makes
+exactly two real serves at mount (the construction effect's one-shot
+plus its rAF follow-up) and then stops forever; the remaining 28
+prefixes are never requested. The running-trace sibling test (`paints
+each partial answer as the rebuild advances`) passes throughout, which
+is the BLF-streaming half of the owner's report reproduced as the
+control.
+
+**Conclusion (attributed).** The defect is an ADR-0049 violation on the
+stopped-trace path: the ADR's "the view re-requests; it does not poll"
+is implemented only by a loop gated on `live`. A restored capture is
+stopped by construction, so a cold pyramid rebuild under one leaves the
+first prefix on screen until a gesture bumps `xEpoch` (pan/zoom, Fit
+Data, goto-event) — exactly the owner's workaround.
+
+This also explains observation (c), the transient hlines: a prefix
+holds one sample in-window for a series the catch-up has not reached,
+and the one-sample-hline rule draws it flat. They are the stall made
+visible, not a separate defect — matching the owner's ruling that they
+are accepted and need no work here.
+
+**Fix.** `PlotArea.tsx` latches the host's completeness token into a
+`catchingUp` state and the resample loop runs on `live || catchingUp`.
+The latch clears on the token, so a frozen capture with nothing left to
+decode still stops dead — pinned by the second test. Landed with the
+tests. Frontend suite: 158 files / 2092 tests green; `pnpm build` clean.
+
+### 2026-08-14 — item 1 leg: hang visibility (host-side watchdog)
+
+**Observation.** The 22:27 hang left `cannet.log` with nothing to read:
+startup interactive in 2744 ms, restore 642 ms with pyramids reused, no
+errors or warnings afterwards, and health samples continuing at their
+normal cadence right up to the kill ~17 minutes later.
+
+**Why the log was silent.** Every field the health sample carries —
+`trace_len`, `fps`, `rss_mb`/`tree_mb`/`webview_mb`, `sys_avail_mb`, the
+scratch breakdown — is the **host describing itself**, and the host was
+fine. The one number that originates in the renderer, `jsheap_mb`, is
+pushed by the frontend's 1 Hz diag reporter through `report_js_heap`;
+the host stored the value but not the _time it arrived_, so a frontend
+that stopped pushing was indistinguishable from one pushing an unchanged
+figure.
+
+**Change (host-side).** `crash.rs` stamps every `report_js_heap` arrival
+as a UI liveness heartbeat — the reporter runs on the renderer's main
+thread, so a wedged one cannot issue it. The health sample gains
+`ui_last_ms=<age>` (`?` when the frontend has never reported), and
+`ui_liveness` turns the age into a once-per-episode verdict: a `warn`
+line naming the stall when the beat has been missing for
+`UI_HEARTBEAT_STALL_MS` (5 s, five beats), and an `info` line when it
+returns. Both are above the level a bug report filters away; the sample
+trail underneath keeps showing when the stall began.
+
+One frontend line changes with it: the heartbeat now goes out even where
+`performance.memory` is absent (WebKitGTK / WKWebView) — the heap number
+is then `0`, which the host already reads as "no reading" and does not
+store. Without that the watchdog would have been inert everywhere but
+Windows. Pinned by `diag.heartbeat.test.ts`, which failed 0-of-3 beats
+before the change.
+
+Tests: `crash::tests::health_message_reports_how_stale_the_ui_heartbeat_is`
+and `..::the_ui_stall_verdict_fires_once_per_episode_and_clears_on_recovery`
+(both written failing first). Host suite 642 passed / 6 ignored, clippy
+clean; frontend 159 files / 2093 tests.
+
+**Note on scope.** This is a _visibility_ change, not an attribution. It
+does not explain the 22:27 hang; it makes the next one legible from
+`cannet.log` alone, and distinguishes "the host died" from "the window
+stopped responding" without a debugger attached.
+
+### 2026-08-14 — item 1 leg: the 22:27 launch hang — bounded non-reproduction
+
+Not attributed. What follows is what the evidence **rules out**, with
+the experiment behind each, so the next attempt starts narrower.
+
+**Observation (from the task file's log account).** 57.7 M frames
+(~18.5 h) restored in 642 ms with pyramids reused; startup interactive
+at 2744 ms; no warning or error afterwards; health samples continuing at
+their normal cadence until the kill ~17 min later; host rss 80–103 MB;
+one renderer excursion 265 → 534 MB at 02:42 that recovered; no WebView2
+crashpad dump.
+
+**Ruled out — a host command holding the trace-store lock.** The obvious
+suspect was the restore-widened window driving a non-chunked
+`latest_in_window` pass: `useByIdView` / `useSignalView` send
+`scanEnd = winEnd` (not the live tip) whenever the trace is _stopped_,
+and a restored trace is stopped. Two data points kill it.
+_(i)_ `TraceStore::latest_in_window_where` takes the fast O(keys) path
+whenever `end == raw.len()`, and on a fresh restore `winEnd` **is** the
+restored frame count, i.e. exactly `len` — the window scan is not
+entered at all.
+_(ii)_ Decisive regardless of _(i)_: `TraceStore::len`,
+`buffer_seconds`, `frames_per_second` and `scratch_breakdown` all take
+the same `lock_inner()` mutex that a window scan would hold for its
+duration — and every one of them is read by the health sampler on each
+tick. A host command sitting on that lock would have **stalled the
+health samples**, and the log shows them arriving normally for the whole
+17 minutes. The same argument clears `fetch_filtered_trace`, whose index
+extend chunks its own locking.
+
+**Ruled out — an O(capture) walk in the trace viewport.** The one
+capture-length walk in `traceViewport.ts` (`expandedExtraHeight`) is
+reachable only from `ByIdTable`, whose `count` is id space;
+`TraceView` uses `expandedExtraHeightOf`, which costs one iteration per
+_expanded row_. Likewise `gridviewSelection`'s O(count) `selectionOrder`
+is overridden in `TraceView` to the render window.
+
+**Ruled out — any _finite_ O(capture) pass on the UI thread.** Measured
+on V8, at the observed 57.7 M: an accumulate-per-row loop takes
+**107 ms**; pushing every index into an array takes **1017 ms** and
+~460 MB; a `Set`-union-then-sort (the `mergeSeries` shape) over 2 M
+takes **1199 ms**, so ~35–60 s extrapolated to 57.7 M — and at that size
+it exhausts the heap rather than finishing. Nothing in that family
+produces 17 minutes of unbroken unresponsiveness. A single pass would
+have completed, and a fatal one would have left a crashpad dump; neither
+happened.
+
+**What the shape does say.** Seventeen minutes with no completion and no
+death is a **non-terminating loop or a deadlock on the renderer's main
+thread**, not slow work. The renderer's 265 → 534 MB excursion that
+_recovered_ fits that too: a ~270 MB allocation churned and collected
+repeatedly is a loop re-doing large work, where a single pass would show
+one step and a plateau.
+
+**Standing lead, unconfirmed.** The plot's x-sync ring — `applyXAll`
+→ uPlot's `setScale` hook → `onUserXChange` → `applyXAll` — is the one
+identified cycle on that thread. It is guarded twice (the
+`xSyncRef.suppress` window and an equality check against the shared
+window), and `PlotPanel.tsx` already carries a `plot.userXChange` DIAG
+counter placed, in its own comment, to catch this ring "during the
+freeze" — so the symptom has been suspected here before. A restore is
+the case that puts every area through a full-span programmatic window
+change at mount, which is when a missed suppression window would bite.
+
+**Why it stops here.** Reproducing it needs the ring driven by _real_
+uPlot: the jsdom double fires hooks only when a test explicitly asks it
+to, so the cycle cannot close in the component suite, and a synthetic
+capture at this scale plus an isolated-app-data GUI launch is a bigger
+lift than the remaining budget. The watchdog above is what makes the
+next occurrence cheap to attribute: `ui_last_ms` climbing while the host
+stays healthy confirms the class in one log line, and `diag.ts`'s burst
+path (`lag` / `longtask` / `plot.userXChange`) distinguishes a spinning
+render loop from a thread blocked on IPC without attaching a profiler.
+
+**Recommended next step (not done here):** rerun with the diag reporter
+capturing and, on the next hang, read `plot.userXChange` and
+`userx.setscale-hook` — a non-zero delta with no user input names the
+ring directly.
+
+## Blockers / side effects
+
+- **Latent, out of scope for item 1: the by-id / signal window scan on
+  a large stopped capture.** `useByIdView` and `useSignalView` pass
+  `scanEnd = winEnd` whenever the trace is stopped, and
+  `latest_in_window_where` only takes its O(keys) fast path while
+  `end == raw.len()`. On a _fresh_ restore those are equal, which is
+  why this is not the launch-hang mechanism (see the status log). But
+  the moment the window stops covering the tip — a Clear, a Start, a
+  re-anchor — a stopped 57.7 M-frame capture takes a full O(buffer)
+  pass **holding the trace-store append mutex**, blocking every other
+  command and the health sampler with it. It is once per descriptor
+  change by design, but the design was sized before captures this
+  long. Noted here rather than fixed: it is not item 1's defect, and
+  the fix (chunk it, or bound the snapshot the way the pyramid
+  catch-up is bounded by ADR 0049) is its own piece of work.

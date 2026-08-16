@@ -178,14 +178,18 @@ export function startDiagReporter(): () => void {
     // Report the renderer's JS-heap size to the host so the crash
     // health log can split a JS leak from native/GPU growth. Chromium-
     // only (`performance.memory`); absent elsewhere (jsdom in tests).
+    //
+    // The call goes out either way, because the host reads its *arrival*
+    // as this window's liveness heartbeat (`crash.rs`): it runs on the
+    // main thread, so a renderer that has stopped responding stops
+    // sending it, and that is the only way a frontend hang reaches
+    // `cannet.log` at all. `0` is the host's "no reading" — it records
+    // the beat and leaves the last real heap figure alone.
     const mem = (performance as { memory?: { usedJSHeapSize?: number } })
       .memory;
-    if (typeof mem?.usedJSHeapSize === "number") {
-      diagGauge("jsheap_mb", mem.usedJSHeapSize / (1024 * 1024));
-      void invoke("report_js_heap", { bytes: mem.usedJSHeapSize }).catch(
-        () => {},
-      );
-    }
+    const heap = typeof mem?.usedJSHeapSize === "number" ? mem.usedJSHeapSize : 0;
+    if (heap > 0) diagGauge("jsheap_mb", heap / (1024 * 1024));
+    void invoke("report_js_heap", { bytes: heap }).catch(() => {});
     const g: Record<string, number> = {};
     for (const [k, v] of gauges) g[k] = Math.round(v * 10) / 10;
     // eslint-disable-next-line no-console
