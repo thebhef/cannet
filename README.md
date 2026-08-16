@@ -860,6 +860,23 @@ the rest-of-bus simulation's run flag (the load, which resumes on
 connect). For a hardware-free run the project should bind to a virtual
 bus. See [ADR 0031](docs/adr/0031-gui-performance-automation-self-driving.md).
 
+**How to run one so the numbers mean something.** A capture measures
+the machine as much as the build, by more than the margin a gate
+judges — one unchanged binary has measured a 9× spread on
+`rx_gap_short_frac_worst` across back-to-back runs and a 2.2× spread
+on `renderer_mb_drift_per_min` between two sessions the same evening.
+
+- **Run on a quiet machine**, with nothing else competing, and not
+  immediately after a build or other heavy work. Concurrent CPU load
+  on its own is enough to push `rx_gap_short_frac_worst` past its gate
+  limit with no code change.
+- **Compare runs from one session** to each other. Numbers carried
+  across sessions are a weaker comparison than they look.
+- **Take several runs per gate**, and when one run breaches while the
+  others are clean, **re-run it** after letting the machine settle
+  rather than trying to explain it: the gate stands on the re-runs,
+  and a breach that repeats is real.
+
 The render report this writes is the frontend counterpart to the host
 harness's baseline. The harness can't generate it (only the webview sees
 the render tier), so it's fed in: `cannet-perf-measurement baseline
