@@ -1068,6 +1068,15 @@ pub struct SignalQuery {
 pub struct SampledPoints {
     pub t: Vec<f64>,
     pub v: Vec<f64>,
+    /// The stretches of this window a view is about to draw without data
+    /// behind them, as `[from_seconds, to_seconds]` pairs in ascending
+    /// time order — the model's own classification, since what counts as
+    /// extrapolation turns on the series' *raw* cadence, which only the
+    /// host's pyramid knows (ADR 0026). The renderer styles them; it does
+    /// not re-derive them from the points above, whose spacing at a
+    /// coarse zoom is a fact about the decimation rather than about the
+    /// signal.
+    pub extrapolated: Vec<[f64; 2]>,
 }
 
 /// The frozen **time-addressed, lossy accessor response** of the

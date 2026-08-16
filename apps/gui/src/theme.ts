@@ -32,8 +32,11 @@ export type ThemeName = "dark" | "light" | "lighthk";
 /// two entries that share a value today but mean different things stay
 /// separate, same rule as the CSS token block.
 export interface ThemeColors {
-  /// The app background. Not painted from here (CSS owns the surface);
-  /// it is the surface the wheels are contrast-tested against.
+  /// The app background. CSS owns the surface itself, and this is the
+  /// color the wheels are contrast-tested against — but it *is* painted
+  /// from here in one place: the diagonal hatching an extrapolated lane
+  /// tile carries (ADR 0026) is drawn in it, so a striped tile reads as
+  /// the app showing through the tile rather than as a second fill.
   background: string;
   /// Plot axis labels and tick text.
   axisText: string;
@@ -84,6 +87,21 @@ export interface Theme extends ThemeColors {
   /// Strokes and chips only, so the threshold is WCAG 1.4.11 non-text
   /// (≥ 3:1) against this theme's background.
   busWheel: readonly string[];
+  /// How many stacked background-color shadow passes a lane label gets
+  /// where it overlaps an extrapolation-striped stretch (ADR 0026).
+  ///
+  /// The stripes are drawn in `background` and cut straight through the
+  /// glyphs, so a label needs a halo of the same color to stay readable.
+  /// Canvas shadow alpha does not go past what one pass paints, so
+  /// strength is bought by repeating the pass rather than by a number.
+  /// A **light theme needs about double** a dark one: its stripes carry
+  /// far more contrast against the tile fill, so a single pass is lost
+  /// under them. Owner call after a side-by-side.
+  ///
+  /// A per-theme number rather than a branch on `name`, so adding a
+  /// theme stays "add a `Theme` to `THEMES`" and no consumer grows a
+  /// list of which themes count as light.
+  laneLabelShadowPasses: number;
 }
 
 const DARK: Theme = {
@@ -105,6 +123,7 @@ const DARK: Theme = {
   busUnset: "#475569",
   graphNeutralEdge: "#94a3b8",
   graphBusNodeBase: "#11161f",
+  laneLabelShadowPasses: 2,
   signalWheel: [
     "#c6f24e",
     "#4ecbff",
@@ -162,6 +181,7 @@ const LIGHT: Theme = {
   busUnset: "#98a3b3",
   graphNeutralEdge: "#5b6879",
   graphBusNodeBase: "#eef1f6",
+  laneLabelShadowPasses: 4,
   signalWheel: [
     "#5a760f",
     "#0873a0",
@@ -215,6 +235,7 @@ const LIGHTHK: Theme = {
   busUnset: "#d98ca3",
   graphNeutralEdge: "#be2d58",
   graphBusNodeBase: "#fdd8e3",
+  laneLabelShadowPasses: 4,
   signalWheel: [
     "#6f690e",
     "#2356f3",

@@ -108,6 +108,62 @@ the actual value. Under **unified** mode an enum plots as a plain
 numeric line with no labels (a text box per overlaid enum would be
 noise). "Lane" is an axis *render style*, not a new structural level.
 
+**Where the plot extrapolates, it says so — it does not stop
+drawing.** A plot draws in places its data does not reach: a series is
+sample-and-held to the last column its *axis* has, which a faster
+neighbour puts well past its own newest sample; a stall between two
+samples is drawn as a line straight through it; and a one-sample series
+is drawn as a horizontal line across the whole window (below). All of
+that is worth drawing — a held state is the best answer there is about
+what a signal was last doing — but none of it is a reading, and drawn
+identically to the readings it is a claim the data does not support.
+So the extrapolated stretches keep their pixels and are **rendered
+differently**: a line is dashed, a lane tile is hatched. Nothing is
+cut. The alternative — drawing only where there are samples — throws
+away the answer to the question the view is usually being asked ("what
+is it now?"), and the alternative of leaving it as it was makes the
+plot quietly assert things it does not know.
+
+**What counts as extrapolated is a model fact, computed host-side.**
+Two rules decide it: a stretch **not bounded by a sample on each side**
+(before a series' first, after its last, and both wings of a
+one-sample series), and a **gap longer than ten times the series'
+typical raw sample interval** — a stale interior stretch is
+extrapolation too. The second cannot be evaluated in the frontend,
+which sees only what the serve sent: at a coarse zoom those points sit
+a decimation bucket apart, so measuring their spacing against a raw
+cadence would paint every zoomed-out window as extrapolation, and
+measuring it against *their own* spacing would hide every real stall.
+The host has the raw series, so it answers both from there — including
+confirming each candidate gap against level 0 — and ships the
+stretches with the window they describe. The renderer styles them and
+re-derives nothing.
+
+The styling itself: a line's extrapolated stretch is **dashed [6, 4]**
+in the series' own color and width — same line, drawn without data. A
+lane tile keeps its normal fill and takes **45° stripes in the app
+background color, 20 px horizontal period at exactly 50 % duty**;
+because a 45° stroke's horizontal footprint is `lineWidth·√2`, even
+bands need `lineWidth = period / (2·√2)` and the naive `period / 2`
+paints ~71 % of each period. A tile only partly stale stripes only the
+stale part. A label over stripes gets a background-color halo, stacked
+passes toward opacity, about twice as many on a light theme as on a
+dark one — its stripes carry far more contrast and swallow a single
+pass.
+
+**An enum lane draws its own sample markers.** uPlot's point layer
+cannot serve a lane: its `auto` rule reads the density of the *axis*,
+and a shared enum-lanes axis carries every enum's samples at once, so
+one fast lane suppresses the markers of every slow one — and whatever
+survives that is painted over by the tiles, which are 65–75 % opaque
+and sit in front of the line by design. A lane needs its markers more
+than a line does, not less: a line's shape shows where it was measured,
+while a lane's tiles show only its transitions, so without markers
+nothing on screen separates a state held through a thousand samples
+from one held through none. So a tile axis turns the point layer off
+and marks its own served samples, over the tiles, capped at the same
+flat marker budget.
+
 **Vertical space is fit-to-panel, with draggable splitters.** The
 derived axes of a panel always fit its height — no stack-scrolling
 once N axes exceed it. Each axis carries a **weight** (flex-grow,
@@ -275,12 +331,22 @@ below:
   One point is not a line — there is nothing to draw between a sample
   and itself — and a series whose entire content is one value has no
   shape that the usual pre-first-sample gap could be protecting. The
-  gap rule is otherwise unchanged: a series with two or more samples
-  still begins where its first one does and is never drawn past its
-  data. The one-sample series is the deliberate exception, and it is
-  an exception in both directions: it is held across every column its
-  axis has, including columns other series contributed after — and
-  before — its only sample.
+  *leading* gap rule is unchanged: a series with two or more samples
+  still begins where its first one does, and a dash is not drawn there
+  either — a stretch nothing is currently drawn across is not made
+  honest by adding ink to it. The one-sample series is the deliberate
+  exception, and it is an exception in both directions: it is held
+  across every column its axis has, including columns other series
+  contributed after — and before — its only sample, so **both** its
+  wings are drawn, and both are dashed.
+
+  The **trailing** half of that sentence used to read "and is never
+  drawn past its data", which the sample-and-hold has never obeyed: a
+  merged row carries its last value forward to the end, so every series
+  is drawn to the last column its axis has. That overdraw is real and
+  worth keeping — see the extrapolation rule above — so what is written
+  down is now what the code does: a series *is* drawn past its data,
+  and the stretch where it is says so.
 - **Y-axis-mode selector** (`unified` / `per-unit` / `individual`)
   sits in each plot area's signal-panel head. Switching modes
   re-stacks the area's canvases. The per-axis derivation is the pure

@@ -8,13 +8,14 @@
 // recent value forward (sample-and-hold) — `null` before the series'
 // first sample so uPlot leaves a gap rather than drawing from zero.
 
-import type { SignalsSample } from "./types";
+import type { SampledPoints, SignalsSample } from "./types";
 
 /** Magic bytes at the start of a `sample_signals` binary response —
- * `"SIGSAMP\x02"` little-endian. The trailing version byte lets us
+ * `"SIGSAMP\x03"` little-endian. The trailing version byte lets us
  * tweak the layout without breaking older builds outright; `\x02` added
- * the `flags` word that carries the host's completeness token. */
-const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
+ * the `flags` word that carries the host's completeness token, and
+ * `\x03` the per-signal list of extrapolated stretches (ADR 0026). */
+const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x03];
 
 /**
  * Decode the compact binary `SignalsSample` produced by the Rust host's
@@ -38,6 +39,8 @@ const SIGSAMP_MAGIC = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
  *     n     u32             sample count
  *     t[n]  f64×n           timestamps (absolute seconds)
  *     v[n]  f64×n           values
+ *     m     u32             extrapolated-span count
+ *     s[m]  f64×2m          span (from, to) pairs, ascending seconds
  * ```
  */
 export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
@@ -63,7 +66,7 @@ export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
   off += 4;
   const nsig = view.getUint32(off, true);
   off += 4;
-  const series: { t: number[]; v: number[] }[] = new Array(nsig);
+  const series: SampledPoints[] = new Array(nsig);
   for (let s = 0; s < nsig; s++) {
     const n = view.getUint32(off, true);
     off += 4;
@@ -83,7 +86,17 @@ export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
     for (let j = 0; j < n; j++) t[j] = view.getFloat64(off + j * 8, true);
     for (let j = 0; j < n; j++) v[j] = view.getFloat64(vOff + j * 8, true);
     off += n * 16;
-    series[s] = { t, v };
+    // The host's extrapolation classification for this window. Usually
+    // empty or a single tail span, so a plain loop over pairs is the
+    // whole cost.
+    const m = view.getUint32(off, true);
+    off += 4;
+    const extrapolated: [number, number][] = new Array(m);
+    for (let j = 0; j < m; j++) {
+      extrapolated[j] = [view.getFloat64(off, true), view.getFloat64(off + 8, true)];
+      off += 16;
+    }
+    series[s] = { t, v, extrapolated };
   }
   return {
     from_seconds: Number.isNaN(fromS) ? null : fromS,
@@ -100,6 +113,27 @@ export interface RawSeries {
   t: number[];
   /** Parallel sampled values. */
   v: number[];
+  /** The host's extrapolation classification for this window, in the
+   * same time base as `t` (ADR 0026). Absent on a series nobody
+   * classified — every merge behaves exactly as it did before the
+   * classification existed. */
+  extrapolated?: readonly ExtrapolatedSpan[];
+}
+
+/** One stretch a view draws without data behind it: `[from, to]` in the
+ * series' own time base. The host decides these (ADR 0026) — the raw
+ * cadence they turn on is a model fact the frontend cannot see. */
+export type ExtrapolatedSpan = readonly [number, number];
+
+/** A stretch of merged columns to stroke dashed rather than solid: the
+ * column the extrapolation runs from, and the one it runs to.
+ *
+ * `i1`'s value in the row may be `null` — that is the past-the-end tail,
+ * which is held *flat* out to the last column the axis has, so a
+ * renderer reads its far value from `i0` when `i1` has none. */
+export interface ExtrapolatedSegment {
+  i0: number;
+  i1: number;
 }
 
 /**
@@ -132,6 +166,21 @@ export function mergeSeries(
   const xsSet = new Set<number>();
   for (const s of series) {
     for (const t of s.t) xsSet.add(t);
+    // An *interior* extrapolated stretch is bounded by a sample of this
+    // series at each end, so blanking either end to break the solid
+    // stroke would also cut the data-backed segment beside it short.
+    // When the two ends are already neighbouring columns there is
+    // nothing in between to blank, so the stretch gets a column of its
+    // own — its midpoint — which exists only to be blanked. A stretch
+    // running off either end of the series needs none: what it would
+    // break is already `null` (before the first sample) or is blanked to
+    // the axis edge (after the last).
+    if (s.t.length === 0 || !s.extrapolated) continue;
+    const first = s.t[0];
+    const last = s.t[s.t.length - 1];
+    for (const [a, b] of s.extrapolated) {
+      if (a >= first && b <= last) xsSet.add((a + b) / 2);
+    }
   }
   if (
     xsSet.size === 1 &&
@@ -168,6 +217,94 @@ export function mergeSeries(
     out.push(ys);
   }
   return out;
+}
+
+/**
+ * Split each merged row against its series' extrapolated spans (ADR
+ * 0026): **blank the row wherever the stroke would be extrapolation**,
+ * and return the column stretches a renderer must draw dashed instead.
+ *
+ * The two halves are one operation because they must not disagree: a
+ * stretch that is blanked but not returned vanishes from the plot, and
+ * one returned but not blanked is drawn twice — solid underneath the
+ * dashes, which reads as solid.
+ *
+ * `rows` is mutated in place, matching how `PlotArea` normalises the
+ * same arrays; `rows[k]` belongs to `series[k]`, as `mergeSeries`
+ * returns them (its `xs` row removed).
+ *
+ * **A span only produces a segment where something is drawn today.** The
+ * classification is about the whole window, but a multi-sample series is
+ * still not drawn before its first sample — the pre-first-sample `null`
+ * of ADR 0026 stands, and a dash there would be new ink, not honest ink.
+ * So a span whose ends aren't both carrying a value is skipped whole:
+ * neither blanked nor dashed. The one-sample series is the case where
+ * this *does* fire on both wings, because `mergeSeries` holds its value
+ * across every column.
+ */
+export function splitExtrapolatedRows(
+  xs: readonly number[],
+  rows: (number | null)[][],
+  series: readonly RawSeries[],
+): ExtrapolatedSegment[][] {
+  return rows.map((row, k) => {
+    const spans = series[k]?.extrapolated;
+    if (!spans || spans.length === 0 || xs.length === 0) return [];
+    const out: ExtrapolatedSegment[] = [];
+    for (const [a, b] of spans) {
+      // The columns the stretch is drawn between: the last one at or
+      // before its start, and the first one at or after its end. A
+      // stretch running past the newest column — the past-the-end tail —
+      // is drawn to that column and no further, which is exactly the
+      // extent the plot already had.
+      const i0 = lastAtOrBefore(xs, a);
+      if (i0 < 0) continue;
+      const found = firstAtOrAfter(xs, b);
+      const i1 = found >= 0 ? found : xs.length - 1;
+      // Is the far column carrying a *sample* of this series, or only a
+      // held value? Asked of the series' own timestamps rather than of
+      // the column grid, because a neighbour's column can land exactly
+      // on a stretch's end without this series having anything there.
+      const t = series[k].t;
+      const bounded = t.length > 0 && t[t.length - 1] >= b;
+      if (i1 <= i0) continue;
+      if (row[i0] == null || row[i1] == null) continue;
+      // Blank what the solid stroke must no longer cover. An unbounded
+      // stretch takes its far column too: nothing there is a sample of
+      // this series, and leaving the held value behind would both draw a
+      // stray marker at the axis edge and leave the tail solid.
+      const blankTo = bounded ? i1 - 1 : i1;
+      for (let i = i0 + 1; i <= blankTo; i++) row[i] = null;
+      out.push({ i0, i1 });
+    }
+    return out;
+  });
+}
+
+/** Index of the last entry of the ascending `xs` that is `<= x`, or -1. */
+function lastAtOrBefore(xs: readonly number[], x: number): number {
+  let lo = 0;
+  let hi = xs.length - 1;
+  if (hi < 0 || xs[0] > x) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (xs[mid] <= x) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/** Index of the first entry of the ascending `xs` that is `>= x`, or -1. */
+function firstAtOrAfter(xs: readonly number[], x: number): number {
+  let lo = 0;
+  let hi = xs.length - 1;
+  if (hi < 0 || xs[hi] < x) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (xs[mid] >= x) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
 }
 
 /** Stable key for a `(bus, message, signal)` triple — what the plot

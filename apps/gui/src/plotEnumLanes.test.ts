@@ -6,6 +6,9 @@ import {
   laneLabels,
   laneTileBand,
   laneValueRange,
+  stripeOverlay,
+  stripedOverlap,
+  EXTRAPOLATION_STRIPE_PERIOD_PX,
   measureTileLabel,
   normalizeIntoLane,
   tileLabelX,
@@ -272,5 +275,82 @@ describe("measureTileLabel", () => {
     c.font = "bold 14px mono";
     measureTileLabel(c, "Fault");
     expect(c.measureText).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("stripeOverlay", () => {
+  const rect = { x0: 100, x1: 200, yTop: 10, yBot: 30 };
+
+  it("makes the painted and unpainted bands exactly even", () => {
+    // The whole point of the geometry note in the ruling. A 45° stroke
+    // of width w covers w·√2 horizontally, so the naive period/2 paints
+    // period/√2 ≈ 71 % of each period and the hatching reads as a
+    // repaint of the tile. Even bands need period/(2·√2).
+    const { lineWidth } = stripeOverlay(rect, 20);
+    expect(lineWidth).toBeCloseTo(20 / (2 * Math.SQRT2), 12);
+    // Stated as the property rather than the formula: the horizontal
+    // footprint of one stroke is exactly half the period.
+    expect(lineWidth * Math.SQRT2).toBeCloseTo(20 / 2, 12);
+    // And the naive value it is not.
+    expect(lineWidth).not.toBeCloseTo(10, 3);
+  });
+
+  it("runs the stripes at 45° and covers the whole rectangle", () => {
+    const { lines } = stripeOverlay(rect, 20);
+    const h = rect.yBot - rect.yTop;
+    for (const l of lines) {
+      expect(l.x1 - l.x0).toBeCloseTo(h, 12); // 45°: dx = dy
+      expect(l.y0).toBe(rect.yTop);
+      expect(l.y1).toBe(rect.yBot);
+    }
+    // A line starting at `xt` covers [xt, xt + h] somewhere in the band,
+    // so the set must reach one height left of the rectangle and past
+    // its right edge, or the corners come out unpainted.
+    const starts = lines.map((l) => l.x0);
+    expect(Math.min(...starts)).toBeLessThanOrEqual(rect.x0 - h);
+    expect(Math.max(...starts)).toBeGreaterThanOrEqual(rect.x1);
+    // Evenly spaced by the period, with none missing in between.
+    for (let i = 1; i < starts.length; i++) {
+      expect(starts[i] - starts[i - 1]).toBeCloseTo(20, 12);
+    }
+  });
+
+  it("anchors the pattern to the canvas, not to the rectangle", () => {
+    // Two tiles that meet must continue one another's stripes. Anchored
+    // to each rectangle instead, both would restart at their shared
+    // edge and put a double-width band on every join.
+    const left = stripeOverlay({ ...rect, x0: 100, x1: 150 }, 20);
+    const right = stripeOverlay({ ...rect, x0: 150, x1: 200 }, 20);
+    for (const l of [...left.lines, ...right.lines]) {
+      expect(l.x0 % 20).toBeCloseTo(0, 12);
+    }
+  });
+
+  it("returns no lines for a rectangle with no area", () => {
+    expect(stripeOverlay({ x0: 100, x1: 100, yTop: 10, yBot: 30 }, 20).lines).toEqual([]);
+    expect(stripeOverlay({ x0: 100, x1: 200, yTop: 10, yBot: 10 }, 20).lines).toEqual([]);
+    expect(stripeOverlay(rect, 0).lines).toEqual([]);
+  });
+
+  it("ships the ruling's 20 px period", () => {
+    expect(EXTRAPOLATION_STRIPE_PERIOD_PX).toBe(20);
+  });
+});
+
+describe("stripedOverlap", () => {
+  it("stripes only the stale part of a partly-extrapolated tile", () => {
+    // A tile is a run of one held code and a stretch of extrapolation is
+    // a run of silence; neither divides the other. A tile that went
+    // stale halfway through shows both halves in one picture.
+    expect(stripedOverlap(0, 10, [4, 20])).toEqual({ from: 4, to: 10 });
+    expect(stripedOverlap(0, 10, [-5, 4])).toEqual({ from: 0, to: 4 });
+    expect(stripedOverlap(0, 10, [3, 7])).toEqual({ from: 3, to: 7 });
+    expect(stripedOverlap(0, 10, [-5, 20])).toEqual({ from: 0, to: 10 });
+  });
+
+  it("is null when the tile and the stretch do not meet", () => {
+    expect(stripedOverlap(0, 10, [10, 20])).toBeNull();
+    expect(stripedOverlap(0, 10, [-5, 0])).toBeNull();
+    expect(stripedOverlap(0, 10, [20, 30])).toBeNull();
   });
 });

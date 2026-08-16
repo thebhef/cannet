@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { diagCount } from "./diag"; // DIAG
 import { decodeSignalsSample } from "./plotData";
-import type { Series } from "./plotCursors";
+import type { RawSeries } from "./plotData";
 
 /// The plot's time-addressed windowed source — the `DecimatedRange`
 /// sibling of [`useWindowedQuery`](./useWindowedQuery.ts), per the
@@ -104,7 +104,11 @@ export interface DecimatedSnapshot {
   /// The window's last-frame time relative to `base` (the live edge), or
   /// `null` before the first non-empty fetch.
   lastT: number | null;
-  byKey: Map<string, Series>;
+  /// One entry per requested signal, times relative to `base`. Each
+  /// carries the host's extrapolation classification for this window
+  /// alongside its points (ADR 0026) — the renderer styles those
+  /// stretches, it does not re-derive them.
+  byKey: Map<string, RawSeries>;
   /// Whether the host had finished catching its per-signal caches up when
   /// it answered (ADR 0049). A serve is bounded in time, so the first sample for a
   /// signal set over a long capture is a *prefix* — real points, drawable,
@@ -154,7 +158,7 @@ interface Cache {
   base: number | null;
   firstT: number | null;
   lastT: number | null;
-  byKey: Map<string, Series>;
+  byKey: Map<string, RawSeries>;
   /// `${winStart}:${windowKey}:${fromSeconds}:${toSeconds}:${maxPoints}:${categorical}` —
   /// skip the fetch when it matches the last successful one. `windowKey`
   /// is `winEnd`, or the constant `"parked"` when the requested slice
@@ -299,12 +303,18 @@ export function useDecimatedRange(): DecimatedRange {
       }
       const base = cache.base;
 
-      const byKey = new Map<string, Series>();
+      const byKey = new Map<string, RawSeries>();
       req.signals.forEach((s, i) => {
-        const got = res.series[i] ?? { t: [], v: [] };
+        const got = res.series[i] ?? { t: [], v: [], extrapolated: [] };
         const t = new Array<number>(got.t.length);
         for (let j = 0; j < got.t.length; j++) t[j] = got.t[j] - base;
-        byKey.set(s.key, { t, v: got.v.slice() });
+        // The spans are window times like the samples are, so they
+        // rebase with them — a span left in absolute seconds would land
+        // a whole session origin away from the row it describes.
+        const extrapolated = (got.extrapolated ?? []).map(
+          ([a, b]) => [a - base, b - base] as const,
+        );
+        byKey.set(s.key, { t, v: got.v.slice(), extrapolated });
       });
       cache.byKey = byKey;
       // `res.from_seconds` is the *window's* first-frame timestamp (the

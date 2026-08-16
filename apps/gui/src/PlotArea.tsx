@@ -18,7 +18,16 @@ import uPlot from "uplot";
 
 import { isEnumValueTable, type SignalDescriptorRecord, type SignalExtent, type ValueTableEntryRecord } from "./types";
 import { type ColorResolver, type ColorTarget, colorMapLaneFill } from "./colorMap";
-import { enumSegments, groupScaleRanges, mergeSeries, scaleGroupKey } from "./plotData";
+import {
+  enumSegments,
+  groupScaleRanges,
+  mergeSeries,
+  scaleGroupKey,
+  splitExtrapolatedRows,
+  type ExtrapolatedSegment,
+  type ExtrapolatedSpan,
+  type RawSeries,
+} from "./plotData";
 import {
   denormalizeOnAxis,
   logDecadeSplits,
@@ -49,7 +58,12 @@ import {
   type XSync,
 } from "./plotPanelConfig";
 import { parsePlotAreaDragData, type PlotAreaDragPayload } from "./plotAreaTransfer";
-import { applyAutoPointFloor, showPointsToUplot, type ShowPointsMode } from "./plotPoints";
+import {
+  applyAutoPointFloor,
+  laneSampleMarkerIndices,
+  showPointsToUplot,
+  type ShowPointsMode,
+} from "./plotPoints";
 import { nextResampleDelayMs } from "./plotPacing";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { DisclosureToggle } from "./DisclosureToggle";
@@ -64,12 +78,15 @@ import { useUndoGesture } from "./undoGesture";
 import { emptyJankMeter, jankPercent, jankPixels, observeScroll, scrollStepMs } from "./scrollJank";
 import { useValueTables } from "./useValueTables";
 import {
+  EXTRAPOLATION_STRIPE_PERIOD_PX,
   laneBandsForVisible,
   laneLabels,
   laneTileBand,
   laneValueRange,
   measureTileLabel,
   normalizeIntoLane,
+  stripeOverlay,
+  stripedOverlap,
   tileLabelX,
 } from "./plotEnumLanes";
 import {
@@ -92,6 +109,12 @@ const SELECTED_SERIES_WIDTH = 2;
  * min/max plot can show; the floor catches early-mount cases where
  * `clientWidth` is still small. */
 const MIN_DECIMATION_POINTS = 200;
+
+/** Dash pattern an extrapolated stretch of a line is stroked with (ADR
+ * 0026): 6 px on, 4 px off, in the series' own color and width. Long
+ * enough to read as a line rather than as a dotted rule at a glance,
+ * broken enough to read as "not measured" without a legend. */
+const EXTRAPOLATION_DASH = [6, 4];
 
 /** Compact tick formatter for the y-axis. Shares the readouts'
  * magnitude rule through {@link formatFloat} so one value can't read
@@ -762,6 +785,60 @@ interface PlotAreaProps {
  * keys on a stable identity instead of a fresh literal per draw. */
 const NO_VALUE_TABLE: readonly ValueTableEntryRecord[] = [];
 
+/**
+ * Stroke every extrapolated stretch of every series dashed (ADR 0026).
+ *
+ * The stretches come from the host's classification, already reduced to
+ * merged-column index pairs by `splitExtrapolatedRows`, which blanked
+ * the same columns out of `u.data` so uPlot's own stroke stops at the
+ * data. So this adds no ink the plot did not already have — it redraws
+ * what was removed, dashed, in the series' own color and width.
+ *
+ * A stretch whose far column carries no value is the past-the-end tail:
+ * it is held **flat** out to the last column the axis has, which is
+ * exactly the extent the series was drawn to before the classification
+ * existed. That is the extent overdraw, made honest rather than cut.
+ */
+export function drawExtrapolatedSegments(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    segments: readonly (readonly ExtrapolatedSegment[])[];
+    signals: readonly { hidden?: boolean }[];
+    color: (seriesIdx0: number) => string;
+    ratio: number;
+  },
+): void {
+  const xs = u.data[0] as number[] | undefined;
+  if (!xs || o.segments.length === 0) return;
+  ctx.save();
+  ctx.setLineDash(EXTRAPOLATION_DASH.map((d) => d * o.ratio));
+  for (let i = 0; i < o.segments.length; i++) {
+    const segs = o.segments[i];
+    if (segs.length === 0) continue;
+    const seriesOpt = u.series[i + 1];
+    if (!seriesOpt || seriesOpt.show === false || o.signals[i]?.hidden) continue;
+    const row = u.data[i + 1] as (number | null)[] | undefined;
+    if (!row) continue;
+    ctx.strokeStyle = o.color(i);
+    // The same width the solid stroke was drawn with — including the
+    // bold a selected series gets, which is written onto the series
+    // object rather than resolved from a function.
+    ctx.lineWidth = (typeof seriesOpt.width === "number" ? seriesOpt.width : 1) * o.ratio;
+    for (const { i0, i1 } of segs) {
+      const v0 = row[i0];
+      if (v0 == null) continue;
+      // `??` and not `||`: a held value of 0 is a value.
+      const v1 = row[i1] ?? v0;
+      ctx.beginPath();
+      ctx.moveTo(u.valToPos(xs[i0], "x", true), u.valToPos(v0, "y", true));
+      ctx.lineTo(u.valToPos(xs[i1], "x", true), u.valToPos(v1, "y", true));
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
 /** Draw the logic-analyzer value tiles for one enum series into a
  * pixel band (ADR 0026). Each constant-value segment of the (stepped)
  * line gets an opaque-ish box carrying its label, centred on the
@@ -771,7 +848,7 @@ const NO_VALUE_TABLE: readonly ValueTableEntryRecord[] = [];
  * the combined enum-lanes axis (one call per signal, its lane band).
  * The stepped line still draws behind the ~0.65-alpha fill, so the
  * waveform reads through. */
-function drawEnumTiles(
+export function drawEnumTiles(
   ctx: CanvasRenderingContext2D,
   u: uPlot,
   o: {
@@ -792,6 +869,17 @@ function drawEnumTiles(
      * lane positions, which can't be matched against a value table; the
      * single-enum axis plots raw codes already and omits it. */
     rawValues?: (number | null)[];
+    /** The stretches of this signal's window the host classified as
+     * extrapolation (ADR 0026), in the plot's own time base. The tile
+     * still draws — a lane's held state is information whether or not
+     * the signal is still arriving — with background-color hatching
+     * over the stale part of it. */
+    extrapolated?: readonly ExtrapolatedSpan[];
+    /** Draw a marker at each served sample, over the tiles. See
+     * `laneSampleMarkerIndices` for why a lane cannot use uPlot's own
+     * point layer for this. `false` is the panel's `off` show-points
+     * mode, which means off here too. */
+    sampleMarkers?: boolean;
   },
 ): void {
   const seriesOpt = u.series[o.seriesIdx];
@@ -824,13 +912,80 @@ function drawEnumTiles(
     const accent = mapColor ?? o.accent;
     ctx.fillStyle = fill;
     ctx.fillRect(visStart, o.bandTop, segW, bandH);
+    // Hatch the stale part of the tile, and only that part: a tile that
+    // went stale halfway through shows, in one picture, when it was a
+    // reading and when it stopped being one. Drawn over the fill and
+    // under the border and label, so the tile keeps its own edges.
+    let striped = false;
+    for (const span of o.extrapolated ?? []) {
+      const overlap = stripedOverlap(seg.t0, seg.tEnd, span);
+      if (!overlap) continue;
+      const sx0 = Math.max(u.valToPos(overlap.from, "x", true), visStart);
+      const sx1 = Math.min(u.valToPos(overlap.to, "x", true), visEnd);
+      if (sx1 <= sx0) continue;
+      striped = true;
+      const rect = { x0: sx0, x1: sx1, yTop: o.bandTop, yBot: o.bandBot };
+      const { lineWidth, lines } = stripeOverlay(
+        rect,
+        EXTRAPOLATION_STRIPE_PERIOD_PX * o.ratio,
+      );
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(sx0, o.bandTop, sx1 - sx0, bandH);
+      ctx.clip();
+      ctx.strokeStyle = theme().background;
+      ctx.lineWidth = lineWidth;
+      ctx.beginPath();
+      for (const l of lines) {
+        ctx.moveTo(l.x0, l.y0);
+        ctx.lineTo(l.x1, l.y1);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
     ctx.strokeStyle = accent;
     ctx.strokeRect(visStart + 0.5, o.bandTop + 0.5, segW - 1, bandH - 1);
     if (labelX != null) {
+      const ly = Math.round((o.bandTop + o.bandBot) / 2);
       ctx.fillStyle = accent;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
-      ctx.fillText(lbl, labelX, Math.round((o.bandTop + o.bandBot) / 2));
+      // Stripes cut straight through the glyphs, so a label over them
+      // gets a halo of the same background color first. Canvas shadow
+      // alpha tops out at one pass, so the strength is stacked passes;
+      // how many is a per-theme number (`theme.ts`), because a light
+      // theme's stripes carry far more contrast and swallow a single one.
+      if (striped) {
+        ctx.save();
+        ctx.shadowColor = theme().background;
+        ctx.shadowBlur = 3 * o.ratio;
+        for (let i = 0; i < theme().laneLabelShadowPasses; i++) {
+          ctx.fillText(lbl, labelX, ly);
+        }
+        ctx.restore();
+      }
+      ctx.fillText(lbl, labelX, ly);
+    }
+  }
+  // Sample markers last, so they land *over* the tiles rather than
+  // under them — the tiles are 65-75 % opaque and were swallowing
+  // whatever markers uPlot's own layer managed to draw. Drawn on the
+  // plotted row (the lane position), so a marker sits on the waveform
+  // where a reader expects it.
+  if (o.sampleMarkers) {
+    const plotted = u.data[o.seriesIdx] as (number | null)[] | undefined;
+    if (plotted) {
+      const from = u.scales.x?.min ?? -Infinity;
+      const to = u.scales.x?.max ?? Infinity;
+      const half = 1.5 * o.ratio;
+      ctx.fillStyle = o.accent;
+      for (const i of laneSampleMarkerIndices(ts, from, to)) {
+        const y = plotted[i];
+        if (y == null) continue;
+        const x = u.valToPos(ts[i], "x", true);
+        if (x < o.left || x > o.left + o.width) continue;
+        ctx.fillRect(x - half, u.valToPos(y, "y", true) - half, half * 2, half * 2);
+      }
     }
   }
 }
@@ -1203,6 +1358,19 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // lane positions, so the draw hook reads its values from here to
   // match them against a value table. Null off the lanes axis.
   const laneRawRef = useRef<(number | null)[][] | null>(null);
+  // Per signal, the merged-column stretches the host classified as
+  // extrapolation (ADR 0026), same row order as `u.data`'s y columns.
+  // The resample blanks them out of the solid stroke and leaves them
+  // here; the draw hook strokes them dashed. A ref rather than state
+  // because it is regenerated on the same tick as the data it indexes
+  // into, and nothing about it should re-render React.
+  const extrapolatedRef = useRef<ExtrapolatedSegment[][]>([]);
+  // The same classification in the plot's *time* base, one list per
+  // signal — what a tile axis needs, since a tile is placed by the times
+  // its run spans rather than by column index. Kept beside the column
+  // form rather than derived in the draw hook: both are regenerated by
+  // the resample that produced the data they describe.
+  const extrapolatedSpansRef = useRef<readonly (readonly ExtrapolatedSpan[])[]>([]);
   // The lane draw hook reads tables live from `valueTablesRef`, so it
   // needs no uPlot rebuild when they resolve — but a stopped trace
   // won't redraw on its own. Nudge one so lane labels appear once the
@@ -1539,7 +1707,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // session-scoped notes project onto this panel's x-axis.
       lr.reports.base(areaId, base);
 
-      const seriesRel: Series[] = signals.map((s) => snapshot.byKey.get(signalRefKey(s)) ?? { t: [], v: [] });
+      const seriesRel: RawSeries[] = signals.map(
+        (s) => snapshot.byKey.get(signalRefKey(s)) ?? { t: [], v: [] },
+      );
       // Auto-normalisation: each series is re-mapped to [0, 1] from
       // its *unit group's* min/max (ADR 0026 — same-unit series share
       // one y scale; each unit group fills the canvas independently),
@@ -1695,6 +1865,26 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       const mergedRaw = mergeSeries(seriesRel, span);
       const xs = mergedRaw[0] as number[];
       const rawRows = mergedRaw.slice(1);
+      // Extrapolated stretches (ADR 0026), differentiated two ways
+      // because the two renderers say "no data behind this" differently.
+      //
+      // A *line* is dashed: the stretch is blanked out of the row so
+      // uPlot's own stroke stops at the data, and the draw hook
+      // re-strokes it dashed. Blanking happens before the normalisation
+      // below, so the blanks are carried through it rather than
+      // normalised into values — every branch there skips `null`.
+      //
+      // A *tile* is hatched, and a hatched tile still has to be drawn —
+      // a lane's held state is information whether or not the signal is
+      // still arriving. Blanking a lane row would delete the tile
+      // instead of marking it, since `enumSegments` ends a run at a
+      // `null`. So a tile axis keeps its row whole and the draw hook
+      // stripes the stale sub-stretch of each tile.
+      const tileAxis = laneActive || enumActive;
+      extrapolatedRef.current = tileAxis
+        ? []
+        : splitExtrapolatedRows(xs, rawRows, seriesRel);
+      extrapolatedSpansRef.current = seriesRel.map((s) => s.extrapolated ?? []);
       const displayRows: (number | null)[][] = laneActive
         ? (() => {
             // Hidden lanes drop out of the layout, so the visible ones
@@ -2105,7 +2295,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // markers; `on` always draws them but capped at a flat max across
           // the visible range so a zoomed-out window doesn't render a
           // marker per decimated sample. See `plotPoints.ts`.
-          points: showPointsToUplot(showPoints),
+          // A tile axis draws its own sample markers over the tiles
+          // (`drawEnumTiles`), because uPlot's layer is both gated on
+          // the *axis's* merged density — which a shared lanes axis has
+          // in abundance — and painted over by the tiles themselves. One
+          // mechanism, not two competing ones.
+          points:
+            enumActiveAtConstruct || laneModeAtConstruct
+              ? { show: false }
+              : showPointsToUplot(showPoints),
           show: !s.hidden,
           ...((enumActiveAtConstruct || laneModeAtConstruct) && uPlot.paths.stepped
             ? { paths: uPlot.paths.stepped({ align: 1 }) }
@@ -2185,6 +2383,21 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             ctx.clip();
             ctx.font = `600 ${9.5 * ratio}px ui-monospace, monospace`;
             ctx.lineWidth = 1 * ratio;
+            // Extrapolated stretches, dashed (ADR 0026). The resample
+            // blanked these out of the data, so the solid stroke stopped
+            // at the samples and this is what puts the stretch back —
+            // same color, same width, dashed, so the picture keeps every
+            // pixel it had and says which of them are readings.
+            //
+            // Before the lane tiles for the same reason the stepped line
+            // is: on a lanes axis the line is content the tiles sit in
+            // front of, and its dashes are part of the line.
+            drawExtrapolatedSegments(ctx, u, {
+              segments: extrapolatedRef.current,
+              signals: signalsRef.current,
+              color: (i) => seriesColorRef.current(signalsRef.current[i] ?? signals[i]),
+              ratio,
+            });
             // Logic-analyzer lane (ADR 0026): on an enum-only axis,
             // overlay an opaque label box on each constant-value
             // segment of the (stepped) line. The line + symbolic
@@ -2218,6 +2431,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 left,
                 width,
                 ratio,
+                extrapolated: extrapolatedSpansRef.current[0],
+                sampleMarkers: showPoints !== "off",
               });
             } else if (laneModeAtConstruct) {
               // Combined enum-lanes axis: one tile row per *visible*
@@ -2259,6 +2474,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                   // way, so keep the plotted values there — that's what
                   // draws today (one flat tile at the lane midline).
                   rawValues: table.length > 0 ? (laneRawRef.current?.[i] ?? undefined) : undefined,
+                  extrapolated: extrapolatedSpansRef.current[i],
+                  sampleMarkers: showPoints !== "off",
                 });
               });
             }

@@ -133,7 +133,7 @@ pub(crate) async fn off_async_workers<T: Send + 'static>(
 ///
 /// Layout (little-endian throughout):
 /// ```text
-/// magic   8 bytes  "SIGSAMP\x02"
+/// magic   8 bytes  "SIGSAMP\x03"
 /// from_s  f64      capture-window first timestamp, NaN ⇒ null
 /// last_s  f64      capture-window last timestamp, NaN ⇒ null
 /// slice   f64      diagnostic: lock-held slice ms
@@ -144,16 +144,26 @@ pub(crate) async fn off_async_workers<T: Send + 'static>(
 ///   n     u32      sample count
 ///   t[n]  f64×n    timestamps (absolute seconds)
 ///   v[n]  f64×n    values
+///   m     u32      extrapolated-span count
+///   s[m]  f64×2m   span (from_seconds, to_seconds) pairs, ascending
 /// ```
 ///
-/// The `flags` word (and the `\x02` that announces it) is the
-/// completeness token of ADR 0049: a serve is bounded in time, so a cold
-/// one answers with the prefix it decoded and bit 0 clear. A caller must
-/// not infer completeness from a non-empty series.
+/// The `flags` word is the completeness token of ADR 0049: a serve is
+/// bounded in time, so a cold one answers with the prefix it decoded and
+/// bit 0 clear. A caller must not infer completeness from a non-empty
+/// series.
+///
+/// `\x03` added the per-signal span list — which stretches of the window
+/// the view is about to draw without data behind them (ADR 0026). It
+/// rides the serve rather than travelling as its own query because it is
+/// a fact about the very window being answered, and a second round trip
+/// could only disagree with it.
 fn encode_signals_sample(s: &DecimatedRange) -> Vec<u8> {
     let total_points: usize = s.series.iter().map(|p| p.t.len()).sum();
-    let mut buf = Vec::with_capacity(8 + 32 + 8 + s.series.len() * 4 + total_points * 16);
-    buf.extend_from_slice(b"SIGSAMP\x02");
+    let total_spans: usize = s.series.iter().map(|p| p.extrapolated.len()).sum();
+    let mut buf =
+        Vec::with_capacity(8 + 32 + 8 + s.series.len() * 8 + total_points * 16 + total_spans * 16);
+    buf.extend_from_slice(b"SIGSAMP\x03");
     buf.extend_from_slice(&s.from_seconds.unwrap_or(f64::NAN).to_le_bytes());
     buf.extend_from_slice(&s.last_seconds.unwrap_or(f64::NAN).to_le_bytes());
     buf.extend_from_slice(&s.slice_ms.to_le_bytes());
@@ -170,6 +180,12 @@ fn encode_signals_sample(s: &DecimatedRange) -> Vec<u8> {
         }
         for &v in &p.v {
             buf.extend_from_slice(&v.to_le_bytes());
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        buf.extend_from_slice(&(p.extrapolated.len() as u32).to_le_bytes());
+        for [from, to] in &p.extrapolated {
+            buf.extend_from_slice(&from.to_le_bytes());
+            buf.extend_from_slice(&to.to_le_bytes());
         }
     }
     buf
@@ -259,14 +275,22 @@ fn sample_signals_inner(
     let t_decode = std::time::Instant::now();
     let series: Vec<SampledPoints> = sliced
         .into_iter()
-        .map(|points| {
+        .zip(served.extrapolated)
+        .map(|(points, spans)| {
             let mut t = Vec::with_capacity(points.len());
             let mut v = Vec::with_capacity(points.len());
             for p in points {
                 t.push(p.t_seconds);
                 v.push(p.value);
             }
-            SampledPoints { t, v }
+            SampledPoints {
+                t,
+                v,
+                extrapolated: spans
+                    .into_iter()
+                    .map(|s| [s.from_seconds, s.to_seconds])
+                    .collect(),
+            }
         })
         .collect();
     let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;

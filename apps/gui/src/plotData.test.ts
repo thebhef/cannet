@@ -7,6 +7,7 @@ import {
   mergeSeries,
   recordSignalKey,
   signalKey,
+  splitExtrapolatedRows,
 } from "./plotData";
 
 describe("mergeSeries", () => {
@@ -141,13 +142,16 @@ describe("decodeSignalsSample", () => {
     lastS: number | null,
     sliceMs: number,
     decodeMs: number,
-    series: { t: number[]; v: number[] }[],
+    series: { t: number[]; v: number[]; extrapolated?: [number, number][] }[],
     complete = true,
   ): ArrayBuffer {
     const totalPts = series.reduce((s, p) => s + p.t.length, 0);
-    const buf = new ArrayBuffer(8 + 32 + 8 + series.length * 4 + totalPts * 16);
+    const totalSpans = series.reduce((s, p) => s + (p.extrapolated?.length ?? 0), 0);
+    const buf = new ArrayBuffer(
+      8 + 32 + 8 + series.length * 8 + totalPts * 16 + totalSpans * 16,
+    );
     const view = new DataView(buf);
-    const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x02];
+    const magic = [0x53, 0x49, 0x47, 0x53, 0x41, 0x4d, 0x50, 0x03];
     for (let i = 0; i < 8; i++) view.setUint8(i, magic[i]);
     let off = 8;
     view.setFloat64(off, fromS ?? NaN, true);
@@ -171,6 +175,15 @@ describe("decodeSignalsSample", () => {
       }
       for (const v of p.v) {
         view.setFloat64(off, v, true);
+        off += 8;
+      }
+      const spans = p.extrapolated ?? [];
+      view.setUint32(off, spans.length, true);
+      off += 4;
+      for (const [a, b] of spans) {
+        view.setFloat64(off, a, true);
+        off += 8;
+        view.setFloat64(off, b, true);
         off += 8;
       }
     }
@@ -234,6 +247,108 @@ describe("decodeSignalsSample", () => {
     const buf = new ArrayBuffer(44);
     new DataView(buf).setUint32(0, 0xdeadbeef, true);
     expect(() => decodeSignalsSample(buf)).toThrow(/bad magic/);
+  });
+
+  it("carries the host's extrapolated stretches per signal", () => {
+    // Which stretches of a window are extrapolation turns on the
+    // series' *raw* cadence, which the host's pyramid knows and the
+    // decimated points on the wire do not show — so the classification
+    // travels with the serve rather than being re-derived here.
+    const out = decodeSignalsSample(
+      encode(0, 9, 0, 0, [
+        { t: [0, 1], v: [5, 6], extrapolated: [[1, 9]] },
+        { t: [0, 2, 8], v: [1, 2, 3], extrapolated: [] },
+        { t: [4], v: [7], extrapolated: [[0, 4], [4, 9]] },
+      ]),
+    );
+    expect(out.series[0].extrapolated).toEqual([[1, 9]]);
+    expect(out.series[1].extrapolated).toEqual([]);
+    expect(out.series[2].extrapolated).toEqual([
+      [0, 4],
+      [4, 9],
+    ]);
+    // The span list sits between two signals' point runs, so a wrong
+    // length there would desync every signal after it.
+    expect(out.series[1].t).toEqual([0, 2, 8]);
+    expect(out.series[2].v).toEqual([7]);
+  });
+});
+
+describe("splitExtrapolatedRows", () => {
+  it("blanks the hold past a series' last sample and reports it to dash", () => {
+    // The extent overdraw made honest: a slow series is held to its
+    // axis's last merged column, which a faster neighbour put well past
+    // its own data. The stretch stays on screen — dashed — rather than
+    // being cut, and the solid stroke stops where the samples do.
+    const series = [
+      { t: [0, 1, 2, 3], v: [10, 11, 12, 13] },
+      { t: [0, 1], v: [20, 21], extrapolated: [[1, 3] as const] },
+    ];
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    const rows = merged.slice(1);
+    const segs = splitExtrapolatedRows(xs, rows, series);
+    expect(xs).toEqual([0, 1, 2, 3]);
+    expect(rows[0]).toEqual([10, 11, 12, 13]);
+    // Held forward before: [20, 21, 21, 21]. The tail is blanked to the
+    // far column inclusive — nothing out there is a sample of this
+    // series, so leaving the held value would both keep the stroke solid
+    // and drop a stray point marker at the axis edge.
+    expect(rows[1]).toEqual([20, 21, null, null]);
+    expect(segs[1]).toEqual([{ i0: 1, i1: 3 }]);
+    expect(segs[0]).toEqual([]);
+  });
+
+  it("breaks an interior stall on a column minted for it", () => {
+    // Both ends of an interior stretch are this series' own samples, so
+    // neither may be blanked — blanking one would cut the data-backed
+    // segment beside it short. With no other series contributing a
+    // column in between, the stretch gets its own midpoint column.
+    const series = [{ t: [0, 1, 9, 10], v: [1, 2, 3, 4], extrapolated: [[1, 9] as const] }];
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    const rows = merged.slice(1);
+    const segs = splitExtrapolatedRows(xs, rows, series);
+    expect(xs).toEqual([0, 1, 5, 9, 10]);
+    expect(rows[0]).toEqual([1, 2, null, 3, 4]);
+    expect(segs[0]).toEqual([{ i0: 1, i1: 3 }]);
+  });
+
+  it("dashes both wings of a one-sample series and nothing of its neighbour's lead-in", () => {
+    // The one-sample series is held across every column, so both its
+    // wings are drawn and both are extrapolation. Its neighbour is *not*
+    // drawn before its own first sample, so the classification's leading
+    // span there must add no ink — a dash where there is currently
+    // nothing would be new ink, not honest ink.
+    const series = [
+      { t: [2, 3], v: [10, 11], extrapolated: [[1, 2] as const] },
+      { t: [1], v: [7], extrapolated: [[1, 3] as const] },
+    ];
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    const rows = merged.slice(1);
+    const segs = splitExtrapolatedRows(xs, rows, series);
+    expect(xs).toEqual([1, 2, 3]);
+    // The neighbour's leading stretch has a column at each end, but its
+    // near end carries no value — the pre-first-sample `null` of ADR
+    // 0026 — so the stretch is skipped whole: nothing blanked, nothing
+    // dashed.
+    expect(rows[0]).toEqual([null, 10, 11]);
+    expect(segs[0]).toEqual([]);
+    // The one-sample series is held at 7 across every column, so its
+    // stretch past its only sample *is* drawn, and is dashed. Its far
+    // column holds no sample of this series, so it is blanked too.
+    expect(rows[1]).toEqual([7, null, null]);
+    expect(segs[1]).toEqual([{ i0: 0, i1: 2 }]);
+  });
+
+  it("leaves a series nobody classified exactly as the merge made it", () => {
+    const series = [{ t: [0, 1, 2], v: [5, 6, 7] }];
+    const merged = mergeSeries(series);
+    const rows = merged.slice(1);
+    const segs = splitExtrapolatedRows(merged[0] as number[], rows, series);
+    expect(rows[0]).toEqual([5, 6, 7]);
+    expect(segs[0]).toEqual([]);
   });
 });
 
