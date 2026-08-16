@@ -133,7 +133,11 @@ jobs:
         run: |
           node -e "const fs=require('fs'),p='apps/gui/src-tauri/tauri.conf.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.version='${{ steps.ver.outputs.version }}';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
           PKG=crates/cannet-server/packaging/packager.toml
-          sed -i 's/^version = "0\.0\.0"$/version = "${{ steps.ver.outputs.version }}"/' "$PKG"
+          # `-i.bak` (suffix attached) is the one in-place form both GNU
+          # and macOS BSD sed accept; bare `-i` makes BSD sed eat the
+          # script as the backup suffix and fail on the filename.
+          sed -i.bak 's/^version = "0\.0\.0"$/version = "${{ steps.ver.outputs.version }}"/' "$PKG"
+          rm -f "$PKG.bak"
           grep -q '^version = "${{ steps.ver.outputs.version }}"$' "$PKG" \
             || { echo "::error::the version placeholder in $PKG did not substitute"; exit 1; }
 
