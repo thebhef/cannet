@@ -140,6 +140,44 @@ export function sampleMarkerColumns(
 }
 
 /**
+ * The single column a **hover** marker may sit on for one series: the
+ * column nearest `hoverX` among the series' *own* sample columns, or
+ * `null` when it has none at all.
+ *
+ * Hover changes *when* a marker is drawn, never *where* (ADR 0026), so
+ * the candidates are the same {@link sampleMarkerColumns} draws from —
+ * the series' raw timestamps, not the merged grid. That is the whole
+ * difference from the per-series hover point this replaces, which snapped
+ * to the nearest **merged** column and so landed on whatever a denser
+ * neighbour happened to contribute, most often on a column this series
+ * was merely held across.
+ *
+ * There is no proximity limit, deliberately: a series that stopped
+ * arriving keeps its marker on its last reading while the pointer moves
+ * on past it, which is the honest picture — the marker stays where the
+ * data is, and the stretch between it and the pointer is already drawn as
+ * extrapolation. A limit would instead make the marker blink out with no
+ * statement about why.
+ */
+export function hoverMarkerColumn(
+  columns: readonly number[],
+  xs: readonly number[],
+  hoverX: number,
+): number | null {
+  if (columns.length === 0 || !Number.isFinite(hoverX)) return null;
+  let lo = 0;
+  let hi = columns.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (xs[columns[mid]] < hoverX) lo = mid + 1;
+    else hi = mid;
+  }
+  const at = columns[lo];
+  const before = lo > 0 ? columns[lo - 1] : at;
+  return Math.abs(xs[at] - hoverX) <= Math.abs(xs[before] - hoverX) ? at : before;
+}
+
+/**
  * Install {@link sampleMarkerColumns} as the `points.filter` of every
  * series of a live uPlot instance (index 0 is x, and is skipped), so
  * uPlot's point layer draws markers only where the series has samples.

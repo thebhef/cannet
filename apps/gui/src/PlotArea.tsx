@@ -62,6 +62,7 @@ import { parsePlotAreaDragData, type PlotAreaDragPayload } from "./plotAreaTrans
 import {
   applyAutoPointFloor,
   applySampleMarkerFilter,
+  hoverMarkerColumn,
   sampleMarkerColumns,
   showPointsToUplot,
   type ShowPointsMode,
@@ -838,6 +839,73 @@ export function drawExtrapolatedSegments(
       ctx.lineTo(u.valToPos(xs[i1], "x", true), u.valToPos(v1, "y", true));
       ctx.stroke();
     }
+  }
+  ctx.restore();
+}
+
+/** Radius of a hover marker, in CSS pixels before the canvas ratio.
+ * Comfortably larger than the 3 px square a sample marker is drawn as,
+ * because the two are shown together and the hover one has to be the
+ * one the eye lands on. */
+const HOVER_MARKER_RADIUS_PX = 3;
+
+/**
+ * Mark, on every series of this area, the sample nearest the panel's
+ * shared hover x (ADR 0026).
+ *
+ * **Panel-wide by construction.** The x comes in as the panel-level
+ * `hoverX` — the same value the crosshair is drawn at, folded from
+ * whichever area the pointer is actually in — so an area draws these
+ * whether or not it is the hovered one. That is the whole point: a
+ * hovered panel reveals where its samples are on *all* of its stacked
+ * areas at once, the way the crosshair already spans them.
+ *
+ * **Honest by construction.** The candidate columns are the series' own
+ * sample columns ([`hoverMarkerColumn`]), so hover changes when a marker
+ * is drawn and never where. The per-series hover point this replaces —
+ * uPlot's own — snapped to the nearest *merged* column, which is a
+ * neighbour's reading as often as it is one of this series'.
+ *
+ * Drawn over the enum tiles for the same reason a lane's sample markers
+ * are: the tiles are 65-75 % opaque and would swallow it. The ring in
+ * the plot background is what keeps it legible on a tile, a stripe or a
+ * gridline.
+ */
+export function drawHoverMarkers(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    hoverX: number | null;
+    signals: readonly { hidden?: boolean }[];
+    /** Per series (0-based), the merged columns it has a sample at. */
+    sampleColumns: readonly (readonly number[] | undefined)[];
+    color: (seriesIdx0: number) => string;
+    ratio: number;
+    left: number;
+    width: number;
+  },
+): void {
+  if (o.hoverX == null) return;
+  const xs = u.data[0] as number[] | undefined;
+  if (!xs) return;
+  ctx.save();
+  ctx.lineWidth = 1 * o.ratio;
+  ctx.strokeStyle = theme().background;
+  for (let i = 0; i < o.signals.length; i++) {
+    const seriesOpt = u.series[i + 1];
+    if (!seriesOpt || seriesOpt.show === false || o.signals[i]?.hidden) continue;
+    const col = hoverMarkerColumn(o.sampleColumns[i] ?? [], xs, o.hoverX);
+    if (col == null) continue;
+    const row = u.data[i + 1] as (number | null)[] | undefined;
+    const v = row?.[col];
+    if (v == null) continue;
+    const x = u.valToPos(xs[col], "x", true);
+    if (x < o.left || x > o.left + o.width) continue;
+    ctx.fillStyle = o.color(i);
+    ctx.beginPath();
+    ctx.arc(x, u.valToPos(v, "y", true), HOVER_MARKER_RADIUS_PX * o.ratio, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -2303,7 +2371,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // our own draw-hook overlay in every area — the native line
       // would double it up in the hovered one. The horizontal line
       // stays: y is meaningful only under the pointer.
-      cursor: { x: false, drag: { x: false, y: false } },
+      //
+      // uPlot's per-series hover point is off for the same two reasons,
+      // one of which the crosshair had first: it is a property of *this*
+      // instance's pointer, so it can never appear on the areas the
+      // pointer is not in — and it snaps to the nearest **merged**
+      // column, which is a neighbour's reading as often as it is this
+      // series'. `drawHoverMarkers` draws it in the overlay instead,
+      // from the panel's shared hover x and on the series' own samples.
+      cursor: { x: false, points: { show: false }, drag: { x: false, y: false } },
       axes: [xAxis, yAxis],
       series: [
         {},
@@ -2564,6 +2640,32 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             // falls outside this area's window, same as A/B.
             if (lr.hoverX != null) {
               vline(lr.hoverX, theme().crosshair, [4, 3], null, false);
+            }
+            // ...and the markers that go with it (ADR 0026). Same shared
+            // x, so a pointer resting in *any* area of the panel reveals
+            // every area's nearest samples at once — the parity the
+            // per-instance hover point uPlot draws could never have,
+            // since a uPlot instance only knows about its own pointer.
+            // Drawn after the tiles so a lane's marker survives them,
+            // and after the crosshair so it sits on the line rather than
+            // under it.
+            //
+            // `off` means off here as everywhere else; `auto` and `on`
+            // both reveal, because what the hover adds is one marker per
+            // series and neither the density rule nor the ≤32 floor has
+            // an opinion about a single column under the pointer. Those
+            // two go on governing the *static* markers, which is where
+            // the modes differ.
+            if (showPoints !== "off") {
+              drawHoverMarkers(ctx, u, {
+                hoverX: lr.hoverX,
+                signals: signalsRef.current,
+                sampleColumns: sampleColumnsRef.current,
+                color: (i) => seriesColorRef.current(signalsRef.current[i] ?? signals[i]),
+                ratio,
+                left,
+                width,
+              });
             }
             const hline = (yVal: number, color: string, lbl: string) => {
               const yp = u.valToPos(yVal, "y", true);

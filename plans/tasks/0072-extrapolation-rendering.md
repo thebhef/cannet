@@ -1272,6 +1272,149 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
     first and watched fail); `tsc --noEmit` and `pnpm build` clean. No
     host code touched, so no Rust run; no perf-gate run.
 
+- **2026-08-15, phase 9 (`task72-p9-hover-parity`, branched off
+  `task72-p8-light-legibility`):** §5, the owner's two hover-marker
+  observations.
+
+  **Verdict: both are properties of the one mechanism that was drawing
+  hover markers — uPlot's own per-series hover point. It belongs to the
+  instance whose pointer moved, so it can only ever appear in the area
+  under the pointer (observation 1); it is placed at the nearest
+  _merged_ column, so it was also the last marker in the build that
+  phase 7's invariant did not reach; and on a lanes axis it is drawn
+  into a canvas the 65–75 %-opaque tiles are painted over
+  (observation 2).** Replaced, not repaired: the panel draws the markers
+  itself, in the overlay, off the shared hover x the crosshair is
+  already drawn at. Photographed before and after, in both themes.
+
+  - _Observation (raw, photographed — the harness can drive a hover
+    now)._ The capture scenario grew two frames, `03-hover-numeric-area`
+    and `04-hover-lane-area`, which rest the pointer at 5 s inside one
+    area and shoot. On the phase-8 binary, `dark-03`: the crosshair
+    spans **both** areas at 5 s, four hover dots sit on the numeric
+    area's series, and **the three lanes carry none**. `dark-04`, the
+    pointer inside the lanes area instead: the crosshair still spans
+    both, and **no area has a hover dot at all** — not the numeric one
+    (no pointer in it) and not the lanes one (the pointer is in it).
+    Both observations, in two pictures.
+
+  - _Hypothesis._ Nothing in the frontend draws a marker as a function
+    of hover, so all of this is uPlot's `cursor.points`: DOM dots
+    created per series and positioned by `closestIdx(valAtPosX,
+    data[0])` in the instance whose `mousemove` fired. That predicts
+    exactly what the two frames show — dots only in the hovered
+    instance — and predicts one more thing: they sit on merged columns,
+    so a stale series is marked wherever a neighbour was read.
+    Falsifiable: if the markers had been ours, they would already have
+    been drawn from `hoverX`, which every area has had since the
+    crosshair was made panel-wide.
+
+  - _Fix (`a1f4de69`), and why this seam._ `drawHoverMarkers` runs in
+    the draw hook of **every** area, straight after the crosshair
+    `vline` and after the tiles, from `liveRef.current.hoverX` — the
+    panel-level value folded from whichever area reported it. So the
+    cross-area half needs no new channel at all: it rides the one the
+    crosshair already rides, and the second observation is fixed by the
+    same call reaching a tile axis, over the tiles rather than under
+    them. `hoverMarkerColumn` (`plotPoints.ts`) picks the column from
+    the series' **own** sample columns — `sampleColumns`, phase 7's seam
+    — so hover changes when a marker is drawn and never where. uPlot's
+    `cursor.points` is turned off in the same commit: two mechanisms
+    drawing the same thing is what phases 4 and 7 each had to undo.
+
+    No proximity limit, deliberately: a series that has stopped keeps
+    its marker on its last reading while the pointer moves on past it.
+    That is visible in the sign-off frames — `OneShotLevel`'s marker
+    sits at **10 s**, its one sample, while the pointer is at 5 s.
+
+  - _Data (falsification at the draw tier, the tests written first)._
+    With the call removed, five of the seven new draw-tier cases fail
+    and the two "nothing is drawn" ones pass, as they must. With the
+    column taken from the merged grid instead of the series' own — the
+    mechanism being replaced, in one line — four fail, and they fail
+    _as the defect_:
+
+    | case | own columns | merged grid |
+    | --- | --- | --- |
+    | two cadences, pointer at 3.2 s | 3.0 s and 3.4 s | **3.4 s and 3.4 s** (one series marked at the other's column) |
+    | stopped line (silent after 6 s), pointer at 12 s | 6.0 s | **no marker** (the blanked row has no value there) |
+    | stale lane (silent after 6 s), pointer at 12 s | 6.0 s | **12.0 s** (a column it was merely held across) |
+    | stall 7 → 15 s, pointer at 9 s | 7.0 s | **9.0 s** (inside the stall, where there is no reading) |
+
+    At the panel tier the same removal gives `expected [] to deeply
+    equal [2]` on both cross-area tests.
+
+  - _Modes, reconciled explicitly._ `off` is off, hover or not — the
+    same rule `applySampleMarkerFilter` carries. `auto` and `on` both
+    reveal, because what a hover adds is **one** marker per series and
+    neither uPlot's density rule nor the ≤32 floor has an opinion about
+    a single column under the pointer; those two go on governing the
+    _static_ markers, which is where the modes differ. For a lane the
+    static markers are drawn under both modes already (phase 4 gave a
+    lanes axis no density rule, the axis's merged density being
+    meaningless for it), so what hover adds to a lane is what it adds to
+    a line: the pointer's own sample, told apart from the rest. ADR 0026
+    carries all of this (`c81c2534`).
+
+  - _A test tier that could not see the other area (`a1f4de69`)._ The
+    cross-area claim is a claim about what an area the pointer was never
+    in paints, so it belongs at the panel tier — where the uPlot stub
+    has no canvas, and the draw hook has therefore never run. The stub
+    grows a recording context and a `bbox`, which is inert for every
+    test that does not fire the `draw` hook, and two tests fire it: a
+    hover reported by area 2 draws area 1's marker at its own sample
+    (2 s, from a pointer at 1.9 s), and un-hovering removes it; the same
+    from a numeric area onto a **lanes** area, plus `off` leaving the
+    hover nothing to reveal.
+
+  - _Harness: the hover is drivable, and stays inside the sanctioned
+    surface (`3e97c3ff`, `61184d7b`)._ The step dispatches `mousemove`
+    on the area's own `.u-over` — the element uPlot binds its cursor to
+    and the only target its handlers accept — inside the run's own
+    isolated child, the same way the palette step dispatches its
+    keystroke. No OS-level input anywhere. The area is picked
+    structurally, by the `data-area-id` a plot area renders and the
+    `/u:enum` suffix the shared lanes axis mints, with all three
+    couplings guarded
+    (`the_hover_steps_target_a_plot_area_the_frontend_still_identifies`)
+    because a rename would abort a capture run mid-walk. `61184d7b` is
+    the mistake the first set caught: without a `mouseleave` on the
+    areas being left, frame 04 carried frame 03's hover as well — two
+    pointers in one picture, which is not a state the app can be in.
+
+  - _The set, and what it measures._ Eight frames at 1600×1000, dark and
+    light, from two real `pnpm --dir apps/gui tauri build --no-bundle`
+    builds — a frontend predating the fix for _before_, this branch's
+    `a1f4de69` for _after_ — through `screenshot --scenario
+    extrapolation` per theme. `screenshot-diff` over the pair:
+
+    | frame | differing pixels of 1 600 000 |
+    | --- | --- |
+    | `01-capture-imported`, dark and light | **0** |
+    | `02-extrapolated-stretches`, dark and light | **0** |
+    | `03-hover-numeric-area` | 289 (dark), 289 (light) |
+    | `04-hover-lane-area` | 295 (dark), 296 (light) |
+
+    The two unhovered frames are **pixel-identical**, which is the pin
+    phase 8 left in place: nothing about the plot changed except what a
+    hover draws. The hovered frames' ~290 pixels are **seven marks** in
+    the diff, in both 03 and 04 and in both themes — four in the numeric
+    area (`RefLevel`, `StoppedLevel`, `StalledLevel` at the pointer's
+    5 s, `OneShotLevel` at its own 10 s) and three in the lanes area
+    (`DenseMode`, `StoppedMode`, `StalledMode` at 5 s). In `04` every one
+    of those seven is ink that was not there before, the pointer being
+    in the lanes area: both halves of the parity in one picture. Kept
+    out of the repo per the no-committed-review-artifacts rule; paths in
+    the phase report.
+
+  - Frontend: 163 test files / 2197 tests passed (from 163 / 2184 at
+    phase 8 — 13 new: 7 at the draw tier, 4 unit cases for
+    `hoverMarkerColumn`, 2 at the panel tier); `tsc --noEmit` and `pnpm
+    build` clean. Host: `cargo test -p cannet-perf-measurement --lib` 45
+    passed (from 44 — the new scenario guard); clippy `--all-targets`
+    and `cargo fmt --check` clean. No `cannet-gui` host code touched. No
+    perf-gate run (the orchestrator's, at closeout).
+
 ## Blockers / side effects
 
 - ~~**The enum leading-edge lag is attributed but NOT fixed.**~~ **Fixed
@@ -1319,6 +1462,22 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   behind it, and no one has looked. It matters because these captures are
   eyeballed: an empty frame is obvious to a human, but an unattended
   gate would take it. Left for whoever next touches the harness.
+  **Recurred in phase 9** at about the same rate — one empty
+  `03`/`04` pair in three runs against the new binary, correct on the
+  re-run — so it is not a function of the two hover steps either, and
+  the sample is now nine runs across three binaries.
+- **The lane hover marker's legibility over a tile is an owner call.**
+  It is a disc in the signal's color with a background-colored ring,
+  drawn over tiles that are 65–75 % opaque and sometimes striped. The
+  ring is what is meant to carry it, and the diff shows it landing, but
+  whether it reads _well_ on a tint is a judgement about the picture
+  rather than a measurement — phase 9's `04` frames are where to look.
+- **The repo's `target/debug/incremental` had grown to 116 GB and the
+  volume was full** (1.2 GB free), which failed every build with `os
+  error 112` before phase 9 could start. Removed — it is a regenerable
+  compiler cache, nothing tracked and nothing another run needs — which
+  freed the volume to 177 GB. Worth knowing at the perf gate: the next
+  debug build of the local crates is a cold one.
 - **`colorMapLaneFill` darkens on every theme, which is what caps the
   light themes' tile legibility — an owner call, not acted on.** The
   ink fix takes the light theme's tinted tiles from 1.03–1.80:1 to
@@ -1363,8 +1522,29 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   plot's follow scrolling; the original fix's fate (deleted guard vs
   guard passing while the surface disagreed) recorded; the new
   reproducing test stays as the guard.
+- Hover-marker parity (§5): a pointer resting in any area of a panel
+  reveals markers on **every** area of it, enum lanes included, with
+  the markers still sitting only on real samples; regression-tested
+  across areas, and photographed hovered.
 - ADR 0026 (sparse-series render rules) amended to record the
   extrapolation-rendering rule; the "no series is drawn past its
   data" phrasing reconciled.
 - ADR-0031 perf gate run on the final build (this touches the render
   hot path); all metrics, no baseline promotion.
+
+## 5. Hover-marker parity (owner observations, 2026-08-15, on a phase-7-complete build)
+
+Two semantic gaps reported during live review, both gating this
+task's closeout by owner ruling ("before we close out the plot/enum
+lane changes"):
+
+1. **Hover points are per-area.** Point markers appear only on the
+   plot area under the mouse; they must appear on **every** area of
+   the panel on hover, the way the shared freehand crosshair already
+   spans all stacked areas.
+2. **Lanes don't participate in hover-reveal.** A hovered enum-lane
+   area shows no markers even with the mouse inside it; a hovered
+   lane must behave exactly like a hovered numeric area does.
+
+Phase 7's invariant binds throughout: a marker sits only on a real
+sample — hover changes *when* markers show, never *where*.

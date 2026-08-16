@@ -14,7 +14,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type uPlot from "uplot";
 
-import { drawEnumTiles, drawExtrapolatedSegments } from "./PlotArea";
+import { drawEnumTiles, drawExtrapolatedSegments, drawHoverMarkers } from "./PlotArea";
 import { mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
 import { applySampleMarkerFilter } from "./plotPoints";
@@ -100,6 +100,8 @@ function recorder() {
       if (s) Object.assign(state, s);
     },
     beginPath: () => push("beginPath"),
+    arc: (...a: number[]) => push("arc", ...a),
+    fill: () => push("fill"),
     moveTo: (x: number, y: number) => push("moveTo", x, y),
     lineTo: (x: number, y: number) => push("lineTo", x, y),
     rect: (...a: number[]) => push("rect", ...a),
@@ -644,5 +646,133 @@ describe("point markers on a numeric axis", () => {
     const { filter } = markedColumns([ramp(ticks(1, 20))], 0);
     const u = fakeU([[0, 1], [1, 2]], [{}]);
     expect(typeof filter === "function" ? filter(u, 1, false, null) : null).toBeNull();
+  });
+});
+
+describe("hover markers", () => {
+  // The x these are drawn at is the *panel's*, not this area's: it is
+  // folded from whichever area the pointer is in and handed to every
+  // area, the same value the crosshair is drawn at. So every case here
+  // drives the function the way a **non-hovered** area is driven — a
+  // hover x and no pointer of its own — which is the cross-area claim
+  // at this tier. (The panel tier pins that the value really does reach
+  // the other areas.)
+
+  function ticks(period: number, until: number, from = 0): number[] {
+    const out: number[] = [];
+    for (let i = 0; from + i * period <= until + 1e-9; i++) {
+      out.push(Number((from + i * period).toFixed(6)));
+    }
+    return out;
+  }
+
+  const ramp = (t: number[]) => ({ t, v: t.map((x) => 50 + x) });
+
+  /** Draw what an area holding `series` would draw at `hoverX`.
+   * `blank` is what a line axis does to its rows (the extrapolated
+   * stretches are cut out of the solid stroke) and what a tile axis
+   * deliberately does not — a lane keeps its row whole. */
+  function hovered(
+    series: Parameters<typeof mergeSeries>[0],
+    hoverX: number | null,
+    o?: { blank?: boolean; signals?: { hidden?: boolean }[]; left?: number; width?: number },
+  ) {
+    const merged = mergeSeries(series);
+    const xs = merged[0] as number[];
+    const rows = merged.slice(1) as (number | null)[][];
+    if (o?.blank !== false) splitExtrapolatedRows(xs, rows, series);
+    const u = fakeU([xs, ...rows], series.map(() => ({})));
+    const { ctx, ops } = recorder();
+    drawHoverMarkers(ctx, u, {
+      hoverX,
+      signals: o?.signals ?? series.map(() => ({})),
+      sampleColumns: sampleColumns(xs, series),
+      color: (i) => ["#aa0000", "#00bb00"][i] ?? "#ffffff",
+      ratio: 1,
+      left: o?.left ?? 0,
+      width: o?.width ?? 1000,
+    });
+    const marks = ops
+      .filter((op) => op.op === "arc")
+      .map((op) => ({
+        t: Number((((op.args[0] as number) / 10)).toFixed(6)),
+        y: op.args[1] as number,
+        r: op.args[2] as number,
+        fill: op.fill,
+      }));
+    return { xs, ops, marks };
+  }
+
+  it("marks each series' own nearest sample, in an area the pointer is not in", () => {
+    // Two cadences that do not share a column near the pointer, so
+    // "each series' own" is falsifiable: a single shared answer would
+    // put both markers at the same x.
+    const a = ramp(ticks(0.5, 10));
+    const b = ramp(ticks(1, 10, 0.4));
+    const { marks } = hovered([a, b], 3.2);
+    expect(marks.map((m) => m.t)).toEqual([3, 3.4]);
+    expect(marks.map((m) => m.fill)).toEqual(["#aa0000", "#00bb00"]);
+    // Drawn as a disc, wider than the 3 px square a sample marker is.
+    expect(marks.every((m) => m.r === 3)).toBe(true);
+  });
+
+  it("keeps a stopped series' marker on its last reading rather than under the pointer", () => {
+    // The honesty rule, at the hover seam: the merged row carries a
+    // held value at the pointer's column — that is what the per-series
+    // hover point this replaces snapped to — but the series has no
+    // reading there. Its last one is at 6 s and that is where the
+    // marker stays, beside the dashed stretch that says why.
+    const stopped = { ...ramp(ticks(0.5, 6)), extrapolated: [[6, 20] as const] };
+    const dense = ramp(ticks(0.2, 20));
+    const { marks } = hovered([stopped, dense], 12);
+    expect(marks.map((m) => m.t)).toEqual([6, 12]);
+  });
+
+  it("marks a lane the same way, over a row that was deliberately kept whole", () => {
+    // A tile axis never blanks its row (a lane's held state is
+    // information), so every column of a stale lane carries a value and
+    // the merged grid alone would have marked the pointer's. The
+    // sample columns are what stops it — the same seam, the same
+    // answer, on the renderer that had no hover marker at all.
+    const stale = { t: ticks(0.5, 6), v: ticks(0.5, 6).map(() => 1), extrapolated: [[6, 20] as const] };
+    const dense = { t: ticks(0.2, 20), v: ticks(0.2, 20).map(() => 2) };
+    const { marks } = hovered([stale, dense], 12, { blank: false });
+    expect(marks.map((m) => m.t)).toEqual([6, 12]);
+    // On the lane's own plotted position (y = 1 → 99 px in the stand-in),
+    // not on the pointer's column and not on the tile band.
+    expect(marks[0].y).toBe(99);
+    expect(marks[1].y).toBe(98);
+  });
+
+  it("marks nothing inside a stall, and the reading on whichever side is nearer", () => {
+    const stalled = {
+      t: [...ticks(0.2, 7), ...ticks(0.2, 20, 15)],
+      v: [] as number[],
+      extrapolated: [[7, 15] as const],
+    };
+    stalled.v = stalled.t.map((x) => 30 + x);
+    const dense = ramp(ticks(0.2, 20));
+    expect(hovered([stalled, dense], 9).marks[0].t).toBe(7);
+    expect(hovered([stalled, dense], 13).marks[0].t).toBe(15);
+  });
+
+  it("draws nothing at all once the pointer has left the panel", () => {
+    const { marks } = hovered([ramp(ticks(0.5, 10))], null);
+    expect(marks).toEqual([]);
+  });
+
+  it("draws nothing for a hidden series", () => {
+    const { marks } = hovered([ramp(ticks(0.5, 10))], 3.2, { signals: [{ hidden: true }] });
+    expect(marks).toEqual([]);
+  });
+
+  it("does not draw a marker that would land outside the plot box", () => {
+    // A series whose nearest sample is off to the left of the visible
+    // window: the crosshair is in frame, its reading is not, and a
+    // marker clamped to the edge would claim a sample at the edge.
+    const stopped = { ...ramp(ticks(0.5, 6)), extrapolated: [[6, 20] as const] };
+    const dense = ramp(ticks(0.2, 20));
+    const { marks } = hovered([stopped, dense], 12, { left: 100, width: 200 });
+    expect(marks.map((m) => m.t)).toEqual([12]);
   });
 });

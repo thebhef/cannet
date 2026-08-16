@@ -5,6 +5,7 @@ import {
   applyAutoPointFloor,
   applySampleMarkerFilter,
   AUTO_POINT_MARKER_FLOOR,
+  hoverMarkerColumn,
   MAX_POINT_MARKERS,
   sampleMarkerColumns,
   showPointsFromRaw,
@@ -179,5 +180,40 @@ describe("applySampleMarkerFilter", () => {
     expect(series[0]).toEqual({});
     expect(series[1]).toEqual({});
     expect(typeof series[2].points!.filter).toBe("function");
+  });
+});
+
+describe("hoverMarkerColumn", () => {
+  // The merged grid a hover lands on carries every series' columns; the
+  // answer must come from the hovered series' own ones. `xs` here is
+  // that grid, `columns` the subset one series has a sample at.
+  const xs = [0, 0.5, 1, 1.5, 2, 2.5, 3];
+  const mine = [0, 2, 6]; // t = 0, 1 and 3
+
+  it("takes the nearest of the series' own sample columns", () => {
+    expect(hoverMarkerColumn(mine, xs, 0.9)).toBe(2);
+    expect(hoverMarkerColumn(mine, xs, 1.4)).toBe(2);
+    expect(hoverMarkerColumn(mine, xs, 2.4)).toBe(6);
+  });
+
+  it("answers past both ends rather than going blank", () => {
+    // A pointer beyond a series' last sample is the stopped-series case:
+    // the marker stays on the last reading while the pointer moves on,
+    // which is what the dashed stretch between them is saying.
+    expect(hoverMarkerColumn(mine, xs, -5)).toBe(0);
+    expect(hoverMarkerColumn(mine, xs, 99)).toBe(6);
+  });
+
+  it("has nothing to answer with for a series that has no samples", () => {
+    expect(hoverMarkerColumn([], xs, 1)).toBeNull();
+    expect(hoverMarkerColumn(mine, xs, Number.NaN)).toBeNull();
+  });
+
+  it("is not a function of the columns the series does not own", () => {
+    // The falsifiable half: the same hover over the same grid gives a
+    // different column for a different series, so nothing here can be
+    // reading the grid alone.
+    expect(hoverMarkerColumn([1, 3, 5], xs, 0.9)).toBe(1);
+    expect(hoverMarkerColumn(mine, xs, 0.9)).toBe(2);
   });
 });
