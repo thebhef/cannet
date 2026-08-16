@@ -1143,6 +1143,81 @@ document; their location travels only in phase prompts.
       is on its hot path; the run is a guard against collateral damage,
       and there is none.
 
+- **2026-08-14, phase 8 (`task70-p8-secure-defaults`, branched off
+  `task70-p7-mdf-ingestion`):** item 12, the production proxy's
+  routable-bind default flips from refuse-unless-flagged to
+  auto-enable.
+  - `428867f` fix(server): a routable bind auto-enables TLS+token;
+    --tls/--insecure removed. `ProxyArgs::identity` becomes bind-aware:
+    operator material (`--cert`/`--key`) always wins; otherwise a
+    loopback bind stays plaintext and a routable bind reaches for the
+    generated identity unless `--no-tls` says to serve it in the
+    clear. `--tls` had nothing left to opt into and `--insecure`
+    suppressed a refusal that no longer exists on this path; both are
+    removed from `ProxyArgs`. `run_proxy` drops its `guard_bind` call
+    — by construction a routable bind is now either TLS-protected or
+    plaintext by the operator's explicit `--no-tls`, so the refusal
+    branch can no longer fire there. `guard_bind`/`Protections` stay,
+    unchanged in behavior, as the guard for `debug replay`/`debug
+    vbus`, which still take no certificate at all and keep their own
+    `--insecure`.
+    Test-first at the guard seam: four new tests cover
+    {loopback, routable} × {no flags, --no-tls}, asserting what
+    `identity()` returns (and, via the untouched "token follows
+    identity" rule in `run_proxy`, what serves); two more assert
+    `--tls` and `--insecure` are rejected as unknown arguments on the
+    production proxy. Five pre-existing tests that parsed `--tls` only
+    to exercise unrelated token logic had it dropped from their
+    argument lists; `insecure_does_not_turn_off_configured_tls` became
+    `no_tls_does_not_turn_off_configured_tls`, same property, new flag.
+    `cargo test -p cannet-server`: 44 unit + 37 lib + 3 auth + 7
+    end_to_end + 9 proxy + 3 tls + 14 virtual_bus passed (1 ignored,
+    the hardware-sidecar test), `cargo clippy -p cannet-server
+    --all-targets` clean.
+  - `05bf20d` fix(server): drop a stale refusal claim from --bind's
+    own doc comment — missed in the first pass, caught on a full
+    re-grep of the file for `tls`/`insecure` before moving to the
+    wider doc sweep.
+  - `8b41cef` docs(server): update every remaining --tls/--insecure
+    reference (item 12). README's flags list, three invocation
+    examples, and the "Connecting to a server run `--insecure`"
+    section (now `--no-tls`); `cannet-client`'s `ConnectConfig`
+    rustdoc; the GUI's `server_trust.rs`/`connect_flow.rs` comments,
+    which describe the _client-side_ mirror of the server's flag.
+    `debug replay`/`debug vbus`'s own `--insecure` bullets are
+    untouched — see the scope note below.
+    Verification (GUI doc comments only, no `.tsx` touched, run
+    anyway per the phase's hard rule): `cargo test -p cannet-gui` 640
+    passed / 6 ignored, `cargo clippy -p cannet-gui --all-targets`
+    clean, `pnpm --dir apps/gui test` 158 files / 2082 tests passed
+    (unchanged from phase 7's count), `pnpm --dir apps/gui build`
+    clean. `cargo test -p cannet-client` 13 end_to_end + 8 protected
+    passed, `cargo clippy -p cannet-client --all-targets` clean.
+
+  **Guard-seam matrix (all four cells green):**
+
+  | bind | flags | serves |
+  | --- | --- | --- |
+  | loopback | none | plaintext |
+  | loopback | `--no-tls` | plaintext (no-op) |
+  | routable | none | TLS + token (auto) |
+  | routable | `--no-tls` | plaintext |
+
+  **Scope note, recorded rather than silently assumed:** the task
+  prompt's "current state" description (`--tls` opts in, `--insecure`
+  suppresses the refusal) matches the production proxy exactly but not
+  `debug replay`/`debug vbus`, which never had a `--tls` flag to
+  remove — they terminate no TLS at all, by design, and ADR 0041's
+  Decision section opens with "Applies to the production cannet
+  server's public endpoint," scoping the whole secure-by-default
+  mechanism there. Read literally, "`--insecure` dies too" could be
+  taken to mean every `--insecure` in the binary; the closest faithful
+  reading given ADR 0041's stated scope is that item 12 governs the
+  production endpoint only, and debug tooling's own `--insecure` (a
+  different, pre-existing mechanism with no TLS on either side of it)
+  is untouched. Recorded under Blockers / side effects below in case
+  the owner meant the broader reading.
+
 ## Blockers / side effects
 
 - **The host command's re-root is exercised only through the
@@ -1310,6 +1385,27 @@ document; their location travels only in phase prompts.
   table and teach the file-backed cache to carry one, or (narrower)
   match a file-backed signal against a loaded DBC by name. Neither is
   started — no ruling, and the ruling that exists is satisfied.
+
+- **Item 12 was implemented as scoped to the production proxy only;
+  `debug replay`/`debug vbus` keep their own, unchanged `--insecure`**
+  (phase 8). The task's "current state" framing — `--tls` opts in,
+  `--insecure` suppresses a refusal — describes `ProxyArgs` exactly,
+  but `debug replay`/`debug vbus` never had a `--tls` flag: they
+  terminate no TLS at all, by design (dev/test tooling), and their
+  `--insecure` only ever suppressed the loopback-only refusal, never a
+  choice about encryption. ADR 0041's Decision section states its
+  scope explicitly — "Applies to the production cannet server's public
+  endpoint" — so the closest faithful reading of "`--insecure` dies
+  too" is the production endpoint's `--insecure`, not every
+  `--insecure` in the binary. Auto-enabling TLS+token for the debug
+  subcommands too was considered and rejected as an unscoped
+  expansion: it would mean generating certificates and tokens for
+  ephemeral BLF-replay and virtual-bus test tooling, which nothing in
+  the groomed rulings, the task prompt, or ADR 0041 asks for. **Owner
+  decision, if the broader reading was intended**: should `debug
+  replay`/`debug vbus` also auto-enable TLS+token on a routable bind,
+  bringing ADR 0041's coverage to every gRPC endpoint the binary can
+  serve rather than just the production one?
 
 ## Exit criteria (draft — firm at grooming)
 

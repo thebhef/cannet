@@ -432,7 +432,7 @@ cargo run -p cannet-server                      # from a source checkout
 tar xzf cannet-server-vX.Y.Z-<target>.tar.gz    # macOS / Linux archive
 # or: Expand-Archive cannet-server-vX.Y.Z-<target>.zip   # Windows archive
 cd cannet-server-vX.Y.Z-<target>
-./cannet-server --bind 0.0.0.0:50051 --tls      # from a distribution archive
+./cannet-server --bind 0.0.0.0:50051            # from a distribution archive
 # → 2026-08-13T09:12:44.108Z INFO hardware proxy: certificate fingerprint SHA256:qF3…RmA
 # → hardware proxy: client token chug-pruning-unclad-hazard-morphine
 # → 2026-08-13T09:12:44.109Z INFO hardware proxy: listening on 0.0.0.0:50051 (tls)
@@ -455,21 +455,25 @@ the one arbitrating who gets it. Point the GUI's connection panel at
 Flags:
 
 - `--bind <addr>` — listen address, default `127.0.0.1:50051`. Serving
-  anything but loopback is a deliberate choice: a routable bind exposes
-  the hardware to everyone who can reach the port, which is what
-  `--tls` is for.
-- `--tls` — terminate TLS on the bound endpoint
-  ([ADR 0041](docs/adr/0041-remote-connection-security.md)). No
-  certificate authority and no setup: the server generates a keypair
+  anything but loopback is a deliberate choice, and it auto-enables TLS
+  and a bearer token with nothing else said
+  ([ADR 0041](docs/adr/0041-remote-connection-security.md)): no
+  certificate authority and no setup, the server generates a keypair
   and a self-signed certificate the first time it needs one and keeps
   them in its per-user data directory (`%LOCALAPPDATA%\cannet-server`
   on Windows, `~/.local/share/cannet-server` on Linux,
   `~/Library/Application Support/cannet-server` on macOS), so the
   identity is the same on every later run. The private key file is
-  created readable by its owner only.
+  created readable by its owner only. A loopback bind stays plaintext
+  by default, unchanged.
+- `--no-tls` — serve a routable bind in the clear anyway: no TLS, no
+  token. The one escape hatch, for an operator who wants the hardware
+  unprotected and says so out loud. Has no effect on a loopback bind,
+  which was already plaintext.
 - `--cert <path>` / `--key <path>` — present operator-supplied PEM
   material instead of the generated identity; the two come as a pair
-  and imply `--tls`. **Renewing this certificate changes the
+  and serve TLS regardless of the bind address, even loopback, and
+  regardless of `--no-tls`. **Renewing this certificate changes the
   fingerprint**, and every client that pinned the old one has to
   accept the new one — the certificate as a whole is the identity, so
   re-keying and re-issuing look the same from the client's side.
@@ -495,13 +499,6 @@ Flags:
   **Sidecar directory** setting — not a way to pick a different frozen
   `cannet-python-can` onedir, which stays inexpressible on either host.
   `CANNET_SIDECAR_DIR` still wins when both are set.
-- `--insecure` — bind a routable address with no protection at all.
-  Without it, `--bind` on anything but loopback and no TLS is a startup
-  refusal, because a routable cannet endpoint hands control of physical
-  hardware to whoever reaches the port. The flag suppresses that
-  refusal and nothing else: TLS you configured stays on, and so does
-  the token. The same flag, and the same refusal, apply to `debug
-  replay` and `debug vbus`, which take no certificate of their own.
 - `--name <name>` — instance name to advertise via mDNS/DNS-SD
   (`_cannet._tcp`), default this machine's hostname. The GUI's browse
   list shows it; `host:port` is unaffected.
@@ -557,12 +554,12 @@ launches it: starting a server stays an explicit terminal act.
 
 ```powershell
 # Windows, default per-user install location
-& "$env:LOCALAPPDATA\cannet\cannet-server.exe" --bind 0.0.0.0:50051 --tls
+& "$env:LOCALAPPDATA\cannet\cannet-server.exe" --bind 0.0.0.0:50051
 ```
 
 ```sh
 # macOS
-/Applications/cannet.app/Contents/Resources/cannet-server --bind 0.0.0.0:50051 --tls
+/Applications/cannet.app/Contents/Resources/cannet-server --bind 0.0.0.0:50051
 ```
 
 Its flags, logs, certificate and token are the ones documented above —
@@ -613,8 +610,8 @@ the console only, the sidecar writes no logfile, and both carry on.
 
 Neither protection exists on a plaintext endpoint: the token is
 enforced exactly when TLS is, because presenting it over an
-unencrypted channel would hand it to anyone on the path. That is why
-a routable bind wants `--tls`, and why a loopback bind — your own
+unencrypted channel would hand it to anyone on the path. That is why a
+routable bind auto-enables both, and why a loopback bind — your own
 machine, and the GUI's local path — needs neither.
 
 ### Connecting to a protected server
@@ -667,7 +664,7 @@ The GUI does the same thing, with the comparison put in front of you.
 Start the server on the bench machine and leave its console visible:
 
 ```sh
-./cannet-server --bind 0.0.0.0:50051 --tls
+./cannet-server --bind 0.0.0.0:50051
 # → 2026-08-13T09:12:44.108Z INFO hardware proxy: certificate fingerprint SHA256:qF3…RmA
 # → hardware proxy: client token chug-pruning-unclad-hazard-morphine
 ```
@@ -769,7 +766,7 @@ measurement settles (info below 100 ms, warn above) and one more each
 time the offset crosses that threshold in either direction — never
 once per probe round, and never per frame.
 
-**Connecting to a server run `--insecure`.** If the protected
+**Connecting to a server run `--no-tls`.** If the protected
 connection never reaches a certificate, the GUI does not quietly fall
 back. It reports the transport error and offers *Connect without
 protection* as an explicit, per-server choice. Take it only on a

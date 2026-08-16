@@ -36,7 +36,7 @@ pub(crate) const SERVERS_FILE: &str = "servers.json";
 /// A pinned server has `fingerprint`; a pinned server that also needs a
 /// credential has `token` as well. `insecure` is the separate, explicit
 /// per-server choice to speak plaintext to a routable address — the
-/// client-side mirror of the server's own `--insecure`.
+/// client-side mirror of the server's own `--no-tls`.
 #[derive(Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrustEntry {
@@ -239,7 +239,7 @@ pub fn set_server_token(
 /// Tauri command — record that the operator chose to reach `address`
 /// without protection.
 ///
-/// The client-side mirror of the server's `--insecure`: it exists only
+/// The client-side mirror of the server's `--no-tls`: it exists only
 /// as a stored answer to an explicit question, is scoped to one server,
 /// and drops any pin and token, because a credential must never ride an
 /// unencrypted channel (ADR 0041).

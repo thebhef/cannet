@@ -3,8 +3,9 @@
 //!
 //! The server side is the production configuration — `ServerTlsConfig`
 //! from a generated identity, the token gate mounted as a server-wide
-//! layer — so what these tests exercise is exactly what a `--tls
-//! --token` proxy presents.
+//! layer — so what these tests exercise is exactly what a routable
+//! proxy presents by default (a loopback bind, and `--no-tls`, opt
+//! out of both).
 
 use std::net::SocketAddr;
 use std::time::Duration;

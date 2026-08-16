@@ -23,9 +23,9 @@
 //!   credential is sent, because the handshake never completes.
 //! - **Explicitly unprotected**: a probe that never reached a
 //!   certificate means the endpoint is not speaking TLS (a server run
-//!   `--insecure`) or is not there. There is no silent fallback: the
-//!   host asks, and only a stored answer lets a later attempt go out in
-//!   the clear.
+//!   `--no-tls`, or a loopback server, which is plaintext by default)
+//!   or is not there. There is no silent fallback: the host asks, and
+//!   only a stored answer lets a later attempt go out in the clear.
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -183,8 +183,9 @@ pub enum TrustPrompt {
     TokenRefused,
     /// A protected connection never reached a certificate: the endpoint
     /// is not speaking TLS, or is not answering at all. `detail` is the
-    /// transport error, so the dialog can distinguish "run it with
-    /// `--tls`" from "it is not there" without the host guessing.
+    /// transport error, so the dialog can distinguish "bound routable
+    /// with `--no-tls`" from "it is not there" without the host
+    /// guessing.
     NoProtection { detail: String },
 }
 

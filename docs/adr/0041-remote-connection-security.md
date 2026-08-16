@@ -37,6 +37,15 @@ transport security under it via tonic's `tls` feature (rustls).
   error unless the operator passes an explicit `--insecure`.
   Loopback binds stay plaintext by default (dev ergonomics, and the
   sidecar link).
+
+  *Amended 2026-08-14:* the startup error is gone. A non-loopback bind
+  now auto-enables TLS (the generated identity, or operator-supplied
+  `--cert`/`--key`) and the bearer token with no flag required.
+  `--tls` had nothing left to opt into and is removed; `--insecure`
+  suppressed a refusal that no longer exists and is removed with it.
+  `--no-tls` is the single remaining escape hatch, for an operator who
+  wants the endpoint served in the clear anyway. Loopback stays
+  plaintext by default, unchanged.
 - **TLS terminates at the server's public endpoint.** Supervised
   sidecars remain loopback-plaintext — a payoff of the single-endpoint
   proxy (ADR 0040). The GUI's local fast path is untouched.
@@ -59,6 +68,11 @@ can read the server's console is authorized to use its buses.
 configuration should be the loud, explicit one. `--insecure` exists
 because trusted-network deployments are real, but it is a flag the
 operator types, not a default they forget.
+
+*Amended 2026-08-14:* pushed further — the safe configuration is now
+also the unconfigured one. A non-loopback bind auto-enables TLS and a
+token with no flags; `--no-tls` is what the operator types to serve
+the hardware unprotected, replacing `--insecure`.
 
 ## Rejected alternatives
 
