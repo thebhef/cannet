@@ -1256,6 +1256,18 @@ writes, so the panel teaches the file.
   it. And if the open
   project is living in cannet's cache space, its row offers **Save
   as…** — this list is the one place you see that it is.
+- **Keeping decoded signals that lost their definition —
+  `pyramid_retention_bytes`.** A plotted signal's decoded samples live
+  in a cache that takes minutes to build over a long capture and
+  milliseconds to reopen, so when a DBC is unloaded or edited so that a
+  signal no longer decodes the way its samples were decoded, that cache
+  is **parked rather than deleted**: load the database back and the
+  samples come back with it, unbuilt. **Keep unreferenced signal
+  caches** bounds what is parked, in bytes (default 16 GB, oldest given
+  up first); `0` keeps none, which is what the app did before. It is a
+  separate budget from **Cache size cap** on purpose — that one bounds
+  the capture you are working on, this one bounds what is kept for a
+  session that may never come.
 
 **Add plot panel** opens a signal plot (Phase 4): a uPlot-based
 oscilloscope-style view, docked like any other panel. It's backed by a

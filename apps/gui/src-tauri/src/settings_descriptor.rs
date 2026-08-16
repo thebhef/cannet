@@ -282,6 +282,20 @@ const DESCRIPTORS: &[Spec] = &[
         },
     },
     Spec {
+        key: "pyramid_retention_bytes",
+        backing: Backing::Field,
+        label: "Keep unreferenced signal caches",
+        help: "Decoded signal caches whose DBC definition has gone are kept this                long in bytes, so reloading the database serves them from disk                instead of decoding the capture again. 0 keeps none.",
+        surfaces: &[Surface::Storage],
+        kind: Kind::Behaviour,
+        control: Control::Int {
+            unit: Some("MB"),
+            scale: 1024 * 1024,
+            min: None,
+            unset: None,
+        },
+    },
+    Spec {
         key: "clear_scratch_on_exit",
         backing: Backing::Field,
         label: "Discard session on exit",

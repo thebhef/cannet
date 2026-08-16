@@ -94,7 +94,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use cannet_dbc::Database;
-use cannet_spill::{lower_bound, SampleSeq};
+use cannet_spill::{lower_bound, SampleSeq, SAMPLE_ENTRY_BYTES};
 use serde::{Deserialize, Serialize};
 
 use crate::signal_fingerprint::{self, DbcScope};
@@ -274,6 +274,30 @@ struct SignalCache {
     /// evidence about the signals that same restore judged *out* — so
     /// [`SignalCacheStore::rebuilding`] leaves it out of the answer.
     restored: bool,
+    /// Fingerprint of the encoding these samples were decoded under
+    /// ([`crate::signal_fingerprint`]), as of the last time the loaded
+    /// set was in hand — [`SignalCacheStore::persist`] stamps it,
+    /// [`Self::from_levels`] carries it in from the manifest row that
+    /// matched.
+    ///
+    /// It is what lets a *DBC-set change* judge this cache without the
+    /// set it was decoded against: that set is gone by the time
+    /// [`SignalCacheStore::invalidate_dbcs`] runs, and this is the only
+    /// record of what it said. A live cache's encoding cannot move
+    /// under it — every change to the loaded set runs that function —
+    /// so the stamp is current for as long as the cache lives.
+    ///
+    /// `None` for a cache created since the last manifest write: nothing
+    /// has ever had both it and a loaded set at once, so what it was
+    /// decoded with is unprovable and a DBC change discards it.
+    encoding: Option<String>,
+    /// Whether **this session** has served anything out of this cache.
+    /// A pyramid that came back off disk and is never asked for anything
+    /// is disk that has not earned its keep, which
+    /// [`SignalCacheStore::usage`] reports so it is visible in a log
+    /// rather than merely true. Per session by construction: it is not
+    /// persisted, because the question is about this run.
+    read: bool,
 }
 
 impl SignalCache {
@@ -292,6 +316,8 @@ impl SignalCache {
             hi: f64::NEG_INFINITY,
             file,
             restored: false,
+            encoding: None,
+            read: false,
         }
     }
 
@@ -299,6 +325,17 @@ impl SignalCache {
     /// so a front-trimmed series counts what it still has.
     fn sample_count(&self) -> usize {
         self.levels[0].live_len()
+    }
+
+    /// Bytes of samples this pyramid holds, every level counted — what
+    /// keeping it costs, and what re-decoding it would have to produce
+    /// again. Live slots only, so a front-trimmed pyramid is charged for
+    /// what it kept.
+    fn bytes(&self) -> u64 {
+        self.levels
+            .iter()
+            .map(|level| level.live_bytes() as u64)
+            .sum()
     }
 
     /// The newest level-0 sample, or `None` for an empty series.
@@ -668,8 +705,13 @@ impl SignalCache {
     /// because here is where the samples are declared to be on disk: it
     /// records what they were decoded from, not what is loaded when they
     /// are read back.
+    ///
+    /// The fingerprint is also **kept** on the cache
+    /// ([`Self::encoding`]): it is the only record of what this pyramid
+    /// was decoded with once the set moves on, and a DBC-set change has
+    /// to judge the cache after that has happened.
     #[allow(clippy::cast_possible_truncation)]
-    fn snapshot(&self, key: &SignalKey, dbcs: &[DbcScope<'_>]) -> PersistedSignal {
+    fn snapshot(&mut self, key: &SignalKey, dbcs: &[DbcScope<'_>]) -> PersistedSignal {
         let encoding = match &self.file {
             Some(file) => signal_fingerprint::file_source(file),
             None => signal_fingerprint::dbc_encoding(
@@ -680,13 +722,30 @@ impl SignalCache {
                 &key.signal,
             ),
         };
+        self.encoding = Some(encoding.clone());
+        self.row(key, Some(encoding))
+    }
+
+    /// This cache's manifest row **against the fingerprint it already
+    /// carries** — what parking one needs, since by then the set it was
+    /// decoded against is no longer loaded. `None` when it carries none,
+    /// which is exactly the case that cannot be parked.
+    fn parked_row(&self, key: &SignalKey) -> Option<PersistedSignal> {
+        Some(self.row(key, Some(self.encoding.clone()?)))
+    }
+
+    /// The manifest row's fields that are facts about the pyramid on
+    /// disk, with `encoding` supplied by the caller (which is what
+    /// decides *which* model the row claims to have been decoded under).
+    #[allow(clippy::cast_possible_truncation)]
+    fn row(&self, key: &SignalKey, encoding: Option<String>) -> PersistedSignal {
         PersistedSignal {
             bus_id: key.bus_id.clone(),
             message_id: key.slot,
             extended: key.extended,
             signal: key.signal.clone(),
             file: self.file.clone(),
-            encoding: Some(encoding),
+            encoding,
             next_index: self.next_index as u64,
             extent: self.extent().map(|(lo, hi)| [lo, hi]),
             levels: self
@@ -765,6 +824,10 @@ impl SignalCache {
             hi,
             file: p.file.clone(),
             restored: true,
+            // The row was only adopted because its fingerprint answered
+            // to the loaded set, so it is this cache's stamp too.
+            encoding: p.encoding.clone(),
+            read: false,
         }
     }
 
@@ -1158,13 +1221,39 @@ fn wipe_prefix(dir: &Path, base: &str) {
     }
 }
 
-/// [`wipe_dir`], but leaving the level files of `keep` (and the manifest
-/// itself) where they are. This is what lets a DBC-set change drop the
-/// live *decoded* state without touching either a staged set's files —
-/// pre-empting its own validity check — or the file-backed series a DBC
-/// change has no bearing on. See [`SignalCacheStore::invalidate_dbcs`].
-fn wipe_dir_except(dir: &Path, keep: &[SignalKey]) {
-    let keep: Vec<String> = keep.iter().map(key_prefix).collect();
+/// Rename every level file under `dir` from one file-name base to
+/// another — how a pyramid moves between the live name
+/// ([`key_prefix`]) and a parked one ([`parked_base`]) without a byte of
+/// it being copied.
+///
+/// Call only once the pyramid's mappings have been dropped: on Windows a
+/// mapped file cannot be renamed. Returns whether anything moved; `false`
+/// means the caller's assumption about what is on disk was wrong, and
+/// the caller wipes rather than record a pool entry that maps nothing.
+fn rename_prefix(dir: &Path, from: &str, to: &str) -> bool {
+    let mut moved = false;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(rest) = name.strip_prefix(from) else {
+                continue;
+            };
+            if std::fs::rename(entry.path(), dir.join(format!("{to}{rest}"))).is_ok() {
+                moved = true;
+            }
+        }
+    }
+    moved
+}
+
+/// [`wipe_dir`], but leaving the level files whose name starts with one
+/// of `keep` (and the manifest itself) where they are. This is what lets
+/// a DBC-set change drop the live *decoded* state without touching a
+/// staged set's files — pre-empting its own validity check — the
+/// file-backed series a DBC change has no bearing on, or the retention
+/// pool's parked pyramids. See [`SignalCacheStore::invalidate_dbcs`].
+fn wipe_dir_except(dir: &Path, keep: &[String]) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -1223,11 +1312,53 @@ pub struct PyramidValidity {
 /// capture is), and nothing will rebuild it.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 pub struct RestoreOutcome {
-    /// Signals whose persisted pyramid was adopted, both provenances.
+    /// Signals whose persisted pyramid was adopted, both provenances —
+    /// `revived` included, since a revival is a reopen that happened to
+    /// come out of the retention pool.
     pub reopened: usize,
     /// DBC-backed signals whose pyramid was discarded, to be decoded again
     /// from the raw frames on the next serve.
     pub rebuilt: usize,
+    /// Of `reopened`, how many came back out of the **retention pool** —
+    /// a definition that had disappeared and returned unchanged. The
+    /// pool's payoff, and the only number that says whether keeping the
+    /// bytes was worth it.
+    pub revived: usize,
+    /// Bytes of samples the reopened pyramids hold — the decoding this
+    /// restore did *not* have to pay for.
+    pub reused_bytes: u64,
+    /// Bytes of samples the discarded rows held — the decoding it will
+    /// pay for, one plotted signal at a time. A parked row counts here
+    /// too: its samples are kept for a later session, not served to this
+    /// one.
+    pub rebuilt_bytes: u64,
+}
+
+/// What the pyramid cache is doing with the disk it holds, right now —
+/// the ongoing half of ADR 0047's "are we saving time or wasting disk"
+/// accounting, surfaced through the health sample.
+///
+/// [`RestoreOutcome`] answers the question for one launch; this answers
+/// it for a session as it runs.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct CacheUsage {
+    /// Signals with a live pyramid.
+    pub live: usize,
+    /// Of them, how many this session has never served anything out of.
+    pub unread: usize,
+    /// Bytes those unread pyramids hold — disk that has not earned its
+    /// keep.
+    pub unread_bytes: u64,
+    /// Pyramids parked in the retention pool, and their bytes.
+    pub retained: usize,
+    pub retained_bytes: u64,
+    /// The pool's byte bound, so a reader can tell a pool that is idling
+    /// from one that is thrashing against its budget.
+    pub retention_cap_bytes: u64,
+    /// Session-lifetime pool outcomes: pyramids handed back to a
+    /// returning definition, and pyramids the bound gave up on.
+    pub revivals: u64,
+    pub evictions: u64,
 }
 
 /// One persisted pyramid level: the two numbers [`SampleSeq::reopen`]
@@ -1274,6 +1405,17 @@ struct PersistedSignal {
 }
 
 impl PersistedSignal {
+    /// Bytes of samples this row's levels hold, from the two numbers the
+    /// row carries per level — the same figure [`SignalCache::bytes`]
+    /// reports for a mapped pyramid, for one nothing has mapped.
+    fn bytes(&self) -> u64 {
+        self.levels
+            .iter()
+            .map(|l| l.len.saturating_sub(l.first_slot))
+            .sum::<u64>()
+            * SAMPLE_ENTRY_BYTES as u64
+    }
+
     fn key(&self) -> SignalKey {
         match &self.file {
             Some(f) => SignalKey::file(f.group, self.signal.clone()),
@@ -1337,6 +1479,74 @@ fn reopen_set(root: &Path, signals: &[PersistedSignal]) -> Option<Vec<(SignalKey
 struct PyramidManifest {
     validity: PyramidValidity,
     signals: Vec<PersistedSignal>,
+    /// The retention pool, oldest park first ([`RetainedPyramid`]).
+    /// `#[serde(default)]` so a manifest written before the pool existed
+    /// still reads, as a set with nothing parked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retained: Vec<RetainedPyramid>,
+}
+
+/// One pyramid **parked**: no live cache references it, but it is kept
+/// against the definition coming back (ADR 0047).
+///
+/// The level files are not deleted, they are *renamed* — a parked
+/// pyramid must not sit under the file-name base a rebuild of the same
+/// signal would append into. `base` is where they went, and a revival
+/// renames them back before mapping them.
+///
+/// The pool is DBC-backed by construction: a file-backed series is never
+/// unreferenced by a model change (no DBC bears on it), and nothing but
+/// a capture change — which discards the pool whole — can take one away.
+#[derive(Serialize, Deserialize)]
+struct RetainedPyramid {
+    /// File-name base the level files were renamed to when parked.
+    base: String,
+    /// The manifest row, carrying the fingerprint a revival is judged by.
+    signal: PersistedSignal,
+    /// Bytes of samples it holds, against the pool's byte bound. Recorded
+    /// rather than recomputed so the bound is charged what was measured
+    /// when the pyramid was still mapped.
+    bytes: u64,
+}
+
+/// The retention pool's byte bound when `settings.json` does not say
+/// otherwise (`pyramid_retention_bytes`): **16 GiB**.
+///
+/// The unit of parking is not one signal but a whole session's worth of
+/// them — unloading a DBC unreferences every pyramid it decoded at once —
+/// and a full session's pyramid set runs to ~1.6 GB on the reference
+/// workload. A default that holds only one such set would evict the
+/// previous one every time a set is parked, which is the case the pool
+/// exists for. Sixteen holds several, so unloading a database, working,
+/// and loading it back still finds its samples.
+///
+/// Zero is a legal value and means "park nothing": every unreferenced
+/// pyramid is deleted, which is what this cache did before the pool.
+pub const DEFAULT_RETENTION_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+/// Prefix of a parked pyramid's file-name base. Distinct from the live
+/// [`key_prefix`] naming (`sig.…`), so a rebuild of a parked signal opens
+/// empty files rather than appending into the samples that were kept.
+const PARK_PREFIX: &str = "park.";
+
+/// Where a parked pyramid's level files go: `park.{seq}.{live base}`.
+///
+/// The sequence number keeps two parks of the *same* signal apart — a
+/// definition that changed twice leaves two candidates, and either may be
+/// the one that comes back — and it makes the name unique without the
+/// pool having to search for a free one. The live base is kept inside it
+/// so the files are still identifiable by eye, and so the
+/// scratch-footprint walk's `….l{n}.{seg}` parse still finds the level.
+fn parked_base(seq: u64, live_base: &str) -> String {
+    format!("{PARK_PREFIX}{seq:08x}.{live_base}")
+}
+
+/// The serial in a [`parked_base`], so a restored pool can carry on
+/// minting names above the ones the prior session used. `None` for a
+/// base this module did not write.
+fn parked_seq(base: &str) -> Option<u64> {
+    let rest = base.strip_prefix(PARK_PREFIX)?;
+    u64::from_str_radix(rest.split('.').next()?, 16).ok()
 }
 
 /// One signal a batch of queries names: the cache key's four fields,
@@ -1536,6 +1746,22 @@ struct Caches {
     /// rebuilding`] turns it into the fact the frontend announces, and
     /// clears it once the caches have caught up.
     rebuild_pending: bool,
+    /// The **retention pool**: pyramids nothing references any more,
+    /// kept against their definition returning. Oldest park first, which
+    /// is the order [`evict_retained`] gives them up in.
+    retained: Vec<RetainedPyramid>,
+    /// Bytes `retained` holds, maintained with it rather than summed on
+    /// demand — the bound is checked on every park.
+    retained_bytes: u64,
+    /// The pool's byte bound, from `settings.json`
+    /// ([`SignalCacheStore::set_retention_cap`]).
+    retention_cap: u64,
+    /// Serial for [`parked_base`], so two parks never collide on a name.
+    park_seq: u64,
+    /// Session-lifetime pool outcomes, reported by
+    /// [`SignalCacheStore::usage`].
+    revivals: u64,
+    evictions: u64,
 }
 
 /// Prepare `root` as a pyramid scratch: create it, and stage whatever a
@@ -1555,7 +1781,116 @@ fn open_root(root: PathBuf) -> Caches {
         staged,
         dirty: false,
         rebuild_pending: false,
+        retained: Vec::new(),
+        retained_bytes: 0,
+        retention_cap: DEFAULT_RETENTION_BYTES,
+        park_seq: 0,
+        revivals: 0,
+        evictions: 0,
     }
+}
+
+/// Move one pyramid into the retention pool: rename its level files out
+/// of the way of a rebuild and record the row a revival is judged by.
+///
+/// Call only after the cache has been dropped — the files are mapped
+/// until then. A row holding no samples is not worth a pool slot, and a
+/// rename that moves nothing means the files are not what the row says,
+/// so both wipe instead.
+fn park(caches: &mut Caches, key: &SignalKey, row: PersistedSignal) {
+    let live_base = key_prefix(key);
+    let bytes = row.bytes();
+    if bytes == 0 || caches.retention_cap == 0 {
+        wipe_prefix(&caches.root, &live_base);
+        return;
+    }
+    caches.park_seq += 1;
+    let base = parked_base(caches.park_seq, &live_base);
+    if !rename_prefix(&caches.root, &live_base, &base) {
+        wipe_prefix(&caches.root, &live_base);
+        return;
+    }
+    caches.retained_bytes += bytes;
+    caches.retained.push(RetainedPyramid {
+        base,
+        signal: row,
+        bytes,
+    });
+}
+
+/// Hand back every parked pyramid whose recorded fingerprint answers to
+/// `dbcs` — the definition returned, so the samples are reusable exactly
+/// as a restore would have found them reusable. Returns how many.
+///
+/// A key that is already live is left parked rather than revived: the
+/// live cache is the current decode of that signal, and two pyramids
+/// cannot share one key (or one set of level files).
+fn revive_retained(caches: &mut Caches, dbcs: &[DbcScope<'_>]) -> usize {
+    let mut revived = 0;
+    let mut i = 0;
+    while i < caches.retained.len() {
+        let entry = &caches.retained[i];
+        let key = entry.signal.key();
+        let now = signal_fingerprint::dbc_encoding(
+            dbcs,
+            key.bus_id.as_deref(),
+            key.slot,
+            key.extended,
+            &key.signal,
+        );
+        if caches.by_key.contains_key(&key)
+            || entry.signal.encoding.as_deref() != Some(now.as_str())
+        {
+            i += 1;
+            continue;
+        }
+        let entry = caches.retained.remove(i);
+        caches.retained_bytes = caches.retained_bytes.saturating_sub(entry.bytes);
+        let live_base = key_prefix(&key);
+        if rename_prefix(&caches.root, &entry.base, &live_base) {
+            if let Some(mapped) = reopen_set(&caches.root, std::slice::from_ref(&entry.signal)) {
+                caches.by_key.extend(mapped);
+                revived += 1;
+                continue;
+            }
+            // The files did not answer to the row after all, and they now
+            // sit under the live name where a rebuild would append into
+            // them. Reject is always the safe direction (ADR 0047).
+            wipe_prefix(&caches.root, &live_base);
+        } else {
+            wipe_prefix(&caches.root, &entry.base);
+        }
+    }
+    caches.revivals += revived as u64;
+    revived
+}
+
+/// Give up the oldest parks until the pool fits its byte bound, wiping
+/// each one's level files. Returns how many went.
+///
+/// Oldest-first because the pool is a bet on a definition returning, and
+/// the longer a park has gone unclaimed the worse that bet looks.
+fn evict_retained(caches: &mut Caches) -> usize {
+    let mut evicted = 0;
+    while caches.retained_bytes > caches.retention_cap && !caches.retained.is_empty() {
+        let entry = caches.retained.remove(0);
+        caches.retained_bytes = caches.retained_bytes.saturating_sub(entry.bytes);
+        wipe_prefix(&caches.root, &entry.base);
+        evicted += 1;
+    }
+    caches.evictions += evicted as u64;
+    evicted
+}
+
+/// Every file-name base the pyramid scratch must keep: the live caches',
+/// and the retention pool's.
+fn keep_bases(caches: &Caches) -> Vec<String> {
+    caches
+        .by_key
+        .keys()
+        .map(key_prefix)
+        .chain(caches.retained.iter().map(|r| r.base.clone()))
+        .collect()
 }
 
 impl SignalCacheStore {
@@ -1606,11 +1941,75 @@ impl SignalCacheStore {
         // restore stops being announced — this is the offramp's own
         // exit as much as the exit path's.
         caches.rebuild_pending = false;
+        // The retention pool goes too. A parked pyramid is a pyramid of
+        // the capture that is being discarded — capture identity is a
+        // hard gate, and parking is not a way around it.
+        caches.retained = Vec::new();
+        caches.retained_bytes = 0;
         wipe_dir(&caches.root);
     }
 
-    /// Drop the live decoded state after a DBC-set change (ADR 0033): the
-    /// samples in it were decoded against a set that no longer applies.
+    /// Bound the retention pool at `bytes`, giving up the oldest parks
+    /// immediately if the new bound is below what is held (ADR 0047).
+    /// `0` disables retention: an unreferenced pyramid is deleted, as it
+    /// was before the pool existed.
+    pub fn set_retention_cap(&self, bytes: u64) {
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
+        caches.retention_cap = bytes;
+        if evict_retained(&mut caches) > 0 {
+            caches.dirty = true;
+        }
+    }
+
+    /// What this cache is doing with the disk it holds ([`CacheUsage`]) —
+    /// the health sample's pyramid accounting.
+    pub fn usage(&self) -> CacheUsage {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let unread: Vec<&SignalCache> = caches.by_key.values().filter(|c| !c.read).collect();
+        CacheUsage {
+            live: caches.by_key.len(),
+            unread: unread.len(),
+            unread_bytes: unread.iter().map(|c| c.bytes()).sum(),
+            retained: caches.retained.len(),
+            retained_bytes: caches.retained_bytes,
+            retention_cap_bytes: caches.retention_cap,
+            revivals: caches.revivals,
+            evictions: caches.evictions,
+        }
+    }
+
+    /// The signal names in the retention pool, oldest park first.
+    #[cfg(test)]
+    fn retained_signals(&self) -> Vec<String> {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        caches
+            .retained
+            .iter()
+            .map(|r| r.signal.signal.clone())
+            .collect()
+    }
+
+    /// Re-judge the live decoded state against a DBC set that has just
+    /// changed (ADR 0033), the same way [`Self::restore`] judges a
+    /// persisted one: `dbcs` is the **new** loaded set, in load order.
+    ///
+    /// Three outcomes per DBC-backed cache, and they are the per-signal
+    /// judgement applied in-session:
+    ///
+    /// - **Its candidate chain has not moved** — the new set decodes it
+    ///   exactly as the old one did, so it keeps decoding. (A whole-set
+    ///   drop used to discard it here, which is the same waste, one
+    ///   session earlier, that the touched-DBC case was.)
+    /// - **It moved** — the samples were decoded against a model that no
+    ///   longer applies, so the cache goes; but the pyramid is *parked*
+    ///   ([`park`]) rather than deleted, against the definition coming
+    ///   back. Which it then does, in the same call: anything in the pool
+    ///   the new set decodes the way it was decoded is revived
+    ///   ([`revive_retained`]).
+    /// - **It carries no fingerprint** — created since the last manifest
+    ///   write, so what it was decoded with was never recorded and cannot
+    ///   be judged. It is discarded, which is the safe direction and the
+    ///   behaviour every cache had before.
     ///
     /// **File-backed series survive.** Their samples were read from a
     /// capture file, not decoded from frames — no DBC produced them and
@@ -1618,36 +2017,70 @@ impl SignalCacheStore {
     /// stay exactly where they are.
     ///
     /// A *staged* set is likewise left where it is. It is not decoded
-    /// state yet — it is a candidate whose own recorded DBC fingerprint is
+    /// state yet — it is a candidate whose own recorded fingerprints are
     /// part of the check [`Self::restore`] is about to make — and the boot
     /// sequence loads a project's DBCs before it restores that project's
     /// capture, so wiping here would mean no persisted pyramid could ever
-    /// be reused. Once a set has been adopted it is live like any other,
-    /// and the next DBC change wipes its DBC-backed half.
-    pub fn invalidate_dbcs(&self) {
+    /// be reused.
+    pub fn invalidate_dbcs(&self, dbcs: &[DbcScope<'_>]) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        caches.by_key.retain(|key, _| key.file_backed);
-        caches.generation += 1;
-        // The surviving file-backed series still owe the manifest a
-        // rewrite: the rows it holds for the discarded DBC-backed ones
-        // no longer describe anything on disk.
-        caches.dirty = !caches.by_key.is_empty();
-        let Caches {
-            root,
-            staged,
-            by_key,
-            ..
-        } = &*caches;
-        let mut keep: Vec<SignalKey> = by_key.keys().cloned().collect();
-        if let Some(manifest) = staged {
-            keep.extend(manifest.signals.iter().map(PersistedSignal::key));
+        let mut park_keys: Vec<SignalKey> = Vec::new();
+        let mut drop_keys: Vec<SignalKey> = Vec::new();
+        for (key, cache) in &caches.by_key {
+            if key.file_backed {
+                continue;
+            }
+            let now = signal_fingerprint::dbc_encoding(
+                dbcs,
+                key.bus_id.as_deref(),
+                key.slot,
+                key.extended,
+                &key.signal,
+            );
+            match cache.encoding.as_deref() {
+                Some(stamp) if stamp == now => {}
+                Some(_) => park_keys.push(key.clone()),
+                None => drop_keys.push(key.clone()),
+            }
+        }
+        let changed = !park_keys.is_empty() || !drop_keys.is_empty();
+        if changed {
+            // A catch-up planned against the set that is going must not
+            // apply its samples to what replaces it.
+            caches.generation += 1;
+        }
+        for key in park_keys {
+            // Remove first: the levels are mapped files, and on Windows a
+            // mapped file cannot be renamed.
+            let Some(cache) = caches.by_key.remove(&key) else {
+                continue;
+            };
+            let row = cache.parked_row(&key);
+            drop(cache);
+            match row {
+                Some(row) => park(&mut caches, &key, row),
+                None => wipe_prefix(&caches.root, &key_prefix(&key)),
+            }
+        }
+        for key in drop_keys {
+            caches.by_key.remove(&key);
+            wipe_prefix(&caches.root, &key_prefix(&key));
+        }
+        let revived = revive_retained(&mut caches, dbcs);
+        let evicted = evict_retained(&mut caches);
+        caches.dirty |= changed || revived > 0 || evicted > 0;
+        let mut keep = keep_bases(&caches);
+        if let Some(manifest) = &caches.staged {
+            keep.extend(manifest.signals.iter().map(|s| key_prefix(&s.key())));
+            keep.extend(manifest.retained.iter().map(|r| r.base.clone()));
         }
         if keep.is_empty() {
             // Nothing to preserve — take the manifest with the files, so
             // the directory doesn't describe pyramids that are gone.
-            wipe_dir(root);
+            caches.dirty = false;
+            wipe_dir(&caches.root);
         } else {
-            wipe_dir_except(root, &keep);
+            wipe_dir_except(&caches.root, &keep);
         }
     }
 
@@ -1669,10 +2102,18 @@ impl SignalCacheStore {
         caches.staged = None;
         // The generation is the store's, not the root's: it only has to
         // keep rising, so a catch-up planned before the move can tell that
-        // its samples belong to a set that is gone.
+        // its samples belong to a set that is gone. The retention bound
+        // and its lifetime counters are the store's too — the budget came
+        // from settings, and the counters describe this session, not this
+        // directory. The pool's *contents* are not carried across: they
+        // are pyramids of the project being left.
         let generation = caches.generation + 1;
+        let (cap, revivals, evictions) = (caches.retention_cap, caches.revivals, caches.evictions);
         *caches = open_root(root.as_ref().to_path_buf());
         caches.generation = generation;
+        caches.retention_cap = cap;
+        caches.revivals = revivals;
+        caches.evictions = evictions;
     }
 
     /// Write the manifest describing the live pyramids and the
@@ -1733,15 +2174,22 @@ impl SignalCacheStore {
         for cache in caches.by_key.values_mut() {
             cache.flush_levels(harden, &mut budget);
         }
+        let signals: Vec<PersistedSignal> = caches
+            .by_key
+            .iter_mut()
+            .map(|(key, cache)| cache.snapshot(key, dbcs))
+            .collect();
         let manifest = PyramidManifest {
             validity: validity.clone(),
-            signals: caches
-                .by_key
-                .iter()
-                .map(|(key, cache)| cache.snapshot(key, dbcs))
-                .collect(),
+            signals,
+            // The pool's rows are as they were parked: their fingerprints
+            // record the model their samples were decoded under, which is
+            // not the one loaded now — that is the whole point of them.
+            retained: std::mem::take(&mut caches.retained),
         };
-        match write_json(&caches.root.join(MANIFEST_FILE), &manifest) {
+        let written = write_json(&caches.root.join(MANIFEST_FILE), &manifest);
+        caches.retained = manifest.retained;
+        match written {
             Ok(()) => {
                 caches.dirty = false;
                 true
@@ -1812,10 +2260,17 @@ impl SignalCacheStore {
         };
         let same_capture = manifest.validity.capture_id == validity.capture_id;
         let same_window = manifest.validity.low_water == validity.low_water;
+        // The two whole-set gates. Past them a row answers for itself;
+        // short of them nothing on disk describes this capture, and the
+        // retention pool is no exception — parking is not a way around a
+        // hard gate.
+        let same_frames = same_capture && same_window;
         let offered = manifest.signals.len();
         let mut dbc_rows: Vec<PersistedSignal> = Vec::new();
         let mut file_rows: Vec<PersistedSignal> = Vec::new();
+        let mut park_rows: Vec<PersistedSignal> = Vec::new();
         let mut rebuilt = 0usize;
+        let mut rebuilt_bytes = 0u64;
         for row in manifest.signals {
             if row.file.is_some() {
                 if same_capture {
@@ -1823,24 +2278,35 @@ impl SignalCacheStore {
                 }
                 continue;
             }
-            let judged = same_capture
-                && same_window
-                && row.next_index <= store_len as u64
-                && row.encoding.as_deref()
-                    == Some(
-                        signal_fingerprint::dbc_encoding(
-                            dbcs,
-                            row.bus_id.as_deref(),
-                            row.message_id,
-                            row.extended,
-                            &row.signal,
-                        )
-                        .as_str(),
-                    );
+            if !same_frames || row.next_index > store_len as u64 {
+                // Not a judgement about the encoding: the frames
+                // underneath are not the frames these samples describe.
+                // Keeping such a pyramid would be keeping something no
+                // returning definition could make valid again.
+                rebuilt += 1;
+                rebuilt_bytes += row.bytes();
+                continue;
+            }
+            let judged = row.encoding.as_deref()
+                == Some(
+                    signal_fingerprint::dbc_encoding(
+                        dbcs,
+                        row.bus_id.as_deref(),
+                        row.message_id,
+                        row.extended,
+                        &row.signal,
+                    )
+                    .as_str(),
+                );
             if judged {
                 dbc_rows.push(row);
             } else {
+                // The definition was edited away, or is gone entirely.
+                // This session owes the decode either way — but the
+                // samples are worth keeping against its return.
                 rebuilt += 1;
+                rebuilt_bytes += row.bytes();
+                park_rows.push(row);
             }
         }
         let restored_dbc = reopen_set(&caches.root, &dbc_rows);
@@ -1849,6 +2315,7 @@ impl SignalCacheStore {
             // The batch reopen failed, so every row it covered is owed a
             // rebuild after all.
             rebuilt += dbc_rows.len();
+            rebuilt_bytes += dbc_rows.iter().map(PersistedSignal::bytes).sum::<u64>();
         }
         // A DBC-backed row that was offered and not taken is the cold
         // rebuild this session is about to pay for, one plotted signal
@@ -1861,20 +2328,49 @@ impl SignalCacheStore {
         let mut by_key: HashMap<SignalKey, SignalCache> = HashMap::new();
         by_key.extend(restored_dbc.into_iter().flatten());
         by_key.extend(restored_file.into_iter().flatten());
-        let reopened = by_key.len();
-        let keep: Vec<SignalKey> = by_key.keys().cloned().collect();
         caches.by_key = by_key;
+        // The pool the prior session left, then this restore's own parks.
+        // Both are conditional on the whole-set gates; short of them the
+        // parked files are simply not in the keep list below.
+        if same_frames {
+            caches.retained_bytes = manifest.retained.iter().map(|r| r.bytes).sum();
+            // Keep minting names above every one already in use, so a
+            // park this session makes cannot land on a prior session's.
+            caches.park_seq = manifest
+                .retained
+                .iter()
+                .filter_map(|r| parked_seq(&r.base))
+                .fold(caches.park_seq, u64::max);
+            caches.retained = manifest.retained;
+        }
+        let parked_now = park_rows.len();
+        for row in park_rows {
+            let key = row.key();
+            park(&mut caches, &key, row);
+        }
+        let revived = revive_retained(&mut caches, dbcs);
+        let evicted = evict_retained(&mut caches);
+        let reopened = caches.by_key.len();
+        let reused_bytes = caches.by_key.values().map(SignalCache::bytes).sum();
+        let keep = keep_bases(&caches);
         if keep.is_empty() {
             caches.dirty = false;
             wipe_dir(&caches.root);
-        } else if reopened < offered {
-            // A rejected row leaves its files behind and makes the
-            // manifest describe pyramids that are no longer live, so it
-            // owes a rewrite. A clean restore owes nothing.
-            caches.dirty = true;
+        } else {
+            // A rejected row leaves the manifest describing pyramids that
+            // are no longer live, and a park, revival or eviction moves
+            // the pool it also describes — any of them owes a rewrite. A
+            // clean restore owes nothing.
+            caches.dirty = reopened < offered || parked_now > 0 || revived > 0 || evicted > 0;
             wipe_dir_except(&caches.root, &keep);
         }
-        RestoreOutcome { reopened, rebuilt }
+        RestoreOutcome {
+            reopened,
+            rebuilt,
+            revived,
+            reused_bytes,
+            rebuilt_bytes,
+        }
     }
 
     /// Whether the restored capture is still owed a **cold rebuild** of
@@ -2363,15 +2859,18 @@ impl SignalCacheStore {
             &store_fetch(store),
             &self.serve_limit(),
         );
-        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let mut series = Vec::with_capacity(keys.len());
         let mut extrapolated = Vec::with_capacity(keys.len());
         for key in &keys {
-            let Some(cache) = caches.by_key.get(key) else {
+            let Some(cache) = caches.by_key.get_mut(key) else {
                 series.push(Vec::new());
                 extrapolated.push(Vec::new());
                 continue;
             };
+            // Something asked this pyramid for samples, so it has earned
+            // its disk this session ([`CacheUsage`]).
+            cache.read = true;
             let window = match reduction {
                 Reduction::MinMax => cache.window(from_seconds, to_seconds, max_points),
                 Reduction::Runs => cache.window_categorical(from_seconds, to_seconds, max_points),
@@ -2443,9 +2942,13 @@ impl SignalCacheStore {
             &store_fetch(store),
             &self.serve_limit(),
         );
-        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         keys.iter()
-            .map(|key| caches.by_key.get(key).and_then(SignalCache::extent))
+            .map(|key| {
+                let cache = caches.by_key.get_mut(key)?;
+                cache.read = true;
+                cache.extent()
+            })
             .collect()
     }
 }
@@ -4913,19 +5416,35 @@ mod tests {
         vec![DbcScope { db, buses: &[] }]
     }
 
+    /// A restore's three counts, for the tests that assert on the split
+    /// rather than on the bytes beside it.
+    fn counts(outcome: RestoreOutcome) -> (usize, usize, usize) {
+        (outcome.reopened, outcome.rebuilt, outcome.revived)
+    }
+
     /// Message 256 with two signals — `A` in bytes 0-1 at unit scale and
     /// `B` in bytes 2-3 at `b_factor`, the one input the re-encoding tests
     /// move.
     fn dbc_ab_text(b_factor: u32) -> String {
+        dbc_ab_scaled_text(1, b_factor)
+    }
+
+    /// [`dbc_ab_text`] with **both** factors nameable, so a test can
+    /// re-encode one signal at a time in a chosen order.
+    fn dbc_ab_scaled_text(a_factor: u32, b_factor: u32) -> String {
         format!(
             "{DBC_HEADER}\nBO_ 256 Msg: 8 Vector__XXX\n \
-             SG_ A : 0|16@1+ (1,0) [0|0] \"\" Vector__XXX\n \
+             SG_ A : 0|16@1+ ({a_factor},0) [0|0] \"\" Vector__XXX\n \
              SG_ B : 16|16@1+ ({b_factor},0) [0|0] \"\" Vector__XXX\n"
         )
     }
 
     fn dbc_ab(b_factor: u32) -> Database {
         Database::parse(&dbc_ab_text(b_factor)).unwrap()
+    }
+
+    fn dbc_ab_scaled(a_factor: u32, b_factor: u32) -> Database {
+        Database::parse(&dbc_ab_scaled_text(a_factor, b_factor)).unwrap()
     }
 
     /// Build pyramids for both signals of [`dbc_ab`] over an `n`-frame
@@ -5053,11 +5572,8 @@ mod tests {
         let reloaded = read_back();
         let reopened = SignalCacheStore::new(root.path());
         assert_eq!(
-            reopened.restore(&v, &scopes(&reloaded), len),
-            RestoreOutcome {
-                reopened: 2,
-                rebuilt: 0,
-            },
+            counts(reopened.restore(&v, &scopes(&reloaded), len)),
+            (2, 0, 0),
         );
         assert!(!reopened.rebuilding(len), "and nothing is announced");
         // Every sample came off disk: these frames decode to nothing.
@@ -5085,11 +5601,8 @@ mod tests {
         let after = dbc_ab(2);
         let reopened = SignalCacheStore::new(root.path());
         assert_eq!(
-            reopened.restore(&v, &scopes(&after), len),
-            RestoreOutcome {
-                reopened: 1,
-                rebuilt: 1,
-            },
+            counts(reopened.restore(&v, &scopes(&after), len)),
+            (1, 1, 0),
         );
         assert!(
             reopened.rebuilding(len),
@@ -5108,7 +5621,9 @@ mod tests {
             0,
             "B's pyramid was discarded",
         );
-        // …and its files with it, so nothing stale is left to accumulate.
+        // …and its level files are no longer where a rebuild of `B` would
+        // append: they were parked ([`RetainedPyramid`]), so nothing
+        // stale is left under the live name.
         let live: Vec<String> = std::fs::read_dir(root.path())
             .unwrap()
             .flatten()
@@ -5122,7 +5637,261 @@ mod tests {
         );
         assert!(
             !live.iter().any(|n| n.starts_with(&dropped)),
-            "B's levels are gone: {live:?}",
+            "B's levels are not under the live name: {live:?}",
+        );
+        assert_eq!(reopened.retained_signals(), vec!["B".to_string()]);
+    }
+
+    // ---- Bounded retention of unreferenced pyramids ------------------
+
+    #[test]
+    fn an_unreferenced_pyramid_is_parked_and_revived_when_its_definition_returns() {
+        // The pool's whole reason to exist: a signal whose definition was
+        // edited away is expensive to have built and cheap to keep, so it
+        // is parked rather than deleted — and when the definition comes
+        // back unchanged, the samples come back with it.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", 0);
+        let len = build_and_persist_ab(root.path(), &v, &dbc_ab(1), 200);
+
+        let after = dbc_ab(2);
+        let session2 = SignalCacheStore::new(root.path());
+        let out = session2.restore(&v, &scopes(&after), len);
+        assert_eq!(
+            (out.reopened, out.rebuilt, out.revived),
+            (1, 1, 0),
+            "B no longer decodes as its samples were decoded",
+        );
+        let parked = session2.usage();
+        assert_eq!(parked.retained, 1, "…so it is parked, not deleted");
+        assert!(parked.retained_bytes > 0, "and its bytes are accounted");
+        // The park has to reach the manifest for the next launch to find it.
+        assert!(session2.persist(&v, &scopes(&after), Harden::All));
+        drop(session2);
+
+        // The edit is undone. `B` now decodes exactly as the parked
+        // samples were decoded.
+        let back = dbc_ab(1);
+        let session3 = SignalCacheStore::new(root.path());
+        let out = session3.restore(&v, &scopes(&back), len);
+        assert_eq!(
+            (out.reopened, out.rebuilt, out.revived),
+            (2, 0, 1),
+            "A reopened; B came back out of the retention pool",
+        );
+        assert!(!session3.rebuilding(len), "so nothing is owed a rebuild");
+        let usage = session3.usage();
+        assert_eq!(usage.retained, 0, "the pool gave its entry back");
+        assert_eq!(usage.revivals, 1);
+
+        // Proof the samples are the parked ones: these frames decode to
+        // nothing, so anything served came off disk.
+        let cold = undecodable_store(len);
+        let dbs: &[&Database] = &[&back];
+        for signal in ["A", "B"] {
+            assert_eq!(
+                session3
+                    .slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &cold, dbs)
+                    .len(),
+                200,
+                "{signal} served from disk",
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn the_retention_pool_evicts_the_oldest_park_at_its_byte_bound() {
+        // The pool is bounded by bytes and gives up its oldest entry
+        // first: what was parked longest ago is what a returning
+        // definition is least likely to be waiting for.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let first = dbc_ab_scaled(1, 1);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        let dbs: &[&Database] = &[&first];
+        for signal in ["A", "B"] {
+            let _ = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
+        }
+        let v = validity("capture-a", 0);
+        assert!(cache.persist(&v, &scopes(&first), Harden::All));
+
+        // A is re-encoded and parks; B's chain has not moved, so it stays.
+        let a_moved = dbc_ab_scaled(2, 1);
+        cache.invalidate_dbcs(&scopes(&a_moved));
+        assert_eq!(cache.retained_signals(), vec!["A".to_string()]);
+        let one = cache.usage().retained_bytes;
+        assert!(one > 0);
+
+        // Bound the pool at exactly what one park costs, then park B too.
+        cache.set_retention_cap(one);
+        assert!(cache.persist(&v, &scopes(&a_moved), Harden::All));
+        let both_moved = dbc_ab_scaled(2, 2);
+        cache.invalidate_dbcs(&scopes(&both_moved));
+
+        let usage = cache.usage();
+        assert_eq!(
+            cache.retained_signals(),
+            vec!["B".to_string()],
+            "oldest out"
+        );
+        assert_eq!(usage.retained, 1);
+        assert_eq!(usage.evictions, 1);
+        assert_eq!(usage.retained_bytes, one, "the pool sits inside its bound");
+        assert_eq!(usage.retention_cap_bytes, one);
+    }
+
+    #[test]
+    fn the_retention_pool_never_survives_a_capture_or_low_water_change() {
+        // The two whole-set gates stay hard. A parked pyramid is still a
+        // pyramid of *these* frames trimmed to *this* mark; neither is a
+        // fact one signal can be right about on its own, so a change in
+        // either discards the pool rather than parking through it.
+        let park_one = |root: &Path| {
+            let v = validity("capture-a", 0);
+            let len = build_and_persist_ab(root, &v, &dbc_ab(1), 200);
+            let session = SignalCacheStore::new(root);
+            assert_eq!(session.restore(&v, &scopes(&dbc_ab(2)), len).revived, 0);
+            assert_eq!(session.usage().retained, 1);
+            assert!(session.persist(&v, &scopes(&dbc_ab(2)), Harden::All));
+            len
+        };
+        let back = dbc_ab(1);
+        for (label, v) in [
+            ("another capture", validity("capture-b", 0)),
+            ("another eviction mark", validity("capture-a", 5)),
+        ] {
+            let root = TempDir::new().unwrap();
+            let len = park_one(root.path());
+            let session = SignalCacheStore::new(root.path());
+            let out = session.restore(&v, &scopes(&back), len);
+            assert_eq!(out.revived, 0, "{label}: nothing is resurrected");
+            assert_eq!(out.reopened, 0, "{label}: and nothing is reopened");
+            assert_eq!(session.usage().retained, 0, "{label}: the pool is gone");
+            assert_eq!(
+                std::fs::read_dir(root.path()).unwrap().count(),
+                0,
+                "{label}: its files with it",
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_dbc_change_parks_what_it_re_encoded_and_leaves_the_rest_live() {
+        // The in-session half. A DBC-set change used to drop every
+        // DBC-backed pyramid; each is now judged by the same fingerprint
+        // a restore judges it by, so one whose candidate chain did not
+        // move keeps decoding, and one whose did is parked for its
+        // definition's return rather than deleted.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let before = dbc_ab(1);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        let dbs: &[&Database] = &[&before];
+        for signal in ["A", "B"] {
+            let _ = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
+        }
+        assert!(cache.persist(&validity("capture-a", 0), &scopes(&before), Harden::All));
+
+        let after = dbc_ab(2);
+        cache.invalidate_dbcs(&scopes(&after));
+        assert_eq!(cache.usage().live, 1, "A still decodes what it decoded");
+        assert_eq!(cache.retained_signals(), vec!["B".to_string()]);
+
+        // …and putting the definition back brings the samples back, with
+        // no frame re-read: these frames decode to nothing.
+        cache.invalidate_dbcs(&scopes(&before));
+        assert_eq!(cache.usage().retained, 0);
+        assert_eq!(cache.usage().revivals, 1);
+        let cold = undecodable_store(200);
+        let cold_dbs: &[&Database] = &[&before];
+        assert_eq!(
+            cache
+                .slice(
+                    None,
+                    256,
+                    false,
+                    "B",
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &cold,
+                    cold_dbs
+                )
+                .len(),
+            200,
+            "B is the pyramid it was, not a rebuild",
+        );
+    }
+
+    #[test]
+    fn a_restore_reports_the_bytes_it_reused_and_the_bytes_it_owes() {
+        // Counts alone cannot answer "are we saving time or wasting
+        // disk": one reopened pyramid over a long capture and one over a
+        // short one are the same count and wildly different savings. The
+        // honest figure is the samples themselves — live slots at the
+        // stored slot size.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", 0);
+        let len = build_and_persist_ab(root.path(), &v, &dbc_ab(1), 200);
+
+        let after = dbc_ab(2);
+        let session = SignalCacheStore::new(root.path());
+        let out = session.restore(&v, &scopes(&after), len);
+        assert_eq!((out.reopened, out.rebuilt), (1, 1));
+        assert!(
+            out.reused_bytes >= 200 * cannet_spill::SAMPLE_ENTRY_BYTES as u64,
+            "at least A's 200 level-0 samples: {}",
+            out.reused_bytes,
+        );
+        assert_eq!(
+            out.reused_bytes, out.rebuilt_bytes,
+            "A and B hold the same samples, so what was saved is what is owed",
+        );
+        // Nothing reused and nothing owed when there was nothing offered.
+        let empty = TempDir::new().unwrap();
+        let fresh = SignalCacheStore::new(empty.path());
+        assert_eq!(
+            fresh.restore(&v, &scopes(&after), len),
+            RestoreOutcome::default(),
+        );
+    }
+
+    #[test]
+    fn the_usage_report_names_the_pyramids_nothing_has_read() {
+        // Disk that never earns its keep has to be visible, or the cache
+        // grows on evidence nobody ever looks at. A restored pyramid is
+        // unread until a serve asks it for something.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", 0);
+        let len = build_and_persist_ab(root.path(), &v, &dbc_ab(1), 200);
+
+        let db = dbc_ab(1);
+        let session = SignalCacheStore::new(root.path());
+        assert_eq!(session.restore(&v, &scopes(&db), len).reopened, 2);
+        let cold = session.usage();
+        assert_eq!((cold.live, cold.unread), (2, 2), "nothing read yet");
+        assert!(cold.unread_bytes > 0);
+
+        let store = undecodable_store(len);
+        let dbs: &[&Database] = &[&db];
+        let _ = session.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        let warm = session.usage();
+        assert_eq!(
+            (warm.live, warm.unread),
+            (2, 1),
+            "one pyramid has now earned its keep; the other has not",
+        );
+        assert!(
+            warm.unread_bytes < cold.unread_bytes,
+            "and the bytes nobody has read shrank with it",
         );
     }
 
@@ -5261,11 +6030,8 @@ mod tests {
 
         let reopened = SignalCacheStore::new(root.path());
         assert_eq!(
-            reopened.restore(&v, &scopes(&db), store.len()),
-            RestoreOutcome {
-                reopened: 1,
-                rebuilt: 1,
-            },
+            counts(reopened.restore(&v, &scopes(&db), store.len())),
+            (1, 1, 0),
         );
         assert_eq!(
             reopened.file_signals().len(),
@@ -5530,19 +6296,21 @@ mod tests {
         let len = build_and_persist(root.path(), &v);
 
         let reopened = SignalCacheStore::new(root.path());
-        reopened.invalidate_dbcs();
+        reopened.invalidate_dbcs(&[]);
         assert_eq!(
             reopened.restore(&v, &scopes(&load_dbc()), len).reopened,
             1,
             "the staged set survived"
         );
 
-        // Once the set is live, a DBC change drops it exactly as before.
-        reopened.invalidate_dbcs();
+        // Once the set is live, a DBC change that re-encodes it drops it
+        // — into the retention pool, since its definition may come back.
+        reopened.invalidate_dbcs(&[]);
+        assert_eq!(reopened.usage().live, 0, "no longer decoded state");
         assert_eq!(
-            std::fs::read_dir(root.path()).unwrap().flatten().count(),
-            0,
-            "an adopted pyramid is wiped by a DBC change",
+            reopened.retained_signals(),
+            vec!["X".to_string()],
+            "parked rather than deleted",
         );
     }
 
@@ -5878,7 +6646,11 @@ mod tests {
         );
         cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
 
-        cache.invalidate_dbcs();
+        // A set in which nothing defines `X`. Its cache has never been
+        // persisted, so nothing records what it was decoded with and it
+        // cannot be parked — it is discarded, as every cache was before
+        // the retention pool.
+        cache.invalidate_dbcs(&[]);
 
         assert_eq!(
             cache
@@ -5952,11 +6724,8 @@ mod tests {
         // A set in which nothing defines `X` any more.
         let changed = dbc_ab(1);
         assert_eq!(
-            reopened.restore(&v, &scopes(&changed), store.len()),
-            RestoreOutcome {
-                reopened: 1,
-                rebuilt: 1,
-            },
+            counts(reopened.restore(&v, &scopes(&changed), store.len())),
+            (1, 1, 0),
             "only the file-backed series is reusable",
         );
         let listed = reopened.file_signals();

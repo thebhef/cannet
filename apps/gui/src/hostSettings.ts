@@ -39,6 +39,9 @@ export interface Settings {
   /// Max bytes the disk-spill scratch may grow to before oldest history
   /// is dropped; `null` = unbounded.
   scratch_cap_bytes: number | null;
+  /// Bytes of unreferenced signal pyramids kept against their DBC
+  /// definition returning (ADR 0047); 0 keeps none.
+  pyramid_retention_bytes: number;
   /// Wipe the scratch on a clean exit.
   clear_scratch_on_exit: boolean;
   /// Whether a dirty close saves silently instead of showing the
@@ -182,6 +185,7 @@ export interface ColumnLayout {
 export function defaultSettings(): Settings {
   return {
     scratch_cap_bytes: null,
+    pyramid_retention_bytes: 16 * 1024 * 1024 * 1024,
     clear_scratch_on_exit: false,
     autosave_on_exit: false,
     keybindings: null,

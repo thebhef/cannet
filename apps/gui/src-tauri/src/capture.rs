@@ -1554,13 +1554,25 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         "project",
         "restored {count} frames from prior capture in {total_ms:.0} ms"
     );
+    // The pyramid half carries counts *and* bytes: one reopened pyramid
+    // over a long capture and one over a short one are the same count and
+    // wildly different savings, and "are we saving time or wasting disk"
+    // (ADR 0047) is a question about the samples, not the signals.
+    // `revived` is how many of the reopened came back out of the
+    // retention pool — the only number that says whether keeping them
+    // paid off.
+    let mb = |bytes: u64| bytes / (1024 * 1024);
     sys_debug!(
         &app,
         "project",
         "restore: {breakdown} notes {notes_ms:.0} \
-         pyramids {pyramids_ms:.0} ({} reopened, {} rebuilt) command {total_ms:.0}",
+         pyramids {pyramids_ms:.0} ({} reopened, {} revived, {} rebuilt; \
+         reused {} MB, re-decoding {} MB) command {total_ms:.0}",
         pyramids.reopened,
-        pyramids.rebuilt
+        pyramids.revived,
+        pyramids.rebuilt,
+        mb(pyramids.reused_bytes),
+        mb(pyramids.rebuilt_bytes),
     );
     if pyramids_rebuilding {
         sys_info!(
