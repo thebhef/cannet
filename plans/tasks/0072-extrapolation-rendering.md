@@ -1437,6 +1437,103 @@ Shapes 1 and 3 are both adopted ("1 and 3 seem worth doing"):
   promoted. Reports: `task72-close/run{1,1b,2,3,4,5}.json` +
   `check-final.txt` in the session scratchpad.
 
+- **2026-08-15, phase 10 (`task72-p10-label-box`, branched off
+  `task76-p2-selective-restore`):** §6, the post-closeout label-box
+  ruling. Shipped in `1f696c6e`, one commit: the box, the ink ground it
+  changes, the halo interplay and the docs together, because they are
+  one behavior.
+
+  - _The box._ A `fillRect` in `canvasChipFill` behind the label, with
+    the canvas chips' own geometry (the measured text plus its existing
+    4 px padding either side, 13 px tall, on the band's centre line),
+    drawn after the stripes and border and before the glyph. It follows
+    `tileLabelX`, so it centres on the tile's _visible_ part and is
+    inside it by construction, and it is capped at the lane band's
+    height so a plate on a thin lane cannot erase its neighbours. No
+    label, no box: a plate with no text on it is a hole in the tile's
+    color.
+
+  - _Opacity is a new per-theme token_, `laneLabelBoxOpacity` — dark
+    **0**, `light` and `lighthk` **1** — in the
+    `laneLabelShadowPasses` idiom, documented the same way. The draw
+    path is unconditional: `globalAlpha = 0` makes the fill a
+    source-over composite at alpha 0, which leaves every pixel as it
+    was, so the dark theme is unchanged **by construction** rather
+    than by a branch, and adding a theme is still picking a number.
+    `theme.test.ts` pins all three values and the 0–1 range.
+
+  - _Ink: the rule is unchanged, the ground is not._ `laneLabelInk`
+    now measures against what is actually under the label — the tile
+    fill over the background, and then the box over that. Dark
+    composites at alpha 0 and gets the tile ground back to the bit, so
+    its ink decisions are byte-identical (unit-tested as an equality of
+    the two grounds, not just of the answers). On the light themes'
+    near-white plate the shipped 3:1 rule now keeps the accent for
+    grey (4.83:1 on `light`), blue (3.68) and red (3.76) — the tile's
+    color is the signal's identity — and falls back to black only for
+    the pale amber (2.15) and green (2.28), exactly as the ruling
+    predicted. `lighthk` measures 4.20 / 3.19 / 3.27 and 1.87 / 1.98,
+    same split.
+
+  - _Halo interplay: the passes are spent only where no solid box
+    already carries the label_ (`striped && laneLabelBoxOpacity < 1`).
+    Under an opaque box the halo would paint background over
+    background, and its 3 px blur would fringe _past_ the box's edge
+    onto the tile — a soft smudge around a crisp plate. Dark keeps its
+    two passes and its exact draw sequence. Consequence worth
+    recording: `laneLabelShadowPasses` is now inert on both shipping
+    light themes (their 4 is unreachable while their box is solid); the
+    number stays because it is what a theme with a translucent box or
+    none would spend, and its rustdoc says so.
+
+  - _Verification: two real builds, four capture sets._ `pnpm --dir
+    apps/gui tauri build --no-bundle` at `888ed86e` (before) and
+    `1f696c6e` (after), each through `screenshot --scenario
+    extrapolation` on both themes into its own `--app-data-dir`. No
+    empty-plot flake this time — all four sets landed on the first run.
+
+    - _dark, before vs after_: **35 differing pixels of 1 600 000**
+      (0.0022 %) on every one of the four frames, and **every one of
+      them in the same 7×7 block at x 787–793, y 158–164** — one glyph
+      of the plot toolbar's `solo` placeholder. The plot canvas is
+      byte-identical. _Control, because a non-zero pin needs one:_ the
+      **same binary** shot twice differs by **the same 35 pixels in the
+      same block**, with the two states swapping — WebView2 subpixel
+      text rendering in that input, not this change. Attributable
+      difference: **0 pixels**.
+    - _light, before vs after_: 5 048 pixels on the sign-off frame
+      (0.32 %). `Idle` now reads in its own grey on a white plate,
+      `Arming` and `Active` in black on theirs — and `Active`'s glyphs
+      are no longer cut by the magenta sample-marker line running
+      through the tile. Over the striped stretches `Running` (black)
+      and `Open` (its blue accent) sit on clean plates with no halo
+      fringe.
+
+    PNGs kept out of the repo per the no-committed-review-artifacts
+    rule; paths in the phase report.
+
+  - _§6's ratified mechanism is implemented as ruled_: solid box, not
+    translucent; opacity as a per-theme token, dark 0 / light 1; ink
+    measured against the ground actually under the label. The
+    `colorMapLaneFill` polarity question stays closed — the tile fill
+    is untouched.
+
+  - _Docs in the same commit._ ADR 0026 gains the box rule (color,
+    geometry, per-theme opacity, one draw path), the amendment that
+    the ink measures through the box, the halo's "only where there is
+    no box", and the no-label-no-box clause in the implementation
+    summary. `theme.ts` documents both numbers and their interplay;
+    `laneLabelInk`'s module and function rustdoc say which ground they
+    measure.
+
+  - Frontend: 164 test files / 2220 tests passed (from 164 / 2215 at
+    this branch point — 5 net new: 4 at the draw tier for the box
+    itself, 1 theme-token test, 1 unit test for dark's ground, less one
+    draw-tier halo-flip case that moved to the unit tier where it is
+    still reachable; three existing cases were re-pointed at the new
+    ground). `pnpm build` clean. No host code touched, so no Rust run;
+    no perf-gate run.
+
 ## Blockers / side effects
 
 - ~~**The enum leading-edge lag is attributed but NOT fixed.**~~ **Fixed
@@ -1647,6 +1744,9 @@ the trace color would look better."
   already does). Recommended reading, pending owner objection.
 - Deliverable: the slice's own before/after frames on both themes,
   for ratification, per the build-and-test-representatively rule.
+- **Implemented in phase 10 (`1f696c6e`)**, exactly as ratified. The
+  frames, the dark pin and the halo-interplay decision are in that
+  phase's status entry.
 
 ## 5. Hover-marker parity (owner observations, 2026-08-15, on a phase-7-complete build)
 
