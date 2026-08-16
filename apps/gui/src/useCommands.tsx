@@ -18,6 +18,7 @@ import type { Note } from "./notes";
 import { GOTO_EVENT, gotoEventItems } from "./gotoEvent";
 import { elementViewEntries } from "./gotoViews";
 import { elementLabel } from "./elementLabel";
+import { basename } from "./windowTitle";
 import type { KeybindingsController } from "./keybindingsContext";
 import { hostSettings, subscribeSettings, updateSettings } from "./hostSettings";
 import { setRecentCommands as persistRecentCommands, hostState } from "./hostState";
@@ -121,6 +122,14 @@ export interface UseCommandsOptions {
   // connection / capture / panel.add / saveAll / kill-switch / exit).
   // Merged with the framework/view/palette commands owned here.
   appCommands: Record<string, () => void>;
+  // The Recent-captures list (task 75 item 5) — the exact same MRU
+  // `App`'s toolbar button reads, so the palette can't drift from it.
+  // Each entry gets its own "Open recent: <name>" palette command.
+  recentCaptures: readonly string[];
+  // Open a recent path through the app's single import entry point
+  // (`handleImportTrace`), the same call the toolbar dropdown's click
+  // handler makes — same census/guard/cancel flow either way.
+  openRecentCapture: (path: string) => void;
 }
 
 /// A command's second stage (ADR 0037): the one piece of text the
@@ -203,6 +212,8 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     sessionStartSeconds,
     renameElement,
     appCommands,
+    recentCaptures,
+    openRecentCapture,
   } = options;
 
   const focusedPanelKind = useMemo(() => {
@@ -453,6 +464,21 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     }
   }, [dockApiRef]);
 
+  // Recent-captures palette commands (task 75 item 5): one per MRU
+  // entry, id-keyed by path so a run of one is stable across
+  // re-renders. Built straight off `recentCaptures` — the same list
+  // the toolbar's Recent-captures button reads — so there's no second
+  // source for the palette to drift from.
+  const recentCaptureCommands = useMemo(
+    () =>
+      recentCaptures.map((path) => ({
+        id: `recent.open:${path}`,
+        path,
+        label: `Open recent: ${basename(path)}`,
+      })),
+    [recentCaptures],
+  );
+
   // The command registry: the app-domain commands passed in merged with
   // the framework/view/palette commands owned here. Rebuilt every render
   // (cheap) and read through a ref so the once-registered keydown
@@ -460,6 +486,12 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
   const commandHandlersRef = useRef<Record<string, () => void>>({});
   commandHandlersRef.current = {
     ...appCommands,
+    // Each opens through the exact path the toolbar dropdown's click
+    // handler uses (`openRecentCapture`, i.e. `App`'s
+    // `handleImportTrace`) — same census/guard/cancel flow either way.
+    ...Object.fromEntries(
+      recentCaptureCommands.map((c) => [c.id, () => openRecentCapture(c.path)]),
+    ),
     "panel.show.project": showProjectPanel,
     "panel.show.systemMessages": showSystemMessagesPanel,
     "panel.show.projectGraph": showProjectGraphPanel,
@@ -656,10 +688,21 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
         keywords: c.keywords,
       };
     });
+    // One entry per recent capture (task 75 item 5), findable by a
+    // fragment of its full path — not just the filename the label
+    // shows — via `keywords` (the same fold-into-fuzzy-match field a
+    // renamed command or view uses to stay reachable by an old name).
+    // An empty recents list contributes none.
+    const recents = recentCaptureCommands.map((c) => ({
+      id: c.id,
+      label: c.label,
+      hint: "Recent",
+      keywords: c.path,
+    }));
     // Recently-used first (the fzf ranking takes over once the user
     // types — this orders only the unfiltered list).
-    return sortRecentFirst(items, recentCommands);
-  }, [openPalette, commandContext, recentCommands, parsedBindings]);
+    return sortRecentFirst([...items, ...recents], recentCommands);
+  }, [openPalette, commandContext, recentCommands, parsedBindings, recentCaptureCommands]);
   // Open-or-focus the dockview panel for a project element — the reopen
   // path go-to-view uses for a closed element view (mirrors ProjectPanel's
   // open). A filter has no panel of its own, so surface the graph instead.

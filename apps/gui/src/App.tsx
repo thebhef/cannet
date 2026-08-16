@@ -176,6 +176,7 @@ import {
 import { UndoGestureContext, type UndoGesture } from "./undoGesture";
 import { PanelCommandsContext } from "./panelCommands";
 import { useCommands } from "./useCommands";
+import { useDismissableMenu } from "./useDismissableMenu";
 import {
   beginDiagCapture,
   diagCount,
@@ -394,6 +395,15 @@ export function App() {
   // persisted host-side per ADR 0032). Offered in the Import-trace
   // flow; format routing at open time is by extension (`importFormat.ts`).
   const [recentCaptures, setRecentCaptures] = useState<string[]>(() => hostState().recent_blfs);
+  // The Recent-captures dropdown's own open/closed state (task 75 item
+  // 4): it must dismiss on outside click / Escape like every other
+  // transient popup, so — unlike its old native `<details>` markup —
+  // it now needs state, driven through the shared dismissal hook every
+  // other floating menu in the app uses.
+  const [recentCapturesOpen, setRecentCapturesOpen] = useState(false);
+  const recentCapturesRef = useDismissableMenu<HTMLDivElement>(recentCapturesOpen, () =>
+    setRecentCapturesOpen(false),
+  );
   const rememberRecentCapture = useCallback((path: string) => {
     setRecentCaptures((current) => {
       const next = recordRecentCapture(current, path);
@@ -2670,6 +2680,8 @@ export function App() {
     sessionStartSeconds,
     renameElement,
     appCommands,
+    recentCaptures,
+    openRecentCapture: (path: string) => void handleImportTrace(path),
   });
   const runCommand = commands.runCommand;
 
@@ -3121,32 +3133,35 @@ export function App() {
     if (item === "recentCaptures") {
       if (recentCaptures.length === 0) return null;
       return (
-        <details key="recent-captures" className="recent-captures">
-          <summary
-            role="button"
+        <div key="recent-captures" className="recent-captures" ref={recentCapturesRef}>
+          <button
+            type="button"
             aria-label={`Recent captures (${recentCaptures.length})`}
+            aria-haspopup="menu"
+            aria-expanded={recentCapturesOpen}
             title="Recent captures"
+            onClick={() => setRecentCapturesOpen((v) => !v)}
           >
             Recent
-          </summary>
-          <ul role="menu" className="recent-captures-menu">
-            {recentCaptures.map((p) => (
-              <li key={p} role="menuitem">
-                <button
-                  onClick={(e) => {
-                    // Close the <details> panel; React state drives the rest.
-                    const el = (e.currentTarget as HTMLElement).closest("details");
-                    if (el instanceof HTMLDetailsElement) el.open = false;
-                    void handleImportTrace(p);
-                  }}
-                  title={p}
-                >
-                  {p}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </details>
+          </button>
+          {recentCapturesOpen && (
+            <ul role="menu" className="recent-captures-menu">
+              {recentCaptures.map((p) => (
+                <li key={p} role="menuitem">
+                  <button
+                    onClick={() => {
+                      setRecentCapturesOpen(false);
+                      void handleImportTrace(p);
+                    }}
+                    title={p}
+                  >
+                    {p}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       );
     }
     if (item === "connection") {

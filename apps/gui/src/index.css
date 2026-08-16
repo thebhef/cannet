@@ -578,14 +578,13 @@ header {
   margin: 0 0.2rem;
 }
 
-/* Recent-captures dropdown. The native <details>/<summary> pair gives
- * us a no-state-needed dropdown; styling matches the surrounding
- * toolbar buttons. */
-.toolbar details.recent-captures {
+/* Recent-captures dropdown. Dismisses on outside click / Escape via
+ * the shared `useDismissableMenu` hook (task 75 item 4); styling
+ * matches the surrounding toolbar buttons. */
+.toolbar .recent-captures {
   position: relative;
 }
-.toolbar details.recent-captures > summary {
-  list-style: none;
+.toolbar .recent-captures > button {
   cursor: pointer;
   padding: 0.2rem 0.5rem;
   border: 1px solid var(--border-default);
@@ -594,10 +593,7 @@ header {
   color: inherit;
   font: inherit;
 }
-.toolbar details.recent-captures > summary::-webkit-details-marker {
-  display: none;
-}
-.toolbar details.recent-captures > summary:hover {
+.toolbar .recent-captures > button:hover {
   background: var(--surface-hover-strong);
 }
 .toolbar ul.recent-captures-menu {

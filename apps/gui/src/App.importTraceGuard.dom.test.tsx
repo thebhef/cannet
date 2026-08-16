@@ -220,7 +220,7 @@ async function runImportFromPalette() {
 
 /// Open the Recent-captures dropdown and click its first entry.
 async function runImportFromRecents() {
-  const summary = document.querySelector("details.recent-captures > summary");
+  const summary = document.querySelector(".recent-captures > button");
   if (!summary) throw new Error("recent-captures dropdown is not rendered");
   await act(async () => {
     fireEvent.click(summary);

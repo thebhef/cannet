@@ -83,7 +83,7 @@ function projectName(projectPath: string | null): string | null {
   return dot > 0 ? base.slice(0, dot) : base;
 }
 
-function basename(path: string): string {
+export function basename(path: string): string {
   const sep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return sep >= 0 ? path.slice(sep + 1) : path;
 }

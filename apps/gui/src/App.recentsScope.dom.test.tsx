@@ -173,7 +173,7 @@ function findButton(label: string): HTMLButtonElement {
 
 /// The paths the Recent-captures menu is currently offering.
 async function recentsShown(): Promise<string[]> {
-  const summary = document.querySelector("details.recent-captures > summary");
+  const summary = document.querySelector(".recent-captures > button");
   if (!summary) return [];
   await act(async () => {
     fireEvent.click(summary);
