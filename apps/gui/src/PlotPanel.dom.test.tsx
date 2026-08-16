@@ -1089,6 +1089,24 @@ describe("PlotPanel", () => {
     expect(comboboxValue(screen.getByLabelText("show points"))).toBe("off");
   });
 
+  it("the points and cursor-mode dropdowns take a real press with measurements on", async () => {
+    // The toolbar's dropdowns used to vanish with no effect when a row
+    // was pressed: the panel root claims focus on any mousedown that
+    // isn't already headed for a focusable, and the dropdown's rows
+    // reach it through the portal's React-tree bubbling. Driven with
+    // measurements enabled — the state the report was made in — though
+    // the panel's focus claim never consulted it.
+    renderPanel();
+    fireEvent.click(screen.getByRole("checkbox", { name: /measurements/i }));
+    const points = screen.getByLabelText("show points");
+    await pickCombobox(points, "on");
+    expect(comboboxValue(screen.getByLabelText("show points"))).toBe("on");
+    const cursors = screen.getByLabelText("cursors");
+    expect(comboboxValue(cursors)).toBe("off");
+    await pickCombobox(cursors, "x");
+    expect(comboboxValue(screen.getByLabelText("cursors"))).toBe("x");
+  });
+
   it("restores its signals from the element's config when reopened with bare params", () => {
     // The close-and-reopen bug: reopening from the Elements list mounts
     // the panel with params carrying only `elementId`; the signal setup

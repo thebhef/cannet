@@ -242,6 +242,15 @@ export function Combobox({
               // Clicking rows must not blur the input (blur closes the
               // dropdown before the click could land).
               if (e.target !== inputRef.current) e.preventDefault();
+              // …and neither must a host that focuses something of its
+              // own on mousedown. A portal escapes its host in the DOM
+              // but not in the React tree, so presses in here still
+              // bubble to the ancestors that rendered the combobox;
+              // `preventDefault` only suppresses the browser's own
+              // focus move, not a handler's explicit `focus()` call.
+              // The dropdown is not inside those ancestors — visually
+              // or logically — so it swallows its own presses.
+              e.stopPropagation();
             }}
           >
             <input

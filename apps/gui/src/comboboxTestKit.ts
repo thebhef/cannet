@@ -22,6 +22,11 @@ function findOption(value: string): HTMLElement | undefined {
 /// `value` — the combobox equivalent of
 /// `fireEvent.change(select, { target: { value } })`. Waits for the
 /// option to appear, so an async-loaded catalog is fine.
+///
+/// The press goes in ahead of the click, because a pointer gesture is
+/// what a user actually performs: a host that reacts to `mousedown`
+/// gets to run before the row's `click`, and a click-only drive would
+/// never notice it closing the dropdown out from under the pointer.
 export async function pickCombobox(trigger: HTMLElement, value: string): Promise<void> {
   openCombobox(trigger);
   const option = await waitFor(() => {
@@ -29,6 +34,7 @@ export async function pickCombobox(trigger: HTMLElement, value: string): Promise
     if (!found) throw new Error(`combobox option ${JSON.stringify(value)} not present`);
     return found;
   });
+  fireEvent.mouseDown(option);
   fireEvent.click(option);
 }
 
