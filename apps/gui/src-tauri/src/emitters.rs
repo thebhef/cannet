@@ -270,7 +270,9 @@ pub(crate) fn spawn_trace_flusher(app: AppHandle) {
                     // Dev-log twin of the gauge (ADR 0031): timestamp-
                     // correlatable with the `tx-sched` lateness lines, so
                     // a flush-vs-scheduler stall can be diagnosed from one
-                    // stderr capture without a perf run.
+                    // stderr capture without a perf run. Opt-in — the
+                    // default filter has this target off, since it is
+                    // routed to stderr alone (`system_log.rs`).
                     tracing::info!(target: "tx-flush", "flush_ms={ms:.1}");
                 }
                 Err(e) => tracing::warn!(error = %e, "trace store flush failed"),
