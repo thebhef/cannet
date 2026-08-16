@@ -1610,6 +1610,44 @@ the consolidated review live under Blockers / side effects
 (`colorMapLaneFill` polarity, lane hover-marker legibility, the
 screenshot-scenario flake).
 
+## 6. Post-closeout lane-label styling (owner ruling, 2026-08-15, on the phase-9 frames)
+
+Ruled after the exit-criteria walk, off the published phase-9 review
+frames, so it is recorded here as a follow-up slice rather than a
+walked criterion. Owner, verbatim: "It's not bad, but I think having a
+background box around the text would be better. Dark doesn't need it
+but I think having it for light and making the light text color match
+the trace color would look better."
+
+- **Light themes:** an enum tile's label gets a background-colored box
+  behind the text. The ink keeps the same _selection_ dark makes — the
+  value's colormap tint, or the trace color where no colormap claims
+  the value — because changing which color carries the label "seems
+  like a behavior change beyond theming" (owner, 2026-08-15). The box
+  replaces the phase-8 halo treatment on light; whether the box is
+  solid or translucent is ratified on the prototype page.
+- **Dark theme:** unchanged, pixel-pinned as shipped (phase 8's pin
+  continues to bind).
+- The hover-marker disc and cursor are accepted as shipped ("the
+  points and hover cursor look good"); the requested change is the
+  label treatment only.
+- **The `colorMapLaneFill` polarity question is closed: no flip.**
+  Owner reviewed the A/B prototypes and chose the label box with the
+  tile fill unchanged, so the recorded blocker above is dispositioned
+  — no action, the box carries light-theme label legibility.
+- **Mechanism (owner-ratified 2026-08-15): solid box, opacity as a
+  per-theme token — dark 0, light 1.** One draw path; a zero-alpha
+  box paints nothing, so the dark theme stays pixel-pinned by
+  construction, and a new theme picks a number instead of a branch.
+- Ink: the existing 3:1 measured-ink rule stays unchanged and
+  measures against the ground actually under the label — the tile
+  where the box is alpha-0 (dark: identical ink to today), the box
+  where it is solid (light: accent everywhere except the pale
+  green/yellow tints, which fall back exactly as the shipped rule
+  already does). Recommended reading, pending owner objection.
+- Deliverable: the slice's own before/after frames on both themes,
+  for ratification, per the build-and-test-representatively rule.
+
 ## 5. Hover-marker parity (owner observations, 2026-08-15, on a phase-7-complete build)
 
 Two semantic gaps reported during live review, both gating this
