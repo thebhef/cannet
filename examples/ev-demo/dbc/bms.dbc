@@ -54,10 +54,33 @@ BO_ 770 BmsLimits: 8 BMS
  SG_ DischargeCurrentLimit : 16|16@1+ (0.1,0) [0|6553.5] "A" VCU,MotorFront,MotorRear
  SG_ ContactorState : 32|2@1+ (1,0) [0|3] "" VCU
 
+BO_ 771 BmsServiceEvent: 8 BMS
+ SG_ EventType M : 0|8@1+ (1,0) [0|3] "" VCU
+ SG_ SequenceCounter : 8|8@1+ (1,0) [0|255] "" VCU
+ SG_ BootInitStage m1 : 16|8@1+ (1,0) [0|255] "" VCU
+ SG_ NvmFailureCode m2 : 16|16@1+ (1,0) [0|65535] "" VCU
+ SG_ CellVoltageIndex m3 : 16|8@1+ (1,0) [0|255] "" VCU
+ SG_ CellVoltageValue m3 : 24|16@1+ (0.001,0) [0|65.535] "V" VCU
+
+BO_ 772 BmsCellVoltages: 8 BMS
+ SG_ CellIndex M : 0|8@1+ (1,0) [0|7] "" VCU
+ SG_ Cell01Voltage m0 : 8|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ Cell02Voltage m1 : 8|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ Cell03Voltage m2 : 8|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ Cell04Voltage m3 : 8|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ Cell05Voltage m4 : 8|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ Cell06Voltage m5 : 8|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ Cell07Voltage m6 : 8|16@1+ (0.001,0) [0|65.535] "V" VCU
+ SG_ Cell08Voltage m7 : 8|16@1+ (0.001,0) [0|65.535] "V" VCU
+
 CM_ BO_ 768 "Battery pack state, 20 ms cadence on the battery bus, standard 11-bit ID. Read by the VCU (across the bridge) and the thermal manager.";
 CM_ BO_ 769 "Cell voltage/temperature extremes, 100 ms cadence.";
 CM_ BO_ 770 "Charge/discharge current limits, 100 ms cadence. The inverters clamp torque to the discharge limit.";
 CM_ SG_ 770 ContactorState "0=Open 1=Precharge 2=Closed 3=Fault.";
+CM_ BO_ 771 "Multiplexed service/diagnostic event, 100 ms cadence. EventType selects which arm's payload the frame carries.";
+CM_ SG_ 771 EventType "Multiplex selector -- names each event via its value table.";
+CM_ BO_ 772 "Indexed cell-voltage series, 100 ms cadence: one self-named signal per CellIndex value. The index-style mux shape -- the selector is an array index, not an enum, so it carries no VAL_ table.";
+CM_ SG_ 772 CellIndex "Multiplex selector -- which cell this frame carries.";
 
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
 BA_DEF_ SG_ "GenSigStartValue" FLOAT 0 100000;
@@ -66,6 +89,9 @@ BA_DEF_DEF_ "GenSigStartValue" 0;
 BA_ "GenMsgCycleTime" BO_ 768 20;
 BA_ "GenMsgCycleTime" BO_ 769 100;
 BA_ "GenMsgCycleTime" BO_ 770 100;
+BA_ "GenMsgCycleTime" BO_ 771 100;
+BA_ "GenMsgCycleTime" BO_ 772 100;
 
 VAL_ 768 PackStatus 0 "Init" 1 "Idle" 2 "Drive" 3 "Charge" 4 "Fault";
 VAL_ 770 ContactorState 0 "Open" 1 "Precharge" 2 "Closed" 3 "Fault";
+VAL_ 771 EventType 1 "BootInit" 2 "NVMemory" 3 "CellVoltageStatus";

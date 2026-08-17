@@ -59,8 +59,11 @@ import { DBC_PANEL_ID } from "./dockLayout";
  * [`list_dbc_content`]. The tree is organised
  * bus → DBC → ECU → message → signal (the ECU level mirrors the RBS
  * panel's per-transmitter grouping). A **multiplexed** message gains
- * one more level — its arms (see {@link groupByMux}) — so the signals
- * that ride each selector read as a group and drag as one. Search runs
+ * one more level for each arm carrying two or more signals (see
+ * {@link groupByMux}) — nested under the multiplexor row when its
+ * `VAL_` table names the arms — so the signals that ride each selector
+ * read as a group and drag as one; a single-signal arm stays flat.
+ * Search runs
  * against an
  * [`fzf`](https://github.com/ajitid/fzf-for-js)-backed matcher; while
  * a filter is active only matches, the paths to them, and expanded
@@ -277,13 +280,25 @@ export interface MuxArm {
 /// A message's signals split into the always-present ones and the
 /// per-arm ones.
 export interface MuxGrouping {
-  /// The multiplexor plus every `plain` signal, in declared order —
-  /// present on every frame regardless of the selector, so they render
-  /// directly under the message with no arm level.
+  /// The multiplexor, every `plain` signal, and every flattened
+  /// single-signal arm's signal, in declared order — rendered directly
+  /// under the message with no arm level.
   common: DbcSignalContentRecord[];
-  /// One entry per selector, ascending. Signals within an arm keep
-  /// their `SG_` declared order.
+  /// One entry per selector carrying **two or more** signals,
+  /// ascending. A single-signal arm groups nothing, so its signal is
+  /// flattened into `common` instead (the index-style selector shape —
+  /// one self-named signal per selector value — renders flat).
+  /// Signals within an arm keep their `SG_` declared order.
   arms: MuxArm[];
+  /// Signal name of the multiplexor the arm rows nest under, or `null`
+  /// when they render at message level. Set when the multiplexor names
+  /// its arms via a `VAL_` table: an enum-style selector is a category
+  /// header worth a level; an index-style one (no `VAL_`) is not.
+  nestUnder: string | null;
+  /// Arm identity of each flattened single-signal arm, keyed by signal
+  /// name — the signal's `VAL_` arm name still has to reach its search
+  /// haystack even though no arm row renders.
+  flatArms: Map<string, MuxArm>;
 }
 
 /// Split a message's signals per mux arm, or `null` when the message
@@ -294,29 +309,48 @@ export interface MuxGrouping {
 /// name for that arm lives in the multiplexor's own `VAL_` table
 /// (e.g. `EventType` 3 = "CellVoltageStatus"), which is why the
 /// grouping resolves labels here rather than leaving them to the
-/// renderer. An arm with no `VAL_` entry — or a message whose
-/// multiplexor is missing entirely — still groups, just unnamed.
+/// renderer. An empty-string `VAL_` label counts as no name. An arm
+/// with no `VAL_` entry — or a message whose multiplexor is missing
+/// entirely — still groups, just unnamed.
 ///
-/// Extended mux (`m<N>M`) buckets by its single selector: the
-/// frontend's mux record carries no nested-range representation, and
-/// the message's `usesExtendedMux` flag surfaces that caveat.
+/// Extended mux (`SG_MUL_VAL_`) is not grouped at all: each `m<N>`
+/// selector lives in its *own multiplexor's* namespace, and the
+/// frontend record carries no parent link — bucketing by the bare
+/// number would merge unrelated arms under wrong labels. Such a
+/// message keeps the flat list; its `usesExtendedMux` details line
+/// carries the caveat.
 export function groupByMux(message: DbcMessageContentRecord): MuxGrouping | null {
+  if (message.usesExtendedMux) return null;
+  const counts = new Map<number, number>();
+  for (const s of message.signals) {
+    if (s.mux.kind === "multiplexed") {
+      counts.set(s.mux.selector, (counts.get(s.mux.selector) ?? 0) + 1);
+    }
+  }
+  if (counts.size === 0) return null;
   const bySelector = new Map<number, DbcSignalContentRecord[]>();
   const common: DbcSignalContentRecord[] = [];
+  const flatSignals: [string, number][] = [];
   let multiplexor: DbcSignalContentRecord | null = null;
   for (const s of message.signals) {
-    if (s.mux.kind === "multiplexed" || s.mux.kind === "multiplexor_and_multiplexed") {
-      const arm = bySelector.get(s.mux.selector);
-      if (arm) arm.push(s);
-      else bySelector.set(s.mux.selector, [s]);
+    if (s.mux.kind === "multiplexed") {
+      if ((counts.get(s.mux.selector) ?? 0) >= 2) {
+        const arm = bySelector.get(s.mux.selector);
+        if (arm) arm.push(s);
+        else bySelector.set(s.mux.selector, [s]);
+      } else {
+        common.push(s);
+        flatSignals.push([s.name, s.mux.selector]);
+      }
       continue;
     }
     if (s.mux.kind === "multiplexor") multiplexor = s;
     common.push(s);
   }
-  if (bySelector.size === 0) return null;
   const labels = new Map(
-    (multiplexor?.valueTable ?? []).map((v) => [v.raw, v.label] as const),
+    (multiplexor?.valueTable ?? [])
+      .filter((v) => v.label.trim() !== "")
+      .map((v) => [v.raw, v.label] as const),
   );
   const arms = [...bySelector.entries()]
     .sort(([a], [b]) => a - b)
@@ -325,13 +359,23 @@ export function groupByMux(message: DbcMessageContentRecord): MuxGrouping | null
       label: labels.get(selector) ?? null,
       signals,
     }));
-  return { common, arms };
+  const flatArms = new Map(
+    flatSignals.map(([name, selector]) => [
+      name,
+      { selector, label: labels.get(selector) ?? null, signals: [] },
+    ]),
+  );
+  const nestUnder =
+    multiplexor !== null && labels.size > 0 && arms.length > 0
+      ? multiplexor.name
+      : null;
+  return { common, arms, nestUnder, flatArms };
 }
 
-/// Display text for an arm row: the DBC's own `m<N>` notation, plus
-/// the multiplexor's name for it when there is one.
+/// Display text for an arm row: the multiplexor's `VAL_` name for the
+/// selector, or the DBC's own `m<N>` notation when it has none.
 export function muxArmLabel(arm: MuxArm): string {
-  return arm.label === null ? `m${arm.selector}` : `m${arm.selector} · ${arm.label}`;
+  return arm.label === null ? `m${arm.selector}` : arm.label;
 }
 
 /// Last path component for display — DBC file paths can get long; the
@@ -368,12 +412,13 @@ function messageHaystack(busPrefix: string, m: DbcMessageContentRecord): string 
     .join(".");
   return `${dotted} ${m.comment} ${decId} ${hexId} ${attrs}`.trim();
 }
-/// `arm` is the mux arm the signal belongs to, or `null` for a plain /
-/// multiplexor signal. A *named* arm's `m<N> · label` text joins the
-/// haystack so a query for the event name reaches the signals that ride
-/// that arm. An unnamed arm contributes nothing: its only text is the
-/// bare selector, which no query is looking for, and appending it to
-/// every signal in a wide message is pure noise.
+/// `arm` is the mux arm the signal belongs to (a flattened
+/// single-signal arm included), or `null` for a plain / multiplexor
+/// signal. A *named* arm's label joins the haystack so a query for the
+/// event name reaches the signals that ride that arm. An unnamed arm
+/// contributes nothing: its only text is the bare selector, which no
+/// query is looking for, and appending it to every signal in a wide
+/// message is pure noise.
 function signalHaystack(
   busPrefix: string,
   m: DbcMessageContentRecord,
@@ -646,8 +691,11 @@ function buildRows(
             kind: { tag: "message", busId: dragBusId, dbcPath: dbc.dbcPath, message: m },
           });
           if (!mExpanded) continue;
-          // A multiplexed message renders its arms as an extra level;
-          // any other message keeps the flat message → signal shape.
+          // A multiplexed message renders its grouped arms as an extra
+          // level — under the multiplexor row when its VAL_ table
+          // names them, at message level otherwise. Flattened
+          // single-signal arms and non-mux messages keep the flat
+          // message → signal shape.
           const grouped = groupByMux(m);
           const pushSignal = (
             s: DbcSignalContentRecord,
@@ -675,36 +723,77 @@ function buildRows(
               },
             });
           };
+          const pushArms = (baseDepth: number, parentMatched: boolean) => {
+            for (const arm of grouped?.arms ?? []) {
+              const xId = muxNodeId(g.busId, key, m.messageId, m.extended, arm.selector);
+              const xMatched = matchSet.has(xId);
+              if (
+                filterActive &&
+                !parentMatched &&
+                !xMatched &&
+                !ancestorsOfMatches.has(xId)
+              ) {
+                continue;
+              }
+              const xExpanded = effectiveExpanded.has(xId);
+              out.push({
+                id: xId,
+                depth: baseDepth,
+                expanded: xExpanded,
+                hasChildren: arm.signals.length > 0,
+                kind: {
+                  tag: "mux",
+                  busId: dragBusId,
+                  dbcPath: dbc.dbcPath,
+                  messageId: m.messageId,
+                  extended: m.extended,
+                  messageName: m.name,
+                  arm,
+                },
+              });
+              if (!xExpanded) continue;
+              for (const s of arm.signals) {
+                pushSignal(s, baseDepth + 1, parentMatched || xMatched);
+              }
+            }
+          };
           for (const s of grouped?.common ?? m.signals) {
-            pushSignal(s, 4, mMatched);
-          }
-          for (const arm of grouped?.arms ?? []) {
-            const xId = muxNodeId(g.busId, key, m.messageId, m.extended, arm.selector);
-            const xMatched = matchSet.has(xId);
-            if (filterActive && !mMatched && !xMatched && !ancestorsOfMatches.has(xId)) {
+            if (grouped !== null && s.name === grouped.nestUnder) {
+              // The multiplexor doubles as the arms' parent: an
+              // expandable signal row (a *selectable branch*,
+              // ADR 0044), with the arm rows one level beneath it.
+              const sId = signalNodeId(g.busId, key, m.messageId, m.extended, s.name);
+              const sMatched = matchSet.has(sId);
+              if (
+                filterActive &&
+                !mMatched &&
+                !sMatched &&
+                !ancestorsOfMatches.has(sId)
+              ) {
+                continue;
+              }
+              const sExpanded = effectiveExpanded.has(sId);
+              out.push({
+                id: sId,
+                depth: 4,
+                expanded: sExpanded,
+                hasChildren: true,
+                kind: {
+                  tag: "signal",
+                  busId: dragBusId,
+                  dbcPath: dbc.dbcPath,
+                  messageId: m.messageId,
+                  extended: m.extended,
+                  messageName: m.name,
+                  signal: s,
+                },
+              });
+              if (sExpanded) pushArms(5, mMatched || sMatched);
               continue;
             }
-            const xExpanded = effectiveExpanded.has(xId);
-            out.push({
-              id: xId,
-              depth: 4,
-              expanded: xExpanded,
-              hasChildren: arm.signals.length > 0,
-              kind: {
-                tag: "mux",
-                busId: dragBusId,
-                dbcPath: dbc.dbcPath,
-                messageId: m.messageId,
-                extended: m.extended,
-                messageName: m.name,
-                arm,
-              },
-            });
-            if (!xExpanded) continue;
-            for (const s of arm.signals) {
-              pushSignal(s, 5, mMatched || xMatched);
-            }
+            pushSignal(s, 4, mMatched);
           }
+          if (grouped?.nestUnder == null) pushArms(4, mMatched);
         }
       }
     }
@@ -792,9 +881,22 @@ export function buildSearchIndex(groups: readonly BusGroup[]): GridviewFilterEnt
             haystack: signalHaystack(prefix, m, s, arm),
           });
         };
+        const base = [bId, dId, eId, mId];
         for (const s of grouped?.common ?? m.signals) {
-          pushSignal(s, [bId, dId, eId, mId], null);
+          // A flattened single-signal arm keeps its VAL_ name in the
+          // haystack even though no arm row renders for it.
+          pushSignal(s, base, grouped?.flatArms.get(s.name) ?? null);
         }
+        // When arms nest under a named multiplexor, its signal id joins
+        // their ancestor chains — the chain must mirror what buildRows
+        // renders for filter reveal and auto-expansion to line up.
+        const armBase =
+          grouped?.nestUnder == null
+            ? base
+            : [
+                ...base,
+                signalNodeId(g.busId, key, m.messageId, m.extended, grouped.nestUnder),
+              ];
         for (const arm of grouped?.arms ?? []) {
           const xId = muxNodeId(g.busId, key, m.messageId, m.extended, arm.selector);
           // Unnamed arms carry no searchable text of their own; they
@@ -803,12 +905,12 @@ export function buildSearchIndex(groups: readonly BusGroup[]): GridviewFilterEnt
           if (arm.label !== null) {
             out.push({
               id: xId,
-              ancestors: [bId, dId, eId, mId],
+              ancestors: armBase,
               haystack: muxHaystack(prefix, m, arm.label),
             });
           }
           for (const s of arm.signals) {
-            pushSignal(s, [bId, dId, eId, mId, xId], arm);
+            pushSignal(s, [...armBase, xId], arm);
           }
         }
       }
@@ -1037,7 +1139,9 @@ function valueColorTarget(kind: RenderRow["kind"]): ColorTarget | null {
 function gridviewRowsOf(rows: readonly RenderRow[]): GridviewRowModel[] {
   return rows.map((r) => ({
     id: r.id,
-    kind: isSignalRow(r) ? "leaf" : "branch",
+    // A signal is a plain leaf — except a multiplexor whose named arms
+    // nest under it, which is an expandable branch like a message.
+    kind: isSignalRow(r) && !r.hasChildren ? "leaf" : "branch",
     expandable: r.hasChildren,
     depth: r.depth,
   }));

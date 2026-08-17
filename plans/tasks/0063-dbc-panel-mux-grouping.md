@@ -15,17 +15,29 @@ event" is a nine-signal manual multi-select.
 
 ## Scope
 
-Insert an optional **mux-arm level** between message and signal in the
-panel's tree, so it reads bus → DBC → ECU → message → mux arm → signal.
-The level appears only for messages that actually multiplex; every
-other message renders exactly as before.
+Insert an optional **mux-arm level** into the panel's tree for arms
+that actually group something. The level appears only where it earns
+its indent; every other shape renders exactly as before.
 
+- **Only an arm with two or more signals gets an arm row.** A
+  single-signal arm groups nothing — the index-style diagnostic shape
+  (one self-named signal per selector, e.g. `Cell01_DeltaSOC m0`,
+  `Cell02_DeltaSOC m1`, …) would gain a whole layer of one-child
+  containers. Its signal renders in the flat list instead; the arm
+  stays visible in the signal's details line, and a named arm's `VAL_`
+  label still joins the signal's search haystack.
+- **Named arms nest under the multiplexor's own row** (which becomes an
+  expandable selectable branch); unnamed arms sit directly under the
+  message. A `VAL_` table on the selector is what makes it a category
+  header (enum-style) rather than an array index (index-style) — and
+  the nested shape is the depth-1 case of the extended-multiplexing
+  tree, so it extends rather than being redone when that lands.
+- Arm label is the bare `VAL_` name, falling back to `m<N>` when the
+  DBC declares no (non-empty) `VAL_` entry for that selector. The
+  `m<N>` notation stays in the details line.
 - The multiplexor signal itself and any `plain` signals stay directly
   under the message (they are present on every frame regardless of the
-  selector). One group per selector, ascending.
-- Arm label is `m<N> · <VAL_ label>` resolved from the multiplexor
-  signal's own value table, falling back to bare `m<N>` when the DBC
-  declares no `VAL_` entry for that selector.
+  selector). Grouped arms are ordered by selector, ascending.
 - An arm row is selectable and **drag-drops every signal in that arm**
   — the one-gesture path to a plot panel. It does not include the
   multiplexor: that is a mode indicator on an unrelated scale, and it
@@ -42,25 +54,32 @@ holds. The grouping is display shaping over a static model snapshot —
 the same role `groupByEcu` already plays in this panel — not a
 re-derivation of a decode fact.
 
-Extended multiplexing (`m<N>M`, `SG_MUL_VAL_`) buckets by its single
-selector. `SignalMuxRecord` carries no nested-range representation
-today, and the message detail row already surfaces the caveat via
-`usesExtendedMux`.
+**Extended multiplexing (`m<N>M`, `SG_MUL_VAL_`) is not grouped at
+all** — the message keeps its flat signal list. Each `m<N>` selector
+lives in its own multiplexor's namespace and `SignalMuxRecord` carries
+no parent link, so bucketing by the bare number would merge unrelated
+arms under wrong labels. The message detail row surfaces the caveat via
+`usesExtendedMux`; real nesting is the follow-up task 85 (host-side
+`SG_MUL_VAL_` modelling).
 
 ## Exit criteria
 
-- A multiplexed message renders one row per selector, in ascending
-  selector order, labelled from the multiplexor's `VAL_` table (bare
-  `m<N>` when absent), with the multiplexor and plain signals directly
-  under the message.
-- A non-multiplexed message renders identically to before — no extra
-  level, no changed depth.
+- A multiplexed message renders one arm row per selector that carries
+  two or more signals, ascending, labelled from the multiplexor's
+  `VAL_` table (bare `m<N>` when absent); named arms nest under the
+  multiplexor row, unnamed arms under the message; single-signal arms
+  render flat.
+- An all-single-arm (index-style) message and a non-multiplexed message
+  render identically to the pre-task tree — no extra level, no changed
+  depth.
+- An extended-mux message renders its flat signal list unchanged.
 - Dragging an arm row onto a plot panel adds exactly that arm's
-  signals.
-- Searching an arm's `VAL_` label reveals that arm and its signals and
-  prunes the other arms.
-- Keyboard tree navigation walks into and out of arm rows; expand state
-  for arms round-trips through the saved layout.
+  signals; dragging the multiplexor row adds only the multiplexor.
+- Searching an arm's `VAL_` label reveals that arm through the
+  multiplexor and prunes the rest; a flattened arm's `VAL_` label still
+  finds its signal.
+- Keyboard tree navigation walks into and out of the multiplexor and
+  arm rows; expand state for both round-trips through the saved layout.
 - Tests cover the grouping function directly and each of the above
   through the panel's DOM.
 - The panel's rustdoc-equivalent header comment and the README's DBC

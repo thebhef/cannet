@@ -1573,59 +1573,127 @@ async function renderMuxedPanel() {
   return { api, msg };
 }
 
-/// Expand one arm row by its rendered label.
-function expandArm(label: string) {
+/// Expand one row (multiplexor or arm) by its rendered label text.
+function expandRowByLabel(label: string) {
   const row = screen.getByText(label).closest(".dbc-row") as HTMLElement;
   fireEvent.click(row.querySelector(".dbc-row-chevron")!);
   return row;
 }
 
+/// The indexed-series shape from real diagnostic DBCs: one signal per
+/// selector, names carrying the index, no VAL_ on the selector. Every
+/// arm is single-signal, so the whole message renders flat.
+const INDEXED_CONTENT: DbcContentRecord[] = [
+  {
+    dbcPath: "/tmp/ct.dbc",
+    messages: [
+      {
+        ...MESSAGE_DEFAULTS,
+        messageId: 900,
+        extended: false,
+        name: "CellDeltaSoc",
+        transmitter: "String1",
+        comment: "",
+        attributes: [],
+        signals: [
+          {
+            ...SIGNAL_DEFAULTS,
+            name: "CellIndex",
+            unit: "",
+            comment: "",
+            attributes: [],
+            valueTable: [],
+            mux: { kind: "multiplexor" as const },
+          },
+          ...[1, 2, 3].map((i) => ({
+            ...SIGNAL_DEFAULTS,
+            name: `Cell0${i}_DeltaSOC`,
+            unit: "",
+            comment: "",
+            attributes: [],
+            valueTable: [],
+            mux: { kind: "multiplexed" as const, selector: i - 1 },
+          })),
+        ],
+      },
+    ],
+  },
+];
+
 describe("DatabasePanel mux-arm grouping", () => {
-  it("renders one row per selector, ascending, labelled from the multiplexor's VAL_ table", async () => {
+  it("nests the named multi-signal arm under the multiplexor and flattens single-signal arms", async () => {
     await renderMuxedPanel();
+    // Flattened single-signal arms render at message level, beside the
+    // multiplexor and the plain signal — no arm rows yet.
+    expect(screen.getByText("EventType")).toBeInTheDocument();
+    expect(screen.getByText("SequenceCounter")).toBeInTheDocument();
+    expect(screen.getByText("NVFailureCode")).toBeInTheDocument();
+    expect(screen.getByText("BootInitStage")).toBeInTheDocument();
+    expect(document.querySelectorAll(".dbc-row-mux").length).toBe(0);
+    // The grouped arm appears when its multiplexor expands, labelled
+    // with the bare VAL_ name.
+    expandRowByLabel("EventType");
     const arms = [...document.querySelectorAll(".dbc-row-mux .dbc-row-label")].map(
       (e) => e.textContent,
     );
-    expect(arms).toEqual(["m1 · BootInit", "m2 · NVMemory", "m3 · CellVoltageStatus"]);
-  });
-
-  it("keeps the multiplexor and plain signals directly under the message", async () => {
-    await renderMuxedPanel();
-    // Present without expanding any arm — they ride every frame.
-    expect(screen.getByText("EventType")).toBeInTheDocument();
-    expect(screen.getByText("SequenceCounter")).toBeInTheDocument();
-    // Arm members stay hidden until their arm is expanded.
-    expect(screen.queryByText("BootInitStage")).not.toBeInTheDocument();
+    expect(arms).toEqual(["CellVoltageStatus"]);
+    // Its signals stay hidden until the arm itself expands.
     expect(screen.queryByText("CellStatusVoltage")).not.toBeInTheDocument();
   });
 
-  it("expanding an arm reveals that arm's signals and no others", async () => {
+  it("expanding the arm reveals that arm's signals and no others", async () => {
     await renderMuxedPanel();
-    expandArm("m3 · CellVoltageStatus");
+    expandRowByLabel("EventType");
+    expandRowByLabel("CellVoltageStatus");
     expect(await screen.findByText("CellStatusVoltage")).toBeInTheDocument();
     expect(screen.getByText("CellStatusPosition")).toBeInTheDocument();
-    expect(screen.queryByText("NVFailureCode")).not.toBeInTheDocument();
-    expect(screen.queryByText("BootInitStage")).not.toBeInTheDocument();
   });
 
-  it("nests arm signals one level below the message's own signals", async () => {
+  it("nests multiplexor → arm → signal one level per step, flattened signals at signal level", async () => {
     await renderMuxedPanel();
-    // Message sits at level 4 (bus → dbc → ecu → message), its own
-    // signals at 5, an arm at 5, and the arm's signals at 6.
     expect(screen.getByText("ServiceEvent").closest(".dbc-row")).toHaveAttribute(
       "aria-level",
       "4",
     );
-    expect(screen.getByText("EventType").closest(".dbc-row")).toHaveAttribute(
+    const muxRow = screen.getByText("EventType").closest(".dbc-row");
+    expect(muxRow).toHaveAttribute("aria-level", "5");
+    // The multiplexor is an expandable branch now.
+    expect(muxRow).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("BootInitStage").closest(".dbc-row")).toHaveAttribute(
       "aria-level",
       "5",
     );
-    const arm = expandArm("m1 · BootInit");
-    expect(arm).toHaveAttribute("aria-level", "5");
-    expect((await screen.findByText("BootInitStage")).closest(".dbc-row")).toHaveAttribute(
+    expandRowByLabel("EventType");
+    const arm = screen.getByText("CellVoltageStatus").closest(".dbc-row");
+    expect(arm).toHaveAttribute("aria-level", "6");
+    expandRowByLabel("CellVoltageStatus");
+    expect((await screen.findByText("CellStatusVoltage")).closest(".dbc-row")).toHaveAttribute(
       "aria-level",
-      "6",
+      "7",
     );
+  });
+
+  it("renders an all-single-arm message completely flat", async () => {
+    // The indexed-series shape (one signal per selector, no VAL_ on
+    // the selector): no arm level, no nesting — exactly the flat list
+    // a non-multiplexed message gets.
+    const core = await import("@tauri-apps/api/core");
+    (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_dbc_content") return INDEXED_CONTENT;
+      if (cmd === "list_file_backed_content") return [];
+      return undefined;
+    });
+    renderPanel();
+    const msg = await screen.findByText("CellDeltaSoc");
+    fireEvent.click(msg.closest(".dbc-row")!.querySelector(".dbc-row-chevron")!);
+    expect(await screen.findByText("Cell01_DeltaSOC")).toBeInTheDocument();
+    expect(document.querySelectorAll(".dbc-row-mux").length).toBe(0);
+    for (const name of ["CellIndex", "Cell01_DeltaSOC", "Cell02_DeltaSOC"]) {
+      expect(screen.getByText(name).closest(".dbc-row")).toHaveAttribute(
+        "aria-level",
+        "5",
+      );
+    }
   });
 
   it("leaves a non-multiplexed message's signals directly under it", async () => {
@@ -1639,14 +1707,36 @@ describe("DatabasePanel mux-arm grouping", () => {
     expect(document.querySelectorAll(".dbc-row-mux").length).toBe(0);
   });
 
-  it("drag from an arm row emits exactly that arm's signals", async () => {
+  it("keyboard navigation walks into the multiplexor, the arm, and back out", async () => {
     await renderMuxedPanel();
-    const arm = screen.getByText("m3 · CellVoltageStatus").closest(".dbc-row") as HTMLElement;
+    const tree = screen.getByRole("tree");
+    fireEvent.click(screen.getByText("EventType"));
+    // Expand the multiplexor from the keyboard; the arm appears.
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    expect(await screen.findByText("CellVoltageStatus")).toBeInTheDocument();
+    // Step into the arm and expand it too.
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    expect(screen.getByText("CellVoltageStatus").closest(".dbc-row")).toHaveClass(
+      "dbc-row-active",
+    );
+    fireEvent.keyDown(tree, { key: "ArrowRight" });
+    expect(await screen.findByText("CellStatusVoltage")).toBeInTheDocument();
+    // ArrowLeft collapses the arm and walks back to the multiplexor.
+    fireEvent.keyDown(tree, { key: "ArrowLeft" });
+    expect(screen.queryByText("CellStatusVoltage")).not.toBeInTheDocument();
+    fireEvent.keyDown(tree, { key: "ArrowLeft" });
+    expect(screen.getByText("EventType").closest(".dbc-row")).toHaveClass(
+      "dbc-row-active",
+    );
+  });
+
+  it("drag from the arm row emits exactly that arm's signals", async () => {
+    await renderMuxedPanel();
+    expandRowByLabel("EventType");
+    const arm = screen.getByText("CellVoltageStatus").closest(".dbc-row") as HTMLElement;
     const dt = makeFakeDataTransfer();
     fireEvent.dragStart(arm, { dataTransfer: dt });
     const refs = parseSignalDragData(dt.getData(SIGNAL_DND_MIME)).signals;
-    // The arm's own signals — not the multiplexor, not the plain
-    // signal, not the other arms.
     expect(refs.map((r) => r.signalName)).toEqual([
       "CellStatusVoltage",
       "CellStatusPosition",
@@ -1654,6 +1744,16 @@ describe("DatabasePanel mux-arm grouping", () => {
     expect(refs.every((r) => r.messageName === "ServiceEvent" && r.messageId === 1018)).toBe(
       true,
     );
+  });
+
+  it("drag from the multiplexor row carries only the multiplexor signal", async () => {
+    await renderMuxedPanel();
+    const dt = makeFakeDataTransfer();
+    fireEvent.dragStart(screen.getByText("EventType").closest(".dbc-row") as HTMLElement, {
+      dataTransfer: dt,
+    });
+    const refs = parseSignalDragData(dt.getData(SIGNAL_DND_MIME)).signals;
+    expect(refs.map((r) => r.signalName)).toEqual(["EventType"]);
   });
 
   it("drag from the message row still carries every signal in the message", async () => {
@@ -1668,38 +1768,52 @@ describe("DatabasePanel mux-arm grouping", () => {
 
   it("an arm row is selectable like a message row", async () => {
     await renderMuxedPanel();
-    fireEvent.click(screen.getByText("m2 · NVMemory"));
-    expectRowSelected("m2 · NVMemory");
-    expectRowNotSelected("m1 · BootInit");
+    expandRowByLabel("EventType");
+    fireEvent.click(screen.getByText("CellVoltageStatus"));
+    expectRowSelected("CellVoltageStatus");
+    expectRowNotSelected("EventType");
   });
 
-  it("search by an arm's VAL_ label reveals that arm and prunes the others", async () => {
+  it("search by the arm's VAL_ label reveals it through the multiplexor and prunes flattened signals", async () => {
     await renderMuxedPanel();
     const search = screen.getByLabelText("search database content");
     fireEvent.change(search, { target: { value: "CellVoltageStatus" } });
     await waitFor(() =>
-      expect(screen.queryByText("m2 · NVMemory")).not.toBeInTheDocument(),
+      expect(screen.queryByText("BootInitStage")).not.toBeInTheDocument(),
     );
-    expect(screen.getByText("m3 · CellVoltageStatus")).toBeInTheDocument();
+    // The arm row and its ancestor path — multiplexor included — render.
+    expect(screen.getByText("CellVoltageStatus")).toBeInTheDocument();
+    expect(screen.getByText("EventType")).toBeInTheDocument();
   });
 
-  it("search for a signal reveals it through its arm", async () => {
+  it("search for an arm signal reveals it through the multiplexor and the arm", async () => {
     await renderMuxedPanel();
     const search = screen.getByLabelText("search database content");
-    fireEvent.change(search, { target: { value: "BootInitStage" } });
-    await screen.findByText("BootInitStage");
-    // The arm is on the path to the match, so it renders too.
-    expect(screen.getByText("m1 · BootInit")).toBeInTheDocument();
-    expect(screen.queryByText("m3 · CellVoltageStatus")).not.toBeInTheDocument();
+    fireEvent.change(search, { target: { value: "CellStatusPosition" } });
+    await screen.findByText("CellStatusPosition");
+    // Both levels of the path to the match render.
+    expect(screen.getByText("EventType")).toBeInTheDocument();
+    expect(screen.getByText("CellVoltageStatus")).toBeInTheDocument();
   });
 
-  it("persists an expanded arm into the panel params so a saved layout restores it", async () => {
+  it("search by a flattened arm's VAL_ label still finds its signal", async () => {
+    // NVMemory appears nowhere in the signal's own name — only the
+    // flattened arm identity carries it into the haystack.
+    await renderMuxedPanel();
+    const search = screen.getByLabelText("search database content");
+    fireEvent.change(search, { target: { value: "NVMemory" } });
+    expect(await screen.findByText("NVFailureCode")).toBeInTheDocument();
+  });
+
+  it("persists an expanded multiplexor and arm into the panel params", async () => {
     const { api } = await renderMuxedPanel();
-    expandArm("m1 · BootInit");
+    expandRowByLabel("EventType");
+    expandRowByLabel("CellVoltageStatus");
     await waitFor(() => {
       const calls = api.updateParameters.mock.calls;
       const last = calls[calls.length - 1][0] as { expanded: string[] };
       expect(last.expanded.some((id) => id.startsWith("mux:"))).toBe(true);
+      expect(last.expanded.some((id) => id.startsWith("sig:"))).toBe(true);
     });
   });
 });

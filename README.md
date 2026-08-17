@@ -1020,11 +1020,17 @@ DBCs form a tree-with-fuzzy-search grouped by bus
 (`bus → DBC → ECU → message → signal`, per-transmitter grouping
 like the RBS panel; messages with no `BO_` transmitter fall under
 "(no transmitter)"; unscoped DBCs appear under each bus group
-labelled "applies to all buses"). A **multiplexed** message gains one
-more level: its signals group under the mux arm they belong to,
-labelled `m<N> · <name>` from the multiplexor's own `VAL_` table (bare
-`m<N>` when the DBC names none), with the multiplexor and any
-always-present signals staying directly under the message.
+labelled "applies to all buses"). A **multiplexed** message groups
+each mux arm that carries two or more signals, labelled from the
+multiplexor's own `VAL_` table (bare `m<N>` when the DBC names none).
+Named arms nest under the multiplexor's row; unnamed ones sit directly
+under the message. A single-signal arm adds no level — its signal
+stays in the flat list with its arm noted in the details line — so an
+index-style multiplexed message (one self-named signal per selector)
+reads as flat as it is. Extended-multiplexing (`SG_MUL_VAL_`) messages
+stay flat too: their selector namespaces aren't representable yet, and
+the message details row carries the caveat. The multiplexor and any
+always-present signals stay directly under the message.
 Type any fragment of a signal
 name, ECU, comment, value-table label, message id (hex or decimal),
 or attribute, and the tree filters to the matches: ancestors of a
