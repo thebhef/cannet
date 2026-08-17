@@ -15,17 +15,30 @@ Two logical buses, one DBC scoped to each:
 
 | Bus | DBC | ECUs | Scale |
 | --- | --- | --- | --- |
-| Pack | `dbc/pack.dbc` | BMS, PackSensorFront/Rear, ThermalControl, ChargerObc, DcdcConverter, InsulationMonitor, VehicleControlUnit | 153 messages, 1159 signals |
-| Zonal | `dbc/zonal.dbc` | ZoneFrontLeft/FrontRight/RearLeft/RearRight, CentralCompute, AdasDomain, BodyGateway | 151 messages, 536 signals |
+| Pack | `dbc/pack.dbc` | BMS, PackSensorFront/Rear, ThermalControl, ChargerObc, DcdcConverter, InsulationMonitor, VehicleControlUnit | 154 messages, 1185 signals |
+| Zonal | `dbc/zonal.dbc` | ZoneFrontLeft/FrontRight/RearLeft/RearRight, CentralCompute, AdasDomain, BodyGateway | 152 messages, 541 signals |
 
 Notable stress cases:
 
 - **`BmsCellDetail`** (`pack.dbc`, CAN FD 64 B, extended id) — per-cell
   voltage, temperature, and balancing state for a 200-cell pack behind
   one `CellPage` multiplex selector: **600 multiplexed signals in one
-  message**.
+  message**. `CellPage` carries a value table naming every page
+  (`Cells001To008` …), so each mux arm shows up named in the GUI.
 - **`AdasObjectList`** (`zonal.dbc`, CAN FD 16 B) — a fused object
-  list multiplexing 16 tracked objects × 6 signals.
+  list multiplexing 16 tracked objects × 6 signals. Its `ObjectIndex`
+  selector carries no `VAL_` table, so the arms render unnamed
+  (`m0`–`m15`) at message level — the index-style counterpart to
+  `BmsCellDetail`'s named pages.
+- **`BmsModuleDeltaSoc`** (`pack.dbc`, extended id) — the
+  indexed-series mux shape: one self-named signal per `ModuleIndex`
+  value, every arm single-signal, so the GUI renders it flat.
+- **`AdasDiagEvent`** (`zonal.dbc`, id `0x6F0`) — two-stage extended
+  multiplexing (`SG_MUL_VAL_`): `DiagChannel` selects the domain,
+  `FusionStage` (`m1M`) selects again inside it, and two unrelated
+  signals both carry the bare `m0` marker — resolvable only through
+  the `SG_MUL_VAL_` records. Rendered flat with the extended-mux
+  caveat until the host models the table.
 - Per-module / per-zone message families (25 battery modules × 3
   messages; 4 zone controllers × 27 messages) — realistic name
   repetition with distinguishing prefixes, the shape that stresses

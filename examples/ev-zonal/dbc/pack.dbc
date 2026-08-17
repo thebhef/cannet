@@ -1499,6 +1499,34 @@ BO_ 2565865473 BmsCellDetail: 64 BMS
  SG_ CellTemp200 m24 : 192|8@1+ (1,-40) [-40|125] "degC" Vector__XXX
  SG_ CellBalance200 m24 : 214|2@1+ (1,0) [0|0] "" Vector__XXX
 
+BO_ 2565865474 BmsModuleDeltaSoc: 8 BMS
+ SG_ ModuleIndex M : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ Module01_DeltaSoc m0 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module02_DeltaSoc m1 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module03_DeltaSoc m2 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module04_DeltaSoc m3 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module05_DeltaSoc m4 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module06_DeltaSoc m5 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module07_DeltaSoc m6 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module08_DeltaSoc m7 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module09_DeltaSoc m8 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module10_DeltaSoc m9 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module11_DeltaSoc m10 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module12_DeltaSoc m11 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module13_DeltaSoc m12 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module14_DeltaSoc m13 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module15_DeltaSoc m14 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module16_DeltaSoc m15 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module17_DeltaSoc m16 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module18_DeltaSoc m17 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module19_DeltaSoc m18 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module20_DeltaSoc m19 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module21_DeltaSoc m20 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module22_DeltaSoc m21 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module23_DeltaSoc m22 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module24_DeltaSoc m23 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+ SG_ Module25_DeltaSoc m24 : 8|16@1- (0.01,0) [-50|50] "%" Vector__XXX
+
 CM_ SG_ 192 PackEnableRequest "Requested high-voltage pack operating mode.";
 CM_ SG_ 192 VcuAliveCounter "Rolling counter, increments each transmission.";
 CM_ SG_ 256 PackVoltage "Total pack terminal voltage.";
@@ -1978,6 +2006,8 @@ CM_ SG_ 2565865473 CellTemp199 "Surface temperature at cell 199 NTC.";
 CM_ SG_ 2565865473 CellVoltage200 "Terminal voltage of cell 200.";
 CM_ SG_ 2565865473 CellTemp200 "Surface temperature at cell 200 NTC.";
 CM_ BO_ 2565865473 "Per-cell measurement page -- cycles CellPage over the full pack.";
+CM_ SG_ 2565865474 ModuleIndex "Multiplex selector -- which module this frame carries.";
+CM_ BO_ 2565865474 "Per-module SoC deviation from pack mean -- cycles ModuleIndex over all modules.";
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
 BA_DEF_DEF_ "GenMsgCycleTime" 0;
 BA_ "GenMsgCycleTime" BO_ 192 10;
@@ -2133,6 +2163,7 @@ BA_ "GenMsgCycleTime" BO_ 1814 5000;
 BA_ "GenMsgCycleTime" BO_ 1799 100;
 BA_ "GenMsgCycleTime" BO_ 1815 5000;
 BA_ "GenMsgCycleTime" BO_ 2565865473 100;
+BA_ "GenMsgCycleTime" BO_ 2565865474 500;
 VAL_ 192 PackEnableRequest 0 "Standby" 1 "Drive" 2 "Charge" 3 "Sleep" ;
 VAL_ 256 PackState 0 "Sleep" 1 "Standby" 2 "Precharge" 3 "Drive" 4 "Charge" 5 "Fault" ;
 VAL_ 256 FaultLevel 0 "None" 1 "Warning" 2 "Derate" 3 "Shutdown" ;
@@ -2153,6 +2184,7 @@ VAL_ 1796 EcuState 0 "Init" 1 "Run" 2 "Degraded" 3 "Shutdown" ;
 VAL_ 1797 EcuState 0 "Init" 1 "Run" 2 "Degraded" 3 "Shutdown" ;
 VAL_ 1798 EcuState 0 "Init" 1 "Run" 2 "Degraded" 3 "Shutdown" ;
 VAL_ 1799 EcuState 0 "Init" 1 "Run" 2 "Degraded" 3 "Shutdown" ;
+VAL_ 2565865473 CellPage 0 "Cells001To008" 1 "Cells009To016" 2 "Cells017To024" 3 "Cells025To032" 4 "Cells033To040" 5 "Cells041To048" 6 "Cells049To056" 7 "Cells057To064" 8 "Cells065To072" 9 "Cells073To080" 10 "Cells081To088" 11 "Cells089To096" 12 "Cells097To104" 13 "Cells105To112" 14 "Cells113To120" 15 "Cells121To128" 16 "Cells129To136" 17 "Cells137To144" 18 "Cells145To152" 19 "Cells153To160" 20 "Cells161To168" 21 "Cells169To176" 22 "Cells177To184" 23 "Cells185To192" 24 "Cells193To200" ;
 VAL_ 2565865473 CellBalance001 0 "Off" 1 "Discharging" 2 "Scheduled" 3 "Fault" ;
 VAL_ 2565865473 CellBalance002 0 "Off" 1 "Discharging" 2 "Scheduled" 3 "Fault" ;
 VAL_ 2565865473 CellBalance003 0 "Off" 1 "Discharging" 2 "Scheduled" 3 "Fault" ;

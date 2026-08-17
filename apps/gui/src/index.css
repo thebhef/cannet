@@ -4707,6 +4707,12 @@ button.trace-event-swatch {
 .dbc-row-message .dbc-row-label {
   color: var(--text-secondary);
 }
+/* Mux-arm row: a container the user can also select and drag, so it
+   reads between the ECU headings and the message rows. */
+.dbc-row-mux .dbc-row-label {
+  color: #c4b5fd;
+  font-weight: 600;
+}
 .dbc-row-signal .dbc-row-label {
   color: var(--text-primary);
 }
