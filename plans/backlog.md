@@ -86,6 +86,15 @@ trip over it.
   per file, expect ~5 files covering classic / FD / error / mixed
   channels / big payloads.
 
+- `[cleanup]` **`apps/gui/src/plotSolo.ts` is committed with CRLF line
+  endings** — the only tracked file whose blob is CRLF (`git ls-files
+  --eol` → `i/crlf`); everything else is LF. Benign today (git skips
+  renormalizing blobs that already contain CRLF), but it's an
+  inconsistency and a trap for tooling that assumes LF. Renormalize to
+  LF in a commit of its own; consider a `.gitattributes` (`* text=auto`)
+  in the same pass. Noticed 2026-08-16 while root-causing the release
+  `-dirty` version stamp (which turned out to be unrelated).
+
 ### Trace view
 
 - `[feat]` **Timestamp display mode (absolute / delta), and the ADR

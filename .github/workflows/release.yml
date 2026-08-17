@@ -87,6 +87,22 @@ jobs:
     env:
       CANNET_SERVER_TARGET: ${{ matrix.rust-target }}
     steps:
+      # The Windows runner's machine gitconfig sets core.autocrlf=true,
+      # so a default checkout writes CRLF working files and records the
+      # converted sizes in the index. `tauri build` later rewrites
+      # src-tauri/Cargo.toml in place with LF endings (a byte-identical
+      # no-op against the committed blob), which that CRLF index can
+      # never reconcile — git reports the file modified from then on,
+      # and the GUI binary's vergen `git describe --dirty` stamp picks
+      # up `-dirty` even though nothing real changed (the clean-stamp
+      # assert below runs before `tauri build`, so it cannot catch
+      # this). Check out as-committed (LF) instead; then the rewrite
+      # really is a no-op. On the macOS leg autocrlf is already off —
+      # this is a harmless no-op there.
+      - name: Force as-committed (LF) checkout
+        shell: bash
+        run: git config --global core.autocrlf input
+
       - uses: actions/checkout@v7
         with:
           # Full history + tags so vergen's `git describe` resolves the
@@ -348,6 +364,26 @@ jobs:
       RUST_TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v7
+
+      # vergen stamps the binary with `git describe --tags`, and this
+      # shallow, tag-less checkout gives it nothing to describe — the
+      # released server then falls back to the crate version and
+      # advertises `0.0.0` (see `build_version` in
+      # `crates/cannet-server/src/main.rs`). Tag HEAD locally so the
+      # stamp comes out as exactly the release tag; unlike the bundle
+      # job there is no version edit to commit first (cargo-deb takes
+      # `--deb-version`), so tagging alone suffices. Assert it, same as
+      # the bundle legs do.
+      - name: Tag the version locally (for vergen)
+        run: |
+          git tag "${{ needs.bundle.outputs.tag }}"
+          DESCRIBE="$(git describe --tags --dirty)"
+          echo "vergen will stamp: $DESCRIBE"
+          if [ "$DESCRIBE" != "${{ needs.bundle.outputs.tag }}" ]; then
+            echo "::error::expected the stamp to be exactly ${{ needs.bundle.outputs.tag }}; the working tree is not clean at stamp time:"
+            git status --porcelain
+            exit 1
+          fi
 
       # rust-toolchain.toml pins the version. The host target already
       # is x86_64-unknown-linux-gnu on this runner, but add it
