@@ -55,7 +55,7 @@ use logging::{Level, PROXY, REPLAY, SERVER, VBUS};
 /// guarantee lives at the type rather than in every call site's memory.
 /// [`Command`] keeps its own `Debug`; it holds nothing sensitive.
 #[derive(Parser)]
-#[command(version, about = "cannet gRPC server")]
+#[command(version = build_version(), about = "cannet gRPC server")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -180,7 +180,7 @@ const TOKEN_ENV: &str = "CANNET_TOKEN";
 /// to the Cargo crate version when the binary was built outside a git
 /// checkout (no `VERGEN_GIT_DESCRIBE` set) — the same fallback
 /// `apps/gui/src-tauri` uses. This is the value advertised as the
-/// mDNS TXT record's `ver` key.
+/// mDNS TXT record's `ver` key and printed by `--version`.
 fn build_version() -> &'static str {
     match option_env!("VERGEN_GIT_DESCRIBE") {
         Some(v) if !v.is_empty() && v != "VERGEN_IDEMPOTENT_OUTPUT" => v,
@@ -850,6 +850,16 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(cli.proxy.token.is_none());
+    }
+
+    #[test]
+    fn version_flag_reports_the_build_version() {
+        // `--version` must agree with what the mDNS TXT record
+        // advertises: the vergen `git describe` stamp, not the
+        // committed crate version 0.0.0. (Outside a git checkout both
+        // fall back to the crate version and this still holds.)
+        use clap::CommandFactory;
+        assert_eq!(Cli::command().get_version(), Some(build_version()));
     }
 
     #[test]
