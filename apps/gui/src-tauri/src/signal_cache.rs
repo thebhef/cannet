@@ -368,6 +368,18 @@ impl SignalCache {
         (self.lo <= self.hi).then_some((self.lo, self.hi))
     }
 
+    /// The series' own first and last sample times (absolute seconds),
+    /// or `None` for an empty series.
+    fn time_span(&self) -> Option<(f64, f64)> {
+        let level = &self.levels[0];
+        (level.live_len() > 0).then(|| {
+            (
+                level.get(level.first_slot()).0,
+                level.get(level.len() - 1).0,
+            )
+        })
+    }
+
     /// Append one decoded sample, widening the all-time `[lo, hi]`
     /// extent with it.
     fn push_sample(&mut self, t_seconds: f64, value: f64) {
@@ -2502,6 +2514,35 @@ impl SignalCacheStore {
             .collect();
         out.sort_by(|a, b| (a.info.group, &a.info.name).cmp(&(b.info.group, &b.info.name)));
         out
+    }
+
+    /// The queried series' combined time span — the earliest first-sample
+    /// and latest last-sample second across the batch's non-empty caches,
+    /// or `None` when every queried cache is absent or empty. A query
+    /// nothing answers to contributes nothing rather than voiding the
+    /// batch.
+    ///
+    /// This is the x-anchor fallback for a capture that has no frames (a
+    /// signals-only import — ADR 0024: its signals are then the capture's
+    /// timeline). `sample_signals` reports the frame window's timestamps
+    /// when the store has them, and this span when it does not, so a plot
+    /// over file-backed series alone still has a window floor and a data
+    /// edge to fit and follow.
+    pub fn time_span(&self, queries: &[CacheQuery<'_>]) -> Option<(f64, f64)> {
+        let caches = self.caches.lock().expect("signal cache mutex poisoned");
+        let mut span: Option<(f64, f64)> = None;
+        for query in queries {
+            let Some(cache) = caches.by_key.get(&query.key()) else {
+                continue;
+            };
+            let Some((first, last)) = cache.time_span() else {
+                continue;
+            };
+            span = Some(span.map_or((first, last), |(lo, hi): (f64, f64)| {
+                (lo.min(first), hi.max(last))
+            }));
+        }
+        span
     }
 
     /// One file-backed series' value table, empty when it has none or
@@ -6523,6 +6564,36 @@ mod tests {
         assert_eq!(
             from_file.min_max_many(&[file_query(1, "EngineSpeed")], &store, dbs),
             vec![Some((0.0, 49.0))],
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn time_span_answers_the_queried_series_own_span() {
+        // The x-anchor fallback for a capture with no frames (ADR 0024:
+        // a signals-only import's signals are its timeline): the span is
+        // the union of the queried series' own first/last sample times,
+        // and a query nothing answers to contributes nothing rather than
+        // voiding the batch.
+        let dir = TempDir::new().unwrap();
+        let store = SignalCacheStore::new_unbounded(dir.path());
+        assert_eq!(store.time_span(&[file_query(1, "EngineSpeed")]), None);
+
+        store.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(1_000));
+        let offset: Vec<(u64, f64)> = (500..1_500u64).map(|i| (i * S, 1.0)).collect();
+        store.fill_file_backed(&file_info(2, "AcVoltage"), &offset);
+
+        assert_eq!(
+            store.time_span(&[file_query(1, "EngineSpeed")]),
+            Some((0.0, 999.0))
+        );
+        assert_eq!(
+            store.time_span(&[
+                file_query(9, "Missing"),
+                file_query(1, "EngineSpeed"),
+                file_query(2, "AcVoltage"),
+            ]),
+            Some((0.0, 1_499.0))
         );
     }
 
