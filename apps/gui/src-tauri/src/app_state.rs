@@ -172,7 +172,7 @@ pub(crate) struct AppState {
     /// The open project *file* and the content the app last exchanged
     /// with it — the disk watch on `.cannet_prj`
     /// ([`crate::project_watch`], ADR 0053 §1).
-    pub(crate) watched_project: Mutex<crate::project_watch::WatchedProject>,
+    pub(crate) watched_project: Mutex<crate::watched_file::WatchedFile>,
 }
 
 /// Guarded-field accessors. Each wraps the one lock its field needs with
@@ -201,7 +201,7 @@ impl AppState {
 
     /// The open project file's watch record. Taken *before*
     /// [`Self::dbc_watcher`] wherever both are needed.
-    pub(crate) fn watched_project(&self) -> MutexGuard<'_, crate::project_watch::WatchedProject> {
+    pub(crate) fn watched_project(&self) -> MutexGuard<'_, crate::watched_file::WatchedFile> {
         self.watched_project
             .lock()
             .expect("watched_project mutex poisoned")
