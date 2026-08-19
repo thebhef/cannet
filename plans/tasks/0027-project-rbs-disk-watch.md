@@ -493,8 +493,244 @@ Reports were not committed (nothing under
 `task27-phase2-run{1,2}.json` in the operator's seeded perf app-data dir
 (outside the repo).
 
+### 2026-08-19 — Phase 3 (the RBS-file watch)
+
+Branch `task-27-phase-3-rbs-watch`, off `task-27-phase-2-project-watch`
+(`8da1e35e`). Implements ADR 0053 §1's app-owned half for the
+`.cannet_rbs` files, and closes the notice side effect phase 2 recorded.
+
+#### Where the apply-vs-notify decision went, and the evidence
+
+**The host decides, and applies.** For the project, phase 2 put the
+decision in the frontend. Here it is host-side — which is not a
+divergence from phase 2 but the same rule reaching a different answer,
+because the rule is *the decision is made where the facts are* and the
+facts sit in different places.
+
+**Observation.** ADR 0053 §1 makes an RBS's decision read two facts: the
+element is clean, and the element is stopped.
+
+**Experiment.** Grepped the host and the frontend for both, the same way
+phase 2 measured the project's.
+
+**Data.** Both are host state and neither is frontend state.
+`RbsElementState` (`rbs/runtime.rs`) carries `dirty` — set by
+`edit_file` and `rbs_set_enabled` on every override mutation, cleared by
+`write_element` — and `run`, which `rbs_set_run` writes and
+`sync_schedules` reads to decide what the scheduler transmits. The
+frontend's `RbsPanel` holds neither: it renders `view.dirty` and
+`view.run` out of `rbs_view`, and its Run checkbox writes through the
+element registry to `rbs_set_run`. The mirror image of phase 2's
+finding, where `dirty` existed *only* at `App.tsx:401`.
+
+**Conclusion.** The decision is host-side, and so is the pending flag.
+That has a consequence worth stating: because the flag lives in
+`RbsElementState`, everything that resolves it — the load path, a save,
+the dismiss — clears it in the same place, and the panel is a view over
+it. The RBS notice therefore **cannot go stale**, which is the phase-2
+side effect this phase had to fix (see below) solved structurally rather
+than by wiring.
+
+Applying is `load_into_element`, extracted from `rbs_load` so the
+command and the watch run the one `.cannet_rbs` load path (ADR 0053 §1:
+a reload is the existing load path, not a merge). It is also what
+carries the element's Run flag across the swap — the load contract's
+run/stopped preservation is a property of that function, not of the
+watch.
+
+**Falsification of the rule itself.** Replaced `outcome_for`'s body with
+an unconditional `Outcome::Apply` and re-ran: three of its four tests
+fail (`left: Apply, right: Notify` on dirty-clean-running, clean-running,
+and dirty-stopped), the clean-and-stopped one still passes. Restored,
+all four pass. The rule is measured, not asserted.
+
+#### What the third watch did *not* need
+
+Both traps phase 2 hit were already solved and were reused rather than
+re-derived:
+
+- **cannet writes this file too.** `WatchedProject` — the content the
+  app last *exchanged* with a file it both reads and writes, with the
+  write performed under the record's lock — generalised to
+  `watched_file::WatchedFile` (`a087b4ed`), and each element now carries
+  one. `write_element` writes through `write_recording`, holding the RBS
+  lock the event path reads under, so a Save cannot be read as an
+  external edit. Without it every Save of a *clean, stopped* element —
+  which is exactly the state that applies silently — would have
+  re-loaded the file cannet had just written.
+- **The watch set's bookkeeping.** `clear_dbcs` already unwatches only
+  the paths it unloaded, and `DbcWatcher` already tracks files rather
+  than directories, so an RBS file in the project's directory survives a
+  project open unchanged.
+
+One thing the project did not have: **several files at once, and two
+elements may hold the same one.** The record is therefore per element,
+and `still_open` guards every give-up of a watch — an element unloading
+must not unwatch a file another element is still holding
+(`a_file_a_second_element_still_has_open_keeps_its_watch`).
+
+#### The notice, extracted rather than copied a third time
+
+Phase 2 added `.project-changed` and an inline `<span>` in `App.tsx`'s
+header, shaped after the cache-rebuild chip. A third copy for the RBS
+panel is the drift `CLAUDE.md` forbids, so the shape — statement,
+primary action, dismiss — is now `ChangedOnDiskNotice`, with one CSS
+class (`.changed-on-disk`) for both surfaces, and the project's notice
+was re-pointed at it in the same commit (`01ca7100`).
+
+The extraction carries a contract, not just markup: **a notice refers to
+something and goes when that something is gone.** That is phase 2's
+recorded side effect (a showing chip did not react to a subsequent save
+or to the project being closed, so its Reload could re-open a project
+the user had closed). The two surfaces meet it differently, and the
+difference is the placement finding above:
+
+| | where the pending state lives | how it stops being stale |
+| --- | --- | --- |
+| RBS | host (`RbsElementState.changed_on_disk`) | load / save / dismiss all clear it; the panel re-fetches |
+| Project | frontend (the dirty bit that decides it is frontend-only) | `App` clears it on re-open, reload, save and close (`5fc0b440`) |
+
+The RBS panel's Dismiss goes through a host command
+(`rbs_dismiss_disk_change`) for that reason: a panel-local dismiss would
+come straight back on the next `rbs_view`.
+
+#### What landed
+
+| Commit | Subject | Tests |
+| --- | --- | --- |
+| `a087b4ed` | Extract the record that tells cannet's own write from someone else's | +2 (`cannet-gui`) |
+| `c3a11d0b` | An open .cannet_rbs rides the shared watch set, and applies when it is safe | +6 (`cannet-gui`) |
+| `01ca7100` | One changed-on-disk notice, shared by the project header and the RBS panel | +5 (frontend) |
+| `5fc0b440` | A changed-on-disk notice goes when the thing it names is saved or closed | +2 (frontend) |
+| `eea341b6` | Document the RBS file's disk watch | — |
+
+Suite totals after the phase: `cannet-gui` 736 passed / 6 ignored (was
+728/6), frontend 2261 across 170 files (was 2254 across 169). `cargo
+clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`,
+`cargo test -p cannet-gui`, `pnpm --dir apps/gui test` and `pnpm --dir
+apps/gui build` clean on every commit (the pre-commit gate ran them).
+
+Deliberate, and the same call phase 2 made: the RBS watch is **not**
+gated by `dbc_auto_reload`. That setting is the opt-out for a *database*
+swapping under an analysis; ADR 0053 §1 names it for the DBC swap only.
+
+Also deliberate: the README / features / ADR update landed as its own
+commit (`eea341b6`) rather than inside the code commits, because it
+describes behaviour delivered across three of them. That is a looser
+reading of "docs in the same commit as the code" than `CLAUDE.md`
+states; nothing shipped undocumented, but it is recorded rather than
+glossed.
+
+`plans/tasks/roadmap.md` still lists task 27. Removing it is the
+completion call, which is the owner's — and the file is being edited by
+another session, so this phase touched only the paths it changed.
+
+#### ADR-0031 perf gate
+
+Two release runs on the real rig (`pnpm --dir apps/gui tauri build
+--no-bundle`, then `target/release/cannet-gui` with `--project <abs
+ev-zonal.cannet_prj> --app-data-dir <the operator's seeded perf app-data
+dir> --connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both connected and ran
+59.0 s at rate — `rx_gap.ids_measured` 173 on both, rx 1602.9 / 1607.2,
+tx 1609.7 / 1611.0 — so neither is the empty-capture failure mode. The
+perf project loads an RBS config (`opened … ev-zonal.cannet_rbs` on both
+runs), so the boot path this phase changed is exercised rather than
+merely compiled.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed on both runs, 31 metrics gated.**
+No baseline promoted or edited, no gate limit widened.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 0.000 | 0.000 | 0.000 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 3.700 | 1.600 | 3.700 | 41.000 |
+| jank_fraction | 0.000 | 0.000 | 0.000 | 0.000 | 0.050 |
+| jsheap_mb_peak | 70.300 | 72.600 | 70.300 | 72.600 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 8.944 | 7.177 | 8.944 | 24.094 |
+| renderer_mb_peak | 299.363 | 297.734 | 305.430 | 305.430 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 29.516 | 43.598 | 43.598 | 85.336 |
+| host_mb_peak | 59.227 | 58.609 | 59.645 | 59.645 | 182.453 |
+| tree_mb_peak | 714.051 | 711.973 | 720.801 | 720.801 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 59.464 | 75.151 | 75.151 | 139.240 |
+| flush_ms_mean | 25.000 | 4.318 | 4.413 | 4.413 | 25.000 |
+| flush_ms_max | 23.772 | 10.237 | 10.354 | 10.354 | 72.544 |
+| tx_late_ms_mean | 18.000 | 5.124 | 5.146 | 5.146 | 18.000 |
+| tx_late_ms_max | 65.695 | 18.624 | 26.055 | 26.055 | 156.391 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.163 | 1.187 | 1.187 | 2.898 |
+| rx_gap_short_frac_worst | 0.008 | 0.003 | 0.003 | 0.003 | 0.166 |
+| rx_fps_retention | 0.998 | 0.996 | 0.996 | 0.996 | 0.800 |
+| tx_fps_retention | 1.001 | 1.000 | 1.001 | 1.000 | 0.800 |
+
+The three host modes (`tracebuffer`, `grpc`, `hardware-peak`) re-ran as
+part of `check` and passed on both.
+
+Reading it against this change: nothing this phase adds runs during a
+capture. Each RBS element's watch registers once at load and its event
+path is idle unless the file is touched; the panel's addition is one
+boolean read out of a view it already fetches. The steady-state rows
+should therefore be unchanged, and they are — every one at or below
+baseline except the memory-drift rows, which sit inside their limits and
+move in opposite directions across the pair.
+
+Against the standing observation: `tx_late_ms_max` came in at **18.6 and
+26.1**, both well *below* the 65.7 baseline, after phase 2's 23.6 / 73.4
+and the four consecutive elevated readings before that. Two pairs in a
+row now include readings at a third of the baseline on the same rig with
+unrelated diffs, which is what phase 2 read as the rig's scheduling tail
+rather than any of these changes. The owner has since ruled on it (ADR
+0031: the row is noisy, gated at its existing limit, and an elevated
+reading is not a finding to report), so this phase's earlier suggestion
+of a bisect is withdrawn — the readings above are recorded, not chased.
+
+Reports were not committed (nothing under
+`docs/performance-measurements/frontend/` is tracked); they are at
+`task27-phase3-run{1,2}.json` in the operator's seeded perf app-data dir
+(outside the repo).
+
+### 2026-08-19 — Exit-criteria status check (end of phase 3)
+
+Phase 3 is the last phase, so this walks the task's `## Exit criteria`
+one by one. **This is a status check, not a completion declaration** —
+the completion call is the owner's.
+
+| Criterion | Status | Evidence |
+| --- | --- | --- |
+| Editing a loaded `.cannet_prj` or `.cannet_rbs` on disk updates the GUI without a manual reload | **Met, with a caveat** | Both watches exist and both are wired to the same `notify` backend (`project_watch::on_event`, `rbs::watch::on_event`, both called from `dbc_watcher::on_event`). "Updates the GUI" is deliberately *not* always an automatic swap: ADR 0053 §1 (and grooming notes 2 and 3, which the owner set) make an app-owned document apply silently only when nothing is at risk and **notify otherwise**, so a dirty project or a running RBS updates the GUI with a statement and an explicit action rather than a swap. The caveat is coverage, not behaviour: no test edits a file on disk and waits for the OS event (see Blockers) — what is tested is everything either side of that event. |
+| A transient broken parse leaves the working copy intact | **Met** | Both watches parse before doing anything: `project_watch::announce_if_changed` runs `parse_project` and returns on `Err` without announcing; `rbs::watch::consider` runs `RbsFile::parse` and returns on `Err` without applying or raising the flag. Both log at `error`. Asserted by inspection of the two functions plus the parser's own tests; not by an end-to-end FS test, per the blocker below. |
+| Editing an enum value name (`VAL_`) in a loaded DBC updates the label in the RBS and plot views without a manual reload, driven by a failing test | **Met (phase 1)** | Landed in phase 1 with the red measurements recorded in its status log — `expected [ 'Off (0)', 'Standby (1)' ] to deeply equal [ 'Off (0)', 'Ready (1)' ]` for the RBS view, and the plot's overlay `expected false to be true`. Commits `5b23774e`, `9da0aa63`. |
+| Tests cover the reload-and-swap pipeline for both file types | **Partially met** | Covered: the record that decides whether an event is news at all (5 tests, `watched_file`); the watch-set bookkeeping both watches ride (4 tests, `dbc_watcher`, including the project-file-survives-`clear_dbcs` invariant); the apply-vs-notify rule for RBS (4 tests, falsified by mutation); the shared-file guard (2 tests); the frontend's whole project decision (7 tests, `App.projectWatch.dom.test.tsx`) and the RBS panel's whole notice contract (5 tests, `RbsPanel.diskWatch.dom.test.tsx`). **Not covered: the host functions that stitch them together** — `announce_if_changed`, `consider`, `load_into_element`, `write_element` — because every one takes an `AppHandle` and Tauri's mock runtime does not load on this platform (phase 1, Experiment 3). That is a standing blocker across all three phases, not something phase 3 introduced, and it is the honest reason this row is not "met". |
+| Scope item: emit the appropriate frontend change event so open panels refresh | **Met** | Project: `project-changed`. RBS: the existing `rbs-changed`, which the panel already re-fetches on — no new subscription was added on either side. DBC-set changes ride phase 1's single carrier. |
+| Scope item: fix the DBC propagation gap | **Met (phase 1)** | ADR 0053 §§2–5 and the five consumers in phase 1's table. |
+
+Two things an overseer should weigh with the above:
+
+- **Nothing here was verified by driving the GUI.** Every claim is from
+  tests and code-level measurement, per the standing rule against UI
+  automation on the owner's machine.
+- **The `Partially met` row is the one to look at.** If the owner wants
+  it closed, the work is whatever makes `tauri/test` link on Windows;
+  it is worth its own task rather than a fourth phase here.
+
 ## Blockers / side effects
 
+- **Phase 3: the notice-staleness side effect is closed, differently on
+  each side.** Phase 2 recorded that a showing notice did not react to a
+  subsequent save or close. The RBS notice is host state and so cannot
+  go stale at all; the project's is frontend state and is now cleared on
+  re-open, reload, save and close, covered by two tests. Nothing is left
+  open here — the entry below is kept as the record of what was found.
+- **Phase 3: `rbs_save_as` no longer assigns a path of its own.** The
+  path now lives in the element's watch record, and the write re-points
+  it. Anything that wants an element's file path reads
+  `watch.path_string()`. Behaviourally identical; noted because the
+  field it replaced (`RbsElementState.path`) was public and is gone.
+- **Phase 3: two elements may hold the same `.cannet_rbs`.** Nothing
+  prevents it, and the watch set is shared, so every give-up of a watch
+  is guarded by `still_open`. If a future change adds another way an
+  element lets go of its file, that guard has to be on it.
 - **No host test covers the project announcement either.** Same shape as
   phase 1's blocker below, and the same cause: `set_open_project`,
   `record_own_write`, `on_event` and `clear_dbcs` all take an
@@ -514,7 +750,8 @@ Reports were not committed (nothing under
   chip up until it is dismissed or reloaded. Reloading a project that has
   since been saved over just re-opens the app's own bytes, which is
   harmless; Dismiss is the way out. Left alone rather than grown into a
-  second state machine.
+  second state machine. **Closed in phase 3** (`5fc0b440`), as part of
+  the shared notice's contract.
 - **Scope notes, so phase 3 does not re-derive them.** No watch is
   installed for an unsaved project (there is no file); Save As re-points
   the watch onto the new path; opening a different `.cannet_prj` replaces
