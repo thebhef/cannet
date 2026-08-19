@@ -687,6 +687,25 @@ header {
   line-height: 1.5;
 }
 
+/* The open project file changed on disk and applying it wasn't safe
+   (ADR 0053 §1): the statement, and the two ways out of it. Same shape
+   and placement as the cache-rebuild chip — it sits ahead of the status
+   readout, divided from it, because its buttons are not part of the
+   numbers. */
+.project-changed {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: 0.6rem;
+  padding-right: 0.6rem;
+  border-right: 1px solid var(--divider-subtle);
+}
+.project-changed button {
+  padding: 0 0.4rem;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
 /* Dock layout -----------------------------------------------------------*/
 .dock-area {
   flex: 1 1 auto;

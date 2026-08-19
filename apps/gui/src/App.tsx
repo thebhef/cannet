@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { DockviewDefaultTab, DockviewReact, themeAbyss, themeLight } from "dockview";
@@ -399,6 +399,10 @@ export function App() {
   projectPathRef.current = projectPath;
   // True when the project has changed since it was last saved/opened.
   const [dirty, setDirty] = useState(false);
+  // Path of a project file the host says changed on disk while applying
+  // it was not safe (ADR 0053 §1). Non-null renders the notice in the
+  // header; the notice's Reload is the only thing that applies it.
+  const [projectChangedOnDisk, setProjectChangedOnDisk] = useState<string | null>(null);
   // The host build's version string, for the window title. Empty until
   // `app_version` answers.
   const [appVersion, setAppVersion] = useState("");
@@ -570,6 +574,12 @@ export function App() {
   // loop, which needs to poll connectedness from inside a once-mounted
   // effect rather than re-subscribing to it.
   const remoteConnectedRef = useRef(false);
+  // Mirrors `remoteConnected` for the project-disk-watch listener, which
+  // is registered once and must read the *current* session state rather
+  // than the one captured when it subscribed. Broader than
+  // `remoteConnectedRef` above: a session still connecting counts, since
+  // re-rooting would drop that too.
+  const sessionUpRef = useRef(false);
 
   // --- element registry ops ---
   // Latest bus list, mirrored into a ref so element creation can
@@ -1971,6 +1981,29 @@ export function App() {
     })();
   }, [seedDefaultLayout, rememberProject, loadDbcSet, resetSession, rehydrateProjectState]);
 
+  // Open the project at `path`. The one open path — the file picker, and
+  // the disk watch's reload, both end here (ADR 0053 §1: a reload is the
+  // existing open path, not a merge).
+  const openProjectAt = useCallback(
+    async (path: string) => {
+      try {
+        const project = await invoke<Project>("open_project", { path });
+        // Opening a project re-roots the host onto that project's own
+        // directory (ADR 0042 §1), so the project-scoped half of the host
+        // state — the layout, its recent BLFs, its channel maps — is a
+        // different file's now. Re-read before anything writes the previous
+        // project's values into it.
+        await rehydrateProjectState();
+        void applyProject(project, path);
+        rememberProject(path);
+        setDirty(false);
+      } catch (err) {
+        setState({ kind: "error", message: String(err) });
+      }
+    },
+    [applyProject, rememberProject, rehydrateProjectState],
+  );
+
   const handleOpenProject = useCallback(async () => {
     const selected = await open({
       multiple: false,
@@ -1979,21 +2012,40 @@ export function App() {
       filters: [{ name: "cannet project", extensions: ["cannet_prj", "json"] }],
     });
     if (typeof selected !== "string") return;
-    try {
-      const project = await invoke<Project>("open_project", { path: selected });
-      // Opening a project re-roots the host onto that project's own
-      // directory (ADR 0042 §1), so the project-scoped half of the host
-      // state — the layout, its recent BLFs, its channel maps — is a
-      // different file's now. Re-read before anything writes the previous
-      // project's values into it.
-      await rehydrateProjectState();
-      void applyProject(project, selected);
-      rememberProject(selected);
-      setDirty(false);
-    } catch (err) {
-      setState({ kind: "error", message: String(err) });
-    }
-  }, [applyProject, rememberProject, rehydrateProjectState]);
+    await openProjectAt(selected);
+  }, [openProjectAt]);
+
+  // The open project file changed on disk. The host watches it and
+  // announces; it applies nothing, because the two facts that decide
+  // whether applying is safe live here (ADR 0053 §1) — whether the
+  // in-memory project is dirty, and whether a session is up. Applying is
+  // `openProjectAt`, which re-roots the session and drops the
+  // connection, so:
+  //
+  // - clean *and* nothing connected → apply silently; there is nothing
+  //   of the user's to lose and no interruption worth raising.
+  // - otherwise → notify. Mid-capture is a precondition, not a weight:
+  //   a clean project reloaded under a running capture still ends it.
+  //
+  // Read through refs so the listener registers once and still sees the
+  // current state, rather than the state it subscribed with.
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    void listen<string>("project-changed", (event) => {
+      const path = typeof event.payload === "string" ? event.payload : projectPathRef.current;
+      if (!path) return;
+      if (!dirtyRef.current && !sessionUpRef.current) void openProjectAt(path);
+      else setProjectChangedOnDisk(path);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [openProjectAt]);
 
   // Returns true if the project was written, false if it wasn't (e.g.
   // the user cancelled the file picker, or the write failed).
@@ -3056,6 +3108,7 @@ export function App() {
   remoteConnectedRef.current = Array.from(remoteSessions.values()).some(
     (s) => s.kind === "running",
   );
+  sessionUpRef.current = remoteConnected;
   const connectedAddresses = useMemo(
     () =>
       Array.from(remoteSessions.entries())
@@ -3361,6 +3414,38 @@ export function App() {
                 onClick={() => void handleDiscardRestoredCapture()}
               >
                 Discard
+              </button>
+            </span>
+          )}
+          {/* The project file changed on disk while applying it would
+              have cost the user something — unsaved changes, or a
+              session a re-root would drop (ADR 0053 §1). Persistent
+              rather than a transient flash: it is a decision waiting on
+              the user, and the explicit Reload beside it is the only
+              thing that applies the change. Same shape as the cache-
+              rebuild chip above — a statement, and the action that ends
+              it. */}
+          {projectChangedOnDisk !== null && (
+            <span className="project-changed">
+              Project changed on disk
+              <button
+                type="button"
+                title="Discard the in-memory project and re-open the file from disk. Unsaved changes are lost, and any open session is dropped (the reload re-roots the session)."
+                onClick={() => {
+                  const path = projectChangedOnDisk;
+                  setProjectChangedOnDisk(null);
+                  void openProjectAt(path);
+                }}
+              >
+                Reload
+              </button>
+              <button
+                type="button"
+                aria-label="Dismiss the project-changed notice"
+                title="Keep working with the project as it is in memory. Saving will overwrite the file's new contents."
+                onClick={() => setProjectChangedOnDisk(null)}
+              >
+                Dismiss
               </button>
             </span>
           )}
