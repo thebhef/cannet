@@ -145,6 +145,7 @@ impl TraceStore {
         inner.raw.clear();
         inner.reset_derived();
         inner.session_start_ns = session_start_ns;
+        inner.session_started = true;
         // Wiping the buffer wipes the scratch (ADR 0002 DS-7): the raw
         // store's `clear` already dropped its segments and manifest; drop
         // the facade's derived + identity files too so a stale prior
@@ -154,6 +155,30 @@ impl TraceStore {
             let _ = std::fs::remove_file(dir.join(DERIVED_FILE));
             let _ = std::fs::remove_file(dir.join(IDENTITY_FILE));
         }
+    }
+
+    /// Lower the session origin to `session_start_ns` — the one way it
+    /// moves without emptying the buffer.
+    ///
+    /// An import learns its origin as it goes: the earliest timestamp it
+    /// brings in is the session origin (ADR 0024), and the file does not
+    /// have to present that timestamp first (BLF promises no ordering,
+    /// and an MDF's earliest sample may be a signal rather than a frame).
+    /// Lowering the anchor is the only correction that keeps the frames
+    /// already appended — [`Self::start_session`] would discard them.
+    ///
+    /// A no-op when the anchor is already at or below `session_start_ns`,
+    /// so the common in-order case costs one comparison. Never *raises*
+    /// the anchor: raising it would strand frames already in the buffer
+    /// below the origin, which is the negative-time bug this exists to
+    /// prevent.
+    pub fn lower_session_start(&self, session_start_ns: u64) {
+        let mut inner = self.lock_inner();
+        if inner.session_started && inner.session_start_ns <= session_start_ns {
+            return;
+        }
+        inner.session_start_ns = session_start_ns;
+        inner.session_started = true;
     }
 
     /// Flush the raw store to disk — a no-op for the in-RAM test double,
@@ -464,6 +489,9 @@ impl TraceStore {
         if let Some(derived) = read_json::<DerivedState>(&dir.join(DERIVED_FILE)) {
             derived_entries = derived.entries.len();
             inner.session_start_ns = derived.session_start_ns;
+            // A reloaded capture has an origin by definition, whatever its
+            // value — including zero, for a log that stated no start time.
+            inner.session_started = true;
             let now = Instant::now();
             for e in derived.entries {
                 let frame = RawTraceFrame {
@@ -530,6 +558,7 @@ impl Inner {
     /// [`RawStore::clear`](cannet_spill::RawStore::clear).
     fn reset_derived(&mut self) {
         self.session_start_ns = 0;
+        self.session_started = false;
         self.agg_rate = RateTrack::default();
         self.per_key = HashMap::new();
         self.key_generation = self.key_generation.wrapping_add(1);

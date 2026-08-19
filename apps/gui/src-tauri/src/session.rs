@@ -889,17 +889,19 @@ pub(crate) fn run_pump<S>(
     stop: Arc<AtomicBool>,
     channel_to_bus: Vec<(u8, Option<String>)>,
     replay_origin: bool,
-) where
+) -> Option<u64>
+where
     S: CanFrameSource,
     S::Error: fmt::Display,
 {
     let state: State<'_, AppState> = app.state();
     let mut total: u64 = 0;
-    // For replay sources (BLF) the session timeline is the file's own
-    // — the first frame's timestamp becomes the session-start. Live
-    // sources keep the wall-clock session-start the GUI set via
-    // `clear_trace_store` before connecting.
-    let mut needs_replay_session_start = replay_origin;
+    // For replay sources (BLF, MDF) the session timeline is the file's
+    // own; `anchor` tracks the earliest timestamp seen so far, which is
+    // the origin (ADR 0024). Live sources keep the wall-clock
+    // session-start the GUI set via `clear_trace_store` before
+    // connecting, so they never anchor here.
+    let mut anchor: Option<u64> = None;
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -912,10 +914,8 @@ pub(crate) fn run_pump<S>(
                     Ok(bid) => raw.bus_id = bid,
                     Err(()) => continue, // skip this channel
                 }
-                if needs_replay_session_start {
-                    state.trace_store.start_session(raw.timestamp_ns);
+                if replay_origin && anchor_replay_session(&state, &mut anchor, raw.timestamp_ns) {
                     restamp_scratch_for_capture(&state);
-                    needs_replay_session_start = false;
                 }
                 // Ingest-time verification (ADR 0027): ids with a
                 // calculated-field config get checked against the
@@ -934,7 +934,7 @@ pub(crate) fn run_pump<S>(
                 let msg = e.to_string();
                 sys_error!(app, "connection", "frame source ended with error: {msg}");
                 let _ = app.emit("log-finished", LogFinished::Error { message: msg });
-                return;
+                return anchor;
             }
         }
     }
@@ -945,7 +945,43 @@ pub(crate) fn run_pump<S>(
         "frame source ended cleanly ({total} frames)"
     );
     let _ = app.emit("log-finished", LogFinished::Ok { total });
+    anchor
 }
+
+/// Keep `anchor` — and the trace store's session origin — at the
+/// **earliest** timestamp this import has brought in (ADR 0024).
+///
+/// Returns `true` exactly once, on the frame that mints the capture:
+/// the caller restamps the scratch for it. A later frame stamped
+/// *before* the anchor lowers the origin instead of starting a new
+/// session, which is what keeps the frames already appended.
+///
+/// The first frame read is not reliably the earliest one. BLF promises
+/// no ordering between objects, and an interleaved multi-bus capture
+/// saved back out carries that interleaving; anchoring on it left every
+/// earlier frame below the origin, where `TraceStore::append`'s
+/// pipeline-drain guard silently dropped it and any annotation at the
+/// same instant rendered negative.
+pub(crate) fn anchor_replay_session(
+    state: &AppState,
+    anchor: &mut Option<u64>,
+    ts_ns: u64,
+) -> bool {
+    match *anchor {
+        None => {
+            *anchor = Some(ts_ns);
+            state.trace_store.start_session(ts_ns);
+            true
+        }
+        Some(current) if ts_ns < current => {
+            *anchor = Some(ts_ns);
+            state.trace_store.lower_session_start(ts_ns);
+            false
+        }
+        Some(_) => false,
+    }
+}
+
 /// One resolved bus → wire route. Returned from
 /// [`resolve_bus_route`]; carries the server address (so the caller
 /// can re-borrow the session under the same lock), the wire channel
