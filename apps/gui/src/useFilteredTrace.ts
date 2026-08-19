@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { FilterPredicate, TraceFrameRecord } from "./types";
+import { useTraceModel } from "./traceData";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
@@ -55,8 +56,14 @@ export function useFilteredTrace(
   // overlap.
   const cursor = useRef({ countedEnd: winStart, total: 0 });
 
+  // The model's re-anchor epoch leads the descriptor, as it does on the
+  // chronological window (`trace.ts`) and the plot's decimated source:
+  // this view's predicate is *decoded* against the DBC set (ADR 0053
+  // §4), so the same window over the same filter is a different set of
+  // matches after the set changes.
+  const { epoch } = useTraceModel();
   const descriptor =
-    active && filter != null ? `${winStart}:${JSON.stringify(filter)}` : "";
+    active && filter != null ? `${epoch}:${winStart}:${JSON.stringify(filter)}` : "";
 
   // A new window or predicate invalidates the incremental cursor: reset it
   // to an empty count at the new window start before the first fetch under
