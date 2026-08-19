@@ -165,3 +165,30 @@ value.
 Tests: `cargo test -p cannet-gui` 704 passed / 0 failed / 6 ignored;
 `cargo test -p cannet-perf-measurement` 1 passed. Gate
 `cargo clippy --workspace --all-targets -- -D warnings` clean.
+
+### 2026-08-19 — phase 1, slice 2: the encoding fingerprint tightens
+
+Grooming note 3, implemented test-first.
+
+- `signal_fingerprint::dbc_encoding` skips a database whose bus scoping
+  means it can never decode the series — `filter::dbc_applies(dbc.buses,
+  Some(bus))`. A signal with `bus_id: None` keeps the whole chain: its
+  frames arrive from every bus and are decoded by whichever database
+  applies to each, so all of them bear on its samples.
+- ADR 0047 amended (dated line in the status header plus a new
+  "Amendment (2026-08-19) — the candidate chain is bus-scoped"
+  section). It records the exception and the cost: a project that
+  **scopes** a DBC pays a one-time rebuild of the signals whose chain
+  shrank; a project that scopes nothing pays nothing, because an
+  unscoped database applies to every bus and was never skipped.
+- Module and function rustdoc in `signal_fingerprint.rs` follow.
+
+Red-first evidence: with the tests written and the filter not yet
+added, `only_the_databases_that_can_decode_the_series_bus_are_in_the_chain`
+failed — `d5dabd653c0ffe6b` (pt-scoped database alone) vs
+`a3c9fc09168c0bd2` (with a ch-scoped database mixed in). The other two
+new tests were green before and after by design: they pin what must
+*not* move (the null-bus exception, and three literal fingerprints an
+unscoped set produced before the change).
+
+Tests: `cargo test -p cannet-gui` 707 passed / 0 failed / 6 ignored.
