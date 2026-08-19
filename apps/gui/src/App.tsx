@@ -404,6 +404,13 @@ export function App() {
   // it was not safe (ADR 0053 §1). Non-null renders the notice in the
   // header; the notice's Reload is the only thing that applies it.
   const [projectChangedOnDisk, setProjectChangedOnDisk] = useState<string | null>(null);
+  // A notice refers to something, and goes when that something is gone
+  // (the contract `ChangedOnDiskNotice` carries). For the project that
+  // is four moments — the file is re-opened, reloaded, saved over, or
+  // closed — and they are wired here because the state that raises the
+  // notice is frontend state. The RBS panel's equivalent is host state
+  // and so cannot go stale at all.
+  const clearProjectDiskNotice = useCallback(() => setProjectChangedOnDisk(null), []);
   // The host build's version string, for the window title. Empty until
   // `app_version` answers.
   const [appVersion, setAppVersion] = useState("");
@@ -1957,6 +1964,9 @@ export function App() {
       await rehydrateProjectState();
       seedDefaultLayout();
       rememberProject(null);
+      // Nothing is open for a notice to refer to, and its Reload would
+      // re-open the project the user has just closed.
+      clearProjectDiskNotice();
       void loadDbcSet([], {});
       setDbcBuses({});
       setBuses([]);
@@ -1980,7 +1990,8 @@ export function App() {
       void resetSession({ fireAndForget: true, startElements: false });
       setDirty(false);
     })();
-  }, [seedDefaultLayout, rememberProject, loadDbcSet, resetSession, rehydrateProjectState]);
+  }, [
+    clearProjectDiskNotice,seedDefaultLayout, rememberProject, loadDbcSet, resetSession, rehydrateProjectState]);
 
   // Open the project at `path`. The one open path — the file picker, and
   // the disk watch's reload, both end here (ADR 0053 §1: a reload is the
@@ -1998,11 +2009,15 @@ export function App() {
         void applyProject(project, path);
         rememberProject(path);
         setDirty(false);
+        // Whatever a notice was pointing at, this project is what is
+        // open now — including the case where *this* open is the
+        // notice's own Reload.
+        clearProjectDiskNotice();
       } catch (err) {
         setState({ kind: "error", message: String(err) });
       }
     },
-    [applyProject, rememberProject, rehydrateProjectState],
+    [applyProject, clearProjectDiskNotice, rememberProject, rehydrateProjectState],
   );
 
   const handleOpenProject = useCallback(async () => {
@@ -2069,13 +2084,16 @@ export function App() {
         if (promote) await rehydrateProjectState();
         rememberProject(path);
         setDirty(false);
+        // The file now holds what the session holds, so a pending
+        // "changed on disk" no longer describes anything.
+        clearProjectDiskNotice();
         return true;
       } catch (err) {
         setState({ kind: "error", message: String(err) });
         return false;
       }
     },
-    [gatherProject, rememberProject, rehydrateProjectState],
+    [clearProjectDiskNotice, gatherProject, rememberProject, rehydrateProjectState],
   );
 
   const handleSaveProjectAs = useCallback(async (): Promise<boolean> => {
