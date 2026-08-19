@@ -239,6 +239,74 @@ commit (the pre-commit gate ran them).
 Phases 2 and 3 (the project and RBS watches) are untouched: this phase
 implements ADR 0053's *what a reload must tell* half only.
 
+#### ADR-0031 perf gate
+
+The phase adds invalidation and refetch traffic on a path every panel
+consumes, so the gate was run rather than skipped. Two release runs on
+the real rig (`pnpm --dir apps/gui tauri build --no-bundle`, then
+`target/release/cannet-gui` with `--project <abs ev-zonal.cannet_prj>
+--app-data-dir <the operator's seeded perf app-data dir>
+--connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both connected and ran
+59.0 s at rate — `rx_gap.ids_measured` 173 on both, rx 1599.8 / 1604.9,
+tx 1606.4 / 1608.2 — so neither is the empty-capture failure mode.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed on both runs, 31 metrics gated.**
+No baseline promoted or edited, no gate limit widened.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 1.350 | 1.183 | 1.350 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 28.300 | 2.000 | 28.300 | 41.000 |
+| jank_fraction | 0.000 | 0.017 | 0.017 | 0.017 | 0.050 |
+| jsheap_mb_peak | 70.300 | 70.900 | 72.700 | 72.700 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 8.663 | 4.436 | 8.663 | 24.094 |
+| renderer_mb_peak | 299.363 | 309.098 | 305.035 | 309.098 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 50.492 | 35.108 | 50.492 | 85.336 |
+| host_mb_peak | 59.227 | 58.441 | 58.371 | 58.441 | 182.453 |
+| tree_mb_peak | 714.051 | 719.164 | 718.891 | 719.164 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 79.440 | 64.700 | 79.440 | 139.240 |
+| flush_ms_mean | 25.000 | 4.617 | 4.783 | 4.783 | 25.000 |
+| flush_ms_max | 23.772 | 11.293 | 10.873 | 11.293 | 72.544 |
+| tx_late_ms_mean | 18.000 | 7.106 | 7.442 | 7.442 | 18.000 |
+| tx_late_ms_max | 65.695 | 82.098 | 70.473 | 82.098 | 156.391 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.163 | 1.168 | 1.168 | 2.898 |
+| rx_gap_short_frac_worst | 0.008 | 0.002 | 0.002 | 0.002 | 0.166 |
+| rx_fps_retention | 0.998 | 0.994 | 0.996 | 0.994 | 0.800 |
+| tx_fps_retention | 1.001 | 1.001 | 0.999 | 0.999 | 0.800 |
+
+Means across the two runs sit between the per-run figures in every row
+(`lag_ms_max` 15.2, `tx_late_ms_max` 76.3, `renderer_mb_drift_per_min`
+42.8); nothing straddles a limit. The three host modes (`tracebuffer`,
+`grpc`, `hardware-peak`) re-ran as part of `check` and passed on both.
+
+Reading it against this change: the traffic this phase adds lands at
+*project open*, not during a capture. The perf project loads two DBCs,
+so the run exercises the batch guard — and the guard is why boot still
+costs one re-anchor rather than five announcements' worth. Nothing
+announces during the 60 s capture (no DBC is loaded mid-run), so the
+steady-state rows should be unchanged, and they are: `flush_ms`,
+`rx_gap`, retention and the host modes all sit at or below baseline.
+
+`lag_ms_max` 28.3 on run 1 against 2.0 on run 2 is the widest spread in
+the table and is not reproduced across the pair; both are inside the
+41.0 limit. `tx_late_ms_max` is the row task 86's phases have been
+tracking — 82.1 / 70.5 here against a baseline of 65.7 and a limit of
+156.4, after phase 3's 73.3 / 72.5 and phase 2's 101.4 / 86.7. That is
+now a **fourth** consecutive elevated reading across four unrelated
+diffs, with `tx_late_ms_mean` moving with it and staying well inside its
+own limit (7.1 / 7.4 against 18.0). Same reading as phase 3 recorded: a
+rig whose scheduling tail has got longer, not a transmit path that has
+got slower. It needs a bisect against an unchanged tree rather than an
+attribution to any of these phases.
+
+Reports were not committed (nothing under
+`docs/performance-measurements/frontend/` is tracked); they are at
+`task27-phase1-run{1,2}.json` in the operator's seeded perf app-data dir
+(outside the repo).
+
 ## Blockers / side effects
 
 - **The watcher reload's announcement is still not covered by a host
