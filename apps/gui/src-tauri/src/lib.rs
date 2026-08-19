@@ -601,6 +601,7 @@ pub fn run() -> ! {
             rbs::rbs_set_calc,
             rbs::rbs_save,
             rbs::rbs_dirty,
+            rbs::rbs_dismiss_disk_change,
             rbs::rbs_view,
             rbs::rbs_crc_algorithms,
             fetch_field_validity,

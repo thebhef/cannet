@@ -3,17 +3,21 @@
 //! `#[tauri::command]` runs the runtime reconciliation tail after a
 //! mutation.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::AppState;
 use crate::ipc::{CounterSpec, CrcSpec};
 use crate::sys_info;
+use crate::watched_file::{move_watch, write_recording, WatchedFile};
 
 use super::file_model::{disabled_key, RbsBus, RbsEcu, RbsFile, RbsMessage, RbsValue};
 use super::runtime::{
     notify_schedule_change, refresh_all_elements, refresh_element, sync_schedules, RbsElementState,
 };
+use super::watch::still_open;
 
 /// Load (or reload) a `.cannet_rbs` file for an RBS element. The run
 /// flag starts/stays as the element previously had it only when
@@ -28,42 +32,76 @@ pub async fn rbs_load(
     element_id: String,
     path: String,
 ) -> Result<(), String> {
+    load_into_element(&app, state.inner(), &element_id, Path::new(&path))
+}
+
+/// The `.cannet_rbs` load path: read, parse, install, take up the disk
+/// watch on the file and record what was read as the content the app
+/// has for it.
+///
+/// The [`rbs_load`] command and the watch's own apply both run *this*,
+/// because a reload is the existing load path and not a merge
+/// (ADR 0053 §1) — and it is what keeps the element's run/stopped state
+/// across a reload.
+pub(super) fn load_into_element(
+    app: &AppHandle,
+    state: &AppState,
+    element_id: &str,
+    path: &Path,
+) -> Result<(), String> {
     // On any failure the element still gets state — the seeded
     // file-less default — so its panel shows the usual tree instead
     // of nothing (the error is on the system log; the element's path
     // is left unset so a later Save can't clobber the unreadable
     // file).
     let fallback = |msg: String| {
-        crate::sys_error!(&app, "rbs", "{msg}");
-        let seeded = state.rbs().ensure_seeded(&element_id);
+        crate::sys_error!(app, "rbs", "{msg}");
+        let seeded = state.rbs().ensure_seeded(element_id);
         if seeded {
-            refresh_element(&app, &element_id);
+            refresh_element(app, element_id);
         }
         msg
     };
-    let text = match std::fs::read_to_string(&path) {
+    let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) => return Err(fallback(format!("failed to read RBS file at {path}: {e}"))),
+        Err(e) => {
+            return Err(fallback(format!(
+                "failed to read RBS file at {}: {e}",
+                path.display()
+            )))
+        }
     };
     let file = match RbsFile::parse(&text) {
         Ok(f) => f,
-        Err(e) => return Err(fallback(format!("RBS file at {path}: {e}"))),
+        Err(e) => return Err(fallback(format!("RBS file at {}: {e}", path.display()))),
     };
-    {
+    let previous = {
         let mut rbs = state.rbs();
-        let run = rbs.elements.get(&element_id).is_some_and(|e| e.run);
+        // Carry the run flag and the watch record across the swap: a
+        // reload keeps the element running, and the record it already
+        // has is what tells the next event from cannet's own write.
+        let (run, mut watch) = match rbs.elements.remove(element_id) {
+            Some(previous) => (previous.run, previous.watch),
+            None => (false, WatchedFile::default()),
+        };
+        let previous = watch.point_at(path, text);
         rbs.elements.insert(
-            element_id.clone(),
+            element_id.to_string(),
             RbsElementState {
-                path: Some(path.clone()),
+                watch,
                 file,
                 dirty: false,
+                // Whatever the file changed to is now what the element
+                // holds, so there is nothing left to tell anyone about.
+                changed_on_disk: false,
                 run,
             },
         );
-    }
-    sys_info!(&app, "rbs", "loaded RBS config {path}");
-    refresh_element(&app, &element_id);
+        previous.filter(|p| !still_open(&rbs.elements, p))
+    };
+    move_watch(state, previous.as_deref(), Some(path));
+    sys_info!(app, "rbs", "loaded RBS config {}", path.display());
+    refresh_element(app, element_id);
     Ok(())
 }
 
@@ -94,10 +132,17 @@ pub async fn rbs_unload(
     state: State<'_, AppState>,
     element_id: String,
 ) -> Result<(), String> {
-    {
+    let previous = {
         let mut rbs = state.rbs();
-        rbs.elements.remove(&element_id);
-    }
+        let previous = rbs
+            .elements
+            .remove(&element_id)
+            .and_then(|mut e| e.watch.forget());
+        // Another element may have the same file open — only the last
+        // one out gives up the watch.
+        previous.filter(|p| !still_open(&rbs.elements, p))
+    };
+    move_watch(state.inner(), previous.as_deref(), None);
     let mut registry = state.transmit_frames();
     for id in registry.rbs_row_ids(&element_id) {
         registry.remove(&id);
@@ -378,8 +423,8 @@ pub async fn rbs_save(
         rbs.elements
             .get(&element_id)
             .ok_or_else(|| format!("no RBS element {element_id}"))?
-            .path
-            .clone()
+            .watch
+            .path_string()
             .ok_or("RBS config has no file yet — pick a path (Save As)")?
     };
     write_element(&app, state.inner(), &element_id, &path)
@@ -395,14 +440,8 @@ pub async fn rbs_save_as(
     element_id: String,
     path: String,
 ) -> Result<(), String> {
-    {
-        let mut rbs = state.rbs();
-        let element = rbs
-            .elements
-            .get_mut(&element_id)
-            .ok_or_else(|| format!("no RBS element {element_id}"))?;
-        element.path = Some(path.clone());
-    }
+    // No separate path assignment: the write re-points the element's
+    // watch record on to `path`, which is where the path now lives.
     write_element(&app, state.inner(), &element_id, &path)
 }
 
@@ -414,33 +453,67 @@ fn write_rbs_file(path: &str, file: &RbsFile) -> std::io::Result<()> {
     crate::persisted_json::write_json_atomic(std::path::Path::new(path), file)
 }
 
+/// Write an element's document to `path`, through its watch record.
+///
+/// The write runs **under the RBS lock**, which is what makes cannet's
+/// own Save invisible to the watch: the event path reads the file under
+/// that same lock, so it can never compare the post-write file against
+/// the pre-write record (see [`crate::watched_file::write_recording`]).
 fn write_element(
     app: &AppHandle,
     state: &AppState,
     element_id: &str,
     path: &str,
 ) -> Result<(), String> {
-    let file = {
-        let rbs = state.rbs();
+    let target = Path::new(path);
+    let previous = {
+        let mut rbs = state.rbs();
         let element = rbs
             .elements
-            .get(element_id)
+            .get_mut(element_id)
             .ok_or_else(|| format!("no RBS element {element_id}"))?;
-        element.file.clone()
-    };
-    write_rbs_file(path, &file).map_err(|e| {
-        let msg = format!("failed to write RBS file to {path}: {e}");
-        crate::sys_error!(app, "rbs", "{msg}");
-        msg
-    })?;
-    {
-        let mut rbs = state.rbs();
-        if let Some(element) = rbs.elements.get_mut(element_id) {
+        let file = element.file.clone();
+        let written = write_recording(&mut element.watch, target, || write_rbs_file(path, &file));
+        if written.is_ok() {
             element.dirty = false;
+            // The file now holds what the element holds, so a pending
+            // "changed on disk" no longer refers to anything.
+            element.changed_on_disk = false;
         }
-    }
+        let previous = written.map_err(|e| {
+            let msg = format!("failed to write RBS file to {path}: {e}");
+            crate::sys_error!(app, "rbs", "{msg}");
+            msg
+        })?;
+        previous.filter(|p| !still_open(&rbs.elements, p))
+    };
+    move_watch(state, previous.as_deref(), Some(target));
     sys_info!(app, "rbs", "saved RBS config {path}");
     let _ = app.emit("rbs-changed", element_id.to_string());
+    Ok(())
+}
+
+/// Keep working with the element as it is in memory: the disk change
+/// stays on disk, and the notice goes.
+///
+/// The pending flag is host state (the panel is a view over it), so
+/// dismissing has to reach the host — otherwise the next `rbs_view`
+/// would bring the notice straight back.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
+pub async fn rbs_dismiss_disk_change(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    element_id: String,
+) -> Result<(), String> {
+    {
+        let mut rbs = state.rbs();
+        let Some(element) = rbs.elements.get_mut(&element_id) else {
+            return Ok(());
+        };
+        element.changed_on_disk = false;
+    }
+    let _ = app.emit("rbs-changed", element_id);
     Ok(())
 }
 
@@ -464,7 +537,7 @@ pub async fn rbs_dirty(state: State<'_, AppState>) -> Result<Vec<RbsDirtyRecord>
         .filter(|(_, e)| e.dirty)
         .map(|(id, e)| RbsDirtyRecord {
             element_id: id.clone(),
-            path: e.path.clone(),
+            path: e.watch.path_string(),
         })
         .collect();
     out.sort_by(|a, b| a.element_id.cmp(&b.element_id));

@@ -1,7 +1,8 @@
 //! Filesystem watcher for loaded DBC files — and the shared machinery
-//! the open project file's watch ([`crate::project_watch`]) reuses: the
-//! same `notify` backend, the same parent-directory watch set, the same
-//! event-kind classification.
+//! the app-owned documents' watches reuse ([`crate::project_watch`] for
+//! the `.cannet_prj`, [`crate::rbs::watch`] for the `.cannet_rbs` files
+//! RBS elements have open): the same `notify` backend, the same
+//! parent-directory watch set, the same event-kind classification.
 //!
 //! When the user has a DBC loaded and then edits / re-exports it from
 //! another tool, we'd like the GUI to pick up the change automatically
@@ -69,7 +70,8 @@ pub struct DbcWatcher {
     /// startup.
     watcher: Option<RecommendedWatcher>,
     /// The files this watcher is holding a watch for — every loaded
-    /// DBC that came from disk, plus the open project file. Makes
+    /// DBC that came from disk, plus the app-owned documents (the open
+    /// project file, each element's `.cannet_rbs`). Makes
     /// [`Self::watch_file`] idempotent and [`Self::unwatch_file`] exact:
     /// an unwatch for a path never watched is a no-op rather than a
     /// decrement of somebody else's directory.
@@ -215,9 +217,10 @@ pub(crate) fn reaction_to(kind: EventKind, auto_reload: bool) -> Reaction {
 /// The `dbc_auto_reload` setting is read here, once per event, so
 /// turning it off stops the next swap rather than the next launch.
 fn on_event(app: &AppHandle, event: &notify::Event) {
-    // The open project file rides on this same watch set, and is never
-    // also a loaded DBC — the two reactions are independent.
+    // The app-owned documents ride on this same watch set, and neither
+    // is ever also a loaded DBC — the three reactions are independent.
     crate::project_watch::on_event(app, event);
+    crate::rbs::watch::on_event(app, event);
     match reaction_to(event.kind, crate::settings::effective().dbc_auto_reload) {
         Reaction::Reload => {}
         Reaction::NoteRemoval => {
