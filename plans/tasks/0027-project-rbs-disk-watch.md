@@ -12,7 +12,9 @@ the in-memory copy intact, deletions don't unload). The hand-written
 surface should stay small — register the project/RBS paths with the
 same watch set and route events to the existing reload commands.
 
-An ADR should be captured about reloading files.
+The reload contract is written down in
+[`docs/adr/0053-reload-when-it-applies-and-what-it-tells.md`](../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+— when a disk change is applied, and what a reload must tell.
 
 ## Scope
 
@@ -82,7 +84,8 @@ Resolutions:
 
 ## Phases
 
-1. **The reload ADR and the propagation contract.** Write the ADR,
+1. **The reload ADR and the propagation contract.** Write the ADR
+   (landed as ADR 0053),
    then implement the propagation half: a DBC-set change (add, remove,
    re-scope, watcher reload) invalidates and notifies every consumer
    of derived state, with the failing `VAL_`-rename test from the exit
