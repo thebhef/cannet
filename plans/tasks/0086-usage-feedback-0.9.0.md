@@ -456,6 +456,146 @@ Reports were not committed (nothing under
 `task86-phase1-run{1,2}.json` in the operator's seeded perf app-data dir
 (outside the repo).
 
+### 2026-08-19 — Phase 2 (item 1, events-panel controls)
+
+Branch `task-86-phase-2-events-panel-controls`, off
+`perf-gate-rx-gap-regate`.
+
+#### Investigation
+
+**Observation 1 (the rendered DOM).** Rendered `EventsPanel` in jsdom
+and dumped its markup: `.trace-scroll-content` carries
+`--trace-content-width: 1144px` in a view that draws no frame columns —
+`columnsFromParams(undefined)` is not an array, so it falls back
+wholesale to the default frame layout.
+
+**Hypothesis 1** (the candidate in item 1). The rows are
+`position: absolute; left: 0; right: 0`, which resolves against the
+scroller's padding box and contributes nothing to the scroll extent, so
+each row ends at the viewport edge and its tail is unreachable.
+
+**Experiment 1.** Took that dumped DOM, put it under the real
+`index.css` in a 220 x 300 px group (a narrow vertical dock), and
+measured in headless Edge — the WebView2 engine — with
+`getBoundingClientRect`, `clientWidth` / `scrollWidth`, and `scrollLeft`
+driven to its maximum.
+
+**Data 1.** `.trace-rows`: `clientWidth` 220, `scrollWidth` **1163**,
+`maxScrollLeft` **943**. The row's own box: 0 → 1163. `✎` at
+x 1105-1128, `×` at x 1136-1154 — 885 px past the panel's right edge.
+Scrolled to the maximum, both controls came fully into view
+(`✎` 162-185, `×` 193-211).
+
+**Conclusion 1.** Hypothesis 1 is **refuted**. The row is not clipped at
+the viewport and the scroll extent does cover it: the row's containing
+block is the sticky viewport, whose width is `.trace-scroll-content`'s,
+and that box is `min-width: calc(var(--trace-content-width) + 2 *
+var(--trace-row-padding-x))` = 1163.2 px — so the extent and the row
+agree, and both are wrong. The mechanism is Observation 1's: **the
+events view declares the default frame columns, and the layer sizes
+every row for tracks that are never drawn.** The controls are pinned by
+`margin-left: auto` to the right edge of a 1163 px row inside a 220 px
+panel, behind 943 px of empty horizontal scroll.
+
+**Not reproduced: "horizontal scrolling would not reach them."** In
+Chromium they are reachable, at `scrollLeft` 943. What the measurement
+does show is 943 px of blank scroll with nothing in it and — with only a
+few events — no vertical overflow either, so the panel shows no
+scrollbar until something scrolls it. Whether the owner's gesture never
+moved that axis or was abandoned is an input-level question this
+measurement cannot settle; the geometry defect above is sufficient to
+explain the report, and is what the fix removes.
+
+**Data 2 (after).** Same harness, same 220 px group, with no columns
+declared: `--trace-content-width` 0, `.trace-scroll-content` 220 px,
+`scrollWidth === clientWidth === 220`, `maxScrollLeft` **0** — nothing
+to scroll at all. The label ellipsises to 40 px and both controls render
+inside the panel, `✎` at x 161-185 and `×` at x 193-210.
+
+#### Gridview verdict (ADR 0044)
+
+These rows are on the gridview's **interaction** base and off its **row
+template**. `EventRow` draws its own flex row, not a `GridviewRow` of
+column cells; but it takes its DOM id from `grid.rowDomId`, sits in the
+cursor's row space, and is kept out of the *selection* by the adapter's
+`isSelectable` — so the layer governs it as a row without rendering it
+as one. The column model still reaches it, through the width the view
+publishes for its scrolled content: the rows are absolutely positioned
+against that box, so a declared column set sizes every row, drawn cells
+or not. The owner's "either not on gridview, or gridview still has
+problems" therefore resolves as *both halves, narrowly* — not on the row
+template, and the column half of the layer did size the row, off a
+column set the panel should never have declared. Recorded in
+`EventsPanel`'s doc comment.
+
+#### What landed
+
+| Commit | Subject | Tests |
+|---|---|---|
+| `826450cc` | The events view declares no columns, so its rows fit the panel | +2 (frontend) |
+
+The fix is one panel-level change (`EventsPanel` hands `TraceView` an
+empty column set instead of `columnsFromParams(undefined)`), because the
+cause is not shared: every other `TraceView` / `ByIdTable` / signals view
+publishes a column width it actually draws, and the shared machinery is
+right for them. **No other panel is touched.**
+
+The red evidence is the first of the two new tests, which failed with
+`expected '1144px' to be '0px'`; jsdom does no layout, so it asserts the
+width the view publishes — the same pattern as `ByIdTable`'s
+content-width test and `dockPanelScrolling`'s stylesheet assertions —
+with the Chromium geometry above recorded in its comment. Frontend suite
+2237 tests across 165 files (was 2235); `pnpm --dir apps/gui build`
+clean. Nothing under `apps/gui/src-tauri` changed, so the Rust suites are
+untouched.
+
+#### ADR-0031 perf gate
+
+Two release runs on the real rig (`pnpm --dir apps/gui tauri build
+--no-bundle`, then `target/release/cannet-gui` with `--project <abs
+ev-zonal.cannet_prj> --app-data-dir <the operator's seeded perf app-data
+dir> --connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both connected and ran
+59.0 s at rate — rx 1605.1 / 1608.6, tx 1611.5 / 1610.4.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed on both runs, 31 metrics gated.**
+No baseline promoted or edited.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 1.750 | 0.000 | 1.750 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 20.600 | 3.700 | 20.600 | 41.000 |
+| jank_fraction | 0.000 | 0.017 | 0.000 | 0.017 | 0.050 |
+| jsheap_mb_peak | 70.300 | 71.300 | 65.500 | 71.300 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 8.276 | 3.122 | 8.276 | 24.094 |
+| renderer_mb_peak | 299.363 | 296.930 | 301.742 | 301.742 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 32.912 | 35.757 | 35.757 | 85.336 |
+| host_mb_peak | 59.227 | 59.074 | 60.172 | 60.172 | 182.453 |
+| tree_mb_peak | 714.051 | 711.742 | 716.055 | 716.055 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 64.182 | 67.967 | 67.967 | 139.240 |
+| flush_ms_mean | 25.000 | 5.017 | 4.976 | 5.017 | 25.000 |
+| flush_ms_max | 23.772 | 14.338 | 12.421 | 14.338 | 72.544 |
+| tx_late_ms_mean | 18.000 | 8.435 | 8.121 | 8.435 | 18.000 |
+| tx_late_ms_max | 65.695 | 101.368 | 86.653 | 101.368 | 156.391 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.168 | 1.146 | 1.168 | 2.898 |
+| rx_gap_short_frac_worst | 0.008 | 0.004 | 0.010 | 0.010 | 0.166 |
+| rx_fps_retention | 0.998 | 0.994 | 0.997 | 0.994 | 0.800 |
+| tx_fps_retention | 1.001 | 0.999 | 0.999 | 0.999 | 0.800 |
+
+Means across the two runs sit between the per-run figures in every row
+(`tx_late_ms_max` 94.0, `lag_ms_max` 12.2); nothing straddles a limit.
+The three host modes (`tracebuffer`, `grpc`, `hardware-peak`) re-ran as
+part of `check` and passed on both. `rx_gap_short_frac_worst` is now
+gated at ADR 0031's re-gated 0.166 limit and came in at 0.004 / 0.010.
+See the `tx_late_ms_max` note under blockers.
+
+Reports were not committed (nothing under
+`docs/performance-measurements/frontend/` is tracked); they are at
+`task86-phase2-run{1,2}.json` in the operator's seeded perf app-data dir
+(outside the repo).
+
 ## Blockers / side effects
 
 - **`BlfCaptureWriter` clamps an out-of-order frame's timestamp** (found
@@ -482,3 +622,23 @@ Reports were not committed (nothing under
   per the standing rule against UI automation on the owner's machine.
   The owner-visible confirmation is opening `examples/time-origins/` by
   hand.
+- **`tx_late_ms_max` ran above baseline on both phase-2 perf runs**
+  (101.4 / 86.7 ms against a baseline of 65.7 and a limit of 156.4; no
+  gate breached, and `tx_late_ms_mean` was 8.4 / 8.1 against a limit of
+  18.0). Phase 1's runs on the same rig were 25.7 / 16.8. This phase
+  changes one prop on the events panel, which the perf project's layout
+  never opens, so a causal link is implausible — recorded as a rig
+  observation for whoever runs the gate next, not as a finding against
+  this change.
+- **The chronological trace panel keeps the same geometry for its event
+  rows, by design.** A note rendered inside `TracePanel` is as wide as
+  the frame columns (~1163 px with the default layout), so its ✎ / ×
+  sit at the far right there too — reachable by exactly the horizontal
+  scroll the columns already require. Item 1's report is the events
+  panel, whose columns are phantom; nothing here changes `TracePanel`.
+- **One half of the item-1 report is not reproduced.** "Horizontal
+  scrolling would not reach them" is false in Chromium as measured: the
+  controls came into view at `scrollLeft` 943. The measured defect
+  (885 px of misplacement behind 943 px of blank scroll) explains the
+  report without it; if a control is still unreachable after this phase,
+  that is a second, input-level defect and needs its own reproduction.
