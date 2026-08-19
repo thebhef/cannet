@@ -134,6 +134,7 @@ function sampleView(): RbsView {
     path: "/tmp/sim.cannet_rbs",
     fillBit: 0,
     dirty: true,
+    changedOnDisk: false,
     run: false,
     killSwitch: false,
     buses: [
