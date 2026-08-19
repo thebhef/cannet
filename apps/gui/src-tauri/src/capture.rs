@@ -1507,7 +1507,11 @@ pub struct RestoredCapture {
     /// capture shows it without waiting for a `trace-grew` tick (a stopped
     /// trace gets none). `None` when nothing was truncated or restored.
     first_index_ts_ns: Option<u64>,
-    session_start_seconds: f64,
+    /// The reloaded capture's session origin (Unix-epoch seconds, ADR
+    /// 0024), or `None` when nothing was restored. Never zero-for-absent:
+    /// a capture imported from a log with no stated start time is
+    /// anchored at exactly zero.
+    session_start_seconds: Option<f64>,
     /// Whether the restore had to **discard** the pyramids a prior
     /// session persisted (ADR 0047), so every plotted signal is decoded
     /// again from frame zero — minutes on a large capture. The frontend
@@ -1566,7 +1570,7 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
             count: 0,
             first_index: 0,
             first_index_ts_ns: None,
-            session_start_seconds: 0.0,
+            session_start_seconds: None,
             pyramids_rebuilding: false,
         };
     };
@@ -1652,7 +1656,10 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         count: u64::try_from(count).unwrap_or(u64::MAX),
         first_index,
         first_index_ts_ns,
-        session_start_seconds: session_start_ns as f64 / 1_000_000_000.0,
+        session_start_seconds: state
+            .trace_store
+            .session_started()
+            .then_some(session_start_ns as f64 / 1_000_000_000.0),
         pyramids_rebuilding,
     }
 }

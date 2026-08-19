@@ -2142,6 +2142,51 @@ fn an_mdf_whose_signals_start_before_its_frames_anchors_on_the_signals() {
     );
 }
 
+/// The store has to tell "no capture yet" apart from "a capture anchored
+/// at zero", because both read `session_start_ns == 0` and only one of
+/// them means the renderers have no origin (ADR 0024). The `trace-grew`
+/// payload carries the distinction as `Option<f64>`, so a frontend can
+/// no longer infer it from the value.
+#[test]
+fn a_session_anchored_at_zero_is_told_apart_from_no_session_at_all() {
+    let store = TraceStore::new();
+    assert!(!store.session_started());
+    assert!(!store.status_snapshot().session_started);
+
+    store.start_session(0);
+
+    assert!(store.session_started(), "anchored at zero is anchored");
+    assert_eq!(store.session_start_ns(), 0);
+    let snap = store.status_snapshot();
+    assert!(snap.session_started);
+    assert_eq!(snap.session_start_ns, 0);
+}
+
+/// `lower_session_start` is the only way the origin moves without
+/// emptying the buffer — an import learns its earliest timestamp as it
+/// goes, and the frames already appended have to survive the correction.
+/// It never raises the anchor: raising it would strand appended frames
+/// below the origin, which is the negative-time bug it exists to prevent.
+#[test]
+fn lowering_the_session_start_keeps_the_frames_and_never_raises_the_anchor() {
+    let store = TraceStore::new();
+    store.start_session(1_000);
+    store.append(dummy_frame(1_500, 0x100));
+    store.append(dummy_frame(2_000, 0x101));
+
+    store.lower_session_start(400);
+    assert_eq!(store.session_start_ns(), 400);
+    assert_eq!(store.len(), 2, "the buffer survives the correction");
+
+    store.lower_session_start(9_000);
+    assert_eq!(
+        store.session_start_ns(),
+        400,
+        "an anchor is never raised — that would strand appended frames below it"
+    );
+    assert_eq!(store.len(), 2);
+}
+
 /// The rebuild chip's own query on an ordinary session: nothing was
 /// restored, so nothing was discarded, so there is nothing to announce.
 /// The fast-path silence the chip depends on (task 75 item 6).

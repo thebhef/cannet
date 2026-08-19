@@ -88,9 +88,13 @@ export interface TraceGrew {
   frames_dropped_before_session: number;
   /// Session-start timestamp (Unix epoch seconds, fractional). The
   /// trace view subtracts this from frame timestamps to render relative
-  /// time, so every frame in a session shares one stable zero. Zero
-  /// before any session has been configured.
-  session_start_seconds: number;
+  /// time, so every frame in a session shares one stable zero (ADR
+  /// 0024).
+  ///
+  /// `null` — never zero — before any session has been configured. Zero
+  /// is a legitimate origin: a capture imported from a log that states
+  /// no start time is anchored there and reads as relative.
+  session_start_seconds: number | null;
   /// Wall-clock span of the buffered frames in seconds (newest − oldest
   /// timestamp). Shown in the status line; zero when fewer than two
   /// frames are buffered.
