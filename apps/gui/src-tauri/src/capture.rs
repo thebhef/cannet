@@ -1170,10 +1170,10 @@ fn adopt_embedded_databases(app: &AppHandle, mdf_path: &str, source: &MdfCanFram
         }
     }
     if loaded.iter().any(|d| d.error.is_none()) {
-        crate::rbs::refresh_all_elements(app);
-        // Same event the filesystem watcher fires: the catalog and the
-        // database panel rebuild off the loaded set, and it just changed.
-        let _ = app.emit("dbc-changed", mdf_path.to_owned());
+        // The same announcement every other DBC-set change makes
+        // (ADR 0053 §2) — the loaded set just changed, and a capture's
+        // embedded databases are no different to the consumers.
+        crate::dbc_commands::announce_dbc_change(app, mdf_path);
     }
 }
 
