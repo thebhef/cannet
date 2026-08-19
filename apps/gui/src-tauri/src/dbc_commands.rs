@@ -412,10 +412,10 @@ fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecor
 ///
 /// `file_backed` says which namespace `message_id` is in, because the
 /// two are unrelated numbers: for a DBC-backed signal it is a CAN id and
-/// the `VAL_` table is looked up across every loaded DBC,
-/// first-match-wins; for a file-backed one it is the source file's
-/// signal channel group index and the table is the one the channel's own
-/// conversion carried in (see
+/// the `VAL_` table is looked up across the databases `bus_id` admits
+/// (see [`list_value_tables_inner`]); for a file-backed one it is the
+/// source file's signal channel group index and the table is the one the
+/// channel's own conversion carried in (see
 /// [`crate::signal_cache::SignalCacheStore::file_signal_value_table`]).
 /// One command either way, so a view labels both kinds of enum the same
 /// way.
@@ -427,15 +427,49 @@ pub(crate) fn list_value_tables(
     extended: bool,
     signal_name: String,
     file_backed: bool,
+    bus_id: Option<String>,
+) -> Vec<ipc::ValueTableEntryRecord> {
+    list_value_tables_inner(
+        state.inner(),
+        message_id,
+        extended,
+        &signal_name,
+        file_backed,
+        bus_id.as_deref(),
+    )
+}
+
+/// [`list_value_tables`]'s testable body.
+///
+/// `bus_id` scopes the DBC-backed branch the same way decode does:
+/// `Some(bus)` resolves only through databases `filter::dbc_applies`
+/// admits for that bus, first-match-wins within that set. `None` means
+/// "the bus is unknown", not "on no bus" — it keeps the pre-scoping
+/// behaviour of trying every loaded database, first-match-wins, rather
+/// than taking `dbc_applies`'s literal (scoped-out) answer, which would
+/// strip labels from a null-bus signal in a project where every database
+/// is scoped. This mirrors the any-bus rule the encoding fingerprint
+/// applies (`signal_fingerprint::dbc_encoding`). The file-backed branch
+/// is unaffected — no DBC bears on a file-backed series.
+pub(crate) fn list_value_tables_inner(
+    state: &AppState,
+    message_id: u32,
+    extended: bool,
+    signal_name: &str,
+    file_backed: bool,
+    bus_id: Option<&str>,
 ) -> Vec<ipc::ValueTableEntryRecord> {
     if file_backed {
         return state
             .signal_caches
-            .file_signal_value_table(message_id, &signal_name);
+            .file_signal_value_table(message_id, signal_name);
     }
     state
-        .first_dbc(|db| {
-            db.value_table_for_signal(message_id, extended, &signal_name)
+        .databases()
+        .iter()
+        .filter(|d| bus_id.is_none() || filter::dbc_applies(&d.buses, bus_id))
+        .find_map(|d| {
+            d.db.value_table_for_signal(message_id, extended, signal_name)
                 .map(|rows| {
                     rows.iter()
                         .map(|e| ipc::ValueTableEntryRecord {
