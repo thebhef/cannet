@@ -119,11 +119,13 @@ pub struct Verdict {
     pub pass: bool,
     /// Measured and reported, but excluded from the pass/fail aggregate
     /// (`main.rs`'s `verdicts.iter().filter(|v| !v.advisory).all(|v| v.pass)`
-    /// and its "N metrics gated" count) — a metric whose `_worst`/`_peak`
-    /// extreme-value spread on a desktop rig is wider than any gate limit
-    /// can absorb without false-tripping (ADR 0031's 2026-08-19
-    /// amendment). `baseline`/`current`/`limit`/`pass` are still computed
-    /// so a human reading the report sees the same numbers as a gated row.
+    /// and its "N metrics gated" count) — the escape hatch for a metric
+    /// whose run-to-run spread on a desktop rig is wider than any gate
+    /// limit could absorb without false-tripping. No metric currently
+    /// sets this `true`; `baseline`/`current`/`limit`/`pass` are still
+    /// computed the same way a gated row's are, so the mechanism is
+    /// ready if a future metric genuinely needs it (ADR 0031's
+    /// 2026-08-19 amendment).
     pub advisory: bool,
 }
 
