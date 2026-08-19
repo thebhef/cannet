@@ -449,6 +449,15 @@ counted in the same report when they are.
 rather than whichever was appended last, so an unordered file's header
 never states a span that runs backwards.
 
+cannet's own Save Capture declares the anchor: one pass over the
+frames and notes it is about to write settles the minimum before the
+writer opens — the same pass its MDF save makes for
+`hd_start_time_ns` — so a saved BLF is timestamp-for-timestamp the
+capture it came from, however far its arrival order departs from its
+timestamp order. Should a future caller ever save without declaring one,
+the clamp report becomes a `capture`-tagged system-log warning naming
+the moved event and the error in milliseconds.
+
 ## Summary of cannet's gaps
 
 Sorted by need.
