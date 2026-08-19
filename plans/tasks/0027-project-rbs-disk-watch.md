@@ -231,7 +231,7 @@ and at App level (one editor save's burst → one round of re-pages).
 | `9da0aa63` | Pin the plot's enum overlay against the DBC-set change that fills it in | +1 (frontend) |
 
 Suite totals after the phase: `cannet-gui` 722 passed / 6 ignored (was
-721/6), frontend 2249 across 169 files (was 2238 across 165). `cargo
+721/6), frontend 2249 across 168 files (was 2238 across 165). `cargo
 clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`,
 `pnpm --dir apps/gui test` and `pnpm --dir apps/gui build` clean on every
 commit (the pre-commit gate ran them).
