@@ -1,6 +1,9 @@
 # ADR 0031 — GUI performance automation drives the real app from within
 
-Status: accepted (2026-06-22)
+Status: accepted (2026-06-22); amended (2026-08-19) —
+`rx_gap_short_frac_worst` is advisory only, not a gate; the `_worst` /
+`_peak` families are extreme-value statistics and are not all equally
+trustworthy as desktop-rig gates
 
 ## Decision
 
@@ -240,3 +243,56 @@ the decision to touch interfaces, and the decision to record.
   so they arm on the next baseline regeneration. Drift only reads as signal over a
   representative-length capture — a multi-minute run, not the smoke-test
   span — so a memory baseline is captured at scenario length.
+
+## Amendment (2026-08-19) — `rx_gap_short_frac_worst` is advisory, not a gate
+
+Owner ruling, on a control measurement (15 healthy 60 s captures, one
+rig, same day, across two branches): `rx_gap_short_frac_worst` spread
+0.0022-0.0967 (44x) with a mode near 0.004 and **no code regression
+present**. Against its gate limit — `baseline * FACTOR + floor` = 0.046,
+off a baseline of 0.008 that was itself an unlucky run — that is a ~7%
+spurious breach rate per run, ~13% per two-run gate. Two facts rule out
+code as the cause: the two highest values in the 15 are exactly the two
+lowest-`rx_fps` runs (the short-gap fraction tracks a depressed on-wire
+receive rate, not a code path), and one of those two is on a branch the
+other spike isn't on. The argmax id also shuffles across three different
+ids across the 15 runs rather than naming one hurt signal — the
+fingerprint of an extreme-value statistic over a near-flat field, not of
+one signal being hurt. `tree_mb_peak` shows the same shape (709-998 MB
+across 7 runs, comfortably inside its limit): the `_worst` / `_peak`
+families as a class are extreme-value statistics, gated here as if they
+were means.
+
+This cannot be resolved on a desktop PC — or at least not on every
+desktop PC — so gating on it is a waste of time. `rx_gap_short_frac_worst`
+**stops being a gate**: it is still computed, still written into every
+report, and still printed by `check` (marked `advisory` in the result
+column, per-run, same as before), but it no longer contributes to
+`check`'s pass/fail verdict (`Verdict::advisory` in
+`crates/cannet-perf-measurement/src/check.rs`).
+
+**Realism about this harness's gate families on a desktop rig:**
+
+- **Trustworthy as gates**: every mean/ceiling row (`longtask_*`,
+  `lag_ms_max`, `jank_fraction`, `flush_ms_mean`, `tx_late_ms_mean`), the
+  `*_retention` floors, the expected-rate bands, and
+  `rx_gap_p95_ratio_worst` (a ratio, not a rare-tail fraction — this
+  finding does not implicate it).
+- **Advisory only**: `rx_gap_short_frac_worst`, per this amendment.
+- **`_worst` / `_peak` extreme-value metrics generally** (this includes
+  the memory peaks and `flush_ms_max` / `tx_late_ms_max`) carry more
+  run-to-run spread than a mean ever will, by construction — a max over
+  N samples gets noisier as the tail gets thinner, exactly what a
+  60 s capture's per-id gap tail is. They are not shown to false-trip in
+  practice the way `rx_gap_short_frac_worst` was, so they stay gates, but
+  a future breach in one of them deserves the same control-measurement
+  scrutiny before it is read as a regression.
+
+If `rx_gap_short_frac_worst` — or another `_worst`/`_peak` metric — is
+ever wanted as a gate again, the principled treatment is the one already
+applied to the `_mb_drift_per_min` family above: gate the **median across
+the gate's reports**, not the worst run (`check_frontend_gate` already
+carries the mechanism; adding a metric to it is a `DRIFT_METRIC_NAMES`-shaped
+change). That needs a **3-run minimum** — a two-run median is just the
+average of the two runs, no less noisy than either alone; three is the
+smallest sample where the median actually discards an outlier.
