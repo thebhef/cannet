@@ -116,6 +116,8 @@ pub struct StatusSnapshot {
     pub first_index_ts_ns: Option<u64>,
     /// As [`TraceStore::session_start_ns`].
     pub session_start_ns: u64,
+    /// As [`TraceStore::session_started`].
+    pub session_started: bool,
     /// As [`TraceStore::buffer_seconds`].
     pub buffer_seconds: f64,
     /// As [`TraceStore::frames_dropped_before_session`].
@@ -196,6 +198,13 @@ struct Inner {
     /// configured yet" — every frame is accepted (used at construction
     /// and during tests that don't care).
     session_start_ns: u64,
+    /// Whether a session has ever been started on this store. Separates
+    /// "no capture yet" from "a capture whose origin is exactly zero" —
+    /// a log with no stated start time anchors at zero (ADR 0024), and
+    /// reading that as "no origin" makes renderers invent one of their
+    /// own. Not persisted: a store that reloads a capture from the
+    /// scratch has one by definition.
+    session_started: bool,
     /// The raw frame bytes — `Vec`-backed in tests, disk-spilled in
     /// production. Owns the always-on `by-id` index too (on disk for the
     /// disk store), so it serves [`Self::matching_frames_indexed`].
@@ -312,6 +321,7 @@ impl TraceStore {
         Self {
             inner: Mutex::new(Inner {
                 session_start_ns: 0,
+                session_started: false,
                 raw,
                 agg_rate: RateTrack::default(),
                 per_key: HashMap::new(),
@@ -394,6 +404,7 @@ impl TraceStore {
             first_index: inner.raw.first_index(),
             first_index_ts_ns: first_ts,
             session_start_ns: inner.session_start_ns,
+            session_started: inner.session_started,
             buffer_seconds,
             frames_dropped_before_session: inner.dropped_before_session,
             scratch_bytes: inner.scratch_dir.is_some().then_some(inner.footprint_bytes),
@@ -644,11 +655,23 @@ impl TraceStore {
     }
 
     /// Current session-start threshold (Unix-epoch ns). The trace UI
-    /// renders frames relative to this; zero means "no session start
-    /// has been configured yet", and the store accepts every frame.
+    /// renders frames relative to this; zero is a legitimate origin (a
+    /// log that states no start time anchors there — ADR 0024), so ask
+    /// [`Self::session_started`] to tell that apart from "no capture
+    /// yet".
     #[must_use]
     pub fn session_start_ns(&self) -> u64 {
         self.lock_inner().session_start_ns
+    }
+
+    /// Whether this store has ever been given a session origin. `false`
+    /// only before the first [`Self::start_session`] (and after a reset
+    /// that found nothing to reload) — the one case in which
+    /// [`Self::session_start_ns`]'s zero means "none" rather than
+    /// "anchored at zero" (ADR 0024).
+    #[must_use]
+    pub fn session_started(&self) -> bool {
+        self.lock_inner().session_started
     }
 
     /// Bring `index` current against this store for a resolved predicate,
