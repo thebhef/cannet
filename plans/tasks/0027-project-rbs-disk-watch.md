@@ -307,7 +307,223 @@ Reports were not committed (nothing under
 `task27-phase1-run{1,2}.json` in the operator's seeded perf app-data dir
 (outside the repo).
 
+### 2026-08-19 — Phase 2 (the project-file watch)
+
+Branch `task-27-phase-2-project-watch`, off `task-27-phase-1-dbc-propagation`
+(`fd32e604`). Implements ADR 0053 §1's app-owned half for the project
+file; the RBS half (phase 3) is untouched.
+
+#### Where the apply-vs-notify decision went, and the evidence
+
+**The host announces; the frontend decides.** The host emits
+`project-changed` (path payload) and applies nothing.
+
+**Observation.** ADR 0053 §1 makes the decision read two facts: the
+in-memory project is clean, and no session is up.
+
+**Experiment.** Grepped the host for a project dirty flag and read the
+session / connection state on both sides.
+
+**Data.** `dirty` exists **only** in the frontend: `App.tsx:401`
+(`const [dirty, setDirty] = useState(false)`) with fifteen
+`setDirty(true)` call sites, all in `App.tsx` - layout changes, element
+edits, bus / binding / vbus mutations, DBC re-scoping, signal colors.
+The host's only `dirty` is per-RBS-element (`rbs/runtime.rs:29`,
+`rbs/commands.rs`); nothing project-level. Connection state is the other
+way round - the host owns it (`connection_state.rs`) - but the frontend
+already holds the session map that Connect / Disconnect write and the
+toolbar renders (`remoteSessions`), so the frontend has both facts and
+the host has one.
+
+**Conclusion.** The recommendation stands, and for a stronger reason than
+convenience: the alternative is not a placement change but a model move.
+For the host to hold the dirty bit it would have to see every project
+mutation the frontend makes, none of which reaches it today - that is
+the project model moving host-side, a defensible direction and far
+larger than this phase. Against the GUI architecture rule: this is a
+**policy over two booleans**, not domain computation over capture data.
+The host keeps what only the host can know (the file changed on disk),
+the frontend keeps what only it knows (whether applying is safe now),
+and nothing capture-derived is computed in JS.
+
+Applying is `openProjectAt`, the file picker's own open path, extracted
+so the reload cannot drift from it (ADR 0053 §1: a reload is the
+existing open path, not a merge). The DBC-set change it causes rides the
+phase-1 carrier - `applyProject` -> `loadDbcSet` -> the host DBC
+commands, each already announcing - so **no second frontend subscription**
+was added.
+
+#### Two things the grooming notes did not anticipate
+
+**1. cannet writes this file, so its own Save looks like an edit.**
+`save_project` (and autosave-on-exit) reach `write_json_atomic`, which
+renames a temp file over the target - exactly the `Create(Any)` /
+`Modify(Name)` that `reaction_to` classifies as a reload. And the
+frontend clears `dirty` on a successful save. So an unguarded watch
+would announce on every Save, and the state right after a Save (clean,
+and often disconnected) is precisely the state that applies *silently*:
+every Save would re-open the project, re-rooting the session (ADR 0042)
+and dropping the restored capture. Reasoned from the code rather than
+measured - it is a defect the design would have shipped, closed before
+it existed rather than reproduced.
+
+The guard is `WatchedProject`: the content the app last **exchanged**
+with the file - what `open_project` read, what `save_project` wrote - and
+an event is news only when what is on disk differs from it. Recording
+after the write left a real race (the events the write raises could be
+read against the pre-write record), so the write now runs inside
+`record_own_write`, holding the lock the event path reads under
+(`9cd91a6f`). Found by reading the code against its own rustdoc, which
+already claimed the ordering it did not have.
+
+**2. `clear_dbcs` unwatched everything, and a project open starts with
+`clear_dbcs`.** The watch set was per-directory with a refcount, and
+`unwatch_all` dropped every directory - so `loadDbcSet`, the first thing
+`applyProject` does, would have silently unwatched the project file that
+had just been registered (and a project's DBCs commonly live in the same
+directory). `clear_dbcs` now unwatches the paths it actually unloaded,
+and the watcher tracks the **files** it holds a watch for, so a
+capture-embedded database - an identity, never watched - cannot decrement
+a directory a real file is holding (which also used to underflow the
+refcount in debug builds).
+
+**Experiment (falsification).** Removed both guards and re-ran:
+`unwatching_a_path_that_was_never_watched_leaves_the_directory_alone`
+(`left: None, right: Some(1)`) and
+`watching_the_same_file_twice_takes_one_refcount` (`left: Some(2),
+right: Some(1)`) both fail; restored, both pass. The third watch-set test
+(`unwatching_every_dbc_in_a_directory_leaves_the_project_file_watched`)
+is *not* red under that mutation - it is the invariant `clear_dbcs` now
+relies on, asserted at the watcher; `clear_dbcs` itself is covered by
+inspection only (it takes an `AppHandle`; see Blockers).
+
+**Experiment (the mid-capture rule).** Replaced
+`!dirtyRef.current && !sessionUpRef.current` with `!dirtyRef.current` and
+re-ran the frontend file: exactly one test failed - "notifies rather than
+applying while a session is up, clean or not". So that test's project is
+genuinely clean, and it measures ADR 0053's precondition rather than
+dirtiness leaking in through the back door.
+
+#### The notification
+
+The app has no general banner to reuse, so the closest existing idiom was
+taken rather than a new one invented: the **cache-rebuild chip**
+(`.cache-rebuild` - a persistent statement in the header, divided from
+the status readout, carrying the one action that ends it). `Dismiss` sits
+beside `Reload` because the ADR requires the statement be dismissible;
+`Reload` is the only thing that applies the change. The transient status
+line was rejected - it dwells and then disappears, and this is a decision
+waiting on the user, not a flash.
+
+#### What landed
+
+| Commit | Subject | Tests |
+| --- | --- | --- |
+| `45b8efd9` | The open project file rides on the DBC watch set, and says when it changed | +6 (`cannet-gui`) |
+| `ce1413e8` | The frontend decides whether a project changed on disk may be applied | +5 (frontend) |
+| `9cd91a6f` | A Save writes the project under the watch record's lock | - |
+
+Suite totals after the phase: `cannet-gui` 728 passed / 6 ignored (was
+722/6), frontend 2254 across 169 files (was 2249 across 168). `cargo
+clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`,
+`cargo test -p cannet-gui`, `pnpm --dir apps/gui test` and `pnpm --dir
+apps/gui build` clean on every commit (the pre-commit gate ran them).
+
+Deliberate: the project watch is **not** gated by `dbc_auto_reload`. That
+setting is the opt-out for a database swapping under an analysis
+mid-edit; nothing is swapped here, and the announcement carries no change
+with it. ADR 0053 §1 names an opt-out for the DBC swap only.
+
+#### ADR-0031 perf gate
+
+Two release runs on the real rig (`pnpm --dir apps/gui tauri build
+--no-bundle`, then `target/release/cannet-gui` with `--project <abs
+ev-zonal.cannet_prj> --app-data-dir <the operator's seeded perf app-data
+dir> --connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both connected and ran
+59.0 s at rate - `rx_gap.ids_measured` 173 on both, rx 1602.6 / 1607.7,
+tx 1606.7 / 1611.9 - so neither is the empty-capture failure mode.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed on both runs, 31 metrics gated.**
+No baseline promoted or edited, no gate limit widened.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 0.000 | 0.000 | 0.000 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 8.900 | 1.500 | 8.900 | 41.000 |
+| jank_fraction | 0.000 | 0.000 | 0.000 | 0.000 | 0.050 |
+| jsheap_mb_peak | 70.300 | 71.000 | 69.800 | 71.000 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 9.501 | 7.582 | 9.501 | 24.094 |
+| renderer_mb_peak | 299.363 | 295.312 | 305.633 | 305.633 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 37.665 | 39.135 | 39.135 | 85.336 |
+| host_mb_peak | 59.227 | 59.199 | 59.301 | 59.301 | 182.453 |
+| tree_mb_peak | 714.051 | 709.914 | 721.918 | 721.918 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 68.770 | 71.014 | 71.014 | 139.240 |
+| flush_ms_mean | 25.000 | 4.346 | 4.706 | 4.706 | 25.000 |
+| flush_ms_max | 23.772 | 12.130 | 12.230 | 12.230 | 72.544 |
+| tx_late_ms_mean | 18.000 | 5.731 | 6.814 | 6.814 | 18.000 |
+| tx_late_ms_max | 65.695 | 23.582 | 73.416 | 73.416 | 156.391 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.201 | 1.140 | 1.201 | 2.898 |
+| rx_gap_short_frac_worst | 0.008 | 0.004 | 0.006 | 0.006 | 0.166 |
+| rx_fps_retention | 0.998 | 0.997 | 0.997 | 0.997 | 0.800 |
+| tx_fps_retention | 1.001 | 1.000 | 1.000 | 1.000 | 0.800 |
+
+The three host modes (`tracebuffer`, `grpc`, `hardware-peak`) re-ran as
+part of `check` and passed on both.
+
+Reading it against this change: nothing this phase adds runs during a
+capture. The watch registers once at project open, and its event path is
+idle unless the file is touched; the frontend's addition is one `listen`
+and a boolean read inside it. The steady-state rows should therefore be
+unchanged, and they are.
+
+Worth recording against the standing observation: `tx_late_ms_max` came
+in at **23.6 on run 1** - the first reading *below* the 65.7 baseline
+after four consecutive elevated ones (task 86 phases 1-3 and task 27
+phase 1) - with run 2 at 73.4. A 50 ms spread across a back-to-back pair
+on the same binary is the rig-tail reading those phases proposed, now
+evidenced from the other side: the row moves while the diff does not.
+Still not this phase's to chase, and still wants a bisect against an
+unchanged tree.
+
+Reports were not committed (nothing under
+`docs/performance-measurements/frontend/` is tracked); they are at
+`task27-phase2-run{1,2}.json` in the operator's seeded perf app-data dir
+(outside the repo).
+
 ## Blockers / side effects
+
+- **No host test covers the project announcement either.** Same shape as
+  phase 1's blocker below, and the same cause: `set_open_project`,
+  `record_own_write`, `on_event` and `clear_dbcs` all take an
+  `AppHandle`, and Tauri's mock runtime does not load on this platform.
+  What is asserted host-side is what does not need one - the record that
+  decides whether an event is news, and the watch-set bookkeeping the
+  project watch depends on (`DbcWatcher::inert()`, a real `notify`
+  backend with a no-op callback). That the announcement *fires*, and that
+  `clear_dbcs` leaves the project watched, are covered by inspection.
+- **The OS-level watcher path is untested, as it always was.** No test
+  edits a `.cannet_prj` on disk and waits for the event; `dbc_watcher`'s
+  module docs already record why (FS watchers are timing-dependent enough
+  to be flaky in CI). The event *classification* is shared with the DBC
+  watch and is tested there.
+- **A notice that is showing does not react to what happens next.**
+  Saving or closing the project leaves a stale "Project changed on disk"
+  chip up until it is dismissed or reloaded. Reloading a project that has
+  since been saved over just re-opens the app's own bytes, which is
+  harmless; Dismiss is the way out. Left alone rather than grown into a
+  second state machine.
+- **Scope notes, so phase 3 does not re-derive them.** No watch is
+  installed for an unsaved project (there is no file); Save As re-points
+  the watch onto the new path; opening a different `.cannet_prj` replaces
+  the watch and unwatches the old file; `close_project` clears it.
+- **No UI verification.** Every claim above comes from tests and
+  code-level measurement; nothing was checked by driving the GUI, per the
+  standing rule against UI automation on the owner's machine. The
+  notice's presence, actions and wording are asserted through the DOM in
+  `App.projectWatch.dom.test.tsx`, not seen.
 
 - **The watcher reload's announcement is still not covered by a host
   test.** `reload_one` and every DBC command take an `AppHandle`, and
