@@ -402,6 +402,60 @@ writers, so regenerating needs no Python. Committed as binaries *and* as
 generators: the owner asked to be able to open them, and the tests in
 three crates address them by path.
 
+#### ADR-0031 perf gate
+
+Two release runs on the real rig (`pnpm --dir apps/gui tauri build
+--no-bundle`, then `target/release/cannet-gui` with `--project <abs
+ev-zonal.cannet_prj> --app-data-dir <the operator's seeded perf app-data dir>
+--connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both connected —
+`ids_measured` 173, rx 1608.5 / 1603.1, tx 1612.2 / 1607.6, 59.0 s each
+— so neither is the empty-capture failure mode.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed on both runs, 30 metrics gated.**
+No baseline promoted or edited.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 0.000 | 0.000 | 0.000 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 3.300 | 4.400 | 4.400 | 41.000 |
+| jank_fraction | 0.000 | 0.000 | 0.000 | 0.000 | 0.050 |
+| jsheap_mb_peak | 70.300 | 71.700 | 70.300 | 71.700 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 6.522 | 5.503 | 6.522 | 24.094 |
+| renderer_mb_peak | 299.363 | 300.098 | 301.020 | 301.020 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 42.958 | 33.946 | 42.958 | 85.336 |
+| host_mb_peak | 59.227 | 58.602 | 58.344 | 58.602 | 182.453 |
+| tree_mb_peak | 714.051 | 711.926 | 713.004 | 713.004 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 73.787 | 64.839 | 73.787 | 139.240 |
+| flush_ms_mean | 25.000 | 4.145 | 4.263 | 4.263 | 25.000 |
+| flush_ms_max | 23.772 | 9.999 | 10.953 | 10.953 | 72.544 |
+| tx_late_ms_mean | 18.000 | 5.755 | 5.587 | 5.755 | 18.000 |
+| tx_late_ms_max | 65.695 | 25.730 | 16.820 | 25.730 | 156.391 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.142 | 1.146 | 1.146 | 2.898 |
+| rx_gap_short_frac_worst (advisory) | 0.008 | 0.004 | 0.004 | 0.004 | 0.046 |
+| rx_fps_retention | 0.998 | 0.998 | 0.997 | 0.997 | 0.800 |
+| tx_fps_retention | 1.001 | 1.000 | 1.000 | 1.000 | 0.800 |
+
+Means across the two runs sit between the per-run figures above in every
+row; nothing straddles a limit. The three host modes (`tracebuffer`,
+`grpc`, `hardware-peak`) re-ran as part of `check` and passed on both.
+`rx_gap_short_frac_worst` is advisory per ADR 0031's 2026-08-19
+amendment and came in at half the baseline, so there is nothing to
+chase.
+
+One abandoned run before run 1: `perf automation: connect preconditions
+not ready after 30000ms (bindings=2, sidecar=not ready)`, with the
+sidecar visibly listening in the same log 30 s earlier. No report was
+written and the launch was simply repeated. Flagged as the
+sidecar-readiness flake, not a result.
+
+Reports were not committed (nothing under
+`docs/performance-measurements/frontend/` is tracked); they are at
+`task86-phase1-run{1,2}.json` in the operator's seeded perf app-data dir
+(outside the repo).
+
 ## Blockers / side effects
 
 - **`BlfCaptureWriter` clamps an out-of-order frame's timestamp** (found
