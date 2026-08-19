@@ -80,15 +80,44 @@ impl WatchedProject {
 }
 
 /// Take up `path` as the open project file, with `text` as the content
-/// the app has for it. Called by `open_project` (with what it read) and
-/// by `save_project` (with what it wrote), so the two entry points that
-/// exchange content with the file are the two that record it.
+/// the app has for it. Called by `open_project` with what it read — the
+/// other entry point that exchanges content with the file is
+/// [`record_own_write`].
 ///
 /// Moving to a different file re-points the underlying watch; opening
 /// the same file again just re-records the content.
 pub(crate) fn set_open_project(app: &AppHandle, path: &Path, text: String) {
     let state: State<'_, AppState> = app.state();
     let mut record = state.watched_project();
+    adopt(&state, &mut record, path, text);
+}
+
+/// Perform cannet's own write of the project file, recording what landed
+/// on disk as the content the app has for it.
+///
+/// The write runs **under the watch record's lock**, which is what makes
+/// the record race-free: the events the write itself raises are read by
+/// [`announce_if_changed`] under the same lock, so it cannot compare the
+/// post-write file against the pre-write record and mistake a Save for
+/// an external edit.
+pub(crate) fn record_own_write<F>(app: &AppHandle, path: &Path, write: F) -> std::io::Result<()>
+where
+    F: FnOnce() -> std::io::Result<()>,
+{
+    let state: State<'_, AppState> = app.state();
+    let mut record = state.watched_project();
+    write()?;
+    // Read back rather than keeping what the serializer produced: the
+    // bytes on disk are what an event will be compared against.
+    if let Ok(text) = std::fs::read_to_string(path) {
+        adopt(&state, &mut record, path, text);
+    }
+    Ok(())
+}
+
+/// Point the record — and the underlying watch — at `path`, holding
+/// `text` as its content.
+fn adopt(state: &State<'_, AppState>, record: &mut WatchedProject, path: &Path, text: String) {
     let previous = record.path.replace(path.to_path_buf());
     record.content = Some(text);
     if previous.as_deref() == Some(path) {
@@ -149,11 +178,11 @@ pub(crate) fn on_event(app: &AppHandle, event: &notify::Event) {
 /// Re-read the project file and announce it if what is on disk is not
 /// what the app last exchanged with it.
 ///
-/// Holds the [`WatchedProject`] lock across the read so a save in
-/// flight cannot be read half-recorded: `save_project` records under the
-/// same lock, so an event either sees the pre-save content (and matches
-/// it, because the read is then also pre-save) or waits and sees both
-/// the new content and the new record.
+/// Holds the [`WatchedProject`] lock across the read, which is what makes
+/// cannet's own saves invisible here: [`record_own_write`] writes under
+/// that same lock, so this either reads before the write started (and
+/// matches the pre-write record) or after it finished (and matches the
+/// post-write one) — never the new file against the old record.
 fn announce_if_changed(app: &AppHandle, path: &Path) {
     let state: State<'_, AppState> = app.state();
     let mut record = state.watched_project();
