@@ -219,3 +219,85 @@ load-bearing rather than vacuous:
 Conclusion: grooming note 1 stands as written. No blocker.
 
 Tests: `cargo test -p cannet-gui` 709 passed / 0 failed / 6 ignored.
+
+### 2026-08-19 — phase 1: ADR-0031 render-tier gate
+
+Two release runs on the real rig, `ev-zonal` (the baseline project —
+and one that **scopes** both its DBCs, `pack.dbc` → `pack` and
+`zonal.dbc` → `zonal`, so these runs exercise the new scoped path and
+the tightened fingerprint rather than the unscoped fast path).
+
+Build `pnpm --dir apps/gui tauri build --no-bundle`; run
+`target/release/cannet-gui --project <abs ev-zonal.cannet_prj>
+--app-data-dir <isolated, seeded with the operator .window-state.json>
+--connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`. Both runs connected
+(`ids_measured` 173, rx/tx non-zero — the dongles were free), so
+neither is the empty-capture failure mode.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed, 31 metrics gated, both runs.**
+No baseline was promoted or edited.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 0.000 | 0.000 | 0.000 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 3.600 | 1.600 | 3.600 | 41.000 |
+| jank_fraction | 0.000 | 0.000 | 0.000 | 0.000 | 0.050 |
+| flush_ms_mean | 5.211 | 4.601 | 4.547 | 4.601 | 25.000 |
+| flush_ms_max | 23.772 | 14.180 | 13.236 | 14.180 | 72.544 |
+| tx_late_ms_mean | 7.600 | 6.676 | 5.471 | 6.676 | 18.000 |
+| tx_late_ms_max | 65.695 | 31.975 | 21.357 | 31.975 | 156.391 |
+| jsheap_mb_peak | 70.300 | 65.900 | 66.700 | 66.700 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 3.935 | 1.750 | 3.935 | 24.094 |
+| renderer_mb_peak | 299.363 | 309.453 | 305.051 | 309.453 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 35.734 | 40.847 | 40.847 | 85.336 |
+| host_mb_peak | 59.227 | 67.387 | 59.742 | 67.387 | 182.453 |
+| tree_mb_peak | 714.051 | 722.906 | 714.859 | 722.906 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 66.097 | 76.902 | 76.902 | 139.240 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.302 | 1.172 | 1.302 | 2.898 |
+| rx_gap_short_frac_worst | 0.008 | 0.012 | 0.004 | 0.012 | 0.046 |
+| rx_fps_retention | 0.998 | 0.996 | 0.998 | 0.996 | ≥0.800 |
+| tx_fps_retention | 1.001 | 1.001 | 1.002 | 1.001 | ≥0.800 |
+
+Rates: rx 1589.1 / 1605.9 fps, tx 1598.6 / 1610.6 fps against the
+1608 ± 15 % band.
+
+Reading it: the metrics the decode hot loop actually moves —
+`flush_ms` and `tx_late_ms`, mean and max — are **below** baseline on
+both runs (means 4.57 ms and 6.07 ms vs 5.21 and 7.60), so the
+per-frame `dbc_applies` selection costs nothing measurable. It is
+memoised until a frame's bus turns over, and frames of one message
+arrive on one bus, so the common cost is one list rebuild per chunk.
+The rows above baseline are all memory tiers (`host_mb_peak` +13.8 %
+worst-to-worst, `tree_mb_drift_per_min` +14.6 %) and `rx_gap`
+(+8.6 %), each far inside its limit and each varying more between my
+own two runs than against baseline — run-to-run noise, not a signal.
+
+Reports were written outside the repo: the owner deleted the historical
+`docs/performance-measurements/frontend/*.json` set in `292f3051`, so
+this phase records the numbers here rather than re-adding files there.
+
+## Blockers / side effects
+
+Phase 1 hit no blockers. Side effects worth the next phase's
+attention:
+
+- **A scoped project pays a one-time pyramid rebuild** on first launch
+  after this change, for the signals whose candidate chain shrank (ADR
+  0047's 2026-08-19 amendment). Their old pyramids park rather than
+  being deleted, so the disk is reclaimed by the pool's byte bound
+  rather than immediately. An unscoped project pays nothing.
+- **`crates/cannet-perf-measurement` declares its example DBCs
+  unscoped**, though `examples/ev-demo` scopes them (`pt`, `batt`).
+  That is deliberate — the signal bench characterizes one signal's
+  decimation and its baselines were measured with every database a
+  candidate for every frame — but it means the *bench* no longer
+  mirrors what the *GUI* does with that project. If a future task wants
+  the bench to measure the scoped path, carrying `buses` onto the
+  harness's own `LoadedDbc` is the change, and it invalidates the
+  bench's existing numbers.
+- **`list_value_tables` is still unscoped**, so a lane's labels can
+  still come from a database that cannot decode the series. That is
+  phase 2 and is unchanged by this phase.
