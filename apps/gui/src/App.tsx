@@ -1063,9 +1063,13 @@ export function App() {
           }
           return newCount;
         });
-        setSessionStartSeconds(
-          session_start_seconds > 0 ? session_start_seconds : null,
-        );
+        // Taken as reported: the host says "no session" with `null`, and
+        // zero is a real origin — a log with no stated start time
+        // anchors there (ADR 0024). Reading zero as "no origin" left the
+        // plot falling back to its own window's first frame, so anything
+        // to the left of it rendered at a negative time and the trace
+        // table and the plot disagreed about the same instant.
+        setSessionStartSeconds(session_start_seconds);
         setFramesPerSecond(frames_per_second);
         setBufferSeconds(buffer_seconds);
         setScratchBytes(scratch_bytes);
@@ -1873,7 +1877,7 @@ export function App() {
             count: number;
             first_index: number;
             first_index_ts_ns: number | null;
-            session_start_seconds: number;
+            session_start_seconds: number | null;
             pyramids_rebuilding?: boolean;
           }>("restore_scratch_capture");
           if (restored.count <= 0) return;
@@ -1882,9 +1886,7 @@ export function App() {
           setCount(restored.count);
           setFirstIndex(restored.first_index);
           setFirstIndexTsNs(restored.first_index_ts_ns);
-          setSessionStartSeconds(
-            restored.session_start_seconds > 0 ? restored.session_start_seconds : null,
-          );
+          setSessionStartSeconds(restored.session_start_seconds);
           setRegistry((reg) => reg.map((e) => ({ ...e, trace: restoredTrace(restored.count) })));
         } catch {
           /* no scratch capture to restore */

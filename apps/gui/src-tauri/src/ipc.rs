@@ -219,11 +219,15 @@ pub struct TraceGrew {
     pub frames_dropped_before_session: u64,
     /// Session-start timestamp in seconds (Unix epoch, fractional). The
     /// trace UI displays everything relative to this — a single, stable
-    /// origin for the whole live capture / replay. Live capture sets it
-    /// to wall-clock now on Clear / Connect; BLF replay sets it to the
-    /// first frame's timestamp. Zero before any session has been
-    /// configured.
-    pub session_start_seconds: f64,
+    /// origin for the whole live capture / replay (ADR 0024). Live
+    /// capture sets it to wall-clock now on Clear / Connect; an import
+    /// sets it to the earliest timestamp the file brings in.
+    ///
+    /// `None` — **not** zero — before any session has been configured.
+    /// Zero is a legitimate origin: a log that states no start time
+    /// anchors there and reads as relative, and a frontend that took
+    /// zero for "no origin" made its renderers invent one of their own.
+    pub session_start_seconds: Option<f64>,
     /// Wall-clock span of the buffered frames in seconds (newest −
     /// oldest timestamp). Shown in the status line as "N s buffered";
     /// zero when fewer than two frames are stored.

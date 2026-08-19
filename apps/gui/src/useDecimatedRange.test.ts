@@ -162,6 +162,26 @@ describe("useDecimatedRange", () => {
     expect(out.snapshot.lastT).toBe(25); // 115 − 90
   });
 
+  it("treats a session origin of zero as an origin, not a missing one", async () => {
+    // A capture imported from a log that states no start time is
+    // anchored at exactly zero and reads as relative (ADR 0024) — the
+    // shape `examples/time-origins/relative-zero.blf` has. Zero is
+    // falsy, so a `||` fallback here (or a `> 0` test upstream) sends
+    // `origin: null`, and the plot then anchors on its own window's
+    // first frame: a window opened part-way into the capture renders
+    // everything to the left of it at a negative time, and disagrees
+    // with the trace table about the same instant.
+    mockInvoke.mockResolvedValue(encode(4, 9, [{ t: [4, 6, 9], v: [1, 2, 3] }]));
+    const { result } = renderHook(() => useDecimatedRange());
+
+    const out = await run(() => result.current, req({ origin: 0 }));
+
+    expect(out.kind).toBe("sampled");
+    expect(out.snapshot.base).toBe(0);
+    expect(out.snapshot.firstT).toBe(4); // the window starts 4 s into the capture
+    expect(out.snapshot.byKey.get("k0")).toEqual({ t: [4, 6, 9], v: [1, 2, 3], extrapolated: [] });
+  });
+
   it("skips the round-trip when the request is unchanged, reporting the live edge", async () => {
     mockInvoke.mockResolvedValue(encode(100, 105, [{ t: [100, 101], v: [1, 2] }]));
     const { result } = renderHook(() => useDecimatedRange());
