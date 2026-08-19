@@ -238,7 +238,7 @@ rate gates below are what close that blind spot.
 | `tx_late_ms_mean` | ≤ 18 ms (absolute) |
 | `flush_ms_max` / `tx_late_ms_max` | ≤ 2× baseline + 25 ms (inert until a baseline carries them) |
 | `rx_gap_p95_ratio_worst` | ≤ 2× baseline + 0.5 (inert until a baseline carries it) |
-| `rx_gap_short_frac_worst` | ≤ 2× baseline + 0.03 (inert until a baseline carries it) |
+| `rx_gap_short_frac_worst` | ≤ 2× baseline + 0.15 (inert until a baseline carries it) |
 
 The memory rows (ADR 0031) gate the renderer's growth — the JS heap
 (`jsheap_mb`, reported by the frontend) and the WebView renderer process RSS
