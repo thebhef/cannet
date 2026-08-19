@@ -397,6 +397,10 @@ pub struct BlfCaptureWriter {
     frame_count: u64,
     /// `GLOBAL_MARKER` (note) count appended so far.
     marker_count: u64,
+    /// Events written at the anchor because they preceded it.
+    clamped_count: u64,
+    /// The deepest such clamp seen so far.
+    worst_clamp: Option<ClampedEvent>,
 }
 
 /// Successful [`BlfCaptureWriter::finish`] outcome.
@@ -414,6 +418,34 @@ pub struct FinishedCapture {
     /// retired when `blf_asc` did); kept in the struct for
     /// backwards compatibility with system-message consumers.
     pub max_timestamp_drift_ns: u64,
+    /// How many events were written later than their own timestamp
+    /// because they preceded the file's `measurement_start_time`.
+    /// Zero for a caller that declared its capture's minimum via
+    /// [`BlfCaptureWriter::create_with_start`].
+    pub clamped_count: u64,
+    /// The deepest of those clamps, or `None` when there were none.
+    /// Enough to name what moved, so the caller can say so rather
+    /// than shipping a file that quietly differs from its capture.
+    pub worst_clamp: Option<ClampedEvent>,
+}
+
+/// An event the writer could not place at its own timestamp.
+///
+/// BLF's `objectTimeStamp` is an unsigned offset from the file's
+/// `measurement_start_time`, so an event earlier than that anchor has
+/// no representation and is written *at* the anchor instead. Reported
+/// through [`FinishedCapture::worst_clamp`] so the loss is never
+/// silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClampedEvent {
+    /// The event's own timestamp, ns since the UNIX epoch — where it
+    /// should have landed.
+    pub timestamp_ns: u64,
+    /// How far forward it moved to reach the anchor, in nanoseconds.
+    pub error_ns: u64,
+    /// The clamped frame's `(channel, raw id)`, or `None` when what
+    /// clamped was a marker (which carries neither).
+    pub frame: Option<(u8, u32)>,
 }
 
 /// Anything that can go wrong driving a [`BlfCaptureWriter`].
@@ -460,7 +492,43 @@ impl BlfCaptureWriter {
             inner: Some(inner),
             frame_count: 0,
             marker_count: 0,
+            clamped_count: 0,
+            worst_clamp: None,
         })
+    }
+
+    /// Open a capture writer whose `measurement_start_time` is
+    /// **declared** up front rather than latched from the first event
+    /// appended.
+    ///
+    /// Per-event `object_timestamp` is an *unsigned* offset from that
+    /// start, so the format's one timestamp constraint is that no event
+    /// precede it — and arrival order is not timestamp order on a
+    /// multi-bus capture
+    /// ([ADR 0024](../../../docs/adr/0024-trace-like-view-timing.md)),
+    /// so the first event appended is routinely not the earliest. A
+    /// caller that knows its capture's minimum passes it here and every
+    /// event lands where it belongs: no reordering, and no second pass
+    /// over encoded objects. This is the same shape the GUI's MDF save
+    /// already uses for the identically-constrained `hd_start_time_ns`
+    /// — one pass for the minimum over frames and notes, then a
+    /// streaming write.
+    ///
+    /// `start_unix_nanos` is floored to the enclosing millisecond, the
+    /// resolution BLF's SYSTEMTIME-encoded start carries; per-event
+    /// offsets keep the sub-millisecond tail.
+    ///
+    /// A caller that does not know its minimum uses [`Self::create`]
+    /// and reads [`FinishedCapture::worst_clamp`] afterwards.
+    pub fn create_with_start<P: AsRef<Path>>(
+        dest: P,
+        start_unix_nanos: u64,
+    ) -> Result<Self, BlfWriteError> {
+        let mut writer = Self::create(dest)?;
+        if let Some(inner) = writer.inner.as_mut() {
+            inner.set_start_if_unset((start_unix_nanos / 1_000_000) * 1_000_000);
+        }
+        Ok(writer)
     }
 
     /// Append one [`CanFrame`] to the capture.
@@ -478,7 +546,30 @@ impl BlfCaptureWriter {
         let bytes = frame_to_object_bytes(frame, Some(start));
         inner.append_object(&bytes, frame.timestamp_ns)?;
         self.frame_count += 1;
+        self.note_clamp(
+            start,
+            frame.timestamp_ns,
+            Some((frame.channel, frame.id.raw())),
+        );
         Ok(())
+    }
+
+    /// Record an event that the anchor moved forward. `start` is the
+    /// file's `measurement_start_time`; an event at or after it is not
+    /// clamped and this does nothing.
+    fn note_clamp(&mut self, start: u64, timestamp_ns: u64, frame: Option<(u8, u32)>) {
+        let error_ns = start.saturating_sub(timestamp_ns);
+        if error_ns == 0 {
+            return;
+        }
+        self.clamped_count += 1;
+        if self.worst_clamp.is_none_or(|w| error_ns > w.error_ns) {
+            self.worst_clamp = Some(ClampedEvent {
+                timestamp_ns,
+                error_ns,
+                frame,
+            });
+        }
     }
 
     /// Append a `GLOBAL_MARKER` (text annotation) at
@@ -519,6 +610,7 @@ impl BlfCaptureWriter {
         let bytes = format::marker::encode(&marker);
         inner.append_object(&bytes, timestamp_ns)?;
         self.marker_count += 1;
+        self.note_clamp(start, timestamp_ns, None);
         Ok(())
     }
 
@@ -536,6 +628,8 @@ impl BlfCaptureWriter {
             marker_count: self.marker_count,
             byte_size,
             max_timestamp_drift_ns: 0,
+            clamped_count: self.clamped_count,
+            worst_clamp: self.worst_clamp,
         })
     }
 }
