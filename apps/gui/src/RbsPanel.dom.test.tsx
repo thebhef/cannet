@@ -14,6 +14,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import type { RbsView } from "./types";
 
 let VIEW: RbsView | null = null;
+// The `VAL_` table the host currently answers with — a test that edits
+// the DBC on disk moves it.
+let LABELS: Array<{ raw: number; label: string }> = [];
 const calls: Array<{ cmd: string; args: unknown }> = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -25,10 +28,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "rbs_crc_algorithms":
         return ["CRC-8/SAE-J1850", "CRC-8/AUTOSAR"];
       case "list_value_tables":
-        return [
-          { raw: 0, label: "Off" },
-          { raw: 1, label: "Standby" },
-        ];
+        return LABELS;
       default:
         return undefined;
     }
@@ -37,12 +37,21 @@ vi.mock("@tauri-apps/api/core", () => ({
 // Captures registered handlers so tests can deliver `rbs-changed`
 // events like the host does.
 let eventHandlers: Array<(e: { payload: string }) => void> = [];
+// Same handlers, kept per event name, so a test can deliver *only* the
+// host's `dbc-changed` and see what that alone reaches.
+const eventHandlersByName = new Map<string, Array<(e: { payload: string }) => void>>();
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (_name: string, handler: (e: { payload: string }) => void) => {
+  listen: vi.fn(async (name: string, handler: (e: { payload: string }) => void) => {
     eventHandlers.push(handler);
+    const forName = eventHandlersByName.get(name) ?? [];
+    forName.push(handler);
+    eventHandlersByName.set(name, forName);
     return () => {};
   }),
 }));
+function emitHost(name: string, payload = "*"): void {
+  for (const h of [...(eventHandlersByName.get(name) ?? [])]) h({ payload });
+}
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(async () => null),
   save: vi.fn(async () => null),
@@ -233,6 +242,11 @@ beforeEach(() => {
   VIEW = null;
   calls.length = 0;
   eventHandlers = [];
+  eventHandlersByName.clear();
+  LABELS = [
+    { raw: 0, label: "Off" },
+    { raw: 1, label: "Standby" },
+  ];
 });
 afterEach(() => cleanup());
 
@@ -340,6 +354,30 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     await waitFor(() =>
       expect(comboboxOptionLabels()).toEqual(["Off (0)", "Standby (1)"]),
     );
+  });
+
+  it("a VAL_ renamed on disk reaches the picker without a manual reload", async () => {
+    // Task 27's exit criterion, RBS half. The panel's *rows* already
+    // rebuilt on a DBC change — the host runs `rbs::refresh_all_elements`
+    // on every DBC path and the panel refetches on `rbs-changed` — but
+    // the enum labels come from the shared value-table fetch, which had
+    // no way to hear that the set changed. Only `dbc-changed` is
+    // delivered here, so what is asserted is what the carrier alone
+    // reaches (ADR 0053 §3-4).
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const picker = await screen.findByLabelText("TargetMode value");
+    openCombobox(picker);
+    await waitFor(() => expect(comboboxOptionLabels()).toEqual(["Off (0)", "Standby (1)"]));
+
+    // The DBC is edited in another tool: raw 1 is renamed.
+    LABELS = [
+      { raw: 0, label: "Off" },
+      { raw: 1, label: "Ready" },
+    ];
+    act(() => emitHost("dbc-changed", "/tmp/pack.dbc"));
+    await waitFor(() => expect(comboboxOptionLabels()).toEqual(["Off (0)", "Ready (1)"]));
   });
 
   it("picks a label in one click and does not send it twice", async () => {
