@@ -228,9 +228,9 @@ debounce is never in the user's way for their own gesture.
 - A consumer added later inherits the contract by reading a shared
   model; if it needs a new kind of derived state, §4's table grows a
   row rather than the app growing a subscription.
-- The project and RBS watches (not implemented here) inherit both
-  halves: they register with the same watch set, and whatever they
-  apply announces itself the same way.
+- The project and RBS watches inherit both halves: they register with
+  the same watch set, and whatever they apply announces itself the same
+  way.
 - The frontend's fan-out is delayed by up to 250 ms after a host-side
   change. Nothing user-initiated waits on it, and no host state is
   gated by it.

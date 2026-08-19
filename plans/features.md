@@ -49,7 +49,7 @@ High-performance CAN traffic analyzer.
   - [x] Bus configs
   - [x] DBC references, reloadable from disk at any time
   - [x] Autosave on exit (opt-in; projects with their own directory)
-  - [ ] Live disk-watch: project and RBS files reload on external edits
+  - [x] Live disk-watch: project and RBS files reload on external edits
 - [x] Logical CAN bus layer: map CAN channels to logical project channels
 - [x] Read .blf logs
   - [x] Channel-mapping dialog: map each BLF channel to a logical bus, or skip it

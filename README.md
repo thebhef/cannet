@@ -1853,6 +1853,18 @@ In the panel:
   `.cannet_rbs`, and the exit prompt covers both. Save dialogs
   default to `.cannet_prj` / `.cannet_rbs`; `.json` is still
   accepted on open.
+- The file is **watched on disk**, the way the project file and a
+  loaded DBC are — edit it in another tool and cannet picks the
+  change up. It is re-read silently only when there is nothing to
+  lose: the element has no unsaved overrides *and* is not running. A
+  running element is putting frames on a real bus, so cannet will not
+  swap its definitions underneath it; that case, and unsaved
+  overrides, get *RBS file changed on disk* in the panel toolbar with
+  **Apply anyway** and **Dismiss**. Apply anyway is an ordinary load
+  of the file — unsaved overrides go, and an element that was running
+  keeps running with the file's definitions. A config mid-edit that
+  won't parse is logged and ignored, and one that disappears doesn't
+  unload the element.
 
 **Calculated fields** (ADR 0027) are signals recomputed on every
 send: a **sequence counter** (increment + rollover) and/or a **CRC**
