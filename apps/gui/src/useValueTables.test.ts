@@ -5,16 +5,37 @@
 // mocked so this runs without the host.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 
 import { invoke } from "@tauri-apps/api/core";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
 import { signalKey } from "./plotData";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+// The shared carrier's one listener (ADR 0053 §3) — the host announcing
+// a DBC-set change is what this file drives through `announce()`.
+type Handler = () => void;
+let handlers: Handler[] = [];
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (_event: string, handler: Handler) => {
+    handlers.push(handler);
+    return () => {
+      handlers = handlers.filter((h) => h !== handler);
+    };
+  }),
+}));
+function announce(): void {
+  for (const h of [...handlers]) h();
+}
+
 const mockInvoke = vi.mocked(invoke);
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  cleanup();
+  handlers = [];
+  vi.clearAllMocks();
+});
 
 const sig = (name: string): ValueTableSignal => ({
   busId: "b1",
@@ -116,6 +137,27 @@ describe("useValueTables", () => {
       fileBacked: false,
       busId: null,
     });
+  });
+
+  it("refetches when the host announces a DBC-set change, so a panel that mounted first is not stuck", async () => {
+    // Task 86 item 3, measured: a panel mounts and asks before the
+    // project's DBCs are installed, gets "no table", and — keying its
+    // fetch on the signal set alone — never asks again. The enum lane
+    // stays numeric until the view is closed and reopened. The DBC set
+    // changing is the carrier that has to reach it (ADR 0053 §4).
+    let installed = false;
+    mockInvoke.mockImplementation(async () =>
+      installed ? [{ raw: 0, label: "Off" }, { raw: 1, label: "On" }] : [],
+    );
+    const signals = [sig("Mode")];
+    const { result } = renderHook(() => useValueTables(signals));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(1));
+    expect(result.current.size).toBe(0);
+
+    installed = true;
+    act(() => announce());
+    await waitFor(() => expect(result.current.size).toBe(1));
+    expect(result.current.get(signalKey("b1", 100, false, "Mode"))).toHaveLength(2);
   });
 
   it("an empty signal list never invokes and returns an empty map — the gate panels use to skip non-enum signals", async () => {

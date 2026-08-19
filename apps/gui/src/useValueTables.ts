@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { signalKey } from "./plotData";
+import { useDbcGeneration } from "./dbcChanged";
 import type { ValueTableEntryRecord } from "./types";
 import type { ComboboxOption } from "./Combobox";
 import { diagCount } from "./diag"; // DIAG
@@ -64,6 +65,12 @@ export function useValueTables(
   );
   const signalsRef = useRef(signals);
   signalsRef.current = signals;
+  // The other half of the fetch's identity: which labels the host has
+  // to give is a function of the loaded DBC set as much as of the
+  // signals asked about (ADR 0053 §4). Without it a panel that asked
+  // before its project's DBCs were installed caches "no table" for the
+  // session and recovers only on a remount.
+  const dbcGeneration = useDbcGeneration();
   useEffect(() => {
     let cancelled = false;
     const accum = new Map<string, ValueTableEntryRecord[]>();
@@ -94,7 +101,7 @@ export function useValueTables(
     return () => {
       cancelled = true;
     };
-  }, [signalsKey]);
+  }, [signalsKey, dbcGeneration]);
   return tables;
 }
 
