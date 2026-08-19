@@ -196,13 +196,13 @@ pub struct FrontendMetrics {
     /// ~1.2 / ~2%; the pre-stagger cohort regression ~3.5 / ~28%.
     #[serde(default)]
     pub rx_gap_p95_ratio_worst: f64,
-    /// **Advisory, not a gate** (ADR 0031's 2026-08-19 amendment, owner
-    /// ruling). Still computed and reported the same way as
-    /// `rx_gap_p95_ratio_worst`, but a control measurement of 15 healthy
-    /// captures on one rig spread it 0.0022-0.0967 (44x) with no code
-    /// change — a false-trip rate no desktop-rig limit can absorb, so it
-    /// no longer contributes to `check`'s pass/fail verdict. Read it as
-    /// a per-run number, not a threshold.
+    /// Worst per-id fraction of gaps under half the median — for a
+    /// 10 ms-cycle id, a frame arriving under 5 ms after its
+    /// predecessor. Gated like `rx_gap_p95_ratio_worst`, but the floor
+    /// (ADR 0031's 2026-08-19 amendment) is set by the ~28% cohort
+    /// regression this gate exists to catch, not by `baseline × factor`
+    /// off the last run: 15 healthy same-rig runs spread 0.0022-0.0967
+    /// (mode ~0.004), comfortably under the resulting limit.
     #[serde(default)]
     pub rx_gap_short_frac_worst: f64,
 }
@@ -305,12 +305,14 @@ mod ftol {
     /// a healthy ~1.2 baseline tolerates run-to-run tail wobble up to
     /// ~2.9 before gating; the cohort regression measured ~3.5.
     pub const RX_GAP_RATIO_FLOOR: f64 = 0.5;
-    /// Floor for the on-wire worst short-gap fraction — a ~2% baseline
-    /// would gate at ~7%; the cohort regression measured ~28%. Still used
-    /// to compute the reported limit, but the metric itself is advisory
-    /// (ADR 0031's 2026-08-19 amendment): 15 healthy same-rig captures
-    /// spread 0.22%-9.67% with no code change, well past this floor.
-    pub const RX_GAP_SHORT_FRAC_FLOOR: f64 = 0.03;
+    /// Floor for the on-wire worst short-gap fraction, set by the
+    /// magnitude of the regression it must catch (ADR 0031's 2026-08-19
+    /// amendment), not by `baseline × factor` off the last run: 15
+    /// healthy same-rig captures spread 0.22%-9.67% (mode ~0.4%) with no
+    /// code change, and the cohort regression this gate exists to catch
+    /// measured ~28%. This floor ratchets down only — raising it needs
+    /// an owner ruling recorded in the ADR.
+    pub const RX_GAP_SHORT_FRAC_FLOOR: f64 = 0.15;
 }
 
 /// Compare a fresh frontend report's metrics against the baseline's, and
@@ -326,10 +328,6 @@ mod ftol {
 ///   sim rate, when handed in. Baseline-independent, so a uniformly-slow
 ///   run is caught even against a slow baseline, and a deterministic
 ///   schedule makes an overshoot as wrong as a shortfall.
-///
-/// One row, `rx_gap_short_frac_worst`, is computed and returned like any
-/// other but marked [`Verdict`]'s `advisory` field — it never fails the
-/// aggregate `check` verdict (ADR 0031's 2026-08-19 amendment).
 #[must_use]
 #[allow(clippy::too_many_lines)] // a flat list of independent gate blocks
 pub fn check_frontend(
@@ -508,27 +506,24 @@ pub fn check_frontend(
     // only, so neither sees it. Baseline-armed like the spike tier (a
     // sim-only baseline has no hardware rx and holds 0 ⇒ inert).
     //
-    // `rx_gap_short_frac_worst` is **advisory only** (ADR 0031's
-    // 2026-08-19 amendment, owner ruling): a control measurement of 15
-    // healthy captures on one rig spread the metric 44x (0.0022-0.0967)
-    // with no code change, wider than any floor can absorb without a
-    // desktop-rig-dependent false-trip rate — so it is still computed and
-    // shown, but excluded from the pass/fail aggregate. `rx_gap_p95_ratio_worst`
-    // stays a real gate.
-    for (metric, base, cur, floor, advisory) in [
+    // Both rows are real gates. `rx_gap_short_frac_worst`'s floor
+    // (`ftol::RX_GAP_SHORT_FRAC_FLOOR`) is set by the ~28% cohort
+    // regression it must catch, not by `baseline × factor` off the last
+    // run (ADR 0031's 2026-08-19 amendment): 15 healthy same-rig runs
+    // spread 0.0022-0.0967 with no code change, comfortably under the
+    // resulting limit.
+    for (metric, base, cur, floor) in [
         (
             "rx_gap_p95_ratio_worst",
             baseline.rx_gap_p95_ratio_worst,
             current.rx_gap_p95_ratio_worst,
             ftol::RX_GAP_RATIO_FLOOR,
-            false,
         ),
         (
             "rx_gap_short_frac_worst",
             baseline.rx_gap_short_frac_worst,
             current.rx_gap_short_frac_worst,
             ftol::RX_GAP_SHORT_FRAC_FLOOR,
-            true,
         ),
     ] {
         if base <= 0.0 {
@@ -541,7 +536,7 @@ pub fn check_frontend(
             baseline: base,
             current: cur,
             limit,
-            advisory,
+            advisory: false,
             pass: cur <= limit,
         });
     }
@@ -957,9 +952,7 @@ mod tests {
         // worst per-id p95/median gap ratio to ~3.5; healthy rig ~1.2.
         // Baseline-armed like the stall rows — inert until a baseline
         // carries the field. `rx_gap_short_frac_worst` is covered
-        // separately by `rx_gap_short_frac_worst_is_advisory_not_a_gate`
-        // — it is reported alongside this row but does not gate (ADR
-        // 0031's 2026-08-19 amendment).
+        // separately by `rx_gap_short_frac_worst_gates_the_cohort_regression`.
         let mut base = metrics(1.0, 12.0, 27.0, 0.03);
         base.rx_gap_p95_ratio_worst = 1.25;
         let mut cur = base.clone();
@@ -994,48 +987,47 @@ mod tests {
     }
 
     #[test]
-    fn rx_gap_short_frac_worst_is_advisory_not_a_gate() {
-        // Owner ruling, ADR 0031's 2026-08-19 amendment: a control
-        // measurement of 15 healthy same-rig captures spread this metric
-        // 44x (0.0022 to 0.0967) with no code change — wider than any
-        // floor a gate could set without a desktop-rig-dependent
-        // false-trip rate. It stays measured and reported at the same
-        // baseline/current/limit math a gated row carries, but a breach
-        // must not fail a build.
+    fn rx_gap_short_frac_worst_gates_the_cohort_regression() {
+        // Owner ruling, ADR 0031's 2026-08-19 amendment: the limit is
+        // set by the magnitude of the regression it must catch (~28%,
+        // the cohort regression this metric was added for), not by
+        // `baseline * factor` off the last run. With a 0.008 baseline
+        // (the task-81 measurement) and the corrected floor (0.15), the
+        // limit is 0.008*2 + 0.15 = 0.166: above the worst of 15 healthy
+        // same-rig runs (0.097), below the ~28% regression.
         let mut base = metrics(1.0, 12.0, 27.0, 0.03);
-        base.rx_gap_short_frac_worst = 0.02;
-        let mut cur = base.clone();
-        cur.rx_gap_short_frac_worst = 0.28; // would have failed the old gate (> 0.02*2+0.03=0.07)
-        let verdicts = check_frontend(&base, &cur, Expected::default());
+        base.rx_gap_short_frac_worst = 0.008;
 
+        let mut regressed = base.clone();
+        regressed.rx_gap_short_frac_worst = 0.28;
+        let verdicts = check_frontend(&base, &regressed, Expected::default());
         let short = verdicts
             .iter()
             .find(|v| v.metric == "rx_gap_short_frac_worst")
             .unwrap();
-        assert!(
-            short.advisory,
-            "rx_gap_short_frac_worst must be marked advisory"
-        );
-        // Still measured and reported — the breach is visible in the row.
-        approx(short.baseline, 0.02);
-        approx(short.current, 0.28);
-        approx(short.limit, 0.07);
-        assert!(!short.pass, "the breach is still visible in the verdict");
+        approx(short.limit, 0.166);
+        assert!(!short.pass, "a ~28% cohort-scale regression must fail");
+        assert!(!short.advisory, "the row is a real gate again");
 
-        // The breach does not fail the aggregate check (main.rs excludes
-        // advisory rows from the pass/fail aggregate the same way).
+        // The worst of 15 healthy same-rig runs must not false-trip.
+        let mut healthy_worst = base.clone();
+        healthy_worst.rx_gap_short_frac_worst = 0.097;
+        let verdicts = check_frontend(&base, &healthy_worst, Expected::default());
         assert!(
-            verdicts.iter().filter(|v| !v.advisory).all(|v| v.pass),
-            "an rx_gap_short_frac_worst breach alone must not fail the gate",
-        );
-        assert_eq!(
-            verdicts.iter().filter(|v| v.advisory).count(),
-            1,
-            "only rx_gap_short_frac_worst is advisory in this scenario",
+            verdicts
+                .iter()
+                .find(|v| v.metric == "rx_gap_short_frac_worst")
+                .unwrap()
+                .pass,
+            "the worst observed healthy run (0.097) must not breach the gate",
         );
 
         // Inert without a baseline, same as the ratio row.
-        let verdicts = check_frontend(&metrics(1.0, 12.0, 27.0, 0.03), &cur, Expected::default());
+        let verdicts = check_frontend(
+            &metrics(1.0, 12.0, 27.0, 0.03),
+            &regressed,
+            Expected::default(),
+        );
         assert!(
             !verdicts
                 .iter()
