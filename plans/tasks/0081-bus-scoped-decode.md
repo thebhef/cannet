@@ -192,3 +192,30 @@ new tests were green before and after by design: they pin what must
 unscoped set produced before the change).
 
 Tests: `cargo test -p cannet-gui` 707 passed / 0 failed / 6 ignored.
+
+### 2026-08-19 — phase 1, slice 3: the parked-cache ruling, proved
+
+Grooming note 1 said "no code change expected". Reality agreed with
+both facts; the tests are new, the behaviour is not.
+
+- `one_signal_on_two_buses_parks_as_two_independent_entries` — one
+  unscoped database, two series on message 256 signal `A` scoped to
+  `pt` and `ch`, one edit under both. Two parks, both named `A`, told
+  apart by `bus_id`, with two distinct level-file bases.
+- `an_a_to_b_to_a_edit_leaves_one_park_not_two` — build under A, edit
+  to B (A parks), rebuild and stamp under B, edit back to A. One park
+  remains and it is B's; `revivals == 1`. A third distinct encoding
+  (A -> B -> C) is what it takes for one key to hold two parks, and
+  the pool then keeps both, per the ruling.
+
+Both passed on first run, so each was falsified to show it is
+load-bearing rather than vacuous:
+
+| Injected fault | Result |
+| --- | --- |
+| `revive_retained` skipped in `invalidate_dbcs` | `retained` 2, expected 1 — the test depends on park-then-revive ordering |
+| `SignalKey::dbc` drops `bus_id` | the two buses collapse into one 400-point series (expected 200) — the test depends on the key carrying the bus |
+
+Conclusion: grooming note 1 stands as written. No blocker.
+
+Tests: `cargo test -p cannet-gui` 709 passed / 0 failed / 6 ignored.

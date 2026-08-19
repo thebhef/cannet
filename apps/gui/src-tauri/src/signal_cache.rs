@@ -6044,6 +6044,126 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn one_signal_on_two_buses_parks_as_two_independent_entries() {
+        // The retention pool is keyed by the *whole* series identity,
+        // not by signal name: `SignalKey` carries `bus_id`, so the same
+        // name on two buses is two caches — and when the definition
+        // under them moves, two parks with their own level files. No
+        // code change made this so; it is what the key already said,
+        // and this pins it against a future "one park per signal".
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            let t = i as u64 * 2 * S;
+            store.append(ab_frame_on("pt", t, (i % 50) as u16, 0));
+            store.append(ab_frame_on("ch", t + S, (i % 40) as u16, 0));
+        }
+        let before = dbc_ab_scaled(1, 1);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        let dbs = &all_buses(&[&before]);
+        for bus in ["pt", "ch"] {
+            let built = cache.slice(
+                Some(bus),
+                256,
+                false,
+                "A",
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                dbs,
+            );
+            assert_eq!(built.len(), 200, "{bus} built");
+        }
+        assert!(cache.persist(&validity("capture-a", 0), &scopes(&before), Harden::All));
+
+        // One edit, under both series at once — the database is
+        // unscoped, so it is a candidate for either bus.
+        let after = dbc_ab_scaled(2, 1);
+        cache.invalidate_dbcs(&scopes(&after));
+        assert_eq!(cache.usage().retained, 2, "one park per bus");
+        assert_eq!(
+            cache.retained_signals(),
+            vec!["A".to_string(), "A".to_string()],
+            "…of one signal name",
+        );
+        let caches = cache.caches.lock().unwrap();
+        let mut buses: Vec<Option<String>> = caches
+            .retained
+            .iter()
+            .map(|r| r.signal.key().bus_id)
+            .collect();
+        buses.sort();
+        assert_eq!(
+            buses,
+            vec![Some("ch".to_string()), Some("pt".to_string())],
+            "the parks are told apart by bus",
+        );
+        let file_bases: std::collections::HashSet<&str> =
+            caches.retained.iter().map(|r| r.base.as_str()).collect();
+        assert_eq!(file_bases.len(), 2, "and hold their own level files");
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn an_a_to_b_to_a_edit_leaves_one_park_not_two() {
+        // The pool keeps every park it holds — a park is real samples,
+        // and a user who wants the disk back lowers the bound. That is
+        // not the same as accumulating a park per edit: parking runs
+        // *before* `revive_retained` inside one `invalidate_dbcs`, so a
+        // definition's return hands its own park back in the same
+        // breath it parks what replaced it. A -> B -> A therefore ends
+        // with exactly one park, B's. Two persistent parks of one key
+        // need a third distinct encoding.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let v = validity("capture-a", 0);
+        let (a, b, c) = (
+            dbc_ab_scaled(1, 1),
+            dbc_ab_scaled(2, 1),
+            dbc_ab_scaled(3, 1),
+        );
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        // Serve `A` under `db` and stamp what it was decoded with — an
+        // unstamped cache is dropped rather than parked.
+        let built = |db: &Database| {
+            let dbs = all_buses(&[db]);
+            let served = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, &dbs);
+            assert_eq!(served.len(), 200);
+            assert!(cache.persist(&v, &scopes(db), Harden::All));
+        };
+
+        built(&a);
+        cache.invalidate_dbcs(&scopes(&b));
+        assert_eq!(cache.usage().retained, 1, "A parked");
+        built(&b);
+
+        cache.invalidate_dbcs(&scopes(&a));
+        let usage = cache.usage();
+        assert_eq!(usage.retained, 1, "one park after A -> B -> A, not two");
+        assert_eq!(usage.revivals, 1, "A came back rather than rebuilding");
+        let fp_b = signal_fingerprint::dbc_encoding(&scopes(&b), None, 256, false, "A");
+        {
+            let caches = cache.caches.lock().unwrap();
+            assert_eq!(
+                caches.retained[0].signal.encoding.as_deref(),
+                Some(fp_b.as_str()),
+                "the one left is B's — the definition that is now gone",
+            );
+        }
+
+        // A third distinct encoding is what it takes for one key to
+        // hold two parks. The ruling is that the pool then keeps both.
+        built(&a);
+        cache.invalidate_dbcs(&scopes(&c));
+        assert_eq!(cache.usage().retained, 2, "B's park and now A's");
+    }
+
+    #[test]
     fn a_restore_reports_the_bytes_it_reused_and_the_bytes_it_owes() {
         // Counts alone cannot answer "are we saving time or wasting
         // disk": one reopened pyramid over a long capture and one over a
