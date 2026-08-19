@@ -596,6 +596,182 @@ Reports were not committed (nothing under
 `task86-phase2-run{1,2}.json` in the operator's seeded perf app-data dir
 (outside the repo).
 
+### 2026-08-19 — Phase 3 (item 4, what survives a DBC replace)
+
+Branch `task-86-phase-3-dbc-replace`, off
+`task-86-phase-2-events-panel-controls`.
+
+#### The three paths, as they stand in 0.9.0-dev
+
+| Path | Where | DBC set | Bus scoping | Priority order | Derived caches | `dbc-changed` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Reload in place | `add_dbc` -> `install_dbc`, path already loaded (`reloaded = true`) | the slot's `db` is swapped | **kept** (the entry is mutated, not replaced) | kept | `invalidate_derived_caches` | **no** |
+| Watcher reload | `dbc_watcher::reload_one` | same swap, on an FS event | kept | kept | `invalidate_derived_caches` | yes |
+| Replace | `add_dbc` (new path) then `remove_dbc` | two set changes, both databases loaded in between | **lost** — a new entry gets `buses: Vec::new()` | **lost** — a new entry is pushed to the end | `invalidate_derived_caches`, twice | **no** |
+
+`reload_one` differs from `install_dbc`'s reload branch in exactly two
+things: it emits `dbc-changed`, and it does not re-arm the file watch
+(already armed). Not exercised by a test — it takes an `AppHandle` and
+this crate has no Tauri mock-app harness — so its row above is a code
+read, not a measurement.
+
+#### Investigation
+
+**Observation 1.** Every DBC path — `add_dbc`, `set_dbc_buses`,
+`remove_dbc`, `clear_dbcs`, the watcher reload, the MDF import's
+embedded install — ends at `invalidate_derived_caches`, which re-judges
+the pyramids per signal and nulls the filter index, the descriptor
+snapshot and the mux extractor. There is no path that changes the DBC
+set and skips it.
+
+**Hypothesis 1.** The 0.8.1 report is therefore a *view not re-asking*
+rather than a cache not invalidating (the shape item 4 predicted, and
+ADR 0049's lazy rebuild is what makes it possible: nothing decodes until
+a view asks).
+
+**Experiment 1.** Render `PlotPanel` in jsdom over a **stopped** panel —
+one signal, a window that does not move — settle it past every
+post-mount fetch, then bump the trace model's re-anchor epoch, which is
+what `App.invalidateCache` bumps on every frontend-initiated DBC change
+(add, remove, reload-in-place, re-scope, open project). Count
+`sample_signals` round-trips.
+
+**Data 1.** `expected 2 to be greater than 2`. Zero further round-trips.
+
+**Conclusion 1.** Confirmed, and there are *two* independent reasons, so
+fixing either alone would not have been enough:
+
+- The decimated source's memo keys on `winStart`, `winEnd`, the visible
+  slice, the point budget and the render mode (`useDecimatedRange.ts`'s
+  `fetchKey`). That is the right question — "could this request return
+  different bytes?" — asked without one of its inputs. A live capture's
+  `winEnd` moves every tick and re-keys it incidentally, which is
+  exactly why the report is *"doesn't **always** happen"*; a stopped
+  capture, or a plot zoomed into history (where the key is deliberately
+  `"parked"`), never re-keys at all.
+- On a stopped panel `PlotArea`'s resample loop is **off**. Even a
+  re-keyed memo would not have been consulted, because nothing ticks.
+
+Fixed here: the model epoch rides in front of the decimated source's
+descriptor, and a change to it forces a resample the way a programmatic
+x-window change already does. This is the plot catching up with what
+every row-addressed trace window has done all along (`trace.ts`'s
+`${model.epoch}:${offset}`) — the plot was the one view over the model
+that ignored the re-anchor signal.
+
+**What is still not covered:** the *watcher* path. `dbc-changed` is not
+translated into an epoch bump anywhere, so an on-disk edit still leaves
+the plot on the old decode. That is the propagation contract task 27
+owns (grooming note 5) and is left to it, with the plot named as a
+consumer — not patched here, because patching one consumer while the
+others stay broken is how this drifted.
+
+#### The design question: what survives replacing a DBC?
+
+**The cache half — yes, and it is the parked-cache pool that does it,
+not the fingerprint match.**
+
+**Experiment 2.** At `AppState` level, over a 200-frame capture of one
+message with two signals (`A` and `B`): install `a.dbc`, build both
+pyramids, stamp them with `persist`, then install `b.dbc` with `A`
+defined identically and `B` rescaled, then remove `a.dbc`. Serve each
+afterwards against a capture **nothing decodes**, so a returned sample
+is a pyramid's rather than a rebuild's.
+
+**Data 2.**
+
+| Step | live | parked | revivals |
+| --- | --- | --- | --- |
+| built + stamped under `a.dbc` | 2 | 0 | 0 |
+| `b.dbc` installed alongside | **0** | **2** | 0 |
+| `a.dbc` removed | 1 | 1 | 1 |
+
+`A` then answers with its 200 samples off the undecodable capture; `B`
+answers with none.
+
+**Conclusion 2.** The answer is yes, but by a different mechanism than
+ADR 0047's summary suggests. A replace is *two* set changes, and the
+intermediate set — both databases loaded — is a two-candidate chain for
+every signal, so **both** pyramids re-encode and park, the unchanged one
+included. What brings `A` back is the pool: the removal restores a
+one-database chain whose fingerprint is the one `A` was parked with, and
+`revive_retained` hands it straight back in the same call. Without the
+pool a near-identical replace would rebuild *everything*. Falsified by
+skipping `revive_retained`: `A's chain is what it was, so A comes back`
+fails, `left: 0, right: 1`.
+
+The contrast is the **reload-in-place** path, which does not churn at
+all: one database, `A`'s chain never moves, and its pyramid never leaves
+the live set (live 1, parked 1, **revivals 0**). Falsified by making a
+fingerprint match count as a mismatch: the revival count goes to 1 — the
+samples still survive, through the pool, but the per-signal judgement
+stops being what saved them.
+
+**Precondition worth naming:** a pyramid is parked only if it carries an
+encoding stamp, and the stamp is written by `persist` (periodic, and at
+exit). A pyramid built since the last manifest write is **dropped**, not
+parked, by any DBC-set change — ADR 0047 says so on purpose (the safe
+direction), but it means "a near-identical replace keeps your caches" is
+true of a session that has been running and not of one that has just
+plotted a signal.
+
+**The cache half — no, on a project that scopes its databases.**
+
+**Experiment 3.** The same replace with a **byte-identical** file, on a
+project whose database is scoped to one bus and whose series is scoped
+to that bus.
+
+**Data 3.** The replacement's bus list is `[]`. After the replace:
+live 0, parked 2, revivals 0 — *nothing* is reused. Re-scoping the
+replacement the way the replaced file was scoped: live 2, parked 0,
+revivals 2, and both series answer off an undecodable capture.
+
+**Conclusion 3.** The pyramids are right and the project state is wrong.
+`install_dbc` gives a newly-added entry the "applies to every bus"
+default, because it has no way to know this file stands in for another —
+so the replacement genuinely decodes differently (it now answers for
+every bus), the encoding fingerprint moves with it, and every pyramid it
+backs rebuilds. The samples are not lost, only unreferenced; re-scoping
+puts the chain back and the pool answers for both. The same is true of
+**load priority**: a new entry is pushed to the end, so replacing the
+first of several overlapping databases silently re-prioritises the set,
+which is part of the candidate chain and so part of the fingerprint.
+
+Neither is a defect in the cache. Both are the honest answer to "what
+survives replacing a DBC": **the bus scoping and the priority position
+do not.** Written up under blockers as a candidate for its own task,
+with the ruling left to the owner — the app has no notion of "replace",
+and inventing one is a feature, not a fix.
+
+**The view-config half — yes, everywhere it was checked.** Plot series,
+signal-view patterns and RBS entries all name a signal by *identity* —
+bus, message id, extended flag, signal name — never by the database that
+defined it, and the descriptor universe every one of them resolves
+through is rebuilt by the same invalidation. Asserted host-side: after
+the replace the descriptor snapshot still names `(p, 256, A)` and
+`(p, 256, B)`, and an RBS entry with a signal-value override still
+registers its row through each step of the replace (falsified by giving
+the replacement a database that does not define the message — the row
+goes unregistered and the rebuild warns).
+
+#### What landed
+
+| Commit | Subject | Tests |
+| --- | --- | --- |
+| `a5521981` | Pin what a DBC replace keeps, and what it does not | +3 (`cannet-gui`) |
+| `c49495ba` | The plot re-asks the host when the DBC set changes | +1 (frontend) |
+| `5a5fef99` | An RBS entry outlives the database file that defined it | +1 (`cannet-gui`) |
+
+Suite totals after the phase: `cannet-gui` 721 passed / 6 ignored (was
+717), frontend 2238 across 165 files (was 2237). `cargo clippy
+--workspace --all-targets -- -D warnings`, `cargo fmt --all`, `pnpm
+--dir apps/gui test` and `pnpm --dir apps/gui build` clean on every
+commit (the pre-commit gate ran them).
+
+The only production change is the plot's: one prop threaded from
+`PlotPanel` into `PlotArea`, folded into the decimated source's
+descriptor, plus a forced resample on it. Everything else is tests.
+
 ## Blockers / side effects
 
 - **`BlfCaptureWriter` clamps an out-of-order frame's timestamp** (found
@@ -642,3 +818,51 @@ Reports were not committed (nothing under
   (885 px of misplacement behind 943 px of blank scroll) explains the
   report without it; if a control is still unreachable after this phase,
   that is a second, input-level defect and needs its own reproduction.
+- **A replacement DBC inherits neither the bus scoping nor the priority
+  position of the file it replaces** (measured, **not fixed here** —
+  needs its own task and an owner ruling). `install_dbc` gives a
+  newly-added entry `buses: Vec::new()` and pushes it to the end of the
+  loaded list, because the host has no notion of "replace" — a replace
+  is an add and a remove that happen to be adjacent. Two consequences,
+  in order of severity: (1) on a project that scopes its databases the
+  replacement **decodes the wrong frames** until the user re-scopes it
+  by hand, silently; (2) every pyramid it backs rebuilds, correctly, for
+  the same reason. Measured on a byte-identical replacement: live 0,
+  parked 2, revivals 0, and the replacement's bus list `[]`. Re-scoping
+  it recovers everything (live 2, revivals 2) — the samples are
+  unreferenced, not lost. Fixing it means deciding what a "replace"
+  *is*: a gesture in the project panel that swaps a path in place and
+  keeps the entry, or a rule that a new entry inherits the scoping of a
+  removed one (which cannot be right in general). That is a feature, and
+  grooming note 4 sends features out of this phase.
+- **The plot's watcher-path gap is left to task 27.** After this phase
+  the plot re-asks on every *frontend-initiated* DBC change, because
+  those bump `App.invalidateCache`'s epoch. An on-disk edit picked up by
+  `dbc_watcher::reload_one` emits `dbc-changed`, and nothing translates
+  that into an epoch bump, so the plot still shows the old decode.
+  Deliberately not patched here: it is the same hole as item 3's, and
+  grooming note 5 gives the contract to task 27. That contract has three
+  consumers to cover — `useValueTables` (item 3), the signal catalog
+  (already covered), and the plot's decimated source.
+- **`useFilteredTrace`'s descriptor has the same shape of gap** (code
+  read, **not measured, not fixed**). It is
+  `${winStart}:${JSON.stringify(filter)}` — no model epoch — so a
+  filtered chronological view on a stopped capture would not re-page
+  after a DBC change either, and a signal-value predicate is decoded
+  against the DBC set. The chronological `useTrace` already folds the
+  epoch in; this is the one windowed source left that does not. Needs
+  its own reproduction before anyone changes it; recorded here rather
+  than fixed because it is a different view from item 4's report.
+- **A pyramid built since the last `persist` is dropped, not parked.**
+  ADR 0047's stated safe direction (an unstamped cache was never held
+  alongside a loaded set, so what decoded it is unknown), and the reason
+  "a near-identical replace keeps your caches" is true of a session that
+  has been running and not of one that has just plotted a signal. No
+  change proposed; naming it because it is the difference between the
+  design question's conceptual answer and what a user sees in the first
+  minute after plotting something.
+- **The watcher reload path is not unit-testable.** `reload_one` takes
+  an `AppHandle` and this crate has no Tauri mock-app harness, so the
+  third path's row in the table above is a code read. Its cache
+  behaviour is `install_dbc`'s reload branch verbatim; what is untested
+  is that it is, and that it emits `dbc-changed`.
