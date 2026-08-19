@@ -129,10 +129,12 @@ impl TraceStore {
     /// `session_start_ns` — the pipeline-drain guard for in-flight
     /// frames at the moment of clear / connect.
     ///
-    /// Live capture passes wall-clock now; BLF replay passes the
-    /// first frame's timestamp so the trace is rooted at the file's
-    /// own time origin. Tests that just want an empty buffer with no
-    /// gating pass `0`.
+    /// Live capture passes wall-clock now; an import passes the earliest
+    /// timestamp it has seen so far, and corrects downwards through
+    /// [`Self::lower_session_start`] as it meets earlier ones (ADR
+    /// 0024). Tests that just want an empty buffer with no gating pass
+    /// `0` — which is also a real origin, for a log that states no start
+    /// time; [`Self::session_started`] is what tells the two apart.
     ///
     /// (Why fresh `HashMap` allocations instead of `clear()`: those only
     /// reset length, leaving the — possibly enormous after a long replay
