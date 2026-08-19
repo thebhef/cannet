@@ -338,6 +338,115 @@ position. Both `cannet` (via the current `blf_asc` wrapper) and
 *unsupported* in this doc never means *crashes on encounter*, it
 means *the payload is not surfaced to cannet*.
 
+## Object timestamps and ordering
+
+**Nothing in BLF requires objects to be in timestamp order, and
+cannet's reader does not assume they are.** This matters because a
+multi-bus capture's arrival order is routinely not its timestamp order
+— separate interface clocks disagree, and a real 23-hour two-bus PCAN
+capture dips ~1.1 s below its own running maximum several times a
+minute ([ADR 0024](adr/0024-trace-like-view-timing.md)).
+
+### The one hard constraint: no event before the file's start
+
+`ObjectHeader`'s `objectTimeStamp` is an **unsigned** 64-bit offset from
+the file header's `measurement_start_time` (see `ObjectHeaderV1` in
+[`format/object.rs`](../crates/cannet-blf/src/format/object.rs)). There
+is no representation for a negative offset, so the format's only
+timestamp constraint is that **no event may be earlier than
+`measurement_start_time`**. It says nothing about the order of
+successive objects.
+
+### The ordering question is *permitted by silence*
+
+There is no published BLF specification — python-can's own module
+docstring says so, and every open implementation (`vector_blf`, `ablf`,
+Wireshark) is reverse-engineered from Tobias Lorenz's C++ library.
+Vector's one public API document, the *BINLOG DLL Manual* v1.5, states
+no ordering requirement anywhere: `BLWriteObject` is documented as
+"write a BL object to the file" with no timestamp contract, and the
+manual does not even document the `mObjectTimeStamp` field. So the
+question can only be answered from what implementations do.
+
+Every reader examined walks objects in file order and applies no
+ordering check, no sort, and no warning:
+
+- **Technica's `vector_blf`** — the most comprehensive open BLF
+  implementation, and the oracle cannet's `vector-blf-oracle` feature
+  tests against. Its `File.cpp` read path never reads `objectTimeStamp`
+  at all; the library contains no sort and no ordering check.
+- **`python-can` 4.6.1** (`can/io/blf.py`) — `BLFReader` computes each
+  object's absolute time as `objectTimeStamp * factor +
+  start_timestamp`, per object, in file order. It reads
+  `examples/time-origins/wall-clock-out-of-order.blf` — which carries a
+  2.46 s → 0.12 s descent — completely, in order, and without warning.
+  Its `BLFWriter` likewise *emits* decreasing offsets whenever the
+  source messages descend but stay above its anchor. Notably,
+  python-can's `ASCWriter`, `MF4Writer`, `TRCWriter` and
+  `CanutilsLogWriter` all document a "smaller than the previous"
+  floor; `BLFWriter` is the one that does not.
+- **Wireshark** (`wiretap/blf.c`) — adds the start offset per object
+  and neither detects nor warns on a descent. Its log-container index,
+  used for random access, is keyed on **file position**
+  (`blf_logcontainers_cmp` compares `real_start_pos`), not on time, so
+  even seeking does not depend on time order.
+- **cannet's own reader** (`BlfReader`, `BlfCanFrameSource`,
+  [`scan_blf`](../crates/cannet-blf/src/scan.rs)) is purely sequential:
+  it never seeks, builds no index, and reads no restore points (cannet
+  writes `restore_points_offset = 0`). `scan_blf` reports the capture's
+  span as a **min / max** over the walk rather than the first and last
+  object read, precisely so an out-of-order file yields a correct span.
+
+BLF's own structure anticipates mixed timestamp provenance: header
+version 2's `timeStampStatus` carries a per-object `SwHw` bit
+("1: sw generated ts; 0: hw") alongside an `originalTimeStamp` field. A
+format assuming one strictly ascending clock would not need per-object
+provenance bits.
+
+**Residual risk.** Two things are *not* established. First, whether
+Vector's own CANoe / CANalyzer sort, warn, or misbehave on a descent —
+that needs those tools, which this project does not have, and Vector's
+KB portal renders its article bodies through JavaScript. Second, the
+only ordering-adjacent thing in Vector's API is `BLSeekTime` ("seek
+forward in a BLF file to the first object with a certain time stamp"),
+whose usefulness *implicitly* assumes ascending order — a Vector
+consumer that seeks by time through a file with a descent may land
+somewhere surprising. Neither risk is structural: nothing in the
+container framing, the object framing, or any index depends on order,
+so a file with a descent parses identically to one without.
+
+### What cannet's writer guarantees
+
+`BlfCaptureWriter` anchors `measurement_start_time` on the **first**
+event appended and encodes every event as a `saturating_sub` against
+that anchor. Consequences, all measured:
+
+| appended | on disk / read back |
+| --- | --- |
+| `[+0 ms, +1000 ms, +500 ms, +1100 ms]` | `[+0, +1000, +500, +1100]` — the descent is preserved exactly |
+| `[+1000 ms, +500 ms, +1100 ms]` | `[+1000, +1000, +1100]` — the second event gains 500 ms |
+
+So the writer preserves out-of-order events faithfully **as long as no
+event precedes the first one appended**; an event earlier than the
+anchor is silently clamped up to it. Markers clamp the same way.
+`python-can`'s `BLFWriter` has the identical shape — `max(timestamp,
+0)` against an anchor latched from the first object — so this is a
+shared limitation of the "anchor on first object" strategy rather than
+anything the format forces.
+
+`FileStatistics.last_object_time` is stamped from the **last object
+appended**, not the latest. That is faithful to the field's name
+(Vector documents it as "last object time"), but on an unordered file
+it means the header can claim an end earlier than the file's own newest
+event, and — when the final event is a dip below the anchor — a span
+that inverts, with `measurement_start_time` later than
+`last_object_time`.
+
+Both are defects: the anchor should come from the capture's minimum
+rather than its first event. Until that lands, saving a multi-bus
+capture can lose up to the depth of its first dip below its opening
+frame.
+
 ## Summary of cannet's gaps
 
 Sorted by need.
