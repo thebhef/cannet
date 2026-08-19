@@ -4323,3 +4323,271 @@ fn bench_blf_import() {
         assert_eq!(store.len(), frames);
     }
 }
+
+// ---- Replacing a DBC: what survives -------------------------------
+//
+// The three paths a DBC "load" can take, and what each leaves of the
+// derived state:
+//
+// - **Reload in place** — `install_dbc` under a path already loaded.
+//   The slot's `db` is swapped and its bus scoping is left alone.
+// - **The watcher reload** — `dbc_watcher::reload_one`. Swaps the same
+//   slot the same way, then calls the same
+//   [`invalidate_derived_caches`]; it differs from the reload above in
+//   exactly one thing a view can see, the `dbc-changed` event it emits.
+//   Not exercised here: it takes an `AppHandle`, and this crate has no
+//   Tauri mock-app harness.
+// - **Replace** — a *different* file installed and the old one removed.
+//   Two DBC-set changes, with both databases loaded in between.
+//
+// All three end at `invalidate_derived_caches`, so the pyramids are
+// judged per signal by their encoding fingerprint (ADR 0047) rather
+// than dropped wholesale. What these tests pin is what that judgement
+// actually produces when the replacement is *nearly* the file it
+// replaced.
+
+/// Message 256 with `A` in bytes 0-1 and `B` in bytes 2-3, each at a
+/// nameable scale — the one decode input a near-identical replacement
+/// moves.
+fn ab_dbc_text(a_factor: u32, b_factor: u32) -> String {
+    format!(
+        "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\nBO_ 256 Msg: 8 ECU\n \
+         SG_ A : 0|16@1+ ({a_factor},0) [0|0] \"\" Vector__XXX\n \
+         SG_ B : 16|16@1+ ({b_factor},0) [0|0] \"\" Vector__XXX\n"
+    )
+}
+
+/// A frame of message 256 carrying `A` in bytes 0-1 and `B` in 2-3.
+fn ab_frame_256(ts_ns: u64, a: u16, b: u16) -> RawTraceFrame {
+    let ([a0, a1], [b0, b1]) = (a.to_le_bytes(), b.to_le_bytes());
+    RawTraceFrame {
+        timestamp_ns: ts_ns,
+        payload: CanFramePayload::Classic(vec![a0, a1, b0, b1, 0, 0, 0, 0]),
+        ..dummy_frame(ts_ns, 256)
+    }
+}
+
+/// An `AppState` whose pyramid scratch is this test's own directory
+/// (`test_state`'s is reused across runs, so a manifest an earlier run
+/// left behind would be *staged* and block `persist`), holding `n`
+/// decodable frames of message 256 on `bus`.
+#[allow(clippy::cast_possible_truncation)]
+fn ab_state(scratch: &std::path::Path, bus: Option<&str>, n: u64) -> AppState {
+    let state = test_state();
+    state.signal_caches.reroot(scratch);
+    for i in 0..n {
+        let mut f = ab_frame_256(i * 1_000_000_000, (i % 50) as u16, (i % 40) as u16);
+        f.bus_id = bus.map(ToOwned::to_owned);
+        state.trace_store.append(f);
+    }
+    state
+}
+
+/// Serve `signal` out of `state`'s pyramids, decoded through the DBC
+/// set `state` currently holds. `store` is a parameter so a test can
+/// serve against a capture nothing decodes — anything that comes back
+/// then came from a pyramid, not from a rebuild.
+fn ab_serve(state: &AppState, store: &TraceStore, bus: Option<&str>, signal: &str) -> usize {
+    let dbcs = state.databases();
+    let scopes = crate::app_state::dbc_scopes(&dbcs);
+    state
+        .signal_caches
+        .slice(
+            bus,
+            256,
+            false,
+            signal,
+            f64::MIN,
+            f64::MAX,
+            0,
+            store,
+            &scopes,
+        )
+        .len()
+}
+
+/// A capture of `n` frames no DBC decodes, the same length as the one
+/// the pyramids were built over — so a serve against it advances no
+/// cursor and returns only what a pyramid already holds.
+fn ab_cold_store(n: u64) -> TraceStore {
+    let store = TraceStore::new();
+    for i in 0..n {
+        store.append(dummy_frame(i * 1_000_000_000, 999));
+    }
+    store
+}
+
+/// Stamp the live pyramids with the encoding they were decoded under —
+/// what the periodic persist does. An unstamped cache is *dropped* by a
+/// DBC-set change rather than parked (ADR 0047), so a test about parking
+/// and revival has to have persisted first.
+fn ab_stamp(state: &AppState) {
+    let v = crate::signal_cache::PyramidValidity {
+        capture_id: "capture-a".to_string(),
+        low_water: 0,
+    };
+    let dbcs = state.databases();
+    let scopes = crate::app_state::dbc_scopes(&dbcs);
+    assert!(
+        state
+            .signal_caches
+            .persist(&v, &scopes, crate::signal_cache::Harden::All),
+        "the live pyramids were stamped with what decoded them",
+    );
+}
+
+/// `remove_dbc`'s body without its `AppHandle`: drop the entry and
+/// re-judge the derived state.
+fn ab_remove(state: &AppState, path: &str) {
+    {
+        let mut list = state.databases();
+        list.retain(|d| d.path != path);
+    }
+    invalidate_derived_caches(state);
+}
+
+#[test]
+fn a_reload_in_place_keeps_the_unchanged_signals_pyramid_and_rebuilds_the_changed_one() {
+    // The first of the three paths, and the cheapest: `add_dbc` under a
+    // path already loaded swaps that slot's parsed database and leaves
+    // everything else about the entry — its position in the priority
+    // order, its bus scoping — where it was. So a signal the edit did
+    // not touch keeps a candidate chain identical to the one it was
+    // decoded under, and its pyramid never even leaves the live set.
+    let scratch = tempfile::TempDir::new().unwrap();
+    let state = ab_state(scratch.path(), None, 200);
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    assert_eq!(ab_serve(&state, &state.trace_store, None, "A"), 200);
+    assert_eq!(ab_serve(&state, &state.trace_store, None, "B"), 200);
+    ab_stamp(&state);
+
+    // Re-export the same file with `B` rescaled and reload it in place.
+    let reloaded = crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 2)).unwrap();
+    assert!(
+        reloaded.reloaded,
+        "same path -> a reload, not a second entry"
+    );
+    assert_eq!(state.databases().len(), 1, "and no second entry");
+
+    let usage = state.signal_caches.usage();
+    assert_eq!(usage.live, 1, "A never left the live set");
+    assert_eq!(usage.retained, 1, "B is parked, not deleted");
+    assert_eq!(usage.revivals, 0, "and A did not have to be handed back");
+
+    // Proof rather than counting: served against a capture nothing
+    // decodes, `A` still answers with its 200 samples (they are the
+    // pyramid's, since no frame here can produce one) and `B` answers
+    // with nothing (its pyramid went with its definition).
+    let cold = ab_cold_store(200);
+    assert_eq!(ab_serve(&state, &cold, None, "A"), 200, "A's samples stand");
+    assert_eq!(ab_serve(&state, &cold, None, "B"), 0, "B's are gone");
+}
+
+#[test]
+fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyramid() {
+    // The third path, and the one the design question is about: a
+    // *different* file added and the old one removed. It is two DBC-set
+    // changes with both databases loaded in between, so the intermediate
+    // set re-encodes every signal (a two-database chain is not a
+    // one-database chain) and parks both pyramids. What makes the
+    // replace work is the parked-cache pool: the removal leaves a chain
+    // that is once again one database's, and any pyramid whose
+    // fingerprint that chain answers for is handed straight back.
+    let scratch = tempfile::TempDir::new().unwrap();
+    let state = ab_state(scratch.path(), None, 200);
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    assert_eq!(ab_serve(&state, &state.trace_store, None, "A"), 200);
+    assert_eq!(ab_serve(&state, &state.trace_store, None, "B"), 200);
+    ab_stamp(&state);
+
+    // Step 1: the replacement is installed alongside. `A` is defined
+    // exactly as before; `B` is rescaled.
+    crate::dbc_commands::install_dbc(&state, "b.dbc", &ab_dbc_text(1, 2)).unwrap();
+    let mid = state.signal_caches.usage();
+    assert_eq!(
+        (mid.live, mid.retained),
+        (0, 2),
+        "both chains grew a second candidate, so both pyramids park",
+    );
+
+    // Step 2: the old file is removed.
+    ab_remove(&state, "a.dbc");
+    let usage = state.signal_caches.usage();
+    assert_eq!(usage.live, 1, "A's chain is what it was, so A comes back");
+    assert_eq!(usage.revivals, 1, "…out of the pool, not off the frames");
+    assert_eq!(usage.retained, 1, "B stays parked against its return");
+
+    let cold = ab_cold_store(200);
+    assert_eq!(ab_serve(&state, &cold, None, "A"), 200, "A's samples stand");
+    assert_eq!(ab_serve(&state, &cold, None, "B"), 0, "B's are gone");
+
+    // The view-config half. Plot series, signal-view patterns and RBS
+    // entries name a signal by identity — bus, message id, name — never
+    // by the database that defined it, so a replacement defining the
+    // same messages leaves every one of them resolving. The descriptor
+    // universe every such view resolves through is rebuilt by the same
+    // invalidation, against the database now loaded.
+    let named: Vec<(Option<String>, u32, String)> = state
+        .scoped_descriptor_snapshot(&["p".to_string()])
+        .iter()
+        .map(|(bus, d)| (bus.clone(), d.message_id, d.signal_name.clone()))
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            (Some("p".to_string()), 256, "A".to_string()),
+            (Some("p".to_string()), 256, "B".to_string()),
+        ],
+        "both signals still resolve, on the same identity, after the replace",
+    );
+}
+
+#[test]
+fn a_replacement_dbc_does_not_inherit_the_bus_scoping_of_the_file_it_replaced() {
+    // The half of a replace that does *not* survive. `install_dbc`
+    // gives a newly-added entry an empty bus list — the
+    // "applies to every bus" default — because it has no way to know
+    // this file is standing in for another. So on a project that scopes
+    // its databases, even a byte-identical replacement decodes
+    // differently (it now answers for every bus), the encoding
+    // fingerprint moves with it, and every pyramid the replaced file
+    // backed rebuilds. The pool keeps the samples against the user
+    // re-scoping, which is what puts the chain back.
+    let scratch = tempfile::TempDir::new().unwrap();
+    let state = ab_state(scratch.path(), Some("pt"), 200);
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    state.databases()[0].buses = vec!["pt".to_string()];
+    invalidate_derived_caches(&state);
+    assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "A"), 200);
+    assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "B"), 200);
+    ab_stamp(&state);
+
+    // A byte-identical file under a new name, installed and the old one
+    // removed — the same content, the same signals, the same scale.
+    crate::dbc_commands::install_dbc(&state, "b.dbc", &ab_dbc_text(1, 1)).unwrap();
+    ab_remove(&state, "a.dbc");
+    assert!(
+        state.databases()[0].buses.is_empty(),
+        "the replacement is unscoped, whatever the file it replaced was",
+    );
+    let usage = state.signal_caches.usage();
+    assert_eq!(
+        (usage.live, usage.retained, usage.revivals),
+        (0, 2, 0),
+        "so nothing is reused: both pyramids are parked and rebuild",
+    );
+
+    // Re-scoping it the way the replaced file was scoped puts the chain
+    // back where it was, and the pool answers for both.
+    state.databases()[0].buses = vec!["pt".to_string()];
+    invalidate_derived_caches(&state);
+    let usage = state.signal_caches.usage();
+    assert_eq!(
+        (usage.live, usage.retained, usage.revivals),
+        (2, 0, 2),
+        "the samples were never lost, only unreferenced",
+    );
+    let cold = ab_cold_store(200);
+    assert_eq!(ab_serve(&state, &cold, Some("pt"), "A"), 200);
+    assert_eq!(ab_serve(&state, &cold, Some("pt"), "B"), 200);
+}
