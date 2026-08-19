@@ -695,6 +695,56 @@ mod tests {
         }
     }
 
+    /// Path to one of the committed `examples/time-origins/` captures.
+    fn time_origin_fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/time-origins")
+            .join(name)
+    }
+
+    /// The origin rule, BLF half (ADR 0024): a file that states a
+    /// measurement start time keeps absolute wall-clock timestamps, and
+    /// one carrying the all-zero "unset" `SYSTEMTIME` is anchored at
+    /// zero and reads as relative. Same arithmetic either way — the
+    /// header simply supplies zero — which is what makes it one rule
+    /// rather than a special case.
+    #[test]
+    fn a_stated_measurement_start_makes_timestamps_wall_clock_and_an_unset_one_anchors_at_zero() {
+        const WALL_CLOCK_NS: u64 = 1_709_294_400_000_000_000;
+
+        let mut stated =
+            BlfCanFrameSource::open(time_origin_fixture("wall-clock-out-of-order.blf")).unwrap();
+        assert_eq!(
+            stated
+                .file_statistics()
+                .measurement_start_time
+                .to_unix_nanos(),
+            WALL_CLOCK_NS,
+        );
+        let first = stated.next_frame().unwrap().unwrap();
+        assert_eq!(
+            first.timestamp_ns,
+            WALL_CLOCK_NS + 500_000_000,
+            "the per-object offset is added to the stated start"
+        );
+
+        let mut relative =
+            BlfCanFrameSource::open(time_origin_fixture("relative-zero.blf")).unwrap();
+        assert_eq!(
+            relative
+                .file_statistics()
+                .measurement_start_time
+                .to_unix_nanos(),
+            0,
+            "the all-zero SYSTEMTIME is the unset sentinel"
+        );
+        let first = relative.next_frame().unwrap().unwrap();
+        assert_eq!(
+            first.timestamp_ns, 0,
+            "with no stated start the capture is anchored at zero and reads as relative"
+        );
+    }
+
     #[test]
     fn round_trips_classic_frame_through_blf() {
         let frame = CanFrame::classic(

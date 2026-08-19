@@ -397,6 +397,49 @@ impl From<IdError> for MdfSourceError {
 mod tests {
     use super::*;
 
+    /// The origin rule, MDF half (ADR 0024): a file that states an
+    /// `hd_start_time_ns` keeps absolute wall-clock timestamps on
+    /// *everything* it carries — frames, message-independent signal
+    /// samples, and `##EV` events alike — so nothing the file holds can
+    /// read as earlier than the file's own start. Same rule the BLF
+    /// reader follows, where the stated start comes from
+    /// `measurement_start_time` and an unset one supplies zero.
+    #[test]
+    fn a_stated_hd_start_time_puts_every_kind_of_timestamp_on_the_wall_clock() {
+        use cannet_core::CanFrameSource as _;
+        const WALL_CLOCK_NS: u64 = 1_709_294_400_000_000_000;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/time-origins")
+            .join("wall-clock-signals.mf4");
+        let mut source = MdfCanFrameSource::open(&path).unwrap();
+        assert_eq!(source.start_unix_nanos(), WALL_CLOCK_NS);
+
+        let groups = source.signal_groups();
+        let samples: Vec<u64> = groups
+            .iter()
+            .flat_map(|g| &g.signals)
+            .flat_map(|s| s.timestamps_ns.iter().copied())
+            .collect();
+        assert!(!samples.is_empty());
+        assert_eq!(
+            samples.iter().copied().min(),
+            Some(WALL_CLOCK_NS),
+            "the earliest sample sits exactly at the stated start"
+        );
+
+        let events = source.events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.timestamp_ns >= WALL_CLOCK_NS));
+
+        let mut frames = 0u64;
+        while let Some(f) = source.next_frame().unwrap() {
+            assert!(f.timestamp_ns >= WALL_CLOCK_NS);
+            frames += 1;
+        }
+        assert_eq!(frames, 120);
+    }
+
     #[test]
     fn decoded_message_paths_are_recognised() {
         assert!(is_decoded_message_path(
