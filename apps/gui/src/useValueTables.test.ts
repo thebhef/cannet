@@ -85,12 +85,36 @@ describe("useValueTables", () => {
       extended: false,
       signalName: "CurrentState",
       fileBacked: true,
+      busId: null,
     });
     expect(mockInvoke).toHaveBeenCalledWith("list_value_tables", {
       messageId: 100,
       extended: false,
       signalName: "Mode",
       fileBacked: false,
+      busId: "b1",
+    });
+  });
+
+  it("passes each signal's busId through the invoke, so the host resolves per bus", async () => {
+    mockInvoke.mockImplementation(async () => []);
+    const powertrain: ValueTableSignal = { ...sig("Gear"), busId: "powertrain" };
+    const unknown: ValueTableSignal = { ...sig("Mode"), busId: null };
+    renderHook(() => useValueTables([powertrain, unknown]));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledTimes(2));
+    expect(mockInvoke).toHaveBeenCalledWith("list_value_tables", {
+      messageId: 100,
+      extended: false,
+      signalName: "Gear",
+      fileBacked: false,
+      busId: "powertrain",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("list_value_tables", {
+      messageId: 100,
+      extended: false,
+      signalName: "Mode",
+      fileBacked: false,
+      busId: null,
     });
   });
 

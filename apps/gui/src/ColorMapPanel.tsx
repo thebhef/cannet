@@ -100,6 +100,7 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
           extended: d.extended,
           signalName: d.signal_name,
           fileBacked: d.file_backed ?? false,
+          busId: d.bus_id,
         });
         update(elementId, { rules: isEnumValueTable(rows) ? rulesFromValueTable(rows) : [] });
       } catch {
