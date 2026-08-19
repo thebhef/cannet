@@ -69,6 +69,7 @@ mod persisted_json;
 mod project;
 mod project_dir;
 mod project_registry;
+mod project_watch;
 mod rbs;
 mod sampling;
 mod server_browse;
@@ -661,6 +662,7 @@ pub fn run() -> ! {
                 import_cancel: Mutex::new(None),
                 live_tail_rows: std::sync::atomic::AtomicU64::new(0),
                 active_project_id: Mutex::new(None),
+                watched_project: Mutex::new(project_watch::WatchedProject::default()),
             });
             // Make sure the main window has the id our capabilities expect.
             // Tauri assigns "main" by default for the first window in the

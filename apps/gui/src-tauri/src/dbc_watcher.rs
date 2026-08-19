@@ -1,4 +1,7 @@
-//! Filesystem watcher for loaded DBC files.
+//! Filesystem watcher for loaded DBC files — and the shared machinery
+//! the open project file's watch ([`crate::project_watch`]) reuses: the
+//! same `notify` backend, the same parent-directory watch set, the same
+//! event-kind classification.
 //!
 //! When the user has a DBC loaded and then edits / re-exports it from
 //! another tool, we'd like the GUI to pick up the change automatically
@@ -38,9 +41,13 @@
 //!   file into the target (the inode changes; many backends lose the
 //!   watch). Watching the parent dir + filtering by exact path is
 //!   the convention. The refcount lets two DBCs in the same dir
-//!   share one watch.
+//!   share one watch, and the set of watched *files* keeps the
+//!   refcount honest: a path that was never watched — a database
+//!   embedded in a capture, whose "path" is an identity and not a
+//!   file — must not decrement a directory some other file is
+//!   holding.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use notify::{
@@ -61,8 +68,14 @@ pub struct DbcWatcher {
     /// degrades to "no auto-reload" in that case rather than failing
     /// startup.
     watcher: Option<RecommendedWatcher>,
+    /// The files this watcher is holding a watch for — every loaded
+    /// DBC that came from disk, plus the open project file. Makes
+    /// [`Self::watch_file`] idempotent and [`Self::unwatch_file`] exact:
+    /// an unwatch for a path never watched is a no-op rather than a
+    /// decrement of somebody else's directory.
+    watched_files: HashSet<PathBuf>,
     /// Parent dirs we've called `watch()` on, with a refcount of how
-    /// many loaded DBCs live under each.
+    /// many watched files live under each.
     watched_dirs: HashMap<PathBuf, usize>,
 }
 
@@ -86,12 +99,14 @@ impl DbcWatcher {
         match watcher {
             Ok(w) => Self {
                 watcher: Some(w),
+                watched_files: HashSet::new(),
                 watched_dirs: HashMap::new(),
             },
             Err(e) => {
                 sys_warn!(app, "dbc-watch", "couldn't start DBC file watcher: {e}");
                 Self {
                     watcher: None,
+                    watched_files: HashSet::new(),
                     watched_dirs: HashMap::new(),
                 }
             }
@@ -100,12 +115,15 @@ impl DbcWatcher {
 
     /// Start watching the parent directory of `path` (or bump its
     /// refcount if we're already watching). Safe to call on a path
-    /// whose parent is the same as another loaded DBC's parent —
+    /// whose parent is the same as another watched file's parent —
     /// only one underlying watch exists.
-    pub fn watch_dbc(&mut self, path: &Path) {
+    pub fn watch_file(&mut self, path: &Path) {
         let Some(watcher) = self.watcher.as_mut() else {
             return;
         };
+        if !self.watched_files.insert(path.to_path_buf()) {
+            return; // already watched — one file, one refcount
+        }
         let dir = match path.parent() {
             Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
             // Path has no parent (or empty parent) — fall back to "."
@@ -123,6 +141,7 @@ impl DbcWatcher {
                 // can still hit "Reload DBC" manually.
                 eprintln!("dbc-watch: couldn't watch {}: {e}", dir.display());
                 self.watched_dirs.remove(&dir);
+                self.watched_files.remove(path);
                 return;
             }
         }
@@ -131,10 +150,13 @@ impl DbcWatcher {
 
     /// Decrement the refcount for `path`'s parent and unwatch if it
     /// drops to zero. No-op if the path was never watched.
-    pub fn unwatch_dbc(&mut self, path: &Path) {
+    pub fn unwatch_file(&mut self, path: &Path) {
         let Some(watcher) = self.watcher.as_mut() else {
             return;
         };
+        if !self.watched_files.remove(path) {
+            return; // never watched — not ours to decrement
+        }
         let dir = match path.parent() {
             Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
             _ => PathBuf::from("."),
@@ -147,23 +169,11 @@ impl DbcWatcher {
             }
         }
     }
-
-    /// Drop every watch — used when the loaded DBC set is cleared.
-    pub fn unwatch_all(&mut self) {
-        let Some(watcher) = self.watcher.as_mut() else {
-            self.watched_dirs.clear();
-            return;
-        };
-        for dir in self.watched_dirs.keys() {
-            let _ = watcher.unwatch(dir);
-        }
-        self.watched_dirs.clear();
-    }
 }
 
 /// What a filesystem event calls for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reaction {
+pub(crate) enum Reaction {
     /// Re-read, re-parse, and swap the in-memory `Database`.
     Reload,
     /// The file is gone: warn, but keep the in-memory copy.
@@ -184,7 +194,7 @@ enum Reaction {
 /// `Create(Any)` on the target path on macOS/Linux, so creates count
 /// too. A removal is reported whether or not auto-reload is on: it is
 /// news, not a swap.
-fn reaction_to(kind: EventKind, auto_reload: bool) -> Reaction {
+pub(crate) fn reaction_to(kind: EventKind, auto_reload: bool) -> Reaction {
     match kind {
         EventKind::Remove(_) => Reaction::NoteRemoval,
         EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Any | ModifyKind::Name(_))
@@ -205,6 +215,9 @@ fn reaction_to(kind: EventKind, auto_reload: bool) -> Reaction {
 /// The `dbc_auto_reload` setting is read here, once per event, so
 /// turning it off stops the next swap rather than the next launch.
 fn on_event(app: &AppHandle, event: &notify::Event) {
+    // The open project file rides on this same watch set, and is never
+    // also a loaded DBC — the two reactions are independent.
+    crate::project_watch::on_event(app, event);
     match reaction_to(event.kind, crate::settings::effective().dbc_auto_reload) {
         Reaction::Reload => {}
         Reaction::NoteRemoval => {
@@ -293,6 +306,21 @@ pub fn reload_one(app: &AppHandle, path: &str) {
 }
 
 #[cfg(test)]
+impl DbcWatcher {
+    /// A watcher with a real `notify` backend and a callback that does
+    /// nothing, so the watch-set bookkeeping can be exercised without a
+    /// Tauri app (whose mock runtime does not load on this platform).
+    /// Watching is real; only the reaction is dropped.
+    fn inert() -> Self {
+        Self {
+            watcher: notify::recommended_watcher(|_| {}).ok(),
+            watched_files: HashSet::new(),
+            watched_dirs: HashMap::new(),
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     //! Unit tests focus on bookkeeping pieces that don't need the OS
     //! watcher running — the refcount logic is the most error-prone
@@ -304,6 +332,60 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// Opening a project is `clear_dbcs` followed by an `add_dbc` per
+    /// database, and `clear_dbcs` unwatches every DBC it unloaded. The
+    /// open project file lives in the same watch set — frequently in
+    /// the same directory as the DBCs it references — so this is the
+    /// case that decides whether the project watch survives a project
+    /// open at all.
+    #[test]
+    fn unwatching_every_dbc_in_a_directory_leaves_the_project_file_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = DbcWatcher::inert();
+        let prj = dir.path().join("p.cannet_prj");
+        let a = dir.path().join("a.dbc");
+        let b = dir.path().join("b.dbc");
+        w.watch_file(&prj);
+        w.watch_file(&a);
+        w.watch_file(&b);
+        assert_eq!(w.watched_dirs.get(dir.path()), Some(&3));
+        w.unwatch_file(&a);
+        w.unwatch_file(&b);
+        assert_eq!(w.watched_dirs.get(dir.path()), Some(&1));
+        assert!(w.watched_files.contains(&prj));
+    }
+
+    /// A database embedded in a capture is loaded under an identity,
+    /// not a file, and is never watched — so unloading it must not
+    /// decrement the directory a real file is holding. (It also used to
+    /// underflow the refcount.)
+    #[test]
+    fn unwatching_a_path_that_was_never_watched_leaves_the_directory_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = DbcWatcher::inert();
+        let real = dir.path().join("a.dbc");
+        w.watch_file(&real);
+        w.unwatch_file(&dir.path().join("capture.blf#embedded"));
+        assert_eq!(w.watched_dirs.get(dir.path()), Some(&1));
+        w.unwatch_file(&real);
+        assert!(w.watched_dirs.is_empty());
+    }
+
+    /// One file, one refcount: re-watching an already-watched path (the
+    /// project file re-recorded on every save) must not leave a
+    /// directory watched forever.
+    #[test]
+    fn watching_the_same_file_twice_takes_one_refcount() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut w = DbcWatcher::inert();
+        let f = dir.path().join("p.cannet_prj");
+        w.watch_file(&f);
+        w.watch_file(&f);
+        assert_eq!(w.watched_dirs.get(dir.path()), Some(&1));
+        w.unwatch_file(&f);
+        assert!(w.watched_dirs.is_empty());
+    }
+
     /// A `DbcWatcher` whose backend is missing degrades to no-op
     /// watch / unwatch — the rest of the GUI still has to function
     /// even when (e.g.) Linux refuses to give us inotify. Verifies
@@ -312,13 +394,14 @@ mod tests {
     fn null_backend_watcher_no_ops_cleanly() {
         let mut w = DbcWatcher {
             watcher: None,
+            watched_files: HashSet::new(),
             watched_dirs: HashMap::new(),
         };
         // None of these should panic; nothing is recorded.
-        w.watch_dbc(&PathBuf::from("/tmp/foo.dbc"));
-        w.unwatch_dbc(&PathBuf::from("/tmp/foo.dbc"));
-        w.unwatch_all();
+        w.watch_file(&PathBuf::from("/tmp/foo.dbc"));
+        w.unwatch_file(&PathBuf::from("/tmp/foo.dbc"));
         assert!(w.watched_dirs.is_empty());
+        assert!(w.watched_files.is_empty());
     }
 
     /// Every event kind an editor's save shows up as, so the opt-out

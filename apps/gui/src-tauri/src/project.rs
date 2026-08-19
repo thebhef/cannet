@@ -261,7 +261,7 @@ fn existing_project_id(path: &str) -> Option<Uuid> {
 /// version) is rejected with a user-facing message (ADR 0011). Split
 /// from [`open_project`] so the parse is testable without touching the
 /// filesystem.
-fn parse_project(text: &str) -> Result<Project, String> {
+pub(crate) fn parse_project(text: &str) -> Result<Project, String> {
     crate::persisted_json::parse_versioned(text, "project", PROJECT_SCHEMA_VERSION)
 }
 
@@ -314,6 +314,12 @@ pub fn open_project(
             // never fires traffic onto a bus the user hasn't
             // intentionally reconnected.
             state.transmit_frames().load(p.transmit_frames.clone());
+            // Take up the disk watch on this file, recording the text
+            // just read as the content the app has for it (ADR 0053 §1;
+            // `crate::project_watch`). Registered here rather than in
+            // the frontend so a reload — which is this same command —
+            // re-records without a second round trip.
+            crate::project_watch::set_open_project(&app, Path::new(&path), text);
             // Usually a no-op here (the frontend re-adds the project's
             // DBCs after open, each add re-resolving), but covers a
             // load into an already-populated DBC set.
@@ -354,8 +360,10 @@ pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_s
     let dir = crate::project_dir::resolve(None, &cache_root);
     crate::remember_project_dir(&app, &dir, None);
     crate::reroot_session(&app, &dir, crate::trace_store::Carry::Nothing);
-    // No project file, so no project identity to stamp a capture with.
+    // No project file, so no project identity to stamp a capture with,
+    // and nothing on disk left to watch.
     *state.active_project_id() = None;
+    crate::project_watch::clear_open_project(&app);
     crate::sys_info!(&app, "project", "closed the open project");
 }
 
@@ -388,6 +396,15 @@ pub fn save_project(
     project.transmit_frames = state.transmit_frames().snapshot();
     match write_project_file(&path, &project) {
         Ok(()) => {
+            // The file cannet just wrote *is* the open project file, and
+            // what it now holds is what the app has: record both, so the
+            // watch treats this write as cannet's own rather than
+            // announcing a change on every Save (ADR 0053 §1). Read back
+            // rather than kept from the serializer — the bytes on disk
+            // are what an event will be compared against.
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                crate::project_watch::set_open_project(&app, Path::new(&path), text);
+            }
             crate::sys_info!(&app, "project", "saved project to {path}");
             Ok(project.project_id.to_string())
         }
