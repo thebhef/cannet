@@ -772,6 +772,80 @@ The only production change is the plot's: one prop threaded from
 `PlotPanel` into `PlotArea`, folded into the decimated source's
 descriptor, plus a forced resample on it. Everything else is tests.
 
+#### ADR-0031 perf gate
+
+The phase changes a render path (`PlotArea`'s fetch identity and one
+extra forced resample), so the gate was run rather than skipped. Two
+release runs on the real rig (`pnpm --dir apps/gui tauri build
+--no-bundle`, then `target/release/cannet-gui` with `--project <abs
+ev-zonal.cannet_prj> --app-data-dir <the operator's seeded perf app-data
+dir> --connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both connected and ran
+59.0 s at rate — `rx_gap.ids_measured` 173 on both, rx 1600.8 / 1603.3,
+tx 1606.1 / 1606.9 — so neither is the empty-capture failure mode.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed on both runs, 31 metrics gated.**
+No baseline promoted or edited.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 1.217 | 1.183 | 1.217 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 3.800 | 1.500 | 3.800 | 41.000 |
+| jank_fraction | 0.000 | 0.017 | 0.017 | 0.017 | 0.050 |
+| jsheap_mb_peak | 70.300 | 71.500 | 75.400 | 75.400 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 9.816 | 4.758 | 9.816 | 24.094 |
+| renderer_mb_peak | 299.363 | 297.723 | 324.480 | 324.480 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 41.430 | 66.988 | 66.988 | 85.336 |
+| host_mb_peak | 59.227 | 58.680 | 58.062 | 58.680 | 182.453 |
+| tree_mb_peak | 714.051 | 711.352 | 730.527 | 730.527 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 73.439 | 97.101 | 97.101 | 139.240 |
+| flush_ms_mean | 25.000 | 4.719 | 4.527 | 4.719 | 25.000 |
+| flush_ms_max | 23.772 | 12.992 | 12.807 | 12.992 | 72.544 |
+| tx_late_ms_mean | 18.000 | 7.436 | 7.712 | 7.712 | 18.000 |
+| tx_late_ms_max | 65.695 | 73.343 | 72.520 | 73.343 | 156.391 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.189 | 1.161 | 1.189 | 2.898 |
+| rx_gap_short_frac_worst | 0.008 | 0.004 | 0.003 | 0.004 | 0.166 |
+| rx_fps_retention | 0.998 | 0.996 | 0.993 | 0.993 | 0.800 |
+| tx_fps_retention | 1.001 | 1.000 | 0.999 | 0.999 | 0.800 |
+
+Means across the two runs sit between the per-run figures in every row
+(`tx_late_ms_max` 72.9, `tree_mb_drift_per_min` 85.3,
+`renderer_mb_drift_per_min` 54.2); nothing straddles a limit. The three
+host modes (`tracebuffer`, `grpc`, `hardware-peak`) re-ran as part of
+`check` and passed on both.
+
+Reading it against this change: the perf project's layout does open
+plots, so the changed path *is* exercised — but the change adds no work
+to a running capture. The epoch it now folds into the fetch key does not
+move during a run (nothing loads a DBC mid-capture), and the extra
+effect fires once at mount. The rows above baseline are the memory
+tiers on run 2 (`renderer_mb_drift_per_min` +67 % over baseline,
+`tree_mb_drift_per_min` +45 %) and they are *not* reproduced on run 1
+(+3 % and +9 % on the same binary) — run-to-run spread, not a signal,
+and both far inside their limits.
+
+`tx_late_ms_max` is the row phase 2 flagged, and this is its **third**
+consecutive elevated reading: 73.3 / 72.5 here against a baseline of
+65.7 and a limit of 156.4, after phase 2's 101.4 / 86.7 and phase 1's
+25.7 / 16.8 on the same rig. Reported as asked. What the three phases
+have in common is not their diffs — phase 1 touched the import path,
+phase 2 one prop on a panel the perf project never opens, this phase the
+plot's fetch identity — so a common *cause in the code* is not
+available. `tx_late_ms_mean` has moved with it and stayed well inside
+its own limit throughout (5.8 / 5.6 → 8.4 / 8.1 → 7.4 / 7.7 against
+18.0), which is the shape of a rig whose scheduling tail has got longer
+rather than of a transmit path that has got slower. It is a rig
+observation and it now has three data points; whoever runs the gate next
+should keep reporting it, and if it keeps climbing it needs a bisect
+against an unchanged tree rather than an attribution to a phase.
+
+Reports were not committed (nothing under
+`docs/performance-measurements/frontend/` is tracked); they are at
+`task86-phase3-run{1,2}.json` in the operator's seeded perf app-data dir
+(outside the repo).
+
 ## Blockers / side effects
 
 - **`BlfCaptureWriter` clamps an out-of-order frame's timestamp** (found
