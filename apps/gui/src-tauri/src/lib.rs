@@ -150,7 +150,9 @@ use dbc_commands::{
     list_file_backed_content, list_signals, list_value_tables, remove_dbc, set_dbc_buses,
 };
 #[cfg(test)]
-use dbc_commands::{decode_frame_inner, describe_message_inner, encode_frame_inner};
+use dbc_commands::{
+    decode_frame_inner, describe_message_inner, encode_frame_inner, list_value_tables_inner,
+};
 pub(crate) use emitters::emit_system_log;
 use emitters::{
     clear_system_log, fetch_system_log, gui_emit_system_log, set_live_tail_rows,
