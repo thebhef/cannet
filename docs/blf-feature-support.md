@@ -417,35 +417,37 @@ so a file with a descent parses identically to one without.
 
 ### What cannet's writer guarantees
 
-`BlfCaptureWriter` anchors `measurement_start_time` on the **first**
-event appended and encodes every event as a `saturating_sub` against
-that anchor. Consequences, all measured:
+`BlfCaptureWriter` writes every event at its own timestamp, in the
+order it was appended, and reorders nothing. The one thing it cannot
+represent is an event earlier than the file's
+`measurement_start_time`, so that anchor is **declared before the first
+append** (`BlfCaptureWriter::create_with_start`) rather than latched
+from whichever event happens to arrive first. A caller that hands it
+the capture's minimum loses nothing:
 
 | appended | on disk / read back |
 | --- | --- |
-| `[+0 ms, +1000 ms, +500 ms, +1100 ms]` | `[+0, +1000, +500, +1100]` — the descent is preserved exactly |
-| `[+1000 ms, +500 ms, +1100 ms]` | `[+1000, +1000, +1100]` — the second event gains 500 ms |
+| `[+0 ms, +1000 ms, +500 ms, +1100 ms]`, anchor declared at `+0 ms` | unchanged — the descent is preserved exactly |
+| `[+1000 ms, +500 ms, +1100 ms]`, anchor declared at `+500 ms` | unchanged — the dip below the first-appended event survives |
+| `[+1000 ms, +500 ms, +1100 ms]`, no anchor declared | `[+1000, +1000, +1100]` — the dip is clamped up to the anchor, and reported |
 
-So the writer preserves out-of-order events faithfully **as long as no
-event precedes the first one appended**; an event earlier than the
-anchor is silently clamped up to it. Markers clamp the same way.
-`python-can`'s `BLFWriter` has the identical shape — `max(timestamp,
-0)` against an anchor latched from the first object — so this is a
-shared limitation of the "anchor on first object" strategy rather than
-anything the format forces.
+`BlfCaptureWriter::create` stays for a caller that cannot know its
+minimum in advance. It anchors on the first event appended, so anything
+earlier clamps up to it — but never silently: `FinishedCapture` carries
+`clamped_count` and a `worst_clamp` naming the deepest moved event (its
+channel, id, timestamp, and how far it moved), for the caller to
+report. `python-can`'s `BLFWriter`
+has the same latch-on-first-object shape with no report — `max(timestamp,
+0)` against an anchor taken from its first object — so this is a
+property of that strategy rather than anything the format forces.
 
-`FileStatistics.last_object_time` is stamped from the **last object
-appended**, not the latest. That is faithful to the field's name
-(Vector documents it as "last object time"), but on an unordered file
-it means the header can claim an end earlier than the file's own newest
-event, and — when the final event is a dip below the anchor — a span
-that inverts, with `measurement_start_time` later than
-`last_object_time`.
+Markers (`GLOBAL_MARKER`) obey exactly the same rule as frames: written
+where they are stamped, clamped only if they precede the anchor, and
+counted in the same report when they are.
 
-Both are defects: the anchor should come from the capture's minimum
-rather than its first event. Until that lands, saving a multi-bus
-capture can lose up to the depth of its first dip below its opening
-frame.
+`FileStatistics.last_object_time` is the capture's **latest** event
+rather than whichever was appended last, so an unordered file's header
+never states a span that runs backwards.
 
 ## Summary of cannet's gaps
 
