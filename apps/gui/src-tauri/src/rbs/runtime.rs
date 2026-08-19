@@ -17,17 +17,25 @@ use super::file_model::{format_message_key, RbsBus, RbsFile, RbsMessage, RbsValu
 // Runtime state
 // ---------------------------------------------------------------------
 
-/// One loaded RBS element's host state: the file path (`None` until
-/// the config is first saved — a fresh element lives entirely in
-/// memory), the in-memory document (the override source of truth),
-/// the dirty flag, and the element's Run flag (mirrored from the
-/// project element so the host can schedule without the frontend
+/// One loaded RBS element's host state: the `.cannet_rbs` it has open
+/// (no path until the config is first saved — a fresh element lives
+/// entirely in memory), the in-memory document (the override source of
+/// truth), the dirty flag, and the element's Run flag (mirrored from
+/// the project element so the host can schedule without the frontend
 /// awake).
 pub struct RbsElementState {
-    pub path: Option<String>,
+    /// The open file and the content the app last exchanged with it —
+    /// what tells an external edit from cannet's own Save
+    /// ([`crate::rbs::watch`]).
+    pub watch: crate::watched_file::WatchedFile,
     pub file: RbsFile,
     pub dirty: bool,
     pub run: bool,
+    /// An external change to the file that was *not* applied, because
+    /// the element was dirty or running when it landed (ADR 0053 §1).
+    /// Cleared by anything that resolves it: a save, a load, or the
+    /// user dismissing it.
+    pub changed_on_disk: bool,
 }
 
 /// All RBS host state: loaded elements, the project's logical-bus
@@ -64,10 +72,11 @@ impl RbsRuntime {
         self.elements.insert(
             element_id.to_string(),
             RbsElementState {
-                path: None,
+                watch: crate::watched_file::WatchedFile::default(),
                 file,
                 dirty: false,
                 run: false,
+                changed_on_disk: false,
             },
         );
         true
@@ -643,7 +652,8 @@ BO_ 1280 AuxFrame: 8 AUX
             rbs.elements.insert(
                 "el1".into(),
                 RbsElementState {
-                    path: Some("/tmp/x.cannet_rbs".into()),
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
                     file,
                     dirty: false,
                     run: false,
@@ -702,7 +712,8 @@ BO_ 1280 AuxFrame: 8 AUX
             rbs.elements.insert(
                 "el1".into(),
                 RbsElementState {
-                    path: Some("/tmp/x.cannet_rbs".into()),
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
                     file,
                     dirty: false,
                     run: false,
@@ -886,7 +897,8 @@ BO_ 1280 AuxFrame: 8 AUX
             rbs.elements.insert(
                 "el1".into(),
                 RbsElementState {
-                    path: None,
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
                     file,
                     dirty: false,
                     run: true,
@@ -929,7 +941,8 @@ BO_ 1280 AuxFrame: 8 AUX
             rbs.elements.insert(
                 "el1".into(),
                 RbsElementState {
-                    path: Some("/tmp/x.cannet_rbs".into()),
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
                     file,
                     dirty: false,
                     run: false,
@@ -983,14 +996,18 @@ BO_ 1280 AuxFrame: 8 AUX
         };
         assert!(rbs.ensure_seeded("el1"));
         assert!(rbs.elements["el1"].file.buses.contains_key("Powertrain"));
-        assert!(rbs.elements["el1"].path.is_none());
+        assert!(rbs.elements["el1"].watch.path().is_none());
         // A loaded element is left untouched.
-        rbs.elements.get_mut("el1").unwrap().path = Some("/tmp/x.cannet_rbs".into());
+        rbs.elements
+            .get_mut("el1")
+            .unwrap()
+            .watch
+            .point_at(std::path::Path::new("/tmp/x.cannet_rbs"), String::new());
         rbs.elements.get_mut("el1").unwrap().run = true;
         assert!(!rbs.ensure_seeded("el1"));
         assert_eq!(
-            rbs.elements["el1"].path.as_deref(),
-            Some("/tmp/x.cannet_rbs")
+            rbs.elements["el1"].watch.path(),
+            Some(std::path::Path::new("/tmp/x.cannet_rbs"))
         );
         assert!(rbs.elements["el1"].run);
     }
@@ -1015,7 +1032,8 @@ BO_ 1280 AuxFrame: 8 AUX
             rbs.elements.insert(
                 "el1".into(),
                 RbsElementState {
-                    path: Some("/tmp/x.cannet_rbs".into()),
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
                     file,
                     dirty: false,
                     run: false,

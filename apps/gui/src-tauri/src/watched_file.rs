@@ -3,8 +3,8 @@
 //! every such watch needs: moving the shared watch set, and writing
 //! under the record's lock.
 //!
-//! Used by the open project file's watch ([`crate::project_watch`]) —
-//! the file kind
+//! Shared by the open project file's watch ([`crate::project_watch`])
+//! and the RBS elements' ([`crate::rbs::watch`]) — the two file kinds
 //! [ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
 //! §1 calls app-owned. A DBC needs none of this: cannet never writes
 //! one, so every event on it is unambiguously news.
@@ -35,6 +35,11 @@ impl WatchedFile {
     /// The watched file's path, if the document has one.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// The path as the IPC surfaces carry it.
+    pub fn path_string(&self) -> Option<String> {
+        self.path.as_ref().map(|p| p.display().to_string())
     }
 
     /// Whether this record is pointing at `path`.
