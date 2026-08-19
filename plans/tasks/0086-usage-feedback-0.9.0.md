@@ -846,6 +846,25 @@ Reports were not committed (nothing under
 `task86-phase3-run{1,2}.json` in the operator's seeded perf app-data dir
 (outside the repo).
 
+### 2026-08-19 — Item 3 (enum overlays) landed in task 27 phase 1
+
+Folded into task 27 by the owner ruling in that task's grooming note 1,
+and implemented on branch `task-27-phase-1-dbc-propagation` under
+[ADR 0053](../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md).
+This item's predicted cause was confirmed exactly — `useValueTables`
+keyed its fetch on the signal set alone, so a panel that asked before
+its project's DBCs were installed cached "no table" for the session —
+and the fix is that one hook reading the DBC-change carrier, which
+serves every consumer of it at once (the plot's enum axis and readout,
+the RBS picker, the colormap panel, the transmit table). The ordering
+dependency this item flagged is closed too: `add_dbc` now announces, so
+the plain project-open path is covered.
+
+The plot-side pin lives here, in `PlotPanel.dom.test.tsx` ("relabels a
+lane that mounted before its DBCs were installed"); the rest of the
+evidence, and the propagation contract this item asked for, are in
+task 27's status log and ADR 0053.
+
 ## Blockers / side effects
 
 - **`BlfCaptureWriter` clamps an out-of-order frame's timestamp** (found
