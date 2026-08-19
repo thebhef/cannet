@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { ByIdSnapshotRecord, FilterPredicate } from "./types";
 import type { SortState } from "./traceColumns";
+import { useTraceModel } from "./traceData";
 import { useWindowedQuery, type WindowPage } from "./useWindowedQuery";
 import { diagCount } from "./diag"; // DIAG
 
@@ -56,8 +57,13 @@ export function useByIdView(
 ): ByIdView {
   const sortKey = sort?.key ?? null;
   const sortDir = sort?.dir ?? null;
+  // The model's re-anchor epoch leads the descriptor, as it does on
+  // every other window over the capture: a by-id row carries the
+  // message name and decoded columns the DBC set defines (ADR 0053 §4),
+  // and a stopped snapshot has nothing else that would re-key it.
+  const { epoch } = useTraceModel();
   const descriptor = active
-    ? `${winStart}:${sortKey ?? ""}:${sortDir ?? ""}:${JSON.stringify(filter)}`
+    ? `${epoch}:${winStart}:${sortKey ?? ""}:${sortDir ?? ""}:${JSON.stringify(filter)}`
     : "";
 
   const fetchPage = useCallback(
