@@ -394,17 +394,14 @@ pub fn save_project(
     // project it submits. Snapshot the registry into the project before
     // writing so save captures the current pool + order.
     project.transmit_frames = state.transmit_frames().snapshot();
-    match write_project_file(&path, &project) {
+    // Through the watch record: the file cannet just wrote *is* the open
+    // project file, and the watch has to know that this write was
+    // cannet's own rather than announce a change on every Save
+    // (ADR 0053 §1, `crate::project_watch`).
+    match crate::project_watch::record_own_write(&app, Path::new(&path), || {
+        write_project_file(&path, &project)
+    }) {
         Ok(()) => {
-            // The file cannet just wrote *is* the open project file, and
-            // what it now holds is what the app has: record both, so the
-            // watch treats this write as cannet's own rather than
-            // announcing a change on every Save (ADR 0053 §1). Read back
-            // rather than kept from the serializer — the bytes on disk
-            // are what an event will be compared against.
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                crate::project_watch::set_open_project(&app, Path::new(&path), text);
-            }
             crate::sys_info!(&app, "project", "saved project to {path}");
             Ok(project.project_id.to_string())
         }
