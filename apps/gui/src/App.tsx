@@ -98,6 +98,7 @@ import type { SystemMessage } from "./types";
 import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import { suppressDbcChanges, useDbcGeneration } from "./dbcChanged";
 import { SignalGeneratorProvider } from "./signalGeneratorContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { ServersPanel } from "./ServersPanel";
@@ -956,6 +957,21 @@ export function App() {
     setLiveTail({ start: 0, rows: [] });
   }, []);
 
+  // The host's DBC-change carrier (ADR 0053), read here and nowhere
+  // else in this file: a change to the loaded set re-decodes the
+  // capture, so the model every window and plot fetches against is not
+  // the one they fetched. This is the *only* route for a change the
+  // frontend did not initiate — a file edited on disk, a capture's
+  // embedded databases — and it costs one re-anchor however many
+  // announcements the host made getting here.
+  const dbcGeneration = useDbcGeneration();
+  const seenDbcGenerationRef = useRef(dbcGeneration);
+  useEffect(() => {
+    if (seenDbcGenerationRef.current === dbcGeneration) return;
+    seenDbcGenerationRef.current = dbcGeneration;
+    invalidateCache();
+  }, [dbcGeneration, invalidateCache]);
+
   // The unfiltered `RowPage` read: raw chronological rows for an
   // absolute index range. A trace window translates its local offset
   // into this range; the host owns the buffer (ADR 0025).
@@ -1393,27 +1409,37 @@ export function App() {
   // survives an open-project round-trip.
   const loadDbcSet = useCallback(
     async (paths: readonly string[], scoping: Record<string, string[]> = {}) => {
+      // One set change, spread over `clear_dbcs` + an add and a re-scope
+      // per database — each of which the host announces (ADR 0053 §2).
+      // Held here so the frontend takes a single re-anchor at the end
+      // rather than one per host call, which is the refresh storm this
+      // path is on record for.
+      const release = suppressDbcChanges();
       try {
-        await invoke("clear_dbcs");
-      } catch {
-        /* unreachable in practice; the next add_dbc would surface real trouble */
-      }
-      let list: string[] = [];
-      const errors: string[] = [];
-      for (const path of paths) {
         try {
-          list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
-          const buses = scoping[path];
-          if (buses && buses.length > 0) {
-            await invoke<DbcInfo[]>("set_dbc_buses", { path, buses });
-          }
-        } catch (err) {
-          errors.push(`${path}: ${String(err)}`);
+          await invoke("clear_dbcs");
+        } catch {
+          /* unreachable in practice; the next add_dbc would surface real trouble */
         }
+        let list: string[] = [];
+        const errors: string[] = [];
+        for (const path of paths) {
+          try {
+            list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+            const buses = scoping[path];
+            if (buses && buses.length > 0) {
+              await invoke<DbcInfo[]>("set_dbc_buses", { path, buses });
+            }
+          } catch (err) {
+            errors.push(`${path}: ${String(err)}`);
+          }
+        }
+        setDbcPaths(list);
+        invalidateCache();
+        if (errors.length > 0) setState({ kind: "error", message: `DBC: ${errors.join("; ")}` });
+      } finally {
+        release();
       }
-      setDbcPaths(list);
-      invalidateCache();
-      if (errors.length > 0) setState({ kind: "error", message: `DBC: ${errors.join("; ")}` });
     },
     [invalidateCache],
   );
