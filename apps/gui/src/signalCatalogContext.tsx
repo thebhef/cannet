@@ -19,6 +19,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { SignalDescriptorRecord } from "./types";
 import { useProjectContext } from "./projectContext";
+import { useDbcGeneration } from "./dbcChanged";
 
 export interface SignalCatalogContextValue {
   /// One record per (bus, message, signal) triple the attached DBCs
@@ -60,21 +61,16 @@ export function SignalCatalogProvider({ children }: { children: ReactNode }): Re
   }, [buses]);
 
   // Refetch on a bus-list change (via refreshCatalog's own `buses`
-  // dep) or the loaded DBC-path set changing — `dbcPaths` doesn't
+  // dep), on the loaded DBC-path set changing — `dbcPaths` doesn't
   // otherwise enter the query, so it's called out as an explicit
-  // extra dependency (mirrors PlotPanel's/SignalsPanel's prior effect).
-  useEffect(refreshCatalog, [refreshCatalog, dbcPaths]);
-
-  // Re-fetch when the host's filesystem watcher reports a loaded DBC
-  // changed on disk (content edit, not an add/remove).
-  useEffect(() => {
-    const unlisten = listen("dbc-changed", () => {
-      refreshCatalog();
-    });
-    return () => {
-      void unlisten.then((fn) => fn());
-    };
-  }, [refreshCatalog]);
+  // extra dependency (mirrors PlotPanel's/SignalsPanel's prior effect)
+  // — and on the host's DBC-change carrier, which is what covers a
+  // change the frontend did not make: a file edited on disk, a
+  // capture's embedded databases (ADR 0053 §3). The catalog reads that
+  // carrier through the shared subscription rather than listening for
+  // `dbc-changed` itself.
+  const dbcGeneration = useDbcGeneration();
+  useEffect(refreshCatalog, [refreshCatalog, dbcPaths, dbcGeneration]);
 
   // Re-fetch when a capture import finishes. The catalog is not purely
   // a function of the DBC set any more: a capture file can carry

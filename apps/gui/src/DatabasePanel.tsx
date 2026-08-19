@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import type { SignalSnapshotRecord } from "./types";
 import { useProjectContext } from "./projectContext";
+import { useDbcGeneration } from "./dbcChanged";
 import { useElementRegistry } from "./projectElements";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { buildColorResolver, type ColorResolver, type ColorTarget } from "./colorMap";
@@ -1000,22 +1001,13 @@ export function DatabasePanel(props: IDockviewPanelProps) {
 
   // Re-fetch on mount and whenever the loaded-DBC set changes. The
   // project context's `dbcPaths` mirrors the host's set so it's the
-  // right dependency for add/remove/reload-via-UI; the explicit
-  // `dbc-changed` event below covers the auto-reload-on-file-change
-  // path (the host watches DBC files).
-  useEffect(() => refreshContent(), [dbcPaths, refreshContent]);
-
-  // When the host's filesystem watcher reports a
-  // DBC change, refresh our snapshot so the tree reflects the new
-  // content without a manual reload.
-  useEffect(() => {
-    const unlisten = listen<string>("dbc-changed", () => {
-      refreshContent();
-    });
-    return () => {
-      void unlisten.then((fn) => fn());
-    };
-  }, [refreshContent]);
+  // right dependency for add/remove/reload-via-UI; the host's
+  // DBC-change carrier covers what the frontend did not do — a file
+  // edited on disk, a capture's embedded databases — and the panel
+  // reads it through the shared subscription rather than listening for
+  // `dbc-changed` itself (ADR 0053 §3).
+  const dbcGeneration = useDbcGeneration();
+  useEffect(() => refreshContent(), [dbcPaths, dbcGeneration, refreshContent]);
 
   // Persist filter + expanded + showDetails into the dockview panel
   // params so the saved layout round-trips them. Selection
