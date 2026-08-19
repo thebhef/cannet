@@ -48,6 +48,7 @@ import { PlotPanel } from "./PlotPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
+import { ChangedOnDiskNotice } from "./ChangedOnDiskNotice";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { GeneratorPanel } from "./GeneratorPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
@@ -3419,35 +3420,30 @@ export function App() {
           )}
           {/* The project file changed on disk while applying it would
               have cost the user something — unsaved changes, or a
-              session a re-root would drop (ADR 0053 §1). Persistent
-              rather than a transient flash: it is a decision waiting on
-              the user, and the explicit Reload beside it is the only
-              thing that applies the change. Same shape as the cache-
-              rebuild chip above — a statement, and the action that ends
-              it. */}
+              session a re-root would drop (ADR 0053 §1). The RBS panel
+              raises the same notice for its own file; the shared
+              component is where the shape and the going-away rule
+              live. */}
           {projectChangedOnDisk !== null && (
-            <span className="project-changed">
-              Project changed on disk
-              <button
-                type="button"
-                title="Discard the in-memory project and re-open the file from disk. Unsaved changes are lost, and any open session is dropped (the reload re-roots the session)."
-                onClick={() => {
+            <ChangedOnDiskNotice
+              statement="Project changed on disk"
+              action={{
+                label: "Reload",
+                title:
+                  "Discard the in-memory project and re-open the file from disk. Unsaved changes are lost, and any open session is dropped (the reload re-roots the session).",
+                onClick: () => {
                   const path = projectChangedOnDisk;
                   setProjectChangedOnDisk(null);
                   void openProjectAt(path);
-                }}
-              >
-                Reload
-              </button>
-              <button
-                type="button"
-                aria-label="Dismiss the project-changed notice"
-                title="Keep working with the project as it is in memory. Saving will overwrite the file's new contents."
-                onClick={() => setProjectChangedOnDisk(null)}
-              >
-                Dismiss
-              </button>
-            </span>
+                },
+              }}
+              dismiss={{
+                label: "Dismiss the project-changed notice",
+                title:
+                  "Keep working with the project as it is in memory. Saving will overwrite the file's new contents.",
+                onClick: () => setProjectChangedOnDisk(null),
+              }}
+            />
           )}
           {status}
         </div>

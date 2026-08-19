@@ -40,6 +40,7 @@ import type {
 } from "./types";
 import { useProjectContext } from "./projectContext";
 import { CalcFieldEditor } from "./CalcFieldEditor";
+import { ChangedOnDiskNotice } from "./ChangedOnDiskNotice";
 import { Combobox } from "./Combobox";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
@@ -157,6 +158,23 @@ export function RbsPanel(props: IDockviewPanelProps) {
       // errors land on the system log
     }
   }, [elementId, path, registry]);
+
+  // The `.cannet_rbs` changed on disk and the host declined to apply it,
+  // because this element had unsaved overrides or was transmitting
+  // (ADR 0053 §1). Both facts are the host's, so the decision and the
+  // pending flag are the host's too — the panel renders `changedOnDisk`
+  // and offers the two ways out of it.
+  //
+  // Applying runs `rbs_load`, the same load path the host would have
+  // run itself, which is what preserves the element's run state.
+  const applyDiskChange = useCallback(() => {
+    const target = view?.path;
+    if (target == null) return;
+    void invoke("rbs_load", { elementId, path: target }).catch(() => {});
+  }, [elementId, view]);
+  const dismissDiskChange = useCallback(() => {
+    void invoke("rbs_dismiss_disk_change", { elementId }).catch(() => {});
+  }, [elementId]);
 
   const setRun = useCallback(
     (value: boolean) => {
@@ -336,6 +354,23 @@ export function RbsPanel(props: IDockviewPanelProps) {
         >
           Save{view?.dirty ? " •" : ""}
         </button>
+        {view?.changedOnDisk === true && (
+          <ChangedOnDiskNotice
+            statement="RBS file changed on disk"
+            action={{
+              label: "Apply anyway",
+              title:
+                "Re-read the .cannet_rbs from disk. Unsaved overrides are lost; a running element keeps running, with the file's definitions.",
+              onClick: applyDiskChange,
+            }}
+            dismiss={{
+              label: "Dismiss the RBS changed-on-disk notice",
+              title:
+                "Keep working with the config as it is in memory. Saving will overwrite the file's new contents.",
+              onClick: dismissDiskChange,
+            }}
+          />
+        )}
         <GridviewFilterBox
           filter={filter}
           className="rbs-filter"

@@ -687,12 +687,13 @@ header {
   line-height: 1.5;
 }
 
-/* The open project file changed on disk and applying it wasn't safe
-   (ADR 0053 §1): the statement, and the two ways out of it. Same shape
-   and placement as the cache-rebuild chip — it sits ahead of the status
-   readout, divided from it, because its buttons are not part of the
-   numbers. */
-.project-changed {
+/* A file cannet has open changed on disk and applying it wasn't safe
+   (ADR 0053 §1): the statement, and the two ways out of it. One class
+   for both surfaces — the project's notice in the header, an RBS
+   element's in its panel toolbar. Same shape as the cache-rebuild chip
+   above: in the header it sits ahead of the status readout, divided
+   from it, because its buttons are not part of the numbers. */
+.changed-on-disk {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
@@ -700,7 +701,7 @@ header {
   padding-right: 0.6rem;
   border-right: 1px solid var(--divider-subtle);
 }
-.project-changed button {
+.changed-on-disk button {
   padding: 0 0.4rem;
   font-size: 0.72rem;
   line-height: 1.5;

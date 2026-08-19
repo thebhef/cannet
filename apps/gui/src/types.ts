@@ -1034,6 +1034,9 @@ export interface RbsView {
   path: string | null;
   fillBit: number;
   dirty: boolean;
+  /// An external change to the file the host did *not* apply, because
+  /// the element was dirty or running when it landed (ADR 0053 §1).
+  changedOnDisk: boolean;
   run: boolean;
   killSwitch: boolean;
   buses: RbsBusView[];
