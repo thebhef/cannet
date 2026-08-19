@@ -8,8 +8,12 @@ import { useTraceModel } from "./traceData";
 import { useNotes } from "./notesContext";
 import { timelineEvents } from "./notes";
 import type { TraceRow } from "./trace";
-import { busLookup, columnsFromParams } from "./traceColumns";
+import { busLookup, type ColumnState } from "./traceColumns";
 import { diagCount } from "./diag"; // DIAG
+
+/// The column set this view declares to TraceView: empty. One shared
+/// reference so the memoised rows aren't handed a fresh array per render.
+const NO_COLUMNS: readonly ColumnState[] = [];
 
 /// The singleton timeline-events view (ADR 0035): one panel, opened from the
 /// command palette like Project / System Messages, that *is* the trace view
@@ -17,6 +21,17 @@ import { diagCount } from "./diag"; // DIAG
 /// marker, chronological. It reuses TraceView's event-row renderer (one base
 /// type, `TraceRow`), with the frame header hidden. Each editable row carries
 /// inline rename / recolor / remove controls (derived events aren't editable).
+///
+/// **How much of the gridview (ADR 0044) these rows are on.** They are on its
+/// *interaction* base — the cursor, the row DOM ids, the click policy that
+/// makes an event focusable but not selectable — and off its *row template*:
+/// `EventRow` draws its own flex row rather than a `GridviewRow` of column
+/// cells. The layer's column model still reaches them, though, through the
+/// width the view publishes for its scrolled content: the rows are absolutely
+/// positioned against it, so a declared column set sizes every row, drawn
+/// cells or not. That is why this view declares **none** — a column set is not
+/// inert here, and the default frame layout (1144 px of tracks) laid the ✎ / ×
+/// controls out ~900 px beyond a narrow panel's right edge.
 export function EventsPanel(_props: IDockviewPanelProps) {
   diagCount("render.EventsPanel"); // DIAG
   const model = useTraceModel();
@@ -34,11 +49,9 @@ export function EventsPanel(_props: IDockviewPanelProps) {
     [events],
   );
 
-  // TraceView is built for frame data; an events-only view supplies inert
-  // column state (the rows ignore it, the header is hidden) and no-op
-  // frame-side callbacks.
+  // TraceView is built for frame data; an events-only view supplies no
+  // columns at all and no-op frame-side callbacks.
   const noop = useCallback(() => {}, []);
-  const columns = useMemo(() => columnsFromParams(undefined), []);
   const lookup = useMemo(() => busLookup([]), []);
 
   const eventActions = useMemo<EventActions>(
@@ -58,7 +71,7 @@ export function EventsPanel(_props: IDockviewPanelProps) {
         version={events.length}
         autoScroll={false}
         baseTimestampSeconds={model.sessionStartSeconds}
-        columns={columns}
+        columns={NO_COLUMNS}
         onColumnResize={noop}
         onColumnToggle={noop}
         onColumnReorder={noop}
