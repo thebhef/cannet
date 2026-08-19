@@ -169,6 +169,10 @@ pub(crate) struct AppState {
     /// later launch reloads that scratch only against the same project;
     /// `None` when no project is open.
     pub(crate) active_project_id: Mutex<Option<uuid::Uuid>>,
+    /// The open project *file* and the content the app last exchanged
+    /// with it — the disk watch on `.cannet_prj`
+    /// ([`crate::project_watch`], ADR 0053 §1).
+    pub(crate) watched_project: Mutex<crate::project_watch::WatchedProject>,
 }
 
 /// Guarded-field accessors. Each wraps the one lock its field needs with
@@ -193,6 +197,14 @@ impl AppState {
 
     pub(crate) fn dbc_watcher(&self) -> MutexGuard<'_, Option<DbcWatcher>> {
         self.dbc_watcher.lock().expect("dbc_watcher mutex poisoned")
+    }
+
+    /// The open project file's watch record. Taken *before*
+    /// [`Self::dbc_watcher`] wherever both are needed.
+    pub(crate) fn watched_project(&self) -> MutexGuard<'_, crate::project_watch::WatchedProject> {
+        self.watched_project
+            .lock()
+            .expect("watched_project mutex poisoned")
     }
 
     pub(crate) fn transmit_frames(&self) -> MutexGuard<'_, transmit_frames::TransmitFrameRegistry> {

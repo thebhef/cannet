@@ -656,6 +656,7 @@ pub(crate) fn test_state() -> AppState {
         import_cancel: Mutex::new(None),
         live_tail_rows: std::sync::atomic::AtomicU64::new(0),
         active_project_id: Mutex::new(None),
+        watched_project: Mutex::new(crate::project_watch::WatchedProject::default()),
     }
 }
 
