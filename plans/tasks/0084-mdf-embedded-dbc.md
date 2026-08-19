@@ -40,6 +40,14 @@ grilling session:
 - Interaction with per-signal cache fingerprints (a DBC arriving by a
   new route must fingerprint identically to the same DBC from disk).
 
+- Enum labels for MDF-imported content. `list_value_tables` resolves
+  a DBC-backed signal through the databases scoped to its bus (task
+  81); a signal whose bus is unknown falls back to every loaded
+  database. MDF content is what reaches that fallback today, because
+  those signals have no DBC of their own. When the embedded DBC
+  becomes durable, revisit whether they should resolve through it
+  instead (owner ruling 2026-08-19).
+
 ## Constraints
 
 - ADR 0010 (no sidecar files): whatever persists must not invent a

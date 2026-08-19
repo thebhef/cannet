@@ -8,9 +8,7 @@
 
 use tauri::{AppHandle, Manager, State};
 
-use cannet_dbc::Database;
-
-use crate::app_state::AppState;
+use crate::app_state::{dbc_scopes, AppState};
 use crate::ipc::{DecimatedRange, SampledPoints, SignalExtent, SignalQuery};
 use crate::signal_cache::{CacheQuery, Reduction};
 use crate::signal_sampler;
@@ -250,7 +248,9 @@ fn sample_signals_inner(
     // the win at long captures + high rate: per-tick host work no
     // longer scales with capture length.
     let dbs_guard = state.databases();
-    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
+    // Scoped, not bare: the cache decodes each frame with the
+    // databases that apply to the bus it arrived on.
+    let db_refs = dbc_scopes(&dbs_guard);
     // The cache decimates internally now: it reads the coarsest pyramid
     // level above `max_points` (ADR 0002 DS-5), so a "fit data" over a
     // huge capture serves `O(max_points)` points instead of
@@ -338,7 +338,9 @@ pub(crate) async fn signal_min_max(
 fn signal_min_max_inner(app: &AppHandle, signals: &[SignalQuery]) -> Vec<Option<SignalExtent>> {
     let state: State<'_, AppState> = app.state();
     let dbs_guard = state.databases();
-    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
+    // Scoped, not bare: the cache decodes each frame with the
+    // databases that apply to the bus it arrived on.
+    let db_refs = dbc_scopes(&dbs_guard);
     let out = state
         .signal_caches
         .min_max_many(&cache_queries(signals), &state.trace_store, &db_refs)
