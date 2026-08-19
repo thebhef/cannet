@@ -100,8 +100,8 @@ so the round-trip test has its input already.
   (experiment 2). Not in this task's scope; needs its own decision
   (walk to EOF and filter, or state the truncation in the dialog).
 
-- **`FileStatistics.last_object_time` is the last object appended, not
-  the latest** (experiment 3). It is stamped from
+- **Resolved in phase 2 — `FileStatistics.last_object_time` was the
+  last object appended, not the latest** (experiment 3). It is stamped from
   `BlfFileWriter::last_unix_nanos`, which each `append_object`
   overwrites unconditionally. With a dip as the final frame the header
   understates the capture's end, and with input `[+1000 ms, +500 ms]`
@@ -109,7 +109,26 @@ so the round-trip test has its input already.
   is *later* than `last_object_time` (+500 ms) (experiment 6). A
   third-party tool that sizes its timeline from the header alone gets
   a negative duration. Small enough to fold into phase 2 (make it a
-  running max) rather than raise as separate work.
+  running max) rather than raise as separate work. Done: it is a
+  running max as of `3458dab8`, pinned by
+  `the_headers_last_object_time_is_the_latest_event_not_the_last_appended`.
+
+- **`TraceStore::frame_index_at_ns`'s doc comment claims "frames are
+  appended in arrival order with monotonic timestamps"** while the
+  store's own test `live_edge_is_the_newest_frame_not_the_last_appended_one`
+  in the same file shows they are not (phase 1, question 3). A
+  live-capture condition, not one the BLF writer creates, and nothing
+  in this task touches it — phase 1 said it recorded this but the entry
+  never landed, so here it is.
+
+- **Two crates ship an example named `gen_time_origin_fixtures`**
+  (`crates/cannet-blf/examples/` and `crates/cannet-mdf/examples/`,
+  both from commit `65207a54`). Cargo links both to
+  `target/debug/examples/gen_time_origin_fixtures.exe`, so a parallel
+  `cargo test --workspace` races on that output and fails with
+  `LNK1104: cannot open file` — observed twice in phase 2, naming a
+  different crate each time. Pre-existing and unrelated to this task;
+  `cargo test --workspace --lib --tests` skips examples and is green.
 
 ## Status log
 
@@ -328,3 +347,126 @@ so no ADR-0031 perf run is due.
 - `write_blf_capture`'s comment — "consumers (Vector CANalyzer, our own
   reader) expect timestamps to climb" — is wrong about our own reader
   (conclusion 2) and should be corrected with the code it sits on.
+
+### 2026-08-19 — Phase 2 (the writer change: declare the anchor)
+
+Branch `task-87-phase-2-blf-anchor`, off
+`task-87-phase-1-blf-ordering-research`. Two commits.
+
+#### What landed
+
+- **`3458dab8`** — *A BLF's start time is declared by the caller, not
+  latched from the first frame.* `BlfCaptureWriter::create_with_start`
+  sets `measurement_start_time` before the first append; the writer
+  stays streaming and stays `.part`-then-rename, with no reorder buffer
+  and no second pass over encoded objects. `create` stays for a caller
+  that cannot know its minimum, and the clamp it can still hit is now
+  counted and described — `FinishedCapture::clamped_count` and
+  `worst_clamp` (a `ClampedEvent`: the event's own timestamp, how far it
+  moved, and the frame's channel + id, or `None` for a marker).
+  `last_object_time` became a running max in the same commit.
+  `docs/blf-feature-support.md` § "Object timestamps and ordering" now
+  states what the writer guarantees instead of describing the defect.
+- **`099b7488`** — *Save Capture declares the BLF's start time.*
+  `write_blf_capture` takes the minimum over the frames **and** notes it
+  is about to write and hands it to the writer before the first append —
+  the pass `write_mdf_capture` already makes for MDF's identically
+  constrained `hd_start_time_ns`; the code comment says so. Any
+  surviving clamp becomes a `capture`-tagged `sys_warn!` via
+  `capture::clamped_timestamp_warning`, which follows
+  `dropped_file_backed_warning`'s shape (a pure, tested formatter; the
+  command emits it). The merge comment claiming "consumers (Vector
+  CANalyzer, our own reader) expect timestamps to climb" was wrong about
+  our reader (phase 1, conclusion 2) and was corrected with the code it
+  sits on.
+
+**Tests: 1427 → 1432 passed, 0 failed, 9 ignored**
+(`cargo test --workspace --lib --tests`). Five new: three in
+`crates/cannet-blf/tests/ordering.rs` (112 → 115 in that crate), two in
+`apps/gui/src-tauri/src/tests.rs` (742 → 744 in `cannet-gui`'s lib).
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --all` green at both commits. No frontend source changed
+(`SaveCaptureResult` gained a field the frontend does not read), so no
+`pnpm` run was due.
+
+#### Investigation — one hypothesis refuted along the way
+
+**Observation.** The headline round-trip test — read
+`examples/time-origins/wall-clock-out-of-order.blf`, write it back
+through `write_blf_capture`, compare every timestamp — **passed before
+the fix was written**, against a `write_blf_capture` that still latched
+its anchor on the first frame appended.
+
+**Hypothesis.** The test as first written declared the anchor by
+accident: it placed a note at the capture's *minimum*, and
+`write_blf_capture` merges notes and frames in timestamp order, so that
+note was the first object appended and latched the anchor at the true
+minimum — masking the defect.
+
+**Experiment.** Move the note to the capture's *maximum*, changing
+nothing else, and re-run against the unfixed writer.
+
+**Data.** Red, with exactly the two frames phase 1's experiment 5
+identified: `+120 ms` and `+300 ms` — the file's earliest events, stored
+last — both written at the anchor (`+500 ms`), 380 ms and 200 ms late.
+119 of 121 timestamps were already exact.
+
+**Conclusion.** Hypothesis confirmed; the test now carries a comment
+saying why the note sits at the maximum. Worth recording because it is a
+false-negative shape that would recur: any test that puts an
+early-stamped *note* in an out-of-order capture anchors the file
+correctly by accident.
+
+**Second check (`last_object_time`).** Written test-first as well: with
+the running max reverted, `[+1100 ms, +500 ms]` stamped
+`last_object_time = +500 ms` (measured), i.e. a header whose stated span
+ran backwards; with the max in place it stamps `+1100 ms`.
+
+#### Perf gate (ADR 0031)
+
+Release build (`pnpm --dir apps/gui tauri build --no-bundle`), two 60 s
+`ev-zonal` scrub runs on hardware, each gated with
+`cannet-perf-measurement check`. Reports (untracked) at
+`docs/performance-measurements/frontend/2026-08-19-099b7488-blf-anchor-run{1,2}.json`.
+
+| run | result | notable |
+| --- | --- | --- |
+| 1 | **check passed (31 metrics gated)** | `rx_fps_retention` 0.997, `tx_fps_retention` 0.998, `flush_ms_mean` 4.735 (limit 25), `jsheap_mb_peak` 82.0 (limit 204.6) |
+| 2 | **check passed (27 metrics gated)** | `rx_fps_retention` 0.996, `tx_fps_retention` 1.001, `flush_ms_mean` 4.393; the `grpc` host mode was skipped — "tx session connect: failed to connect: transport error", a rig flake in the re-run, not a frontend metric |
+
+No baseline promoted, no limit widened. Every frontend metric sat inside
+its limit on both runs. (`tx_late_ms_max` 25.1 / 24.4 and
+`rx_gap_short_frac_worst` 0.014 / 0.006 are the metrics ADR 0031 rules
+noisy; both well under their limits either way.)
+
+#### Exit criteria
+
+| criterion | status | evidence |
+| --- | --- | --- |
+| The format question is answered with evidence and recorded | **Met** | Phase 1. `docs/blf-feature-support.md` § "Object timestamps and ordering": permitted by silence, plus four implementations examined and `python-can` measured in both directions |
+| A capture with out-of-order timestamps round-trips through save and reload with every timestamp preserved, tested against the existing fixture | **Met** | `write_blf_capture_preserves_every_timestamp_of_an_out_of_order_capture` — all 121 fixture timestamps exact through `write_blf_capture` → `BlfCanFrameSource`, plus the note and a header span that no longer inverts. Red before the change (two frames 380 ms / 200 ms late), green after |
+| Any surviving clamp is logged, never silent; tested | **Met** | `an_undeclared_start_clamps_and_reports_the_event_it_moved` (the writer counts both clamps and names the deepest with channel, id, timestamp, error) and `a_clamped_timestamp_is_named_with_the_frame_and_the_error` (the `sys_warn!` text, frame and marker branches). The macro call itself is not unit-tested — the harness has no `AppHandle` — exactly as for the existing `dropped_file_backed_warning` |
+| `docs/blf-feature-support.md` states the writer's ordering guarantee | **Met** | § "What cannet's writer guarantees", rewritten: what is preserved, what a declared anchor buys, what the undeclared fallback still clamps and how it reports, and that Save Capture declares one |
+
+**Does phase 1's unresolved residual leave any criterion short?** No —
+but it is worth stating where it now points. Vector's CANoe / CANalyzer
+behaviour on a descending `objectTimeStamp`, and `BLSeekTime`'s implicit
+assumption of ascent, remain untested (no Vector tools here; the
+`vector-blf-oracle` feature needs a Linux CI host). That residual is
+about *reading* a descending file, which cannet's writer has always been
+able to produce — a dip above the anchor round-trips today (phase 1,
+data 1). What this phase changes is that dips **below** the first
+appended event are now preserved rather than flattened, so a
+cannet-written BLF is marginally more likely to carry a descent than
+before. The fidelity criterion cannot be met any other way: flattening
+those dips *was* the corruption. Nothing structural depends on order in
+any implementation examined, so the exposure is a time-seeking Vector
+consumer landing somewhere surprising, not an unreadable file.
+
+Recorded as a status check; the completion call is the owner's.
+
+#### Out of scope, untouched
+
+`WindowedSource`'s truncation of an out-of-order import (first blocker
+entry) is an import-path defect awaiting an owner decision and was left
+exactly as phase 1 recorded it.
