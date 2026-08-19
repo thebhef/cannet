@@ -468,6 +468,51 @@ call: the ADR-0031 gate's worst-to-worst failure on
 `rx_gap_short_frac_worst` (above) is unresolved — hypothesized as
 unrelated environmental jitter, not confirmed.
 
+### 2026-08-19 — `rx_gap_short_frac_worst` ungated (owner ruling, out of scope)
+
+Not part of this task's exit criteria — an owner ruling on the open
+finding above (the phase-2 ADR-0031 gate's worst-to-worst failure), and
+the overseer control measurement that resolved it as environmental
+(15 further captures, both branches, spread 0.0022-0.0967 with no code
+regression present). The owner's disposition of that finding:
+`rx_gap_short_frac_worst` **stops being a gate** — it cannot be resolved
+on a desktop PC, or at least not on every desktop PC, so gating on it
+wastes review time. It stays measured and reported.
+
+Landed on branch `task-81-phase-2-bus-scoped-value-tables` (continuing
+this task's branch, since the finding surfaced here, though the fix
+itself is unrelated to bus-scoped decode):
+
+- `Verdict` (`crates/cannet-perf-measurement/src/check.rs`) gains an
+  `advisory: bool` field. `rx_gap_short_frac_worst`'s row in
+  `check_frontend` (`frontend.rs`) sets it `true`; every other verdict
+  in the crate sets it `false`. `main.rs`'s aggregate pass/fail and its
+  "N metrics gated" count both filter `!v.advisory`; the printed table
+  shows `advisory` in the result column instead of `ok`/`REGRESSED` for
+  that row — still visible, never gating.
+- `rx_gap_gates_catch_on_wire_bunching` (the failing-case test at
+  `frontend.rs:955`, formerly ~932) now covers only
+  `rx_gap_p95_ratio_worst`, which stays a real gate. A new test,
+  `rx_gap_short_frac_worst_is_advisory_not_a_gate`, proves the metric is
+  still computed and reported at the same baseline/current/limit values
+  a gated row would carry (including that a breach still reads `pass:
+  false` on the row itself), and that the breach does not fail the
+  aggregate `check` a caller would compute by excluding advisory rows.
+- ADR 0031 amended (dated status-header line plus a new "Amendment
+  (2026-08-19)" section): records the control-measurement evidence,
+  names which gate families are trustworthy on a desktop rig vs.
+  advisory, and notes that a future `_worst`/`_peak` gate wants the
+  median-across-reports treatment already used for `_mb_drift_per_min`,
+  with a 3-run minimum.
+- No baseline touched; no other metric's limit changed.
+
+Tests: `cargo test -p cannet-perf-measurement` 48 passed / 0 failed (was
+47; net +1 across the split test). `cargo test -p cannet-gui` 710 passed
+/ 0 failed / 6 ignored (unchanged — no host code outside
+`cannet-perf-measurement` touched). Gate
+`cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo
+fmt --all` clean.
+
 ## Blockers / side effects
 
 Phase 1 hit no blockers. Side effects worth the next phase's
@@ -511,3 +556,40 @@ Phase 2 hit one open finding, unresolved at hand-off:
   next investigation reruns the gate, `zonal/0x10E` /
   `PackCurrentHiRes` (pack bus, `GenMsgCycleTime` 10 ms) is where to
   look first.
+
+  **Resolved — environmental, not attributable** (overseer control
+  measurement, 2026-08-19). 11 further captures on the same rig, same
+  session: 7 on the phase-2 binary (bit-identical to the one that
+  failed) and 4 on a freshly-built phase-1 control. The spike did not
+  reproduce on either branch; both branches' gates pass on the
+  untouched baseline (phase-2 7 reports, 141 metrics gated, exit 0;
+  phase-1 4 reports, 87 metrics gated, exit 0).
+
+  The falsifying datum: ordering all 15 runs by `rx_fps`, the two
+  lowest are the two runs with the highest `short_frac` — and one of
+  them is a **phase-1** run (0.012 at 1589 fps), which a
+  phase-2-attributable regression cannot produce. The elevated
+  short-gap fraction tracks a depressed on-wire receive rate, and it
+  occurs on both branches. Supporting: the 4-vs-4 same-session
+  distributions are a perfect tie (Mann-Whitney U = 8 of 16; medians
+  0.0045 vs 0.0047), and the argmax id shuffles across three ids
+  (`0x10F` 8x, `0x10E` 3x, `0x100` 2x) rather than naming one hurt
+  signal — the fingerprint of an extreme-value statistic over a
+  near-flat field.
+
+- **The gate's own limit for this metric is too tight** (finding about
+  the harness, not about this task; for the owner to dispose of).
+  `rx_gap_short_frac_worst`'s limit is `baseline x 2 + 0.03` = 0.046
+  (`ftol::FACTOR` / `ftol::RX_GAP_SHORT_FRAC_FLOOR`,
+  `crates/cannet-perf-measurement/src/frontend.rs`), while 15 healthy
+  runs spread 0.0022-0.0967 (44x) with a mode near 0.004 — the 0.008
+  baseline was itself captured on a slightly unlucky run. That is a
+  ~7 % spurious breach rate per run, ~13 % per two-run phase gate.
+  Options: raise the floor (costs sensitivity — 0.097 would need
+  ~0.081), or gate it on the **median across the supplied reports**
+  the way ADR 0031 already treats the `_mb_drift_per_min` family,
+  which is the principled treatment for a statistic that is itself a
+  max — though that wants a 3-run minimum to bite. `tree_mb_peak`
+  shows the same shape (709-998 MB across 7 runs, well inside its
+  limit), so the `_worst` / `_peak` families as a class are
+  extreme-value statistics gated as if they were means.
