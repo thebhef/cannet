@@ -26,6 +26,7 @@ use std::time::Instant;
 use cannet_core::{CanFramePayload, Direction};
 use cannet_dbc::Database;
 use cannet_gui_lib::signal_cache::SignalCacheStore;
+use cannet_gui_lib::signal_fingerprint::DbcScope;
 use cannet_gui_lib::signal_sampler;
 use cannet_gui_lib::trace_store::{RawTraceFrame, TraceStore};
 
@@ -84,6 +85,13 @@ pub fn run(ex: &LoadedExample, cfg: &SignalBenchConfig) -> SignalBenchReport {
     let templates = workload::build_schedule(ex);
     let dbs: Vec<&Database> = ex.dbcs.iter().map(|d| &d.db).collect();
     let chosen = pick_signal(&templates, &dbs).expect("a decodable scheduled signal");
+    // The serve path takes DBC bus scoping now, and this bench declares
+    // every database **unscoped** — the empty bus list means "applies to
+    // every bus". That is what the bench means: it characterizes the
+    // decimation of one signal's series, so every database should stay a
+    // candidate for every frame, which is also the eligible set the
+    // numbers in the existing baselines were measured against.
+    let scopes: Vec<DbcScope<'_>> = dbs.iter().map(|db| DbcScope { db, buses: &[] }).collect();
 
     let scratch = match cfg.store {
         StoreKind::Mem => None,
@@ -121,7 +129,7 @@ pub fn run(ex: &LoadedExample, cfg: &SignalBenchConfig) -> SignalBenchReport {
         f64::MAX,
         cfg.max_points,
         &store,
-        &dbs,
+        &scopes,
     );
     let build_ms = ms(t);
 
@@ -129,7 +137,7 @@ pub fn run(ex: &LoadedExample, cfg: &SignalBenchConfig) -> SignalBenchReport {
     // what every request cost before DS-5. The cache is warm, so this is
     // purely the materialize-and-decimate cost.
     let t = Instant::now();
-    let raw = caches.slice(bus, id, ext, sig, f64::MIN, f64::MAX, 0, &store, &dbs);
+    let raw = caches.slice(bus, id, ext, sig, f64::MIN, f64::MAX, 0, &store, &scopes);
     let naive = signal_sampler::decimate_min_max(&raw, cfg.max_points);
     let serve_naive_ms = ms(t);
     let matches = raw.len();
@@ -148,7 +156,7 @@ pub fn run(ex: &LoadedExample, cfg: &SignalBenchConfig) -> SignalBenchReport {
             f64::MAX,
             cfg.max_points,
             &store,
-            &dbs,
+            &scopes,
         );
         returned_points = pts.len();
     }

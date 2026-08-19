@@ -97,6 +97,7 @@ use cannet_dbc::Database;
 use cannet_spill::{lower_bound, SampleSeq, SAMPLE_ENTRY_BYTES};
 use serde::{Deserialize, Serialize};
 
+use crate::filter;
 use crate::signal_fingerprint::{self, DbcScope};
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::{read_json, write_json, RawTraceFrame, TraceStore};
@@ -916,9 +917,15 @@ struct ChunkSample {
 ///   *that name*, so two signals of one message may come from two
 ///   different databases exactly as they did when each was decoded on
 ///   its own.
-/// - **Bus scoping.** The filter is the target's, not the group's: two
-///   series on one message id can be scoped to different buses (or to
-///   the legacy "any bus"), so the eligibility test runs per target.
+/// - **Bus scoping**, which is two questions with two different
+///   answers. *Which frames a target takes* is the target's own filter,
+///   not the group's: two series on one message id can be scoped to
+///   different buses (or to the legacy "any bus"), so that test runs
+///   per target. *Which databases may decode a frame* is the frame's:
+///   [`filter::dbc_applies`] judges each database's scoping against the
+///   bus the frame arrived on, so a database scoped to bus B never
+///   supplies a value for a frame on bus A, however the target that
+///   wants it is scoped.
 /// - **Cursors.** A target already past a frame is skipped, so a series
 ///   joining a message that is already plotted can read the whole
 ///   history in the same pass that appends nothing to the incumbents.
@@ -933,7 +940,7 @@ fn scan_chunk(
     extended: bool,
     targets: &[GroupTarget<'_>],
     chunk: std::ops::Range<usize>,
-    dbs: &[&Database],
+    dbs: &[DbcScope<'_>],
     fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     out: &mut [Vec<ChunkSample>],
 ) -> usize {
@@ -947,6 +954,12 @@ fn scan_chunk(
     let mut pending: Vec<usize> = Vec::with_capacity(targets.len());
     let mut wanted: Vec<&str> = Vec::with_capacity(targets.len());
     let mut values: Vec<Option<f64>> = Vec::with_capacity(targets.len());
+    // The databases eligible for the frame in hand, and the bus they
+    // were selected for. Frames of one message overwhelmingly arrive on
+    // one bus, so the list is rebuilt only when the bus turns over —
+    // and never for the common set where nothing is scoped.
+    let mut eligible: Vec<&Database> = Vec::with_capacity(dbs.len());
+    let mut eligible_for: Option<Option<String>> = None;
     for (index, frame) in fetch(message_id, extended, chunk.start, chunk.end) {
         scanned += 1;
         pending.clear();
@@ -970,7 +983,28 @@ fn scan_chunk(
         if pending.is_empty() {
             continue;
         }
-        signal_sampler::sample_shared(&frame, dbs, message_id, extended, &wanted, &mut values);
+        // Which databases may decode *this* frame: the same
+        // `dbc_applies` scoping every other decode consumer uses, judged
+        // against the frame's own bus. A database scoped to bus B never
+        // supplies a value for a frame on bus A, however the series that
+        // wants it is scoped.
+        if eligible_for.as_ref().map(Option::as_deref) != Some(frame.bus_id.as_deref()) {
+            eligible.clear();
+            eligible.extend(
+                dbs.iter()
+                    .filter(|d| filter::dbc_applies(d.buses, frame.bus_id.as_deref()))
+                    .map(|d| d.db),
+            );
+            eligible_for = Some(frame.bus_id.clone());
+        }
+        signal_sampler::sample_shared(
+            &frame,
+            &eligible,
+            message_id,
+            extended,
+            &wanted,
+            &mut values,
+        );
         #[allow(clippy::cast_precision_loss)]
         let t_seconds = (frame.timestamp_ns as f64) / 1e9;
         for (&i, value) in pending.iter().zip(&values) {
@@ -2638,7 +2672,7 @@ impl SignalCacheStore {
         &self,
         keys: &[SignalKey],
         store_len: usize,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
         limit: &ServeLimit,
     ) {
@@ -2750,7 +2784,7 @@ impl SignalCacheStore {
         &self,
         group: &mut GroupCatchUp<'_>,
         store_len: usize,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
         generation: u64,
     ) -> Option<usize> {
@@ -2814,9 +2848,10 @@ impl SignalCacheStore {
     /// steady state; only the first call on a fresh cache pays for the
     /// backlog. The decimated serve is `O(max_points)`, independent of
     /// capture length. Loaded-DBC iteration mirrors the rest of the
-    /// host's "first DBC that decodes wins" semantics. `bus_id` scopes
-    /// the catch-up to frames tagged with that bus; pass `None` for the
-    /// legacy "any bus" path.
+    /// host's "first DBC that decodes wins" semantics — among the
+    /// databases whose bus scoping admits the frame in hand. `bus_id`
+    /// scopes the catch-up to frames tagged with that bus; pass `None`
+    /// for the legacy "any bus" path.
     #[allow(clippy::too_many_arguments)]
     pub fn slice(
         &self,
@@ -2828,7 +2863,7 @@ impl SignalCacheStore {
         to_seconds: f64,
         max_points: usize,
         store: &TraceStore,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
     ) -> Vec<SamplePoint> {
         let query = CacheQuery {
             bus_id,
@@ -2886,7 +2921,7 @@ impl SignalCacheStore {
         max_points: usize,
         reduction: Reduction,
         store: &TraceStore,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
     ) -> ServedWindows {
         let keys = self.ensure_caches(queries);
         // One tip for the whole batch, and the same one completeness is
@@ -2944,7 +2979,7 @@ impl SignalCacheStore {
         extended: bool,
         signal_name: &str,
         store: &TraceStore,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
     ) -> Option<(f64, f64)> {
         let query = CacheQuery {
             bus_id,
@@ -2973,7 +3008,7 @@ impl SignalCacheStore {
         &self,
         queries: &[CacheQuery<'_>],
         store: &TraceStore,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
     ) -> Vec<Option<(f64, f64)>> {
         let keys = self.ensure_caches(queries);
         self.catch_up_keys(
@@ -3114,7 +3149,7 @@ mod tests {
         store.append(dummy(4 * S, 999, vec![0, 0, 0, 0, 0, 0, 0, 0]));
         store.append(dummy(5 * S, 256, vec![4, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3172,7 +3207,7 @@ mod tests {
         store.append(dummy(S, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]));
         store.append(dummy(2 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3199,7 +3234,7 @@ mod tests {
         let store = TraceStore::new();
         store.append(dummy(0, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         // Unknown id and unknown signal both have no decoded samples.
@@ -3214,7 +3249,7 @@ mod tests {
         let store = TraceStore::new();
         store.append(dummy(0, 256, vec![0; 8]));
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let nope = cache.slice(None, 256, false, "Nope", 0.0, 1.0, 0, &store, dbs);
@@ -3239,7 +3274,7 @@ mod tests {
         store.append(b);
         store.append(c2);
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let on_p = cache.slice(Some("p"), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
@@ -3274,6 +3309,12 @@ mod tests {
     // `slice`), so they hold whoever does the decoding underneath.
 
     const DBC_HEADER: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_:\n";
+
+    /// The loaded set with nothing scoped — every database applies to
+    /// every bus, which is what a test that isn't about scoping wants.
+    fn all_buses<'a>(dbs: &[&'a Database]) -> Vec<DbcScope<'a>> {
+        dbs.iter().map(|db| DbcScope { db, buses: &[] }).collect()
+    }
 
     /// Defines message 256 with **only** `A`, at unit scale.
     fn dbc_a_only() -> Database {
@@ -3318,7 +3359,7 @@ mod tests {
         let (first, second) = (dbc_a_only(), dbc_a_and_b());
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let dbs: &[&Database] = &[&first, &second];
+        let dbs = &all_buses(&[&first, &second]);
         let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
         let b = cache.slice(None, 256, false, "B", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(
@@ -3334,12 +3375,142 @@ mod tests {
         // ×10 scaling from what is now the first database.
         let tmp2 = TempDir::new().unwrap();
         let cache2 = SignalCacheStore::new(tmp2.path());
-        let dbs: &[&Database] = &[&second, &first];
+        let dbs = &all_buses(&[&second, &first]);
         let a = cache2.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(
             a.iter().map(|p| p.value).collect::<Vec<_>>(),
             vec![30.0, 40.0]
         );
+    }
+
+    /// The same `ab_frame` payload, carried on a named bus.
+    fn ab_frame_on(bus: &str, ts_ns: u64, a: u16, b: u16) -> RawTraceFrame {
+        RawTraceFrame {
+            bus_id: Some(bus.to_string()),
+            ..ab_frame(ts_ns, a, b)
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_scoped_database_never_decodes_another_bus() {
+        // Load priority does not outrank bus scoping. Both databases
+        // define `A` in message 256 — the first at unit scale, the
+        // second ×10 — and each is scoped to one bus, so the same
+        // message id names a *different* signal instance per bus (two
+        // copies of one ECU is the case this exists for). The series on
+        // `powertrain` must read the first database and the series on
+        // `chassis` the second, rather than both taking whichever
+        // database loaded first.
+        let store = TraceStore::new();
+        store.append(ab_frame_on("powertrain", 0, 3, 100));
+        store.append(ab_frame_on("chassis", S, 4, 200));
+        let (first, second) = (dbc_a_only(), dbc_a_and_b());
+        let (pt, ch) = (vec!["powertrain".to_string()], vec!["chassis".to_string()]);
+        let dbs = &[
+            DbcScope {
+                db: &first,
+                buses: &pt,
+            },
+            DbcScope {
+                db: &second,
+                buses: &ch,
+            },
+        ];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let pt_a = cache.slice(
+            Some("powertrain"),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
+        let ch_a = cache.slice(
+            Some("chassis"),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
+        assert_eq!(pt_a.iter().map(|p| p.value).collect::<Vec<_>>(), vec![3.0]);
+        assert_eq!(ch_a.iter().map(|p| p.value).collect::<Vec<_>>(), vec![40.0]);
+
+        // `B` exists only in the chassis-scoped database, so a
+        // powertrain series never resolves it — the scoping decides
+        // what the signal *is*, not just what it scales to.
+        let pt_b = cache.slice(
+            Some("powertrain"),
+            256,
+            false,
+            "B",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
+        assert!(pt_b.is_empty(), "chassis-only signal decoded on powertrain");
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn an_unscoped_series_decodes_each_frame_by_its_own_bus() {
+        // Eligibility is a fact about the *frame*, not about the query.
+        // A legacy any-bus series (`bus_id: None`) takes frames from
+        // every bus, and each one is decoded by the databases that apply
+        // to the bus it arrived on — so one series carries unit-scale
+        // samples from `powertrain` and ×10 samples from `chassis`.
+        let store = TraceStore::new();
+        store.append(ab_frame_on("powertrain", 0, 3, 100));
+        store.append(ab_frame_on("chassis", S, 4, 200));
+        let (first, second) = (dbc_a_only(), dbc_a_and_b());
+        let (pt, ch) = (vec!["powertrain".to_string()], vec!["chassis".to_string()]);
+        let dbs = &[
+            DbcScope {
+                db: &first,
+                buses: &pt,
+            },
+            DbcScope {
+                db: &second,
+                buses: &ch,
+            },
+        ];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert_eq!(
+            a.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![3.0, 40.0]
+        );
+    }
+
+    #[test]
+    fn a_scoped_database_ignores_frames_with_no_bus() {
+        // `dbc_applies`'s other half: a scoped database does not decode
+        // an unassigned frame. Nothing else in the set defines the
+        // message, so the series stays empty rather than falling back to
+        // a database whose scope the frame is outside of.
+        let store = TraceStore::new();
+        store.append(ab_frame(0, 3, 100)); // no bus_id
+        let db = dbc_a_only();
+        let pt = vec!["powertrain".to_string()];
+        let dbs = &[DbcScope {
+            db: &db,
+            buses: &pt,
+        }];
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        assert!(a.is_empty(), "a scoped DBC decoded an unassigned frame");
     }
 
     /// One multiplexed message: a selector plus two signals that decode
@@ -3374,7 +3545,7 @@ mod tests {
         store.append(mux_frame(2 * S, 0, 12));
         store.append(mux_frame(3 * S, 1, 13));
         let db = dbc_muxed();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let m0 = cache.slice(None, 512, false, "M0", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -3410,7 +3581,7 @@ mod tests {
              SG_ X : 0|16@1+ (100,0) [0|0] \"\" Vector__XXX\n"
         ))
         .unwrap();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let store = TraceStore::new();
         store.append(val_frame(0, 1));
         store.append(RawTraceFrame {
@@ -3445,7 +3616,7 @@ mod tests {
             store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
         }
         let (first, second) = (dbc_a_only(), dbc_a_and_b());
-        let dbs: &[&Database] = &[&first, &second];
+        let dbs = &all_buses(&[&first, &second]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -3480,7 +3651,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 1000) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3520,7 +3691,7 @@ mod tests {
             store.append(val_frame(i * S, v));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3545,7 +3716,7 @@ mod tests {
         to: f64,
         max_points: usize,
         store: &TraceStore,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
     ) -> Vec<(f64, u32)> {
         cache
             .slice_many(
@@ -3603,7 +3774,7 @@ mod tests {
             }
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3655,7 +3826,7 @@ mod tests {
             }
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3702,7 +3873,7 @@ mod tests {
             }
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3746,7 +3917,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 2) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3834,7 +4005,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 500) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3884,7 +4055,7 @@ mod tests {
         to: f64,
         max_points: usize,
         store: &TraceStore,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
     ) -> Vec<(f64, f64)> {
         cache
             .slice_many(
@@ -3928,7 +4099,7 @@ mod tests {
         // 100 samples at 10 ms: the series ends at 0.99 s.
         append_cadence(&store, 0, S / 100, 100);
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3957,7 +4128,7 @@ mod tests {
         let store = TraceStore::new();
         store.append(val_frame(S, 3));
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3981,7 +4152,7 @@ mod tests {
         append_cadence(&store, 0, S / 100, 100);
         append_cadence(&store, 6 * S, S / 100, 100);
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4008,7 +4179,7 @@ mod tests {
         // it at all, over 20 s.
         append_cadence(&store, 0, S / 1000, 20_000);
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4065,7 +4236,7 @@ mod tests {
             &std::fs::read_to_string(dir.join("extrapolation.dbc")).expect("fixture DBC"),
         )
         .expect("fixture DBC must parse");
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
 
         let store = TraceStore::new();
         let mut src = cannet_blf::BlfCanFrameSource::open(dir.join("extrapolation.blf"))
@@ -4158,7 +4329,7 @@ mod tests {
         // the chunks tile the unscanned range exactly. Driven through the
         // fetch seam so a multi-million-frame span costs the test nothing.
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         let store_len = 5 * CATCH_UP_CHUNK_FRAMES + 7;
@@ -4223,7 +4394,7 @@ mod tests {
             }
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4289,7 +4460,7 @@ mod tests {
     fn a_serve_out_of_budget_answers_with_its_prefix_and_says_it_is_partial() {
         let store = rising_capture(3 * CATCH_UP_CHUNK_FRAMES);
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
@@ -4351,7 +4522,7 @@ mod tests {
         // both *finished* answers. A caller that re-asked until the
         // window was non-empty would spin forever on either.
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
@@ -4401,7 +4572,7 @@ mod tests {
             store.append(frame);
         }
         let db = dbc_two_areas();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X"), query_on(512, "Y")];
@@ -4476,7 +4647,7 @@ mod tests {
             .chain((0..MANY_GROUP_SPARSE).map(|k| 512 + k as u32))
             .collect();
         let db = dbc_with_messages(&ids);
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let queries: Vec<CacheQuery<'_>> = ids.iter().map(|id| query_on(*id, "X")).collect();
         let fetch = |id: u32, _extended: bool, from: usize, to: usize| {
             (from..to)
@@ -4548,7 +4719,7 @@ mod tests {
         // rotation, it gets the whole serve rather than one chunk of it.
         let ids: [u32; 4] = [256, 512, 513, 514];
         let db = dbc_with_messages(&[256, 512, 513, 514, 515]);
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let asked = std::cell::RefCell::new(Vec::new());
         let fetch = |id: u32, _extended: bool, from: usize, to: usize| {
             asked.borrow_mut().push(id);
@@ -4624,7 +4795,7 @@ mod tests {
         // read and says it is behind — it never runs to a moving target.
         let store = rising_capture(2 * CATCH_UP_CHUNK_FRAMES);
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
@@ -4669,7 +4840,7 @@ mod tests {
         // while a live capture grows.
         let store = rising_capture(3 * CATCH_UP_CHUNK_FRAMES);
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
@@ -4708,7 +4879,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -4750,7 +4921,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let a = TempDir::new().unwrap();
         let b = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(a.path());
@@ -4842,7 +5013,7 @@ mod tests {
         store: &SignalCacheStore,
         queries: &[CacheQuery<'_>],
         store_len: usize,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
         fetch: impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     ) -> Vec<SignalKey> {
         let keys = store.ensure_caches(queries);
@@ -5016,7 +5187,7 @@ mod tests {
         // optimisation *of* this.
         let store = mixed_capture();
         let owned = mixed_dbs();
-        let dbs: Vec<&Database> = owned.iter().collect();
+        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
         let queries = mixed_queries();
 
         // Per signal: each `slice` is its own one-member group, which
@@ -5081,7 +5252,7 @@ mod tests {
         // y-extent (ADR 0025) has to come out of it unchanged too.
         let store = mixed_capture();
         let owned = mixed_dbs();
-        let dbs: Vec<&Database> = owned.iter().collect();
+        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
         let queries = mixed_queries();
 
         let a = TempDir::new().unwrap();
@@ -5113,7 +5284,7 @@ mod tests {
         // the fetch seam, so the count is observable — three series,
         // one walk.
         let owned = [dbc_a_only(), dbc_a_and_b()];
-        let dbs: Vec<&Database> = owned.iter().collect();
+        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         let queries = [
@@ -5181,7 +5352,7 @@ mod tests {
             store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
         }
         let owned = [dbc_a_only(), dbc_a_and_b()];
-        let dbs: Vec<&Database> = owned.iter().collect();
+        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = CacheQuery {
@@ -5247,7 +5418,7 @@ mod tests {
         // internally — and a repeated query answers twice, identically.
         let store = mixed_capture();
         let owned = mixed_dbs();
-        let dbs: Vec<&Database> = owned.iter().collect();
+        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let mut queries = mixed_queries();
@@ -5327,7 +5498,7 @@ mod tests {
     /// both threads always join.
     fn while_a_cold_rebuild_runs(
         cache: &SignalCacheStore,
-        dbs: &[&Database],
+        dbs: &[DbcScope<'_>],
         store_len: usize,
         probe: impl FnOnce() + Send,
     ) -> bool {
@@ -5378,7 +5549,7 @@ mod tests {
             ));
         }
         let db = dbc_two_areas();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         let store_len = 3 * CATCH_UP_CHUNK_FRAMES;
@@ -5418,7 +5589,7 @@ mod tests {
             ));
         }
         let db = dbc_two_areas();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         // Something already built, so the manifest write has work to do.
@@ -5497,7 +5668,7 @@ mod tests {
         for i in 0..n {
             store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
         }
-        let dbs: &[&Database] = &[db];
+        let dbs = &all_buses(&[db]);
         let cache = SignalCacheStore::new_unbounded(root);
         for signal in ["A", "B"] {
             let built = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
@@ -5525,7 +5696,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let cache = SignalCacheStore::new(root);
         let built = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(built.len(), 200);
@@ -5543,7 +5714,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -5619,7 +5790,7 @@ mod tests {
         assert!(!reopened.rebuilding(len), "and nothing is announced");
         // Every sample came off disk: these frames decode to nothing.
         let cold = undecodable_store(len);
-        let dbs: &[&Database] = &[&reloaded];
+        let dbs = &all_buses(&[&reloaded]);
         for signal in ["A", "B"] {
             let served =
                 reopened.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &cold, dbs);
@@ -5651,7 +5822,7 @@ mod tests {
         );
 
         let cold = undecodable_store(len);
-        let dbs: &[&Database] = &[&after];
+        let dbs = &all_buses(&[&after]);
         let a = reopened.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &cold, dbs);
         assert_eq!(a.len(), 200, "A came back off disk");
         assert_eq!(a[7].value, 7.0);
@@ -5728,7 +5899,7 @@ mod tests {
         // Proof the samples are the parked ones: these frames decode to
         // nothing, so anything served came off disk.
         let cold = undecodable_store(len);
-        let dbs: &[&Database] = &[&back];
+        let dbs = &all_buses(&[&back]);
         for signal in ["A", "B"] {
             assert_eq!(
                 session3
@@ -5753,7 +5924,7 @@ mod tests {
         }
         let first = dbc_ab_scaled(1, 1);
         let cache = SignalCacheStore::new_unbounded(root.path());
-        let dbs: &[&Database] = &[&first];
+        let dbs = &all_buses(&[&first]);
         for signal in ["A", "B"] {
             let _ = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
         }
@@ -5835,7 +6006,7 @@ mod tests {
         }
         let before = dbc_ab(1);
         let cache = SignalCacheStore::new_unbounded(root.path());
-        let dbs: &[&Database] = &[&before];
+        let dbs = &all_buses(&[&before]);
         for signal in ["A", "B"] {
             let _ = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
         }
@@ -5852,7 +6023,7 @@ mod tests {
         assert_eq!(cache.usage().retained, 0);
         assert_eq!(cache.usage().revivals, 1);
         let cold = undecodable_store(200);
-        let cold_dbs: &[&Database] = &[&before];
+        let cold_dbs = &all_buses(&[&before]);
         assert_eq!(
             cache
                 .slice(
@@ -5922,7 +6093,7 @@ mod tests {
         assert!(cold.unread_bytes > 0);
 
         let store = undecodable_store(len);
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let _ = session.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
         let warm = session.usage();
         assert_eq!(
@@ -5958,7 +6129,7 @@ mod tests {
         let reopened = SignalCacheStore::new_unbounded(root.path());
         assert_eq!(reopened.restore(&v, &scopes(&after), len).rebuilt, 1);
 
-        let dbs: &[&Database] = &[&after];
+        let dbs = &all_buses(&[&after]);
         let fetches = std::cell::Cell::new(0usize);
         let keys = catch_up_through(
             &reopened,
@@ -6055,7 +6226,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         {
             let cache = SignalCacheStore::new(root.path());
             let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -6096,7 +6267,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
         let v = validity("capture-a", 0);
@@ -6132,7 +6303,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
         let v = validity("capture-a", 0);
@@ -6179,7 +6350,7 @@ mod tests {
         );
         let store = undecodable_store(len);
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let served = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(served.len(), 200, "served from the persisted pyramid");
         assert_eq!(served[7].value, 7.0);
@@ -6219,7 +6390,7 @@ mod tests {
             for i in 0..200u64 {
                 store.append(val_frame(i * S, (i % 50) as u16));
             }
-            let dbs: &[&Database] = &[&db];
+            let dbs = &all_buses(&[&db]);
             let rebuilt = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
             assert_eq!(rebuilt.len(), 200);
         }
@@ -6296,7 +6467,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let rebuilt = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(rebuilt.len(), 200, "the rebuild ran");
         assert!(
@@ -6378,7 +6549,7 @@ mod tests {
             store.append(val_frame(i * S, 7));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(
             !reopened.persist(&validity("capture-b", 0), &[], Harden::All),
@@ -6434,7 +6605,7 @@ mod tests {
             store.append(val_frame(i * S, 100));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let all = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(all.len(), 260, "200 persisted + 60 newly decoded");
         assert_eq!(all.last().map(|p| p.value), Some(100.0));
@@ -6451,7 +6622,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let cache = SignalCacheStore::new(root.path());
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         cache.evict_below(1000.0);
@@ -6521,7 +6692,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
 
         let decoded_dir = TempDir::new().unwrap();
         let decoded = SignalCacheStore::new_unbounded(decoded_dir.path());
@@ -6609,7 +6780,7 @@ mod tests {
             store.append(val_frame(i * S, 1));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
@@ -6649,7 +6820,7 @@ mod tests {
         // a signal it does not.
         let store = TraceStore::new();
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let served = cache.slice_many(
@@ -6711,7 +6882,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         assert_eq!(
@@ -6783,7 +6954,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         {
             let cache = SignalCacheStore::new(root.path());
             assert_eq!(
@@ -6931,7 +7102,7 @@ mod tests {
             }))
             .collect();
         let db = Database::parse(&dbc).unwrap();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         let queries: Vec<CacheQuery<'_>> = (0..signals)
             .map(|n| CacheQuery {
                 bus_id: None,
@@ -7067,7 +7238,7 @@ mod tests {
             }))
             .collect();
         let db = Database::parse(&dbc).unwrap();
-        let dbs: &[&Database] = &[&db];
+        let dbs = &all_buses(&[&db]);
         // The set the persisted rows are fingerprinted against, and the
         // restore judges them by — the real one, so the restore arm pays
         // what a launch pays.

@@ -192,12 +192,10 @@ fn mix_spec(h: &mut Fnv, spec: &SignalDecodeSpec) {
 /// distinct from every chain that decodes something.
 ///
 /// A contributing database's **bus scoping** joins its contribution.
-/// Today the pyramid decode path does not consult scoping when it picks
-/// a database (only frames are filtered, by the series' own bus), so
-/// including it is conservative: a re-scope rebuilds pyramids whose
-/// samples would not have changed. It is the safe direction, and it
-/// keeps the fingerprint honest if that path is ever made to honour
-/// scoping.
+/// The decode path judges every database against the bus a frame
+/// arrived on (`filter::dbc_applies`), so a re-scope changes which
+/// database answers for a frame: scoping is an input to the samples,
+/// not a hedge against one.
 pub fn dbc_encoding(
     dbcs: &[DbcScope<'_>],
     bus_id: Option<&str>,
