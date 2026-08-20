@@ -278,6 +278,12 @@ const mockSampleRebuild = { on: false, served: 0, of: 0 };
 /// in what the plot draws rather than only in the request. Prefixed
 /// `mock` for the hoisted factory.
 const mockFileBackedSignals = new Set<string>();
+// Signals whose defining database is assigned to no bus. Such a database
+// decodes nothing (`filter::dbc_applies`), so the host leaves its signals
+// out of the descriptor universe and answers with no samples for them —
+// which is what a view configured against it sees. Prefixed `mock` for
+// the hoisted factory.
+const mockUnassignedSignals = new Set<string>();
 /// The host's categorical reduction, modelled so a lane's serve carries
 /// what the real one carries: an **over-budget** window comes back as
 /// its run boundaries (plus the series' last point, so the final tile
@@ -306,7 +312,8 @@ function mockReduceRuns(s: { t: number[]; v: number[] }, maxPoints: number) {
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: { signals?: unknown[]; signalName?: string }) => {
-    if (cmd === "list_signals") return SIGNALS;
+    if (cmd === "list_signals")
+      return SIGNALS.filter((sig) => !mockUnassignedSignals.has(sig.signal_name));
     if (cmd === "sample_signals") {
       if (mockSampleStall.on)
         return new Promise<ArrayBuffer>((resolve) => mockSampleStall.pending.push(resolve));
@@ -325,6 +332,7 @@ vi.mock("@tauri-apps/api/core", () => ({
           const q = s as { signalName?: string; fileBacked?: boolean };
           const name = q.signalName ?? "";
           if (mockFileBackedSignals.has(name) && !q.fileBacked) return { t: [], v: [] };
+          if (mockUnassignedSignals.has(name)) return { t: [], v: [] };
           const series = mockSampleSeries[name] ?? { t: [0, 1, 2], v: [10, 20, 15] };
           const points = req?.categorical ? mockReduceRuns(series, req.maxPoints ?? 0) : series;
           return { ...points, extrapolated: mockExtrapolated[name] ?? [] };
@@ -338,6 +346,7 @@ vi.mock("@tauri-apps/api/core", () => ({
         const q = s as { signalName?: string; fileBacked?: boolean };
         const name = q.signalName ?? "";
         if (mockFileBackedSignals.has(name) && !q.fileBacked) return null;
+        if (mockUnassignedSignals.has(name)) return null;
         return mockSignalExtents[name] ?? { lo: 10, hi: 20 };
       });
     if (cmd === "list_value_tables") return mockValueTables[args?.signalName ?? ""] ?? [];
@@ -722,6 +731,7 @@ afterEach(async () => {
   mockRenderCost.perTickMs = 0;
   mockRenderCost.accMs = 0;
   mockFileBackedSignals.clear();
+  mockUnassignedSignals.clear();
   mockUplotPointsShow.answer = false;
   for (const k of Object.keys(mockSettings)) delete mockSettings[k];
   // Awaited: an un-awaited publish here can resolve inside a later
@@ -7060,5 +7070,58 @@ describe("PlotPanel enum overlays after a DBC change", () => {
       await new Promise((r) => setTimeout(r, 400));
     });
     await waitFor(() => expect(areaId().endsWith("/u:enum")).toBe(true));
+  });
+});
+
+describe("PlotPanel when the database behind a signal is unassigned", () => {
+  /// The whole of what a `dbc-changed` does to a plot panel: the shared
+  /// catalog / value-table fan-out (`dbcChanged.ts`) plus the trace
+  /// model's re-anchor epoch, which `App.invalidateCache` bumps on the
+  /// same carrier. The panel folds that epoch into its fetch descriptor,
+  /// so without it a window whose bytes changed under an unchanged
+  /// request would stay memoised.
+  async function announceAssignmentChange(panel: { bumpEpoch: () => void }) {
+    await act(async () => {
+      announceDbcChange();
+      panel.bumpEpoch();
+      await new Promise((r) => setTimeout(r, 400));
+    });
+  }
+
+  it("keeps the series configured, and any assigned database that provides it brings it back", async () => {
+    // The guarantee that makes cache revival worth having (task 88's
+    // owner ruling, ADR 0047's assignment amendment). Unassigning a
+    // database parks its decoded samples; the plot series that named one
+    // of its signals must stay configured and render nothing, so that
+    // assigning a database again brings the view back whole instead of
+    // leaving the user to rebuild the plot by hand.
+    //
+    // Both directions, and by *signal* rather than by file: a view
+    // config names `bus | messageId : signalName` and carries no DBC
+    // path (`signalKey`), so what restores it is any assigned database
+    // that provides the signal — this test never tells the panel which
+    // file is loaded, because the panel has no way to ask.
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [10, 20, 15] };
+    await withSizedCanvas(async () => {
+      const panel = renderPanel();
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3));
+
+      // The database is unassigned: it decodes nothing, so the host
+      // stops listing the signal and stops answering for it.
+      mockUnassignedSignals.add("EngineSpeed");
+      await announceAssignmentChange(panel);
+      // The configuration stands — the row is still on the panel…
+      expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
+      // …and the lane is simply empty.
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(0));
+
+      // A database providing that signal is assigned. The series was
+      // never rebuilt by hand, so it comes back drawing on its own.
+      mockUnassignedSignals.delete("EngineSpeed");
+      await announceAssignmentChange(panel);
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3));
+      expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
+    });
   });
 });
