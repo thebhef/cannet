@@ -40,6 +40,8 @@ import {
   SHORTCUTS_PANEL_ID,
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   SYSTEM_MESSAGES_PANEL_ID,
+  VIEW_SIGNALS_PANEL_COMPONENT,
+  VIEW_SIGNALS_PANEL_ID,
   elementPanelComponent,
   isTabMiddlePress,
   panelKindForFocus,
@@ -300,6 +302,15 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       }),
     [showSingletonPanel],
   );
+  const showViewSignalsPanel = useCallback(
+    () =>
+      showSingletonPanel({
+        id: VIEW_SIGNALS_PANEL_ID,
+        component: VIEW_SIGNALS_PANEL_COMPONENT,
+        title: "View signals",
+      }),
+    [showSingletonPanel],
+  );
   const showSettingsPanel = useCallback(
     () =>
       showSingletonPanel({
@@ -496,6 +507,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     "panel.show.systemMessages": showSystemMessagesPanel,
     "panel.show.projectGraph": showProjectGraphPanel,
     "panel.show.dbc": showDbcPanel,
+    "panel.show.viewSignals": showViewSignalsPanel,
     "panel.show.settings": showSettingsPanel,
     "panel.show.about": showAboutPanel,
     "panel.show.events": showEventsPanel,
@@ -756,6 +768,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     // It was the "DBC panel" before it grew every other signal-defining
     // format (ADR 0052).
     singleton(DBC_PANEL_ID, "Database", showDbcPanel, "DBC panel");
+    singleton(VIEW_SIGNALS_PANEL_ID, "View signals", showViewSignalsPanel, "signal mapping");
     singleton(SYSTEM_MESSAGES_PANEL_ID, "System messages", showSystemMessagesPanel);
     singleton(SETTINGS_PANEL_ID, "Settings", showSettingsPanel);
     singleton(ABOUT_PANEL_ID, "About", showAboutPanel);
@@ -769,6 +782,7 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     showProjectPanel,
     showProjectGraphPanel,
     showDbcPanel,
+    showViewSignalsPanel,
     showSystemMessagesPanel,
     showSettingsPanel,
     showAboutPanel,
