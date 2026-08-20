@@ -2022,7 +2022,11 @@ reports.
 distinct channels and shows a modal where each channel is mapped to a
 logical bus or marked as "skip". Skipped channels are dropped before
 they reach the trace store; mapped channels stream in tagged with their
-bus. The scan is header-only — it reads each object's channel field
+bus. Dropping is the whole of what "skip" does — silently, with no
+confirmation step: a user who skips a channel is saying they are not
+interested in those messages. A frame without a bus is not a thing the
+store holds, so a channel the mapping never names is dropped on the
+same terms. The scan is header-only — it reads each object's channel field
 without decoding the frame — so it covers the **whole** file however
 large: a channel that first appears near the end still gets a mapping
 row. The same scan also carries the capture's frame count, duration,
@@ -2135,8 +2139,7 @@ any capture spanning less than about 26 days.
 row of checkboxes — one per defined logical bus — that control which
 buses the DBC decodes for. A DBC with no boxes checked is *unscoped*
 ("all buses", the migration default for v2 projects). A DBC scoped to
-bus A doesn't decode bus-B frames; an unassigned frame matches only
-unscoped DBCs.
+bus A doesn't decode bus-B frames.
 
 **Default: receive from every bus**. Each consumer (trace, plot, filter) carries a
 `sources: string[]` list of upstream producer ids — bus ids or filter
