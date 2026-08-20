@@ -300,3 +300,15 @@ mechanism; adding a metric to it is a `DRIFT_METRIC_NAMES`-shaped
 change). That needs a **3-run minimum** — a two-run median is just the
 average of the two runs, no less noisy than either alone; three is the
 smallest sample where the median actually discards an outlier.
+
+**`tx_late_ms_max` is the same story, and gets the same treatment**
+(owner ruling, 2026-08-19). It read above its 65.7 baseline on four
+consecutive gate runs across four unrelated diffs, then 23.6 and 73.4
+back-to-back on one binary — a 50 ms spread with nothing changing
+between the two. Owner ruling: *"it's noisy. Same as the rx — don't
+stop for it."* So: no bisect, no investigation, and an elevated reading
+is not a finding to report. It stays **gated at its existing limit**
+(156.4, with `tx_late_ms_mean` gated separately and sitting far inside
+its own) on the same terms as `rx_gap_short_frac_worst` — optimized and
+noisy, and it should not get worse. A run that actually breaches the
+limit is still a stop; readings under it are not.

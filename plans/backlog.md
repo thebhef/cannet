@@ -879,3 +879,127 @@ next planning pass.
   design point: encoding several rules in one STRING value (one
   value per attribute name at database scope; ADR 0043 rules out
   JSON-in-STRING). (Owner, task-56 grooming 2026-08-07.)
+- `[feat]` **"View signals" — a live status panel over the signals the
+  views reference.** Prototype:
+  [`prototypes/view-signals-panel.html`](prototypes/view-signals-panel.html)
+  (open it in a browser; the button top-right switches themes). It is a
+  static mock with hard-coded rows — the layout, column set, status
+  taxonomy and filter behaviour are the deliverable, not the code.
+  **The same grid serves the RBS element's DBC fields** (owner ruling
+  2026-08-19), prototyped in
+  [`prototypes/rbs-signals-panel.html`](prototypes/rbs-signals-panel.html):
+  same chips, same filter model, same sortable columns, with the RBS's
+  own status vocabulary — Override / Start value / Fill / Muted / Not
+  Decoded, which is exactly the `.cannet_rbs` precedence
+  `fill_bit -> GenSigStartValue -> override` (ADR 0028,
+  `rbs/runtime.rs`) made visible per row. Worth stating because it is
+  the reason the reuse is more than cosmetic: a sparse override document
+  records only what the user changed, while every transmitted frame is
+  fully populated, so *where a value came from* is the question the RBS
+  panel exists to answer and the status chip is already the column that
+  answers it. **The grid is shared; the scope is not.** The views
+  grid combines across every view because per-view divergence is a defect
+  the owner ruled out; an RBS grid is scoped to **one** `.cannet_rbs`
+  because two RBS sims are *meant* to hold different values and timings,
+  and combining them would invite editing across configs the user thinks
+  of as independent. Same component, opposite scoping rule, and the
+  reason is which kind of divergence is a bug (owner, 2026-08-19). The
+  config is named in the panel title; the app's internal word "element"
+  stays out of the UI. When a project's DBC is
+  replaced by a newer version of itself, view configurations that
+  reference signals by name keep pointing at names the new file may
+  have renamed, moved, or dropped. Task 88 settles the adjacent half —
+  a view configured against an unassigned database keeps its
+  configuration and comes back when the database is re-assigned — but
+  says nothing about a signal that no longer exists under that name. A
+  remap view would let the user re-point a file's signal selections
+  onto what the *assigned* DBC actually defines, scoped per DBC file
+  rather than per view, so one remap fixes every consumer of that
+  database at once. Owner note (2026-08-19, task 88 grooming): a full
+  remapping UI "might be extreme, but could be nice for when DBC
+  versions change" — the tractable version is a view that configures
+  the existing-in-assigned-DBC signal selection. **Shape the owner has
+  in mind: another gridview (ADR 0044), one combobox picker per signal,
+  filterable to just those not mapped to a live signal** — so the
+  default view is the short list of what actually broke, not every
+  signal in the file. Note that a view config carries no DBC path
+  (`signalKey` is `bus | messageId : signalName`), so this is needed
+  only where a *name* changed, not where a file was replaced.
+  Two highlights the owner wants in that grid (2026-08-19): **signals
+  with no scale they can reach** — read as a candidate whose unit
+  differs from the signal it replaces, so it cannot join the y-scale
+  group it used to share and would land on an axis of its own (ADR 0026
+  groups y scales by unit); and **signals with multiple matches in the
+  same view** — more than one assigned database defines that name, so
+  the mapping is ambiguous and the user should pick rather than inherit
+  load order (the same ambiguity task 88 rules must *warn* about,
+  naming the winner). A fifth case fell out of prototyping: **same name,
+  changed scaling** (factor 0.1 -> 0.5) — nothing looks broken, but the
+  fingerprint differs so the parked cache will not revive and the signal
+  silently re-decodes; invisible without this view.
+  Owner decisions from the 2026-08-19 prototype: **it is not scoped to a
+  database at all.** Anchoring it to one file ("powertrain.dbc -> pt")
+  was the original framing and the owner rejected it: the panel lists
+  *every signal the open views reference* and what currently serves it,
+  live, so assigning / unassigning / replacing a database moves rows in
+  it without a reopen. Consequently there is **no apply step** — a pick
+  takes effect immediately, like any other panel — and columns for the
+  serving database and which views use each signal replace the scope
+  header. A database picker was tried and rejected on the way: it read
+  as an assignment gesture, which is exactly what task 88 makes
+  load-bearing; **one signal is one row, and a pick applies
+  everywhere** — the owner ruled that the frontend must not support
+  Plot 1 configured differently from Plot 2, and that a user should
+  never have to repeat a fix per view. The grid is therefore keyed on
+  signal identity, and the "used by" column is *blast radius*, not a
+  list of things to fix one at a time. Note this has to be **enforced**:
+  today each plot series stores its own `bus | messageId : signalName`,
+  so divergence is currently possible. Two ways to close it — rewrite
+  every referencing view config when the pick is made (no new model
+  concept; reverting to the old database simply reports the difference
+  the other way round, self-healing through the same panel), or a
+  project-scoped alias table resolving old name -> current signal (keeps
+  both working, but adds durable indirection that can outlive its reason
+  and mis-resolve quietly). Overseer recommendation: **rewrite on pick**;
+  not yet ruled on. **The ambiguous case is the one that is not free**
+  (owner, 2026-08-19): every other repair is a rewrite of view state that
+  already exists, but "which database wins for this signal" has no home
+  in the model. Measured: the signal catalog *deduplicates the collision
+  away* -- `list_signals` dedups on `(bus_id, message_id, signal_name)`
+  (`dbc_commands.rs`) -- and the decoder settles it silently by load
+  order, the first database yielding the signal name winning
+  (`signal_cache.rs`, pinned by
+  `first_dbc_wins_per_signal_not_per_message`). The existing
+  signal-focused views are therefore blind to it and not responsible for
+  it: it is resolved upstream of them and never reported. Persisting a
+  selection therefore belongs in the **project file, attached to the
+  signal** (owner ruling 2026-08-19) -- the decoder being a consumer is a
+  *driver* for putting it there, not an argument against it. Rules:
+  **not persisted when not set**, so an absent entry means the databases
+  resolve in their consistent order and default behaviour stays
+  predictable; and the entry is **dropped silently from the project when
+  the selected DBC is removed**, falling back to that same default.
+  `SignalKey` does **not** grow a DBC field -- that would mean two
+  decodes of one signal, which defeats the purpose. And **no DBC
+  disambiguation appears in views that report signals or messages**: the
+  plot stays `bus.ecu.signal`, clear and minimal, and this panel is the
+  one place the rare ambiguity is resolved. Expected shape of that rare
+  case (owner): a client-facing DBC alongside a private one carrying
+  extra enum values, rather than two databases genuinely defining the
+  same message / signal / scaling combination;
+  **reuse the existing gridview** (ADR 0044) rather than a bespoke
+  table, **sortable, sorted by bus by default**; **the problem
+  highlight is toggleable**, with the status column carrying the fact
+  when the row washes are off; and **it is a separate launchable
+  panel**, not an embedded section. A database assigned to several buses
+  shows rows from all of them in one grid — the mapping is name-to-name
+  within the database, so one pick fixes every bus and every view that
+  reads it. Open question for grooming: the status column sorts by
+  *severity*, not alphabetically, so check that the shared gridview can
+  express a custom sort key before committing to reuse.
+  Prototyping also surfaced a theme finding worth its own look, recorded
+  here because it is where it was found: the light theme's warn wash
+  (`--warn-surface-dim` #fbf7e8) is ~4% off white, so a row tint that
+  reads instantly in dark mode is close to invisible in light. That
+  affects anywhere the app tints a row to mean something, not just this
+  view. Not scoped; needs grooming before it becomes a task.
