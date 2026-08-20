@@ -214,10 +214,9 @@ fn sort_by_id_orders_by_rate() {
 }
 
 #[test]
-fn sort_by_id_orders_by_bus_name_unassigned_last() {
-    // Sorts by the resolved bus *name*, with the unassigned bucket
-    // after any real bus ascending (and before them descending). A bus
-    // the project no longer knows falls back to its raw id.
+fn sort_by_id_orders_by_bus_name_unknown_buses_by_raw_id() {
+    // Sorts by the resolved bus *name*. A bus the project no longer
+    // knows falls back to its raw id, which sorts among the names.
     // The bus ids deliberately sort the *opposite* way to their names,
     // so an implementation that ignored `names` and ordered by raw id
     // would fail rather than coincide.
@@ -367,8 +366,7 @@ fn descriptor_snapshot_is_reused_across_calls_and_dropped_on_dbc_change() {
 #[test]
 fn fetch_signal_page_scopes_to_source_buses() {
     // A signal view is a sink with `sources` wiring: restricted to
-    // specific buses, descriptors outside them (including the
-    // unassigned-bus degenerate) don't exist for it.
+    // specific buses, descriptors outside them don't exist for it.
     let state = mux_snapshot_state();
     let sel = SignalSelection {
         keys: vec![],
@@ -389,7 +387,7 @@ fn fetch_signal_page_scopes_to_source_buses() {
         100,
     )
     .unwrap();
-    assert_eq!(page.count, 0); // fixture descriptors are unassigned-bus
+    assert_eq!(page.count, 0); // fixture descriptors are on TEST_BUS
     let unrestricted = fetch_signal_page_inner(
         &state,
         &sel,
@@ -963,16 +961,16 @@ fn per_bus_dbc_scoping_filters_decode() {
     on_p.bus_id = Some("p".into());
     let mut on_c = frame_with_data(256);
     on_c.bus_id = Some("c".into());
-    let unassigned = frame_with_data(256); // bus_id: None
+    let elsewhere = frame_with_data(256); // on TEST_BUS, which neither DBC scopes to
     state.trace_store.append(on_p);
     state.trace_store.append(on_c);
-    state.trace_store.append(unassigned);
+    state.trace_store.append(elsewhere);
 
     let r = collect_trace_records(&state, 0, 3);
     let name = |i: usize| r[i].decoded.as_ref().map(|d| d.name.clone());
     assert_eq!(name(0).as_deref(), Some("FromBusP"));
     assert_eq!(name(1).as_deref(), Some("FromBusC"));
-    // An unassigned frame doesn't match any scoped DBC.
+    // A frame from outside every scope matches no DBC.
     assert_eq!(name(2), None);
 }
 
@@ -1215,9 +1213,9 @@ fn unscoped_dbc_decodes_every_bus() {
     *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
     let mut on_p = frame_with_data(256);
     on_p.bus_id = Some("p".into());
-    let unassigned = frame_with_data(256);
+    let on_test_bus = frame_with_data(256);
     state.trace_store.append(on_p);
-    state.trace_store.append(unassigned);
+    state.trace_store.append(on_test_bus);
     let r = collect_trace_records(&state, 0, 2);
     // Both decode against the unscoped DBC.
     assert_eq!(
@@ -4260,8 +4258,6 @@ fn an_unrequested_exit_keeps_the_event_loops_code() {
 //   convert  — decode + `RawTraceFrame::from` + routing + verifier probe
 //   full/mem — convert + `TraceStore::append` against the in-RAM raw
 //              store; the gap to `full` is the disk-spill write
-//   mem/nobus— full/mem with unassigned frames; the gap to `full/mem`
-//              is what a logical bus id costs per frame
 //   full     — convert + `TraceStore::append` against the disk store
 //   full+obs — full, with the flusher and the 10 Hz status/tail readout
 //              the running app puts on the same store lock
@@ -4438,30 +4434,6 @@ fn bench_blf_import() {
         }
     }
     report("full/mem", t.elapsed().as_secs_f64());
-    assert_eq!(store.len(), frames);
-    drop(store);
-
-    // -- mem/nobus: the same loop again with the frames left
-    //    unassigned. The delta against full/mem is what carrying a
-    //    logical bus costs per frame — the routing clone, the
-    //    latest-by-key clone, the retention clone, and the three string
-    //    hashes those keys drive.
-    let store = TraceStore::new();
-    let mut source = BlfCanFrameSource::open(&blf).unwrap();
-    let t = std::time::Instant::now();
-    let mut first = true;
-    while let Some(frame) = source.next_frame().unwrap() {
-        let raw = RawTraceFrame::from(frame);
-        if first {
-            store.start_session(raw.timestamp_ns);
-            first = false;
-        }
-        let checked = verifier.wants(&raw).then(|| raw.clone());
-        if store.append(raw).is_some() {
-            std::hint::black_box(&checked);
-        }
-    }
-    report("mem/nobus", t.elapsed().as_secs_f64());
     assert_eq!(store.len(), frames);
     drop(store);
 
