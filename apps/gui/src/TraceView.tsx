@@ -16,6 +16,7 @@ import type { TraceRow } from "./trace";
 import { formatTimestamp, type CanIdFormat } from "./format";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
+import { ColorChip } from "./ColorChip";
 import {
   ROW_HEIGHT,
   anchorFromScroll,
@@ -829,7 +830,6 @@ function EventRow({
   const color = event.color ?? (EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note)();
   const editable = event.editable && actions != null;
   const onGoto = actions?.onGoto;
-  const colorInputRef = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(event.label);
 
@@ -876,28 +876,17 @@ function EventRow({
         </button>
       )}
       {editable ? (
-        // Swatch over a stacked native color input — same control as the
-        // plot's series swatch (PlotPanel's `SignalSwatch`).
-        <span className="trace-event-swatch-wrap">
-          <button
-            type="button"
-            className="trace-event-swatch"
-            style={{ background: color }}
-            title="pick a color"
-            aria-label="pick event color"
-            onClick={() => colorInputRef.current?.click()}
-          />
-          <input
-            ref={colorInputRef}
-            type="color"
-            className="trace-event-swatch-input"
-            aria-label="event color"
-            value={color}
-            onChange={(e) => actions?.onRecolor(event.id, e.target.value)}
-          />
-        </span>
+        <ColorChip
+          color={color}
+          onChange={(hex) => actions?.onRecolor(event.id, hex)}
+          swatchClassName="trace-event-swatch"
+          inputClassName="trace-event-swatch-input"
+          title="pick a color"
+          swatchAriaLabel="pick event color"
+          pickerAriaLabel="event color"
+        />
       ) : (
-        <span className="trace-event-swatch" style={{ background: color }} aria-hidden />
+        <ColorChip color={color} swatchClassName="trace-event-swatch" />
       )}
       {editing ? (
         <input

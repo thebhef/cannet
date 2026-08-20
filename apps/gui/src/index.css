@@ -2141,44 +2141,11 @@ header {
   color: var(--text-secondary);
 }
 
-/* Full-height color bar at the row's left. A `<button>` for editable
-   events (click opens the stacked native picker), a bare `<span>` for the
-   derived truncation marker. */
-.trace-event-swatch {
-  align-self: stretch;
-  width: 1.5rem;
-  flex: 0 0 auto;
-  border: 1px solid var(--border-wash);
-  border-radius: 2px;
-}
-button.trace-event-swatch {
-  cursor: pointer;
-}
-/* Wrap the swatch + its hidden color input (same control as the plot's
-   series swatch). The input pops the native picker over the swatch. */
-.trace-event-swatch-wrap {
-  position: relative;
-  display: flex;
-  align-self: stretch;
-  flex: 0 0 auto;
-}
-.trace-event-swatch-input {
-  /* Cover the swatch's real footprint (inset:0 stretches the absolutely
-   * positioned input to fill the relative wrap) rather than collapsing to
-   * a zero-size point. The native color picker anchors to the input's
-   * rendered rect; giving it the swatch box keeps the popover on the
-   * swatch. On macOS a zero-size anchor inside a virtualized,
-   * absolutely-positioned event row lands in the wrong place — this is a
-   * candidate fix for that, pending verification on a Mac. `opacity:0` +
-   * `pointer-events:none` keep it invisible and let the button take the
-   * click (which forwards to `input.click()`). */
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  pointer-events: none;
-  border: 0;
-  padding: 0;
-}
+/* The row's colour swatch — a `<button>` for editable events (click
+   opens the picker via `ColorChip`), a bare `<span>` for the derived
+   truncation marker. Shape and behaviour come from `.color-chip*`
+   below (ColorChip.tsx); `trace-event-swatch`/`-input` are query hooks
+   only, carrying no CSS of their own. */
 
 /* === Shared colour chip (ColorChip.tsx) ===
    One control renders every colour swatch and picker in the app: an
