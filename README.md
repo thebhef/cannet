@@ -1006,8 +1006,12 @@ organised the way that format organises signals (ADR 0052). Loaded
 DBCs form a tree-with-fuzzy-search grouped by bus
 (`bus → DBC → ECU → message → signal`, per-transmitter grouping
 like the RBS panel; messages with no `BO_` transmitter fall under
-"(no transmitter)"; unscoped DBCs appear under each bus group
-labelled "applies to all buses"). Type any fragment of a signal
+"(no transmitter)"; a database not assigned to a bus decodes nothing
+and appears once, under an "(Unassigned)" group saying so — this row
+is the only discoverability the app offers for an unassigned database,
+by design. Two databases assigned to the same bus that define the same
+message/signal id is a rare mistake the panel warns about, naming
+which one wins the decode). Type any fragment of a signal
 name, ECU, comment, value-table label, message id (hex or decimal),
 or attribute, and the tree filters to the matches: ancestors of a
 match auto-expand and everything else is hidden, so a filtered

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import type {
+  DbcCollisionRecord,
   DbcContentRecord,
   DbcMessageContentRecord,
   DbcSignalContentRecord,
@@ -323,8 +324,25 @@ interface RenderRow {
   expanded: boolean;
   hasChildren: boolean;
   kind:
-    | { tag: "bus"; busId: string; label: string; unscopedNote: boolean }
-    | { tag: "dbc"; path: string; scopeLabel: string | null }
+    | { tag: "bus"; busId: string; label: string }
+    | {
+        tag: "dbc";
+        path: string;
+        /// Why this row decodes nothing, or `null` under a real bus
+        /// group (its position there already says what it's assigned
+        /// to). Set only under the `(Unassigned)` / `(All DBCs)`
+        /// sentinel groups — the discoverability rule is this row, and
+        /// nothing more (no status-line warning, no open-project
+        /// prompt).
+        note: string | null;
+        /// A compact summary of every id this database loses to
+        /// another database assigned to the *same* bus, or `null` when
+        /// it has none there. `title` is the same information, one
+        /// collision per line, for the row's tooltip. Detected
+        /// host-side (`list_dbc_collisions`) — naming the winner is
+        /// all this warns about; choosing one is a different surface.
+        collision: { summary: string; title: string } | null;
+      }
     | { tag: "ecu"; label: string }
     | {
         tag: "message";
@@ -363,21 +381,21 @@ interface RenderRow {
       };
 }
 
-/// Group [`DbcContentRecord`]s by the bus(es) they apply to. Each
-/// project bus gets its own group; an unscoped DBC appears in every
-/// bus group (it applies to all buses). DBCs scoped to bus ids no
-/// longer in the project fall into an `(Unassigned)` group at the
-/// end. When the project has zero buses configured we collapse to a
-/// single `(All DBCs)` group so the tree still has a single root
-/// pattern.
+/// Group [`DbcContentRecord`]s by the bus(es) they are **assigned
+/// to**. Each project bus gets its own group; a database appears once
+/// per bus it is assigned to — never more, never zero for a bus it
+/// isn't assigned to. A database assigned to nothing (never scoped, or
+/// scoped only to bus ids no longer in the project) decodes nothing
+/// ([`filter::dbc_applies`] on the host) and falls into a single
+/// `(Unassigned)` group at the end, each carrying a `note` saying why.
+/// When the project has zero buses configured we collapse to a single
+/// `(All DBCs)` group instead, so the tree still has one root pattern
+/// — such a project can assign nothing either, so every entry there
+/// decodes nothing too.
 interface BusGroup {
   busId: string;
   label: string;
-  /// `true` when an entry in `dbcs` is unscoped (would otherwise be
-  /// invisibly merged into every per-bus group). The DBC row gets a
-  /// small "(applies to all buses)" label so the user knows why it's
-  /// duplicated across bus groups.
-  dbcs: Array<{ dbc: DbcContentRecord; unscoped: boolean; key: string }>;
+  dbcs: Array<{ dbc: DbcContentRecord; key: string; note: string | null }>;
 }
 
 export function groupByBus(
@@ -386,12 +404,18 @@ export function groupByBus(
   dbcBuses: Readonly<Record<string, string[]>>,
 ): BusGroup[] {
   if (buses.length === 0) {
-    // No project buses → collapse to a single "All DBCs" group.
+    // No project buses → nothing can be assigned to anything; collapse
+    // to a single "All DBCs" group so the tree still has one root
+    // pattern.
     return [
       {
         busId: ALL_BUSES_BUS_ID,
         label: "All DBCs (no buses configured)",
-        dbcs: content.map((d, i) => ({ dbc: d, unscoped: true, key: dbcKey(i, d.dbcPath) })),
+        dbcs: content.map((d, i) => ({
+          dbc: d,
+          key: dbcKey(i, d.dbcPath),
+          note: "no project bus is configured — decodes nothing",
+        })),
       },
     ];
   }
@@ -404,25 +428,34 @@ export function groupByBus(
   const groupByBusId = new Map(groups.map((g) => [g.busId, g]));
   const unassigned: BusGroup = {
     busId: UNASSIGNED_BUS_ID,
-    label: "(Unassigned — scoped to a bus that's no longer in the project)",
+    label: "(Unassigned — decodes nothing)",
     dbcs: [],
   };
   for (const [i, d] of content.entries()) {
     const key = dbcKey(i, d.dbcPath);
     const scope = dbcBuses[d.dbcPath] ?? [];
     if (scope.length === 0) {
-      // Unscoped: applies to every project bus.
-      for (const g of groups) g.dbcs.push({ dbc: d, unscoped: true, key });
+      unassigned.dbcs.push({
+        dbc: d,
+        key,
+        note: "not assigned to a bus — decodes nothing",
+      });
       continue;
     }
     const liveScope = scope.filter((b) => knownBusIds.has(b));
     if (liveScope.length === 0) {
-      unassigned.dbcs.push({ dbc: d, unscoped: false, key });
+      unassigned.dbcs.push({
+        dbc: d,
+        key,
+        note: "assigned only to a bus no longer in the project — decodes nothing",
+      });
       continue;
     }
     for (const busId of liveScope) {
       const g = groupByBusId.get(busId);
-      if (g) g.dbcs.push({ dbc: d, unscoped: false, key });
+      // A row under a real bus group needs no extra note — its
+      // position there is the assignment.
+      if (g) g.dbcs.push({ dbc: d, key, note: null });
     }
   }
   if (unassigned.dbcs.length > 0) groups.push(unassigned);
@@ -446,6 +479,36 @@ export function groupByBus(
 /// selection follows the cursor, so folding it in here would rebuild
 /// every row object on every arrow press and defeat [`DbcRow`]'s memo.
 /// The highlight is a per-row prop instead.
+/// Render text for one DBC row's duplicate-id collisions on the bus it
+/// sits under — every `DbcCollisionRecord` the host reported for that
+/// (bus, database) pair, i.e. every id this database *loses*.
+/// Presentational grouping only (by winner, so "a.dbc wins X, Y" reads
+/// once rather than once per signal); the collision itself is detected
+/// host-side and handed over already resolved
+/// ([`list_dbc_collisions`]). `null` when the database has no
+/// collision on this bus.
+function formatCollisionNote(
+  lostHere: readonly DbcCollisionRecord[],
+): { summary: string; title: string } | null {
+  if (lostHere.length === 0) return null;
+  const byWinner = new Map<string, string[]>();
+  for (const c of lostHere) {
+    const names = byWinner.get(c.winnerPath) ?? [];
+    names.push(c.signalName);
+    byWinner.set(c.winnerPath, names);
+  }
+  const summary = [...byWinner.entries()]
+    .map(([winner, names]) => `${basename(winner)} wins ${names.join(", ")}`)
+    .join("; ");
+  const title = lostHere
+    .map(
+      (c) =>
+        `${c.signalName} (0x${c.messageId.toString(16)}) is also defined in ${basename(c.winnerPath)} — ${basename(c.winnerPath)} wins`,
+    )
+    .join("\n");
+  return { summary: `⚠ duplicate id — ${summary}`, title };
+}
+
 function buildRows(
   groups: readonly BusGroup[],
   files: readonly FileBackedContentRecord[],
@@ -453,6 +516,7 @@ function buildRows(
   matchSet: ReadonlySet<string>,
   ancestorsOfMatches: ReadonlySet<string>,
   filterActive: boolean,
+  collisions: readonly DbcCollisionRecord[],
 ): RenderRow[] {
   const out: RenderRow[] = [];
   for (const g of groups) {
@@ -474,23 +538,26 @@ function buildRows(
         tag: "bus",
         busId: g.busId,
         label: g.label,
-        unscopedNote: false,
       },
     });
     if (!bExpanded) continue;
-    for (const { dbc, unscoped, key } of g.dbcs) {
+    for (const { dbc, key, note } of g.dbcs) {
       const dId = dbcNodeId(g.busId, key);
       if (filterActive && !ancestorsOfMatches.has(dId)) continue;
       const dExpanded = effectiveExpanded.has(dId);
+      const lostHere = collisions.filter(
+        (c) => c.busId === g.busId && c.loserPath === dbc.dbcPath,
+      );
       out.push({
         id: dId,
         depth: 1,
         expanded: dExpanded,
         hasChildren: dbc.messages.length > 0,
-          kind: {
+        kind: {
           tag: "dbc",
           path: dbc.dbcPath,
-          scopeLabel: unscoped ? "applies to all buses" : null,
+          note,
+          collision: formatCollisionNote(lostHere),
         },
       });
       if (!dExpanded) continue;
@@ -704,17 +771,17 @@ function initialExpandedRoots(
 /// rows it's just the one. Returns an empty list for bus / DBC rows
 /// (those aren't draggable).
 ///
-/// **Bus context comes from the row's visual position**, not the
-/// DBC's `dbcBuses` scoping. With the per-bus tree (slice 6), the
-/// same unscoped DBC is rendered under each project bus group; a
-/// drag from the bus-a copy of `EngineSpeed` produces a ref with
-/// `busId: "bus-a"` even though the DBC is unscoped. This matches
-/// what the user expects from the visual layout — they explicitly
-/// chose to drag from bus-a's view.
+/// **Bus context comes from the row's visual position**, not a second
+/// lookup into `dbcBuses`. A database assigned to two buses is
+/// rendered once per bus it's assigned to; a drag from the bus-a copy
+/// of `EngineSpeed` produces a ref with `busId: "bus-a"` even though
+/// the same DBC also appears under bus-b. This matches what the user
+/// expects from the visual layout — they explicitly chose to drag from
+/// bus-a's view.
 ///
 /// Sentinel groups ("(All DBCs)", "(Unassigned)") carry `busId:
-/// null` on their rows; drag from those produces the legacy
-/// "any bus" ref.
+/// null` on their rows — a database rendered there decodes nothing on
+/// any bus, so there is no destination to carry.
 function rowToSignalRefs(
   row: RenderRow,
   content: readonly DbcContentRecord[],
@@ -961,6 +1028,30 @@ export function DatabasePanel(props: IDockviewPanelProps) {
     };
   }, [buses, dbcBuses, seedExpanded]);
 
+  /// Duplicate-id collisions the host detected across the loaded set:
+  /// two databases assigned to the same bus defining the same id,
+  /// naming which one wins. Fetched off the same triggers as `content`
+  /// — detection is host-side, over the same set — and re-fetched here
+  /// rather than carried by `list_dbc_content`'s response so the
+  /// tree's per-bus shape and the collision facts stay two
+  /// independently testable calls. `Array.isArray` guards a
+  /// malformed / missing answer down to "no collisions" rather than
+  /// letting `buildRows` fail on it.
+  const [collisions, setCollisions] = useState<DbcCollisionRecord[]>([]);
+  const refreshCollisions = useCallback(() => {
+    let cancelled = false;
+    void invoke<DbcCollisionRecord[]>("list_dbc_collisions")
+      .then((next) => {
+        if (!cancelled) setCollisions(Array.isArray(next) ? next : []);
+      })
+      .catch(() => {
+        /* best effort — the tree renders without collision warnings */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   /// Pull a fresh `list_file_backed_content` snapshot — the capture's
   /// file-backed branches. Runs on mount and on each of the capture's
   /// change signals below; an empty answer is how the branches vanish
@@ -1008,6 +1099,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   // `dbc-changed` itself (ADR 0053 §3).
   const dbcGeneration = useDbcGeneration();
   useEffect(() => refreshContent(), [dbcPaths, dbcGeneration, refreshContent]);
+  useEffect(() => refreshCollisions(), [dbcPaths, dbcGeneration, refreshCollisions]);
 
   // Persist filter + expanded + showDetails into the dockview panel
   // params so the saved layout round-trips them. Selection
@@ -1031,6 +1123,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
         filter.matchSet,
         filter.ancestorsOfMatches,
         filter.active,
+        collisions,
       ),
     [
       busGroups,
@@ -1039,6 +1132,7 @@ export function DatabasePanel(props: IDockviewPanelProps) {
       filter.matchSet,
       filter.ancestorsOfMatches,
       filter.active,
+      collisions,
     ],
   );
 
@@ -1684,8 +1778,16 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
         <span className="dbc-row-label" title={kind.path}>
           {basename(kind.path)}
         </span>
-        {kind.scopeLabel && (
-          <span className="dbc-row-meta dbc-row-scope">{kind.scopeLabel}</span>
+        {kind.note && (
+          <span className="dbc-row-meta dbc-row-scope">{kind.note}</span>
+        )}
+        {kind.collision && (
+          <span
+            className="dbc-row-meta dbc-row-collision"
+            title={kind.collision.title}
+          >
+            {kind.collision.summary}
+          </span>
         )}
       </>
     );

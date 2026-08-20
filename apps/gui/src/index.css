@@ -4708,6 +4708,10 @@ button.trace-event-swatch {
 .dbc-row-scope {
   font-style: italic;
 }
+.dbc-row-collision {
+  color: var(--warn-text);
+  font-weight: 600;
+}
 /* File-backed branches (ADR 0052) read as siblings of the DBC ones:
    the source file like a DBC file, its channel group like an ECU. */
 .dbc-row-file .dbc-row-label {
