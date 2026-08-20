@@ -100,9 +100,15 @@ impl From<PersistedPayload> for CanFramePayload {
 /// frame index and session frame count, plus the newest frame itself (the
 /// retention overlay — `timestamp_ns` / `tx` / `payload`), so a reopen across
 /// an eviction still shows the row's last value.
+///
+/// `bus_id` is required, as it is on [`FrameKey`] — the store holds no
+/// bus-less frame, so no key flattened from one names no bus. A
+/// `derived.json` written before that rule carries `null` there and
+/// fails to parse; [`read_json`] reports that as a clean miss, so such a
+/// scratch reopens with its frames and an empty retention overlay.
 #[derive(Serialize, Deserialize)]
 struct DerivedEntry {
-    bus_id: Option<String>,
+    bus_id: String,
     channel: u8,
     id: u32,
     extended: bool,
@@ -503,7 +509,7 @@ impl TraceStore {
                     extended: e.extended,
                     direction: if e.tx { Direction::Tx } else { Direction::Rx },
                     payload: e.payload.into(),
-                    bus_id: e.bus_id.clone(),
+                    bus_id: Some(e.bus_id.clone()),
                 };
                 let key: FrameKey = (e.bus_id, e.channel, e.id, e.extended);
                 let mut rate = RateEstimate::first_seen(0, now);
@@ -644,7 +650,7 @@ pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace_store::test_support::{dummy, dummy_on_bus};
+    use crate::trace_store::test_support::{dummy, dummy_on_bus, TEST_BUS};
     use cannet_core::CanFramePayload;
     use cannet_spill::RawStore;
 
@@ -1179,7 +1185,7 @@ mod tests {
             f.payload.data().first().copied().map(u64::from)
         })));
         assert!(booted.try_reload(pid).is_some());
-        let got = booted.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, usize::MAX);
+        let got = booted.latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0, 1], 0, usize::MAX);
         assert_eq!(
             got.get(&0).map(|(i, f)| (*i, f.timestamp_ns)),
             Some((2, 3_000)),

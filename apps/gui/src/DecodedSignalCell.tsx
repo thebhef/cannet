@@ -34,7 +34,7 @@ export function DecodedSignalCell({
       messageId: frame.id,
       extended: frame.extended,
       signalName: sig.name,
-      busId: frame.bus_id ?? null,
+      busId: frame.bus_id,
     },
     sig.value,
   );
@@ -53,7 +53,7 @@ export function DecodedSignalCell({
         e.stopPropagation();
         setSignalDragData(e, [
           {
-            busId: frame.bus_id ?? null,
+            busId: frame.bus_id,
             messageId: frame.id,
             extended: frame.extended,
             signalName: sig.name,

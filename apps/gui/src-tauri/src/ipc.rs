@@ -24,11 +24,13 @@ pub struct TraceFrameRecord {
     pub kind: CanFrameKind,
     pub data: Vec<u8>,
     pub decoded: Option<DecodedRecord>,
-    /// Logical bus id this frame was routed onto, or `None` if no
-    /// binding/mapping assigned one. `None` for an unassigned
-    /// frame, which a filter `{bus: ...}` predicate never matches.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bus_id: Option<String>,
+    /// Logical bus id this frame was routed onto. Always present: a
+    /// frame enters through a bus, and one whose channel maps to none is
+    /// dropped rather than stored. (The *signal*-side `bus_id` on
+    /// [`SignalDescriptorRecord`] / [`SignalQuery`] stays optional —
+    /// `None` there names a file-backed series, which has no bus and no
+    /// message. Two different things under one name.)
+    pub bus_id: String,
     /// Ingest-time verification finding for this frame (`"crc"` /
     /// `"counter"` / `"truncated"`), if any — the trace view renders
     /// flagged rows red (ADR 0027). Absent for clean frames.
@@ -147,7 +149,11 @@ impl TraceFrameRecord {
             kind,
             data,
             decoded,
-            bus_id: frame.bus_id.clone(),
+            // Every frame the store accepts carries a bus, so this
+            // finds one. The empty-string fallback is reachable only for
+            // a scratch restored from a build that predates the rule —
+            // a row that shows no bus, which is what it had.
+            bus_id: frame.bus_id.clone().unwrap_or_default(),
             violation: None,
         }
     }
@@ -180,8 +186,9 @@ pub struct DbcInfo {
 /// One bus's current frame rate, as carried by [`TraceGrew`].
 #[derive(serde::Serialize, Clone)]
 pub struct BusFps {
-    /// Logical bus id, or `None` for the unassigned bucket.
-    pub bus_id: Option<String>,
+    /// Logical bus id. Every stored frame has one, so there is no
+    /// unassigned bucket to report.
+    pub bus_id: String,
     /// Estimated frames per second on this bus over the last second.
     pub frames_per_second: f64,
 }
