@@ -36,7 +36,7 @@ Both generators use cannet's own writers, so they need no Python:
 
 ```sh
 cargo run -p cannet-blf --example gen_time_origin_fixtures
-cargo run -p cannet-mdf --example gen_time_origin_fixtures
+cargo run -p cannet-mdf --example gen_mdf_time_origin_fixtures
 ```
 
 `time-origins.dbc` is hand-written and is not generated.
