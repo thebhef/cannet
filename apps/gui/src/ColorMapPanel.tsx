@@ -3,6 +3,7 @@ import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
 import { Combobox } from "./Combobox";
+import { ColorChip } from "./ColorChip";
 import { useElementRegistry } from "./projectElements";
 import { useProjectContext } from "./projectContext";
 import { useSignalCatalog } from "./signalCatalogContext";
@@ -158,11 +159,10 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
         <ul className="colormap-rules">
           {valueTable.map((v) => (
             <li key={v.raw} className="colormap-rule">
-              <input
-                type="color"
-                value={colorForRaw(v.raw) ?? DEFAULT_RULE_COLOR}
-                aria-label={`${v.label} color`}
-                onChange={(e) => setColorForRaw(v.raw, e.target.value)}
+              <ColorChip
+                color={colorForRaw(v.raw) ?? DEFAULT_RULE_COLOR}
+                onChange={(hex) => setColorForRaw(v.raw, hex)}
+                swatchAriaLabel={`${v.label} color`}
               />
               <span className="colormap-enum-label">{v.label}</span>
               <span className="colormap-enum-raw">{v.raw}</span>
@@ -178,11 +178,10 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
             <ul className="colormap-rules">
               {rules.map((r, i) => (
                 <li key={i} className="colormap-rule">
-                  <input
-                    type="color"
-                    value={r.color}
-                    aria-label={`range ${i + 1} color`}
-                    onChange={(e) => patchRule(i, { color: e.target.value })}
+                  <ColorChip
+                    color={r.color}
+                    onChange={(hex) => patchRule(i, { color: hex })}
+                    swatchAriaLabel={`range ${i + 1} color`}
                   />
                   <input
                     type="number"
