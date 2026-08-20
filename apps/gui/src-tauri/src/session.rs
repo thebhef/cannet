@@ -58,10 +58,9 @@ pub(crate) struct RemoteSession {
     /// interface bindings. The pump uses it to stamp incoming frames'
     /// `bus_id`; `transmit_frame` uses the reverse direction (bus id
     /// → channel) to route an outgoing frame to the right session.
-    /// Entries with `None` mean "channel unmapped" — those frames
-    /// pump through unassigned and are unreachable as transmit
-    /// destinations.
-    pub(crate) channel_to_bus: Vec<(u8, Option<String>)>,
+    /// A channel with no entry is unmapped — its frames are dropped at
+    /// the pump and it is unreachable as a transmit destination.
+    pub(crate) channel_to_bus: Vec<(u8, String)>,
     pub(crate) stop: Arc<AtomicBool>,
     /// This session's live clock-offset tracking, or `None` for a
     /// session with no `Session` behind it — the in-process
@@ -513,13 +512,13 @@ pub(crate) async fn connect_remote_server(
     // above, so each subscription has a matching binding by
     // interface id. Stored on the session so `transmit_frame` can
     // use it for outgoing routing; the pump gets its own clone.
-    let channel_to_bus: Vec<(u8, Option<String>)> = subscriptions
+    let channel_to_bus: Vec<(u8, String)> = subscriptions
         .iter()
         .filter_map(|sub| {
             binding_lookup
                 .iter()
                 .find(|b| b.interface == sub.interface_id)
-                .map(|b| (sub.channel, Some(b.bus_id.clone())))
+                .map(|b| (sub.channel, b.bus_id.clone()))
         })
         .collect();
 
@@ -651,9 +650,9 @@ fn connect_local_vbus(
         .iter()
         .map(|(c, _, _, _)| (*c, project::LOCAL_VBUS_INTERFACE.to_string()))
         .collect();
-    let channel_to_bus: Vec<(u8, Option<String>)> = participants
+    let channel_to_bus: Vec<(u8, String)> = participants
         .iter()
-        .map(|(c, _, _, bid)| (*c, Some(bid.clone())))
+        .map(|(c, _, _, bid)| (*c, bid.clone()))
         .collect();
     let subscriptions: Vec<ipc::SubscriptionRecord> = participants
         .iter()
@@ -701,7 +700,7 @@ fn connect_local_vbus(
         let stop = Arc::clone(&stop);
         let address_for_cleanup = address.clone();
         let cleanup_addr_for_log = address.clone();
-        let channel_to_bus = vec![(channel, Some(bus_id.clone()))];
+        let channel_to_bus = vec![(channel, bus_id.clone())];
         std::thread::Builder::new()
             .name(format!("cannet-vbus-pump:{address_for_cleanup}#{channel}"))
             .spawn(move || {
@@ -795,7 +794,7 @@ pub(crate) fn disconnect_remote_server(
     // entries, and the pump's own cleanup races this one.
     let retired: Vec<String> = sessions
         .iter()
-        .flat_map(|(_, s)| s.channel_to_bus.iter().filter_map(|(_, b)| b.clone()))
+        .flat_map(|(_, s)| s.channel_to_bus.iter().map(|(_, b)| b.clone()))
         .collect();
     for (addr, session) in sessions {
         session.stop.store(true, Ordering::Relaxed);
@@ -849,20 +848,18 @@ pub(crate) fn disconnect_on_exit(app: &AppHandle) {
 
 /// Decide how to route an incoming frame given the per-channel bus
 /// mapping. Returns `Some(bus_id)` to stamp the frame with that bus,
-/// `None` to leave it unassigned, or `Err(())` to drop the frame
-/// (the "skip this channel" path from the BLF mapping step).
+/// or `None` to drop the frame — a channel the mapping does not name
+/// has no bus, and a CAN frame without a bus is not a thing this host
+/// stores. The import dialog's "(skip)" is spelled the same way: the
+/// caller simply leaves the channel out.
 ///
 /// Pure helper so the pump's routing decision is unit-testable without
 /// spinning up a Tauri runtime.
-pub(crate) fn route_channel(
-    channel: u8,
-    mapping: &[(u8, Option<String>)],
-) -> Result<Option<String>, ()> {
-    match mapping.iter().find(|(ch, _)| *ch == channel) {
-        Some((_, Some(bid))) => Ok(Some(bid.clone())),
-        Some((_, None)) => Err(()),
-        None => Ok(None),
-    }
+pub(crate) fn route_channel(channel: u8, mapping: &[(u8, String)]) -> Option<String> {
+    mapping
+        .iter()
+        .find(|(ch, _)| *ch == channel)
+        .map(|(_, bid)| bid.clone())
 }
 
 /// Human-readable text of a `catch_unwind` payload: the `&str` or
@@ -878,16 +875,17 @@ pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
 // `source` is owned by this thread for its lifetime; clippy's
 // "pass by reference" suggestion doesn't fit the thread-spawn site.
 //
-// `channel_to_bus` is the source's per-channel logical-bus mapping
-// On each frame the pump tags it with the bus_id matching
-// its `channel`; a channel with no entry stays `bus_id: None`; a
-// channel mapped to `None` is dropped (the BLF-import "skip" path).
+// `channel_to_bus` is the source's per-channel logical-bus mapping.
+// On each frame the pump tags it with the bus_id matching its
+// `channel`; a channel with no entry is dropped, which is both the
+// import dialog's "skip" choice and the answer for a channel nobody
+// mapped.
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn run_pump<S>(
     app: &AppHandle,
     mut source: S,
     stop: Arc<AtomicBool>,
-    channel_to_bus: Vec<(u8, Option<String>)>,
+    channel_to_bus: Vec<(u8, String)>,
     replay_origin: bool,
 ) -> Option<u64>
 where
@@ -911,8 +909,8 @@ where
             Ok(Some(frame)) => {
                 let mut raw = RawTraceFrame::from(frame);
                 match route_channel(raw.channel, &channel_to_bus) {
-                    Ok(bid) => raw.bus_id = bid,
-                    Err(()) => continue, // skip this channel
+                    Some(bid) => raw.bus_id = Some(bid),
+                    None => continue, // no bus for this channel: drop
                 }
                 if replay_origin && anchor_replay_session(&state, &mut anchor, raw.timestamp_ns) {
                     restamp_scratch_for_capture(&state);
@@ -1003,7 +1001,7 @@ pub(crate) fn resolve_bus_route(
 ) -> Option<BusRoute> {
     for (address, session) in sessions {
         for (ch, b) in &session.channel_to_bus {
-            if b.as_deref() == Some(bus_id) {
+            if b == bus_id {
                 if let Some((_, iid)) = session.channel_to_interface.iter().find(|(c, _)| c == ch) {
                     return Some(BusRoute {
                         address: address.clone(),

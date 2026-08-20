@@ -669,7 +669,7 @@ fn seam_session(
         handle: None,
         tx: SessionTx::Vbus(sinks),
         channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
-        channel_to_bus: vec![(0, Some("p".into()))],
+        channel_to_bus: vec![(0, "p".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
     }
@@ -1092,16 +1092,15 @@ fn apply_filter_none_returns_input_unchanged() {
 
 #[test]
 fn route_channel_translates_via_mapping() {
-    let m = vec![
-        (0u8, Some("p".to_string())),
-        (1, None), // explicit skip
-        (2, Some("c".into())),
-    ];
-    assert_eq!(route_channel(0, &m), Ok(Some("p".into())));
-    assert_eq!(route_channel(2, &m), Ok(Some("c".into())));
-    assert_eq!(route_channel(1, &m), Err(()));
-    // Channel without an entry: unassigned.
-    assert_eq!(route_channel(7, &m), Ok(None));
+    let m = vec![(0u8, "p".to_string()), (2, "c".into())];
+    assert_eq!(route_channel(0, &m), Some("p".into()));
+    assert_eq!(route_channel(2, &m), Some("c".into()));
+    // A channel with no entry maps to no bus, so its frames are
+    // dropped. The import dialog's "(skip)" and a channel the caller
+    // never mentioned are one and the same outcome: there is no third
+    // answer where a frame arrives without a bus.
+    assert_eq!(route_channel(1, &m), None);
+    assert_eq!(route_channel(7, &m), None);
 }
 
 #[test]
@@ -1393,7 +1392,7 @@ fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
             std::sync::Arc::new(std::sync::Mutex::new(sink_p)),
         )]),
         channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
-        channel_to_bus: vec![(0, Some("p".into()))],
+        channel_to_bus: vec![(0, "p".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
     };
@@ -1546,7 +1545,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
             source: source_q,
             channel: 1,
         };
-        let channel_to_bus = vec![(1u8, Some("q".to_string()))];
+        let channel_to_bus = vec![(1u8, "q".to_string())];
         while !stop_for_pump.load(Ordering::Relaxed) {
             let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
                 .ok()
@@ -1555,8 +1554,8 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
                 break;
             };
             let mut raw = RawTraceFrame::from(frame);
-            if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
-                raw.bus_id = bid;
+            if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
+                raw.bus_id = Some(bid);
                 store_for_pump.append(raw);
             }
         }
@@ -1574,7 +1573,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
             (0, project::LOCAL_VBUS_INTERFACE.into()),
             (1, project::LOCAL_VBUS_INTERFACE.into()),
         ],
-        channel_to_bus: vec![(0, Some("p".into())), (1, Some("q".into()))],
+        channel_to_bus: vec![(0, "p".into()), (1, "q".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
     };
@@ -1860,13 +1859,16 @@ fn windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store()
     // start at the second frame, inclusive end at the fourth.
     let mut windowed =
         WindowedSource::new(source, Some(ts_base + 1_000_000), Some(ts_base + 3_000_000));
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     while let Some(frame) = windowed.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         store.append(raw);
     }
 
@@ -1880,6 +1882,64 @@ fn windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store()
             ts_base + 3_000_000,
         ],
         "only the in-range frames (boundaries inclusive) reached the trace store",
+    );
+}
+
+/// An import routes the channels its mapping names and **drops the
+/// rest**. A CAN frame without a bus is not a thing the store holds, so
+/// the import dialog's "(skip)" and a channel the caller never
+/// mentioned reach the same end: those frames never get appended.
+///
+/// Drives the same per-frame body `run_pump` runs (`RawTraceFrame::from`
+/// → `route_channel` → `TraceStore::append`) against a real
+/// `TraceStore`, without needing a Tauri `AppHandle`.
+#[test]
+fn an_import_drops_the_frames_of_a_channel_no_bus_is_mapped_to() {
+    use cannet_blf::BlfCanFrameSource;
+    use cannet_core::CanFrameSource as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let blf_path = dir.path().join("two-channels.blf");
+    let ts_base = 1_700_000_000_000_000_000u64;
+    {
+        let mut writer = cannet_blf::BlfCaptureWriter::create(&blf_path).unwrap();
+        for (i, channel) in [0u8, 1, 0, 1].into_iter().enumerate() {
+            let frame = cannet_core::CanFrame::classic(
+                ts_base + i as u64 * 1_000_000,
+                channel,
+                cannet_core::CanId::standard(0x100 + u32::from(channel)).unwrap(),
+                Direction::Rx,
+                vec![1],
+            )
+            .unwrap();
+            writer.append(&frame).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    let store = TraceStore::new();
+    // Channel 1 is deliberately absent — the "(skip)" choice.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "powertrain".into())];
+    let mut source = BlfCanFrameSource::open(&blf_path).unwrap();
+    while let Some(frame) = source.next_frame().unwrap() {
+        let mut raw = trace_store::RawTraceFrame::from(frame);
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            continue;
+        };
+        raw.bus_id = Some(bid);
+        store.append(raw);
+    }
+
+    let kept = store.slice(0, store.len());
+    assert_eq!(kept.len(), 2, "only the mapped channel's frames landed");
+    assert!(
+        kept.iter().all(|f| f.channel == 0),
+        "a frame from the unmapped channel reached the store",
+    );
+    assert!(
+        kept.iter()
+            .all(|f| f.bus_id.as_deref() == Some("powertrain")),
+        "every stored frame carries the bus its channel was mapped to",
     );
 }
 
@@ -1915,16 +1975,19 @@ fn an_out_of_order_blf_anchors_the_session_at_its_earliest_frame_and_keeps_every
     let state = test_state();
     let mut source =
         BlfCanFrameSource::open(time_origin_fixture("wall-clock-out-of-order.blf")).unwrap();
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut anchor: Option<u64> = None;
     let mut read = 0u64;
     while let Some(frame) = source.next_frame().unwrap() {
         read += 1;
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         crate::session::anchor_replay_session(&state, &mut anchor, raw.timestamp_ns);
         state.trace_store.append(raw);
     }
@@ -1964,14 +2027,17 @@ fn a_blf_with_no_stated_start_time_anchors_the_session_at_zero() {
     );
 
     let mut source = BlfCanFrameSource::open(time_origin_fixture("relative-zero.blf")).unwrap();
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut anchor: Option<u64> = None;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         crate::session::anchor_replay_session(&state, &mut anchor, raw.timestamp_ns);
         state.trace_store.append(raw);
     }
@@ -2013,14 +2079,17 @@ fn a_blf_marker_before_the_first_frame_lowers_the_session_origin_to_itself() {
         }
     });
 
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut anchor: Option<u64> = None;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         crate::session::anchor_replay_session(&state, &mut anchor, raw.timestamp_ns);
         state.trace_store.append(raw);
     }
@@ -2102,14 +2171,17 @@ fn an_mdf_whose_signals_start_before_its_frames_anchors_on_the_signals() {
         .map(|e| crate::capture::note_from_event(e, &mut synthetic_idx))
         .collect();
 
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut anchor: Option<u64> = None;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         crate::session::anchor_replay_session(&state, &mut anchor, raw.timestamp_ns);
         state.trace_store.append(raw);
     }
@@ -2279,7 +2351,10 @@ fn a_cancelled_import_stops_the_pump_loop_early_leaving_the_frames_already_inges
     *state.import_cancel() = Some(Arc::clone(&flag));
 
     let mut source = BlfCanFrameSource::open(&blf_path).unwrap();
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut ingested = 0usize;
     loop {
         if flag.load(Ordering::Relaxed) {
@@ -2289,8 +2364,8 @@ fn a_cancelled_import_stops_the_pump_loop_early_leaving_the_frames_already_inges
             break;
         };
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
-            raw.bus_id = bid;
+        if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
+            raw.bus_id = Some(bid);
             store.append(raw);
             ingested += 1;
         }
@@ -2348,14 +2423,14 @@ fn mdf_import_lands_frames_with_absolute_timestamps_and_mapped_buses() {
     std::fs::create_dir_all(&store_dir).unwrap();
     let store = open_trace_store(&store_dir);
 
-    let channel_to_bus: Vec<(u8, Option<String>)> = vec![(0, Some("p".into()))];
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "p".into())];
     let mut n = 0u64;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         store.append(raw);
         n += 1;
     }
@@ -2399,13 +2474,16 @@ fn mdf_windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_sto
     let store_dir = scratch.path().join("current");
     std::fs::create_dir_all(&store_dir).unwrap();
     let store = open_trace_store(&store_dir);
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     while let Some(frame) = windowed.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         store.append(raw);
     }
 
@@ -3901,7 +3979,7 @@ fn bench_tx_vbus_real_path() {
             source: source_q,
             channel: 1,
         };
-        let channel_to_bus = vec![(1u8, Some("q".to_string()))];
+        let channel_to_bus = vec![(1u8, "q".to_string())];
         while !stop_for_pump.load(Ordering::Relaxed) {
             let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
                 .ok()
@@ -3910,8 +3988,8 @@ fn bench_tx_vbus_real_path() {
                 break;
             };
             let mut raw = RawTraceFrame::from(frame);
-            if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
-                raw.bus_id = bid;
+            if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
+                raw.bus_id = Some(bid);
                 store_for_pump.append(raw);
             }
         }
@@ -3927,7 +4005,7 @@ fn bench_tx_vbus_real_path() {
             (0, project::LOCAL_VBUS_INTERFACE.into()),
             (1, project::LOCAL_VBUS_INTERFACE.into()),
         ],
-        channel_to_bus: vec![(0, Some("p".into())), (1, Some("q".into()))],
+        channel_to_bus: vec![(0, "p".into()), (1, "q".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
     };
@@ -4308,19 +4386,17 @@ fn bench_blf_import() {
     assert_eq!(n, frames);
 
     // -- convert: + `RawTraceFrame::from`, routing, and the verifier probe.
-    let channel_to_bus: Vec<(u8, Option<String>)> = (0..CHANNELS)
-        .map(|c| (c, Some(format!("bus{c}"))))
-        .collect();
+    let channel_to_bus: Vec<(u8, String)> = (0..CHANNELS).map(|c| (c, format!("bus{c}"))).collect();
     let verifier = verification::VerificationState::default();
     let mut source = BlfCanFrameSource::open(&blf).unwrap();
     let t = std::time::Instant::now();
     let mut kept = 0usize;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         let _checked = verifier.wants(&raw).then(|| raw.clone());
         kept += 1;
         std::hint::black_box(&raw);
@@ -4338,10 +4414,10 @@ fn bench_blf_import() {
     let mut first = true;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         if first {
             store.start_session(raw.timestamp_ns);
             first = false;
@@ -4424,10 +4500,10 @@ fn bench_blf_import() {
         let mut first = true;
         while let Some(frame) = source.next_frame().unwrap() {
             let mut raw = RawTraceFrame::from(frame);
-            let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
                 continue;
             };
-            raw.bus_id = bid;
+            raw.bus_id = Some(bid);
             if first {
                 store.start_session(raw.timestamp_ns);
                 first = false;
