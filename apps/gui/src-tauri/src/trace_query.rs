@@ -655,13 +655,7 @@ fn decode_snapshot_frame<'a>(
 ) -> Option<cannet_dbc::DecodedMessage<'a>> {
     let id = CanId::new(frame.id, frame.extended).ok()?;
     dbs.iter()
-        .filter(|(_, buses)| {
-            buses.is_empty()
-                || frame
-                    .bus_id
-                    .as_ref()
-                    .is_some_and(|b| buses.iter().any(|x| x == b))
-        })
+        .filter(|(_, buses)| filter::dbc_applies(buses, frame.bus_id.as_deref()))
         .find_map(|(db, _)| db.decode_raw(id, frame.payload.data()))
 }
 

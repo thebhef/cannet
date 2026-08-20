@@ -143,7 +143,7 @@ impl VerificationState {
             let Ok(can_id) = can_id else { continue };
             let Some(loaded) = dbs
                 .iter()
-                .filter(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == bus))
+                .filter(|d| crate::filter::dbc_applies(&d.buses, Some(bus.as_str())))
                 .find(|d| d.db.dbc_calculated_fields(can_id).is_some())
             else {
                 continue;

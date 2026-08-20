@@ -429,7 +429,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
                         // Per-field layering over the DBC default.
                         let dbc_default = dbs
                             .iter()
-                            .filter(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == &bus_id))
+                            .filter(|d| filter::dbc_applies(&d.buses, Some(bus_id.as_str())))
                             .find_map(|d| d.db.dbc_calculated_fields(can_id))
                             .cloned()
                             .unwrap_or_default();

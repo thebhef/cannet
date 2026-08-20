@@ -76,7 +76,7 @@ pub(crate) fn resolve_effective_calc(
     };
     let Some(loaded) = dbs
         .iter()
-        .filter(|d| d.buses.is_empty() || d.buses.iter().any(|b| b == &request.bus_id))
+        .filter(|d| crate::filter::dbc_applies(&d.buses, Some(request.bus_id.as_str())))
         .find(|d| d.db.dbc_calculated_fields(id).is_some())
     else {
         return if no_override {

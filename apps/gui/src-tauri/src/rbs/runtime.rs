@@ -173,10 +173,10 @@ pub(super) fn reconstruct_payload(
 // Registration and schedule reconciliation
 // ---------------------------------------------------------------------
 
-/// Whether DBC `d` is scoped to bus `bus_id`. An empty scope is the
-/// "applies to all buses" default.
+/// Whether DBC `d` is scoped to bus `bus_id` — the same scoping rule
+/// the decode path applies ([`crate::filter::dbc_applies`]).
 fn dbc_scoped_to(d: &crate::app_state::LoadedDbc, bus_id: &str) -> bool {
-    d.buses.is_empty() || d.buses.iter().any(|b| b == bus_id)
+    crate::filter::dbc_applies(&d.buses, Some(bus_id))
 }
 
 /// Visit every message the rest-of-bus simulation should show for
