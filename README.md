@@ -2162,6 +2162,20 @@ any assigned database defining that signal brings the view back, and one
 defining it exactly as the parked samples were decoded brings the samples
 back with it.
 
+**Unchecking a bus stops what it was driving.** A periodic transmit row
+or a rest-of-bus row that is *transmitting* is putting frames on a real
+bus, so once no database assigned to that bus defines its message any
+more, it stops — one line in the System Messages panel says how many
+did, and there is no prompt and no per-row notice. The unassign itself
+always proceeds: it is a deliberate gesture, and refusing it would make
+assignment conditional on first hunting down what is transmitting. A row
+the databases never described — a CAN id typed by hand — keeps firing,
+and so does one another database still on the bus defines. Removing a
+database from the project removes it from its buses and reaches the same
+rule the same way. A stopped transmit row keeps its configuration and is
+restarted with its own Run control; a rest-of-bus row is rebuilt by its
+element, so it resumes when the element's Run is still on.
+
 **Default: receive from every bus**. Each consumer (trace, plot, filter) carries a
 `sources: string[]` list of upstream producer ids — bus ids or filter
 ids — with the literal `"*"` as a wildcard meaning "every bus in the
