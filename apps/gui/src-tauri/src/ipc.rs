@@ -183,6 +183,28 @@ pub struct DbcInfo {
     pub buses: Vec<String>,
 }
 
+/// One duplicate-id collision the Database panel warns about: two
+/// databases assigned to `bus_id` define the same `(message id,
+/// extended, signal name)`, and `winner_path` names the one that
+/// actually resolves it today (project load order, restricted to the
+/// bus's assigned databases — [`crate::signal_snapshot::dbc_collisions`]).
+/// Returned from `list_dbc_collisions` as a flat list; the panel groups
+/// by the database it renders each row under.
+///
+/// Naming the winner is all the warning does — which database's
+/// decode should apply to the colliding signal is a resolution the
+/// Database panel does not offer.
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DbcCollisionRecord {
+    pub bus_id: String,
+    pub message_id: u32,
+    pub extended: bool,
+    pub signal_name: String,
+    pub winner_path: String,
+    pub loser_path: String,
+}
+
 /// One bus's current frame rate, as carried by [`TraceGrew`].
 #[derive(serde::Serialize, Clone)]
 pub struct BusFps {

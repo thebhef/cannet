@@ -5167,3 +5167,41 @@ fn removing_a_database_stops_the_periodics_it_was_driving() {
     assert_eq!(stopped, Some(vec!["row".to_string()]));
     assert!(!state.transmit_frames().is_running("row"));
 }
+
+// ---- The Database panel warns on a duplicate id ---------------------
+//
+// Priority stays one project-wide load order; assignment filters it
+// (`AppState::first_dbc_on_bus`). Two databases assigned to one bus
+// that define the same id is a weird case, but it warns rather than
+// silently deciding for the user which one wins.
+
+#[test]
+fn set_dbc_buses_wires_up_a_bus_collision_the_real_load_and_assign_path_produces() {
+    // Through `install_dbc` / `set_dbc_buses_inner` — the same calls
+    // the panel's Add / bus-checkbox actions make — rather than
+    // building `LoadedDbc`s by hand, so a wiring mistake between the
+    // two would show up here even if `dbc_collisions` itself is right.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::install_dbc(&state, "b.dbc", &ab_dbc_text(1, 2)).unwrap();
+    // c.dbc defines the same signals but never shares a bus with
+    // either — it must collide with neither.
+    crate::dbc_commands::install_dbc(&state, "c.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["pt".to_string()]);
+    crate::dbc_commands::set_dbc_buses_inner(&state, "c.dbc", vec!["ch".to_string()]);
+
+    let dbs = state.databases();
+    let collisions = crate::signal_snapshot::dbc_collisions(
+        dbs.iter()
+            .map(|d| (d.path.as_str(), d.db.as_ref(), d.buses.as_slice())),
+    );
+    drop(dbs);
+
+    let mut names: Vec<&str> = collisions.iter().map(|c| c.signal_name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, vec!["A", "B"], "a.dbc and b.dbc collide on both");
+    assert!(collisions.iter().all(|c| c.bus_id == "pt"));
+    assert!(collisions.iter().all(|c| c.winner_path == "a.dbc"));
+    assert!(collisions.iter().all(|c| c.loser_path == "b.dbc"));
+}
