@@ -265,3 +265,29 @@ either direction:
 | full/mem | 2.20 s | 1.62 s |
 | full | 7.38 s | 3.83 s |
 | full+obs | 5.85 s | 3.87 s |
+
+**`bench_blf_import` re-verified a second time** (foreground, release,
+`--ignored --nocapture`, commit `ce24de28` — this branch, correct
+checkout confirmed): census 0.40 s, markers* 0.52 s, decode 0.73 s,
+convert 0.93 s, full/mem 2.30 s, full 7.44 s, full+obs 7.06 s — within
+machine noise of both prior runs above, no regression.
+
+**ADR-0031 render-tier gate.** Release build
+(`pnpm --dir apps/gui tauri build --no-bundle`), four 60 s
+`--perf-interact scrub` runs against `examples/ev-zonal`
+(`docs/performance-measurements/frontend/2026-08-20-ce24de28-p1-run{1..4}.json`,
+not committed — review artifacts). `cannet-perf-measurement check`
+against the promoted baseline with all four `--frontend-report`s and
+`--expected-rx-fps 1608 --expected-tx-fps 1608`:
+
+```
+check passed (87 metrics gated)
+```
+
+Every host mode (`tracebuffer`, `grpc`, `hardware-peak`) and every
+frontend metric across all four runs is `ok`. No baseline promoted, no
+limit widened. The two metrics flagged as known-jittery came in inside
+their noted bands: `lag_ms_max` worst 26.3 ms (band 1.1–29.4, limit
+41), `rx_gap_short_frac_worst` worst 0.005 (band 0.003–0.0105, limit
+0.166). `tree_mb_peak` worst 767.7 MB against baseline 714.1 / limit
+1492.1 — no repeat of task 88 phase 6's unreproduced 8233 MB spike.
