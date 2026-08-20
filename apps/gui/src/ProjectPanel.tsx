@@ -13,6 +13,7 @@ import {
   describeBusConnState,
   useConnectionStates,
 } from "./connectionStates";
+import { ColorChip } from "./ColorChip";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { useProjectContext } from "./projectContext";
 import { useElementRegistry, type RegistryEntry } from "./projectElements";
@@ -352,12 +353,11 @@ export function ProjectPanel(props: IDockviewPanelProps) {
           return (
             <div className="project-bus-row" key={bus.id}>
               <div className="project-bus">
-                <input
-                  type="color"
-                  className="project-bus-color"
-                  value={bus.color ?? defaultBusColor(i)}
-                  onChange={(e) => p.onUpdateBus(bus.id, { color: e.target.value })}
-                  aria-label={`bus ${bus.id} color`}
+                <ColorChip
+                  color={bus.color ?? defaultBusColor(i)}
+                  onChange={(hex) => p.onUpdateBus(bus.id, { color: hex })}
+                  inputClassName="project-bus-color"
+                  swatchAriaLabel={`bus ${bus.id} color`}
                   title="Graph color for this bus"
                 />
                 <input

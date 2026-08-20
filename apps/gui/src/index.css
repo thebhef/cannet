@@ -1697,16 +1697,10 @@ header {
   padding: 0.15rem 0.35rem;
 }
 
-.project-bus-color {
-  flex: 0 0 auto;
-  width: 1.6rem;
-  height: 1.6rem;
-  padding: 0;
-  border: 1px solid var(--border-soft);
-  border-radius: 0.2rem;
-  background: var(--surface-field);
-  cursor: pointer;
-}
+/* The bus colour picker is a ColorChip (`.color-chip*`) — shape and
+   behaviour come from there now; `.project-bus-color` (on the real
+   `<input type="color">`) is a query hook only, kept for
+   `App.busColor.dom.test.tsx`. */
 
 .project-binding-form {
   display: flex;
