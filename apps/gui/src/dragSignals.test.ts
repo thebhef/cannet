@@ -87,22 +87,18 @@ describe("dragSignals", () => {
       unit: "rpm",
     };
 
-    it("emits one ref per scoped bus when the DBC is scoped", () => {
+    it("emits one ref per bus the DBC is assigned to", () => {
       const out = fanOutByBus(base, ["bus-a", "bus-b"]);
       expect(out).toHaveLength(2);
       expect(out.map((r) => r.busId)).toEqual(["bus-a", "bus-b"]);
     });
 
-    it("emits a single null-bus ref when the DBC is unscoped (no project-bus fan-out)", () => {
-      // An unscoped DBC drops as one ref with `busId: null` — the
-      // legacy "any bus" sampling path. We deliberately do NOT
-      // multiply by project buses here; doing so would manufacture
-      // N copies of every signal on a drop and surprise the user
-      // (they never picked a bus). This is asymmetric with
-      // `list_signals`, which does fan unscoped DBCs across project
-      // buses for the picker dropdown.
-      const out = fanOutByBus(base, []);
-      expect(out).toEqual([{ ...base, busId: null }]);
+    it("emits nothing for a DBC assigned to no bus", () => {
+      // Bus assignment governs decode: such a database answers for no
+      // frame on any bus, so there is no series to drop. The old
+      // `busId: null` ref would have asked the sampler for whatever
+      // some other database on some other bus supplied.
+      expect(fanOutByBus(base, [])).toEqual([]);
     });
   });
 
