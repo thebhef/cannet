@@ -855,3 +855,47 @@ describe("TransmitPanel rehydration", () => {
     expect(screen.getAllByLabelText("frame description")).toHaveLength(2);
   });
 });
+
+describe("view-signals push (task 89)", () => {
+  it("pushes nothing for a frame with no calculated-field spec", async () => {
+    POOL = [frame("a")];
+    renderPanel("el", ["a"]);
+    await waitFor(() =>
+      expect(lastCall("set_view_signals")?.args).toEqual(
+        expect.objectContaining({ viewId: "el", signals: [] }),
+      ),
+    );
+  });
+
+  it("pushes a frame's counter and CRC signals, identity only", async () => {
+    POOL = [
+      frame("a", {
+        request: { busId: "b1", id: 0x110, extended: false, kind: "classic", data: [0], brs: false, esi: false, dlc: 0 },
+        calc: {
+          counter: { signal: "Counter", increment: 1 },
+          crc: { signal: "Crc", range_bits: [0, 8] },
+        },
+      }),
+    ];
+    renderPanel("el", ["a"]);
+    await waitFor(() =>
+      expect(lastCall("set_view_signals")?.args).toEqual(
+        expect.objectContaining({
+          viewId: "el",
+          signals: [
+            { busId: "b1", messageId: 0x110, extended: false, signalName: "Counter" },
+            { busId: "b1", messageId: 0x110, extended: false, signalName: "Crc" },
+          ],
+        }),
+      ),
+    );
+  });
+
+  it("un-pushes on unmount", async () => {
+    POOL = [frame("a")];
+    renderPanel("el", ["a"]);
+    await waitFor(() => expect(lastCall("set_view_signals")).toBeDefined());
+    cleanup();
+    expect(lastCall("remove_view_signals")?.args).toEqual({ viewId: "el" });
+  });
+});
