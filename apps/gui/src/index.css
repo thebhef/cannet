@@ -2180,6 +2180,81 @@ button.trace-event-swatch {
   padding: 0;
 }
 
+/* === Shared colour chip (ColorChip.tsx) ===
+   One control renders every colour swatch and picker in the app: an
+   editable picker (a trace event, a plot series, a colour-map rule, a
+   project bus's graph colour, a signal's name colour) and a plain
+   identity dot (the bus marker beside a plotted signal, a
+   measurement's series marker). Standardised on the events panel's
+   shape below, because it was the one of the three prior
+   implementations that had already solved the native picker's
+   anchoring correctly — see `.color-chip-input`. A site may still
+   carry its own class alongside these (a query hook for its own tests
+   and generator rules); it carries no styling of its own. */
+.color-chip {
+  border-radius: 2px;
+  border: 1px solid var(--border-wash);
+  padding: 0;
+}
+button.color-chip {
+  cursor: pointer;
+}
+.color-chip-bar {
+  align-self: stretch;
+  width: 1.5rem;
+  flex: 0 0 auto;
+}
+/* A small, non-interactive identity marker — a bus's colour beside a
+   signal row, a measurement's series colour — sized to sit inline with
+   text rather than fill a row. */
+.color-chip-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-right: 0.3rem;
+  vertical-align: middle;
+  border-color: var(--border-wash-strong);
+}
+.color-chip-hidden {
+  opacity: 0.25;
+}
+/* Wrap the visible box + its hidden native colour input. The input
+   pops the native picker over the box. */
+.color-chip-wrap {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+  flex: 0 0 auto;
+}
+.color-chip-input {
+  /* Cover the box's real footprint (inset:0 stretches the absolutely
+   * positioned input to fill the relative wrap) rather than collapsing
+   * to a zero-size point. The native colour picker anchors to the
+   * input's rendered rect; giving it the box's own size keeps the
+   * popover on the box. On macOS a zero-size anchor inside a
+   * virtualized, absolutely-positioned row makes the popover land in
+   * the wrong place — this `inset: 0` sizing is the fix, carried here
+   * from the one prior copy that had worked it out, so every site now
+   * gets it. `opacity: 0` + `pointer-events: none` keep it invisible
+   * and let the box take the click (which forwards to
+   * `input.click()`). */
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  border: 0;
+  padding: 0;
+}
+/* The invisible-trigger variant (`hideBox`): no box at all, just the
+   native input, for a site whose own trigger is something else (a
+   coloured signal name, right-clicked). No absolute positioning is
+   needed — nothing to anchor over — `display: none` is enough, and the
+   caller opens it via a forwarded ref. */
+.color-chip-input-bare {
+  display: none;
+}
+/* === end shared colour chip === */
+
 /* The clicked event row. Selection is view-local and keyed by event id,
    so it survives the row slots being recycled by a scroll. */
 .trace-event-focused {
