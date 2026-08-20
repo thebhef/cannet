@@ -3477,15 +3477,9 @@ button.color-chip {
   align-items: center;
   gap: 0.5rem;
 }
-.colormap-rule input[type="color"] {
-  flex: 0 0 auto;
-  width: 1.5rem;
-  height: 1.5rem;
-  padding: 0;
-  border: 1px solid var(--border-dotted);
-  border-radius: 0.2rem;
-  background: none;
-}
+/* The rule's colour picker is a ColorChip (`.color-chip*`) — shape and
+   behaviour come from there now, standardised on the events panel's
+   shape rather than this panel's own smaller square. */
 /* Enum row: the value's name fills the row, its raw value sits muted at
  * the end. */
 .colormap-enum-label {
