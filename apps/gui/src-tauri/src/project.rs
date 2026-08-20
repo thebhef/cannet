@@ -159,8 +159,9 @@ pub struct BridgeSpec {
     pub name: String,
 }
 
-/// A loaded DBC reference with its bus scoping. An empty `buses` is
-/// the conventional "all buses" default.
+/// A loaded DBC reference with its bus assignment. An empty `buses`
+/// assigns it to nothing, and a database assigned to nothing decodes
+/// nothing — including a project saved before that was the rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbcRef {
     pub path: String,
@@ -202,8 +203,8 @@ pub struct Project {
     /// Interface → bus bindings.
     #[serde(default)]
     pub interface_bindings: Vec<InterfaceBinding>,
-    /// Loaded DBCs + per-DBC bus scoping. An empty `buses`
-    /// on a `DbcRef` is the "all buses" default.
+    /// Loaded DBCs + per-DBC bus assignment. An empty `buses` on a
+    /// `DbcRef` is a database assigned to nothing.
     #[serde(default)]
     pub dbcs: Vec<DbcRef>,
     /// Remote `cannet-server` address (`host:port`), if the project

@@ -177,8 +177,8 @@ pub struct ImportMdfResult {
 pub struct DbcInfo {
     pub dbc_path: String,
     pub message_count: usize,
-    /// Logical bus ids this DBC is scoped to. An empty vec
-    /// is the conventional "all buses" default.
+    /// Logical bus ids this DBC is assigned to. An empty vec is a
+    /// database assigned to nothing, which decodes nothing.
     #[serde(default)]
     pub buses: Vec<String>,
 }
@@ -573,9 +573,11 @@ pub enum LogFinished {
 // came from — the same reasoning `cannet_dbc::SignalDescriptor` records.
 #[allow(clippy::struct_excessive_bools)]
 pub struct SignalDescriptorRecord {
-    /// Logical bus this descriptor applies to. `None` only when no
-    /// project bus is configured *and* the DBC is unscoped — a
-    /// degenerate state the plot picker treats as "any frame".
+    /// Logical bus this descriptor applies to — a bus the defining
+    /// database is assigned to. Optional only because the wire type is
+    /// shared with the signal-key side, where `None` is a file-backed
+    /// series; the descriptor universe itself never produces one, since
+    /// an unassigned database contributes no descriptors.
     pub bus_id: Option<String>,
     pub message_id: u32,
     pub extended: bool,

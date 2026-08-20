@@ -32,16 +32,17 @@ use crate::trace_store::RawTraceFrame;
 /// Minimum spacing of valid→invalid Info messages per `(bus, id)`.
 const TRANSITION_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
-/// A configured `(bus scope, raw id, extended)`. `None` is "any bus" —
-/// the declaring DBC is unscoped. That wildcard is a fact about the
-/// *database*, not about a frame, which is why the runtime maps key on
-/// [`RuntimeKey`] instead.
-type ConfigKey = (Option<String>, u32, bool);
+/// A configured `(bus, raw id, extended)`. The bus is required, and is
+/// a bus the declaring database is *assigned to*: assignment governs
+/// decode ([`crate::filter::dbc_applies`]), so a database assigned to no
+/// bus declares no configuration and there is no any-bus wildcard to
+/// fall back to. Distinct from [`RuntimeKey`] all the same — this bus
+/// comes from a database's assignment, that one from a frame.
+type ConfigKey = (String, u32, bool);
 
 /// The `(bus, raw id, extended)` counter continuity and validity are
 /// tracked per. The bus is required: a frame enters through one, and
-/// one whose channel maps to no bus never reaches the ingest path — so
-/// unlike [`ConfigKey`] there is no wildcard and no unknown-bus case.
+/// one whose channel maps to no bus never reaches the ingest path.
 type RuntimeKey = (String, u32, bool);
 
 /// Shared verification state. One instance on `AppState`.
@@ -102,9 +103,10 @@ impl VerificationState {
     ) {
         let mut configs: HashMap<ConfigKey, ResolvedCalculatedFields> = HashMap::new();
 
-        // DBC-declared defaults: one entry per scoped bus, or a
-        // wildcard (`None`) for an unscoped DBC. First DBC wins per
-        // key (matching the decode path's first-match-wins).
+        // DBC-declared defaults: one entry per bus the database is
+        // assigned to, and none at all for one assigned to no bus —
+        // it decodes nothing, so it declares nothing. First DBC wins
+        // per key (matching the decode path's first-match-wins).
         for loaded in dbs {
             for (id, extended, config) in loaded.db.calculated_field_messages() {
                 let can_id = if extended {
@@ -117,16 +119,10 @@ impl VerificationState {
                     // Malformed designation — already warned at load.
                     continue;
                 };
-                if loaded.buses.is_empty() {
+                for bus in &loaded.buses {
                     configs
-                        .entry((None, id, extended))
+                        .entry((bus.clone(), id, extended))
                         .or_insert_with(|| resolved.clone());
-                } else {
-                    for bus in &loaded.buses {
-                        configs
-                            .entry((Some(bus.clone()), id, extended))
-                            .or_insert_with(|| resolved.clone());
-                    }
                 }
             }
         }
@@ -149,7 +145,7 @@ impl VerificationState {
                 continue;
             };
             if let Ok(resolved) = loaded.db.resolve_calculated_fields(can_id, config) {
-                configs.insert((Some(bus.clone()), *id, *extended), resolved);
+                configs.insert((bus.clone(), *id, *extended), resolved);
             }
         }
 
@@ -184,13 +180,12 @@ impl VerificationState {
         if frame.direction == Direction::Tx || !self.configured.load(Ordering::Relaxed) {
             return false;
         }
+        let Some(bus) = frame.bus_id.clone() else {
+            return false;
+        };
         let inner = self.inner.lock().expect("verification mutex poisoned");
-        let wildcard: ConfigKey = (None, frame.id, frame.extended);
-        if inner.configs.contains_key(&wildcard) {
-            return true;
-        }
-        let scoped: ConfigKey = (frame.bus_id.clone(), frame.id, frame.extended);
-        inner.configs.contains_key(&scoped)
+        let key: ConfigKey = (bus, frame.id, frame.extended);
+        inner.configs.contains_key(&key)
     }
 
     /// Verify one just-ingested frame. Cheap for unconfigured ids —
@@ -228,13 +223,11 @@ impl VerificationState {
         let bus = frame.bus_id.clone()?;
 
         let mut inner = self.inner.lock().expect("verification mutex poisoned");
-        // Bus-scoped config first, then the any-bus wildcard.
-        let scoped_cfg: ConfigKey = (Some(bus.clone()), frame.id, frame.extended);
-        let wildcard: ConfigKey = (None, frame.id, frame.extended);
-        let config = inner
-            .configs
-            .get(&scoped_cfg)
-            .or_else(|| inner.configs.get(&wildcard))?;
+        // The configuration of the bus this frame arrived on, declared
+        // by a database assigned to it. There is no wildcard: a
+        // database assigned to no bus configures nothing.
+        let cfg_key: ConfigKey = (bus.clone(), frame.id, frame.extended);
+        let config = inner.configs.get(&cfg_key)?;
 
         let seen: RuntimeKey = (bus, frame.id, frame.extended);
         let prev = inner.counters.get(&seen).copied();
@@ -380,13 +373,12 @@ mod tests {
         }
     }
 
+    /// A configured state whose database is assigned to `buses`. There
+    /// is no "assigned to nothing" flavour: such a database configures
+    /// nothing, which is [`a_database_assigned_to_no_bus_configures_nothing`].
     fn state_with_config(buses: &[&str]) -> VerificationState {
         let state = VerificationState::default();
-        let loaded = if buses.is_empty() {
-            crate::tests::loaded("v.dbc", VERIFY_DBC)
-        } else {
-            crate::tests::loaded_scoped("v.dbc", VERIFY_DBC, buses)
-        };
+        let loaded = crate::tests::loaded_scoped("v.dbc", VERIFY_DBC, buses);
         state.rebuild_configs(&[loaded], &[]);
         state
     }
@@ -399,7 +391,7 @@ mod tests {
 
     #[test]
     fn valid_sequence_stays_clean_and_seeds_state() {
-        let state = state_with_config(&[]);
+        let state = state_with_config(&["p"]);
         for (i, payload) in valid_payloads(4).into_iter().enumerate() {
             observe_quiet(&state, &rx_frame(Some("p"), payload), i as u64);
         }
@@ -412,7 +404,7 @@ mod tests {
 
     #[test]
     fn corruption_and_skip_paint_their_frames() {
-        let state = state_with_config(&[]);
+        let state = state_with_config(&["p"]);
         let frames = valid_payloads(5);
         observe_quiet(&state, &rx_frame(Some("p"), frames[0].clone()), 0);
         // Corrupt a covered byte → CRC violation at index 1.
@@ -450,7 +442,7 @@ mod tests {
 
     #[test]
     fn own_tx_and_unconfigured_ids_are_exempt() {
-        let state = state_with_config(&[]);
+        let state = state_with_config(&["p"]);
         let mut tx = rx_frame(Some("p"), vec![0u8; 8]);
         tx.direction = Direction::Tx;
         // A Tx frame with garbage fields is never checked.
@@ -505,7 +497,7 @@ mod tests {
 
         // Same probe, now with a config loaded: the answer needs the map,
         // so holding the lock withholds it.
-        let loaded = crate::tests::loaded("v.dbc", VERIFY_DBC);
+        let loaded = crate::tests::loaded_scoped("v.dbc", VERIFY_DBC, &["p"]);
         state.rebuild_configs(&[loaded], &[]);
         assert_eq!(
             ask(&state, answered),
@@ -525,12 +517,12 @@ mod tests {
     /// on the bus a frame *arrived on*, which is always a real bus: a
     /// frame enters through one, and one whose channel maps to no bus
     /// never reaches the ingest path. That is a different thing from
-    /// the config map's key, whose `None` is an unscoped database's
-    /// any-bus wildcard, and the snapshot names the frame's bus
-    /// outright rather than carrying an "unknown" case.
+    /// the config map's key, which names a bus a *database* is assigned
+    /// to, and the snapshot names the frame's bus outright rather than
+    /// carrying an "unknown" case.
     #[test]
     fn runtime_state_is_keyed_on_the_bus_the_frame_arrived_on() {
-        let state = state_with_config(&[]); // unscoped: applies to every bus
+        let state = state_with_config(&["p", "c"]);
         let frames = valid_payloads(3);
         // Interleaved, but each bus sees its own in-order sequence.
         for (i, payload) in frames.iter().enumerate() {
@@ -554,6 +546,19 @@ mod tests {
             vec!["c", "p"],
         );
         assert!(snap.iter().all(|r| !r.valid));
+    }
+
+    #[test]
+    fn a_database_assigned_to_no_bus_configures_nothing() {
+        // Assignment governs decode, and a calculated-field declaration
+        // is decode: an unassigned database declares no configuration,
+        // so nothing is checked on any bus.
+        let state = state_with_config(&[]);
+        let garbage = vec![0xAAu8; 8];
+        observe_quiet(&state, &rx_frame(Some("p"), garbage.clone()), 0);
+        observe_quiet(&state, &rx_frame(Some("q"), garbage), 1);
+        assert!(state.violations_in(0, 10).is_empty());
+        assert!(!state.wants(&rx_frame(Some("p"), vec![0u8; 8])));
     }
 
     #[test]
@@ -583,7 +588,11 @@ mod tests {
         };
         let state = VerificationState::default();
         state.rebuild_configs(
-            &[crate::tests::loaded("v.dbc", VERIFY_DBC)],
+            &[crate::tests::loaded_scoped(
+                "v.dbc",
+                VERIFY_DBC,
+                &["p", "z"],
+            )],
             &[("p".into(), 291, false, override_config)],
         );
 

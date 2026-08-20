@@ -42,20 +42,17 @@ export function useSignalCatalog(): SignalCatalogContextValue {
 
 /// Fetches the signal catalog once and shares it with every descendant
 /// via `useSignalCatalog()`. Must be mounted inside a `ProjectContext`
-/// provider — it reads `buses` (to scope the query, same as every
-/// panel's prior independent fetch) and `dbcPaths` (to refetch when
-/// the loaded DBC set changes).
+/// provider — it reads `buses` (to refetch when the project's bus list
+/// moves) and `dbcPaths` (to refetch when the loaded DBC set changes).
 export function SignalCatalogProvider({ children }: { children: ReactNode }): ReactNode {
   const { buses, dbcPaths } = useProjectContext();
   const [catalog, setCatalog] = useState<SignalDescriptorRecord[]>([]);
 
   const refreshCatalog = useCallback(() => {
-    void invoke<SignalDescriptorRecord[]>("list_signals", {
-      // The host expands unscoped DBCs to one record per project bus,
-      // so every picker can offer the same signal on each bus the DBC
-      // applies to.
-      projectBuses: buses.map((b) => b.id),
-    })
+    // The host expands each database across the buses it is *assigned*
+    // to, so the catalog is a function of the loaded set and its
+    // assignments alone — the project's bus list is not an input.
+    void invoke<SignalDescriptorRecord[]>("list_signals")
       .then(setCatalog)
       .catch(() => setCatalog([]));
   }, [buses]);

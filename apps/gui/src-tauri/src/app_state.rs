@@ -43,17 +43,20 @@ use crate::trace_query::ActiveFilterIndex;
 use crate::transmit_commands::{merge_calc_override, resolve_effective_calc};
 
 /// A loaded DBC: its source path, the parsed database, and the set of
-/// logical bus ids this DBC is scoped to. Decoders walk the
+/// logical bus ids this DBC is **assigned to**. Decoders walk the
 /// loaded list in order — the first that decodes a given frame wins —
-/// and skip any DBC whose `buses` set is non-empty and doesn't contain
-/// the frame's `bus_id`. An empty set is "applies to every bus".
+/// and skip any DBC whose `buses` set does not contain the frame's
+/// `bus_id` ([`crate::filter::dbc_applies`]). An empty set is a
+/// database assigned to nothing, which decodes nothing: loading a file
+/// makes it available, assigning it to a bus makes it decode.
 pub(crate) struct LoadedDbc {
     pub(crate) path: String,
     /// `Arc` so the trace store's per-frame mux-selector extractor can
     /// hold a snapshot of the loaded set without cloning parse results
     /// or locking `databases` on the append path.
     pub(crate) db: Arc<Database>,
-    /// Scoped bus ids; empty = unscoped (applies to all buses).
+    /// The bus ids this database is assigned to; empty = assigned to
+    /// nothing, so it decodes nothing.
     pub(crate) buses: Vec<String>,
 }
 
@@ -249,8 +252,8 @@ impl AppState {
             .expect("descriptor_snapshot mutex poisoned")
     }
 
-    /// The bus-expanded descriptor universe for `project_buses` — built
-    /// on first use and reused until the DBC set or the bus list
+    /// The bus-expanded descriptor universe — built on first use and
+    /// reused until the DBC set (or a database's bus assignment)
     /// changes. See [`signal_snapshot::DescriptorSnapshot`] for why this
     /// is cached at all.
     ///
@@ -259,14 +262,10 @@ impl AppState {
     /// Two concurrent misses may each build a snapshot; that is a
     /// wasted rebuild, not a correctness problem — they are equal by
     /// construction.
-    pub(crate) fn scoped_descriptor_snapshot(
-        &self,
-        project_buses: &[String],
-    ) -> Arc<signal_snapshot::ScopedDescriptors> {
+    pub(crate) fn scoped_descriptor_snapshot(&self) -> Arc<signal_snapshot::ScopedDescriptors> {
         if let Some(hit) = self
             .descriptor_snapshot()
             .as_ref()
-            .filter(|s| s.project_buses == project_buses)
             .map(|s| s.descriptors.clone())
         {
             return hit;
@@ -275,19 +274,19 @@ impl AppState {
             self.databases()
                 .iter()
                 .map(|l| (l.db.as_ref(), l.buses.as_slice())),
-            project_buses,
         ));
         *self.descriptor_snapshot() = Some(signal_snapshot::DescriptorSnapshot {
-            project_buses: project_buses.to_vec(),
             descriptors: built.clone(),
         });
         built
     }
 
     /// First loaded DBC (in priority order) for which `f` yields a value —
-    /// the "first-loaded-DBC-wins" scan the unscoped decode/describe/encode
-    /// queries share. Bus-scoped resolution (`resolve_effective_calc`)
-    /// deliberately does *not* use this: it filters by bus first.
+    /// the "first-loaded-DBC-wins" scan the bus-less describe/encode
+    /// queries share. Decode and per-bus resolution
+    /// (`resolve_effective_calc`) deliberately do *not* use this: they
+    /// filter by the frame's bus first, so a database assigned to no
+    /// bus can never answer for a frame.
     pub(crate) fn first_dbc<T>(&self, mut f: impl FnMut(&Database) -> Option<T>) -> Option<T> {
         self.databases()
             .iter()

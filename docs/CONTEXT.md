@@ -135,14 +135,17 @@ capture data; it renders windows over the capture model.
 _Avoid_: "TraceStore" as a name for the whole model — that code symbol
 is only the raw-frame part.
 
-**DBC bus scoping**:
-The set of buses a loaded DBC applies to. Empty means every bus. A
-scoped DBC decodes only frames from its own buses — the same message
-id on two buses is then two different signal instances (two copies of
-one ECU), not one. Every frame has a bus: one whose channel maps to
-none is dropped at import rather than stored.
-_Avoid_: "DBC filter" — scoping selects which frames a database may
-speak for, it does not narrow a view.
+**DBC bus assignment**:
+The set of buses a loaded DBC is applied to, and the boundary that
+governs decode: a database decodes a frame only when the frame's bus is
+in its assigned set, so a database assigned to no bus decodes nothing.
+Loading a file makes it available; assigning it to a bus makes it
+decode. The same message id on two buses is two different signal
+instances (two copies of one ECU), not one. Every frame has a bus: one
+whose channel maps to none is dropped at import rather than stored.
+_Avoid_: "DBC filter" — assignment selects which frames a database may
+speak for, it does not narrow a view. _Avoid_: "unscoped" for an
+unassigned database — it decodes nothing, not everything.
 
 **Derived projection**:
 A host-side structure computed from the raw frames and kept current as
