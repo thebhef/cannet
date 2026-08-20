@@ -23,6 +23,8 @@ import {
 import { useGridview } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
 import { toggleInSet } from "./toggleSet";
+import { elementLabel } from "./elementLabel";
+import { transmitViewSignalRefs, usePushViewSignals } from "./viewSignalsPush";
 
 /**
  * Transmit panel (thin view over the host model).
@@ -56,7 +58,7 @@ import { toggleInSet } from "./toggleSet";
 const PAGE_ROWS = 6;
 export function TransmitPanel(props: IDockviewPanelProps) {
   const project = useProjectContext();
-  const { elementId, registry, persist } = useElementPanel(props, "transmit");
+  const { elementId, registry, element, persist } = useElementPanel(props, "transmit");
 
   // Persist just the elementId in panel params — the frame model is
   // host-owned now (no `frames` blob, so no `config` to write onto
@@ -68,7 +70,6 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   // This panel's group + display order: the transmit element's
   // `frameIds`. Mirrored into a ref so event-driven handlers read the
   // latest without re-binding.
-  const element = registry.get(elementId)?.element;
   const frameIds = useMemo<readonly string[]>(
     () => (element && element.kind === "transmit" ? element.frameIds : []),
     [element],
@@ -109,6 +110,13 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   );
   const framesRef = useRef<readonly TransmitFrameConfig[]>(frames);
   framesRef.current = frames;
+
+  // Push this panel's calculated-field signal references to the host's
+  // view-signal panel model (task 89) — identity only, the only
+  // persisted per-signal picks a transmit frame carries
+  // (`viewSignalsPush.ts`).
+  const viewSignalRefs = useMemo(() => transmitViewSignalRefs(frames), [frames]);
+  usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
 
   // Keep the transmit *element's* `sinks` in sync with the union of
   // its frames' bus picks. The graph view reads `sinks` to draw

@@ -7124,4 +7124,36 @@ describe("PlotPanel when the database behind a signal is unassigned", () => {
       expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
     });
   });
+
+  describe("view-signals push (task 89)", () => {
+    it("pushes its referenced signals on mount, and un-pushes on unmount", () => {
+      renderPanel({ params: { elementId: "el-view-signals" } });
+      expect(invoke).toHaveBeenCalledWith(
+        "set_view_signals",
+        expect.objectContaining({ viewId: "el-view-signals", signals: [] }),
+      );
+
+      dropSignal("Area 1", "EngineSpeed", "rpm");
+      expect(invoke).toHaveBeenCalledWith(
+        "set_view_signals",
+        expect.objectContaining({
+          viewId: "el-view-signals",
+          signals: [
+            {
+              busId: null,
+              messageId: 256,
+              extended: false,
+              signalName: "EngineSpeed",
+              fileBacked: undefined,
+              messageName: "EngineData",
+              unit: "rpm",
+            },
+          ],
+        }),
+      );
+
+      cleanup();
+      expect(invoke).toHaveBeenCalledWith("remove_view_signals", { viewId: "el-view-signals" });
+    });
+  });
 });
