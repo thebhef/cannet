@@ -174,7 +174,17 @@ pub(crate) fn add_dbc(
 /// **revives** every park whose fingerprint the restored chain answers
 /// for, instead of decoding the capture a second time. What revives one
 /// is the fingerprint, not the file it came from.
-pub(crate) fn set_dbc_buses_inner(state: &AppState, path: &str, buses: Vec<String>) {
+///
+/// **Unassigning also stops what the database was driving.** Every
+/// periodic still firing that no database assigned to its bus defines
+/// any more is stopped, through the same path the user's own Stop takes
+/// ([`crate::transmit_commands::stop_periodics_left_unbacked`]), and
+/// their ids are returned so the caller can record the one system-log
+/// entry that says so. The assignment change itself always proceeds: it
+/// is a deliberate gesture, and refusing it would make assignment
+/// conditional on the user first finding what is transmitting.
+pub(crate) fn set_dbc_buses_inner(state: &AppState, path: &str, buses: Vec<String>) -> Vec<String> {
+    let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state);
     {
         let mut list = state.databases();
         if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
@@ -182,6 +192,45 @@ pub(crate) fn set_dbc_buses_inner(state: &AppState, path: &str, buses: Vec<Strin
         }
     }
     invalidate_derived_caches(state);
+    crate::transmit_commands::stop_periodics_left_unbacked(state, &backed_before)
+}
+
+/// [`remove_dbc`]'s body without its `AppHandle`. Removing a database
+/// removes it from the buses it was assigned to and nothing more, so it
+/// reaches [`set_dbc_buses_inner`]'s stop rule by the same route.
+/// Returns the ids of the periodics it was driving, now stopped —
+/// `None` when no DBC was loaded under this path.
+pub(crate) fn remove_dbc_inner(state: &AppState, path: &str) -> Option<Vec<String>> {
+    let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state);
+    let removed = {
+        let mut list = state.databases();
+        let before = list.len();
+        list.retain(|d| d.path != path);
+        before != list.len()
+    };
+    if !removed {
+        return None;
+    }
+    invalidate_derived_caches(state);
+    Some(crate::transmit_commands::stop_periodics_left_unbacked(
+        state,
+        &backed_before,
+    ))
+}
+
+/// Record, in **one** system-log entry, that an assignment change
+/// stopped periodics that were firing. One line however many stopped:
+/// no modal and no per-element notice.
+fn log_periodics_stopped(app: &AppHandle, path: &str, stopped: &[String]) {
+    if stopped.is_empty() {
+        return;
+    }
+    sys_warn!(
+        app,
+        "dbc",
+        "stopped {} running transmit(s) {path} was driving",
+        stopped.len()
+    );
 }
 
 /// Replace the bus assignment of a loaded DBC. An empty `buses`
@@ -201,7 +250,16 @@ pub(crate) fn set_dbc_buses(
     path: String,
     buses: Vec<String>,
 ) -> Vec<DbcInfo> {
-    set_dbc_buses_inner(state.inner(), &path, buses);
+    let stopped = set_dbc_buses_inner(state.inner(), &path, buses);
+    // One line, however many stopped — then tell the open transmit
+    // views, whose Run control is the state that just moved. RBS rows
+    // stopped in the same call; the announcement below is what then
+    // takes them out of the pool altogether, and it notifies the RBS
+    // panel itself.
+    log_periodics_stopped(&app, &path, &stopped);
+    if !stopped.is_empty() {
+        crate::transmit_commands::emit_transmit_frames_changed(&app);
+    }
     announce_dbc_change(&app, &path);
     dbc_list(state.inner())
 }
@@ -211,18 +269,15 @@ pub(crate) fn set_dbc_buses(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
-    let removed = {
-        let mut list = state.databases();
-        let before = list.len();
-        list.retain(|d| d.path != path);
-        before != list.len()
-    };
-    if removed {
+    if let Some(stopped) = remove_dbc_inner(state.inner(), &path) {
         sys_info!(&app, "dbc", "removed DBC {path}");
+        log_periodics_stopped(&app, &path, &stopped);
+        if !stopped.is_empty() {
+            crate::transmit_commands::emit_transmit_frames_changed(&app);
+        }
         if let Some(w) = state.dbc_watcher().as_mut() {
             w.unwatch_file(std::path::Path::new(&path));
         }
-        invalidate_derived_caches(state.inner());
         announce_dbc_change(&app, &path);
     }
     dbc_list(state.inner())
