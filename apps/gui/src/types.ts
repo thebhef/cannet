@@ -1124,7 +1124,9 @@ export interface RbsDirtyRecord {
 
 /// Per-(bus, id) calculated-field validity — `fetch_field_validity`.
 export interface FieldValidityRecord {
-  busId: string | null;
+  /// The bus the frames were seen on — a frame's bus, so always
+  /// present, unlike a database's scope.
+  busId: string;
   id: number;
   extended: boolean;
   valid: boolean;
