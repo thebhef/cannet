@@ -1313,10 +1313,12 @@ export function App() {
         return;
       }
       try {
-        const channelBusMapping = scan.channels.map((ch) => ({
-          channel: ch,
-          busId: choices[ch] ? choices[ch] : null,
-        }));
+        // A skipped channel is left out entirely: the host drops the
+        // frames of any channel the mapping does not name, so "(skip)"
+        // and "never mentioned" are the same instruction.
+        const channelBusMapping = scan.channels
+          .filter((ch) => choices[ch])
+          .map((ch) => ({ channel: ch, busId: choices[ch] }));
         const result = await invoke<OpenLogResult>("open_log", {
           blfPath,
           channelBusMapping,
@@ -1358,10 +1360,12 @@ export function App() {
         return;
       }
       try {
-        const channelBusMapping = scan.channels.map((ch) => ({
-          channel: ch,
-          busId: choices[ch] ? choices[ch] : null,
-        }));
+        // A skipped channel is left out entirely: the host drops the
+        // frames of any channel the mapping does not name, so "(skip)"
+        // and "never mentioned" are the same instruction.
+        const channelBusMapping = scan.channels
+          .filter((ch) => choices[ch])
+          .map((ch) => ({ channel: ch, busId: choices[ch] }));
         const result = await invoke<ImportMdfResult>("import_mdf", {
           mdfPath,
           channelBusMapping,
