@@ -345,3 +345,18 @@ Recorded by phase 1, 2026-08-19.
   (the Database-panel launcher badge ruling). Left untouched and
   uncommitted, as are `apps/gui/src-tauri/Cargo.toml`'s line-ending
   noise and the untracked `docs/performance-measurements/frontend/`.
+- **`pre-commit` clobbers a file edited while a commit is running.**
+  Every hooked commit prints `Stashing unstaged files to
+  …/.cache/pre-commit/patch<n>` before the hooks and `Restored changes
+  from …` after, and one run in this phase printed `Stashed changes
+  conflicted with hook auto-fixes… Rolling back fixes…`. The stash is
+  taken from the working tree, so an edit made to an unstaged file
+  *during* the hook run (the workspace clippy and test gates take a
+  couple of minutes) is overwritten by the restore of the pre-edit
+  copy. That is the mechanism behind planning-doc edits disappearing
+  while an implementation agent commits alongside a live grooming
+  session — no agent ran `git checkout`, `git restore` or `git stash`.
+  Two ways out, both cheap: a docs-only commit can pass `--no-verify`
+  (no code, so the gates prove nothing), and a code commit is safer
+  when nothing under `plans/` is left dirty. The stashed copies survive
+  in `~/.cache/pre-commit/patch*` if something needs recovering.
