@@ -198,3 +198,150 @@ Firm at grooming; one entry is already settled:
   winner.
 - The perf bench measures the example project's real assignments, with
   its one-time re-baseline recorded.
+
+## Status log
+
+### 2026-08-19 — Phase 1: a frame's bus is required (branch `task-88-phase-1-frame-bus-required`)
+
+Branched from `dbc-rbs-reload-planning`. Four commits, each green on
+`cargo test -p cannet-gui`, `cargo clippy --workspace --all-targets`,
+`pnpm --dir apps/gui build` and `pnpm --dir apps/gui test`.
+
+Rust tests: **738 → 741** (6 ignored throughout). Frontend: **2261**
+passing, unchanged. `bench_blf_import` re-run under `--ignored` after
+the change and reports every remaining phase.
+
+| commit | subject |
+| --- | --- |
+| `8be5a6d4` | An unmapped import channel is dropped, not stored bus-less |
+| `eb346b6b` | A stored frame's bus is a String, not an Option |
+| `ae64d6d9` | Verification's runtime state keys on the bus a frame arrived on |
+| `699ab791` | Say what "no bus" means now, where the docs and tests still claimed one |
+
+**`8be5a6d4` — routing loses its third answer.** `route_channel` was
+`Result<Option<String>, ()>`: a bus, "unassigned", or "skip". It is now
+`Option<String>` — the mapped bus, or nothing, and nothing means the
+pump drops the frame. `ChannelBusMapping.bus_id` follows to `String`,
+so "(skip)" is spelled by leaving the channel out of the mapping (the
+frontend filters those entries instead of sending a JSON `null`), which
+makes an explicitly skipped channel and a never-mentioned one one and
+the same instruction. `RemoteSession.channel_to_bus` and `run_pump`'s
+mapping become `Vec<(u8, String)>`. Dropping stays silent, per the
+"(skip) is a stated choice" ruling — no confirmation, no relabelling,
+no warning.
+
+Red first: `route_channel_translates_via_mapping` rewritten to the new
+contract, observed failing to compile against the old signature. Added
+`an_import_drops_the_frames_of_a_channel_no_bus_is_mapped_to`, which
+drives the pump's own per-frame body (`RawTraceFrame::from` →
+`route_channel` → `TraceStore::append`) over a two-channel BLF with only
+channel 0 mapped and asserts the store holds channel 0's frames only,
+each tagged with its bus.
+
+**`eb346b6b` — the store holds no bus-less frame.** Red first:
+`a_frame_with_no_bus_never_reaches_the_store` (asserted `append`
+returns `None`, observed `Some(0)`). `TraceStore::append` now drops a
+frame that names no bus — the same rule the pump applies, stated where
+frames actually land — so everything derived from a stored frame keys
+on a `String`: `FrameKey`, `MuxKey`, the per-bus rate buckets,
+`seen_bus_ids`, `DerivedEntry.bus_id` (`derived.json`),
+`TraceFrameRecord.bus_id`, `BusFps.bus_id`, and their TypeScript
+mirrors. The "unassigned bucket" is gone from the by-id view, the
+status line's rate breakdown and the by-id bus sort.
+
+Signal-key-side `bus_id` is untouched, and the frame side now states
+the boundary where it is visible — on `FrameKey`, on
+`TraceFrameRecord`, and in `trace_query::plain_latest_for`, where a
+`StreamKey`'s optional bus meets a frame key's required one.
+
+**`ae64d6d9` — the two judged sites.** `verification::Key` was one type
+over two things, as its own doc comment said: a `None` bus meant "any
+bus" in the *config* map and "arrived with no bus" in the *runtime*
+maps. Split into `ConfigKey` (`Option<String>`, wildcard kept for phase
+2) and `RuntimeKey` (`String`); `ValidityRecord.bus_id` follows the
+runtime key. Red first:
+`runtime_state_is_keyed_on_the_bus_the_frame_arrived_on`.
+`RbsBusView.bus_id` is judged the other way and **stays optional** — it
+is the result of resolving an RBS file's bus *name* against the
+project, and "no project bus has this name" is an answer the panel
+renders. The reason is written where the field sits.
+
+**`699ab791` — the docs and comments that still claimed an unassigned
+frame.** `docs/CONTEXT.md`'s DBC-scoping definition, README's per-bus
+scoping paragraph, the by-id sort test's name, and three trace-decode
+test comments. README's BLF channel-mapping paragraph now states the
+"(skip) is silent" ruling and that an unnamed channel is dropped on the
+same terms.
+
+**Sites where removing `Option` forced a decision — all resolved to
+today's behaviour, all for phase 2 to revisit:**
+
+1. **`TraceStore::latest_mux_in_window` / `mux_stats`** keep
+   `Option<&str>` (a *signal key's* bus) and now return empty / `None`
+   for a bus-less query. Behaviour-preserving — such a query already
+   matched only bus-less frames, of which there are now none — but it
+   means the legacy any-bus **mux** series can never resolve. Phase 2's
+   migration decision on the `None`-means-any-bus series covers it.
+2. **`TraceFrameRecord::from_raw`** is the one place an empty-string
+   bus can appear: `frame.bus_id.clone().unwrap_or_default()`.
+   Unreachable for a frame this build stored; reachable only for a
+   scratch restored from a pre-rule build (see side effects). Confined
+   to one documented line rather than spread through the row type.
+3. **`filter::matches_fields` / `filter::dbc_applies` /
+   `dbc_commands::decode_against`** are untouched and still take
+   `Option<&str>`; `trace_query::record_matches` passes
+   `Some(&record.bus_id)`. The rule change is phase 2's.
+4. **`verification::wants`** still builds its `ConfigKey` from
+   `frame.bus_id.clone()` and probes the any-bus wildcard first. Both
+   are config-side, so phase 2 owns them.
+5. **`list_value_tables_inner(bus: None)`** keeps task 81's
+   all-databases fallback (`labels(None)` still reads the first
+   database). Explicitly phase 2's to remove.
+6. **`scoped_descriptors`' "a project with no buses falls back to one
+   `bus_id: None` record"** (`dbc_commands.rs`) is left as it was, but
+   it is now unreachable in a useful sense: a project with no buses can
+   map no channel, so it has no frames, so those descriptors can never
+   match a row. Left for phase 2/5 to decide whether the fallback
+   should exist at all.
+7. **`capture.rs::channel_for_save` / `write_blf_capture`** still
+   handle a `bus_id: None` frame (they take the `cannet-spill` record,
+   which keeps its `Option`), and
+   `write_blf_capture_keeps_wire_channel_when_bus_is_unmapped` still
+   exercises that arm. Left alone — the spill record is out of scope.
+
+## Blockers / side effects
+
+Recorded by phase 1, 2026-08-19.
+
+- **A pre-rule scratch can still yield bus-less frames.** Restore maps
+  the spill segments directly rather than replaying them through
+  `TraceStore::append`, so a scratch written by a build from before
+  this rule reopens with `bus_id: None` frames in the raw store. They
+  render with an empty bus id (site 2 above) rather than crashing.
+  `cannet-spill`'s manifest carries a `version` field that
+  `DiskRawStore::reopen` **never checks** — the comment on
+  `MANIFEST_VERSION` claims an old manifest "fails to parse", which is
+  true only for layouts missing a required field — so bumping the
+  version would not close this. Not fixed: both the record and the
+  manifest are `cannet-spill`, which this phase is scoped out of.
+- **`derived.json` written before this rule is discarded.**
+  `DerivedEntry.bus_id` is now required, so an older file fails to
+  parse; `read_json` already reports that as a clean miss. Such a
+  scratch reopens with its frames intact and an empty by-id retention
+  overlay (evicted rows show no last value until they are seen again).
+- **`bench_blf_import` lost its `mem/nobus` phase.** It measured
+  "full/mem with the frames left unassigned" to price what carrying a
+  logical bus costs per frame. The store no longer accepts such a
+  frame, so the phase measures nothing and its `store.len() == frames`
+  assertion cannot hold. No perf doc referenced the figure.
+- **A project with no buses now captures nothing.** No channel can be
+  mapped to a bus, so no frame is routed, so the trace stays empty.
+  That is the model's intent ("frames enter the GUI via a bus") but it
+  is a behaviour change visible before any DBC work: the mux-snapshot
+  tests had to give their project a bus, and the canonical signal path
+  (ADR 0038) gained its bus segment in those tests as a result.
+- **Not a blocker, recorded for the owner:** `plans/backlog.md` picked
+  up an edit in the working tree during this phase that is not mine
+  (the Database-panel launcher badge ruling). Left untouched and
+  uncommitted, as are `apps/gui/src-tauri/Cargo.toml`'s line-ending
+  noise and the untracked `docs/performance-measurements/frontend/`.
