@@ -37,6 +37,7 @@ import {
   resolvePatterns,
   scopeCatalog,
 } from "./signalSelection";
+import { ColorChip } from "./ColorChip";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { FILE_BACKED_BADGE, FILE_BACKED_TITLE } from "./fileBackedSignal";
 import { recordSignalKey, signalKey } from "./plotData";
@@ -1428,13 +1429,11 @@ function SignalRow({
           >
             {row.signal_name}
             {manual.has(key) ? "" : " ◇"}
-            <input
+            <ColorChip
               ref={colorInputRef}
-              type="color"
-              value={nameColor ?? "#ffffff"}
-              style={{ display: "none" }}
-              onChange={(e) => onSetSignalColor(key, e.target.value)}
-              onClick={(e) => e.stopPropagation()}
+              color={nameColor ?? "#ffffff"}
+              onChange={(hex) => onSetSignalColor(key, hex)}
+              hideBox
             />
           </span>
         );
