@@ -308,20 +308,21 @@ pub enum DecodeDependentLeaf<'a> {
     SignalName(&'a str),
 }
 
-/// Per-bus DBC scoping test. A DBC with an empty `buses` set applies to
-/// every frame; a scoped DBC applies only to frames whose `bus_id` is in
-/// its set (and never to an unassigned frame). Folded here from the
-/// former `lib.rs` `dbc_applies_to_frame` so the decode gate and the
-/// filter share one scoping rule, expressed over the fields it reads
-/// rather than a `LoadedDbc`.
+/// Per-bus DBC scoping test — the one statement of "which databases may
+/// decode this frame", shared by the decode gate, the filter, and every
+/// other consumer of a database's bus assignment.
+///
+/// **Bus assignment governs decode.** A database applies to a frame only
+/// when the frame's bus is in the database's assigned set, so a database
+/// assigned to no bus decodes nothing: loading a file makes it available,
+/// assigning it to a bus makes it decode. A `None` `bus_id` is a query
+/// that names no bus (a file-backed or legacy any-bus signal key — a
+/// stored frame always has one), and no assignment can contain it.
 #[must_use]
 pub(crate) fn dbc_applies(buses: &[String], bus_id: Option<&str>) -> bool {
-    if buses.is_empty() {
-        return true; // unscoped: every frame
-    }
     match bus_id {
         Some(b) => buses.iter().any(|x| x == b),
-        None => false, // scoped DBCs ignore unassigned frames
+        None => false,
     }
 }
 
@@ -727,11 +728,17 @@ mod tests {
     }
 
     #[test]
+    fn a_database_assigned_to_no_bus_decodes_nothing() {
+        // Assignment is the decode boundary: an empty bus list is "this
+        // database is applied to nothing", not "applied to everything".
+        assert!(!dbc_applies(&[], Some("p")));
+        assert!(!dbc_applies(&[], None));
+    }
+
+    #[test]
     fn dbc_applies_honours_scoping() {
-        // Unscoped: applies to every frame, assigned or not.
-        assert!(dbc_applies(&[], Some("p")));
-        assert!(dbc_applies(&[], None));
-        // Scoped: only frames on a listed bus; unassigned never matches.
+        // Assigned: only frames on a listed bus; a bus-less query never
+        // matches.
         let buses = vec!["p".to_string(), "c".to_string()];
         assert!(dbc_applies(&buses, Some("p")));
         assert!(dbc_applies(&buses, Some("c")));

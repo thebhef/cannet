@@ -499,7 +499,6 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     [sections, folded],
   );
   const busNames = useMemo<[string, string][]>(() => buses.map((b) => [b.id, b.name]), [buses]);
-  const projectBusIds = useMemo(() => buses.map((b) => b.id), [buses]);
 
   const view = useSignalView(
     true,
@@ -509,7 +508,6 @@ export function SignalsPanel(props: IDockviewPanelProps) {
     wireSections,
     sort,
     busNames,
-    projectBusIds,
     sourceBusList,
     trace.status === "running",
   );

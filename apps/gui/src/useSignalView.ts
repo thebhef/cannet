@@ -39,7 +39,6 @@ export function useSignalView(
   sections: SignalSectionsWire,
   sort: SignalSortState,
   busNames: [string, string][],
-  projectBuses: string[],
   sourceBuses: readonly string[] | null,
   running: boolean,
 ): SignalView {
@@ -67,7 +66,6 @@ export function useSignalView(
           sortKey,
           sortDir,
           busNames,
-          projectBuses,
           sourceBuses: sourceBuses == null ? null : [...sourceBuses],
           offset: Math.max(0, offset),
           limit,
@@ -89,7 +87,6 @@ export function useSignalView(
       sortKey,
       sortDir,
       busNames,
-      projectBuses,
       sourceBuses,
       running,
     ],

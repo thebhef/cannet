@@ -52,12 +52,10 @@ pub fn build_schedule(ex: &LoadedExample) -> Vec<ScheduledMessage> {
 
     for (dbc_idx, loaded) in ex.dbcs.iter().enumerate() {
         let dbc_ref = &ex.project.dbcs[dbc_idx];
-        // Bus ids this DBC is scoped to; empty `buses` means "all buses".
-        let bus_ids: Vec<String> = if dbc_ref.buses.is_empty() {
-            ex.project.buses.iter().map(|b| b.id.clone()).collect()
-        } else {
-            dbc_ref.buses.clone()
-        };
+        // The bus ids this DBC is assigned to. An empty set is assigned
+        // to nothing, and a database assigned to nothing decodes
+        // nothing — so it schedules nothing either.
+        let bus_ids: Vec<String> = dbc_ref.buses.clone();
 
         // Collect ids first so the immutable `describe_message` borrow
         // below doesn't overlap the `message_names` iterator borrow.

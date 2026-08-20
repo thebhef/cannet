@@ -6,7 +6,9 @@ rather than by one whole-set key; amended (2026-08-15) — a pyramid whose
 definition has gone is retained in a bounded pool rather than deleted;
 amended (2026-08-19) — a DBC-backed row's candidate chain is the
 databases that may decode the series' bus, not every database that
-defines the signal
+defines the signal; amended (2026-08-19) — bus assignment governs
+decode, so an unassigned database is in no chain and a series that
+names no bus has the empty chain
 
 ## Context
 
@@ -80,9 +82,9 @@ that pyramid, a mismatch rebuilds that signal and only that signal.
   that loses one frame can win the next. A database that defines nothing
   about the signal contributes nothing, which is what makes loading,
   unloading or re-prioritising an unrelated database invalidate nothing.
-  A series whose bus is unknown (`bus_id = None`) keeps the whole chain:
-  its frames arrive from every bus and each is decoded by whichever
-  database applies to *that* bus, so all of them bear on its samples.
+  A series that names no bus has the **empty** chain: no assignment
+  admits a query without a bus, so no database can be a candidate for
+  it (see the 2026-08-19 assignment amendment).
 - For a **file-backed** row it is over the source the samples were
   imported from — path, signal channel group, channel name. No DBC bears
   on such a series, so no DBC-set change may touch it; and none can,
@@ -263,19 +265,40 @@ candidate, so it does not belong in the fingerprint. Before this, a
 `ch`-scoped database was mixed into a `pt`-scoped signal's chain, and
 editing it forced a rebuild that provably could not change a sample.
 
-The exception is `bus_id = None`. That means "the bus is unknown", not
-"on no bus": such a series takes frames from every bus, each decoded by
-whichever database applies to it, so its chain stays every defining
-database.
+`bus_id = None` was the exception at the time of this amendment — a
+series whose bus was unknown kept every defining database. The
+assignment amendment below retires that case.
 
 The cost is a **one-time rebuild of the affected signals** the first
 time a project runs with this amendment: the chain shrank, so the
 fingerprint moved, so those pyramids are parked and rebuilt from the
-raw frames. Only projects that **scope** a DBC pay it, and only for
-signals whose chain actually contained a database scoped elsewhere. A
-project that scopes nothing sees no fingerprint move at all — an
-unscoped database applies to every bus and was never going to be
-skipped — and reuses every pyramid across the change.
+raw frames. Only signals whose chain actually contained a database
+scoped elsewhere pay it.
+
+## Amendment (2026-08-19) — bus assignment governs the chain
+
+A database decodes a frame only when the frame's bus is in the set the
+project **assigns** it to; an empty set is "assigned to nothing", not
+"applies to everywhere" (`filter::dbc_applies`). Two consequences for
+the fingerprint, both of which are the bus-scoping amendment above read
+under the new rule rather than a second mechanism:
+
+- **An unassigned database is in no chain.** Loading a file, unloading
+  it, re-ordering it or editing it moves no fingerprint until it is
+  assigned to a bus, because until then it could not have supplied a
+  sample. Assigning it is what puts it in the chain — and, from the
+  fingerprint's point of view, is indistinguishable from any other
+  change that grows a candidate chain.
+- **A series that names no bus has the empty chain.** No assignment
+  contains "no bus", so nothing is a candidate. The fingerprint is
+  well-defined and distinct from every chain that decodes something.
+
+The cost is again a one-time rebuild, and this time it falls on every
+project whose databases were relying on the old default: their chains
+are empty until the databases are assigned, at which point the chain is
+whatever that assignment admits. Pyramids are parked rather than
+deleted, so assigning a database back to the bus it used to decode for
+hands the samples back rather than re-decoding them.
 
 ## Why
 

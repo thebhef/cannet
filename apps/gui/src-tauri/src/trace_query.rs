@@ -351,7 +351,6 @@ pub(crate) async fn fetch_signal_page(
     sort_key: Option<String>,
     sort_dir: Option<String>,
     bus_names: Vec<(String, String)>,
-    project_buses: Vec<String>,
     source_buses: Option<Vec<String>>,
     offset: u64,
     limit: u64,
@@ -366,7 +365,6 @@ pub(crate) async fn fetch_signal_page(
         sort_key.as_deref(),
         sort_dir.as_deref(),
         bus_names,
-        &project_buses,
         source_buses.as_deref(),
         offset,
         limit,
@@ -383,7 +381,6 @@ pub(crate) fn fetch_signal_page_inner(
     sort_key: Option<&str>,
     sort_dir: Option<&str>,
     bus_names: Vec<(String, String)>,
-    project_buses: &[String],
     source_buses: Option<&[String]>,
     offset: u64,
     limit: u64,
@@ -404,7 +401,7 @@ pub(crate) fn fetch_signal_page_inner(
     // signal per bus on every poll tick is what this cache exists to
     // avoid. The view's `sources` wiring is applied inside the selection
     // scan instead of by pruning `all`, so the snapshot stays shareable.
-    let all = state.scoped_descriptor_snapshot(project_buses);
+    let all = state.scoped_descriptor_snapshot();
     let no_sections = SignalSections::default();
     let sections = sections.unwrap_or(&no_sections);
     // A section's own patterns are part of what the view selects, so

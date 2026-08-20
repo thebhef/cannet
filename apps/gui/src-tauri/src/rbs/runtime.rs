@@ -694,7 +694,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
         let file = RbsFile::parse(
             r#"{ "schema_version": 1, "buses": {
                  "Powertrain": { "ecus": { "BMS": { "messages": {
@@ -890,7 +890,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
         {
             let mut rbs = state.rbs.lock().unwrap();
             rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
@@ -965,7 +965,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
         resolved("under the original database");
 
         // The replacement, installed alongside…
@@ -973,7 +973,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("b.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("b.dbc", RBS_DBC, &["p1"]));
         resolved("with both loaded");
 
         // …and the original removed.
@@ -1019,7 +1019,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
         let file = RbsFile::parse(
             r#"{ "schema_version": 1, "buses": {
                  "Powertrain": { "ecus": { "NotBms": { "messages": { "0x123": {} } } } }
