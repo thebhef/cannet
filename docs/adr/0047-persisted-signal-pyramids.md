@@ -8,7 +8,8 @@ amended (2026-08-19) — a DBC-backed row's candidate chain is the
 databases that may decode the series' bus, not every database that
 defines the signal; amended (2026-08-19) — bus assignment governs
 decode, so an unassigned database is in no chain and a series that
-names no bus has the empty chain
+names no bus has the empty chain; amended (2026-08-19) — the encoding
+fingerprint is stamped when a cache is built, not at persist
 
 ## Context
 
@@ -215,11 +216,12 @@ longer answers to the loaded set moves to a **retention pool**:
 - **This applies in-session too.** A DBC-set change judges the live
   pyramids the same way a restore judges persisted ones: one whose
   candidate chain has not moved keeps decoding, one whose has is parked,
-  and one the pool can answer for is revived — all in the one call. A
-  live cache created since the last manifest write carries no
-  fingerprint (nothing has held it and a loaded set at the same moment),
-  so it is discarded, which is the safe direction and the behaviour every
-  cache had before.
+  and one the pool can answer for is revived — all in the one call. **A
+  cache is stamped where it is created**, against the set that is about to
+  decode it, so a pyramid built in the current session parks like any
+  other. Stamping only at the next manifest write made this rule true of a
+  long-running session and false of one that had just plotted a signal: an
+  unstamped cache cannot be judged, and unjudgeable was discarded.
 
 **What the cache is doing is answerable from a log.** Reuse this
 aggressive is only worth having if "are we saving time or wasting disk"
@@ -299,6 +301,15 @@ are empty until the databases are assigned, at which point the chain is
 whatever that assignment admits. Pyramids are parked rather than
 deleted, so assigning a database back to the bus it used to decode for
 hands the samples back rather than re-decoding them.
+
+**Assignment is therefore the cache lifecycle boundary**, and it needs no
+machinery of its own: changing a database's buses is a DBC-set change like
+any other, so the one in-session judgement above runs — unassigning
+empties the chains that database was in and parks what it decoded,
+assigning restores them and the pool hands back every pyramid whose
+fingerprint the new chain answers for. What revives one is the
+fingerprint, not the file: any assigned database that defines the signal
+the way the samples were decoded brings them back.
 
 ## Why
 

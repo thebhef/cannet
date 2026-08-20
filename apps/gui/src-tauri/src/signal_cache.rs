@@ -276,10 +276,11 @@ struct SignalCache {
     /// [`SignalCacheStore::rebuilding`] leaves it out of the answer.
     restored: bool,
     /// Fingerprint of the encoding these samples were decoded under
-    /// ([`crate::signal_fingerprint`]), as of the last time the loaded
-    /// set was in hand — [`SignalCacheStore::persist`] stamps it,
-    /// [`Self::from_levels`] carries it in from the manifest row that
-    /// matched.
+    /// ([`crate::signal_fingerprint`]). Stamped where the cache is
+    /// **created**, against the set that is about to decode it
+    /// ([`ensure_caches`], [`SignalCacheStore::fill_file_backed`]),
+    /// re-stamped by [`SignalCacheStore::persist`], and carried in from
+    /// the matching manifest row by [`Self::from_levels`].
     ///
     /// It is what lets a *DBC-set change* judge this cache without the
     /// set it was decoded against: that set is gone by the time
@@ -288,9 +289,12 @@ struct SignalCache {
     /// under it — every change to the loaded set runs that function —
     /// so the stamp is current for as long as the cache lives.
     ///
-    /// `None` for a cache created since the last manifest write: nothing
-    /// has ever had both it and a loaded set at once, so what it was
-    /// decoded with is unprovable and a DBC change discards it.
+    /// Stamping at creation rather than at the next manifest write is
+    /// what makes a pyramid built in *this* session park like any other:
+    /// an unstamped cache is unjudgeable, and unjudgeable is discarded.
+    /// `None` therefore survives only for a manifest row written before
+    /// fingerprints existed, which [`SignalCacheStore::restore`] judges
+    /// by provenance.
     encoding: Option<String>,
     /// Whether **this session** has served anything out of this cache.
     /// A pyramid that came back off disk and is never asked for anything
@@ -1668,16 +1672,35 @@ impl CacheQuery<'_> {
 /// there is no decode that could fill an empty one, so minting a cache
 /// here would only leave an empty series in the store — and in the
 /// manifest — for a signal this capture does not have.
-fn ensure_caches(caches: &mut Caches, queries: &[CacheQuery<'_>]) -> Vec<SignalKey> {
+fn ensure_caches(
+    caches: &mut Caches,
+    queries: &[CacheQuery<'_>],
+    dbcs: &[DbcScope<'_>],
+) -> Vec<SignalKey> {
     let Caches { root, by_key, .. } = caches;
     queries
         .iter()
         .map(|q| {
             let key = q.key();
             if !key.file_backed {
-                by_key
-                    .entry(key.clone())
-                    .or_insert_with(|| SignalCache::new(root, &key_prefix(&key), None));
+                by_key.entry(key.clone()).or_insert_with(|| {
+                    let mut cache = SignalCache::new(root, &key_prefix(&key), None);
+                    // Stamped here, because here is where the samples
+                    // start being decoded and `dbcs` is what will decode
+                    // them (ADR 0047): a cache whose fingerprint is
+                    // recorded only at the next manifest write cannot be
+                    // judged before then, so a DBC-set change discards it
+                    // instead of parking it — which is exactly the
+                    // just-plotted signal a park is worth most for.
+                    cache.encoding = Some(signal_fingerprint::dbc_encoding(
+                        dbcs,
+                        key.bus_id.as_deref(),
+                        key.slot,
+                        key.extended,
+                        &key.signal,
+                    ));
+                    cache
+                });
             }
             key
         })
@@ -2513,6 +2536,9 @@ impl SignalCacheStore {
             wipe_prefix(&caches.root, &base);
         }
         let mut cache = SignalCache::new(&caches.root, &base, Some(info.clone()));
+        // Stamped at creation like a decoded one, so a live cache always
+        // carries the fingerprint of what built it.
+        cache.encoding = Some(signal_fingerprint::file_source(info));
         #[allow(clippy::cast_precision_loss)]
         for &(ts_ns, value) in points {
             cache.push_sample((ts_ns as f64) / 1e9, value);
@@ -2625,13 +2651,14 @@ impl SignalCacheStore {
         out
     }
 
-    /// Create a cache for every query that doesn't have one yet, and
-    /// return the queries' keys in request order (duplicates included —
-    /// the result of a batch is index-parallel with it). One short hold
-    /// of the lock, taken and released before any decoding starts.
-    fn ensure_caches(&self, queries: &[CacheQuery<'_>]) -> Vec<SignalKey> {
+    /// Create a cache for every query that doesn't have one yet, stamped
+    /// with the encoding `dbcs` is about to decode it under, and return
+    /// the queries' keys in request order (duplicates included — the
+    /// result of a batch is index-parallel with it). One short hold of
+    /// the lock, taken and released before any decoding starts.
+    fn ensure_caches(&self, queries: &[CacheQuery<'_>], dbcs: &[DbcScope<'_>]) -> Vec<SignalKey> {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
-        ensure_caches(&mut caches, queries)
+        ensure_caches(&mut caches, queries, dbcs)
     }
 
     /// Catch every cache named by `keys` up to `store_len`, one decode
@@ -2923,7 +2950,7 @@ impl SignalCacheStore {
         store: &TraceStore,
         dbs: &[DbcScope<'_>],
     ) -> ServedWindows {
-        let keys = self.ensure_caches(queries);
+        let keys = self.ensure_caches(queries, dbs);
         // One tip for the whole batch, and the same one completeness is
         // judged against — so "complete" means "caught up to the capture
         // this serve read", not to a tip that moved under it.
@@ -3010,7 +3037,7 @@ impl SignalCacheStore {
         store: &TraceStore,
         dbs: &[DbcScope<'_>],
     ) -> Vec<Option<(f64, f64)>> {
-        let keys = self.ensure_caches(queries);
+        let keys = self.ensure_caches(queries, dbs);
         self.catch_up_keys(
             &keys,
             store.len(),
@@ -4707,7 +4734,7 @@ mod tests {
 
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let keys = cache.ensure_caches(&queries);
+        let keys = cache.ensure_caches(&queries, dbs);
         let mut lags = Vec::new();
         for _ in 0..4 {
             store_len += growth;
@@ -4772,7 +4799,7 @@ mod tests {
         let cache = SignalCacheStore::new(tmp.path());
         let store_len = 4 * CATCH_UP_CHUNK_FRAMES;
         let incumbents: Vec<CacheQuery<'_>> = ids.iter().map(|id| query_on(*id, "X")).collect();
-        let settled = cache.ensure_caches(&incumbents);
+        let settled = cache.ensure_caches(&incumbents, dbs);
         cache.catch_up_keys(
             &settled,
             store_len,
@@ -4786,7 +4813,7 @@ mod tests {
         // buys three chunks of *its* history.
         let per_round = CATCH_UP_CHUNK_FRAMES / 5;
         asked.borrow_mut().clear();
-        let joined = cache.ensure_caches(&[query_on(515, "X")]);
+        let joined = cache.ensure_caches(&[query_on(515, "X")], dbs);
         cache.catch_up_keys(
             &joined
                 .iter()
@@ -5048,7 +5075,7 @@ mod tests {
         dbs: &[DbcScope<'_>],
         fetch: impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     ) -> Vec<SignalKey> {
-        let keys = store.ensure_caches(queries);
+        let keys = store.ensure_caches(queries, dbs);
         store.catch_up_keys(&keys, store_len, dbs, &fetch, &store.serve_limit());
         keys
     }
@@ -6261,8 +6288,9 @@ mod tests {
             dbc_ab_scaled(3, 1),
         );
         let cache = SignalCacheStore::new_unbounded(root.path());
-        // Serve `A` under `db` and stamp what it was decoded with — an
-        // unstamped cache is dropped rather than parked.
+        // Serve `A` under `db`. The stamp that makes a park judgeable is
+        // taken when the cache is built, so the persist here is about the
+        // manifest, not about the park.
         let built = |db: &Database| {
             let dbs = on_test_bus(&[db]);
             let served = cache.slice(
@@ -6304,6 +6332,203 @@ mod tests {
         built(&a);
         cache.invalidate_dbcs(&scopes(&c));
         assert_eq!(cache.usage().retained, 2, "B's park and now A's");
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_pyramid_built_this_session_parks_like_any_other() {
+        // The fingerprint is stamped when a cache is **built**, not when
+        // the manifest is next written. Stamping at persist made
+        // "a definition's return hands the samples back" true of a
+        // long-running session and false of one that had just plotted a
+        // signal: an unstamped cache cannot be judged, so it was dropped.
+        // Nothing here persists, and the park still happens.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let before = dbc_ab_scaled(1, 1);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        let built = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            &on_test_bus(&[&before]),
+        );
+        assert_eq!(built.len(), 200, "A built");
+
+        let after = dbc_ab_scaled(2, 1);
+        cache.invalidate_dbcs(&scopes(&after));
+        assert_eq!(
+            cache.retained_signals(),
+            vec!["A".to_string()],
+            "a pyramid built since the last persist is parked, not dropped",
+        );
+
+        // …and it is a real park: the definition's return hands the
+        // samples back rather than re-decoding them. These frames decode
+        // to nothing, so anything served came off disk.
+        cache.invalidate_dbcs(&scopes(&before));
+        let usage = cache.usage();
+        assert_eq!(usage.retained, 0, "the pool gave its entry back");
+        assert_eq!(usage.revivals, 1);
+        let cold = undecodable_store(200);
+        assert_eq!(
+            cache
+                .slice(
+                    Some(TEST_BUS),
+                    256,
+                    false,
+                    "A",
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &cold,
+                    &on_test_bus(&[&before]),
+                )
+                .len(),
+            200,
+            "A is the pyramid it was, not a rebuild",
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn unassigning_a_database_parks_its_caches_and_assigning_it_back_revives_them() {
+        // Assignment is the cache lifecycle boundary. Unassigning a
+        // database from a bus takes it out of that bus's candidate
+        // chains, so every cache it decoded is re-encoded and parks;
+        // assigning it back restores the chain, so the parks come home
+        // rather than being decoded a second time.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let db = dbc_ab(1);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        for signal in ["A", "B"] {
+            let built = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &on_test_bus(&[&db]),
+            );
+            assert_eq!(built.len(), 200, "{signal} built");
+        }
+
+        // Unassigned: the database is a candidate for no bus, so both
+        // series' chains are empty and both pyramids park.
+        cache.invalidate_dbcs(&assigned_to(&[&db], &[]));
+        let usage = cache.usage();
+        assert_eq!(usage.live, 0, "nothing still decodes");
+        // Sorted: the two parks are taken in one walk of the live caches,
+        // whose order is a hash map's.
+        let mut parked = cache.retained_signals();
+        parked.sort();
+        assert_eq!(parked, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(usage.retained, 2);
+
+        // Assigned back to the bus its frames arrive on: both revive.
+        cache.invalidate_dbcs(&on_test_bus(&[&db]));
+        let usage = cache.usage();
+        assert_eq!(usage.retained, 0, "the pool gave both entries back");
+        assert_eq!(usage.revivals, 2);
+        let cold = undecodable_store(200);
+        for signal in ["A", "B"] {
+            assert_eq!(
+                cache
+                    .slice(
+                        Some(TEST_BUS),
+                        256,
+                        false,
+                        signal,
+                        f64::MIN,
+                        f64::MAX,
+                        0,
+                        &cold,
+                        &on_test_bus(&[&db]),
+                    )
+                    .len(),
+                200,
+                "{signal} served from disk, not re-decoded",
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_park_is_revived_by_the_fingerprint_not_by_the_file_it_came_from() {
+        // What restores a parked pyramid is the *encoding*, not the
+        // identity of the database that produced it. A second, separately
+        // parsed database defining the signal exactly as the first did
+        // hands the samples back when it is assigned to the bus — which
+        // is what makes "any assigned database that provides the signal
+        // restores the view" true of the samples as well as of the
+        // configuration.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let first = dbc_ab(1);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        let built = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            &on_test_bus(&[&first]),
+        );
+        assert_eq!(built.len(), 200);
+
+        // The database it was decoded against leaves the project entirely.
+        cache.invalidate_dbcs(&[]);
+        assert_eq!(cache.retained_signals(), vec!["A".to_string()]);
+        drop(first);
+
+        // A different database — parsed on its own, and outliving the one
+        // the samples were decoded against — is assigned to the same bus.
+        // It defines `A` the same way, so the fingerprint matches and the
+        // park comes home.
+        let replacement = dbc_ab(1);
+        cache.invalidate_dbcs(&on_test_bus(&[&replacement]));
+        let usage = cache.usage();
+        assert_eq!(usage.retained, 0);
+        assert_eq!(usage.revivals, 1, "revived by fingerprint");
+        let cold = undecodable_store(200);
+        assert_eq!(
+            cache
+                .slice(
+                    Some(TEST_BUS),
+                    256,
+                    false,
+                    "A",
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &cold,
+                    &on_test_bus(&[&replacement]),
+                )
+                .len(),
+            200,
+            "the replacement inherited the samples rather than re-decoding",
+        );
     }
 
     #[test]
@@ -7180,16 +7405,24 @@ mod tests {
         let cache = SignalCacheStore::new(tmp.path());
         assert_eq!(
             cache
-                .slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs)
+                .slice(
+                    Some(TEST_BUS),
+                    256,
+                    false,
+                    "X",
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &store,
+                    dbs
+                )
                 .len(),
             200
         );
         cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
 
-        // A set in which nothing defines `X`. Its cache has never been
-        // persisted, so nothing records what it was decoded with and it
-        // cannot be parked — it is discarded, as every cache was before
-        // the retention pool.
+        // A set in which nothing defines `X`: its candidate chain empties,
+        // so it stops being live and is parked for the definition's return.
         cache.invalidate_dbcs(&[]);
 
         assert_eq!(
@@ -7216,6 +7449,11 @@ mod tests {
         assert_eq!(served.series[0].len(), 20);
         // And exactly one series is live: the DBC-backed one went.
         assert_eq!(cache.caches.lock().unwrap().by_key.len(), 1);
+        assert_eq!(
+            cache.retained_signals(),
+            vec!["X".to_string()],
+            "…to the retention pool, not to nothing",
+        );
     }
 
     #[test]
