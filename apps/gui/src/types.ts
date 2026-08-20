@@ -171,9 +171,26 @@ export interface MdfScanResult extends BlfScanResult {
 export interface DbcInfo {
   dbc_path: string;
   message_count: number;
-  /// Logical bus ids this DBC is scoped to. Empty / absent =
-  /// unscoped (applies to all buses).
+  /// Logical bus ids this DBC is assigned to. Empty / absent = assigned
+  /// to nothing, which decodes nothing.
   buses?: string[];
+}
+
+/// One duplicate-id collision the Database panel warns about: two
+/// databases assigned to `busId` define the same `(messageId,
+/// extended, signalName)`, and `winnerPath` names the one that
+/// actually resolves it today (project load order, restricted to the
+/// bus's assigned databases). Returned from `list_dbc_collisions` as a
+/// flat list — naming the winner is all it does; which database's
+/// decode should apply to the colliding signal is a resolution the
+/// panel does not offer.
+export interface DbcCollisionRecord {
+  busId: string;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  winnerPath: string;
+  loserPath: string;
 }
 
 /// One logical bus the project owns. `id` is stable across

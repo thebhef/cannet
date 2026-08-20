@@ -76,6 +76,76 @@ fn descriptor_key(
     )
 }
 
+/// One duplicate-id collision [`dbc_collisions`] found: two or more
+/// databases assigned to `bus_id` define the same `(message id,
+/// extended, signal name)`. `winner_path` is whichever of them
+/// [`scoped_descriptors`]' dedup — and every other "first assigned
+/// database that answers wins" scan, `AppState::first_dbc_on_bus`
+/// included — actually resolves the id from; this record is attached
+/// to the `loser_path` it also names, so a database's own rows carry
+/// only the collisions it is losing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbcCollision {
+    pub bus_id: String,
+    pub message_id: u32,
+    pub extended: bool,
+    pub signal_name: String,
+    pub winner_path: String,
+    pub loser_path: String,
+}
+
+/// Every duplicate-id collision across the loaded set, for the
+/// Database panel's warning. For each bus any database is assigned
+/// to, walk its assigned databases in **project load order** —
+/// [`filter::dbc_applies`] restricted to that bus, the same filter and
+/// the same order `scoped_descriptors`' dedup and
+/// `AppState::first_dbc_on_bus` apply — and record every signal
+/// identity a later database repeats: the first database to define it
+/// is the winner by construction (same rule, same order), and every
+/// later one is a loser naming that winner.
+///
+/// This only detects and names a winner; it does not choose one. Which
+/// database's decode should apply to a colliding signal is a
+/// resolution the Database panel does not offer — this is the warning
+/// alone.
+pub fn dbc_collisions<'a>(
+    dbs: impl IntoIterator<Item = (&'a str, &'a Database, &'a [String])>,
+) -> Vec<DbcCollision> {
+    let dbs: Vec<(&str, &Database, &[String])> = dbs.into_iter().collect();
+    let mut bus_ids: Vec<String> = dbs
+        .iter()
+        .flat_map(|(_, _, buses)| buses.iter().cloned())
+        .collect();
+    bus_ids.sort_unstable();
+    bus_ids.dedup();
+
+    let mut out = Vec::new();
+    for bus_id in &bus_ids {
+        let mut seen: HashMap<(u32, bool, String), &str> = HashMap::new();
+        for (path, db, buses) in &dbs {
+            if !crate::filter::dbc_applies(buses, Some(bus_id.as_str())) {
+                continue;
+            }
+            for sig in db.signals() {
+                let key = (sig.message_id, sig.extended, sig.signal_name.clone());
+                if let Some(&winner_path) = seen.get(&key) {
+                    out.push(DbcCollision {
+                        bus_id: bus_id.clone(),
+                        message_id: sig.message_id,
+                        extended: sig.extended,
+                        signal_name: sig.signal_name,
+                        winner_path: winner_path.to_owned(),
+                        loser_path: (*path).to_owned(),
+                    });
+                } else {
+                    seen.insert(key, path);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The canonical signal path `bus/ecu/message/signal` (ADR 0038) — the
 /// one regex/fzf/display subject app-wide. Segments are the DBC names
 /// verbatim; a missing bus or transmitter renders an empty segment so
@@ -749,6 +819,52 @@ mod tests {
                                   // a row a frame could answer for.
         let db = db();
         assert!(scoped_descriptors([(&db, &[] as &[String])]).is_empty());
+    }
+
+    #[test]
+    fn dbc_collisions_names_the_project_order_winner() {
+        // Two databases assigned to the same bus, both defining every
+        // signal `TWO_ECU_DBC` has: every one of them collides, and
+        // `a` — first in project (iteration) order — wins all three.
+        let a = db();
+        let b = db();
+        let collisions = dbc_collisions([
+            ("a.dbc", &a, &["power".to_string()][..]),
+            ("b.dbc", &b, &["power".to_string()][..]),
+        ]);
+        let mut names: Vec<&str> = collisions.iter().map(|c| c.signal_name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["PackTemp", "PackVolts", "TorqueReq"]);
+        assert!(collisions.iter().all(|c| c.bus_id == "power"));
+        assert!(collisions.iter().all(|c| c.winner_path == "a.dbc"));
+        assert!(collisions.iter().all(|c| c.loser_path == "b.dbc"));
+    }
+
+    #[test]
+    fn dbc_collisions_ignores_a_matching_id_on_a_different_bus() {
+        // Same definitions, but assigned to different buses: no bus
+        // sees both, so nothing collides.
+        let a = db();
+        let b = db();
+        let collisions = dbc_collisions([
+            ("a.dbc", &a, &["power".to_string()][..]),
+            ("b.dbc", &b, &["chassis".to_string()][..]),
+        ]);
+        assert!(collisions.is_empty());
+    }
+
+    #[test]
+    fn dbc_collisions_ignores_a_database_assigned_to_no_bus() {
+        // An unassigned database decodes nothing (`filter::dbc_applies`),
+        // so it is no part of any bus's candidate chain and can collide
+        // with nothing.
+        let a = db();
+        let b = db();
+        let collisions = dbc_collisions([
+            ("a.dbc", &a, &[] as &[String]),
+            ("b.dbc", &b, &["power".to_string()][..]),
+        ]);
+        assert!(collisions.is_empty());
     }
 
     #[test]
