@@ -65,9 +65,12 @@ pub struct ChannelBusMapping {
 /// session uses (ADR 0046). The time range is the same rule applied to
 /// itself: it is a [`cannet_core::WindowedSource`] wrapped around the
 /// BLF source, not a second pump — frames outside the range never reach
-/// `run_pump`, let alone `TraceStore::append`. Markers still ride the
-/// prefix of the walk the pump actually makes (up to where `end_ns`, if
-/// set, stops it) — see [`cannet_core::WindowedSource`]'s docs.
+/// `run_pump`, let alone `TraceStore::append`. The wrapper reads the
+/// source to EOF regardless of the window, because a capture's frames
+/// are not promised to arrive in timestamp order (ADR 0024) and a
+/// frame that belongs in the range can sit after one that doesn't; see
+/// [`cannet_core::WindowedSource`]'s docs. Markers ride the whole walk
+/// the same way — every marker the file carries, not just a prefix.
 ///
 /// `async` so Tauri runs it off the main thread, like its siblings:
 /// opening a several-hundred-megabyte BLF parses a header and allocates

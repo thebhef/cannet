@@ -9,7 +9,7 @@
 //! that verdict rests on.
 
 use cannet_blf::{scan_blf, BlfCanFrameSource, BlfCaptureWriter};
-use cannet_core::{CanFrame, CanFrameSource, CanId, Direction};
+use cannet_core::{CanFrame, CanFrameSource, CanId, Direction, WindowedSource};
 
 const BASE_NS: u64 = 1_700_000_000_u64 * 1_000_000_000;
 const MS: u64 = 1_000_000;
@@ -168,5 +168,50 @@ fn the_headers_last_object_time_is_the_latest_event_not_the_last_appended() {
         stats.last_object_time.to_unix_nanos(),
         BASE_NS + 1_100 * MS,
         "the header must not claim an end before the file's newest event",
+    );
+}
+
+/// A time-range import over an out-of-order file returns every frame in
+/// the range (task 90 phase 1). Before the fix, `WindowedSource` stopped
+/// at the first frame past `end_ns` and never called the inner source
+/// again: on this fixture, `end_ns = start + 1000 ms` kept only 31 of
+/// the file's 121 frames, silently dropping its two *earliest* frames
+/// (+120 ms, +300 ms) even though both are inside the requested window
+/// — they arrive as the file's last two objects (see
+/// `the_out_of_order_fixture_decodes_end_to_end_with_its_descent`
+/// above). The fix reads to EOF and skips out-of-range frames instead,
+/// so all 33 in-range frames come back.
+#[test]
+fn a_windowed_import_over_the_out_of_order_fixture_keeps_every_frame_in_range() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/time-origins/wall-clock-out-of-order.blf");
+    let source = BlfCanFrameSource::open(&path).unwrap();
+    let start = source
+        .file_statistics()
+        .measurement_start_time
+        .to_unix_nanos();
+
+    let mut windowed = WindowedSource::new(source, None, Some(start + 1_000 * MS));
+    let mut offsets = Vec::new();
+    while let Some(f) = windowed.next_frame().unwrap() {
+        offsets.push(f.timestamp_ns - start);
+    }
+
+    assert_eq!(
+        offsets.len(),
+        33,
+        "31 ascending frames plus the file's two earliest, which arrive last",
+    );
+    assert!(
+        offsets.iter().all(|o| *o <= 1_000 * MS),
+        "every kept frame is inside the requested window",
+    );
+    assert!(
+        offsets.contains(&(120 * MS)),
+        "the file's earliest frame must not be dropped",
+    );
+    assert!(
+        offsets.contains(&(300 * MS)),
+        "the file's second-earliest frame must not be dropped",
     );
 }
