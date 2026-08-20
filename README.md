@@ -2151,6 +2151,17 @@ labels) and the rest-of-bus panel's enum labels all resolve through the
 databases assigned to the row's bus — the same set that would decode
 the frame once it is on the wire.
 
+**Unchecking a bus is reversible.** Unassigning a DBC parks the decoded
+samples it produced rather than deleting them, and checking a bus again
+hands them back instead of re-decoding the capture. Views keep their
+configuration throughout: a plot series, a colour-map lane or a transmit
+row names a signal by bus, message id and name and never by the file that
+defined it, so it sits empty while nothing is assigned and comes back
+whole when something is. What restores it is the signal, not the file —
+any assigned database defining that signal brings the view back, and one
+defining it exactly as the parked samples were decoded brings the samples
+back with it.
+
 **Default: receive from every bus**. Each consumer (trace, plot, filter) carries a
 `sources: string[]` list of upstream producer ids — bus ids or filter
 ids — with the literal `"*"` as a wildcard meaning "every bus in the
