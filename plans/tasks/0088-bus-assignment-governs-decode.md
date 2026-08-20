@@ -797,6 +797,185 @@ its inversion, with `longtask_ms_per_s` (mean and p95) and
 `jank_fraction` exactly 0.000 in all four runs. Nothing was attributed
 to this phase and no limit was touched.
 
+### 2026-08-20 - Phase 4: unassigning stops what it was driving (branch `task-88-phase-4-unassign-stops-transmit`)
+
+Branched from `task-88-phase-3-cache-lifecycle` (at `fe42753f`). One
+commit, green on `cargo test -p cannet-gui`, `cargo clippy --workspace
+--all-targets` and `cargo fmt --all`. No frontend file is touched, so no
+frontend gate was needed (`pnpm` was run only for the release build the
+perf gate uses).
+
+Rust tests: **748 -> 755** (6 ignored throughout). Frontend: **2264**,
+unchanged. The commit is `--no-verify` with the hooks' work run by hand
+first, for the reason phase 2 recorded.
+
+| commit | subject |
+| --- | --- |
+| `0cb20f6b` | Unassigning a database stops the periodics it was driving |
+
+**What "stopped" resolved to, and why it is not a second mechanism.**
+`stop_periodic_transmit`'s body is extracted as
+`stop_periodic_transmit_inner(&AppState, &str)` - clear the entry's
+`running` flag, unschedule the id - and **both** callers take it: the
+user's Stop button and this rule. So the resulting state is the one the
+panel's own Stop leaves, and it is the state the UI reads: the row stays
+in the pool, stays `Periodic`, keeps its `cycle_ms`, and reports
+`running: false` through `list_transmit_frames`. That is asserted
+directly (`unassigning_a_database_stops_the_periodics_it_was_driving`
+reads the row back out of `registry.list()`), not inferred.
+
+**RBS rows are periodics like any other and take the same path.** They
+were already *removed* by `rbs::refresh_all_elements`'s row rebuild when
+their bus lost its databases - that half worked before this phase and
+nothing said so - but the removal happens inside `announce_dbc_change`,
+after the assignment call has returned, so nothing could count it. They
+now stop in `set_dbc_buses_inner` alongside project rows, and the rebuild
+then takes them out of the pool as it always did. No bus-scoped variant
+of the row rebuild was added.
+
+**How "built from a database that was unassigned" is measured.** A
+`TransmitFrame` carries no DBC path - there is no provenance field to
+read - so the observable question is asked instead, twice:
+`first_dbc_on_bus` (phase 2's per-bus priority scan, the same one the
+transmit panel's describe / decode / encode queries use) is asked
+**before** the change and **again after** it, over the periodics that are
+firing. A row that was backed and is no longer stops. Three properties
+fall out of that shape rather than being special-cased, and each has its
+own test:
+
+- a row another assigned database still defines keeps firing
+  (`a_row_another_assigned_database_still_defines_keeps_firing`);
+- a hand-typed CAN id no database on the bus ever described is in
+  neither answer, so an assignment change is never its business
+  (asserted inside the main case as `hand-typed`);
+- assigning stops nothing, because growing a bus's candidate list cannot
+  take a candidate away (`assigning_a_database_stops_nothing`);
+- narrowing `{pt, ch}` to `{pt}` stops the `ch` row and leaves the `pt`
+  one firing (`a_row_on_another_bus_is_untouched_by_an_unassign`).
+
+**One line, however many stopped.** `log_periodics_stopped` emits a
+single `sys_warn!` - `stopped N running transmit(s) <path> was driving`
+- and returns early on an empty list. No modal, no per-element notice,
+no toast: `system-log-appended` only appends to the System Messages
+panel. Warn rather than info because the entry is the *only* notice the
+ruling allows, so it has to be findable. `transmit-frames-changed` is
+emitted alongside it so the transmit panel's Run control re-fetches;
+`rbs-changed` already rode on `announce_dbc_change`.
+
+**The unassign always proceeds.** Nothing in the path can refuse or
+prompt: `set_dbc_buses_inner` applies the new bus list, invalidates, and
+only then asks what stopped.
+
+#### Three scope decisions, all recorded rather than assumed
+
+1. **`remove_dbc` reaches the same rule.** The task's own model says
+   removing a database removes it from its assigned buses (rule 3), so a
+   removal *is* an unassign and leaving a periodic firing from a file the
+   project has dropped would be the same defect. `remove_dbc_inner` is
+   the extracted body; `tests::ab_remove`, which was a hand-rolled copy
+   of that body, now calls it.
+2. **`clear_dbcs` deliberately does not.** It is a whole-set *replace*,
+   not an unassign: `App.tsx`'s `loadDbcSet` runs `clear_dbcs` + N x
+   `add_dbc` + M x `set_dbc_buses` for **open project, new project and
+   "reload all from disk"**. Applying the rule there would stop every
+   running periodic on a reload-from-disk and never restart it. Under the
+   rule as implemented that sequence stops nothing, because after the
+   clear no row is backed, so `backed_before` is empty for every
+   subsequent assign.
+3. **A DBC reloaded in place is untouched**, even when the new file drops
+   a message a periodic is transmitting. ADR 0053 section 1 rules
+   explicitly that an externally-owned input *swaps in place*; this
+   phase's rule is its **deliberate** counterpart, and extending it to
+   the watcher path would overturn that rule rather than complement it.
+   Recorded here so the asymmetry is a decision and not an oversight.
+
+#### The one asymmetry between a project row and an RBS row
+
+A stopped project transmit row **stays stopped** when the database is
+assigned back: `running` is the state the user toggles directly, and
+there is no separate "should run" flag behind it, so restoring it
+silently would be a start nobody commanded. An RBS row **resumes**: it is
+rebuilt by its element and `sync_schedules` derives its running state
+from the element's Run flag and the ANDed enables, which are the user's
+persisted configuration and which this phase does not touch (`run` is
+mirrored from the *project* element, so the host cannot clear it without
+desynchronising the project anyway). That is the phase-3 ruling applied
+consistently - a view configured against an unassigned database keeps its
+configuration and comes back whole - and it is the same thing that
+already happens when a DBC is assigned to a bus while an element is
+running.
+
+#### How the tests avoid a timing dependency
+
+Not one sleep, and no scheduler thread. `test_state()` builds its
+`TransmitScheduler` with the receiving end dropped, so `start` / `stop`
+are best-effort no-ops and the registry's `running` flag is the whole
+observable - which is also exactly what `fire_info` reads each tick and
+what `list_transmit_frames` reports, so asserting on it is asserting on
+the shipping state rather than on a test-only proxy. Every case runs
+synchronously inside one `set_dbc_buses_inner` call and asserts on its
+return value plus `is_running`. The returned list is built by walking the
+registry in pool order, so it is deterministic.
+
+Red was observed twice per case, once as a compile failure (no such
+function) and once against three mutations of the finished code, each
+chosen to be a plausible wrong implementation:
+
+| mutation | which cases went red |
+| --- | --- |
+| stop nothing | the four positive cases |
+| stop **every** running periodic | the four cases that name what must survive |
+| count non-running entries as firing | `a_row_that_was_not_firing_is_not_reported_as_stopped`, and the RBS case |
+
+The third mutation is why `a_row_that_was_not_firing_is_not_reported_as_stopped`
+exists: it survives the first two, so without it the `running` filter was
+untested.
+
+#### Docs
+
+ADR 0053 gains a *the deliberate counterpart to section 1* amendment -
+section 1 protects a transmitting element from a file changing underneath
+it and says nothing about the user reaching the same place on purpose,
+which is exactly the gap this rule fills. README gains **"Unchecking a
+bus stops what it was driving"** beside phase 3's "Unchecking a bus is
+reversible", covering the one log line, the always-proceeds rule, what
+survives, and the project-row / RBS-row difference above.
+
+#### The perf gate
+
+Same rig and method as phase 3: a `pnpm --dir apps/gui tauri build
+--no-bundle` release binary of `0cb20f6b`, `examples/ev-zonal` over two
+PEAK channels, four 60 s captures with `--perf-interact scrub`, gated by
+`cargo run --release -p cannet-perf-measurement -- check` over all four
+reports with `--expected-rx-fps 1608 --expected-tx-fps 1608` against the
+committed `docs/performance-measurements/baseline.json`. **Passed, 87
+metrics gated.** No baseline promoted and no gate limit touched. Reports
+are review artifacts and stay out of the repository.
+
+Host modes: tracebuffer 25000.120 fps / retention 1.000 / append 3.111 ms
+/ scan 0.249 ms; grpc 2934.073 fps / 0.995 / 1.054 ms / 0.052 ms;
+hardware-peak 999.846 fps / 1.001 / 0.896 ms / 0.203 ms - every one
+inside its limit.
+
+| run | rx fps | tx fps | short-frac worst | p95 ratio worst | `lag_ms` max | `lag_ms` mean | ids |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1606.4 | 1599.8 | 0.0033 (`zonal/0x10E`) | 1.267 | 7.3 | 0.04 | 173 |
+| 2 | 1601.0 | 1605.7 | 0.0027 (`zonal/0x100`) | 1.220 | 15.9 | -0.00 | 173 |
+| 3 | 1601.0 | 1604.2 | 0.0050 (`zonal/0x10E`) | 1.251 | 26.7 | 0.01 | 173 |
+| 4 | 1597.4 | 1608.9 | 0.0040 (`zonal/0x100`) | 1.200 | 3.9 | 0.01 | 173 |
+
+Neither metric under owner review fired. `rx_gap_short_frac_worst` sat at
+0.0027-0.0050 against a 0.166 limit (phase 3 saw 0.0028-0.0043);
+`lag_ms_max` spanned 3.9-26.7 ms against 41, inside the 2.8-37.6 ms
+within-build spread phase 2's eight-run control established, with
+`longtask_ms_per_s` (mean and p95) and `jank_fraction` exactly 0.000 in
+all four runs. Nothing was attributed to this phase and no limit was
+touched. `tx_late_ms_max` - the metric this phase's path could plausibly
+move - measured 44.3 / 30.8 / 22.1 / 36.9 ms against a 156.4 limit and a
+65.7 baseline, i.e. below baseline in every run: the rule adds one
+`first_dbc_on_bus` scan per running periodic **per assignment change**,
+and nothing at all to the per-tick fire path.
+
 ## Blockers / side effects
 
 Recorded by phase 1, 2026-08-19.
@@ -963,3 +1142,28 @@ Recorded by phase 3, 2026-08-20.
   unassigned DBC under every bus group labelled "applies to all buses".
   Neither moved here; the first is the migration decision phase 2
   flagged, the second is phase 5's row.
+
+Recorded by phase 4, 2026-08-20.
+
+- **A row the databases never described, but whose id one happens to
+  define, is treated as driven by it.** With no provenance field on a
+  `TransmitFrame`, "built from a database" is measured as "an assigned
+  database on this bus defines this message", so a CAN id the user typed
+  by hand that *coincidentally* matches a DBC message stops when that
+  database leaves the bus. Judged the right side to err on - the transmit
+  panel showed that row the database's signal table, so from the user's
+  side it *was* the DBC's message - and the alternative (stamping a DBC
+  path on every transmit row) is a persisted-model change for a case
+  nobody has reported. Recorded so the reading is a decision.
+- **Nothing stops when a DBC is reloaded in place and the new file drops
+  the message.** ADR 0053 section 1 rules that an externally-owned input
+  swaps in place; this phase is its deliberate counterpart, not an
+  extension of it. Closing that case means overturning section 1 for a
+  *running* transmit the way it already does for a running RBS element,
+  which is an ADR ruling rather than a phase edit.
+- **Phase 2's and phase 3's open items are unchanged by this phase.** The
+  legacy `bus_id: None` DBC-backed series still decodes samples its empty
+  chain cannot invalidate; the Database panel still files an unassigned
+  DBC under every bus group labelled "applies to all buses" (phase 5's
+  row); the fingerprint still mixes each candidate's whole assignment
+  set. None of them moved here.
