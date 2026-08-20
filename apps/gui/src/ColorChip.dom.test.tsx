@@ -73,6 +73,32 @@ describe("ColorChip", () => {
     expect(clickSpy).not.toHaveBeenCalled();
   });
 
+  it("onSwatchContextMenu runs on right-click, and the picker still opens after it — the plot series' recolour-on-right-click behaviour", () => {
+    const onSwatchContextMenu = vi.fn();
+    render(
+      <ColorChip
+        color="#123456"
+        onChange={() => {}}
+        swatchAriaLabel="pick a colour"
+        onSwatchClick={() => {}}
+        onSwatchContextMenu={onSwatchContextMenu}
+      />,
+    );
+    const picker = document.querySelector('input[type="color"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(picker, "click");
+    fireEvent.contextMenu(screen.getByRole("button", { name: "pick a colour" }));
+    expect(onSwatchContextMenu).toHaveBeenCalledTimes(1);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("with no onSwatchContextMenu given, right-click gets no special handling", () => {
+    render(<ColorChip color="#123456" onChange={() => {}} swatchAriaLabel="pick a colour" />);
+    const picker = document.querySelector('input[type="color"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(picker, "click");
+    fireEvent.contextMenu(screen.getByRole("button", { name: "pick a colour" }));
+    expect(clickSpy).not.toHaveBeenCalled();
+  });
+
   it("onChange fires with the new hex value from the native input", () => {
     const onChange = vi.fn();
     render(<ColorChip color="#123456" onChange={onChange} swatchAriaLabel="pick a colour" />);

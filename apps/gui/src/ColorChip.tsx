@@ -23,10 +23,14 @@ export interface ColorChipProps {
   /// and call `.click()` on it from that trigger's own handler.
   hideBox?: boolean;
   /// Overrides the swatch's default left-click behaviour (open the
-  /// picker). Given this, the swatch click does this instead, and the
-  /// picker opens only via `onSwatchContextMenu` — the plot series
+  /// picker). Given this, the swatch click does this instead, and
+  /// `onSwatchContextMenu` is how the picker opens — the plot series
   /// swatch's toggle-hidden-on-click / recolour-on-right-click split.
   onSwatchClick?: (e: MouseEvent<HTMLButtonElement>) => void;
+  /// Runs on right-click, then the picker opens (the swatch's own
+  /// `ref` is what opens it — the caller only needs to
+  /// `preventDefault`/`stopPropagation` as it likes). Omit for no
+  /// special right-click handling.
   onSwatchContextMenu?: (e: MouseEvent<HTMLButtonElement>) => void;
   title?: string;
   swatchAriaLabel?: string;
@@ -134,7 +138,13 @@ export const ColorChip = forwardRef<HTMLInputElement, ColorChipProps>(function C
         title={title}
         aria-label={swatchAriaLabel}
         onClick={onSwatchClick ?? (() => localInputRef.current?.click())}
-        onContextMenu={onSwatchContextMenu}
+        onContextMenu={
+          onSwatchContextMenu &&
+          ((e) => {
+            onSwatchContextMenu(e);
+            localInputRef.current?.click();
+          })
+        }
       />
       <input
         ref={setInputRef}
