@@ -32,10 +32,17 @@ use crate::trace_store::RawTraceFrame;
 /// Minimum spacing of valid→invalid Info messages per `(bus, id)`.
 const TRANSITION_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
-/// `(bus scope, raw id, extended)`. A `None` bus in the *config* map
-/// means "any bus" (the declaring DBC is unscoped); in the *runtime*
-/// maps it keys frames that arrived with no bus assigned.
-type Key = (Option<String>, u32, bool);
+/// A configured `(bus scope, raw id, extended)`. `None` is "any bus" —
+/// the declaring DBC is unscoped. That wildcard is a fact about the
+/// *database*, not about a frame, which is why the runtime maps key on
+/// [`RuntimeKey`] instead.
+type ConfigKey = (Option<String>, u32, bool);
+
+/// The `(bus, raw id, extended)` counter continuity and validity are
+/// tracked per. The bus is required: a frame enters through one, and
+/// one whose channel maps to no bus never reaches the ingest path — so
+/// unlike [`ConfigKey`] there is no wildcard and no unknown-bus case.
+type RuntimeKey = (String, u32, bool);
 
 /// Shared verification state. One instance on `AppState`.
 #[derive(Default)]
@@ -56,14 +63,14 @@ pub struct VerificationState {
 #[derive(Default)]
 struct Inner {
     /// Resolved configs per `(bus scope, id)`.
-    configs: HashMap<Key, ResolvedCalculatedFields>,
+    configs: HashMap<ConfigKey, ResolvedCalculatedFields>,
     /// Counter continuity per `(actual bus, id)`.
-    counters: HashMap<Key, u64>,
+    counters: HashMap<RuntimeKey, u64>,
     /// Sparse violation index: frame index → kind.
     violations: HashMap<u64, &'static str>,
     /// Current validity per `(actual bus, id)` + the last time an
     /// invalid transition was logged.
-    validity: HashMap<Key, Validity>,
+    validity: HashMap<RuntimeKey, Validity>,
 }
 
 struct Validity {
@@ -75,7 +82,9 @@ struct Validity {
 #[derive(serde::Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidityRecord {
-    pub bus_id: Option<String>,
+    /// The bus the frames were seen on. Always present — this is a
+    /// frame's bus, not a database's scope.
+    pub bus_id: String,
     pub id: u32,
     pub extended: bool,
     pub valid: bool,
@@ -91,7 +100,7 @@ impl VerificationState {
         dbs: &[LoadedDbc],
         rbs_overrides: &[(String, u32, bool, CalculatedFieldsConfig)],
     ) {
-        let mut configs: HashMap<Key, ResolvedCalculatedFields> = HashMap::new();
+        let mut configs: HashMap<ConfigKey, ResolvedCalculatedFields> = HashMap::new();
 
         // DBC-declared defaults: one entry per scoped bus, or a
         // wildcard (`None`) for an unscoped DBC. First DBC wins per
@@ -176,11 +185,11 @@ impl VerificationState {
             return false;
         }
         let inner = self.inner.lock().expect("verification mutex poisoned");
-        let wildcard: Key = (None, frame.id, frame.extended);
+        let wildcard: ConfigKey = (None, frame.id, frame.extended);
         if inner.configs.contains_key(&wildcard) {
             return true;
         }
-        let scoped: Key = (frame.bus_id.clone(), frame.id, frame.extended);
+        let scoped: ConfigKey = (frame.bus_id.clone(), frame.id, frame.extended);
         inner.configs.contains_key(&scoped)
     }
 
@@ -189,7 +198,9 @@ impl VerificationState {
     /// Own transmissions (`Direction::Tx`) are exempt.
     pub fn observe(&self, app: &AppHandle, frame: &RawTraceFrame, index: u64) {
         if let Some(kind) = self.observe_inner(frame, index) {
-            let bus = frame.bus_id.as_deref().unwrap_or("(unassigned)");
+            // `observe_inner` only returns `Some` for a frame it keyed,
+            // which means it had a bus.
+            let bus = frame.bus_id.as_deref().unwrap_or_default();
             sys_debug!(
                 app,
                 "verify",
@@ -212,23 +223,28 @@ impl VerificationState {
             CanFramePayload::Remote { .. } | CanFramePayload::Error => return None,
         };
 
+        // The bus the frame arrived on: what the runtime state is keyed
+        // on, and half of the config lookup.
+        let bus = frame.bus_id.clone()?;
+
         let mut inner = self.inner.lock().expect("verification mutex poisoned");
         // Bus-scoped config first, then the any-bus wildcard.
-        let scoped: Key = (frame.bus_id.clone(), frame.id, frame.extended);
-        let wildcard: Key = (None, frame.id, frame.extended);
+        let scoped_cfg: ConfigKey = (Some(bus.clone()), frame.id, frame.extended);
+        let wildcard: ConfigKey = (None, frame.id, frame.extended);
         let config = inner
             .configs
-            .get(&scoped)
+            .get(&scoped_cfg)
             .or_else(|| inner.configs.get(&wildcard))?;
 
-        let prev = inner.counters.get(&scoped).copied();
+        let seen: RuntimeKey = (bus, frame.id, frame.extended);
+        let prev = inner.counters.get(&seen).copied();
         let outcome = config.verify(data, prev);
         if let Some(counter) = outcome.counter {
-            inner.counters.insert(scoped.clone(), counter);
+            inner.counters.insert(seen.clone(), counter);
         }
 
         if outcome.violations.is_empty() {
-            if let Some(v) = inner.validity.get_mut(&scoped) {
+            if let Some(v) = inner.validity.get_mut(&seen) {
                 v.valid = true;
             }
             return None;
@@ -242,7 +258,7 @@ impl VerificationState {
         inner.violations.insert(index, kind);
 
         let now = Instant::now();
-        let entry = inner.validity.entry(scoped).or_insert(Validity {
+        let entry = inner.validity.entry(seen).or_insert(Validity {
             valid: true,
             last_logged: None,
         });
@@ -503,6 +519,41 @@ mod tests {
             "configured: the answer comes from behind the lock",
         );
         drop(held);
+    }
+
+    /// The runtime state — counter continuity and validity — is keyed
+    /// on the bus a frame *arrived on*, which is always a real bus: a
+    /// frame enters through one, and one whose channel maps to no bus
+    /// never reaches the ingest path. That is a different thing from
+    /// the config map's key, whose `None` is an unscoped database's
+    /// any-bus wildcard, and the snapshot names the frame's bus
+    /// outright rather than carrying an "unknown" case.
+    #[test]
+    fn runtime_state_is_keyed_on_the_bus_the_frame_arrived_on() {
+        let state = state_with_config(&[]); // unscoped: applies to every bus
+        let frames = valid_payloads(3);
+        // Interleaved, but each bus sees its own in-order sequence.
+        for (i, payload) in frames.iter().enumerate() {
+            let i = i as u64 * 2;
+            observe_quiet(&state, &rx_frame(Some("p"), payload.clone()), i);
+            observe_quiet(&state, &rx_frame(Some("c"), payload.clone()), i + 1);
+        }
+        assert!(
+            state.violations_in(0, 100).is_empty(),
+            "each bus keeps its own counter continuity",
+        );
+
+        let mut bad = frames[0].clone();
+        bad[2] ^= 1; // corrupt a CRC-covered byte
+        observe_quiet(&state, &rx_frame(Some("p"), bad.clone()), 10);
+        observe_quiet(&state, &rx_frame(Some("c"), bad), 11);
+
+        let snap = state.validity_snapshot();
+        assert_eq!(
+            snap.iter().map(|r| r.bus_id.as_str()).collect::<Vec<_>>(),
+            vec!["c", "p"],
+        );
+        assert!(snap.iter().all(|r| !r.valid));
     }
 
     #[test]
