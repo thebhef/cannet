@@ -379,14 +379,15 @@ green on `cargo test -p cannet-gui`, `cargo clippy --workspace
 --all-targets`, `cargo fmt --all`, and — for the commit that touches it
 — `pnpm --dir apps/gui build` / `pnpm --dir apps/gui test`.
 
-Rust tests: **741 → 743** (6 ignored throughout). Frontend: **2261**
-passing, unchanged. Perf harness crate: 49 passing.
+Rust tests: **741 → 743** (6 ignored throughout). Frontend: **2261 →
+2263**. Perf harness crate: 49 passing.
 
 | commit | subject |
 | --- | --- |
 | `8ec43685` | The signal bench decodes through the project's real bus assignments |
 | `9cb171e4` | One scoping rule, not six copies of it |
 | `d412c0d4` | Bus assignment governs decode: an unassigned database decodes nothing |
+| `ac2f9653` | The transmit and RBS panels ask the bus, not the first file loaded |
 
 Commits are `--no-verify` with the hooks' work run by hand first
 (`cargo fmt --all`, `cargo clippy --workspace --all-targets`, `cargo
@@ -472,6 +473,35 @@ DBC-backed series names the bus it is on. Docs in the same commit: ADR
 `docs/CONTEXT.md`'s glossary entry becomes **DBC bus assignment**, and
 README states that a DBC with no boxes checked decodes nothing and that
 a pre-rule project opens decoding nothing.
+
+**`ac2f9653` — the consumers that were not asking any bus at all.**
+Reading the callers of the removed value-table fallback turned up three
+DBC lookups that resolved through "first loaded database that claims
+the id" with no bus in the query — `describe_message`, `decode_frame`
+and `encode_frame`, i.e. the transmit panel's message descriptor, its
+live payload decode and its signal-edit encoder. Under the new rule a
+database assigned to nothing could still drive a transmit row's signal
+table while decoding no frame of the trace, so all three now take the
+row's `bus_id` and resolve through `first_dbc_on_bus` — `first_dbc`
+with `filter::dbc_applies` in front of it, and its replacement (it had
+no other caller).
+
+Two of the callers were **regressions this phase had introduced** and
+are fixed here rather than recorded: `TransmitSignalsTable`'s
+`EnumValueCell` and `RbsPanel`'s signal row both asked
+`list_value_tables` with `busId: null`, which answered out of the first
+loaded database before the fallback came out and answered *nothing*
+after it — enum pickers in the transmit and rest-of-bus panels would
+have gone label-less. Both now pass the bus the row is on (the transmit
+frame's `busId`; the project bus an RBS element's bus resolved to), and
+a new dom case in each panel pins the wiring — each fails without it.
+`dragSignals::fanOutByBus` was the third: it emitted a `busId: null`
+ref for a database assigned to nothing, which would have asked the
+sampler for whatever some *other* database on some other bus supplied.
+It now emits no ref, since such a database decodes no frame on any bus.
+Frontend 2261 → 2263; Rust stays 743 (the new host coverage is
+assertions inside the describe / decode / encode tests, which now also
+pin that another bus and no bus resolve nothing).
 
 #### The seven sites phase 1 left for judgement
 
@@ -577,6 +607,16 @@ and was investigated rather than waved through.**
   `jank_fraction`, which never leave 0.000. Recorded as a gate hazard
   under Blockers rather than acted on: the limit stays where it is.
 
+**3 — the branch as it stands, on `ac2f9653`.** The transmit / RBS
+commit landed after the gate above and touches the render tier, so it
+was rebuilt and re-gated: two runs, **passed, 51 metrics gated**. Host
+modes: tracebuffer 25000.1 fps / 1.000 / 3.923 ms / 0.266 ms; grpc
+2921.7 fps / 1.000 / 0.967 ms / 0.057 ms; hardware-peak 999.81 fps /
+1.001 / 0.573 ms / 0.094 ms. Frontend: rx 1602.4 / 1606.0 fps, tx
+1605.4 / 1612.2 fps, `rx_gap` short-frac worst 0.0043 / 0.0035, p95
+ratio worst 1.225 / 1.238, `lag_ms` max 2.0 / 13.7, 173 ids measured on
+both. No baseline promoted, no limit touched.
+
 ## Blockers / side effects
 
 Recorded by phase 1, 2026-08-19.
@@ -642,11 +682,13 @@ Recorded by phase 2, 2026-08-19.
   each frame is then decoded by the databases assigned to *its* bus.
   So a legacy any-bus series still produces samples, while no DBC edit
   can invalidate the pyramid holding them — under-invalidation, where
-  the old rule over-invalidated. It is reachable only from a saved
-  project that pre-dates per-bus signal binding (the descriptor
-  universe no longer emits a `bus_id: None` row, so nothing creates one
-  now), and such a project opens with its databases unassigned and
-  decoding nothing until the user assigns them. **The faithful fix is
+  the old rule over-invalidated. Nothing in the app creates such a
+  series any more — the descriptor universe emits no `bus_id: None`
+  row, the Database panel's drag fans out over assignments only, and
+  the transmit and RBS panels name their row's bus — so it is
+  reachable only from a project saved before per-bus signal binding,
+  which opens with its databases unassigned and decoding nothing until
+  the user assigns them. **The faithful fix is
   the migration decision, not a type change**: rule that a DBC-backed
   series naming no bus resolves nothing, and `scan_chunk`'s `None`
   target arm goes with it. Not taken here — it would silently empty
@@ -658,14 +700,17 @@ Recorded by phase 2, 2026-08-19.
   so whoever takes the decision has the cases in front of them.
 - **The Database panel still files an unassigned DBC under every bus
   group, labelled "applies to all buses".** That label is now false —
-  the database decodes nothing — so the panel actively misstates the
-  rule until phase 5 reaches it. It is a user-visible defect introduced
-  by this phase and left standing on purpose: the phase brief scopes
-  the Database panel UI to phase 5. `DatabasePanel.tsx`'s `unscoped`
-  flag, its `unscopedNote` bus-group field and the two
-  `DatabasePanel.dom.test.tsx` cases that assert the label are where it
-  lives. README's description of the tree was left matching the shipped
-  panel rather than the new rule, so that section and the panel move
+  the database decodes nothing — so the panel misstates the rule until
+  phase 5 reaches it. A user-visible defect, left standing only because
+  the phase brief scopes the Database panel UI to phase 5, which owns
+  exactly this row. It is not large: the tree already has an
+  **unassigned** group (`DatabasePanel.tsx`, the `unassigned.dbcs.push`
+  arm), so the change is to route an empty-`buses` entry there instead
+  of into every bus group, drop the `unscoped` / `unscopedNote` flags
+  and the label they render, and update the two
+  `DatabasePanel.dom.test.tsx` cases that assert it. README's
+  description of the tree was deliberately left matching the shipped
+  panel rather than the new rule, so that paragraph and the panel move
   together in phase 5.
 - **Opening a pre-rule project decodes nothing, and nothing says why
   yet.** The grooming ruling accepts this ("a user whose databases are
