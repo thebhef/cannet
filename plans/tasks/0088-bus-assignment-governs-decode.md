@@ -617,6 +617,186 @@ modes: tracebuffer 25000.1 fps / 1.000 / 3.923 ms / 0.266 ms; grpc
 ratio worst 1.225 / 1.238, `lag_ms` max 2.0 / 13.7, 173 ids measured on
 both. No baseline promoted, no limit touched.
 
+### 2026-08-20 — Phase 3: assignment is the cache lifecycle boundary (branch `task-88-phase-3-cache-lifecycle`)
+
+Branched from `task-88-phase-2-dbc-applies-inverts` (at `d169eeab`).
+Three commits, each green on `cargo test -p cannet-gui`, `cargo clippy
+--workspace --all-targets`, `cargo fmt --all`, and — for the commits
+that touch it — `pnpm --dir apps/gui test` / `pnpm --dir apps/gui
+build`.
+
+Rust tests: **743 → 748** (6 ignored throughout). Frontend: **2263 →
+2264**. Commits are `--no-verify` with the hooks' work run by hand
+first, for the reason phase 2 recorded (`pre-commit` stashes and
+restores the unstaged working tree around a multi-minute hook run,
+which clobbers live planning edits).
+
+| commit | subject |
+| --- | --- |
+| `d81ca01c` | A pyramid built this session parks like any other |
+| `9660413f` | Assignment is where a pyramid is parked and revived |
+| `c321610d` | A view configured against an unassigned database keeps it |
+
+**`d81ca01c` — the stamp moves to where the cache is built.** This is
+the phase's one real code change, and everything else in it turned on
+this. `SignalCache::encoding` was written only by
+`SignalCacheStore::persist`, so a cache created since the last manifest
+write carried `None` — and `invalidate_dbcs`'s third arm *discards* an
+unjudgeable cache rather than parking it. `ensure_caches` now stamps a
+new cache with `signal_fingerprint::dbc_encoding` against the very set
+that is about to decode it, and `fill_file_backed` stamps `file_source`
+the same way, so a live cache always carries the fingerprint of what
+built it.
+
+Red first — three cases that never persist, all observed asserting an
+empty retention pool against the park they expect:
+`a_pyramid_built_this_session_parks_like_any_other`,
+`unassigning_a_database_parks_its_caches_and_assigning_it_back_revives_them`
+(park on unassign, revive on re-assign, samples proved to come off disk
+by serving over a capture nothing decodes), and
+`a_park_is_revived_by_the_fingerprint_not_by_the_file_it_came_from`.
+
+Two fixtures moved with the rule rather than around it, and both were
+fixture faults rather than product ones:
+
+1. **`dbc_set_change_invalidates_stale_derived_caches`** invalidated
+   against an *empty* set while serving against a loaded one, so under
+   build-time stamping the cache's empty-chain fingerprint matched the
+   empty-chain recomputation and the cache correctly survived — leaving
+   the test's back-fill assertion failing. Production never does that
+   (`invalidate_derived_caches` reads `state.databases()`, which is also
+   what the serve decodes with), so the late-arriving DBC now goes into
+   the project, assigned to the bus its frames are on.
+2. **`a_dbc_change_does_not_touch_a_file_backed_series`**' DBC-backed
+   companion named *no bus*, so its chain was empty either side of the
+   change and, once stamped, nothing moved. It now names `TEST_BUS` and
+   parks — which is what the test's "exactly one series is live" was
+   asserting all along — and the test gained an assertion that the
+   series that left went to the pool rather than to nothing.
+
+`tests::ab_stamp` went with the change: it existed only to persist
+before a parking test, and its stated reason no longer exists. The
+three replace-a-DBC tests now exercise the never-persisted path
+directly, which is stronger coverage than they had.
+
+ADR 0047 gains a *stamped when a cache is built* amendment, and its
+assignment amendment gains the paragraph naming assignment as the cache
+lifecycle boundary.
+
+**`9660413f` — naming the hook, and testing it.** `set_dbc_buses`
+already reached the retention pool: it calls
+`invalidate_derived_caches`, and since phase 2 inverted `dbc_applies` a
+bus change moves every candidate chain that database was in. Nothing
+said so and nothing tested it. `set_dbc_buses_inner` is the command's
+body without its `AppHandle`, carrying the rule in its rustdoc — **one
+implementation, not two**: no bus-scoped variant of `park` /
+`revive_retained` was added, because a bus change *is* a DBC-set change
+and the existing in-session judgement is exactly right for it.
+`tests::ab_assign` now goes through it rather than mutating the slot by
+hand.
+
+Two host-level cases, both red first (no such function):
+
+- `unassigning_a_database_parks_its_caches_and_re_assigning_revives_them`
+  — unassign to park (live 0, retained 2), re-assign to revive (live 2,
+  retained 0, revivals 2), the samples proved to be the parked ones by
+  serving against a capture nothing decodes. It also pins **the hazard
+  in between**: a view keeps polling while its database is unassigned,
+  so an empty live cache is minted under each parked key. That does not
+  strand the park, because `invalidate_dbcs` re-encodes the live caches
+  *before* it consults the pool — the empty ones hold no bytes, so
+  `park` wipes rather than parks them, and the keys are free when
+  `revive_retained` looks. Pinned rather than assumed: the ordering is
+  load-bearing and nothing else asserted it.
+- `a_view_is_restored_by_the_signal_and_its_samples_by_the_fingerprint`
+  — the owner's ruling as ruled, not in its weaker by-file form; see
+  below.
+
+README says what unchecking a bus now costs: nothing, and why.
+
+**`c321610d` — the view-config guarantee, frontend half.** A plot
+series names `bus | messageId : signalName` and carries no DBC path, so
+unassigning must leave it configured and merely empty, and assigning any
+database that provides the signal must bring it back with no hand
+rebuild. `mockUnassignedSignals` is the fixture for "assigned to
+nothing" — the host lists no such signal and answers no samples for it.
+
+#### How the by-signal-and-fingerprint guarantee was tested
+
+Not by re-assigning the same file. The host case builds `A` and `B`
+under `a.dbc` assigned to `pt`, then **unassigns `a.dbc` and removes it
+from the project outright** — `state.databases()` is asserted empty, so
+nothing that decoded those samples is loaded any more, and the
+descriptor universe is asserted empty with it. A *different* file,
+`b.dbc`, is then installed and assigned to `pt`. It defines `A` exactly
+as the parked samples were decoded and `B` **rescaled**, which sets the
+ruling's two halves against each other in one experiment:
+
+- **The view is restored by the signal.** Both `A` and `B` resolve
+  again in `scoped_descriptor_snapshot`, on the same
+  `(bus, message id, name)` identity, out of a file that never decoded
+  them.
+- **The samples are restored by the fingerprint.** `A` revives (live 1,
+  revivals 1) and serves its 200 points over a capture nothing decodes;
+  `B` — the same *signal*, a different *encoding* — stays parked and
+  serves nothing.
+
+The frontend case is by-signal by construction: it never tells the panel
+which file is loaded, because the panel has no way to ask.
+
+#### The frontend recovery direction, investigated rather than waved through
+
+- *Observation.* After the samples came back, the chart stayed at zero
+  points and every `PlotArea` resample outcome was `unchanged`.
+- *Hypothesis.* `useDecimatedRange` memoises on a key that answers
+  "could this request return different bytes?", and the one input that
+  says "the decode moved" is the trace model's re-anchor epoch folded
+  into the fetch descriptor.
+- *Experiment.* A control that emptied only `mockSampleSeries` and left
+  the catalog entry alone reproduced the failure identically, which
+  falsifies "the catalog removal did it"; instrumenting `PlotArea`
+  showed `outcome.kind === "unchanged"` on every tick after recovery.
+- *Data.* `App.invalidateCache` — not the panel — bumps that epoch off
+  `useDbcGeneration`, and `renderPanel` hands the panel a fixed
+  `TraceData` whose `epoch` never moves.
+- *Conclusion.* A harness fact, not a product defect: the shipping app
+  re-anchors on the same carrier that refreshes the catalog. The test
+  now does both halves (`announceDbcChange()` plus the harness's own
+  `bumpEpoch`, whose doc comment already says it is what
+  `invalidateCache` does on a DBC-set change). The `PlotArea`
+  instrumentation was removed; that file is unchanged on this branch.
+
+#### The perf gate
+
+Same rig and method as phase 2: a `pnpm --dir apps/gui tauri build
+--no-bundle` release binary, `examples/ev-zonal` over two PEAK channels,
+four 60 s captures with `--perf-interact scrub`, gated by `cargo run
+--release -p cannet-perf-measurement -- check` over all four reports
+with `--expected-rx-fps 1608 --expected-tx-fps 1608` against the
+committed `docs/performance-measurements/baseline.json`. **Passed, 87
+metrics gated.** No baseline promoted and no gate limit touched. Reports
+are review artifacts and stay out of the repository.
+
+Host modes: tracebuffer 25000.107 fps / retention 1.000 / append 2.690
+ms / scan 0.545 ms; grpc 2922.189 fps / 0.996 / 0.803 ms / 0.055 ms;
+hardware-peak 999.664 fps / 1.000 / 0.839 ms / 0.053 ms — every one
+inside its limit.
+
+| run | rx fps | tx fps | short-frac worst | p95 ratio worst | `lag_ms` max | `lag_ms` mean | ids |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1601.8 | 1609.0 | 0.0035 (`zonal/0xC0`) | 1.226 | 14.1 | 0.01 | 173 |
+| 2 | 1602.6 | 1606.4 | 0.0030 (`zonal/0xC0`) | 1.230 | 11.4 | 0.19 | 173 |
+| 3 | 1599.3 | 1608.9 | 0.0043 (`zonal/0x10E`) | 1.259 | 3.8 | 0.00 | 173 |
+| 4 | 1608.3 | 1611.5 | 0.0028 (`zonal/0x10F`) | 1.219 | 9.6 | −0.03 | 173 |
+
+Neither jittery metric fired. `rx_gap_short_frac_worst` sat at
+0.0028–0.0043 against a 0.166 limit (phase 2's pre-inversion control
+spiked to 0.194 on the same rig); `lag_ms_max` spanned 3.8–14.1 ms
+against 41, worst-to-worst below phase 2's 23.7 on both its control and
+its inversion, with `longtask_ms_per_s` (mean and p95) and
+`jank_fraction` exactly 0.000 in all four runs. Nothing was attributed
+to this phase and no limit was touched.
+
 ## Blockers / side effects
 
 Recorded by phase 1, 2026-08-19.
@@ -745,3 +925,41 @@ Recorded by phase 2, 2026-08-19.
   re-based every gated metric on today's machine state for no reason,
   and would have lowered the bar the inversion then had to clear, so
   the authorisation stands unused.
+
+Recorded by phase 3, 2026-08-20.
+
+- **The fingerprint still mixes each candidate's whole assignment set,
+  so narrowing an assignment invalidates buses it did not touch.**
+  `signal_fingerprint::dbc_encoding` hashes `dbc.buses` for every
+  candidate as well as its decode specs, so a database assigned to
+  `{pt, ch}` and then narrowed to `{pt}` re-encodes the `pt` series
+  too — it parks and rebuilds, although no `pt` frame decodes any
+  differently. Pre-existing and deliberate: ADR 0047 names bus scoping
+  as a fingerprint input and its *Why* section lists exactly this as
+  conservatism on purpose ("a re-scoped database whose frames this path
+  does not filter by"). Worth writing down because the inverted rule
+  weakens the argument for it — chain *membership* now encodes
+  assignment already, so the buses list is arguably redundant — but
+  narrowing it is itself a fingerprint change, costing every project one
+  more one-time rebuild, so it is an ADR ruling rather than a phase-3
+  edit. Nothing in this phase's exit criteria depends on it: revival
+  after an unassign/re-assign round trip restores the identical
+  assignment set and matches.
+- **Two pyramids parked in one call are parked in hash-map order.**
+  `invalidate_dbcs` walks `by_key` to decide what parks, so when a
+  single change parks several signals their order in the pool — and
+  therefore which of them `evict_retained` gives up first at the byte
+  bound — is not deterministic. No user-visible consequence beyond
+  which of two same-instant parks is evicted first, and no existing test
+  depended on it; phase 3's own
+  `unassigning_a_database_parks_its_caches_and_assigning_it_back_revives_them`
+  sorts before asserting rather than pinning an accidental order.
+  Recorded rather than fixed: making it deterministic means sorting the
+  park list, which is work on the DBC-change path for a tie-break
+  nobody has asked to be stable.
+- **Phase 2's open items are unchanged by this phase.** The legacy
+  `bus_id: None` DBC-backed series still decodes samples its (empty)
+  chain cannot invalidate, and the Database panel still files an
+  unassigned DBC under every bus group labelled "applies to all buses".
+  Neither moved here; the first is the migration decision phase 2
+  flagged, the second is phase 5's row.
