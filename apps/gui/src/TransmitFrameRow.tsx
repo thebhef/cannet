@@ -90,7 +90,11 @@ export function TransmitFrameRow({
   const [descriptor, setDescriptor] = useState<MessageDescriptorRecord | null>(null);
   useEffect(() => {
     let cancelled = false;
+    // Scoped to the row's bus: only a database assigned to that bus
+    // may describe the message, the same set that decodes it on the
+    // wire. A row with no bus picked yet describes nothing.
     void invoke<MessageDescriptorRecord | null>("describe_message", {
+      busId: frame.busId,
       messageId: frame.canId,
       extended: frame.extended,
     })
@@ -103,7 +107,7 @@ export function TransmitFrameRow({
     return () => {
       cancelled = true;
     };
-  }, [frame.canId, frame.extended]);
+  }, [frame.busId, frame.canId, frame.extended]);
 
   // DBC drives FD / BRS / payload length. When the id binds to a DBC
   // message, mirror the DBC's `isFd` onto the frame's `kind` / `brs`

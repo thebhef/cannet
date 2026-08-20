@@ -197,33 +197,23 @@ export function messageDragRefs(frame: TraceFrameRecord | null): DraggableSignal
   }));
 }
 
-/// Fan one signal out across the buses a given DBC applies to. The
-/// Database panel calls this when producing drag payloads.
+/// Fan one signal out across the buses a given DBC is assigned to.
 ///
-/// - Scoped DBC (`scopedBuses.length > 0`): emit one ref per scope
-///   bus. The user explicitly bound the DBC to these buses, so each
-///   one is a valid (and intentional) instance worth plotting on its
-///   own series.
-/// - Unscoped DBC (`scopedBuses.length === 0`): emit a single
-///   `busId: null` ref — the legacy "any bus" path. The host's
-///   sampler treats `null` as "no bus filter" and resolves whichever
-///   bus carries the frames. We deliberately do NOT fan an unscoped
-///   DBC across every project bus here (which is what `list_signals`
-///   does for the plot picker dropdown); on drop that would
-///   manufacture N copies of every signal even though the user never
-///   asked for per-bus disambiguation.
-///
-/// This is asymmetric with `list_signals` on purpose — the dropdown
-/// needs explicit (bus, signal) entries for the user to *pick*; drag
-/// is a single gesture without that disambiguation step.
+/// - Assigned DBC (`assignedBuses.length > 0`): emit one ref per bus.
+///   The user explicitly assigned the DBC to these buses, so each one
+///   is a valid (and intentional) instance worth plotting on its own
+///   series.
+/// - Assigned to nothing (`assignedBuses.length === 0`): emit no ref
+///   at all. Bus assignment governs decode, so such a database decodes
+///   no frame on any bus — a series dragged out of it could only ever
+///   render empty, and the old `busId: null` "any bus" ref would ask
+///   the sampler for values some *other* database on some other bus
+///   happened to supply.
 export function fanOutByBus(
   base: Omit<DraggableSignalRef, "busId">,
-  scopedBuses: readonly string[],
+  assignedBuses: readonly string[],
 ): DraggableSignalRef[] {
-  if (scopedBuses.length === 0) {
-    return [{ ...base, busId: null }];
-  }
-  return scopedBuses.map((busId) => ({ ...base, busId }));
+  return assignedBuses.map((busId) => ({ ...base, busId }));
 }
 
 /// Deduplicate signal refs by their `(busId, messageId, extended,

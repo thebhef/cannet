@@ -506,9 +506,11 @@ pub(crate) fn list_value_tables_inner(
 }
 
 /// Run a batch of signal edits through
-/// [`cannet_dbc::Database::encode_frame`] against the first DBC that
-/// claims the `(message_id, extended)` pair. Returns the updated
-/// payload bytes plus any signals the encoder couldn't place.
+/// [`cannet_dbc::Database::encode_frame`] against the first database
+/// **assigned to `bus_id`** that claims the `(message_id, extended)`
+/// pair — the same set that would decode the frame once it is on that
+/// bus. Returns the updated payload bytes plus any signals the encoder
+/// couldn't place.
 ///
 /// The transmit panel calls this on every signal-table edit: it passes
 /// the current `dataHex` (decoded to bytes) and the signal that
@@ -526,35 +528,50 @@ pub(crate) fn list_value_tables_inner(
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn encode_frame(
     state: State<'_, AppState>,
+    bus_id: Option<String>,
     message_id: u32,
     extended: bool,
     signals: Vec<ipc::EncodeFrameSignal>,
     base: Vec<u8>,
 ) -> Result<ipc::EncodeFrameResponse, String> {
-    encode_frame_inner(state.inner(), message_id, extended, &signals, base)
+    encode_frame_inner(
+        state.inner(),
+        bus_id.as_deref(),
+        message_id,
+        extended,
+        &signals,
+        base,
+    )
 }
 
 /// Return the rich descriptor for one DBC message (signals, range,
 /// mux indicator, …) — what the transmit panel needs to render the
 /// signals table without reimplementing DBC walking on the frontend.
-/// Returns `None` if no DBC matches the id.
+///
+/// `bus_id` is the bus the row transmits on, and scopes the lookup the
+/// same way decode is scoped: only databases assigned to that bus may
+/// answer, so a row on no bus — or one whose bus has no database
+/// assigned — describes nothing. Returns `None` if no such DBC matches
+/// the id.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn describe_message(
     state: State<'_, AppState>,
+    bus_id: Option<String>,
     message_id: u32,
     extended: bool,
 ) -> Option<ipc::MessageDescriptorRecord> {
-    describe_message_inner(state.inner(), message_id, extended)
+    describe_message_inner(state.inner(), bus_id.as_deref(), message_id, extended)
 }
 
 pub(crate) fn describe_message_inner(
     state: &AppState,
+    bus_id: Option<&str>,
     message_id: u32,
     extended: bool,
 ) -> Option<ipc::MessageDescriptorRecord> {
     let id = cannet_core::CanId::new(message_id, extended).ok()?;
-    state.first_dbc(|db| {
+    state.first_dbc_on_bus(bus_id, |db| {
         db.describe_message(id).map(|desc| {
             let signals: Vec<ipc::SignalDescriptorRichRecord> = desc
                 .signals
@@ -595,30 +612,40 @@ pub(crate) fn describe_message_inner(
 }
 
 /// Decode the current payload bytes of a hypothetical (panel-side)
-/// frame through the first DBC that claims `(message_id, extended)`.
-/// Same decoded-signal shape the trace view uses, but the frame
-/// doesn't need to be in the trace store.
+/// frame through the first database **assigned to `bus_id`** that
+/// claims `(message_id, extended)`. Same decoded-signal shape the trace
+/// view uses, and the same scoping — a panel-side frame is decoded by
+/// exactly the databases that would decode it once it is on the wire —
+/// but the frame doesn't need to be in the trace store.
 ///
-/// Returns `None` if no DBC matches the id.
+/// Returns `None` if no such DBC matches the id.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn decode_frame(
     state: State<'_, AppState>,
+    bus_id: Option<String>,
     message_id: u32,
     extended: bool,
     data: Vec<u8>,
 ) -> Option<ipc::DecodedFrameRecord> {
-    decode_frame_inner(state.inner(), message_id, extended, &data)
+    decode_frame_inner(
+        state.inner(),
+        bus_id.as_deref(),
+        message_id,
+        extended,
+        &data,
+    )
 }
 
 pub(crate) fn decode_frame_inner(
     state: &AppState,
+    bus_id: Option<&str>,
     message_id: u32,
     extended: bool,
     data: &[u8],
 ) -> Option<ipc::DecodedFrameRecord> {
     let id = cannet_core::CanId::new(message_id, extended).ok()?;
-    state.first_dbc(|db| {
+    state.first_dbc_on_bus(bus_id, |db| {
         db.decode_raw(id, data)
             .map(|decoded| ipc::DecodedFrameRecord {
                 name: decoded.name.to_string(),
@@ -629,6 +656,7 @@ pub(crate) fn decode_frame_inner(
 
 pub(crate) fn encode_frame_inner(
     state: &AppState,
+    bus_id: Option<&str>,
     message_id: u32,
     extended: bool,
     signals: &[ipc::EncodeFrameSignal],
@@ -642,9 +670,9 @@ pub(crate) fn encode_frame_inner(
         .iter()
         .map(|s| (s.name.as_str(), s.physical))
         .collect();
-    // `first_dbc` writes the encoded payload into `bytes` in place and
-    // yields the skipped-signal list; `bytes` is consumed after the scan.
-    let skipped = state.first_dbc(|db| {
+    // The scan writes the encoded payload into `bytes` in place and
+    // yields the skipped-signal list; `bytes` is consumed after it.
+    let skipped = state.first_dbc_on_bus(bus_id, |db| {
         db.encode_frame(id, &signal_pairs, &mut bytes)
             .map(|report| {
                 report

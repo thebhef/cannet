@@ -43,6 +43,7 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
   useEffect(() => {
     let cancelled = false;
     void invoke<DecodedFrameRecord | null>("decode_frame", {
+      busId: frame.busId,
       messageId: frame.canId,
       extended: frame.extended,
       data: bytes,
@@ -56,7 +57,7 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
     return () => {
       cancelled = true;
     };
-  }, [frame.canId, frame.extended, bytes]);
+  }, [frame.busId, frame.canId, frame.extended, bytes]);
 
   const commitEdits = useCallback(
     async (edits: EncodeFrameSignal[]) => {
@@ -70,6 +71,7 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
       while (padded.length < expected) padded.push(0);
       try {
         const resp = await invoke<EncodeFrameResponse>("encode_frame", {
+          busId: frame.busId,
           messageId: frame.canId,
           extended: frame.extended,
           signals: edits,
@@ -80,7 +82,7 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
         // Surface in system log; nothing to do here.
       }
     },
-    [bytes, descriptor, frame.canId, frame.extended, onChange],
+    [bytes, descriptor, frame.busId, frame.canId, frame.extended, onChange],
   );
 
   // Edit one signal, accounting for mux semantics: when the user
@@ -167,6 +169,7 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
       {rows.map((sig) => (
         <SignalRow
           key={sig.name}
+          busId={frame.busId}
           messageId={frame.canId}
           extended={frame.extended}
           sig={sig}
@@ -179,6 +182,9 @@ export function SignalsTable({ frame, descriptor, onChange }: SignalsTableProps)
 }
 
 interface SignalRowProps {
+  /// The bus the row transmits on — what scopes its enum labels to the
+  /// databases assigned to that bus, exactly as decode is scoped.
+  busId: string | null;
   messageId: number;
   extended: boolean;
   sig: SignalDescriptorRichRecord;
@@ -189,7 +195,7 @@ interface SignalRowProps {
 /// One row in the signals table — name · value · unit · range. Picks
 /// between a plain numeric input and an enum combobox based on the
 /// signal's `hasValueTable` flag.
-function SignalRow({ messageId, extended, sig, decoded, onCommit }: SignalRowProps) {
+function SignalRow({ busId, messageId, extended, sig, decoded, onCommit }: SignalRowProps) {
   return (
     <div className="tx-signal-row" role="row">
       <span className="tx-col-name" title={sig.name}>
@@ -197,6 +203,7 @@ function SignalRow({ messageId, extended, sig, decoded, onCommit }: SignalRowPro
       </span>
       {sig.hasValueTable ? (
         <EnumValueCell
+          busId={busId}
           messageId={messageId}
           extended={extended}
           sig={sig}
@@ -244,6 +251,7 @@ function NumericValueCell({ sig, decoded, onCommit }: NumericValueCellProps) {
 }
 
 interface EnumValueCellProps {
+  busId: string | null;
   messageId: number;
   extended: boolean;
   sig: SignalDescriptorRichRecord;
@@ -262,6 +270,7 @@ interface EnumValueCellProps {
 /// The label table is loaded once per `(messageId, extended,
 /// signal_name)` via the shared `useValueTables` hook.
 function EnumValueCell({
+  busId,
   messageId,
   extended,
   sig,
@@ -269,8 +278,8 @@ function EnumValueCell({
   onCommit,
 }: EnumValueCellProps) {
   const valueTableSignals = useMemo<ValueTableSignal[]>(
-    () => [{ busId: null, messageId, extended, signalName: sig.name }],
-    [messageId, extended, sig.name],
+    () => [{ busId, messageId, extended, signalName: sig.name }],
+    [busId, messageId, extended, sig.name],
   );
   const [rows = []] = useValueTables(valueTableSignals).values();
   const options = useMemo(() => valueTableOptions(rows), [rows]);

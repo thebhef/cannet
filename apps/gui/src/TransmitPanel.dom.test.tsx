@@ -571,6 +571,25 @@ describe("payload sizing helpers", () => {
     expect(calls.filter((c) => c.cmd === "encode_frame")).toHaveLength(1);
   });
 
+  it("the row's bus scopes every DBC lookup the panel makes", async () => {
+    // Bus assignment governs decode, so the panel's describe / decode /
+    // encode queries resolve through the databases assigned to the bus
+    // the row transmits on — the same set that decodes the frame once
+    // it is on the wire.
+    const picker = await renderEnumRow();
+    await pickCombobox(picker, "On");
+    await waitFor(() => expect(lastCall("encode_frame")).toBeDefined());
+    for (const cmd of [
+      "describe_message",
+      "decode_frame",
+      "encode_frame",
+      "list_value_tables",
+    ]) {
+      const args = lastCall(cmd)?.args as { busId?: string | null };
+      expect(args?.busId, cmd).toBe("b1");
+    }
+  });
+
   it("renders one line per enum option: `label (raw)`", async () => {
     const picker = await renderEnumRow();
     openCombobox(picker);

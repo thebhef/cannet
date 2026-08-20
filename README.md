@@ -2144,7 +2144,12 @@ doesn't decode bus-B frames. A project saved before this rule opens
 with its databases unassigned and decodes nothing until they are
 assigned — deliberately, since an old or different-version DBC
 legitimately stays in a project and auto-assigning one would silently
-activate it alongside the current one.
+activate it alongside the current one. Assignment governs every DBC
+answer, not just the trace: the transmit panel's signal table (its
+message descriptor, its decoded values, its encoder and its enum
+labels) and the rest-of-bus panel's enum labels all resolve through the
+databases assigned to the row's bus — the same set that would decode
+the frame once it is on the wire.
 
 **Default: receive from every bus**. Each consumer (trace, plot, filter) carries a
 `sources: string[]` list of upstream producer ids — bus ids or filter

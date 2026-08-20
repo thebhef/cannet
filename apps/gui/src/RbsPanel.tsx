@@ -616,6 +616,7 @@ function BusSection({
                     <MessageRow
                       key={m.key}
                       elementId={elementId}
+                      busId={bus.busId}
                       target={{ bus: bus.key, ecu: ecu.name, message: m.key }}
                       message={m}
                       inert={inert}
@@ -641,6 +642,11 @@ function BusSection({
 
 interface MessageRowProps {
   elementId: string;
+  /// The project bus this element's RBS bus resolved to, or `null` when
+  /// no project bus carries that name. It scopes the signals' enum
+  /// labels to the databases assigned to that bus, the same set that
+  /// decodes the bus's frames.
+  busId: string | null;
   target: Target;
   message: RbsMessageView;
   inert: boolean;
@@ -658,6 +664,7 @@ interface MessageRowProps {
 
 function MessageRow({
   elementId,
+  busId,
   target,
   message: m,
   inert,
@@ -784,6 +791,7 @@ function MessageRow({
               <SignalRow
                 key={s.name}
                 elementId={elementId}
+                busId={busId}
                 target={target}
                 message={m}
                 signal={s}
@@ -815,6 +823,7 @@ function MessageRow({
 
 interface SignalRowProps {
   elementId: string;
+  busId: string | null;
   target: Target;
   message: RbsMessageView;
   signal: RbsSignalView;
@@ -822,7 +831,15 @@ interface SignalRowProps {
   onMenu: (e: MouseEvent) => void;
 }
 
-function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: SignalRowProps) {
+function SignalRow({
+  elementId,
+  busId,
+  target,
+  message,
+  signal: s,
+  inert,
+  onMenu,
+}: SignalRowProps) {
   // Enum signals are picked from the shared Combobox over their VAL_
   // labels (fetched via the shared useValueTables hook) and commit the
   // label string — the host resolves it through the table, and the
@@ -831,9 +848,16 @@ function SignalRow({ elementId, target, message, signal: s, inert, onMenu }: Sig
   const valueTableSignals = useMemo<ValueTableSignal[]>(
     () =>
       s.hasValueTable
-        ? [{ busId: null, messageId: message.messageId, extended: message.extended, signalName: s.name }]
+        ? [
+            {
+              busId,
+              messageId: message.messageId,
+              extended: message.extended,
+              signalName: s.name,
+            },
+          ]
         : [],
-    [s.hasValueTable, s.name, message.messageId, message.extended],
+    [s.hasValueTable, s.name, busId, message.messageId, message.extended],
   );
   const [labels = []] = useValueTables(valueTableSignals).values();
   const enumOptions = useMemo(() => valueTableOptions(labels), [labels]);

@@ -281,15 +281,21 @@ impl AppState {
         built
     }
 
-    /// First loaded DBC (in priority order) for which `f` yields a value —
-    /// the "first-loaded-DBC-wins" scan the bus-less describe/encode
-    /// queries share. Decode and per-bus resolution
-    /// (`resolve_effective_calc`) deliberately do *not* use this: they
-    /// filter by the frame's bus first, so a database assigned to no
-    /// bus can never answer for a frame.
-    pub(crate) fn first_dbc<T>(&self, mut f: impl FnMut(&Database) -> Option<T>) -> Option<T> {
+    /// First loaded DBC **assigned to `bus_id`** (in priority order) for
+    /// which `f` yields a value — the per-bus "first assigned database
+    /// that answers wins" scan the transmit panel's describe / decode /
+    /// encode queries share, and the same priority the decode path
+    /// applies to a frame. A query naming no bus resolves through
+    /// nothing, because no assignment contains "no bus"
+    /// ([`filter::dbc_applies`]).
+    pub(crate) fn first_dbc_on_bus<T>(
+        &self,
+        bus_id: Option<&str>,
+        mut f: impl FnMut(&Database) -> Option<T>,
+    ) -> Option<T> {
         self.databases()
             .iter()
+            .filter(|loaded| filter::dbc_applies(&loaded.buses, bus_id))
             .find_map(|loaded| f(loaded.db.as_ref()))
     }
 }

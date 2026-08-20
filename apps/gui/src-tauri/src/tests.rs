@@ -1253,19 +1253,25 @@ fn describe_message_inner_finds_standard_and_extended_ids() {
     // it back off, so lookups use the plain 0x001A_BCDE id.
     let extended_dbc = tiny_dbc(0x001A_BCDE | 0x8000_0000, "Ext", "Sig");
     *state.databases.lock().unwrap() = vec![
-        loaded("std.dbc", &standard_dbc),
-        loaded("ext.dbc", &extended_dbc),
+        loaded_scoped("std.dbc", &standard_dbc, &[TEST_BUS]),
+        loaded_scoped("ext.dbc", &extended_dbc, &[TEST_BUS]),
     ];
+    let on = Some(TEST_BUS);
 
-    let std_desc = describe_message_inner(&state, 0x100, false).unwrap();
+    let std_desc = describe_message_inner(&state, on, 0x100, false).unwrap();
     assert_eq!(std_desc.name, "Std");
 
-    let ext_desc = describe_message_inner(&state, 0x001A_BCDE, true).unwrap();
+    let ext_desc = describe_message_inner(&state, on, 0x001A_BCDE, true).unwrap();
     assert_eq!(ext_desc.name, "Ext");
 
     // The extended id's raw value doesn't collide with a standard
     // lookup at the same message table.
-    assert!(describe_message_inner(&state, 0x001A_BCDE, false).is_none());
+    assert!(describe_message_inner(&state, on, 0x001A_BCDE, false).is_none());
+
+    // A transmit row on another bus — or on none at all — describes
+    // nothing: only a database assigned to the row's bus may answer.
+    assert!(describe_message_inner(&state, Some("elsewhere"), 0x100, false).is_none());
+    assert!(describe_message_inner(&state, None, 0x100, false).is_none());
 }
 
 #[test]
@@ -1277,16 +1283,21 @@ fn decode_frame_inner_decodes_standard_and_extended_ids() {
     // it back off, so lookups use the plain 0x001A_BCDE id.
     let extended_dbc = tiny_dbc(0x001A_BCDE | 0x8000_0000, "Ext", "Sig");
     *state.databases.lock().unwrap() = vec![
-        loaded("std.dbc", &standard_dbc),
-        loaded("ext.dbc", &extended_dbc),
+        loaded_scoped("std.dbc", &standard_dbc, &[TEST_BUS]),
+        loaded_scoped("ext.dbc", &extended_dbc, &[TEST_BUS]),
     ];
     let data = vec![42u8, 0, 0, 0, 0, 0, 0, 0];
+    let on = Some(TEST_BUS);
 
-    let std_decoded = decode_frame_inner(&state, 0x100, false, &data).unwrap();
+    let std_decoded = decode_frame_inner(&state, on, 0x100, false, &data).unwrap();
     assert_eq!(std_decoded.name, "Std");
 
-    let ext_decoded = decode_frame_inner(&state, 0x001A_BCDE, true, &data).unwrap();
+    let ext_decoded = decode_frame_inner(&state, on, 0x001A_BCDE, true, &data).unwrap();
     assert_eq!(ext_decoded.name, "Ext");
+
+    // The panel-side decode is scoped exactly like the wire-side one.
+    assert!(decode_frame_inner(&state, Some("elsewhere"), 0x100, false, &data).is_none());
+    assert!(decode_frame_inner(&state, None, 0x100, false, &data).is_none());
 }
 
 #[test]
@@ -1296,10 +1307,11 @@ fn encode_frame_inner_writes_signal_bits_through_first_matching_dbc() {
     // of base alone.
     let state = test_state();
     let dbc = tiny_dbc(256, "M", "Sig");
-    *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
+    *state.databases.lock().unwrap() = vec![loaded_scoped("any.dbc", &dbc, &[TEST_BUS])];
     let base = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11];
     let resp = encode_frame_inner(
         &state,
+        Some(TEST_BUS),
         256,
         false,
         &[ipc::EncodeFrameSignal {
@@ -1316,15 +1328,32 @@ fn encode_frame_inner_writes_signal_bits_through_first_matching_dbc() {
         &resp.bytes[1..],
         &[0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11]
     );
+
+    // A row on a bus the database is not assigned to has no DBC to
+    // encode through, the same way it would have none to decode with.
+    let err = encode_frame_inner(
+        &state,
+        Some("elsewhere"),
+        256,
+        false,
+        &[ipc::EncodeFrameSignal {
+            name: "Sig".into(),
+            physical: 42.0,
+        }],
+        vec![0u8; 8],
+    )
+    .unwrap_err();
+    assert!(err.contains("no DBC matches"), "{err}");
 }
 
 #[test]
 fn encode_frame_inner_reports_unknown_signal_in_skipped() {
     let state = test_state();
     let dbc = tiny_dbc(256, "M", "Sig");
-    *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
+    *state.databases.lock().unwrap() = vec![loaded_scoped("any.dbc", &dbc, &[TEST_BUS])];
     let resp = encode_frame_inner(
         &state,
+        Some(TEST_BUS),
         256,
         false,
         &[ipc::EncodeFrameSignal {
@@ -1343,7 +1372,8 @@ fn encode_frame_inner_reports_unknown_signal_in_skipped() {
 fn encode_frame_inner_errors_when_no_dbc_matches() {
     let state = test_state();
     // No DBCs loaded.
-    let err = encode_frame_inner(&state, 0x123, false, &[], vec![0u8; 8]).unwrap_err();
+    let err =
+        encode_frame_inner(&state, Some(TEST_BUS), 0x123, false, &[], vec![0u8; 8]).unwrap_err();
     assert!(err.contains("no DBC matches"));
 }
 
