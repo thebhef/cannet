@@ -794,9 +794,13 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     // decode cursor at the tip.
     assert!(slice(&[]).is_empty(), "no DBC -> nothing decodes");
 
-    // The DBC arrives; plant an active filter index too (a filtered view
-    // would have one) so we can see it reset.
-    let db = Database::parse(&tiny_dbc(256, "Msg", "S")).unwrap();
+    // The DBC arrives — into the *project*, assigned to the bus the
+    // frames are on, because that is the set `invalidate_derived_caches`
+    // judges the live caches against. Plant an active filter index too
+    // (a filtered view would have one) so we can see it reset.
+    let entry = loaded_scoped("late.dbc", &tiny_dbc(256, "Msg", "S"), &[TEST_BUS]);
+    let db = entry.db.clone();
+    *state.databases.lock().unwrap() = vec![entry];
     let fi_dir = std::env::temp_dir().join(format!("cannet-inval-fi-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&fi_dir).unwrap();
     *state.filter_index.lock().unwrap() = Some(ActiveFilterIndex {
@@ -821,7 +825,7 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     // The rebuilt cache now decodes the whole series.
     assert_eq!(
         slice(&[crate::signal_fingerprint::DbcScope {
-            db: &db,
+            db: db.as_ref(),
             buses: &test_bus_scope(),
         }])
         .len(),
@@ -4627,25 +4631,6 @@ fn ab_cold_store(n: u64) -> TraceStore {
     store
 }
 
-/// Stamp the live pyramids with the encoding they were decoded under —
-/// what the periodic persist does. An unstamped cache is *dropped* by a
-/// DBC-set change rather than parked (ADR 0047), so a test about parking
-/// and revival has to have persisted first.
-fn ab_stamp(state: &AppState) {
-    let v = crate::signal_cache::PyramidValidity {
-        capture_id: "capture-a".to_string(),
-        low_water: 0,
-    };
-    let dbcs = state.databases();
-    let scopes = crate::app_state::dbc_scopes(&dbcs);
-    assert!(
-        state
-            .signal_caches
-            .persist(&v, &scopes, crate::signal_cache::Harden::All),
-        "the live pyramids were stamped with what decoded them",
-    );
-}
-
 /// Assign a loaded database to [`TEST_BUS`] — what the Database panel's
 /// bus checkbox does, and what makes it decode at all.
 fn ab_assign(state: &AppState, path: &str) {
@@ -4690,7 +4675,6 @@ fn a_reload_in_place_keeps_the_unchanged_signals_pyramid_and_rebuilds_the_change
         ab_serve(&state, &state.trace_store, Some(TEST_BUS), "B"),
         200
     );
-    ab_stamp(&state);
 
     // Re-export the same file with `B` rescaled and reload it in place.
     let reloaded = crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 2)).unwrap();
@@ -4744,7 +4728,6 @@ fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyrami
         ab_serve(&state, &state.trace_store, Some(TEST_BUS), "B"),
         200
     );
-    ab_stamp(&state);
 
     // Step 1: the replacement is installed alongside. `A` is defined
     // exactly as before; `B` is rescaled. Loading it changes nothing
@@ -4823,7 +4806,6 @@ fn a_replacement_dbc_does_not_inherit_the_bus_scoping_of_the_file_it_replaced() 
     invalidate_derived_caches(&state);
     assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "A"), 200);
     assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "B"), 200);
-    ab_stamp(&state);
 
     // A byte-identical file under a new name, installed and the old one
     // removed — the same content, the same signals, the same scale.
