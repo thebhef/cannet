@@ -39,10 +39,15 @@ pub mod tracebuffer;
 pub mod upstream;
 pub mod workload;
 
-/// A DBC loaded from the example, with its resolved on-disk path.
+/// A DBC loaded from the example, with its resolved on-disk path and
+/// the project bus ids it is assigned to.
 pub struct LoadedDbc {
     pub path: PathBuf,
     pub db: Database,
+    /// The project's bus assignment for this database, verbatim. Decode
+    /// is scoped by it exactly as the GUI scopes it, so the bench
+    /// measures the database set the project really applies to a bus.
+    pub buses: Vec<String>,
 }
 
 /// The parsed `examples/ev-demo` project: the project document, its RBS
@@ -138,7 +143,11 @@ pub fn load_example(dir: &Path) -> Result<LoadedExample, String> {
         let text = std::fs::read_to_string(&path)
             .map_err(|e| format!("reading {}: {e}", path.display()))?;
         let db = Database::parse(&text).map_err(|e| format!("{}: {e:?}", path.display()))?;
-        dbcs.push(LoadedDbc { path, db });
+        dbcs.push(LoadedDbc {
+            path,
+            db,
+            buses: dbc_ref.buses.clone(),
+        });
     }
 
     Ok(LoadedExample {
@@ -200,6 +209,28 @@ impl LoadedExample {
             Ok(())
         } else {
             Err(problems.join("\n"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bench decodes through the project's own bus assignments, so a
+    /// loaded database has to carry them — an empty set is a database the
+    /// project assigns to no bus.
+    #[test]
+    fn load_example_carries_each_dbcs_project_bus_assignment() {
+        let ex = load_example(&default_example_dir()).expect("example loads");
+        assert_eq!(ex.dbcs.len(), ex.project.dbcs.len());
+        for (loaded, dbc_ref) in ex.dbcs.iter().zip(&ex.project.dbcs) {
+            assert_eq!(loaded.buses, dbc_ref.buses);
+            assert!(
+                !loaded.buses.is_empty(),
+                "{} is assigned to no bus in the example project",
+                loaded.path.display()
+            );
         }
     }
 }
