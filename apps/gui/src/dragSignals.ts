@@ -188,7 +188,7 @@ export function messageDragRefs(frame: TraceFrameRecord | null): DraggableSignal
   const decoded = frame?.decoded;
   if (!frame || !decoded) return [];
   return decoded.signals.map((s) => ({
-    busId: frame.bus_id ?? null,
+    busId: frame.bus_id,
     messageId: frame.id,
     extended: frame.extended,
     signalName: s.name,

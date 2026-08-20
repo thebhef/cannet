@@ -91,7 +91,7 @@ pub fn run(ex: &LoadedExample, cfg: &FilterBenchConfig) -> FilterBenchReport {
     seen_ids.dedup();
     let seen_on_bus = |b: &str| -> Vec<(u32, bool)> {
         seen.iter()
-            .filter(|(bus, _, _)| bus.as_deref() == Some(b))
+            .filter(|(bus, _, _)| bus == b)
             .map(|(_, id, ext)| (*id, *ext))
             .collect()
     };

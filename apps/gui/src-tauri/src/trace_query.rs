@@ -152,24 +152,21 @@ pub(crate) fn apply_filter_records(
 /// view the predicate needs directly instead of fabricating a
 /// `RawTraceFrame`.
 fn record_matches(predicate: &FilterPredicate, record: &TraceFrameRecord) -> bool {
-    predicate.matches_fields(record.id, record.bus_id.as_deref(), record.decoded.as_ref())
+    predicate.matches_fields(record.id, Some(&record.bus_id), record.decoded.as_ref())
 }
 
 /// Sort key for the by-id "bus" column: the project bus *name* (so the
-/// on-screen order matches what the user reads), the raw bus id when the
-/// project doesn't know it (defensive — a removed bus), or `"~"` for an
-/// unassigned frame so it sorts after any real bus name ascending.
-/// Mirrors the former client-side `sortValue` "bus" case, moved host-side
-/// with the rest of the by-id sort.
+/// on-screen order matches what the user reads), or the raw bus id when
+/// the project doesn't know it (defensive — a removed bus). Mirrors the
+/// former client-side `sortValue` "bus" case, moved host-side with the
+/// rest of the by-id sort. There is no unassigned case: every row's
+/// frame arrived on a bus.
 ///
 /// Borrows rather than allocating, like [`ecu_sort_key`] and
 /// [`kind_sort_key`] — it is called twice per comparison of an
 /// `O(n log n)` sort.
-fn bus_sort_key<'a>(bus_id: Option<&'a str>, names: &'a HashMap<String, String>) -> &'a str {
-    match bus_id {
-        None => "~",
-        Some(id) => names.get(id).map_or(id, String::as_str),
-    }
+fn bus_sort_key<'a>(bus_id: &'a str, names: &'a HashMap<String, String>) -> &'a str {
+    names.get(bus_id).map_or(bus_id, String::as_str)
 }
 
 /// The `ecu` column's sort key — the decoded message's transmitter.
@@ -207,9 +204,7 @@ fn by_id_cmp(
         "rate" => a.rate.total_cmp(&b.rate),
         "idx" => fa.index.cmp(&fb.index),
         "time" => fa.timestamp_seconds.total_cmp(&fb.timestamp_seconds),
-        "bus" => {
-            bus_sort_key(fa.bus_id.as_deref(), names).cmp(bus_sort_key(fb.bus_id.as_deref(), names))
-        }
+        "bus" => bus_sort_key(&fa.bus_id, names).cmp(bus_sort_key(&fb.bus_id, names)),
         "dir" => fa.direction.cmp(fb.direction),
         "id" => fa.id.cmp(&fb.id),
         "kind" => kind_sort_key(&fa.kind).cmp(kind_sort_key(&fb.kind)),
@@ -528,7 +523,9 @@ fn plain_latest_for<'a>(
     let rows = state
         .trace_store
         .latest_in_window_where(start, end, |(bus, _ch, id, ext)| {
-            wanted.contains(&(bus.clone(), *id, *ext))
+            // A `StreamKey`'s bus is a descriptor's, which may be `None`
+            // (a file-backed series); a frame key's is always a real bus.
+            wanted.contains(&(Some(bus.clone()), *id, *ext))
         });
     for row in rows {
         let key = (row.frame.bus_id.clone(), row.frame.id, row.frame.extended);
@@ -928,7 +925,7 @@ fn resolve_candidates_for(
     seen_ids.dedup();
     let seen_on_bus = |b: &str| -> Vec<(u32, bool)> {
         seen.iter()
-            .filter(|(bus, _, _)| bus.as_deref() == Some(b))
+            .filter(|(bus, _, _)| bus == b)
             .map(|(_, id, ext)| (*id, *ext))
             .collect()
     };

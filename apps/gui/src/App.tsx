@@ -1086,7 +1086,7 @@ export function App() {
         diagGauge("fps.rx", frames_per_second_rx); // DIAG
         diagGauge("fps.tx", frames_per_second_tx); // DIAG
         for (const b of frames_per_second_by_bus) {
-          diagGauge(`fps.${b.bus_id ?? "(unassigned)"}`, b.frames_per_second); // DIAG
+          diagGauge(`fps.${b.bus_id}`, b.frames_per_second); // DIAG
         }
         // DIAG: session-start drop counter (stale pipeline frames after a
         // clear/reconnect race).

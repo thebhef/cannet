@@ -8,6 +8,10 @@
 use super::*;
 use cannet_core::{CanFramePayload, Direction};
 
+/// The bus test frames arrive on unless a test says otherwise: the
+/// store holds no bus-less frame, so every test frame names one.
+const TEST_BUS: &str = "bus0";
+
 fn dummy_frame(ts_ns: u64, id: u32) -> RawTraceFrame {
     RawTraceFrame {
         timestamp_ns: ts_ns,
@@ -16,7 +20,7 @@ fn dummy_frame(ts_ns: u64, id: u32) -> RawTraceFrame {
         extended: false,
         direction: Direction::Rx,
         payload: CanFramePayload::Classic(vec![]),
-        bus_id: None,
+        bus_id: Some(TEST_BUS.to_string()),
     }
 }
 
@@ -132,7 +136,7 @@ fn windowed_filter_page_empty_or_inverted_window_is_zero() {
 
 // --- by-id host-side sort (former client `sortRows`) ---
 
-fn snap(id: u32, channel: u8, rate: f64, bus: Option<&str>) -> ByIdSnapshot {
+fn snap(id: u32, channel: u8, rate: f64, bus: &str) -> ByIdSnapshot {
     ByIdSnapshot {
         frame: TraceFrameRecord {
             index: 0,
@@ -144,7 +148,7 @@ fn snap(id: u32, channel: u8, rate: f64, bus: Option<&str>) -> ByIdSnapshot {
             kind: ipc::CanFrameKind::Classic,
             data: vec![],
             decoded: None,
-            bus_id: bus.map(Into::into),
+            bus_id: bus.into(),
             violation: None,
         },
         rate,
@@ -167,9 +171,9 @@ fn sorted_ids(
 fn sort_by_id_orders_by_a_column_stable_and_no_op_for_none() {
     let names = HashMap::new();
     let rows = [
-        snap(0x200, 1, 0.0, None),
-        snap(0x100, 0, 0.0, None),
-        snap(0x100, 2, 0.0, None),
+        snap(0x200, 1, 0.0, "b"),
+        snap(0x100, 0, 0.0, "b"),
+        snap(0x100, 2, 0.0, "b"),
     ];
     // None key leaves the input order (the host default).
     assert_eq!(
@@ -195,9 +199,9 @@ fn sort_by_id_orders_by_a_column_stable_and_no_op_for_none() {
 fn sort_by_id_orders_by_rate() {
     let names = HashMap::new();
     let rows = [
-        snap(0x100, 0, 5.0, None),
-        snap(0x200, 0, 50.0, None),
-        snap(0x300, 0, 0.5, None),
+        snap(0x100, 0, 5.0, "b"),
+        snap(0x200, 0, 50.0, "b"),
+        snap(0x300, 0, 0.5, "b"),
     ];
     assert_eq!(
         sorted_ids(&rows, Some("rate"), Some("asc"), &names),
@@ -224,10 +228,10 @@ fn sort_by_id_orders_by_bus_name_unassigned_last() {
     .into_iter()
     .collect();
     let rows = [
-        snap(0x100, 0, 0.0, Some("b1")), // Powertrain
-        snap(0x200, 0, 0.0, None),       // unassigned -> "~"
-        snap(0x300, 0, 0.0, Some("b2")), // Chassis
-        snap(0x400, 0, 0.0, Some("z")),  // unknown bus -> "z"
+        snap(0x100, 0, 0.0, "b1"), // Powertrain
+        snap(0x200, 0, 0.0, "zz"), // unknown bus -> "zz"
+        snap(0x300, 0, 0.0, "b2"), // Chassis
+        snap(0x400, 0, 0.0, "z"),  // unknown bus -> "z"
     ];
     assert_eq!(
         sorted_ids(&rows, Some("bus"), Some("asc"), &names),
@@ -253,10 +257,10 @@ fn sort_by_id_orders_by_ecu_no_transmitter_last() {
         s
     };
     let rows = [
-        with_ecu(snap(0x100, 0, 0.0, None), Some("Zonal")),
-        snap(0x200, 0, 0.0, None), // undecoded
-        with_ecu(snap(0x300, 0, 0.0, None), Some("Bms")),
-        with_ecu(snap(0x400, 0, 0.0, None), None), // Vector__XXX
+        with_ecu(snap(0x100, 0, 0.0, "b"), Some("Zonal")),
+        snap(0x200, 0, 0.0, "b"), // undecoded
+        with_ecu(snap(0x300, 0, 0.0, "b"), Some("Bms")),
+        with_ecu(snap(0x400, 0, 0.0, "b"), None), // Vector__XXX
     ];
     assert_eq!(
         sorted_ids(&rows, Some("ecu"), Some("asc"), &names),
@@ -307,7 +311,9 @@ fn mux_snapshot_state() -> AppState {
 fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
     let sel = SignalSelection {
         keys: vec![],
-        patterns: vec!["^/Zonal/Modes/".to_string()],
+        // The canonical path starts with the bus segment (ADR 0038), and
+        // every frame is on a bus now, so the pattern names it.
+        patterns: vec![format!("^{TEST_BUS}/Zonal/Modes/")],
     };
     fetch_signal_page_inner(
         state,
@@ -318,7 +324,7 @@ fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         None,
         0,
         100,
@@ -377,7 +383,7 @@ fn fetch_signal_page_scopes_to_source_buses() {
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         Some(&["powertrain".to_string()]),
         0,
         100,
@@ -393,7 +399,7 @@ fn fetch_signal_page_scopes_to_source_buses() {
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         None,
         0,
         100,
@@ -495,7 +501,9 @@ fn fetch_signal_page_pages_and_sorts_host_side() {
         .append(modes_frame(1_000_000_000, 0, 40, 5));
     let sel = SignalSelection {
         keys: vec![],
-        patterns: vec!["^/Zonal/Modes/".to_string()],
+        // The canonical path starts with the bus segment (ADR 0038), and
+        // every frame is on a bus now, so the pattern names it.
+        patterns: vec![format!("^{TEST_BUS}/Zonal/Modes/")],
     };
     // Sort by value ascending: Mux(0), Always(5), ModeA(40), then
     // blank ModeB last; page [1, 3) of that order.
@@ -508,7 +516,7 @@ fn fetch_signal_page_pages_and_sorts_host_side() {
         Some("value"),
         Some("asc"),
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         None,
         1,
         2,
@@ -535,13 +543,15 @@ fn fetch_signal_page_pages_across_section_headers_with_a_fold_aware_count() {
         .append(modes_frame(1_000_000_000, 0, 40, 5));
     let sel = SignalSelection {
         keys: vec![],
-        patterns: vec!["^/Zonal/Modes/".to_string()],
+        // The canonical path starts with the bus segment (ADR 0038), and
+        // every frame is on a bus now, so the pattern names it.
+        patterns: vec![format!("^{TEST_BUS}/Zonal/Modes/")],
     };
     let sections = ipc::SignalSections {
         names: vec!["Modes".to_string()],
         assignments: [
-            ("*|s:512:ModeA".to_string(), "Modes".to_string()),
-            ("*|s:512:ModeB".to_string(), "Modes".to_string()),
+            (format!("{TEST_BUS}|s:512:ModeA"), "Modes".to_string()),
+            (format!("{TEST_BUS}|s:512:ModeB"), "Modes".to_string()),
         ]
         .into_iter()
         .collect(),
@@ -558,7 +568,7 @@ fn fetch_signal_page_pages_across_section_headers_with_a_fold_aware_count() {
             Some("signal"),
             Some("asc"),
             vec![],
-            &[],
+            &[TEST_BUS.to_string()],
             None,
             offset,
             limit,
@@ -1073,13 +1083,13 @@ fn apply_filter_drops_records_that_dont_pass() {
     // Two records, same id, different buses. A `{bus: "p"}` filter
     // keeps the first only.
     let mut r1 = TraceFrameRecord::from_raw(0, &frame_with_data(256), None);
-    r1.bus_id = Some("p".into());
+    r1.bus_id = "p".into();
     let mut r2 = TraceFrameRecord::from_raw(1, &frame_with_data(256), None);
-    r2.bus_id = Some("c".into());
+    r2.bus_id = "c".into();
     let predicate: FilterPredicate = serde_json::from_str(r#"{"bus": "p"}"#).unwrap();
     let filtered = apply_filter_records(vec![r1.clone(), r2], Some(&predicate));
     assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0].bus_id.as_deref(), Some("p"));
+    assert_eq!(filtered[0].bus_id, "p");
 }
 
 #[test]
@@ -3065,7 +3075,7 @@ fn file_backed_rows(state: &AppState, patterns: &[&str]) -> Vec<SignalSnapshotRe
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         None,
         0,
         100,
@@ -3298,7 +3308,7 @@ fn a_bus_wired_view_has_no_file_backed_rows() {
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         Some(&["powertrain".to_string()]),
         0,
         100,
@@ -4569,14 +4579,15 @@ fn ab_frame_256(ts_ns: u64, a: u16, b: u16) -> RawTraceFrame {
 /// An `AppState` whose pyramid scratch is this test's own directory
 /// (`test_state`'s is reused across runs, so a manifest an earlier run
 /// left behind would be *staged* and block `persist`), holding `n`
-/// decodable frames of message 256 on `bus`.
+/// decodable frames of message 256 on `bus`, or on [`TEST_BUS`] when
+/// the test does not care which — the store holds no bus-less frame.
 #[allow(clippy::cast_possible_truncation)]
 fn ab_state(scratch: &std::path::Path, bus: Option<&str>, n: u64) -> AppState {
     let state = test_state();
     state.signal_caches.reroot(scratch);
     for i in 0..n {
         let mut f = ab_frame_256(i * 1_000_000_000, (i % 50) as u16, (i % 40) as u16);
-        f.bus_id = bus.map(ToOwned::to_owned);
+        f.bus_id = Some(bus.unwrap_or(TEST_BUS).to_owned());
         state.trace_store.append(f);
     }
     state

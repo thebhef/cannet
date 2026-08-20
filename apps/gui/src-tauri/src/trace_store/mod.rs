@@ -131,17 +131,23 @@ pub struct StatusSnapshot {
     /// As [`TraceStore::frames_per_second_by_direction`].
     pub frames_per_second_tx: f64,
     /// As [`TraceStore::frames_per_second_by_bus`].
-    pub frames_per_second_by_bus: Vec<(Option<String>, f64)>,
+    pub frames_per_second_by_bus: Vec<(String, f64)>,
 }
 
 /// Identifies a "kind of frame" for the latest-by-id view: the
-/// logical bus (`None` = unassigned, a distinct bucket from any named
-/// bus), the wire channel, the arbitration id, and whether it's an
-/// extended id (a standard and an extended id with the same numeric
+/// logical bus, the wire channel, the arbitration id, and whether it's
+/// an extended id (a standard and an extended id with the same numeric
 /// value are distinct frames). Keying on `bus_id` matters when two
 /// servers report frames on the same wire channel — without it, the
 /// per-id snapshot would collapse them into one row.
-type FrameKey = (Option<String>, u8, u32, bool);
+///
+/// The bus is a plain `String`, not an `Option`: every frame the store
+/// holds arrived on one, because [`TraceStore::append`] drops a frame
+/// that names none. (A *signal* key's bus stays optional — `None`
+/// there means a file-backed series, which has no bus and no message;
+/// see `crate::signal_cache::SignalKey`. The two are different things
+/// under one name.)
+type FrameKey = (String, u8, u32, bool);
 
 /// Identifies one multiplexor-selector group of a message stream for
 /// the per-signal latest-value view: the logical bus, the arbitration
@@ -149,7 +155,7 @@ type FrameKey = (Option<String>, u8, u32, bool);
 /// there is no wire-channel component — signal identity is
 /// `(bus, message id, extended)` (the descriptor key), matching the
 /// per-signal decoded-sample cache.
-type MuxKey = (Option<String>, u32, bool, u64);
+type MuxKey = (String, u32, bool, u64);
 
 /// Extracts a frame's multiplexor-selector value, or `None` when the
 /// frame's message has no multiplexor (or no DBC decodes it). Injected
@@ -254,7 +260,7 @@ struct Inner {
     /// unassigned, its own bucket). Maintained `O(1)` on append; backs
     /// [`TraceStore::frames_per_second_by_bus`], the per-bus throughput
     /// readout used to localise where a high-rate stream is slowing.
-    per_bus: HashMap<Option<String>, RateTrack>,
+    per_bus: HashMap<String, RateTrack>,
     /// Append rate split by [`Direction`]: received frames and
     /// transmit-confirmed frames tracked separately, so a stall on one
     /// direction is visible even when the aggregate looks healthy.
@@ -428,18 +434,20 @@ impl TraceStore {
     /// stale timestamps and show as negative offsets in the trace
     /// view.
     ///
+    /// A frame naming no bus is dropped the same way. Frames enter
+    /// through a bus — the pump drops a channel no bus is mapped to —
+    /// so a bus-less frame here is one the routing rule already
+    /// rejected, and storing it would put a row in the trace that no
+    /// bus scoping, filter predicate or per-bus database can reach.
+    ///
     /// Returns the appended frame's absolute index — what the
     /// ingest-time verifier keys its violation records on, and what a
     /// tx-confirm reports back.
     pub fn append(&self, frame: RawTraceFrame) -> Option<u64> {
         let now = Instant::now();
         let ts_ns = frame.timestamp_ns;
-        let key: FrameKey = (
-            frame.bus_id.clone(),
-            frame.channel,
-            frame.id,
-            frame.extended,
-        );
+        let bus_id = frame.bus_id.clone()?;
+        let key: FrameKey = (bus_id, frame.channel, frame.id, frame.extended);
         let direction = frame.direction;
         let mut inner = self.lock_inner();
         if ts_ns < inner.session_start_ns {
@@ -454,7 +462,7 @@ impl TraceStore {
         // Mux-group latest: one extra id×selector-bounded clone, only
         // for frames the extractor recognises as multiplexed.
         if let Some(sel) = inner.mux_selector_of.as_ref().and_then(|ext| ext(&frame)) {
-            let mkey: MuxKey = (frame.bus_id.clone(), frame.id, frame.extended, sel);
+            let mkey: MuxKey = (key.0.clone(), frame.id, frame.extended, sel);
             inner.latest_mux.insert(mkey.clone(), (idx, frame.clone()));
             inner
                 .mux_rates
@@ -735,6 +743,11 @@ pub(crate) mod test_support {
     use super::{Direction, RawTraceFrame};
     use cannet_core::CanFramePayload;
 
+    /// The default bus for test frames. Every frame the store accepts
+    /// names a bus, so a test frame has to name one too — tests that
+    /// care which bus use [`dummy_on_bus`].
+    pub(crate) const TEST_BUS: &str = "bus0";
+
     pub(crate) fn dummy(ts_ns: u64, id: u32) -> RawTraceFrame {
         RawTraceFrame {
             timestamp_ns: ts_ns,
@@ -743,7 +756,7 @@ pub(crate) mod test_support {
             extended: false,
             direction: Direction::Rx,
             payload: CanFramePayload::Classic(vec![]),
-            bus_id: None,
+            bus_id: Some(TEST_BUS.to_string()),
         }
     }
 
@@ -775,6 +788,23 @@ mod tests {
             vec![],
         )
         .unwrap()
+    }
+
+    /// The store holds no bus-less frame. The pump already drops a
+    /// frame whose channel maps to no bus, and this is the same rule
+    /// stated where the frames actually land — so the by-id key, the
+    /// per-bus rate buckets and everything persisted from them can name
+    /// a bus outright instead of carrying an "unknown" case.
+    #[test]
+    fn a_frame_with_no_bus_never_reaches_the_store() {
+        let store = TraceStore::new();
+        let mut homeless = dummy(1_000, 0x100);
+        homeless.bus_id = None;
+        assert_eq!(store.append(homeless), None, "a bus-less frame was stored");
+        assert_eq!(store.len(), 0);
+        assert!(store.frames_per_second_by_bus().is_empty());
+        assert_eq!(store.append(dummy(2_000, 0x100)), Some(0));
+        assert_eq!(store.len(), 1);
     }
 
     #[test]
