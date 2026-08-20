@@ -641,6 +641,7 @@ pub(crate) fn test_state() -> AppState {
         live_tail_rows: std::sync::atomic::AtomicU64::new(0),
         active_project_id: Mutex::new(None),
         watched_project: Mutex::new(crate::watched_file::WatchedFile::default()),
+        view_signals: Mutex::new(crate::view_signals::ViewSignalRegistry::default()),
     }
 }
 
