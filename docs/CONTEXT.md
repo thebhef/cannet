@@ -143,6 +143,9 @@ Loading a file makes it available; assigning it to a bus makes it
 decode. The same message id on two buses is two different signal
 instances (two copies of one ECU), not one. Every frame has a bus: one
 whose channel maps to none is dropped at import rather than stored.
+Priority among databases assigned to the same bus is the project's
+load order; two of them defining the same id is a collision the
+Database panel warns about, naming which one wins.
 _Avoid_: "DBC filter" — assignment selects which frames a database may
 speak for, it does not narrow a view. _Avoid_: "unscoped" for an
 unassigned database — it decodes nothing, not everything.
