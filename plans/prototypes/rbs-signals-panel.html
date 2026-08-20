@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RBS Signals — prototype</title>
+<style>
+/* The same grid, tokens and affordances as `view-signals-panel.html`.
+   RBS configs are the analogue of views there: a column, and a checklist
+   fly-out. The one behavioural difference is that signals are *not*
+   combined across configs — the same signal in two `.cannet_rbs` files is
+   two rows, because two sims are meant to hold different values and
+   timings, whereas two views showing one signal must agree.
+   Dark tokens verbatim from apps/gui/src/index.css :root; light verbatim
+   from its [data-theme="light"] block except the few marked (*). */
+:root {
+  --divider:#2c3444; --divider-subtle:#1f2630;
+  --surface-app:#0e1116; --surface-canvas:#0b1220; --surface-field:#0f172a;
+  --surface-row:#11161e; --surface-hover:#1c2530;
+  --surface-section-header:#131a24; --surface-toolbar-control:#1c2230;
+  --surface-toolbar-control-hover:#2a3447;
+  --text-body:#d8dee9; --text-data:#c5d2e0; --text-label:#e6ecf5; --text-muted:#94a3b8;
+  --text-faint:#64748b; --text-dim:#475569; --text-message:#93c5fd; --text-source:#a5b4fc;
+  --text-signal-value:#fde68a;
+  --border-subtle:#243040; --border-wash:rgb(255 255 255 / 0.14);
+  --accent-marker:#4ecbff;
+  --warn-border:#eab308; --warn-text:#fbbf24;
+  --danger-text:#f87171;
+  --ok-text:#4ade80; --ok-dot:#22c55e;
+  --modified-marker:#4f8ef7; --modified-text:#4f8ef7;
+  --surface-pop:#111827; --shadow-menu:rgba(0,0,0,0.45);
+  --scope-text:#5eead4;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --divider:#d3d8e0; --divider-subtle:#e4e7ec;
+  --surface-app:#f4f5f7; --surface-canvas:#ffffff; --surface-field:#ffffff;
+  --surface-row:#ffffff; --surface-hover:#eceff3;
+  --surface-section-header:#eaedf2; --surface-toolbar-control:#e8ebf0;
+  --surface-toolbar-control-hover:#dbe0e9;
+  --text-body:#1f2937; --text-data:#3b4757; --text-label:#0f172a; --text-muted:#5b6879;
+  --text-faint:#78849a; --text-dim:#98a3b3; --text-message:#1d4ed8; --text-source:#4338ca;
+  --text-signal-value:#8a5a06;
+  --border-subtle:#d8dce3; --border-wash:rgb(15 23 42 / 0.14);
+  --accent-marker:#0263a8;              /* (*) stock #0369a1 */
+  --warn-border:#b8860b;                /* (*) stock #d0a017 */
+  --warn-text:#7a4a06;
+  --danger-text:#a01212;                /* (*) stock #b91c1c */
+  --ok-text:#116434; --ok-dot:#16a34a;
+  --modified-marker:#2563eb; --modified-text:#1d4ed8;
+  --surface-pop:#ffffff; --shadow-menu:rgba(15,23,42,0.18);
+  --scope-text:#166f5c;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--surface-app); color:var(--text-body);
+  font:13px/1.45 "Segoe UI", system-ui, sans-serif; }
+.wrap { padding:14px; max-width:1240px; margin:0 auto; }
+.frame { background:var(--surface-canvas); border:1px solid var(--divider);
+  border-radius:4px; overflow:hidden; }
+.toolbar { display:flex; align-items:center; gap:.55rem; flex-wrap:wrap;
+  padding:.4rem .55rem; background:var(--surface-section-header);
+  border-bottom:1px solid var(--divider); }
+.toolbar .spacer { flex:1 1 auto; }
+.title { font-weight:600; color:var(--text-label); }
+button, input, select { font:inherit; color:var(--text-body);
+  background:var(--surface-toolbar-control); border:1px solid var(--border-subtle);
+  border-radius:3px; padding:.15rem .4rem; }
+button:hover { background:var(--surface-toolbar-control-hover); }
+.count { color:var(--text-faint); font-variant-numeric:tabular-nums;
+  min-width:11rem; text-align:right; }
+button.countbtn { background:none; border:none; padding:.15rem .1rem; cursor:pointer; }
+button.countbtn:hover { color:var(--text-body); text-decoration:underline; }
+.gridwrap { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; min-width:1100px; }
+thead th { text-align:left; font-weight:600; font-size:.72rem; letter-spacing:.03em;
+  text-transform:uppercase; color:var(--text-faint);
+  background:var(--surface-section-header); padding:.35rem .5rem;
+  border-bottom:1px solid var(--divider); position:sticky; top:0;
+  cursor:pointer; user-select:none; white-space:nowrap; }
+thead th:hover { color:var(--text-body); }
+thead th.nosort, thead th.nosort:hover { cursor:default; color:var(--text-faint); }
+th .arrow { color:var(--accent-marker); font-size:.7rem; }
+tbody td { padding:.28rem .5rem; border-bottom:1px solid var(--divider-subtle);
+  background:var(--surface-row); vertical-align:middle; }
+tbody tr:hover td { background:var(--surface-hover); }
+tbody tr.muted td { opacity:.45; }
+.sig { color:var(--text-label); font-weight:500; }
+.msg { color:var(--text-message); font-variant-numeric:tabular-nums; }
+.bus { color:var(--scope-text); }
+.rbs { color:var(--text-source); }
+.mono { font-family:"Cascadia Mono", Consolas, monospace; font-size:.82rem; }
+.unit { color:var(--text-data); }
+input.val, select.val { width:100%; max-width:10rem; background:var(--surface-field);
+  font-family:"Cascadia Mono", Consolas, monospace; font-size:.82rem;
+  color:var(--text-signal-value); }
+input.val:disabled, select.val:disabled { color:var(--text-dim); background:transparent;
+  border-color:transparent; }
+button.reset { padding:0 .35rem; font-size:.75rem; color:var(--text-muted); }
+/* Status chips — the events panel's swatch shape, shared with the sibling
+   mock. One shared chip component in the app. */
+.filters { display:flex; align-items:stretch; gap:.35rem; }
+button.stbtn { display:flex; align-items:stretch; gap:.4rem;
+  padding:.15rem .45rem .15rem .3rem; min-height:1.6rem; }
+button.stbtn .chip { width:.85rem; }
+button.stbtn > span { align-self:center; font-size:.78rem; }
+button.stbtn[aria-pressed="false"] .chip { opacity:.45; }
+button.stbtn[aria-pressed="false"] > span { color:var(--text-muted); }
+button.stbtn[aria-pressed="true"] { border-color:var(--accent-marker); }
+.st { display:flex; align-items:stretch; min-height:1.5rem; }
+.chip { width:1.5rem; flex:0 0 auto; align-self:stretch;
+  border:1px solid var(--border-wash); border-radius:2px; }
+.chip.gone{background:var(--danger-text);}
+.chip.range{background:var(--text-signal-value);}
+.chip.unknown{background:var(--warn-border);}
+.chip.override{background:var(--modified-marker);}
+.chip.deflt{background:var(--text-dim);}
+.chip.mutedst{background:var(--text-muted);}
+/* Checklist fly-outs: one per grouping dimension — RBS config and bus. */
+.pickfilter { position:relative; display:inline-flex; }
+button.pickbtn { min-height:1.6rem; font-size:.78rem; text-align:left; }
+button.pickbtn.rbsbtn { min-width:8.5rem; }
+button.pickbtn.busbtn { min-width:7.5rem; }
+.pickmenu { position:absolute; top:calc(100% + 4px); left:0; z-index:20;
+  min-width:13rem; padding:.3rem; border:1px solid var(--border-subtle);
+  border-radius:4px; background:var(--surface-pop);
+  box-shadow:0 6px 18px var(--shadow-menu); }
+.pickmenu[hidden] { display:none; }
+.pickmenu label { display:flex; align-items:center; gap:.45rem; padding:.2rem .35rem;
+  border-radius:3px; cursor:pointer; white-space:nowrap; }
+.pickmenu label:hover { background:var(--surface-hover); }
+.pickmenu .n { margin-left:auto; color:var(--text-faint);
+  font-variant-numeric:tabular-nums; font-size:.75rem; }
+.pickmenu .rule { height:1px; margin:.25rem .1rem; background:var(--divider-subtle); }
+.pickmenu button.all { width:100%; text-align:left; font-size:.78rem; background:none;
+  border:none; padding:.2rem .35rem; color:var(--text-muted); cursor:pointer; }
+.pickmenu button.all:hover { background:var(--surface-hover); color:var(--text-body); }
+.note { font-size:.78rem; color:var(--text-muted); white-space:nowrap; }
+.note .k { color:var(--text-dim); }
+.note .v { color:var(--text-data); }
+.footer { display:flex; align-items:center; gap:.5rem; padding:.4rem .55rem;
+  border-top:1px solid var(--divider); background:var(--surface-section-header); }
+.caption { color:var(--text-faint); font-size:.78rem; margin:.6rem 2px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="toolbar" style="border:1px solid var(--divider);border-radius:4px;
+       margin-bottom:10px;background:var(--surface-canvas)">
+    <span class="title">Prototype</span>
+    <span class="count" style="min-width:auto">RBS signals · same affordances as View signals</span>
+    <span class="spacer"></span>
+    <button id="theme">Switch to light</button>
+  </div>
+
+  <div class="frame">
+    <div class="toolbar">
+      <span class="title">RBS signals</span>
+      <span class="filters" id="filters"></span>
+      <span class="pickfilter">
+        <button class="pickbtn rbsbtn" id="rbsbtn" aria-haspopup="true" aria-expanded="false"></button>
+        <div class="pickmenu" id="rbsmenu" hidden></div>
+      </span>
+      <span class="pickfilter">
+        <button class="pickbtn busbtn" id="busbtn" aria-haspopup="true" aria-expanded="false"></button>
+        <div class="pickmenu" id="busmenu" hidden></div>
+      </span>
+      <span class="spacer"></span>
+      <button class="count countbtn" id="counts"></button>
+    </div>
+    <div class="gridwrap">
+      <table><thead><tr id="head"></tr></thead><tbody id="rows"></tbody></table>
+    </div>
+    <div class="footer"><span class="count" style="min-width:auto" id="summary"></span></div>
+  </div>
+
+  <p class="caption">
+    Every field the project's RBS configs transmit. A <span class="mono">.cannet_rbs</span> is a
+    <em>sparse override document</em> (ADR 0028): the file records only what you changed, while
+    every transmitted frame is fully populated by the precedence
+    <span class="mono">fill_bit → GenSigStartValue → override</span>. The chip says whether a field
+    is <em>yours</em> or not: Default covers both the DBC's start value and the file's fill, since
+    neither is something you set — Detail names which supplied the bits. Messages are rest-of-bus: everything in the database plays unless muted.
+    <b>Signals are not combined across configs</b>: the same signal in two files is two rows,
+    because two sims are meant to differ. An override the encoder cannot apply is
+    <em>dropped</em> — the frame goes out carrying the default while the file still says otherwise,
+    which is the substitution the error rows exist to surface.
+  </p>
+</div>
+<script>
+// One row per (RBS config, signal) — deliberately not combined. EngineSpeed
+// appears twice with different values, which is the point of the grid.
+const ROWS = [
+  { rbs:"drive-cycle.cannet_rbs", st:"range", bus:"pt", msg:"0x100 EngineData", sig:"EngineSpeed", val:"9000", unit:"rpm",
+    kind:"num", min:0, max:8000,
+    detail:{ k:"Signal range", v:"0\u20138000 \u2014 truncated on transmit" } },
+  { rbs:"drive-cycle.cannet_rbs", st:"unknown", bus:"pt", msg:"0x110 Drive", sig:"DriveMode", val:"Sport", unit:"",
+    kind:"enum", opts:["Sport","Off","Eco","Normal","Track"],
+    detail:{ k:"Transmitted", v:"Normal (start value) \u2014 no enum label \"Sport\"" } },
+  { rbs:"drive-cycle.cannet_rbs", st:"gone", bus:"zonal", msg:"0x400 BodyState", sig:"DoorAjar", val:"\u2014", unit:"",
+    kind:"num", dis:true, detail:{ k:"", v:"No mapped database encodes this field" } },
+  { rbs:"drive-cycle.cannet_rbs", st:"override", bus:"pt", msg:"0x120 Chassis", sig:"VehicleSpeed", val:"65", unit:"km/h",
+    kind:"num", min:0, max:250, detail:{ k:"Default", v:"0 (start value)" } },
+  { rbs:"drive-cycle.cannet_rbs", st:"deflt", bus:"pt", msg:"0x100 EngineData", sig:"CoolantTemp", val:"90", unit:"\u00b0C",
+    kind:"num", min:-40, max:215, detail:{ k:"From", v:"DBC start value" } },
+  { rbs:"drive-cycle.cannet_rbs", st:"deflt", bus:"pt", msg:"0x121 Chassis", sig:"BrakePressure", val:"0", unit:"bar",
+    kind:"num", min:0, max:100, detail:{ k:"From", v:"no start value in the DBC \u2014 bits are the file's fill" } },
+  { rbs:"idle-hold.cannet_rbs", st:"unknown", bus:"pt", msg:"0x111 Drive", sig:"GearTarget", val:"0xZZ", unit:"",
+    kind:"num", min:0, max:15, detail:{ k:"Transmitted", v:"0 (fill) \u2014 invalid hex value" } },
+  { rbs:"idle-hold.cannet_rbs", st:"override", bus:"pt", msg:"0x100 EngineData", sig:"EngineSpeed", val:"800", unit:"rpm",
+    kind:"num", min:0, max:8000, detail:{ k:"Default", v:"800 (start value)" } },
+  { rbs:"idle-hold.cannet_rbs", st:"override", bus:"batt", msg:"0x2A0 PackStatus", sig:"PackCurrent", val:"-12.5", unit:"A",
+    kind:"num", min:-500, max:500, detail:{ k:"Default", v:"0 (fill)" } },
+  { rbs:"idle-hold.cannet_rbs", st:"deflt", bus:"batt", msg:"0x2A0 PackStatus", sig:"PackVoltage", val:"400", unit:"V",
+    kind:"num", min:0, max:800, detail:{ k:"From", v:"DBC start value" } },
+  { rbs:"idle-hold.cannet_rbs", st:"deflt", bus:"pt", msg:"0x101 Thermal", sig:"OilTemp", val:"0", unit:"\u00b0C",
+    kind:"num", min:-40, max:215, detail:{ k:"From", v:"no start value in the DBC \u2014 bits are the file's fill" } },
+  { rbs:"idle-hold.cannet_rbs", st:"mutedst", bus:"batt", msg:"0x2A1 PackSoc", sig:"StateOfCharge", val:"\u2014", unit:"%",
+    kind:"num", dis:true, detail:{ k:"Message", v:"muted \u2014 not transmitted" } },
+];
+// Statuses are the user's state, not the encoder's precedence. The file
+// only ever stores overrides, so a field is either set by the user or
+// not — `GenSigStartValue` and the file's `fill_bit` are both "not set",
+// and which of the two supplied the bits is a Detail, not a status.
+//
+// The errors come from what the encoder actually reports:
+// `reconstruct_payload` warns per override it cannot apply — unknown
+// signal, unknown enum label, malformed hex — and *drops* it, so the
+// frame goes out carrying the default while the file says otherwise.
+// Out of Range is the one state the encoder does not check: truncation
+// to the signal's width is correct on transmit (it is what the bus
+// would see), so the check belongs in the frontend, which highlights it
+// here and clamps it on entry.
+const LABEL = { gone:"Not Encoded", range:"Out of Range", unknown:"Unknown Value",
+                override:"Override", deflt:"Default", mutedst:"Muted" };
+const ORDER = ["gone","range","unknown","override","deflt","mutedst"];
+const RANK  = Object.fromEntries(ORDER.map((k, i) => [k, i]));
+const COLS = [
+  { key:"st",     label:"",        w:"2.2rem",  val:r => RANK[r.st] },
+  { key:"rbs",    label:"RBS",     w:"12rem",   val:r => r.rbs },
+  { key:"bus",    label:"Bus",     w:"5rem",    val:r => r.bus },
+  { key:"msg",    label:"Message", w:"11rem",   val:r => r.msg },
+  { key:"sig",    label:"Signal",  w:"9.5rem",  val:r => r.sig.toLowerCase() },
+  { key:"val",    label:"Value",   w:"11rem",   sortable:false },
+  { key:"unit",   label:"Unit",    w:"4.5rem",  val:r => r.unit },
+  { key:"detail", label:"Detail",  w:"",        sortable:false },
+];
+let sortKey = "bus", sortDir = 1;
+// Nothing selected is no filter; any selection is exactly that selection.
+const active = new Set();
+const RBS_FILES = [...new Set(ROWS.map(r => r.rbs))].sort();
+const rbsPicked = new Set();
+const BUSES = [...new Set(ROWS.map(r => r.bus))].sort();
+const buses = new Set();
+// The states where the frame does not carry what the file says.
+const ATTENTION = ["gone", "range", "unknown"];
+
+function menu(id, items, picked, key, counts, clearLabel) {
+  document.getElementById(id).innerHTML =
+    items.map(v => `<label><input type="checkbox" data-${key}="${v}"${picked.has(v) ? " checked" : ""}>
+        <span class="mono ${key}">${v}</span>
+        <span class="n">${counts(v)}</span></label>`).join("")
+    + (picked.size ? `<div class="rule"></div><button class="all" data-all="1">${clearLabel}</button>` : "");
+}
+
+function render() {
+  document.getElementById("head").innerHTML = COLS.map(c => {
+    const on = c.sortable !== false && c.key === sortKey;
+    return `<th class="${c.sortable === false ? "nosort" : ""}" data-k="${c.key}"
+      ${c.w ? `style="width:${c.w}"` : ""}>${c.label}${on ? ` <span class="arrow">${sortDir > 0 ? "▲" : "▼"}</span>` : ""}</th>`;
+  }).join("");
+  document.getElementById("filters").innerHTML = ORDER.map(k =>
+    `<button class="stbtn" data-st="${k}" aria-pressed="${active.has(k)}"
+       title="${active.has(k) ? `Stop filtering to ${LABEL[k]}` : `Filter to ${LABEL[k]}`}">
+       <i class="chip ${k}"></i><span>${LABEL[k]} (${ROWS.filter(r => r.st === k).length})</span>
+     </button>`).join("");
+
+  document.getElementById("rbsbtn").textContent =
+    rbsPicked.size === 0 ? "RBS: all" : `RBS: ${[...rbsPicked].sort().join(", ")}`;
+  menu("rbsmenu", RBS_FILES, rbsPicked, "rbs",
+       v => ROWS.filter(r => r.rbs === v).length, "Clear (show all)");
+  document.getElementById("busbtn").textContent =
+    buses.size === 0 ? "Bus: all" : `Bus: ${[...buses].sort().join(", ")}`;
+  menu("busmenu", BUSES, buses, "bus",
+       v => ROWS.filter(r => r.bus === v).length, "Clear (show all)");
+
+  const rows = ROWS.filter(r =>
+    (active.size === 0 || active.has(r.st))
+    && (rbsPicked.size === 0 || rbsPicked.has(r.rbs))
+    && (buses.size === 0 || buses.has(r.bus)));
+  const col = COLS.find(c => c.key === sortKey);
+  if (col && col.val) rows.sort((a, b) => {
+    const x = col.val(a), y = col.val(b);
+    if (x < y) return -sortDir;
+    if (x > y) return sortDir;
+    return a.rbs.localeCompare(b.rbs) || a.bus.localeCompare(b.bus) || a.sig.localeCompare(b.sig);
+  });
+
+  document.getElementById("rows").innerHTML = rows.map(r => {
+    const field = r.kind === "enum"
+      ? `<select class="val"${r.dis ? " disabled" : ""}>${
+          r.opts.map(o => `<option${o === r.val ? " selected" : ""}>${o}</option>`).join("")}</select>`
+      : `<input class="val" value="${r.val}"${r.dis ? " disabled" : ""}${
+          r.min === undefined ? "" : ` data-min="${r.min}" data-max="${r.max}"`}>`;
+    // Reset is the way back to the sparse document carrying no entry at all.
+    const reset = r.st === "override" ? ` <button class="reset" title="Drop the override">Reset</button>` : "";
+    return `
+    <tr class="${r.st === "mutedst" ? "muted" : ""}">
+      <td><span class="st" title="${LABEL[r.st]}"><i class="chip ${r.st}"></i></span></td>
+      <td class="rbs mono">${r.rbs}</td>
+      <td class="bus mono">${r.bus}</td>
+      <td class="msg mono">${r.msg}</td>
+      <td class="sig mono">${r.sig}</td>
+      <td style="white-space:nowrap">${field}${reset}</td>
+      <td class="unit mono">${r.unit}</td>
+      <td class="note">${r.detail.k ? `<span class="k">${r.detail.k}:</span> ` : ""}<span class="v mono">${r.detail.v}</span></td>
+    </tr>`;
+  }).join("");
+
+  const n = ROWS.filter(r => ATTENTION.includes(r.st)).length;
+  const onAttention = active.size === ATTENTION.length && ATTENTION.every(k => active.has(k));
+  const countsBtn = document.getElementById("counts");
+  countsBtn.textContent = active.size === 0 && rbsPicked.size === 0 && buses.size === 0
+    ? `${n} of ${ROWS.length} need attention`
+    : `${rows.length} of ${ROWS.length} shown`;
+  countsBtn.title = onAttention ? "Show every field again" : "Filter to fields the frame does not carry as written";
+  countsBtn.onclick = () => {
+    active.clear();
+    if (!onAttention) ATTENTION.forEach(k => active.add(k));
+    render();
+  };
+  document.getElementById("summary").textContent =
+    `${ROWS.filter(r => r.st === "override").length} overrides · `
+    + `${ROWS.length} fields across ${RBS_FILES.length} configs and ${BUSES.length} buses · `
+    + `rest-of-bus: unmuted messages transmit`;
+
+  // Clamp on entry. Transmit truncates to the signal's width — correct,
+  // since that is what the bus would see — so the frontend is where a
+  // value is kept in range in the first place. SHARED CODE: the RBS
+  // panel's own value cells and this grid must clamp identically; two
+  // implementations would disagree at the boundary.
+  document.querySelectorAll("input.val[data-min]").forEach(inp => {
+    inp.onchange = () => {
+      const lo = Number(inp.dataset.min), hi = Number(inp.dataset.max);
+      const n = Number(inp.value);
+      if (Number.isFinite(n)) inp.value = String(Math.min(hi, Math.max(lo, n)));
+      inp.title = `Clamped to the signal's range ${lo}\u2013${hi}`;
+    };
+  });
+
+  document.querySelectorAll("button.stbtn").forEach(b => {
+    b.onclick = () => {
+      const k = b.dataset.st;
+      if (active.has(k)) active.delete(k); else active.add(k);
+      render();
+    };
+  });
+  [["rbsmenu", "rbs", rbsPicked], ["busmenu", "bus", buses]].forEach(([id, key, set]) => {
+    document.querySelectorAll(`#${id} input[data-${key}]`).forEach(cb => {
+      cb.onchange = () => { cb.checked ? set.add(cb.dataset[key]) : set.delete(cb.dataset[key]); render(); };
+    });
+    const allBtn = document.querySelector(`#${id} button[data-all]`);
+    if (allBtn) allBtn.onclick = () => { set.clear(); render(); };
+  });
+  document.querySelectorAll("th[data-k]").forEach(th => {
+    const c = COLS.find(x => x.key === th.dataset.k);
+    if (!c || c.sortable === false) return;
+    th.onclick = () => {
+      if (sortKey === c.key) sortDir = -sortDir; else { sortKey = c.key; sortDir = 1; }
+      render();
+    };
+  });
+}
+
+// Fly-out open/close: click its button, click away, or Escape.
+[["rbsbtn", "rbsmenu"], ["busbtn", "busmenu"]].forEach(([b, m]) => {
+  const btnEl = document.getElementById(b), menuEl = document.getElementById(m);
+  btnEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = !menuEl.hidden;
+    document.querySelectorAll(".pickmenu").forEach(x => { x.hidden = true; });
+    menuEl.hidden = open;
+    btnEl.setAttribute("aria-expanded", String(!open));
+  });
+  menuEl.addEventListener("click", (e) => e.stopPropagation());
+});
+function closeMenus() {
+  document.querySelectorAll(".pickmenu").forEach(x => { x.hidden = true; });
+  document.querySelectorAll(".pickbtn").forEach(x => x.setAttribute("aria-expanded", "false"));
+}
+document.addEventListener("click", closeMenus);
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenus(); });
+
+const btn = document.getElementById("theme");
+btn.addEventListener("click", () => {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark";
+  document.documentElement.setAttribute("data-theme", dark ? "light" : "dark");
+  btn.textContent = dark ? "Switch to dark" : "Switch to light";
+});
+render();
+</script>
+</body>
+</html>
