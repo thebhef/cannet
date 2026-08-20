@@ -3402,38 +3402,9 @@ button.color-chip {
   background: var(--surface-row-selected);
 }
 
-/* The swatch doubles as the show/hide toggle. Pinned to the top row
- * (aligns with the signal name) so it doesn't drift down on rows that
- * grow a diagnostic line. */
-.plot-signal-swatch {
-  width: 1rem;
-  height: 1rem;
-  border-radius: 3px;
-  border: 1px solid var(--border-wash-strong);
-  padding: 0;
-  cursor: pointer;
-  margin-top: 0.18rem;
-}
-.plot-signal-swatch.hidden {
-  opacity: 0.25;
-}
-/* Wrap the swatch + its hidden color input. The input is positioned
- * absolutely so the native picker pops up over the swatch (right-click
- * to open it). */
-.plot-signal-swatch-wrap {
-  position: relative;
-  display: inline-flex;
-}
-.plot-signal-swatch-input {
-  position: absolute;
-  inset: 0;
-  width: 0;
-  height: 0;
-  opacity: 0;
-  pointer-events: none;
-  border: 0;
-  padding: 0;
-}
+/* The swatch doubles as the show/hide toggle. Shape and behaviour come
+ * from `.color-chip*` (ColorChip.tsx); plot-signal-swatch/-input are
+ * query hooks only, carrying no CSS of their own. */
 
 /* Left text column: signal name on top (large), message name below
  * (small, dimmed). Both ellipsis on overflow so a long signal name
@@ -3610,31 +3581,22 @@ button.color-chip {
 }
 
 /* Small color dot before the bus name in a signal row — matches the
- * bus's graph color so the source bus is identifiable at a glance. */
-.plot-bus-swatch {
-  display: inline-block;
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 2px;
-  margin-right: 0.3rem;
-  vertical-align: middle;
-  border: 1px solid var(--border-wash-strong);
-}
+ * bus's graph color so the source bus is identifiable at a glance.
+ * Shape comes from `.color-chip-dot` (ColorChip.tsx); plot-bus-swatch
+ * is a query hook only, carrying no CSS of its own. */
+
 /* A hidden row (including one solo's mask hid — same treatment, ADR
  * 0026) has nothing to draw, so it drops to swatch + name: no
  * message, value, or remove control to read. The un-hide affordance
- * stays the swatch. The row grid's other two columns (readout,
- * remove/badge) are simply unused — no extra layout needed to reclaim
- * them once nothing is placed in them. */
+ * stays the swatch — which now stretches to fill whatever height this
+ * shorter row has (`.color-chip-bar`'s `align-self: stretch`), so it
+ * no longer needs its own shrink to match. The row grid's other two
+ * columns (readout, remove/badge) are simply unused — no extra layout
+ * needed to reclaim them once nothing is placed in them. */
 .plot-signal-row.hidden {
   grid-template-columns: auto 1fr;
   align-items: center;
   padding-block: 0.15rem;
-}
-.plot-signal-row.hidden .plot-signal-swatch {
-  width: 0.8rem;
-  height: 0.8rem;
-  margin-top: 0;
 }
 .plot-signal-row.hidden .plot-signal-name {
   opacity: 0.45;
@@ -4031,7 +3993,10 @@ button.color-chip {
 .plot-meas-k {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
+  /* No gap: a swatch cell's own `.color-chip-dot` margin-right supplies
+     the spacing (it has to — a dot is also used inline in running
+     text, with no flex gap to lean on); a swatch-less cell has only
+     one child, so nothing here needs its own spacing either. */
   color: var(--text-faint);
   text-transform: uppercase;
   letter-spacing: 0.06em;

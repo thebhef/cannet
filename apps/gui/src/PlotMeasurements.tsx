@@ -7,6 +7,7 @@
  */
 import { useState } from "react";
 
+import { ColorChip } from "./ColorChip";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { useFloatFormatRule } from "./floatFormat";
@@ -25,7 +26,7 @@ function MeasCell({ k, v, cls, swatch }: { k: string; v: string; cls?: string; s
   return (
     <div className="plot-meas-cell">
       <div className="plot-meas-k">
-        {swatch && <span className="plot-signal-swatch" style={{ background: swatch }} />}
+        {swatch && <ColorChip color={swatch} size="dot" />}
         {k}
       </div>
       <div className={`plot-meas-v${cls ? ` ${cls}` : ""}`}>{v}</div>
