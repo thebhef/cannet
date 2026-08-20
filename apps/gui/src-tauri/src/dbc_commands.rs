@@ -162,12 +162,37 @@ pub(crate) fn add_dbc(
     Ok(dbc_list(state.inner()))
 }
 
+/// [`set_dbc_buses`]'s body without its `AppHandle`: replace the
+/// assignment and re-judge everything derived from the set.
+///
+/// **Assignment is the cache lifecycle boundary**
+/// ([ADR 0047](../../../docs/adr/0047-persisted-signal-pyramids.md)), and
+/// it needs no machinery of its own. A bus change *is* a DBC-set change:
+/// unassigning takes this database out of every candidate chain it was
+/// in, so `invalidate_derived_caches` re-encodes the pyramids it decoded
+/// and **parks** them; assigning puts those chains back, so the same call
+/// **revives** every park whose fingerprint the restored chain answers
+/// for, instead of decoding the capture a second time. What revives one
+/// is the fingerprint, not the file it came from.
+pub(crate) fn set_dbc_buses_inner(state: &AppState, path: &str, buses: Vec<String>) {
+    {
+        let mut list = state.databases();
+        if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
+            slot.buses = buses;
+        }
+    }
+    invalidate_derived_caches(state);
+}
+
 /// Replace the bus assignment of a loaded DBC. An empty `buses`
 /// assigns it to nothing, and a database assigned to nothing decodes
 /// nothing ([`filter::dbc_applies`]). Unknown path is a no-op (returns
 /// the unchanged list); the frontend's project state can drift if a DBC
 /// is removed between the user clicking a checkbox and this command
 /// firing.
+///
+/// This is also where a signal pyramid is parked or revived — see
+/// [`set_dbc_buses_inner`].
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn set_dbc_buses(
@@ -176,13 +201,7 @@ pub(crate) fn set_dbc_buses(
     path: String,
     buses: Vec<String>,
 ) -> Vec<DbcInfo> {
-    {
-        let mut list = state.databases();
-        if let Some(slot) = list.iter_mut().find(|d| d.path == path) {
-            slot.buses = buses;
-        }
-    }
-    invalidate_derived_caches(state.inner());
+    set_dbc_buses_inner(state.inner(), &path, buses);
     announce_dbc_change(&app, &path);
     dbc_list(state.inner())
 }
