@@ -1,5 +1,5 @@
-/// The view-signals panel's toolbar filters (task 89): a status-chip
-/// filter and a bus fly-out, both on the owner-ruled selection model —
+/// The view-signals panel's toolbar filters: a status-chip filter and
+/// a bus fly-out, both on the owner-ruled selection model —
 /// **nothing selected is no filter; any one selected is just those
 /// items; several selected is the union** — so an empty selection never
 /// reads as an empty grid. Pure and DOM-free so the model is

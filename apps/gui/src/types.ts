@@ -1138,9 +1138,9 @@ export interface RbsSignalView {
   hasValueTable: boolean;
 }
 
-/// The RBS signals panel's taxonomy (task 89 phase 6), drawn from what
-/// the encoder actually reports (`reconstruct_payload`) rather than
-/// invented. Severity order is declaration order, same convention as
+/// The RBS signals panel's taxonomy, drawn from what the encoder
+/// actually reports (`reconstruct_payload`) rather than invented.
+/// Severity order is declaration order, same convention as
 /// {@link ViewSignalStatus}. `"out-of-range"` is deliberately absent —
 /// it is decided in the frontend (`rbsValueClamp.ts`), never sent by
 /// the host, and slotted into this same severity band by
@@ -1149,8 +1149,10 @@ export type RbsSignalStatus = "not-encoded" | "unknown-value" | "override" | "de
 
 /// One field of one `.cannet_rbs` config — `rbs_signal_rows`. Mirrors
 /// `rbs::signals::RbsSignalRow`; not combined across elements, unlike
-/// {@link ViewSignalRow} (the opposite scoping rule task 89 draws
-/// between the two grids).
+/// {@link ViewSignalRow} (the opposite scoping rule between the two
+/// grids: two RBS configs are meant to hold different values and
+/// timings, so combining them would invite editing across configs the
+/// user thinks of as independent).
 export interface RbsSignalRow {
   /// Stable within one element: `<bus key>|<message key>|<signal>`.
   id: string;
@@ -1284,9 +1286,9 @@ export interface SignalsSample {
 }
 
 /// One signal reference a view holds, as pushed to `set_view_signals`
-/// (task 89's view-signal panel: `src-tauri/src/view_signals.rs`). The
-/// first four fields are the signal's identity (ADR 0038); the rest is
-/// the view's own *record* of what it picked — absent where a view
+/// (the view-signal panel's model: `src-tauri/src/view_signals.rs`).
+/// The first four fields are the signal's identity (ADR 0038); the
+/// rest is the view's own *record* of what it picked — absent where a view
 /// records only identity — which is what a drift is measured against.
 /// Mirrors the host's `view_signals::ViewSignalRef`.
 export interface ViewSignalRef {

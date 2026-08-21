@@ -91,7 +91,7 @@ describe("panelKindForFocus", () => {
     expect(panelKindForFocus("trace-abc", "filter")).toBeNull();
   });
 
-  it("an RBS signals panel reports its own kind, not the RBS element's — even though its params name the same elementId (task 89 phase 6)", () => {
+  it("an RBS signals panel reports its own kind, not the RBS element's — even though its params name the same elementId", () => {
     expect(panelKindForFocus("rbs-signals-el1", "rbs")).toBe("rbs-signals");
   });
 });

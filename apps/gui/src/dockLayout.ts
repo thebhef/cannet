@@ -30,18 +30,18 @@ export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
 /// differentiation worth having. Search query + expand state still
 /// live in panel `params` so a layout save / restore preserves them.
 export const DBC_PANEL_COMPONENT = "dbc";
-/// View-signals panel (task 89): every signal the open views
-/// reference, live, and what currently decodes it. Singleton, same
-/// pattern as the Database panel — the model is project-wide, so a
+/// View-signals panel: every signal the open views reference, live,
+/// and what currently decodes it. Singleton, same pattern as the
+/// Database panel — the model is project-wide, so a
 /// second instance would carry no differentiation.
 export const VIEW_SIGNALS_PANEL_COMPONENT = "view-signals";
 /// Rest-of-bus-simulation panel (ADR 0028). Element-backed —
 /// multiple named RBS elements per project are allowed, each
 /// referencing its own `.cannet_rbs` file.
 export const RBS_PANEL_COMPONENT = "rbs";
-/// The RBS signals grid (task 89 phase 6): every field one
-/// `.cannet_rbs` config transmits, scoped to a single RBS element —
-/// the opposite scoping rule from `VIEW_SIGNALS_PANEL_COMPONENT`
+/// The RBS signals grid: every field one `.cannet_rbs` config
+/// transmits, scoped to a single RBS element — the opposite scoping
+/// rule from `VIEW_SIGNALS_PANEL_COMPONENT`
 /// (which combines every view). Not the element's *own* panel the way
 /// `RBS_PANEL_COMPONENT` is: it's a second panel referencing the same
 /// element id, opened from a button inside the RBS panel rather than
@@ -183,8 +183,8 @@ function rbsSignalsPanelId(elementId: string): string {
 
 /// The tab title for an element-backed panel — the model-owned name
 /// (ADR 0019) verbatim, except an RBS signals panel names *what it is*
-/// too ("the config is named in the panel title", task 89 phase 6):
-/// the app's internal word "element" never appears, so this reads
+/// too ("the config is named in the panel title"): the app's internal
+/// word "element" never appears, so this reads
 /// "‹config name› — Signals" rather than repeating the RBS panel's own
 /// bare title.
 export function elementPanelTitle(panelId: string, elementLabel: string): string {
@@ -265,10 +265,10 @@ export function panelKindForFocus(
 
 /// Every dockview panel whose params name `elementId` — usually one,
 /// but an RBS element can have two (its own panel and its signals
-/// grid, task 89 phase 6): a caller closing an element's panels must
-/// iterate every match, not stop at the first (the bug this function
-/// was extracted to fix — `removeElement` in `App.tsx` used to
-/// `.find` and leaked the second panel).
+/// grid): a caller closing an element's panels must iterate every
+/// match, not stop at the first (the bug this function was extracted
+/// to fix — `removeElement` in `App.tsx` used to `.find` and leaked
+/// the second panel).
 export function panelsForElementId<P extends { params?: unknown }>(
   panels: readonly P[],
   elementId: string,

@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 //
-// Task 75 item 6 — a cold pyramid rebuild announces itself, and offers a
-// way out.
+// A cold pyramid rebuild announces itself, and offers a way out.
 //
 // When a boot/project-open restore finds the persisted signal pyramids
 // invalid (ADR 0047's validity key), it discards them and every plotted
@@ -199,7 +198,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Cold pyramid rebuild — feedback (task 75 item 6)", () => {
+describe("Cold pyramid rebuild — feedback", () => {
   it("announces the rebuild the restore forced", async () => {
     await boot();
     const bar = chip();
@@ -251,7 +250,7 @@ describe("Cold pyramid rebuild — feedback (task 75 item 6)", () => {
   });
 });
 
-describe("Cold pyramid rebuild — discard offramp (task 75 item 6)", () => {
+describe("Cold pyramid rebuild — discard offramp", () => {
   it("drops the restored capture and leaves a clean empty session", async () => {
     await boot();
     // A capture is loaded: the capture-scoped toolbar actions are live.

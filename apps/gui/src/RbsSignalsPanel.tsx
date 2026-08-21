@@ -1,8 +1,8 @@
-/// The RBS signals panel (task 89 phase 6): every field one
-/// `.cannet_rbs` config transmits, and where its bits actually came
-/// from — the same shared gridview (ADR 0044) `ViewSignalsPanel` uses,
-/// scoped to **one** RBS element instead of combined across every open
-/// view. That is the whole difference the grooming names ("same
+/// The RBS signals panel: every field one `.cannet_rbs` config
+/// transmits, and where its bits actually came from — the same shared
+/// gridview (ADR 0044) `ViewSignalsPanel` uses, scoped to **one** RBS
+/// element instead of combined across every open view. That is the
+/// whole difference the grooming names ("same
 /// component, opposite scoping rule"): both panels are thin views over
 /// `GridviewHeader`/`GridviewRow`/`useGridview`/`arrayRowSpace`, a
 /// status-chip taxonomy with toggleable row washes, and a status +

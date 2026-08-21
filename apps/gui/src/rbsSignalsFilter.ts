@@ -1,6 +1,6 @@
-/// The RBS signals grid's display status and toolbar filters (task 89
-/// phase 6) — the RBS analogue of `viewSignalsFilter.ts`, on the same
-/// owner-ruled selection model: **nothing selected is no filter; any
+/// The RBS signals grid's display status and toolbar filters — the RBS
+/// analogue of `viewSignalsFilter.ts`, on the same owner-ruled
+/// selection model: **nothing selected is no filter; any
 /// one selected is just those items; several selected is their
 /// union**.
 ///

@@ -236,8 +236,8 @@ export function SignalsPanel(props: IDockviewPanelProps) {
   // persisted with the element like other panel config.
   const [selection, setSelection] = useState(() => selectionFromParams(savedConfig?.selection));
   // Push this view's manual selection to the host's view-signal panel
-  // model (task 89) — the selection *patterns* are excluded, for the
-  // same reason a plot area's patterns are (`viewSignalsPush.ts`).
+  // model — the selection *patterns* are excluded, for the same reason
+  // a plot area's patterns are (`viewSignalsPush.ts`).
   const viewSignalRefs = useMemo(
     () => signalsViewSignalRefs(selection.keys),
     [selection.keys],

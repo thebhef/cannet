@@ -124,9 +124,9 @@ export interface UseCommandsOptions {
   // connection / capture / panel.add / saveAll / kill-switch / exit).
   // Merged with the framework/view/palette commands owned here.
   appCommands: Record<string, () => void>;
-  // The Recent-captures list (task 75 item 5) — the exact same MRU
-  // `App`'s toolbar button reads, so the palette can't drift from it.
-  // Each entry gets its own "Open recent: <name>" palette command.
+  // The Recent-captures list — the exact same MRU `App`'s toolbar
+  // button reads, so the palette can't drift from it. Each entry gets
+  // its own "Open recent: <name>" palette command.
   recentCaptures: readonly string[];
   // Open a recent path through the app's single import entry point
   // (`handleImportTrace`), the same call the toolbar dropdown's click
@@ -475,9 +475,9 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     }
   }, [dockApiRef]);
 
-  // Recent-captures palette commands (task 75 item 5): one per MRU
-  // entry, id-keyed by path so a run of one is stable across
-  // re-renders. Built straight off `recentCaptures` — the same list
+  // Recent-captures palette commands: one per MRU entry, id-keyed by
+  // path so a run of one is stable across re-renders. Built straight
+  // off `recentCaptures` — the same list
   // the toolbar's Recent-captures button reads — so there's no second
   // source for the palette to drift from.
   const recentCaptureCommands = useMemo(
@@ -700,9 +700,9 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
         keywords: c.keywords,
       };
     });
-    // One entry per recent capture (task 75 item 5), findable by a
-    // fragment of its full path — not just the filename the label
-    // shows — via `keywords` (the same fold-into-fuzzy-match field a
+    // One entry per recent capture, findable by a fragment of its full
+    // path — not just the filename the label shows — via `keywords`
+    // (the same fold-into-fuzzy-match field a
     // renamed command or view uses to stay reachable by an old name).
     // An empty recents list contributes none.
     const recents = recentCaptureCommands.map((c) => ({

@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// Component tests for the RBS signals panel (task 89 phase 6): a thin
-// view over `rbs_signal_rows`, scoped to one element, editing through
-// the same `RbsValueCell` the RBS panel's own tree uses. The Tauri
+// Component tests for the RBS signals panel: a thin view over
+// `rbs_signal_rows`, scoped to one element, editing through the same
+// `RbsValueCell` the RBS panel's own tree uses. The Tauri
 // bridge is mocked, so this asserts the contract: rows render as the
 // host reports them, the toolbar filters narrow what's shown, and an
 // edit routes through `rbs_set_signal` with the row's own

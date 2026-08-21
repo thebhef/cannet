@@ -1,5 +1,5 @@
-/// The RBS signals grid's column model (task 89 phase 6): the same
-/// defs-parameterized arithmetic `viewSignalsColumns.ts` uses
+/// The RBS signals grid's column model: the same defs-parameterized
+/// arithmetic `viewSignalsColumns.ts` uses
 /// (`traceColumns.ts`), bound to `rbs_signal_rows`'s row shape.
 ///
 /// Unlike the views panel, sorting here runs **client-side**
@@ -47,9 +47,8 @@ export const RBS_SIGNAL_COLUMN_DEFS: readonly ColumnDef<RbsSignalColumnKey>[] = 
 export type RbsSignalColumnState = ColumnState<RbsSignalColumnKey>;
 export type RbsSignalSortState = SortState<RbsSignalColumnKey>;
 
-/// A fresh panel's sort — bus, per the grooming resolution ("sortable,
-/// sorted by bus by default", same wording task 89 uses for the views
-/// grid).
+/// A fresh panel's sort — bus by default, sorted the same way the
+/// views grid is.
 export const DEFAULT_RBS_SIGNAL_SORT: RbsSignalSortState = { key: "bus", dir: "asc" };
 
 export function defaultRbsSignalColumns(): RbsSignalColumnState[] {
