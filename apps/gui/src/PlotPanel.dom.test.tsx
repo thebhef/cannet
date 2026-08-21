@@ -7276,3 +7276,177 @@ describe("PlotPanel when the database behind a signal is unassigned", () => {
     });
   });
 });
+
+// The y gutter of a single-enum axis. Its three rows are one matrix:
+// two enum tables of very different sizes and, as the control, the same
+// axis with no value table at all. The control is what makes a reading
+// here mean anything — if the enum rows printed what the numeric row
+// prints, the probe would be measuring the harness rather than the axis.
+//
+// Owner's 0.9.0 report: enum labels appeared down the y axis, which
+// blows the gutter out for long names and paints a tick per table row
+// for a table with hundreds of them. The overlay already names the
+// value at the point of interest, so the axis carries raw numbers only.
+describe("single-enum y axis", () => {
+  const ENUM3 = [
+    { raw: 0, label: "Idle" },
+    { raw: 1, label: "Run" },
+    { raw: 2, label: "Fault" },
+  ];
+  /** A table big enough that a tick per row is visibly wrong, with
+   * names long enough to blow out a gutter sized to hold them. */
+  const ENUM300 = Array.from({ length: 300 }, (_, i) => ({
+    raw: i,
+    label: `LongishStateName_${i}`,
+  }));
+
+  /** uPlot only constructs against a real-sized canvas. */
+  function stubSize() {
+    const cw = vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(600);
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    return () => {
+      cw.mockRestore();
+      ch.mockRestore();
+    };
+  }
+
+  /** jsdom has no canvas 2d context, so the axis's own label
+   * measurement short-circuits to a constant and the gutter stops
+   * saying anything. Stand in a measurer (6 px a character) so the
+   * width the axis *asks for* is observable. */
+  function stubMeasure() {
+    const orig = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (kind: string) {
+      return kind === "2d"
+        ? ({
+            font: "",
+            measureText: (t: string) => ({ width: t.length * 6 }),
+          } as unknown as CanvasRenderingContext2D)
+        : null;
+    } as typeof HTMLCanvasElement.prototype.getContext;
+    return () => {
+      HTMLCanvasElement.prototype.getContext = orig;
+    };
+  }
+
+  type YAxis = {
+    splits?: (u: unknown, i: number, min: number, max: number, incr: number, space: number) => number[];
+    values: (u: unknown, s: number[]) => string[];
+    size: (u: unknown, v: string[] | null, i: number, c: number) => number;
+  };
+
+  /** Drop `signal` on the focused area as its own axis, and hand back
+   * that axis's tick set, labels and requested gutter.
+   *
+   * `incr` stands in for the increment uPlot picks from the axis's
+   * pixel height — the same argument real uPlot passes a `splits`
+   * callback, and the only place tick density is decided. */
+  async function enumAxis(
+    signal: string,
+    table: { raw: number; label: string }[] | null,
+    incr: number,
+    series: { t: number[]; v: number[] } = { t: [0, 1, 2], v: [0, 1, 2] },
+  ) {
+    if (table) mockValueTables[signal] = table;
+    mockSampleSeries[signal] = series;
+    renderPanel();
+    addFocusedSignal(signal);
+    await waitFor(() => expect(screen.getByText(signal)).toBeInTheDocument());
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "individual");
+    const inst = await waitFor(() => {
+      const i = uplotInstances[uplotInstances.length - 1] as unknown as {
+        opts: { axes: YAxis[] };
+      };
+      // The value table resolves asynchronously and rebuilds the
+      // instance; the enum axis is the one that installs `splits`.
+      if (table) expect(typeof i.opts.axes[1].splits).toBe("function");
+      return i;
+    });
+    const y = inst.opts.axes[1];
+    const lo = table ? Math.min(...table.map((r) => r.raw)) - 0.5 : 0;
+    const hi = table ? Math.max(...table.map((r) => r.raw)) + 0.5 : 1;
+    const splits = y.splits ? y.splits(inst, 1, lo, hi, incr, 30) : null;
+    const values = splits ? y.values(inst, splits) : null;
+    return { inst, splits, values, gutter: y.size(inst, values, 1, 0) };
+  }
+
+  it("CONTROL: a signal with no value table leaves tick density to uPlot", async () => {
+    const restore = stubSize();
+    const unmeasure = stubMeasure();
+    try {
+      const { splits, gutter } = await enumAxis("EngineTemp", null, 0.25);
+      // No `splits` override at all — uPlot's own density-aware splits
+      // stand, which is what "capped and thinned" has to end up looking
+      // like on the enum axis too.
+      expect(splits).toBeNull();
+      expect(gutter).toBe(52);
+    } finally {
+      unmeasure();
+      restore();
+    }
+  });
+
+  it("labels its ticks with the raw number alone — no enum text", async () => {
+    const restore = stubSize();
+    const unmeasure = stubMeasure();
+    try {
+      const { splits, values, gutter } = await enumAxis("EngineSpeed", ENUM3, 0.25);
+      expect(splits).toEqual([0, 1, 2]);
+      expect(values).toEqual(["0", "1", "2"]);
+      // The gutter is measured from what is drawn, so a numeric tick
+      // set sits at the same floor a numeric axis does — not the fixed
+      // 80 px the labelled axis used to reserve.
+      expect(gutter).toBe(52);
+    } finally {
+      unmeasure();
+      restore();
+    }
+  });
+
+  it("bounds its tick count for a table with hundreds of values", async () => {
+    const restore = stubSize();
+    const unmeasure = stubMeasure();
+    try {
+      // 25 is what uPlot's own increment search settles on for a
+      // -0.5..299.5 scale at 400 px with its 30 px minimum spacing.
+      const { splits, values, gutter } = await enumAxis("LimitNominal", ENUM300, 25);
+      expect(splits!.length).toBeLessThanOrEqual(13);
+      expect(splits!.length).toBeGreaterThan(1);
+      // Every label a bare integer: no quotes, no name, whatever the
+      // table calls the value.
+      expect(values!.every((v) => /^\d+$/.test(v))).toBe(true);
+      expect(gutter).toBe(52);
+    } finally {
+      unmeasure();
+      restore();
+    }
+  });
+
+  it("still names the held value in the overlay", async () => {
+    const restore = stubSize();
+    const unmeasure = stubMeasure();
+    try {
+      // The last code needs a run of its own to get a tile: a segment
+      // that ends at the sample that opened it has no width.
+      const { inst } = await enumAxis("EngineSpeed", ENUM3, 0.25, {
+        t: [0, 0.5, 1, 2],
+        v: [0, 1, 2, 2],
+      });
+      const drawn = inst as unknown as FakeUPlotInst;
+      drawn.drawOps.length = 0;
+      await act(async () => {
+        drawn.fire("draw");
+      });
+      const texts = drawn.drawOps
+        .filter((o) => o.op === "fillText")
+        .map((o) => String((o.args as unknown[])[0]));
+      // The axis lost the names; the tiles still carry them.
+      expect(texts).toContain("Idle");
+      expect(texts).toContain("Run");
+      expect(texts).toContain("Fault");
+    } finally {
+      unmeasure();
+      restore();
+    }
+  });
+});

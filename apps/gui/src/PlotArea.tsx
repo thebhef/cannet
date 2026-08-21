@@ -30,6 +30,7 @@ import {
 } from "./plotData";
 import {
   denormalizeOnAxis,
+  enumTickSplits,
   logDecadeSplits,
   resolveAxisRange,
   type AxisScale,
@@ -1433,7 +1434,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // "enum mode": auto-normalisation is bypassed (the values are
   // discrete enum codes, no rescaling), the series is rendered
   // stepped (not linearly interpolated between codes), and the
-  // y-axis ticks become symbolic labels from the table.
+  // y-axis draws its ticks on the table's raw codes.
   // Multi-signal areas keep current behaviour for the axis itself;
   // the per-signal table cache below feeds the side panel so a
   // labelled value reads as `<label> (<raw>)` on an exact raw match
@@ -1441,7 +1442,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   // included.
   const valueTables = useValueTables(signals);
   // Axis-level enum mode is still gated on `signals.length === 1`
-  // (the stepped path + symbolic y-axis ticks + label band only
+  // (the stepped path + raw-code y-axis ticks + label band only
   // make sense on a single-enum axis); derive that from the
   // per-signal map.
   const valueTable = useMemo<ValueTableEntryRecord[] | null>(() => {
@@ -1932,8 +1933,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       // Enum-mode: skip auto-normalisation and pass raw enum codes
       // through. The y scale is pinned to the table's raw-value range
       // below so the trace's discrete codes plot at their natural
-      // positions and the axis tick labels (set in `opts`) are
-      // symbolic.
+      // positions and the axis ticks (set in `opts`) land on the
+      // codes themselves.
       const enumActive = enumModeRef.current && valueTableRef.current != null;
       const effective = new Map<string, ResolvedAxisRange>();
       // Lane axis: normalise each enum into its own lane band on the
@@ -2202,8 +2203,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       ticks: { stroke: () => theme().axisTicks, width: 1 },
       font: "10px ui-monospace, SFMono-Regular, Menlo, monospace",
     };
-    // Enum-mode hook-up: stepped paths + symbolic y-axis
-    // ticks. The construction effect closes over `valueTable` so a
+    // Enum-mode hook-up: stepped paths + y-axis ticks on the table's
+    // raw codes. The construction effect closes over `valueTable` so a
     // table-fetch resolution (which re-renders + triggers rebuild
     // through the `signalSetKey` dep on this effect) installs the
     // enum-mode opts on the next uPlot instance.
@@ -2237,10 +2238,6 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           }
         : null;
     const enumRaws = enumActiveAtConstruct ? valueTable.map((r) => r.raw) : [];
-    const enumLabelFor = (raw: number): string => {
-      const found = valueTable?.find((r) => r.raw === raw);
-      return found ? found.label : String(raw);
-    };
     const yAxis: uPlot.Axis = laneModeAtConstruct
       ? {
           // Blank gutter: no splits / values / grid. The lane tiles
@@ -2258,11 +2255,22 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         }
       : enumActiveAtConstruct
       ? {
+          // Ticks sit on the table's raw codes — the only positions on
+          // this axis that name anything — and are labelled with the
+          // code alone. The value's *name* is the tile overlay's job:
+          // it says what is held where the reader is looking, so
+          // repeating it down the gutter buys nothing and costs the
+          // width of the longest name in the table.
           ...axisCommon,
-          size: () => trackGutter(areaId, 80),
-          splits: () => enumRaws,
-          values: (_u, splits) =>
-            splits.map((v) => `${v} "${enumLabelFor(Math.round(v))}"`),
+          // Thinned to the density uPlot picked for this axis's height,
+          // so a several-hundred-entry table draws the ticks that fit
+          // rather than one per row.
+          splits: (_u, _idx, min, max, incr) => enumTickSplits(enumRaws, min, max, incr),
+          values: (_u, splits) => splits.map((v) => String(Math.round(v))),
+          // Sized from the numbers actually drawn, like the numeric
+          // branch below — the labelled axis reserved a fixed 80 px for
+          // text it no longer draws.
+          size: (_u, values) => trackGutter(areaId, measureAxisSize(values)),
         }
       : {
           ...axisCommon,
@@ -2515,10 +2523,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             });
             // Logic-analyzer lane (ADR 0026): on an enum-only axis,
             // overlay an opaque label box on each constant-value
-            // segment of the (stepped) line. The line + symbolic
-            // y-axis ticks are still there; the boxes sit *in front*
+            // segment of the (stepped) line. The line and its y-axis
+            // ticks are still there; the boxes sit *in front*
             // of the line so a glance reads "Idle ── Running ──"
-            // rather than just a step pattern. Only runs on the
+            // rather than just a step pattern — and they are the only
+            // place the value's *name* appears, the axis carrying the
+            // raw code alone. Only runs on the
             // enum-mode uPlot (the construction effect rebuilds the
             // instance when the value table resolves), so the cost
             // on numeric axes is zero.
