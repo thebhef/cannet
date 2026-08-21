@@ -1370,3 +1370,23 @@ the four reports (`jsheap_mb_drift_per_min` 0.357 vs a 24.094 limit,
 72.377 vs 139.240), all `ok`. Host modes (tracebuffer/grpc/
 hardware-peak) gated on their own baselines and were all `ok` too,
 unaffected by a frontend-only change.
+
+## Inherited ruling — RBS problems may be reported together (2026-08-21)
+
+Task 103's status-bar prototype introduced an **RBS mapping chip**: the
+RBS counterpart of the Signal mapping chip, badged with the count of
+notes and warnings across the project's RBS configurations. It cannot
+open one `.cannet_rbs` file, because a project may have several.
+
+That collides with phase 6's rule that the RBS signals grid is scoped
+to a **single** element, since two RBS configs are meant to carry
+different values and never combine. The owner's accepted resolution
+narrows that rule rather than overturning it:
+
+> **Combining is fine for reporting, and forbidden for editing.**
+
+So a view may list every config's problems together, naming which
+config each belongs to; acting on one enters that config's own grid,
+where values are still edited one file at a time. Phase 6's reasoning
+survives intact — configs are not combined because their *values* are
+independent, not because their *faults* are.

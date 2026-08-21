@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Toolbar &amp; status bar — prototype</title>
+<style>
+/* Dark tokens: verbatim from apps/gui/src/index.css :root.
+   Light: verbatim from its [data-theme="light"] block, except the few
+   marked (*) — proposed values that do not exist in the app today. */
+:root {
+  --divider:#2c3444; --divider-subtle:#1f2630;
+  --surface-app:#0e1116; --surface-canvas:#0b1220; --surface-field:#0f172a;
+  --surface-row:#11161e; --surface-hover:#1c2530;
+  --surface-section-header:#131a24; --surface-toolbar-control:#1c2230;
+  --surface-toolbar-control-hover:#2a3447;
+  --text-body:#d8dee9; --text-data:#c5d2e0; --text-label:#e6ecf5; --text-muted:#94a3b8;
+  --text-faint:#64748b; --text-dim:#475569; --text-message:#93c5fd; --text-source:#a5b4fc;
+  --border-subtle:#243040; --border-wash:rgb(255 255 255 / 0.14);
+  --border-wash-strong:rgb(255 255 255 / 0.28);
+  --accent-marker:#4ecbff; --accent-progress:#4ecbff;
+  --warn-border:#eab308; --warn-text:#fbbf24;
+  --danger-text:#f87171;
+  --ok-text:#4ade80; --ok-dot:#22c55e;
+  --modified-marker:#4f8ef7; --modified-text:#4f8ef7;
+  --surface-pop:#111827; --shadow-menu:rgba(0,0,0,0.45);
+  --scope-text:#5eead4;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --divider:#d3d8e0; --divider-subtle:#e4e7ec;
+  --surface-app:#f4f5f7; --surface-canvas:#ffffff; --surface-field:#ffffff;
+  --surface-row:#ffffff; --surface-hover:#eceff3;
+  --surface-section-header:#eaedf2; --surface-toolbar-control:#e8ebf0;
+  --surface-toolbar-control-hover:#dbe0e9;
+  --text-body:#1f2937; --text-data:#3b4757; --text-label:#0f172a; --text-muted:#5b6879;
+  --text-faint:#78849a; --text-dim:#98a3b3; --text-message:#1d4ed8; --text-source:#4338ca;
+  --border-subtle:#d8dce3; --border-wash:rgb(15 23 42 / 0.14);
+  --border-wash-strong:rgb(15 23 42 / 0.28);
+  --accent-marker:#0263a8; --accent-progress:#0263a8;   /* (*) stock #0369a1 */
+  --warn-border:#b8860b;                                /* (*) stock #d0a017 */
+  --warn-text:#7a4a06;
+  --danger-text:#a01212;                                /* (*) stock #b91c1c */
+  --ok-text:#116434; --ok-dot:#16a34a;
+  --modified-marker:#2563eb; --modified-text:#1d4ed8;
+  --surface-pop:#ffffff; --shadow-menu:rgba(15,23,42,0.18);
+  --scope-text:#166f5c;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--surface-app); color:var(--text-body);
+  font:13px/1.45 "Segoe UI", system-ui, sans-serif; }
+.wrap { padding:18px; max-width:1180px; margin:0 auto; }
+h1 { font-size:16px; margin:0 0 .2rem; color:var(--text-label); }
+h2 { font-size:13px; margin:1.9rem 0 .5rem; color:var(--text-label);
+  border-bottom:1px solid var(--divider); padding-bottom:.3rem; }
+h3 { font-size:12px; margin:1.1rem 0 .35rem; color:var(--text-muted); font-weight:600; }
+p.note { color:var(--text-muted); margin:.2rem 0 1rem; max-width:76ch; }
+.bar { display:flex; gap:.5rem; align-items:center; margin-bottom:1rem; }
+button.plain { font:inherit; color:var(--text-body);
+  background:var(--surface-toolbar-control); border:1px solid var(--border-subtle);
+  border-radius:3px; padding:.2rem .5rem; cursor:pointer; }
+button.plain:hover { background:var(--surface-toolbar-control-hover); }
+.caption { color:var(--text-faint); font-size:12px; }
+.mock { background:var(--surface-app); border:1px solid var(--divider);
+  border-radius:4px; padding:.5rem; margin-bottom:.4rem; }
+
+/* === Toolbar: verbatim shape from index.css .toolbar === */
+.toolbar { display:flex; gap:.4rem; align-items:center; flex-wrap:wrap; }
+.toolbar button { background:var(--surface-toolbar-control); color:var(--text-body);
+  border:1px solid var(--border-subtle); border-radius:4px;
+  padding:.25rem .6rem; cursor:pointer; font:inherit; }
+.toolbar button:hover { background:var(--surface-toolbar-control-hover); }
+.toolbar button:disabled { opacity:.45; cursor:default; }
+.toolbar-separator { width:1px; align-self:stretch; background:var(--divider);
+  margin:0 .15rem; }
+
+/* === Today's status line === */
+.status { font-size:.78rem; color:var(--text-muted); margin-top:.4rem; }
+.trace-scan-bar { display:inline-block; vertical-align:middle; width:4rem;
+  height:2px; margin-right:.4rem; border-radius:1px;
+  background:var(--divider-subtle); overflow:hidden; }
+.trace-scan-bar::after { content:""; display:block; width:35%; height:100%;
+  background:var(--accent-progress); animation:slide 1.1s ease-in-out infinite; }
+@keyframes slide { 0% { transform:translateX(-100%) } 100% { transform:translateX(285%) } }
+
+/* Determinate progress — a known denominator, so a real bar. */
+.prog { display:inline-block; vertical-align:middle; width:5.5rem; height:4px;
+  border-radius:2px; background:var(--divider-subtle); overflow:hidden;
+  margin-right:.4rem; }
+.prog > i { display:block; height:100%; background:var(--accent-progress); }
+
+/* === Status chip (shape settled in connect-disconnect-chip.html) === */
+.chip { display:inline-flex; align-items:center; gap:.4rem; font:inherit;
+  color:var(--text-body); cursor:pointer; background:var(--surface-toolbar-control);
+  border:1px solid var(--border-wash); border-radius:2px;
+  padding:.14rem .45rem; text-align:left; font-size:12px;
+  transition:background .12s, border-color .12s; }
+.chip:hover { background:var(--surface-toolbar-control-hover); }
+.chip .dot { width:.5rem; height:.5rem; border-radius:2px; flex:none;
+  background:var(--text-dim); border:1px solid var(--border-wash-strong); }
+.chip .label { white-space:nowrap; flex:1 1 auto; }
+.chip .count { color:var(--text-faint); font-variant-numeric:tabular-nums; flex:none; }
+.chip[data-state="connected"] { border-color:var(--ok-dot); }
+.chip[data-state="connected"] .dot { background:var(--ok-dot); }
+.chip[data-state="connected"] .label { color:var(--ok-text); }
+.chip[data-state="connecting"] { border-color:var(--accent-marker); }
+.chip[data-state="connecting"] .dot { background:var(--accent-marker);
+  animation:pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
+.chip[data-state="degraded"] { border-color:var(--warn-border); }
+.chip[data-state="degraded"] .dot { background:var(--warn-border); }
+.chip[data-state="degraded"] .label { color:var(--warn-text); }
+.chip[data-state="failed"] { border-color:var(--danger-text); }
+.chip[data-state="failed"] .dot { background:var(--danger-text); }
+.chip[data-state="failed"] .label { color:var(--danger-text); }
+.chip .badge { background:var(--warn-border); color:#1a1400; border-radius:2px;
+  padding:0 .28rem; font-size:11px; font-weight:600;
+  font-variant-numeric:tabular-nums; }
+/* Sized to the longest state ("Connecting…" + "1 / 3"), not padded out.
+   Uniform across states, but no wider than uniformity needs. */
+.w-conn { width:8.75rem; }
+
+/* Bus health is a launcher, not a status chip: with several buses a
+   single word cannot say *which* one is off, and "healthy" overlapped
+   the connection chip. An icon keeps it tight; the panel disambiguates. */
+.iconbtn { display:inline-flex; align-items:center; gap:.28rem; font:inherit;
+  font-size:12px; color:var(--text-muted); cursor:pointer;
+  background:var(--surface-toolbar-control);
+  border:1px solid var(--border-wash); border-radius:2px;
+  padding:.14rem .35rem; }
+.iconbtn:hover { background:var(--surface-toolbar-control-hover); color:var(--text-body); }
+.iconbtn svg { display:block; }
+.iconbtn[data-state="degraded"] { border-color:var(--warn-border); color:var(--warn-text); }
+.iconbtn[data-state="failed"] { border-color:var(--danger-text); color:var(--danger-text); }
+.iconbtn .n { font-variant-numeric:tabular-nums; font-weight:600; }
+
+/* === The proposed status bar === */
+/* The bar is one row, always. It never wraps and never grows the
+   header — a wrapped status bar reflows every panel below it — so when
+   content will not fit, metrics drop into the label tooltip and chips
+   are pushed into the overflow menu.
+   `overflow:hidden` is deliberately NOT used here: the overflow menu is
+   an absolutely-positioned child, and a clipping bar swallows its own
+   dropdown. Fit is guaranteed by dropping items, not by clipping. */
+.statusbar { display:flex; align-items:center; gap:.45rem;
+  padding:.26rem .4rem; background:var(--surface-section-header);
+  border-top:1px solid var(--divider);
+  flex-wrap:nowrap; white-space:nowrap; }
+.statusbar > * { flex:none; }
+.statusbar .spacer { flex:1 1 auto; }
+.statusbar .spacer { flex:1 1 auto; }
+.sb-sep { width:1px; align-self:stretch; background:var(--divider); margin:0 .15rem; }
+.metric { display:inline-flex; align-items:baseline; gap:.28rem; font-size:12px; }
+.metric b { color:var(--text-data); font-weight:600;
+  font-variant-numeric:tabular-nums; }
+.metric span { color:var(--text-faint); }
+.metric.live b { color:var(--text-message); }
+.metric.warn b { color:var(--warn-text); }
+/* Chip overflow: collapses the pinned status chips when the bar is
+   narrow, carrying the sum of their counts so nothing that was
+   demanding attention becomes invisible. */
+.more { display:inline-flex; align-items:center; gap:.35rem; font:inherit;
+  font-size:12px; color:var(--text-body); cursor:pointer;
+  background:var(--surface-toolbar-control);
+  border:1px solid var(--border-wash); border-radius:2px;
+  padding:.14rem .45rem; }
+.more:hover { background:var(--surface-toolbar-control-hover); }
+.more .badge { background:var(--warn-border); color:#1a1400; border-radius:2px;
+  padding:0 .28rem; font-size:11px; font-weight:600;
+  font-variant-numeric:tabular-nums; }
+/* Overflow menu — same shape as the toolbar's recent-captures menu
+   (index.css), dropping from the bar rather than expanding inside it. */
+.menu-wrap { position:relative; display:inline-flex; }
+.sb-menu { position:absolute; top:100%; right:0; margin:4px 0 0 0;
+  padding:4px; list-style:none; display:flex; flex-direction:column; gap:4px;
+  background:var(--surface-pop); border:1px solid var(--border-subtle);
+  border-radius:4px; z-index:50; box-shadow:0 4px 12px var(--shadow-menu); }
+.sb-menu[hidden] { display:none; }
+.sb-menu .chip { width:100%; }
+.sb-notice { font-size:12px; color:var(--text-muted); display:inline-flex;
+  align-items:center; gap:.35rem; }
+.sb-notice.err { color:var(--danger-text); }
+.sb-notice.warn { color:var(--warn-text); }
+.sb-act { font:inherit; font-size:11px; background:var(--surface-toolbar-control);
+  color:inherit; border:1px solid var(--border-wash); border-radius:2px;
+  padding:0 .35rem; cursor:pointer; }
+.sb-act.cancel { border-color:var(--danger-text); color:var(--danger-text); }
+
+code { color:var(--text-source); }
+ul.q { color:var(--text-muted); max-width:76ch; padding-left:1.1rem; }
+ul.q li { margin:.35rem 0; }
+table { border-collapse:collapse; width:100%; margin-top:.4rem; }
+th,td { text-align:left; padding:.3rem .5rem;
+  border-bottom:1px solid var(--divider-subtle); vertical-align:top; font-size:12px; }
+th { color:var(--text-label); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Toolbar &amp; status bar — prototype</h1>
+<p class="note">
+  The prose status line under the toolbar becomes a formatted status bar
+  carrying the connection chip, the bus-health chip, and the same numbers as
+  discrete aligned metrics. The toolbar keeps its buttons; it loses the
+  connection control, which moves into the bar where the connection
+  <em>state</em> already is.
+</p>
+
+<div class="bar">
+  <button class="plain" id="themeBtn">Toggle theme</button>
+  <span class="caption">Both themes use the app&rsquo;s own tokens. Toolbar shape and status-line
+  styling are lifted verbatim from <code>index.css</code>.</span>
+</div>
+
+<h2>Today</h2>
+<p class="note">
+  The real toolbar, in its real order, and the real status line beneath it. The
+  numbers are a sentence: readable once, hard to scan, and impossible to align
+  because the prose in front of them changes length with the session.
+</p>
+<div class="mock">
+  <div class="toolbar">
+    <button>Open project&hellip;</button>
+    <button>Save project</button>
+    <span class="toolbar-separator"></span>
+    <button>Import trace&hellip;</button>
+    <button>Recent&nbsp;&#9662;</button>
+    <button>Add DBC&hellip;</button>
+    <span class="toolbar-separator"></span>
+    <button>Connect</button>
+    <span class="toolbar-separator"></span>
+    <button disabled>Clear</button>
+    <button disabled>Save capture&hellip;</button>
+    <span class="toolbar-separator"></span>
+    <button>Add trace</button>
+    <button>Add plot panel</button>
+    <button>Add signal view</button>
+    <button>Add transmit panel</button>
+    <button>Add RBS panel</button>
+    <button>Add color map</button>
+    <button>Add generator</button>
+    <button>Database panel</button>
+    <button>Signal mapping</button>
+    <button>Graph panel</button>
+    <button>Events panel</button>
+    <button>Project panel</button>
+    <button>System messages</button>
+  </div>
+  <div class="status">
+    Streaming from 2 servers (5 interfaces, 1&nbsp;234&nbsp;567 frames &middot; 18.4k f/s &middot;
+    41:07 elapsed &middot; 4.2 GB RAM &middot; 12.1 GB cache). 3 DBCs.
+  </div>
+</div>
+
+<h2>Proposed — connected and streaming</h2>
+<p class="note">
+  Same toolbar, minus the connection button. On the left the connection chip and
+  the bus-health launcher; metrics in the middle; <strong>Signal mapping and
+  System messages pinned to the right in every state</strong>, because a surface
+  that reports a condition is useless if it disappears when there is a condition
+  to report.
+</p>
+<div class="mock" style="padding:0">
+  <div class="toolbar" style="padding:.5rem">
+    <button>Open project&hellip;</button>
+    <button>Save project</button>
+    <span class="toolbar-separator"></span>
+    <button>Import trace&hellip;</button>
+    <button>Recent&nbsp;&#9662;</button>
+    <button>Add DBC&hellip;</button>
+    <span class="toolbar-separator"></span>
+    <button disabled>Clear</button>
+    <button disabled>Save capture&hellip;</button>
+    <span class="toolbar-separator"></span>
+    <button>Add trace</button>
+    <button>Add plot panel</button>
+    <button>Add signal view</button>
+    <button>Add transmit panel</button>
+    <button>Add RBS panel</button>
+    <button>Add color map</button>
+    <button>Add generator</button>
+    <button>Database panel</button>
+    <button>Graph panel</button>
+    <button>Events panel</button>
+    <button>Project panel</button>
+  </div>
+  <div class="statusbar">
+    <button class="chip w-conn" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">5 / 5</span></button>
+    <button class="iconbtn" title="Bus health — all buses error-active"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><polyline points="1,9 4,9 6,4 8,13 10,9 15,9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+    <span class="sb-sep"></span>
+    <span class="metric"><b>18.4k</b><span>f/s</span></span>
+    <span class="metric live"><b>34 %</b><span>bus load</span></span>
+    <span class="metric"><b>1 234 567</b><span>frames</span></span>
+    <span class="metric"><b>41:07</b><span>elapsed</span></span>
+    <span class="metric"><b>4.2 GB</b><span>RAM</span></span>
+    <span class="metric"><b>12.1 GB</b><span>cache</span></span>
+    <span class="spacer"></span>
+    <button class="chip"><span class="dot"></span><span class="label">System messages</span></button>
+    <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span><span class="badge">4</span></button>
+    <button class="chip"><span class="dot"></span><span class="label">RBS mapping</span><span class="badge">3</span></button>
+  </div>
+</div>
+<p class="note">
+  The DBC count is gone — it was a fact about configuration, not about what is
+  happening, and the Database panel is where it belongs. The
+  <span class="metric live"><b>tinted</b></span> metric is live-only: a capture
+  has no wire, so it is absent when nothing is streaming.
+</p>
+
+<h2>While connected: what a live session can report that a file cannot</h2>
+<p class="note">
+  Frames, elapsed, RAM and cache describe the buffer and are equally true of a
+  loaded file. A few things are knowable only while streaming — but the bar has
+  finite width, so a live-only metric has to be worth more than the standing one
+  it would push out.
+</p>
+<table>
+<tr><th>Metric</th><th>Where it comes from</th><th>Verdict</th></tr>
+<tr><td><b>Bus load %</b></td>
+  <td>Task 101. Meaningless for a file — a capture has no wire.</td>
+  <td><b>In the bar</b> while connected, absent otherwise.</td></tr>
+<tr><td><b>Clock offset</b></td>
+  <td>Already measured: <code>SessionClock</code> runs an SNTP-style probe over
+    the session stream, <code>clock_status.rs</code> polls it and publishes it to
+    the server-list row, and it has a warn threshold
+    (<code>CLOCK_WARN_THRESHOLD_NS</code>) already.</td>
+  <td><b>Not in the bar.</b> Owner ruling 2026-08-20: <em>&ldquo;clock offset
+    doesn&rsquo;t deserve to displace our time stats.&rdquo;</em> It keeps its
+    existing home in the server-list row and its two log lines.</td></tr>
+<tr><td><b>Error rate</b></td>
+  <td>Task 101, coalesced <code>busError</code> events.</td>
+  <td>Stays in the health chip rather than becoming another number.</td></tr>
+<tr><td><b>Dropped / overrun frames</b></td>
+  <td><em>Not tracked anywhere today.</em> Nothing counts frames the ingest path
+    could not keep up with.</td>
+  <td><b>Undecided</b>, and new work — but it is the one number that says
+    whether what you are looking at is <em>complete</em>.</td></tr>
+</table>
+
+<h2>Loading a file — two phases, both with a real denominator</h2>
+<p class="note">
+  Today both phases share one indeterminate sliding chip. Neither needs to be
+  indeterminate:
+</p>
+<ul class="q">
+  <li><b>Census</b> — the walk that discovers the frame count. Its total is not
+    known in frames, but the <b>file size is</b>, so it is determinate against
+    bytes read.</li>
+  <li><b>Import</b> — the pump. <code>scan_blf</code> already returns
+    <code>frame_count</code>, so the denominator is known exactly before a single
+    frame is pumped. This is the tax already paid.</li>
+  <li><b>Cache rebuild</b> — the series and their sample counts are known, so it
+    is determinate too.</li>
+</ul>
+
+<h3>Census — determinate on bytes, cancellable</h3>
+<div class="mock" style="padding:0"><div class="statusbar">
+  <button class="chip w-conn"><span class="dot"></span><span class="label">Not connected</span></button>
+  <span class="sb-sep"></span>
+  <span class="sb-notice"><span class="prog"><i style="width:38%"></i></span>Scanning&nbsp;<code>drive-cycle.blf</code>
+    <b style="color:var(--text-data)">38&nbsp;%</b>
+    <button class="sb-act cancel">Cancel</button></span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System messages</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS mapping</span></button>
+</div></div>
+
+<h3>Import — determinate on frames, cancellable</h3>
+<div class="mock" style="padding:0"><div class="statusbar">
+  <button class="chip w-conn"><span class="dot"></span><span class="label">Not connected</span></button>
+  <span class="sb-sep"></span>
+  <span class="sb-notice"><span class="prog"><i style="width:64%"></i></span>Importing&nbsp;<code>drive-cycle.blf</code>
+    <button class="sb-act cancel">Cancel</button></span>
+  <span class="sb-sep"></span>
+  <span class="metric"><b>2 981 210 / 4 662 118</b><span>frames</span></span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System messages</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS mapping</span></button>
+</div></div>
+
+<h3>Rebuilding caches — determinate, with its existing offramp</h3>
+<div class="mock" style="padding:0"><div class="statusbar">
+  <button class="chip w-conn"><span class="dot"></span><span class="label">Not connected</span></button>
+  <span class="sb-sep"></span>
+  <span class="sb-notice"><span class="prog"><i style="width:22%"></i></span>Rebuilding signal caches
+    <b style="color:var(--text-data)">7 / 31</b>
+    <button class="sb-act">Discard</button></span>
+  <span class="spacer"></span>
+  <span class="metric"><b>892 431</b><span>frames</span></span>
+  <button class="chip"><span class="dot"></span><span class="label">System messages</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS mapping</span></button>
+</div></div>
+
+<h2>The bar in its remaining states</h2>
+
+<h3>Idle — nothing open</h3>
+<div class="mock" style="padding:0"><div class="statusbar">
+  <button class="chip w-conn"><span class="dot"></span><span class="label">Not connected</span></button>
+  <span class="sb-sep"></span>
+  <span class="sb-notice">Open a BLF log or connect to a server to begin.</span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System messages</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS mapping</span></button>
+</div></div>
+
+<h3>Project changed on disk</h3>
+<div class="mock" style="padding:0"><div class="statusbar">
+  <button class="chip w-conn" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">5 / 5</span></button>
+  <button class="iconbtn" title="Bus health — all buses error-active"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><polyline points="1,9 4,9 6,4 8,13 10,9 15,9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+  <span class="sb-sep"></span>
+  <span class="sb-notice warn">Project changed on disk
+    <button class="sb-act">Reload</button><button class="sb-act">Dismiss</button></span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System messages</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS mapping</span></button>
+</div></div>
+
+<h3>Degraded connection, a bus in trouble, and a clock that has drifted</h3>
+<div class="mock" style="padding:0"><div class="statusbar">
+  <button class="chip w-conn" data-state="degraded"><span class="dot"></span><span class="label">Connected</span><span class="count">4 / 5</span></button>
+  <button class="iconbtn" data-state="failed" title="Bus health — Body is bus-off"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><polyline points="1,9 4,9 6,4 8,13 10,9 15,9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="n">1</span></button>
+  <span class="sb-sep"></span>
+  <span class="sb-notice err">bench-2: connection refused</span>
+  <span class="sb-sep"></span>
+  <span class="metric"><b>12.1k</b><span>f/s</span></span>
+  <span class="sb-notice warn">clock +184 ms</span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System messages</span><span class="badge">2</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span><span class="badge">4</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS mapping</span><span class="badge">3</span></button>
+</div></div>
+
+<h2>Why bus health is a launcher, not a status chip</h2>
+<p class="note">
+  It started as a chip reading &ldquo;Bus health &mdash; OK&rdquo;, and that was
+  wrong three ways. <b>&ldquo;Health&rdquo; is a strange word for
+  &ldquo;this bus is fine&rdquo;</b>; it <b>overlapped the connection chip</b>,
+  which already says whether traffic is flowing; and with several buses
+  <b>a single summary cannot say which one is off</b>, which is the only thing
+  worth knowing when one is.
+</p>
+<p class="note">
+  So it is a small icon button that opens the panel &mdash; the panel is where
+  &ldquo;which bus&rdquo; is answered. It stays neutral while every bus is
+  error-active, and <b>tints and grows a count when one is not</b>
+  (<button class="iconbtn" data-state="failed" title="example"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><polyline points="1,9 4,9 6,4 8,13 10,9 15,9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="n">1</span></button>),
+  so a bus going off is still noticed without a word for it. The tooltip names
+  the bus.
+</p>
+
+<h2>What the RBS mapping chip reports — and an open question</h2>
+<p class="note">
+  It is <b>not</b> RBS run status. It is the RBS counterpart of the Signal
+  mapping chip: the notes and warnings across the project&rsquo;s RBS
+  configurations — a field the resolved DBC does not define, an override naming
+  a signal that no longer exists, a value that will not encode. The badge is
+  that count; no badge means nothing needs attention.
+</p>
+<p class="note">
+  <b>Open: what does clicking it open?</b> It cannot open an individual
+  <code>.cannet_rbs</code> file — a project can have several, and picking one
+  would be the same ambiguity that turned bus health into a launcher. But the
+  RBS signals grid built for task 89 is deliberately scoped to <b>one</b>
+  element, on the grounds that two RBS configs are meant to carry different
+  values and must never be combined.
+</p>
+<p class="note">
+  Proposed resolution: <b>combining is fine for reporting, and forbidden for
+  editing.</b> The chip opens a view that lists every RBS config&rsquo;s
+  problems together, naming which config each belongs to; acting on one takes
+  you into that config&rsquo;s own grid, where values are edited one file at a
+  time exactly as today. That keeps the rule task 89 established — the reason
+  configs are not combined is that their <em>values</em> are independent, not
+  that their <em>faults</em> are.
+</p>
+
+<h2>Narrow windows — what drops, and where it goes</h2>
+<p class="note">
+  <b>The bar is one row and never wraps.</b> A header that grows a second line
+  reflows every panel beneath it, so running out of room is handled by removing
+  things, not by taking more space. Two different things give way, and they give
+  way differently.
+</p>
+<p class="note">
+  <b>Metrics</b> run left to right in priority order — <b>f/s</b>,
+  <b>bus load</b>, <b>frames</b>, <b>elapsed</b>, <b>RAM</b>, <b>cache</b> — and
+  drop from the right. <b>Hovering any metric label shows the full readout</b>,
+  hidden ones included, so a narrow window costs a hover rather than the number.
+  That tooltip also replaces today&rsquo;s single blob title on the whole status
+  line.
+</p>
+<p class="note">
+  <b>The pinned chips never drop.</b> When the bar runs out of room they
+  collapse into one overflow control carrying <b>the sum of their counts</b>, so
+  something demanding attention can never become invisible — it can only become
+  one click away. It opens as a <b>menu</b>, the same shape the toolbar&rsquo;s
+  recent-captures dropdown already uses. Click the <b>&hellip;</b> below.
+</p>
+<p class="note">
+  Three chips are pinned right, in this order: <b>System messages</b>,
+  <b>Signal mapping</b>, <b>RBS</b>. They are <b>pushed progressively into the
+  menu from the right</b> — RBS first, then Signal mapping, then System
+  messages — so the last one standing is the one that reports faults. The
+  overflow badge sums whatever is inside it, so the tighter bar below reads
+  <b>3</b> (RBS mapping alone) and the narrow one reads <b>9</b> (2 + 4 + 3).
+</p>
+
+<h3>Roomy — everything fits</h3>
+<div class="mock" style="padding:0"><div class="statusbar">
+  <button class="chip w-conn" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">5 / 5</span></button>
+  <button class="iconbtn" title="Bus health — all buses error-active"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><polyline points="1,9 4,9 6,4 8,13 10,9 15,9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+  <span class="sb-sep"></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>18.4k</b><span>f/s</span></span>
+  <span class="metric live" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>34 %</b><span>bus load</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>1 234 567</b><span>frames</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>41:07</b><span>elapsed</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>4.2 GB</b><span>RAM</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>12.1 GB</b><span>cache</span></span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System messages</span><span class="badge">2</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span><span class="badge">4</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">RBS mapping</span><span class="badge">3</span></button>
+</div></div>
+
+<h3>Tighter — cache and RAM dropped; hover a label for them</h3>
+<div class="mock" style="padding:0; max-width:60rem"><div class="statusbar">
+  <button class="chip w-conn" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">5 / 5</span></button>
+  <button class="iconbtn" title="Bus health — all buses error-active"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><polyline points="1,9 4,9 6,4 8,13 10,9 15,9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg></button>
+  <span class="sb-sep"></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>18.4k</b><span>f/s</span></span>
+  <span class="metric live" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>34 %</b><span>bus load</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>1 234 567</b><span>frames</span></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>41:07</b><span>elapsed</span></span>
+  <span class="spacer"></span>
+  <button class="chip"><span class="dot"></span><span class="label">System messages</span><span class="badge">2</span></button>
+  <button class="chip"><span class="dot"></span><span class="label">Signal mapping</span><span class="badge">4</span></button>
+  <span class="menu-wrap">
+    <button class="more" data-menu="m1"><span>&hellip;</span><span class="badge">3</span></button>
+    <ul class="sb-menu" id="m1" hidden>
+      <li><button class="chip"><span class="dot"></span><span class="label">RBS mapping</span><span class="badge">3</span></button></li>
+    </ul>
+  </span>
+</div></div>
+
+<h3>Narrow — only f/s and bus load survive; both chips collapsed</h3>
+<div class="mock" style="padding:0; max-width:34rem"><div class="statusbar">
+  <button class="chip w-conn" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">5 / 5</span></button>
+  <button class="iconbtn" data-state="failed" title="Bus health — Body is bus-off"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><polyline points="1,9 4,9 6,4 8,13 10,9 15,9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg><span class="n">1</span></button>
+  <span class="sb-sep"></span>
+  <span class="metric" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>18.4k</b><span>f/s</span></span>
+  <span class="metric live" title="18.4k f/s&#10;34 % bus load&#10;1 234 567 frames&#10;41:07 elapsed&#10;4.2 GB RAM&#10;12.1 GB cache"><b>34 %</b><span>bus load</span></span>
+  <span class="spacer"></span>
+  <span class="menu-wrap">
+    <button class="more" data-menu="m2"><span>&hellip;</span><span class="badge">9</span></button>
+    <ul class="sb-menu" id="m2" hidden>
+      <li><button class="chip"><span class="dot"></span><span class="label">System messages</span><span class="badge">2</span></button></li>
+      <li><button class="chip"><span class="dot"></span><span class="label">Signal mapping</span><span class="badge">4</span></button></li>
+      <li><button class="chip"><span class="dot"></span><span class="label">RBS mapping</span><span class="badge">3</span></button></li>
+    </ul>
+  </span>
+</div></div>
+<p class="note">
+  The overflow badge reads <b>6</b> — signal mapping&rsquo;s 4 plus system
+  messages&rsquo; 2. A summed count is the only honest collapse: it says
+  &ldquo;six things want you&rdquo; without pretending to say which, and expanding
+  is what disambiguates.
+</p>
+
+<h2>Settled</h2>
+<ul class="q">
+  <li><b>The connection control moves into the bar.</b> The chip shows the state
+    and pressing it connects or disconnects; the toolbar keeps no Connect
+    button. Nothing reports connection from two places.</li>
+  <li><b>Notices stay in the bar, with their buttons.</b> Changed-on-disk keeps
+    Reload and Dismiss; the cache rebuild keeps Discard. The bar is a readout
+    that can also carry the response to what it is reporting.</li>
+  <li><b>Metrics drop right to left</b>, in the priority order above.
+    <b>Hovering any metric label shows the whole readout</b>, hidden values
+    included — and replaces today&rsquo;s one blob title on the status line.</li>
+  <li><b>System messages, Signal mapping and RBS are pinned right</b>, in that
+    order, and never drop. When the bar is too narrow they are <b>pushed
+    progressively into an overflow menu from the right</b> — RBS, then Signal
+    mapping, then System messages — badged with the sum of their counts.</li>
+</ul>
+
+<h2>Not asked for, not done</h2>
+<ul class="q">
+  <li>The seven &ldquo;Add &hellip;&rdquo; buttons are untouched. Collapsing them
+    into one <em>Add panel&nbsp;&#9662;</em> menu is the largest single
+    reduction available in the toolbar, and is a separate question.</li>
+</ul>
+
+</div>
+<script>
+Array.prototype.forEach.call(document.querySelectorAll(".more"), function (b) {
+  b.addEventListener("click", function () {
+    var m = document.getElementById(b.dataset.menu);
+    m.hidden = !m.hidden;
+  });
+});
+document.getElementById("themeBtn").addEventListener("click", function () {
+  var r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+</script>
+</body>
+</html>

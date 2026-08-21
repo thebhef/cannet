@@ -1,0 +1,255 @@
+{
+  "mode": "frontend",
+  "label": "task89-phase2-run1",
+  "duration_s": 58.99969999999926,
+  "sample_count": 60,
+  "longtask_ms_per_s": {
+    "mean": 0.0,
+    "max": 0.0,
+    "p95": 0.0
+  },
+  "lag_ms": {
+    "mean": -0.013333333345750967,
+    "max": 4.5
+  },
+  "jank_seconds": 0,
+  "jank_fraction": 0.0,
+  "frames_late_per_s_mean": 0.0,
+  "rx_fps": {
+    "overall": 1606.0200000000002,
+    "first_half": 1608.0866666666666,
+    "second_half": 1603.9533333333334,
+    "retention": 0.9974296576055188
+  },
+  "tx_fps": {
+    "overall": 1611.378333333333,
+    "first_half": 1611.5666666666668,
+    "second_half": 1611.19,
+    "retention": 0.9997662729848801
+  },
+  "counters_per_s": {
+    "app.setDirty.callsite": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "dockview.layoutChange": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "event.system-log-appended": {
+      "mean": 2.066666666666667,
+      "max": 5.0
+    },
+    "event.trace-grew": {
+      "mean": 10.0,
+      "max": 10.0
+    },
+    "followwin.slide": {
+      "mean": 14.066666666666666,
+      "max": 41.0
+    },
+    "invoke.fetch_by_id_page": {
+      "mean": 8.0,
+      "max": 8.0
+    },
+    "invoke.fetch_signal_page": {
+      "mean": 4.0,
+      "max": 4.0
+    },
+    "invoke.sample_signals": {
+      "mean": 36.45,
+      "max": 55.0
+    },
+    "memo.elementRegistryValue": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "memo.projectContextValue": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "memo.traceData": {
+      "mean": 10.0,
+      "max": 10.0
+    },
+    "plot.areaResampled": {
+      "mean": 61.63333333333333,
+      "max": 73.0
+    },
+    "plot.reportSeries": {
+      "mean": 36.45,
+      "max": 56.0
+    },
+    "plot.userXChange": {
+      "mean": 1.6666666666666667,
+      "max": 4.0
+    },
+    "plotarea.resample": {
+      "mean": 61.63333333333333,
+      "max": 72.0
+    },
+    "registry.update": {
+      "mean": 0.8333333333333334,
+      "max": 1.0
+    },
+    "render.App": {
+      "mean": 23.066666666666666,
+      "max": 26.0
+    },
+    "render.ByIdTable": {
+      "mean": 30.5,
+      "max": 32.0
+    },
+    "render.PlotArea": {
+      "mean": 115.28333333333333,
+      "max": 131.0
+    },
+    "render.PlotPanel": {
+      "mean": 24.65,
+      "max": 28.0
+    },
+    "render.SignalsPanel": {
+      "mean": 16.433333333333334,
+      "max": 18.0
+    },
+    "render.TracePanel": {
+      "mean": 41.333333333333336,
+      "max": 43.0
+    },
+    "render.TraceView": {
+      "mean": 10.833333333333334,
+      "max": 11.0
+    },
+    "userx.wheel.shiftpan": {
+      "mean": 0.8333333333333334,
+      "max": 2.0
+    },
+    "userx.wheel.zoom": {
+      "mean": 0.8333333333333334,
+      "max": 2.0
+    }
+  },
+  "gauges": {
+    "count": {
+      "mean": 117017.88333333333,
+      "max": 211959.0,
+      "last": 211959.0,
+      "slope_per_min": 193099.63514422416
+    },
+    "drop.before_session": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0,
+      "slope_per_min": 0.0
+    },
+    "ext": {
+      "mean": 36.75166666666667,
+      "max": 65.8,
+      "last": 65.8,
+      "slope_per_min": 60.00655595683937
+    },
+    "flush_ms": {
+      "mean": 4.122455,
+      "max": 11.76,
+      "last": 0.0,
+      "slope_per_min": 1.426018426343054
+    },
+    "fps": {
+      "mean": 3233.78,
+      "max": 3548.5,
+      "last": 3204.5,
+      "slope_per_min": -53.00058206289382
+    },
+    "fps.pack": {
+      "mean": 1602.4400000000003,
+      "max": 1867.0,
+      "last": 1610.0,
+      "slope_per_min": -3.3464464073760922
+    },
+    "fps.rx": {
+      "mean": 1606.0200000000002,
+      "max": 1617.0,
+      "last": 1611.5,
+      "slope_per_min": -7.10188585929286
+    },
+    "fps.tx": {
+      "mean": 1611.378333333333,
+      "max": 1616.9,
+      "last": 1609.5,
+      "slope_per_min": -1.0284297493091363
+    },
+    "fps.zonal": {
+      "mean": 1629.0750000000005,
+      "max": 1869.3,
+      "last": 1611.7,
+      "slope_per_min": -71.11414882909236
+    },
+    "jsheap_mb": {
+      "mean": 52.405,
+      "max": 79.9,
+      "last": 58.7,
+      "slope_per_min": 6.001272285825674
+    },
+    "mem.host_mb": {
+      "mean": 51.961979166666666,
+      "max": 58.26171875,
+      "last": 58.26171875,
+      "slope_per_min": 11.932143816737398
+    },
+    "mem.tree_mb": {
+      "mean": 677.1870442708333,
+      "max": 714.96484375,
+      "last": 713.47265625,
+      "slope_per_min": 74.27009998865827
+    },
+    "mem.webview_mb": {
+      "mean": 566.2376953125,
+      "max": 599.2421875,
+      "last": 596.25,
+      "slope_per_min": 62.335559878583226
+    },
+    "mem.webview_renderer_mb": {
+      "mean": 265.5932291666667,
+      "max": 288.59765625,
+      "last": 285.0859375,
+      "slope_per_min": 43.20068708606577
+    },
+    "scroll_jank_pct": {
+      "mean": 59.09666666666667,
+      "max": 253.1,
+      "last": 46.2,
+      "slope_per_min": -73.13153513885325
+    },
+    "scroll_jank_px": {
+      "mean": 119925.96166666668,
+      "max": 344890.9,
+      "last": 81126.0,
+      "slope_per_min": -82365.3434183711
+    },
+    "scroll_step_ms": {
+      "mean": 69.54833333333333,
+      "max": 124.5,
+      "last": 75.6,
+      "slope_per_min": -0.14279259538775202
+    },
+    "tx_late_ms": {
+      "mean": 4.839663333333331,
+      "max": 16.630499999999998,
+      "last": 2.7005000000000003,
+      "slope_per_min": 0.429257574295479
+    },
+    "winw": {
+      "mean": 0.0,
+      "max": 0.0,
+      "last": 0.0,
+      "slope_per_min": 0.0
+    }
+  },
+  "rx_gap": {
+    "ids_measured": 173,
+    "worst_p95_ratio": 1.1456598375312932,
+    "worst_p95_ratio_id": "zonal/0x10F",
+    "worst_short_frac": 0.0040006667777962995,
+    "worst_short_frac_id": "zonal/0xC0"
+  }
+}
