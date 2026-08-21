@@ -630,4 +630,137 @@ mod tests {
         }
         assert!(!state.violations_in(10, 20).is_empty());
     }
+
+    // ---- Whose definition supplies a calculated field ---------------
+    //
+    // A counter or CRC designation names signals, and verifying one
+    // means reading those signals out of a received payload — so it is
+    // keyed on how the message decodes, which under ADR 0054 is the
+    // business of the one definition that decodes it. These two cases
+    // pin that the resolving database is the first assigned one that
+    // **defines the message**, not the first that happens to declare
+    // calculated fields.
+
+    /// 291 `Status` with `AliveCtr` at `ctr_start`, and the cannet
+    /// counter / CRC attributes only when `with_attrs`.
+    fn calc_placement_dbc(ctr_start: u32, with_attrs: bool) -> String {
+        let attrs = if with_attrs {
+            "BA_DEF_ SG_ \"CannetCounter\" STRING ;\n\
+             BA_DEF_ SG_ \"CannetCrc\" STRING ;\n\
+             BA_DEF_DEF_ \"CannetCounter\" \"\";\n\
+             BA_DEF_DEF_ \"CannetCrc\" \"\";\n\
+             BA_ \"CannetCounter\" SG_ 291 AliveCtr \"increment=1;rollover=15\";\n\
+             BA_ \"CannetCrc\" SG_ 291 Crc8 \"alg=CRC-8/SAE-J1850;range=0:56\";\n"
+        } else {
+            ""
+        };
+        format!(
+            "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
+             BO_ 291 Status: 8 ECU\n\
+             \x20SG_ Mode : 0|8@1+ (1,0) [0|255] \"\" ECU\n\
+             \x20SG_ AliveCtr : {ctr_start}|4@1+ (1,0) [0|15] \"\" ECU\n\
+             \x20SG_ Crc8 : 56|8@1+ (1,0) [0|255] \"\" ECU\n\n{attrs}"
+        )
+    }
+
+    /// A payload whose counter nibble sits at bit 48 — byte 6's low
+    /// nibble, which is where `calc_placement_dbc(48, ..)` puts
+    /// `AliveCtr` and `calc_placement_dbc(40, ..)` does not.
+    fn counter_at_bit_48(n: u8) -> Vec<u8> {
+        vec![0, 0, 0, 0, 0, 0, n & 0x0F, 0]
+    }
+
+    /// A counter-only override on 291, as the RBS layer hands it over.
+    fn counter_override() -> CalculatedFieldsConfig {
+        CalculatedFieldsConfig {
+            counter: Some(cannet_dbc::CounterConfig {
+                signal: "AliveCtr".into(),
+                increment: 1,
+                rollover: Some(15),
+            }),
+            crc: None,
+        }
+    }
+
+    /// Feed three frames counting 0, 1, 2 at bit 48 and report what
+    /// the verifier made of them.
+    fn violations_of_a_bit_48_count(state: &VerificationState) -> Vec<(u64, &'static str)> {
+        for (i, n) in [0u8, 1, 2].into_iter().enumerate() {
+            observe_quiet(state, &rx_frame(Some("p"), counter_at_bit_48(n)), i as u64);
+        }
+        state.violations_in(0, 100)
+    }
+
+    #[test]
+    fn an_rbs_override_resolves_against_the_database_that_defines_the_message() {
+        // `a.dbc` defines 291 and declares no calculated fields;
+        // `b.dbc`, behind it on the same bus, defines 291 too and does
+        // declare them, at a different bit position. The override's
+        // `AliveCtr` is a.dbc's — that is the definition these frames
+        // decode from.
+        let dbs = vec![
+            crate::tests::loaded_scoped("a.dbc", &calc_placement_dbc(48, false), &["p"]),
+            crate::tests::loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
+        ];
+        let state = VerificationState::default();
+        state.rebuild_configs(&dbs, &[("p".to_string(), 291, false, counter_override())]);
+        assert!(
+            violations_of_a_bit_48_count(&state).is_empty(),
+            "the counter is read where a.dbc puts it",
+        );
+
+        // Reversed, the same frames must flag — which is what makes
+        // the clean run above evidence of anything.
+        let dbs = vec![
+            crate::tests::loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
+            crate::tests::loaded_scoped("a.dbc", &calc_placement_dbc(48, false), &["p"]),
+        ];
+        let state = VerificationState::default();
+        state.rebuild_configs(&dbs, &[("p".to_string(), 291, false, counter_override())]);
+        assert_eq!(
+            violations_of_a_bit_48_count(&state),
+            vec![(1, "counter"), (2, "counter")],
+            "b.dbc reads the counter four bits away, and sees it stuck",
+        );
+    }
+
+    #[test]
+    fn a_dbc_calculated_field_default_comes_from_the_defining_database() {
+        // The whole `rebuild_verification` path: an RBS element
+        // overrides 291's counter, and the DBC default it layers over
+        // is the *winner's* — a.dbc's, which is empty. b.dbc's CRC
+        // designation is not borrowed into it.
+        let state = crate::tests::test_state();
+        *state.databases.lock().unwrap() = vec![
+            crate::tests::loaded_scoped("a.dbc", &calc_placement_dbc(48, false), &["p"]),
+            crate::tests::loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
+        ];
+        let file = crate::rbs::RbsFile::parse(
+            r#"{ "schema_version": 1, "buses": {
+                 "Powertrain": { "ecus": { "BMS": { "messages": { "0x123": {
+                   "counter": { "signal": "AliveCtr", "increment": 1, "rollover": 15 }
+                 } } } } }
+             } }"#,
+        )
+        .expect("test RBS file parses");
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            rbs.project_buses = vec![("p".into(), "Powertrain".into())];
+            rbs.elements.insert(
+                "el1".into(),
+                crate::rbs::RbsElementState {
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
+                    file,
+                    dirty: false,
+                    run: true,
+                },
+            );
+        }
+        crate::app_state::rebuild_verification(&state);
+        assert!(
+            violations_of_a_bit_48_count(&state.verifier).is_empty(),
+            "a.dbc's counter placement, and no CRC it never designated",
+        );
+    }
 }
