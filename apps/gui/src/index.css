@@ -4603,6 +4603,25 @@ button.color-chip {
   text-align: center;
 }
 
+/* View-signals launcher badge (task 89 phase 3): same recipe as the
+   system-messages badge above — quiet at zero, a small pill otherwise. */
+.view-signals-button {
+  position: relative;
+}
+.view-signals-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  background: var(--danger-badge);
+  color: var(--text-on-solid);
+  border-radius: 999px;
+  font-size: 0.7rem;
+  line-height: 1.2;
+  vertical-align: middle;
+  min-width: 1.1rem;
+  text-align: center;
+}
+
 /* Phase 12: Database panel — tree-with-fuzzy-search over loaded DBCs. */
 .dbc-panel {
   display: flex;
