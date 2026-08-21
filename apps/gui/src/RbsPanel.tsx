@@ -33,6 +33,8 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 
 import type { CalcFieldsSpec, RbsMessageView, RbsSignalView, RbsView } from "./types";
 import { useProjectContext } from "./projectContext";
+import { elementLabel } from "./elementLabel";
+import { showRbsSignalsPanel } from "./dockLayout";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { ChangedOnDiskNotice } from "./ChangedOnDiskNotice";
 import { Combobox } from "./Combobox";
@@ -89,6 +91,7 @@ interface MenuState {
 }
 
 export function RbsPanel(props: IDockviewPanelProps) {
+  const { containerApi } = props;
   const project = useProjectContext();
   const { elementId, registry, element, persist } = useElementPanel(props, "rbs");
   // Persist just the elementId in panel params — no view-local
@@ -374,6 +377,15 @@ export function RbsPanel(props: IDockviewPanelProps) {
         </span>
         <button type="button" onClick={() => void handleOpenFile()}>
           Open…
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            showRbsSignalsPanel(containerApi, elementId, element ? elementLabel(element) : "")
+          }
+          title="Every field this config transmits, with where each value came from"
+        >
+          Signals
         </button>
       </div>
 
