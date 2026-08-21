@@ -25,7 +25,10 @@ export const DBC_IDENTIFIER_LIMIT = 32;
 
 /** Characters the tail keeps, before the word-boundary search below. */
 const TAIL_CHARS = 10;
-/** The furthest back that search will move the split. */
+/** Shortest tail that search will settle for. */
+const TAIL_MIN_CHARS = 6;
+/** Longest — a tail never shrinks, so it must stay small enough that
+ * the narrowest column can still show it. */
 const TAIL_MAX_CHARS = 16;
 
 /** Whether `name[i]` starts a word — an underscore, a digit, or a
@@ -43,17 +46,24 @@ function startsWord(name: string, i: number): boolean {
  * tail it always keeps. A name of `DBC_IDENTIFIER_LIMIT` characters or
  * fewer gets an empty tail, meaning "render it as one string".
  *
- * The split lands on a word boundary where there is one within a few
- * characters of `TAIL_CHARS`, so the tail reads as `…Temperature`
- * rather than `…emperature`; failing that it falls back to a plain
- * character count, which is still a tail.
+ * The split lands on the word boundary nearest `TAIL_CHARS`, searched
+ * outward in both directions so a boundary just past the preferred cut
+ * is taken rather than one far short of it — that is the difference
+ * between `…Broadcast` and `…yBroadcast`. A tie goes to the longer
+ * tail, and the search is bounded either side so no tail is too short
+ * to distinguish or too long to fit. With no boundary in range it falls
+ * back to a plain character count, which is still a tail.
  */
 export function splitName(name: string): { head: string; tail: string } {
   if (name.length <= DBC_IDENTIFIER_LIMIT) return { head: name, tail: "" };
   const preferred = name.length - TAIL_CHARS;
-  const floor = Math.max(1, name.length - TAIL_MAX_CHARS);
-  for (let i = preferred; i >= floor; i--) {
-    if (startsWord(name, i)) return { head: name.slice(0, i), tail: name.slice(i) };
+  const longest = Math.max(1, name.length - TAIL_MAX_CHARS);
+  const shortest = name.length - TAIL_MIN_CHARS;
+  for (let d = 0; d <= TAIL_MAX_CHARS; d++) {
+    for (const i of d === 0 ? [preferred] : [preferred - d, preferred + d]) {
+      if (i < longest || i > shortest) continue;
+      if (startsWord(name, i)) return { head: name.slice(0, i), tail: name.slice(i) };
+    }
   }
   return { head: name.slice(0, preferred), tail: name.slice(preferred) };
 }

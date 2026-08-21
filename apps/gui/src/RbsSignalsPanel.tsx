@@ -57,6 +57,7 @@ import { arrayRowSpace, type GridviewAdapter, type GridviewRow as GridviewRowMod
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { formatCanIdHex } from "./format";
+import { NameText } from "./NameText";
 
 interface RbsSignalsPanelParams {
   [key: string]: unknown;
@@ -428,11 +429,16 @@ function RbsSignalRowLine({
           case "msg":
             return (
               <span className={className}>
-                0x{formatCanIdHex(row.messageId, row.extended)} {row.messageName ?? ""}
+                0x{formatCanIdHex(row.messageId, row.extended)}{" "}
+                <NameText name={row.messageName ?? ""} />
               </span>
             );
           case "signal":
-            return <span className={className}>{row.signalName}</span>;
+            return (
+              <span className={className}>
+                <NameText name={row.signalName} />
+              </span>
+            );
           case "value":
             return (
               <span className={className} onClick={(e) => e.stopPropagation()}>

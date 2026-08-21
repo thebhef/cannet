@@ -102,6 +102,7 @@ import { useFirstSampleWait } from "./useFirstSampleWait";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { theme, useThemeName } from "./theme";
 import { laneLabelInk } from "./laneLabelInk";
+import { NameText } from "./NameText";
 
 const ZOOM_STEP = 1.15;
 /** Line width (CSS px) for a *selected* series, against 1 for the rest.
@@ -3856,7 +3857,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                     className="plot-signal-name"
                     title={`${s.messageName}.${s.signalName} — drag to another plot area`}
                   >
-                    {s.signalName}
+                    <NameText
+                      name={s.signalName}
+                      title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                    />
                   </span>
                 ) : (
                   <>
@@ -3865,7 +3869,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                         className="plot-signal-name"
                         title={`${s.messageName}.${s.signalName} — drag to another plot area`}
                       >
-                        {s.signalName}
+                        <NameText
+                          name={s.signalName}
+                          title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                        />
                       </span>
                       <span className="plot-signal-message" title={messageLabelFor(s)}>
                         {s.busId ? (
@@ -3875,10 +3882,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                               size="dot"
                               swatchClassName="plot-bus-swatch"
                             />
-                            {messageLabelFor(s)}
+                            <NameText name={messageLabelFor(s)} />
                           </>
                         ) : (
-                          messageLabelFor(s)
+                          <NameText name={messageLabelFor(s)} />
                         )}
                       </span>
                     </div>

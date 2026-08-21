@@ -37,6 +37,13 @@ function emitRbsChanged(payload = "*"): void {
 }
 
 import { RbsSignalsPanel } from "./RbsSignalsPanel";
+import {
+  LONG_MESSAGE_NAME,
+  LONG_MESSAGE_TAIL,
+  LONG_SIGNAL_NAME,
+  LONG_SIGNAL_TAIL,
+  expectMiddleEllipsis,
+} from "./longNameTestKit";
 
 function row(over: Partial<RbsSignalRow> = {}): RbsSignalRow {
   return {
@@ -185,5 +192,21 @@ describe("RbsSignalsPanel", () => {
     fireEvent.click(screen.getByText(/need attention/));
     expect(screen.queryByText("EngineSpeed")).toBeNull();
     expect(screen.getByText("PackVoltage")).toBeInTheDocument();
+  });
+});
+
+describe("RbsSignalsPanel with long names", () => {
+  it("splits the signal and message names, and leaves a short one alone", async () => {
+    ROWS = [
+      row({ id: "a", signalName: LONG_SIGNAL_NAME, messageName: LONG_MESSAGE_NAME }),
+      row({ id: "b", signalName: "PackVoltage", messageName: "BmsState" }),
+    ];
+    const { container } = renderPanel();
+    await screen.findByText("PackVoltage");
+    const rows = container.querySelectorAll(".trace-row");
+    expectMiddleEllipsis(rows[0].querySelector(".col-rs-signal"), LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    expectMiddleEllipsis(rows[0].querySelector(".col-rs-msg"), LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL);
+    // The control: a short row keeps its plain text node.
+    expect(rows[1].querySelector(".name-text")).toBeNull();
   });
 });

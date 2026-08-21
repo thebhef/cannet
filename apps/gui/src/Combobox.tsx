@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Fzf } from "fzf";
+import { NameText } from "./NameText";
 
 export interface ComboboxOption {
   /// Submitted value — what `onChange` receives (a `<select>` option's
@@ -229,7 +230,9 @@ export function Combobox({
         }}
         onKeyDown={onTriggerKeyDown}
       >
-        <span className="combobox-trigger-label">{closedLabel}</span>
+        <span className="combobox-trigger-label">
+          <NameText name={closedLabel} />
+        </span>
       </button>
       {open &&
         pos &&
@@ -301,7 +304,7 @@ export function Combobox({
                       if (!row.opt.disabled) commit(row.opt.value);
                     }}
                   >
-                    {row.opt.label}
+                    <NameText name={row.opt.label} />
                   </li>
                 ),
               )}
