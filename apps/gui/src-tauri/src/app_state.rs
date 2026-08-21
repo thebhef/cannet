@@ -30,6 +30,7 @@ use crate::signal_cache::SignalCacheStore;
 use crate::sys_warn;
 use crate::system_log::SystemLog;
 use crate::trace_store::{RawTraceFrame, TraceStore};
+use crate::view_signals::ViewSignalRegistry;
 use crate::{
     filter, ipc, local_buses, rbs, signal_snapshot, transmit_frames, transmit_scheduler,
     verification,
@@ -176,6 +177,12 @@ pub(crate) struct AppState {
     /// with it — the disk watch on `.cannet_prj`
     /// ([`crate::project_watch`], ADR 0053 §1).
     pub(crate) watched_project: Mutex<crate::watched_file::WatchedFile>,
+    /// Which signals the open views reference, pushed here by the
+    /// frontend as view configs are edited
+    /// ([`crate::view_signals`]). The host owns the model the
+    /// view-signal panel and its launcher badge read; the frontend owns
+    /// the view configs it is derived from.
+    pub(crate) view_signals: Mutex<ViewSignalRegistry>,
 }
 
 /// Guarded-field accessors. Each wraps the one lock its field needs with
@@ -236,6 +243,14 @@ impl AppState {
         self.active_project_id
             .lock()
             .expect("active_project_id mutex poisoned")
+    }
+
+    /// The view-signal reference registry. Taken *before*
+    /// [`Self::databases`] wherever both are needed.
+    pub(crate) fn view_signals(&self) -> MutexGuard<'_, ViewSignalRegistry> {
+        self.view_signals
+            .lock()
+            .expect("view_signals mutex poisoned")
     }
 
     pub(crate) fn import_cancel(&self) -> MutexGuard<'_, Option<Arc<AtomicBool>>> {
