@@ -262,6 +262,185 @@ noted.
 - One shared colour chip replaces the three swatch implementations and
   the `type="color"` sites that copied them.
 
+## Phase 7 — an RBS element stops when a database it references reloads (owner ruling 2026-08-20)
+
+**This reopens the task after its exit-criteria walk**, deliberately and
+by owner instruction. Phase 4 stopped RBS elements and periodic
+transmit rows when a database is *unassigned* or *removed*, and
+explicitly ruled a **reload in place** out of scope, on the grounds
+that [ADR 0053](../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+§1 says an externally-owned input swaps in place and that extending the
+rule there would overturn §1 rather than complement it. Phase 4 also
+recorded the resulting gap as a blocker: *"Nothing stops on a DBC
+reloaded in place that drops the message."*
+
+**The owner's ruling: stop the RBS.** "Let's just stop RBS if a
+referenced DBC reloads." A reload can change or remove the very
+definitions an element is transmitting from, and continuing to put
+frames on a real bus from definitions that just changed underneath is
+the uncommanded send §1 exists to prevent — the difference from an
+unassign is only that the user did not type the gesture, which makes it
+*more* surprising, not less.
+
+Scope, read literally from the ruling:
+
+- **RBS elements stop** when a database they reference is reloaded in
+  place (the watcher's path, and any other reload).
+- **Periodic transmit rows stop on the same terms** (owner ruling
+  2026-08-20, extending the first: "apply same logic to transmit panel
+  as to RBS"). So reload joins unassign and remove as a reason a
+  periodic stops, and the two panels behave identically — which is the
+  outcome worth having, since a user has no reason to expect a
+  hand-built periodic and an RBS element to react differently to the
+  same event.
+- Phase 4's measurement of "built from a database that left" carries
+  over unchanged: a `TransmitFrame` has no DBC-path field, so provenance
+  is measured by asking `first_dbc_on_bus` before and after the change
+  over the periodics that are firing. Reuse it; do not invent a second
+  way to decide what a database was driving.
+- Reuse phase 4's machinery: `stop_periodic_transmit_inner` is the
+  user's own stop path and already has two callers; this becomes a
+  third. Do not write a second stop.
+- One system-log entry, as phase 4 established. No modal, no per-element
+  notice. The reload itself proceeds — it is an externally-owned input
+  and §1 still governs the swap.
+- ADR 0053 needs amending in the same commit: §1's "swaps in place"
+  now carries the exception that a running RBS element stops first.
+
+### Exit criterion added
+
+- Reloading a database stops the RBS elements **and the periodic
+  transmit rows** it was driving, with one system-log entry; the reload
+  itself still applies. Tested for both.
+
+## Phase 8 — the encoding fingerprint identifies the definition that decoded the value (owner ruling 2026-08-20)
+
+**The principle, in the owner's words:** *"A CAN signal in a view is
+related to exactly one signal definition, one message, one ecu, one
+dbc, one bus"* — and, broadening it, *"really **any** CAN signal value
+has those relationships."* It is not a property of being referenced by
+a view; it is what a decoded CAN value *is*.
+
+`signal_fingerprint::dbc_encoding` does not honour that. Two spurious
+inputs, both of which make **states that decode identically hash
+differently** — the one thing a decode fingerprint must not do:
+
+1. **The candidate's whole bus-assignment list** is hashed
+   (`h.mix_len(dbc.buses.len())` and the loop over `dbc.buses`), even
+   though the `filter::dbc_applies` guard above it has already
+   restricted the walk to candidates eligible for this series' single
+   bus. A database's *other* assignments cannot change how it decodes a
+   frame on this one. Unassigning a second bus therefore parks and
+   rebuilds a series whose samples provably cannot move.
+2. **Every eligible candidate is hashed, not just the winner.** With no
+   pick, the loop mixes each eligible database that defines the signal.
+   Decode is first-wins per signal (pinned by
+   `first_dbc_wins_per_signal_not_per_message`), so only the first one
+   ever produces a sample. Loading a second database that defines the
+   name but never wins changes the fingerprint and parks a cache whose
+   values are unchanged.
+
+**The fix: hash the definition that decoded the value, and nothing
+else** — the identity already mixed (bus, message id, extended, signal
+name) plus the winning candidate's decode specs. Drop the bus list;
+drop the losing candidates.
+
+**Why this stays coherent with what already shipped.** Task 88 phase 3
+pinned the guarantee that a view is restored *by the signal* and its
+samples *by the fingerprint*, tested by removing the originating file
+entirely and assigning a different one. Under this change, a different
+database with identical specs produces an identical fingerprint and the
+parked cache revives — which is correct, because identical specs mean
+identical values. This makes that rule consistent rather than
+contradicting it.
+
+**Cost, and the ruling that pays it.** Changing the fingerprint
+invalidates every persisted pyramid once, so every existing project
+pays a single rebuild. Owner ruling: *"One time rebuilds are a cost
+we'll pay. It's important that the caches be dynamic and work well but
+they are caches at the end of the day and sometimes you have to."* One
+rebuild now; the spurious rebuilds stop for good.
+
+**This phase is now a consequence of a stated decision, not an ad-hoc
+fix.** [ADR 0054](../../docs/adr/0054-a-decoded-value-has-one-definition.md)
+(written 2026-08-20, after the owner asked why this concept was not in
+an ADR — it was not) states that a decoded value has exactly one
+definition and that anything derived from it depends on that definition
+and nothing else. Part 3 and its consequences are what this phase
+implements; the fingerprint was *wrong*, not merely wasteful.
+
+Amend [ADR 0047](../../docs/adr/0047-persisted-signal-pyramids.md) in
+the same commit to cite ADR 0054 for the contract its fingerprint must
+meet.
+
+**And `docs/CONTEXT.md` in the same commit.** Its **Encoding
+fingerprint** entry currently defines the hash as covering decode
+inputs *"across the databases that may decode it, plus their bus
+scoping"* — which is an accurate description of today's code and
+becomes false the moment this phase lands, since both of those are the
+spurious inputs being removed. Rewrite it to say the fingerprint
+identifies the **winning** definition's decode specification. Found
+2026-08-20 while defining *trace import census* two entries away; a
+behavioural change without its doc update is incomplete.
+
+### Exit criteria added
+
+- Unassigning a database from a bus other than the series' own does not
+  park or rebuild that series; tested.
+- Loading a further database that defines the signal but does not win
+  does not park or rebuild it; tested.
+- A different database with identical decode specs still revives the
+  parked cache — phase 3's by-signal-and-fingerprint guarantee still
+  holds; its test still passes.
+- Editing the winning definition's specs still parks and rebuilds.
+
+## Exit-criteria walk (overseer, 2026-08-20)
+
+All six phases landed. Each criterion below is judged against a named
+test or a named artefact, not against a phase report. Suites verified
+independently by the overseer on the phase branches: Rust **759**
+passed / 0 failed / 6 ignored; frontend **2279** passed / 171 files.
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| 1 | A database assigned to no bus decodes nothing, on every consumer | **Met** | `filter::dbc_applies` inverted to `bus_id.is_some_and(\|b\| buses.contains(b))`; `a_database_assigned_to_no_bus_decodes_nothing` (`filter.rs`) plus a whole-decode-path regression through `collect_trace_records`. Consumers swept in phase 2: decode, mux extractor, signal-cache scan, value tables, fingerprint, transmit calc, verification, RBS, descriptor universe. |
+| 2 | No frame the store accepts lacks a bus; unmapped import channel dropped silently | **Met, scoped** | `a_frame_with_no_bus_never_reaches_the_store` (`trace_store/mod.rs`), `route_channel_translates_via_mapping` (`tests.rs`). Scope is the append path by design — reopen maps spill segments directly and bypasses `append`. The underlying defect is [task 90](0090-cycle-86-87-follow-ups.md) item 4. |
+| 3 | Assigning revives fingerprint-matching parked caches; unassigning parks them; both directions | **Met** | `unassigning_a_database_parks_its_caches_and_assigning_it_back_revives_them` (`signal_cache.rs`). No second parking mechanism was built: `set_dbc_buses` reaches the existing pool, and phase 3 named the rule in rustdoc and made it testable. |
+| 4 | A pyramid built in the current session parks like any other | **Met** | `a_pyramid_built_this_session_parks_like_any_other` (`signal_cache.rs`). `ensure_caches` now stamps the encoding against the set about to decode it, rather than the stamp appearing only at `persist`; ADR 0047 amended. |
+| 5 | View config survives an unassign; restored by signal, samples by fingerprint | **Met** | `a_view_is_restored_by_the_signal_and_its_samples_by_the_fingerprint` (`tests.rs`), read line by line by the overseer. It unassigns *and removes* the originating file (asserting the project is empty), then assigns a **different** file where `A` matches and `B` is rescaled: both signals resolve again, `A` revives, `B` stays parked, and `A` serves 200 points over a **cold store whose frames cannot be decoded** — which is what proves the samples came from the pool. This is the by-signal-and-fingerprint guarantee, not the weaker by-file one. |
+| 6 | Unassigning stops the RBS elements and periodic rows it drove, one log entry, unassign proceeds | **Met** | `unassigning_a_database_stops_the_periodics_it_was_driving`, `assigning_a_database_stops_nothing`, `a_row_that_was_not_firing_is_not_reported_as_stopped`, `removing_a_database_stops_the_periodics_it_was_driving`. "Stopped" reuses the user's own stop path — `stop_periodic_transmit_inner` has exactly two callers, the Stop button and this rule — so the resulting state is the one the UI already reads. One `sys_warn!` carrying a count, however many stopped. |
+| 7 | A pre-rule project decodes nothing and says why on the Database panel rows | **Met** | Phase 5. Rows group by bus; an unassigned database appears under `(Unassigned — decodes nothing)` with a note distinguishing *not assigned to a bus* from *assigned only to a bus no longer in the project*. The false "applies to all buses" label — deferred by three phases — is gone. |
+| 8 | Two databases on one bus defining the same id warn, naming the winner; warning only | **Met** | Detected host-side in `signal_snapshot::dbc_collisions`, exposed via `list_dbc_collisions`; the frontend renders records and never re-scans DBC content in JS. `dbc_collisions_names_the_project_order_winner`, `..._ignores_a_matching_id_on_a_different_bus`, `..._ignores_a_database_assigned_to_no_bus`, and `set_dbc_buses_wires_up_a_bus_collision_the_real_load_and_assign_path_produces`. No picker, no selection, no project-file entry shipped — those belong to [task 89](0089-signal-mapping-panel.md). |
+| 9 | The perf bench measures the example project's real assignments, re-baseline recorded | **Met — and the re-baseline was not spent** | `8ec43685` gives the signal bench the project's real assignments. The authorised one-time re-baseline proved unnecessary: the signal bench's figures are not in `baseline.json`, and measured either side of the input change (same signal, 18182 matches, `build_ms` 32.6/32.7/35.2 → 34.0/35.9/37.4) they sit in noise. Recorded here because "no baseline moved" is the fact worth keeping. |
+| 10 | One shared colour chip replaces the three swatch implementations and the copies | **Met, and it recovered a lost fix** | `ColorChip.tsx`; six `<input type="color">` elements across five components all route through it (the brief said seven — one was a doc comment). The three swatch class families survive only as query/styling hooks passed in, carrying no CSS of their own. The macOS zero-size-anchor fix existed only in `.trace-event-swatch-input`; the plot copy sat at `width: 0; height: 0`, the exact failing shape. `.color-chip-input` now applies `inset: 0` everywhere. A fourth unlisted consumer (`PlotMeasurements.tsx`) was found and migrated rather than left dangling. |
+
+**Verdict: all ten criteria met. Task 88 is code-complete.**
+
+### One reservation, and it is not an exit criterion
+
+**The task is code-complete but not gate-clean, pending an owner ruling.**
+Phase 6's first ADR-0031 gate **failed** on `tree_mb_peak` — 8233.7 MB
+against a 1492.1 limit, a 5.5× blowout — and passed on a second gate
+over later runs. The investigation was honest and reasonably thorough
+(that run's `host_mb` / `webview_mb` were ordinary; two fresh captures
+on the same unmodified binary read ~711 and ~720 MB; phases 3–5's
+first-runs were all ordinary, which falsifies a "first run after build"
+explanation; and no mechanism connects a presentational component to
+tree memory). But the *shape* of the outcome is the one the gate rules
+exist to prevent: a gate failed, nobody could explain it, and it passed
+on a re-run that excluded the failing run.
+
+This is a different animal from the `rx_gap_short_frac_worst` and
+`lag_ms_max` jitter already under review — those are worst-of-N
+statistics wobbling inside a narrow band, while this is a single
+memory reading 5.5× over its limit that was either real and
+unexplained or a bad read. Both possibilities are worth knowing about.
+
+No baseline was promoted and no limit was touched at any point in this
+task. What is missing is a *stated policy* for an unreproducible
+outlier, so that the next agent does not have to improvise one.
+Recorded for the owner alongside the ADR 0031 estimator question.
+
 ## Status log
 
 ### 2026-08-19 — Phase 1: a frame's bus is required (branch `task-88-phase-1-frame-bus-required`)
@@ -1276,6 +1455,63 @@ control established, with `longtask_ms_per_s` (mean and p95) and
 `jank_fraction` exactly 0.000 in every run. Neither fired; nothing was
 attributed to this phase and no limit was touched.
 
+### 2026-08-21 — Phase 7: a reload stops what it was driving (branch `task-88-phase-7-stop-on-reload`)
+
+**Reconstructed by the overseer from the branch itself.** The phase
+agent's session ended after its third commit without writing this entry
+or reporting back, leaving a fourth slice complete but uncommitted in
+the working tree. Everything below is verified against the code and a
+full re-run of the suites, not taken from a phase report — there was
+none.
+
+Four commits, each green:
+
+- `82376e26` — **the bus-assignment scan names the database that
+  answered.** `first_dbc_on_bus` yielded only a boolean, so a change
+  needing provenance had nowhere to read it. Two projections over one
+  body; the running-periodic snapshot now carries the backing
+  database's path alongside the row id. No behaviour change.
+- `1aace7de` — **the stop itself.** Every reload path stops what the
+  old content was driving before the swap is announced: the watcher's
+  auto-reload, a reload requested through `add_dbc`, and a capture
+  re-imported under an identity already loaded. ADR 0053 section 1
+  amended in the same commit, as the phase brief required, and README
+  updated.
+- `e348d6fd` — **the project's Run flag follows the host.** An
+  element's Run is the project's flag mirrored onto the host, so the
+  host clearing it left the two halves disagreeing — the panel reading
+  "on" while nothing was sent, and the project saving in that state.
+  The host now names the stopped elements on `rbs-run-stopped` and App
+  writes `run: false` onto each, through the same registry write the
+  panel's own control makes.
+- `f55b277a` — **Reload all from disk swaps in place.** Found and
+  fixed by the agent, committed by the overseer. The stop hangs off
+  `add_dbc` recognising a path it already holds, and this button did
+  not take that route: it called `clear_dbcs` and reloaded the set, so
+  every re-read reached the host as a first load and the stop never
+  ran. Each path now goes through `add_dbc`, which also preserves its
+  bus assignment and priority position; the set change is suppressed
+  until the last path lands, so the views re-anchor once.
+
+**The brief's "do not write a second stop" was honoured.**
+`stop_periodic_transmit_inner` has exactly three callers — the user's
+own Stop command, phase 4's unassign path, and this phase's reload
+path. Checked by grep across the crate, not by report.
+
+**Verification (overseer, on the branch head).** `cargo test
+--workspace` green, `cannet-gui` 806 passed / 6 ignored; `cargo clippy
+-p cannet-gui --all-targets` clean; `tsc --noEmit` clean; the frontend
+suite 2421 passed across 185 files, up from 2418 across 183 — the two
+files this phase added (`App.rbsRunStopped.dom.test.tsx`,
+`App.reloadDbc.dom.test.tsx`) and their three cases.
+
+**No perf gate was run for this phase.** The change is on the
+DBC-change path rather than a render or ingest hot spot, and task 88
+does not complete until phase 8, whose fingerprint change is the one
+that genuinely warrants a gate. Recorded so the gate is owed at phase
+8's end and not assumed spent here.
+
+
 ## Blockers / side effects
 
 Recorded by phase 1, 2026-08-19.
@@ -1407,7 +1643,33 @@ Recorded by phase 2, 2026-08-19.
 
 Recorded by phase 3, 2026-08-20.
 
-- **The fingerprint still mixes each candidate's whole assignment set,
+- **REOPENED 2026-08-20 as a defect, not a cost.** The owner challenged
+  the framing: *"Why would a signal in a specific view have a signature
+  including an irrelevant bus? A CAN signal in a view is related to
+  exactly one signal definition, one message, one ecu, one dbc, one
+  bus."* Reading `signal_fingerprint::dbc_encoding` confirms it —
+  `h.mix_len(dbc.buses.len())` and the loop hashing every bus name
+  (lines ~389-393) run *after* line 373 has already filtered to
+  candidates `dbc_applies` accepts for this signal's bus. Every
+  surviving candidate is eligible for the one bus that matters, so its
+  other assignments cannot change how this series decodes.
+
+  The real fault is not the wasted work: **two states that decode
+  identically hash differently**, which is the one thing a decode
+  fingerprint must not do. Unassigning a second bus parks and rebuilds
+  a series whose samples provably cannot move.
+
+  The fix is to drop the bus-list mix and keep the specs. That is
+  itself a fingerprint change, so every existing project pays one
+  rebuild — which the owner has ruled payable: *"One time rebuilds are
+  a cost we'll pay. It's important that the caches be dynamic and work
+  well but they are caches at the end of the day and sometimes you have
+  to."* One rebuild now, and the spurious rebuilds stop for good.
+
+  Scheduled as **phase 8**. (For the record, `pt` / `ch` below are bus
+  ids from the test fixtures rather than product concepts.) Original
+  note:
+  **the fingerprint still mixes each candidate's whole assignment set,
   so narrowing an assignment invalidates buses it did not touch.**
   `signal_fingerprint::dbc_encoding` hashes `dbc.buses` for every
   candidate as well as its decode specs, so a database assigned to
@@ -1520,3 +1782,22 @@ Recorded by phase 6, 2026-08-20.
   CSS came out; not a scope change, since the brief's own exit
   criterion is "the `type="color"` sites that copied them," and this
   site copied the same look even though it was never itself a picker.
+
+Recorded by the overseer for phase 7, 2026-08-21.
+
+- **Reload all from disk changed shape, not just gained a stop.** It
+  used to clear the whole set and reload it, which rebuilt priority
+  order from the path list; it now swaps each database in place. Bus
+  assignment and priority position survive a reload where before they
+  were re-derived. That is the correct reading of ADR 0053 section 1
+  and it is what makes the stop reachable at all, but it is a
+  user-visible change to a button whose brief only asked for a stop —
+  named here so it is a decision on the record rather than a
+  side effect nobody wrote down.
+- **The phase agent's session ended without a report.** Three commits
+  were on the branch and a fourth slice sat complete but uncommitted in
+  the working tree. The suites, clippy and the typechecker were re-run
+  from scratch by the overseer before that slice was committed, and the
+  status-log entry above says which claims were checked against code
+  rather than against a report. No work was lost; the gap was the
+  record, not the branch.
