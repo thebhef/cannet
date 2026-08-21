@@ -95,11 +95,11 @@ pub(super) fn row_id(element: &str, bus_key: &str, msg_key: &str) -> String {
 
 /// Why one override couldn't be applied — the same three cases
 /// `reconstruct_payload` has always distinguished, named so a caller
-/// can classify without re-parsing the message text (task 89 phase 6:
-/// the signals panel's Not Encoded / Unknown Value split is drawn on
-/// this distinction — a signal the DBC doesn't define is not encoded
-/// at all, one whose *value* isn't recognised still transmits, just
-/// carrying the default).
+/// can classify without re-parsing the message text: the RBS signals
+/// panel's Not Encoded / Unknown Value split is drawn on this
+/// distinction — a signal the DBC doesn't define is not encoded at
+/// all, one whose *value* isn't recognised still transmits, just
+/// carrying the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OverrideProblem {
     /// The override names a signal the message descriptor has none of.
@@ -708,8 +708,8 @@ BO_ 1280 AuxFrame: 8 AUX
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].problem, OverrideProblem::UnknownEnumLabel);
 
-        // Malformed hex is its own, distinct problem — the taxonomy
-        // (task 89 phase 6) reads it the same as a bad enum label
+        // Malformed hex is its own, distinct problem — the RBS signals
+        // panel's taxonomy reads it the same as a bad enum label
         // (Unknown Value: the signal is real, the text isn't), but the
         // two are still classified separately rather than collapsed.
         let mut msg = RbsMessage::new();

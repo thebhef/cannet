@@ -210,10 +210,13 @@ fn consider(app: &AppHandle, element_id: &str, path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    //! What is testable without an `AppHandle` (Tauri's mock runtime
-    //! does not load on this platform — see task 27's status log): the
-    //! rule that decides apply-vs-notify, and the shared-file
-    //! bookkeeping the watch set depends on.
+    //! What is testable without an `AppHandle`: the rule that decides
+    //! apply-vs-notify, and the shared-file bookkeeping the watch set
+    //! depends on. An `AppHandle`-driven test is out of reach here —
+    //! Tauri's mock runtime fails to load the `cannet-gui` test binary
+    //! on this platform (`STATUS_ENTRYPOINT_NOT_FOUND`, most likely a
+    //! `WebView2` loader export the `test` feature links differently),
+    //! not merely to construct one.
 
     use super::*;
     use crate::watched_file::WatchedFile;

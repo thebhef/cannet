@@ -154,12 +154,12 @@ pub(crate) async fn open_log(
     // sees a frame outside `[start_ns, end_ns]`.
     let source = cannet_core::WindowedSource::new(source, start_ns, end_ns);
 
-    // The launcher doubles as a Cancel button once the pump is running
-    // (ADR-free — task 75's trace-open feedback refinement): this flag
-    // is what `cancel_import` flips, mirroring `remote_sessions`'s
-    // per-session `stop` flag. Installed before the thread spawns so a
-    // cancel racing the spawn still lands on a flag the pump will see;
-    // cleared back to `None` when the pump ends, whichever way.
+    // The launcher doubles as a Cancel button once the pump is running:
+    // this flag is what `cancel_import` flips, mirroring
+    // `remote_sessions`'s per-session `stop` flag. Installed before the
+    // thread spawns so a cancel racing the spawn still lands on a flag
+    // the pump will see; cleared back to `None` when the pump ends,
+    // whichever way.
     let cancel = Arc::new(AtomicBool::new(false));
     *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
 

@@ -1,6 +1,5 @@
-//! The RBS signals panel's model (task 89 phase 6): every field one
-//! `.cannet_rbs` config transmits, and where its bits actually came
-//! from.
+//! The RBS signals panel's model: every field one `.cannet_rbs` config
+//! transmits, and where its bits actually came from.
 //!
 //! This is the RBS analogue of `crate::view_signals`, sharing its
 //! reason for existing — surfacing where a decoded/encoded value
