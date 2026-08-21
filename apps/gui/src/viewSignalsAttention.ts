@@ -29,7 +29,7 @@
 /// event-gated cost was not judged obviously real (task 89 phase 3's
 /// status log).
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import type { ViewSignalPage } from "./types";
@@ -51,7 +51,19 @@ export function useViewSignalsAttentionCount(): number {
     fallback: 0,
     event: "view-signals-changed",
   });
+  // `useHostMirror` already pays mount's fetch and its own post-listener
+  // race-closing refetch; folding the DBC generation straight into its
+  // dependency array would fire a *third* fetch on mount, since a fresh
+  // effect's first run always "changes" from nothing. `App`'s own
+  // `seenDbcGenerationRef` guards the identical case for the trace-model
+  // epoch — seed the ref with the generation already in hand so only a
+  // genuine change past mount triggers a refetch.
   const dbcGeneration = useDbcGeneration();
-  useEffect(() => refresh(), [dbcGeneration, refresh]);
+  const seenDbcGenerationRef = useRef(dbcGeneration);
+  useEffect(() => {
+    if (seenDbcGenerationRef.current === dbcGeneration) return;
+    seenDbcGenerationRef.current = dbcGeneration;
+    refresh();
+  }, [dbcGeneration, refresh]);
   return value;
 }
