@@ -1512,6 +1512,146 @@ that genuinely warrants a gate. Recorded so the gate is owed at phase
 8's end and not assumed spent here.
 
 
+### 2026-08-21 — Phase 8: the fingerprint identifies the definition that decoded the value (branch `task-88-phase-8-fingerprint-winner`)
+
+Branched from `plans-grooming-0091-0105` at `db010043`, where the tree
+sat. Four commits, each green on `cargo test -p cannet-gui`, `cargo
+clippy -p cannet-gui --all-targets` and `cargo fmt --all -- --check`;
+`cargo test --workspace` green before the last (47 test binaries, none
+failing). Rust tests **806 → 811** (6 ignored throughout). No frontend
+file is touched, so the frontend gates were not run.
+
+| commit | subject |
+| --- | --- |
+| `d739e419` | The encoding fingerprint identifies the definition that decoded the value |
+| `4ffce32d` | The docs that say what a fingerprint covers name a definition, not a chain |
+| `173d201a` | README says which DBC changes cost a rebuild and which cost nothing |
+| `8893fc34` | Pin the one decode a winner-only fingerprint cannot see |
+
+Commits are `--no-verify` with the hooks' work run by hand first, for
+the reason phases 2–7 recorded (`pre-commit` stashes and restores the
+unstaged working tree around a multi-minute hook run, which clobbers
+concurrent planning edits). Only this phase's paths were staged; the
+`Cargo.toml` line-ending noise and the two untracked `scratch-perf*`
+directories were left alone.
+
+**`d739e419` — the change, its tests and its docs.** `dbc_encoding` now
+mixes the identity (bus, message id, extended, signal name) and the
+**winning** definition's decode specs, and stops: the `dbc.buses` loop
+is gone and the walk `break`s at the first eligible database that
+defines the signal — which is the one the decode takes, or the one a
+pick names (`picked_index` is unchanged, and still resolves over the
+same eligible sequence). `TAG_CANDIDATE` becomes `TAG_WINNER`.
+
+Red first, all four cases observed failing against the old body:
+
+- `signal_fingerprint::a_databases_other_assignments_are_no_part_of_the_fingerprint`
+  — `d5dabd653c0ffe6b` against `fd36ed5d32823afd` for one database
+  assigned to `{pt}` versus `{pt, ch}`, a `pt` series.
+- `signal_fingerprint::only_the_winning_definition_is_in_the_fingerprint`
+  — `8d75015ccedcf80d` against `ea5313990b74d854` for a set that grew a
+  second definition behind the winner.
+- `signal_cache::unassigning_a_database_from_another_bus_leaves_this_series_decoding`
+  — live `0`, expected `2`: unchecking an unrelated bus parked both
+  pyramids.
+- `signal_cache::a_database_that_does_not_win_leaves_the_series_decoding`
+  — live `0`, expected `2`: loading a second database behind the
+  incumbent parked both pyramids.
+
+Three existing assertions were assertions *about the old rule* and were
+removed or turned around rather than worked around, each visible in the
+diff: `the_dbc_set_resolution_moves_the_fingerprint` loses "a second
+definition can win frames the first does not" and "the bus assignment of
+a contributing DBC" (the two spurious inputs, now covered inversely),
+and `an_unassigned_database_is_no_part_of_any_chain`'s final "assigned"
+case now assigns the newcomer **in front of** the incumbent, since
+assignment alone no longer moves a fingerprint unless it changes the
+definition. `a_pick_shortens_the_chain_to_the_database_it_names` gained
+an assertion that pinning the database the load order already chose
+costs nothing — true only under this change.
+
+One integration test changed its expectations, and the change is the
+phase's whole point:
+`tests::replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyramid`
+used to assert `(live 0, retained 2)` in the intermediate state where
+both the old file and its replacement are assigned, then a revival for
+`A` out of the pool. It now asserts `(live 2, retained 0)` in that state
+— the incumbent still decodes both signals, so neither pyramid moves —
+and `revivals 0` after the removal, because `A` never left the live set
+at all. Same end state, one fewer round trip through the pool.
+
+Docs in the same commit, as the phase brief requires: ADR 0047 gains the
+*2026-08-21 — the fingerprint identifies the winning definition*
+amendment (with the header status line, the DBC-backed bullet, the
+conservatism bullet under *Why*, and the now-adopted "nominate a winner"
+alternative rewritten), and `docs/CONTEXT.md`'s **Encoding fingerprint**
+entry no longer says "across the databases that may decode it, plus
+their bus scoping".
+
+**`4ffce32d` — the wording the change falsified.** Six places still
+described a DBC-backed row's fingerprint as its candidate chain: the
+manifest `encoding` field's rustdoc, `invalidate_dbcs`' first outcome,
+two test narratives, `set_dbc_buses_inner`'s revival sentence, and ADR
+0047's summary of the in-session judgement. The word stays where it
+still describes decode eligibility (`sample_shared` really does walk an
+ordered list) — only the fingerprint's own description moved.
+
+**`173d201a` — README.** The reversibility paragraph said what
+unassigning costs and what brings samples back; it now also says which
+changes cost nothing, which is the half a user notices.
+
+**`8893fc34` — the trade, pinned.** See the investigation below.
+
+#### What a winner-only fingerprint cannot see, investigated rather than asserted
+
+- *Observation.* ADR 0047 argued the chain was needed because
+  "resolution is per frame", while ADR 0054 and this phase's brief say
+  decode is first-wins per signal. Reading
+  `signal_sampler::sample_shared` shows a per-frame fall-through: a name
+  unresolved by one database is offered to the next, within the same
+  frame.
+- *Hypothesis.* A database behind the winner can still supply samples —
+  for frames the winner withholds — which a winner-only fingerprint has
+  no input from.
+- *Experiment.* Two databases assigned to one bus: `a.dbc` defines `S`
+  only in multiplexor arm 0, `b.dbc` defines it plainly. One frame with
+  selector 1 (so `a.dbc` withholds), sampled through `sample_shared`
+  against `b.dbc` and against an edited `b.dbc`, with `dbc_encoding`
+  taken over both sets.
+- *Data.* The value moves **7.0 → 18.0**; the fingerprint is
+  `476b04dbda88b07e` in both cases.
+- *Conclusion.* The exposure is real and narrow — it needs two assigned
+  databases defining one signal on one bus, the second reached only
+  through an arm the first does not answer, edited without the first. It
+  is the price ADR 0054 pays for a key that cannot park a cache whose
+  samples could not have moved, so it is not "fixed" here; it is named
+  in ADR 0047's amendment and pinned by
+  `a_value_the_winner_withholds_is_outside_the_fingerprint` so a future
+  change has to move it deliberately. Also recorded under Blockers.
+
+#### Exit criteria
+
+| Criterion | Evidence |
+| --- | --- |
+| Unassigning a database from a bus other than the series' own does not park or rebuild that series | `signal_cache::unassigning_a_database_from_another_bus_leaves_this_series_decoding` (live 2, retained 0, revivals 0 after the unassign) and `signal_fingerprint::a_databases_other_assignments_are_no_part_of_the_fingerprint` |
+| Loading a further database that defines the signal but does not win does not park or rebuild it | `signal_cache::a_database_that_does_not_win_leaves_the_series_decoding` (live 2, retained 0) and `signal_fingerprint::only_the_winning_definition_is_in_the_fingerprint` |
+| A different database with identical decode specs still revives the parked cache | `tests::a_view_is_restored_by_the_signal_and_its_samples_by_the_fingerprint` and `signal_cache::a_park_is_revived_by_the_fingerprint_not_by_the_file_it_came_from`, both unchanged by this phase and both passing |
+| Editing the winning definition's specs still parks and rebuilds | `signal_cache::a_dbc_change_parks_what_it_re_encoded_and_leaves_the_rest_live`, unchanged; plus the second half of `a_database_that_does_not_win_leaves_the_series_decoding`, where putting the newcomer in front parks exactly the one signal it re-encodes and leaves the other live |
+
+**The legacy `bus_id: None` series was not touched**, as directed. Such
+a series still has no eligible database (so no definition, and a
+fingerprint independent of the loaded set) while `scan_chunk`'s `None`
+arm still decodes every frame;
+`an_unscoped_series_decodes_each_frame_by_its_own_bus` and
+`bus_id_scoping_keeps_per_bus_series_independent` pass unchanged. The
+migration decision phase 2 flagged is still open and still not this
+phase's to take.
+
+**No perf gate was run for this phase**, per the brief: the overseer
+runs the ADR 0031 render-tier gate after it, and task 88's gate is owed
+at that point. No baseline was promoted and no limit was touched at any
+point here.
+
 ## Blockers / side effects
 
 Recorded by phase 1, 2026-08-19.
@@ -1801,3 +1941,41 @@ Recorded by the overseer for phase 7, 2026-08-21.
   status-log entry above says which claims were checked against code
   rather than against a report. No work was lost; the gap was the
   record, not the branch.
+
+Recorded by phase 8, 2026-08-21.
+
+- **A database behind the winner can still supply samples the
+  fingerprint cannot see.** Decode resolves per frame
+  (`signal_sampler::sample_shared`), so where the winning definition
+  withholds a value — a multiplexor arm that does not match, a payload
+  too short — the next assigned database answers for that frame, and
+  editing *that* database no longer invalidates the pyramid holding
+  those samples. Measured, not assumed: 7.0 → 18.0 with the fingerprint
+  fixed at `476b04dbda88b07e` (experiment in the status log above).
+  Deliberate, as the counterpart to the over-invalidation the chain
+  caused; named in ADR 0047's 2026-08-21 amendment and pinned by
+  `a_value_the_winner_withholds_is_outside_the_fingerprint`. Closing it
+  properly means making decode match the model — one definition per
+  signal, no fall-through — which changes decoded values and is a
+  ruling, not a phase edit.
+- **Every DBC-backed pyramid rebuilds once.** The hashed body changed
+  shape (the bus list came out, the section tag changed, the walk stops
+  at the winner), so no persisted fingerprint matches and every
+  DBC-backed row parks and rebuilds on the first run with this branch.
+  Authorised by the owner ruling quoted in the phase brief; recorded as
+  a fact users see once, not as a cost to be avoided.
+- **"Chain" survives in five test names.**
+  `a_pick_shortens_the_chain_to_the_database_it_names`,
+  `a_stale_pick_leaves_the_chain_where_the_load_order_puts_it`,
+  `only_the_databases_that_can_decode_the_series_bus_are_in_the_chain`,
+  `a_series_that_names_no_bus_has_the_empty_chain` and
+  `an_unassigned_database_is_no_part_of_any_chain` all still assert what
+  they asserted, and every stale *comment* inside them was corrected —
+  but the fingerprint they cover no longer has a chain. Deliberately not
+  renamed: earlier phases' status logs cite them by name, and renaming
+  would leave those citations dangling for no behavioural gain.
+- **Phase 2's legacy `bus_id: None` item is unchanged by this phase.** A
+  DBC-backed series naming no bus still decodes every frame through
+  `scan_chunk`'s `None` arm while having no definition to fingerprint.
+  Not touched, as the brief directed; the migration decision is still
+  open.
