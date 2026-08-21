@@ -1655,7 +1655,7 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         let dbcs = state.databases();
         state
             .signal_caches
-            .restore(&v, &crate::app_state::dbc_scopes(&dbcs), count)
+            .restore(&v, &state.decode_model(&dbcs), count)
     });
     let pyramids_ms = pyramids_at.elapsed().as_secs_f64() * 1000.0;
     // A rejection used to be invisible from here: the capture came back

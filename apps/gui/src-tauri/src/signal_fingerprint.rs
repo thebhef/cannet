@@ -26,6 +26,13 @@
 //! about it contributes nothing, which is what makes re-prioritising
 //! unrelated databases invalidate nothing.
 //!
+//! **Unless the user has picked one.** A [`SignalDbcPicks`] entry names
+//! the database that decodes one signal, overriding the load-order
+//! default; the chain is then that database alone, for the fingerprint
+//! exactly as for the decode. So a pick is a change of encoding: the
+//! samples the old database produced cannot be revived against it, and
+//! reverting the pick restores the fingerprint they were parked under.
+//!
 //! **File-backed series** (`FileSignalInfo`) fingerprint against their
 //! source instead ([`file_source`]): their samples were read out of a
 //! capture file and no DBC ever bore on them.
@@ -57,11 +64,16 @@
 //! compared bit-wise, so the fingerprint moves on a `0.0` → `-0.0` edit
 //! that changes no value — conservative in the safe direction.
 
+use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::Arc;
+
 use cannet_core::CanId;
 use cannet_dbc::{Database, FloatKind, MuxGate, SignalDecodeSpec, SignalMux};
 
 use crate::filter;
 use crate::signal_cache::FileSignalInfo;
+use crate::signal_snapshot::signal_identity;
 
 /// Section tag for a DBC-backed signal's fingerprint.
 const TAG_DBC: u8 = b'D';
@@ -75,12 +87,132 @@ const TAG_CANDIDATE: u8 = b'C';
 /// of a longer one.
 const TAG_END: u8 = b'.';
 
-/// One loaded DBC as a fingerprint sees it: the parsed database and the
-/// bus ids it is scoped to. Borrowed — a fingerprint is computed under
-/// the same lock hold that reads the loaded set.
+/// One loaded DBC as a fingerprint sees it: its identity (the loaded
+/// path), the parsed database and the bus ids it is scoped to.
+/// Borrowed — a fingerprint is computed under the same lock hold that
+/// reads the loaded set.
+///
+/// The path is not mixed into any fingerprint: a fingerprint is over
+/// the *parsed model*, so which file a definition came from must not
+/// move it (see the module docs). It is here because a
+/// [`SignalDbcPicks`] entry names a database by path, and resolving one
+/// has to be able to tell the candidates apart.
 pub struct DbcScope<'a> {
+    pub path: &'a str,
     pub db: &'a Database,
     pub buses: &'a [String],
+}
+
+/// Per-signal choices of *which* assigned database decodes a signal:
+/// signal identity ([`signal_identity`], ADR 0038) → the loaded path of
+/// the chosen database.
+///
+/// A signal is in here only when the user has made a choice for it, so
+/// the map is empty in every project that never had an ambiguity to
+/// resolve, and an absent entry means "the databases resolve in their
+/// consistent order" — the load-order default. Persisted in the project
+/// file ([`crate::project::Project::signal_dbc_picks`]).
+pub type SignalDbcPicks = HashMap<String, String>;
+
+/// **The model a signal decodes against**: the loaded DBC set, in load
+/// order and with each database's bus assignment, plus the per-signal
+/// database picks that override the load-order default.
+///
+/// The two travel together because a pick is only meaningful against
+/// the set it selects within, and because every consumer that resolves
+/// "which database serves this signal" has to apply the same rule —
+/// bundling them makes it structurally impossible for a call site to
+/// pass the set and forget the picks. It derefs to the scope slice, so
+/// the many places that only need the set read exactly as they did.
+///
+/// The picks are shared by `Arc`: a model is built per serve and the
+/// map is empty in almost every project, so cloning it must cost
+/// nothing.
+pub struct DecodeModel<'a> {
+    dbcs: Vec<DbcScope<'a>>,
+    picks: Arc<SignalDbcPicks>,
+}
+
+impl<'a> DecodeModel<'a> {
+    /// The set plus the picks that apply to it.
+    #[must_use]
+    pub fn new(dbcs: Vec<DbcScope<'a>>, picks: Arc<SignalDbcPicks>) -> Self {
+        Self { dbcs, picks }
+    }
+
+    /// The set with no picks — the load-order default everywhere.
+    #[must_use]
+    pub fn plain(dbcs: Vec<DbcScope<'a>>) -> Self {
+        Self {
+            dbcs,
+            picks: Arc::default(),
+        }
+    }
+
+    /// The picks this model resolves against.
+    #[must_use]
+    pub fn picks(&self) -> &SignalDbcPicks {
+        &self.picks
+    }
+
+    /// The path a pick names for one signal, or `None` when the user has
+    /// made no choice for it. Costs nothing — not even the identity
+    /// string — in a project with no picks at all.
+    fn pick_path(
+        &self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+    ) -> Option<&str> {
+        if self.picks.is_empty() {
+            return None;
+        }
+        self.picks
+            .get(&signal_identity(
+                bus_id,
+                message_id,
+                extended,
+                signal_name,
+                false,
+            ))
+            .map(String::as_str)
+    }
+
+    /// **The resolution rule, once.** Where a pick names a database that
+    /// is loaded, is assigned to the signal's bus, and actually defines
+    /// the signal, this is its position among the databases eligible to
+    /// decode a frame on that bus (in load order) — and that database
+    /// alone is the signal's candidate chain. `None` everywhere else,
+    /// which is the load-order default: no pick recorded, or a pick
+    /// naming a database that has since been unassigned, removed, or
+    /// edited so it no longer defines the signal.
+    ///
+    /// A stale pick is *ignored*, not honoured-and-empty: a pick must
+    /// never be able to silence a signal that a database still defines.
+    #[must_use]
+    pub fn picked_index(
+        &self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+    ) -> Option<usize> {
+        let pick = self.pick_path(bus_id, message_id, extended, signal_name)?;
+        let id = CanId::new(message_id, extended).ok()?;
+        self.dbcs
+            .iter()
+            .filter(|d| filter::dbc_applies(d.buses, bus_id))
+            .position(|d| d.path == pick && !d.db.signal_decode_specs(id, signal_name).is_empty())
+    }
+}
+
+impl<'a> Deref for DecodeModel<'a> {
+    type Target = [DbcScope<'a>];
+
+    fn deref(&self) -> &Self::Target {
+        &self.dbcs
+    }
 }
 
 /// FNV-1a 64, fed an explicit canonical encoding. See the module docs
@@ -203,8 +335,15 @@ fn mix_spec(h: &mut Fnv, spec: &SignalDecodeSpec) {
 /// The assignment of a database that *is* a candidate joins its
 /// contribution, because a re-assignment can change which frames it
 /// answers for.
+///
+/// **A pick shortens the chain to one.** Where the model records a
+/// per-signal database choice ([`DecodeModel::picked_index`]), that
+/// database is the whole chain, exactly as it is for the decode — so a
+/// pick moves the fingerprint, a persisted pyramid decoded under the
+/// other database cannot revive against it (ADR 0047), and reverting to
+/// the default restores the fingerprint the parked pyramid carries.
 pub fn dbc_encoding(
-    dbcs: &[DbcScope<'_>],
+    dbcs: &DecodeModel<'_>,
     bus_id: Option<&str>,
     message_id: u32,
     extended: bool,
@@ -223,13 +362,24 @@ pub fn dbc_encoding(
         CanId::standard(message_id)
     };
     if let Ok(id) = id {
-        for dbc in dbcs {
+        let picked = dbcs.picked_index(bus_id, message_id, extended, signal_name);
+        let mut eligible = 0usize;
+        for dbc in dbcs.iter() {
             // Only the databases that can decode *this* series: its
             // frames arrive on one bus, so a database
             // `filter::dbc_applies` rejects for that bus can never
             // supply one of its samples — editing it must not force a
             // rebuild that provably cannot move a value.
             if !filter::dbc_applies(dbc.buses, bus_id) {
+                continue;
+            }
+            // The pick's position is counted over the same eligible
+            // sequence the decode walks (`signal_sampler::sample_shared`
+            // over `scan_chunk`'s `eligible`), so the chain hashed here
+            // is the chain that decodes.
+            let this = eligible;
+            eligible += 1;
+            if picked.is_some_and(|p| p != this) {
                 continue;
             }
             let specs = dbc.db.signal_decode_specs(id, signal_name);
@@ -305,8 +455,16 @@ mod tests {
         Database::parse(text).expect("fixture parses")
     }
 
-    fn scope<'a>(db: &'a Database, buses: &'a [String]) -> DbcScope<'a> {
-        DbcScope { db, buses }
+    /// One loaded database, under `path` — the identity a per-signal
+    /// pick names, and otherwise no input to any fingerprint.
+    fn scope<'a>(path: &'a str, db: &'a Database, buses: &'a [String]) -> DbcScope<'a> {
+        DbcScope { path, db, buses }
+    }
+
+    /// A set with no picks — the load-order default everywhere, which
+    /// is what every test but the pick ones is about.
+    fn plain(dbcs: Vec<DbcScope<'_>>) -> DecodeModel<'_> {
+        DecodeModel::plain(dbcs)
     }
 
     /// The bus the fixtures' databases are assigned to, and the bus
@@ -328,7 +486,13 @@ mod tests {
     fn fp_named(text: &str, signal: &str) -> String {
         let db = parse(text);
         let bus = fp_bus();
-        dbc_encoding(&[scope(&db, &bus)], Some(FP_BUS), 256, false, signal)
+        dbc_encoding(
+            &plain(vec![scope("db.dbc", &db, &bus)]),
+            Some(FP_BUS),
+            256,
+            false,
+            signal,
+        )
     }
 
     /// Fingerprint of `S` in a one-message DBC declaring only `sig`.
@@ -400,7 +564,13 @@ mod tests {
         let db = parse(&message(&[PLAIN]));
         let bus = fp_bus();
         let at = |id: u32, extended: bool| {
-            dbc_encoding(&[scope(&db, &bus)], Some(FP_BUS), id, extended, "S")
+            dbc_encoding(
+                &plain(vec![scope("db.dbc", &db, &bus)]),
+                Some(FP_BUS),
+                id,
+                extended,
+                "S",
+            )
         };
         assert_ne!(at(256, false), at(257, false), "another message id");
         assert_ne!(
@@ -444,23 +614,24 @@ mod tests {
         let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let bus = fp_bus();
         let two_buses = vec![FP_BUS.to_string(), "bus2".to_string()];
-        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, Some(FP_BUS), 256, false, "S");
+        let fp =
+            |dbcs: Vec<DbcScope<'_>>| dbc_encoding(&plain(dbcs), Some(FP_BUS), 256, false, "S");
 
-        let base = fp(&[scope(&a, &bus)]);
-        assert_ne!(base, fp(&[]), "no DBC at all decodes nothing");
+        let base = fp(vec![scope("a.dbc", &a, &bus)]);
+        assert_ne!(base, fp(vec![]), "no DBC at all decodes nothing");
         assert_ne!(
             base,
-            fp(&[scope(&a, &bus), scope(&b, &bus)]),
+            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]),
             "a second definition can win frames the first does not"
         );
         assert_ne!(
-            fp(&[scope(&a, &bus), scope(&b, &bus)]),
-            fp(&[scope(&b, &bus), scope(&a, &bus)]),
+            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]),
+            fp(vec![scope("b.dbc", &b, &bus), scope("a.dbc", &a, &bus)]),
             "load order is decode priority between two definitions"
         );
         assert_ne!(
             base,
-            fp(&[scope(&a, &two_buses)]),
+            fp(vec![scope("a.dbc", &a, &two_buses)]),
             "the bus assignment of a contributing DBC"
         );
 
@@ -483,6 +654,116 @@ mod tests {
         );
     }
 
+    /// The set with `S` on [`FP_BUS`] pinned to the database loaded
+    /// under `path`.
+    fn pinned<'a>(dbcs: Vec<DbcScope<'a>>, path: &str) -> DecodeModel<'a> {
+        let mut picks = SignalDbcPicks::new();
+        picks.insert(
+            signal_identity(Some(FP_BUS), 256, false, "S", false),
+            path.to_owned(),
+        );
+        DecodeModel::new(dbcs, Arc::new(picks))
+    }
+
+    #[test]
+    fn a_pick_shortens_the_chain_to_the_database_it_names() {
+        // A pick is a change of *encoding*, not merely of display: the
+        // chain becomes the picked database alone, so a pyramid decoded
+        // under the load-order chain cannot revive against it
+        // (ADR 0047). Getting this wrong would leave the other
+        // database's samples on screen under the picked database's
+        // name.
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let bus = fp_bus();
+        let both = || vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)];
+        let fp = |m: &DecodeModel<'_>| dbc_encoding(m, Some(FP_BUS), 256, false, "S");
+
+        let default = fp(&plain(both()));
+        let picked_b = fp(&pinned(both(), "b.dbc"));
+        assert_ne!(default, picked_b, "a pick moves the encoding");
+        assert_eq!(
+            picked_b,
+            fp(&plain(vec![scope("b.dbc", &b, &bus)])),
+            "…to exactly the chain of the database it names"
+        );
+
+        // A pick naming the load-order winner is still a pick: the
+        // chain is that database alone, without the fall-through the
+        // default chain carries. (The command that records one clears
+        // the entry in that case, so this shape is never persisted —
+        // but the rule here has to be the same either way.)
+        assert_eq!(
+            fp(&pinned(both(), "a.dbc")),
+            fp(&plain(vec![scope("a.dbc", &a, &bus)]))
+        );
+    }
+
+    #[test]
+    fn a_stale_pick_leaves_the_chain_where_the_load_order_puts_it() {
+        // Three ways a pick goes stale — the database is gone, it is
+        // assigned elsewhere, or it no longer defines the signal — and
+        // all three fall back to the default rather than shortening the
+        // chain to nothing. A pick must never silence a signal.
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let other = parse(&message(&["T : 0|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let bus = fp_bus();
+        let elsewhere = vec!["bus2".to_string()];
+        let fp = |m: &DecodeModel<'_>| dbc_encoding(m, Some(FP_BUS), 256, false, "S");
+
+        let default = fp(&plain(vec![scope("a.dbc", &a, &bus)]));
+        assert_eq!(
+            default,
+            fp(&pinned(vec![scope("a.dbc", &a, &bus)], "gone.dbc")),
+            "the picked database is not loaded"
+        );
+        assert_eq!(
+            fp(&plain(vec![
+                scope("a.dbc", &a, &bus),
+                scope("b.dbc", &b, &elsewhere),
+            ])),
+            fp(&pinned(
+                vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &elsewhere)],
+                "b.dbc",
+            )),
+            "the picked database is assigned to another bus"
+        );
+        assert_eq!(
+            fp(&plain(vec![
+                scope("a.dbc", &a, &bus),
+                scope("b.dbc", &other, &bus),
+            ])),
+            fp(&pinned(
+                vec![scope("a.dbc", &a, &bus), scope("b.dbc", &other, &bus)],
+                "b.dbc",
+            )),
+            "the picked database no longer defines the signal"
+        );
+    }
+
+    #[test]
+    fn a_pick_moves_only_the_signal_it_names() {
+        // The pick key is the signal identity, so a pick on `S` leaves
+        // every other signal of the same message on the load-order
+        // default — the same per-signal granularity the decode has.
+        let a = parse(&message(&[PLAIN, "T : 8|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let b = parse(&message(&[
+            "S : 16|8@1+ (1,0) [0|0] \"\" ECU2",
+            "T : 24|8@1+ (1,0) [0|0] \"\" ECU2",
+        ]));
+        let bus = fp_bus();
+        let both = || vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)];
+        let fp =
+            |m: &DecodeModel<'_>, signal: &str| dbc_encoding(m, Some(FP_BUS), 256, false, signal);
+        assert_ne!(fp(&plain(both()), "S"), fp(&pinned(both(), "b.dbc"), "S"));
+        assert_eq!(
+            fp(&plain(both()), "T"),
+            fp(&pinned(both(), "b.dbc"), "T"),
+            "T's chain is untouched by a pick on S"
+        );
+    }
+
     #[test]
     fn only_the_databases_that_can_decode_the_series_bus_are_in_the_chain() {
         // Every frame a `pt`-scoped series takes arrives on `pt`, and a
@@ -494,22 +775,31 @@ mod tests {
         let ch = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let ch_edited = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let (pt_bus, ch_bus) = (vec!["pt".to_string()], vec!["ch".to_string()]);
-        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, Some("pt"), 256, false, "S");
+        let fp = |dbcs: Vec<DbcScope<'_>>| dbc_encoding(&plain(dbcs), Some("pt"), 256, false, "S");
 
-        let alone = fp(&[scope(&a, &pt_bus)]);
+        let alone = fp(vec![scope("a.dbc", &a, &pt_bus)]);
         assert_eq!(
             alone,
-            fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]),
+            fp(vec![
+                scope("a.dbc", &a, &pt_bus),
+                scope("ch.dbc", &ch, &ch_bus)
+            ]),
             "a chassis-scoped database is no part of a powertrain series"
         );
         assert_eq!(
-            fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]),
-            fp(&[scope(&a, &pt_bus), scope(&ch_edited, &ch_bus)]),
+            fp(vec![
+                scope("a.dbc", &a, &pt_bus),
+                scope("ch.dbc", &ch, &ch_bus)
+            ]),
+            fp(vec![
+                scope("a.dbc", &a, &pt_bus),
+                scope("ch_edited.dbc", &ch_edited, &ch_bus)
+            ]),
             "…so re-encoding it invalidates nothing here"
         );
         assert_eq!(
             alone,
-            fp(&[scope(&a, &pt_bus), scope(&ch, &[])]),
+            fp(vec![scope("a.dbc", &a, &pt_bus), scope("ch.dbc", &ch, &[])]),
             "a database assigned to no bus is a candidate for nothing"
         );
     }
@@ -523,16 +813,28 @@ mod tests {
         let a = parse(&message(&[PLAIN]));
         let ch = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let (pt_bus, ch_bus) = (vec!["pt".to_string()], vec!["ch".to_string()]);
-        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, None, 256, false, "S");
+        let fp = |dbcs: Vec<DbcScope<'_>>| dbc_encoding(&plain(dbcs), None, 256, false, "S");
 
-        let empty = fp(&[]);
-        assert_eq!(fp(&[scope(&a, &pt_bus)]), empty);
-        assert_eq!(fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]), empty);
-        assert_eq!(fp(&[scope(&a, &[])]), empty);
+        let empty = fp(vec![]);
+        assert_eq!(fp(vec![scope("a.dbc", &a, &pt_bus)]), empty);
+        assert_eq!(
+            fp(vec![
+                scope("a.dbc", &a, &pt_bus),
+                scope("ch.dbc", &ch, &ch_bus)
+            ]),
+            empty
+        );
+        assert_eq!(fp(vec![scope("a.dbc", &a, &[])]), empty);
         // …and still distinct from a chain that decodes something.
         assert_ne!(
             empty,
-            dbc_encoding(&[scope(&a, &pt_bus)], Some("pt"), 256, false, "S"),
+            dbc_encoding(
+                &plain(vec![scope("a.dbc", &a, &pt_bus)]),
+                Some("pt"),
+                256,
+                false,
+                "S"
+            ),
         );
     }
 
@@ -548,18 +850,34 @@ mod tests {
         let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let b_edited = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let bus = fp_bus();
-        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, Some(FP_BUS), 256, false, "S");
+        let fp =
+            |dbcs: Vec<DbcScope<'_>>| dbc_encoding(&plain(dbcs), Some(FP_BUS), 256, false, "S");
 
-        let alone = fp(&[scope(&a, &bus)]);
-        assert_eq!(alone, fp(&[scope(&a, &bus), scope(&b, &[])]), "added");
-        assert_eq!(alone, fp(&[scope(&b, &[]), scope(&a, &bus)]), "re-ordered");
+        let alone = fp(vec![scope("a.dbc", &a, &bus)]);
         assert_eq!(
-            fp(&[scope(&a, &bus), scope(&b, &[])]),
-            fp(&[scope(&a, &bus), scope(&b_edited, &[])]),
+            alone,
+            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &[])]),
+            "added"
+        );
+        assert_eq!(
+            alone,
+            fp(vec![scope("b.dbc", &b, &[]), scope("a.dbc", &a, &bus)]),
+            "re-ordered"
+        );
+        assert_eq!(
+            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &[])]),
+            fp(vec![
+                scope("a.dbc", &a, &bus),
+                scope("b_edited.dbc", &b_edited, &[])
+            ]),
             "edited"
         );
         // Assigning it is what makes it an input.
-        assert_ne!(alone, fp(&[scope(&a, &bus), scope(&b, &bus)]), "assigned");
+        assert_ne!(
+            alone,
+            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]),
+            "assigned"
+        );
     }
 
     #[test]
@@ -572,22 +890,38 @@ mod tests {
             "BO_ 300 Other: 8 ECU\n SG_ T : 0|8@1+ (1,0) [0|0] \"\" ECU2\n",
         ));
         let bus = fp_bus();
-        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, Some(FP_BUS), 256, false, "S");
+        let fp =
+            |dbcs: Vec<DbcScope<'_>>| dbc_encoding(&plain(dbcs), Some(FP_BUS), 256, false, "S");
 
-        let base = fp(&[scope(&a, &bus)]);
+        let base = fp(vec![scope("a.dbc", &a, &bus)]);
         assert_eq!(
             base,
-            fp(&[scope(&a, &bus), scope(&elsewhere, &bus)]),
+            fp(vec![
+                scope("a.dbc", &a, &bus),
+                scope("elsewhere.dbc", &elsewhere, &bus)
+            ]),
             "a DBC that defines nothing about this signal contributes nothing"
         );
         assert_eq!(
-            fp(&[scope(&a, &bus), scope(&elsewhere, &bus)]),
-            fp(&[scope(&elsewhere, &bus), scope(&a, &bus)]),
+            fp(vec![
+                scope("a.dbc", &a, &bus),
+                scope("elsewhere.dbc", &elsewhere, &bus)
+            ]),
+            fp(vec![
+                scope("elsewhere.dbc", &elsewhere, &bus),
+                scope("a.dbc", &a, &bus)
+            ]),
             "…so re-prioritising it changes no decode"
         );
         assert_eq!(
-            fp(&[scope(&a, &bus), scope(&twin, &bus)]),
-            fp(&[scope(&twin, &bus), scope(&a, &bus)]),
+            fp(vec![
+                scope("a.dbc", &a, &bus),
+                scope("twin.dbc", &twin, &bus)
+            ]),
+            fp(vec![
+                scope("twin.dbc", &twin, &bus),
+                scope("a.dbc", &a, &bus)
+            ]),
             "two identical definitions decode identically in either order"
         );
     }
@@ -610,7 +944,11 @@ mod tests {
             buses: fp_bus(),
         }];
         let before_signal = dbc_encoding(
-            &[scope(&loaded[0].db, &loaded[0].buses)],
+            &plain(vec![scope(
+                &loaded[0].path,
+                &loaded[0].db,
+                &loaded[0].buses,
+            )]),
             Some(FP_BUS),
             256,
             false,
@@ -633,7 +971,11 @@ mod tests {
         assert_eq!(
             before_signal,
             dbc_encoding(
-                &[scope(&loaded[0].db, &loaded[0].buses)],
+                &plain(vec![scope(
+                    &loaded[0].path,
+                    &loaded[0].db,
+                    &loaded[0].buses,
+                )]),
                 Some(FP_BUS),
                 256,
                 false,
@@ -656,7 +998,13 @@ mod tests {
         ]));
         let bus = fp_bus();
         let fp = |db: &Database, signal: &str| {
-            dbc_encoding(&[scope(db, &bus)], Some(FP_BUS), 256, false, signal)
+            dbc_encoding(
+                &plain(vec![scope("a.dbc", db, &bus)]),
+                Some(FP_BUS),
+                256,
+                false,
+                signal,
+            )
         };
         assert_eq!(fp(&before, "S"), fp(&after, "S"), "S is untouched");
         assert_ne!(fp(&before, "T"), fp(&after, "T"), "T was re-encoded");

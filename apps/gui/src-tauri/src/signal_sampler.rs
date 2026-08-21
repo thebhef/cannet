@@ -94,12 +94,22 @@ pub fn sample_signal(
 /// one message legitimately resolve to two different databases.
 /// Choosing a database once for the whole message would rescale a
 /// signal against the wrong definition, or drop it.
+///
+/// `picked` overrides that default per name. It is either empty — no
+/// signal here has a user-chosen database, which is the ordinary case —
+/// or index-parallel with `wanted`, each entry naming the index in
+/// `dbs` of the one database that may answer for that name
+/// (`signal_fingerprint::DecodeModel::picked_index`). A pinned name
+/// takes its value from that database or from none: falling through to
+/// the next database would put back exactly the silent substitution the
+/// pick was made to stop.
 pub fn sample_shared(
     frame: &RawTraceFrame,
     dbs: &[&Database],
     message_id: u32,
     extended: bool,
     wanted: &[&str],
+    picked: &[Option<usize>],
     out: &mut Vec<Option<f64>>,
 ) {
     out.clear();
@@ -111,15 +121,18 @@ pub fn sample_shared(
         return;
     };
     let mut unresolved = out.len();
-    for db in dbs {
+    for (index, db) in dbs.iter().enumerate() {
         if unresolved == 0 {
             break;
         }
         let Some(decoded) = db.decode_raw(id, frame.payload.data()) else {
             continue;
         };
-        for (slot, name) in out.iter_mut().zip(wanted) {
+        for (i, (slot, name)) in out.iter_mut().zip(wanted).enumerate() {
             if slot.is_some() {
+                continue;
+            }
+            if picked.get(i).copied().flatten().is_some_and(|p| p != index) {
                 continue;
             }
             if let Some(sig) = decoded.signals.iter().find(|s| s.name == *name) {
@@ -372,36 +385,52 @@ BO_ 256 EngineData: 2 ECU
         let good = frame(1_000_000_000, 256, vec![0x04, 0x00]);
         // The decodable name and an unknown one, answered in one pass
         // and index-parallel with the request.
-        sample_shared(&good, dbs, 256, false, &["EngineSpeed", "Nope"], &mut out);
+        sample_shared(
+            &good,
+            dbs,
+            256,
+            false,
+            &["EngineSpeed", "Nope"],
+            &[],
+            &mut out,
+        );
         assert_eq!(out, vec![Some(1.0), None]);
         // Wrong id / wrong extended flag — the frame filter. The
         // extended case is checked in the direction the decoder can't
         // catch on its own: an *extended* frame carrying the same raw
         // id decodes fine against the standard message, so only the
         // frame filter keeps it out of a standard query's series.
-        sample_shared(&good, dbs, 257, false, &["EngineSpeed"], &mut out);
+        sample_shared(&good, dbs, 257, false, &["EngineSpeed"], &[], &mut out);
         assert_eq!(out, vec![None]);
-        sample_shared(&good, dbs, 256, true, &["EngineSpeed"], &mut out);
+        sample_shared(&good, dbs, 256, true, &["EngineSpeed"], &[], &mut out);
         assert_eq!(out, vec![None]);
         let ext = RawTraceFrame {
             extended: true,
             ..good.clone()
         };
-        sample_shared(&ext, dbs, 256, false, &["EngineSpeed"], &mut out);
+        sample_shared(&ext, dbs, 256, false, &["EngineSpeed"], &[], &mut out);
         assert_eq!(out, vec![None]);
         // A frame *of* another id, asked for under its own id, but the
         // DBC doesn't define it.
         let other = frame(1_000_000_000, 257, vec![0xFF, 0xFF]);
-        sample_shared(&other, dbs, 257, false, &["EngineSpeed"], &mut out);
+        sample_shared(&other, dbs, 257, false, &["EngineSpeed"], &[], &mut out);
         assert_eq!(out, vec![None]);
         // Payload too short for the signal.
         let short = frame(2_000_000_000, 256, vec![0x04]);
-        sample_shared(&short, dbs, 256, false, &["EngineSpeed"], &mut out);
+        sample_shared(&short, dbs, 256, false, &["EngineSpeed"], &[], &mut out);
         assert_eq!(out, vec![None]);
         // A malformed standard id, and the empty request.
-        sample_shared(&good, dbs, 0xFFFF_FFFF, false, &["EngineSpeed"], &mut out);
+        sample_shared(
+            &good,
+            dbs,
+            0xFFFF_FFFF,
+            false,
+            &["EngineSpeed"],
+            &[],
+            &mut out,
+        );
         assert_eq!(out, vec![None]);
-        sample_shared(&good, dbs, 256, false, &[], &mut out);
+        sample_shared(&good, dbs, 256, false, &[], &[], &mut out);
         assert!(out.is_empty());
     }
 
@@ -424,7 +453,15 @@ BO_ 256 EngineData: 2 ECU
         .unwrap();
         let f = frame(0, 256, vec![3, 0, 7, 0, 0, 0, 0, 0]);
         let mut out = Vec::new();
-        sample_shared(&f, &[&first, &second], 256, false, &["A", "B"], &mut out);
+        sample_shared(
+            &f,
+            &[&first, &second],
+            256,
+            false,
+            &["A", "B"],
+            &[],
+            &mut out,
+        );
         assert_eq!(
             out,
             vec![Some(3.0), Some(7.0)],
@@ -432,8 +469,44 @@ BO_ 256 EngineData: 2 ECU
         );
         // Load order is the whole rule: reversed, `A` takes the ×10
         // scaling of what is now the first database.
-        sample_shared(&f, &[&second, &first], 256, false, &["A", "B"], &mut out);
+        sample_shared(
+            &f,
+            &[&second, &first],
+            256,
+            false,
+            &["A", "B"],
+            &[],
+            &mut out,
+        );
         assert_eq!(out, vec![Some(30.0), Some(7.0)]);
+
+        // A pinned name takes the database the pick names, whatever
+        // load order says — and only that name: `B` still resolves the
+        // ordinary way in the same pass.
+        sample_shared(
+            &f,
+            &[&first, &second],
+            256,
+            false,
+            &["A", "B"],
+            &[Some(1), None],
+            &mut out,
+        );
+        assert_eq!(out, vec![Some(30.0), Some(7.0)]);
+
+        // A pinned name takes its value from that database or from
+        // none: `first` cannot produce `B`, so pinning `B` to it leaves
+        // the slot empty rather than falling through to `second`.
+        sample_shared(
+            &f,
+            &[&first, &second],
+            256,
+            false,
+            &["A", "B"],
+            &[None, Some(0)],
+            &mut out,
+        );
+        assert_eq!(out, vec![Some(3.0), None]);
     }
 
     fn pt(t: f64, v: f64) -> SamplePoint {
