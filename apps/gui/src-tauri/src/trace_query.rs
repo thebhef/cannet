@@ -576,7 +576,13 @@ fn collect_signal_rows(
     for ((bus, id, extended), wanted) in &streams {
         if !wanted.plain.is_empty() {
             if let Some(latest) = plain_latest.get(&(bus.clone(), *id, *extended)) {
-                if let Some(decoded) = decode_resolved(dbs, &latest.frame) {
+                if let Some(decoded) = decode_resolved(
+                    dbs,
+                    latest.frame.bus_id.as_deref(),
+                    latest.frame.id,
+                    latest.frame.extended,
+                    latest.frame.payload.data(),
+                ) {
                     extract_snapshot_cells(
                         &mut cells,
                         all,
@@ -600,7 +606,13 @@ fn collect_signal_rows(
                 end,
             );
             for (sel, (_, frame)) in &latest {
-                let Some(decoded) = decode_resolved(dbs, frame) else {
+                let Some(decoded) = decode_resolved(
+                    dbs,
+                    frame.bus_id.as_deref(),
+                    frame.id,
+                    frame.extended,
+                    frame.payload.data(),
+                ) else {
                     continue;
                 };
                 let (rate, count) = state
