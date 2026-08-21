@@ -25,7 +25,6 @@ use cannet_core::{CanFramePayload, Direction};
 use cannet_dbc::{CalculatedFieldsConfig, FieldViolation, ResolvedCalculatedFields};
 use tauri::AppHandle;
 
-use crate::app_state::LoadedDbc;
 use crate::sys_debug;
 use crate::trace_store::RawTraceFrame;
 
@@ -98,16 +97,22 @@ impl VerificationState {
     /// reset continuity); keys whose config disappeared are dropped.
     pub fn rebuild_configs(
         &self,
-        dbs: &[LoadedDbc],
+        dbs: &crate::signal_fingerprint::DecodeModel<'_>,
         rbs_overrides: &[(String, u32, bool, CalculatedFieldsConfig)],
     ) {
         let mut configs: HashMap<ConfigKey, ResolvedCalculatedFields> = HashMap::new();
 
         // DBC-declared defaults: one entry per bus the database is
         // assigned to, and none at all for one assigned to no bus —
-        // it decodes nothing, so it declares nothing. First DBC wins
-        // per key (matching the decode path's first-match-wins).
-        for loaded in dbs {
+        // it decodes nothing, so it declares nothing. Which database
+        // supplies the key is
+        // [`DecodeModel::message_source`](crate::signal_fingerprint::DecodeModel::message_source)'s
+        // answer, so a designation reaches the verifier only from the
+        // file that describes the message it designates (ADR 0054) —
+        // a database behind the winner declaring `CannetCounter` where
+        // the winner declares nothing supplies no config, the same way
+        // it supplies no `VAL_` labels.
+        for loaded in dbs.iter() {
             for (id, extended, config) in loaded.db.calculated_field_messages() {
                 let can_id = if extended {
                     cannet_core::CanId::extended(id)
@@ -119,10 +124,15 @@ impl VerificationState {
                     // Malformed designation — already warned at load.
                     continue;
                 };
-                for bus in &loaded.buses {
-                    configs
-                        .entry((bus.clone(), id, extended))
-                        .or_insert_with(|| resolved.clone());
+                for bus in loaded.buses {
+                    if dbs
+                        .message_source(Some(bus.as_str()), id, extended)
+                        .map(|d| d.path)
+                        != Some(loaded.path)
+                    {
+                        continue;
+                    }
+                    configs.insert((bus.clone(), id, extended), resolved.clone());
                 }
             }
         }
@@ -137,11 +147,7 @@ impl VerificationState {
                 cannet_core::CanId::standard(*id)
             };
             let Ok(can_id) = can_id else { continue };
-            let Some(loaded) = dbs
-                .iter()
-                .filter(|d| crate::filter::dbc_applies(&d.buses, Some(bus.as_str())))
-                .find(|d| d.db.dbc_calculated_fields(can_id).is_some())
-            else {
+            let Some(loaded) = dbs.message_source(Some(bus.as_str()), *id, *extended) else {
                 continue;
             };
             if let Ok(resolved) = loaded.db.resolve_calculated_fields(can_id, config) {
@@ -378,8 +384,8 @@ mod tests {
     /// nothing, which is [`a_database_assigned_to_no_bus_configures_nothing`].
     fn state_with_config(buses: &[&str]) -> VerificationState {
         let state = VerificationState::default();
-        let loaded = crate::tests::loaded_scoped("v.dbc", VERIFY_DBC, buses);
-        state.rebuild_configs(&[loaded], &[]);
+        let loaded = vec![crate::tests::loaded_scoped("v.dbc", VERIFY_DBC, buses)];
+        state.rebuild_configs(&crate::tests::plain_model(&loaded), &[]);
         state
     }
 
@@ -497,8 +503,8 @@ mod tests {
 
         // Same probe, now with a config loaded: the answer needs the map,
         // so holding the lock withholds it.
-        let loaded = crate::tests::loaded_scoped("v.dbc", VERIFY_DBC, &["p"]);
-        state.rebuild_configs(&[loaded], &[]);
+        let loaded = vec![crate::tests::loaded_scoped("v.dbc", VERIFY_DBC, &["p"])];
+        state.rebuild_configs(&crate::tests::plain_model(&loaded), &[]);
         assert_eq!(
             ask(&state, answered),
             Ok(true),
@@ -587,12 +593,13 @@ mod tests {
             crc: dbc_config.crc.clone(),
         };
         let state = VerificationState::default();
+        let loaded = vec![crate::tests::loaded_scoped(
+            "v.dbc",
+            VERIFY_DBC,
+            &["p", "z"],
+        )];
         state.rebuild_configs(
-            &[crate::tests::loaded_scoped(
-                "v.dbc",
-                VERIFY_DBC,
-                &["p", "z"],
-            )],
+            &crate::tests::plain_model(&loaded),
             &[("p".into(), 291, false, override_config)],
         );
 
@@ -703,7 +710,10 @@ mod tests {
             crate::tests::loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
         ];
         let state = VerificationState::default();
-        state.rebuild_configs(&dbs, &[("p".to_string(), 291, false, counter_override())]);
+        state.rebuild_configs(
+            &crate::tests::plain_model(&dbs),
+            &[("p".to_string(), 291, false, counter_override())],
+        );
         assert!(
             violations_of_a_bit_48_count(&state).is_empty(),
             "the counter is read where a.dbc puts it",
@@ -716,7 +726,10 @@ mod tests {
             crate::tests::loaded_scoped("a.dbc", &calc_placement_dbc(48, false), &["p"]),
         ];
         let state = VerificationState::default();
-        state.rebuild_configs(&dbs, &[("p".to_string(), 291, false, counter_override())]);
+        state.rebuild_configs(
+            &crate::tests::plain_model(&dbs),
+            &[("p".to_string(), 291, false, counter_override())],
+        );
         assert_eq!(
             violations_of_a_bit_48_count(&state),
             vec![(1, "counter"), (2, "counter")],

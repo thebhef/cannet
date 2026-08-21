@@ -621,6 +621,7 @@ pub(crate) fn test_state() -> AppState {
     AppState {
         databases: Mutex::new(Vec::new()),
         descriptor_snapshot: Mutex::new(None),
+        split_messages: Mutex::new(None),
         remote_sessions: Mutex::new(HashMap::new()),
         trace_store: Arc::new(TraceStore::new()),
         signal_caches: SignalCacheStore::new(signals_dir),
@@ -757,7 +758,7 @@ pub(crate) fn test_bus_scope() -> Vec<String> {
 /// the load-order default, which is what a test that isn't about
 /// ambiguity resolution wants.
 pub(crate) fn plain_model(dbs: &[LoadedDbc]) -> crate::signal_fingerprint::DecodeModel<'_> {
-    crate::app_state::decode_model(dbs, std::sync::Arc::default())
+    crate::signal_fingerprint::DecodeModel::plain(crate::app_state::dbc_scopes(dbs))
 }
 
 pub(crate) fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
@@ -4180,7 +4181,7 @@ fn calc_request(bus: &str, id: u32) -> ipc::TransmitRequest {
 #[test]
 fn effective_calc_uses_dbc_defaults_when_no_override() {
     let dbs = vec![loaded_scoped("a.dbc", CALC_ATTR_DBC, &["p"])];
-    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+    let resolved = resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), None)
         .unwrap()
         .expect("DBC-declared fields resolve");
     // Counter at bits 40..44 (byte 5 low nibble), CRC in byte 7.
@@ -4191,9 +4192,11 @@ fn effective_calc_uses_dbc_defaults_when_no_override() {
     assert_ne!(payload[7], 0);
     // A message without any designation resolves to None.
     let dbs2 = vec![loaded_scoped("b.dbc", &tiny_dbc(291, "Plain", "S"), &["p"])];
-    assert!(resolve_effective_calc(&dbs2, &calc_request("p", 291), None)
-        .unwrap()
-        .is_none());
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs2), &calc_request("p", 291), None)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -4209,7 +4212,7 @@ fn override_replaces_the_dbc_default_per_field() {
         }),
         crc: None,
     };
-    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&spec))
+    let resolved = resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), Some(&spec))
         .unwrap()
         .unwrap();
     let mut payload = [0u8; 8];
@@ -4225,12 +4228,16 @@ fn effective_calc_respects_bus_scoping_and_reports_errors() {
     // The DBC declaring the fields is scoped to bus "q" — a frame
     // on bus "p" doesn't see it.
     let dbs = vec![loaded_scoped("a.dbc", CALC_ATTR_DBC, &["q"])];
-    assert!(resolve_effective_calc(&dbs, &calc_request("p", 291), None)
-        .unwrap()
-        .is_none());
-    assert!(resolve_effective_calc(&dbs, &calc_request("q", 291), None)
-        .unwrap()
-        .is_some());
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("q", 291), None)
+            .unwrap()
+            .is_some()
+    );
     // An override naming an unknown signal is an error, not a
     // silent no-op …
     let bad = ipc::CalcFieldsSpec {
@@ -4241,9 +4248,13 @@ fn effective_calc_respects_bus_scoping_and_reports_errors() {
         }),
         crc: None,
     };
-    assert!(resolve_effective_calc(&dbs, &calc_request("q", 291), Some(&bad)).is_err());
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("q", 291), Some(&bad)).is_err()
+    );
     // … and so is an override on a message no DBC defines.
-    assert!(resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&bad)).is_err());
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), Some(&bad)).is_err()
+    );
 }
 
 /// 291 `Status` with `AliveCtr` at `ctr_start`, and the cannet
@@ -4279,7 +4290,7 @@ fn a_transmit_rows_calculated_fields_come_from_the_defining_database() {
         loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
     ];
     assert!(
-        resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), None)
             .unwrap()
             .is_none(),
         "b.dbc's designations are not borrowed onto a.dbc's message",
@@ -4295,7 +4306,7 @@ fn a_transmit_rows_calculated_fields_come_from_the_defining_database() {
         }),
         crc: None,
     };
-    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&spec))
+    let resolved = resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), Some(&spec))
         .unwrap()
         .expect("the override configures the message");
     let mut payload = [0u8; 8];
@@ -4309,7 +4320,7 @@ fn a_transmit_rows_calculated_fields_come_from_the_defining_database() {
         loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
         loaded_scoped("a.dbc", &calc_placement_dbc(48, false), &["p"]),
     ];
-    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+    let resolved = resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), None)
         .unwrap()
         .expect("b.dbc designates a counter and a CRC");
     let mut payload = [0u8; 8];
@@ -5376,9 +5387,12 @@ fn reloading_a_database_stops_the_periodics_it_was_driving() {
     drop(registry);
     // And the reload itself applied: the swapped scale is what the bus
     // now answers with.
+    let dbs = state.databases();
     let a_factor = state
-        .first_dbc_on_bus(Some("pt"), |db| {
-            db.describe_message(cannet_core::CanId::new(256, false).unwrap())
+        .decode_model(&dbs)
+        .message_source(Some("pt"), 256, false)
+        .and_then(|d| {
+            d.db.describe_message(cannet_core::CanId::new(256, false).unwrap())
         })
         .expect("the reloaded database still backs the bus")
         .signals
@@ -5529,6 +5543,64 @@ fn the_mux_selector_comes_from_the_database_that_defines_the_multiplexor() {
     invalidate_derived_caches(&state);
     state.trace_store.append(modes_frame(0, 1, 7, 9));
     assert_eq!(selectors_seen(&state), vec![1]);
+}
+
+#[test]
+fn the_mux_selector_comes_from_the_database_the_pick_names() {
+    // The cure for a selector read against the wrong file: pin `Mux`
+    // in the signal-mapping panel and the mux index follows, the same
+    // way every other decoded value does (ADR 0054). Without the pick
+    // the same set answers 7, so this is a choice being honoured.
+    let mux_state = |order: [&str; 2], pick: Option<&str>| -> AppState {
+        let state = test_state();
+        *state.databases.lock().unwrap() = order
+            .iter()
+            .map(|p| {
+                if *p == "a.dbc" {
+                    loaded_scoped("a.dbc", &mux_at(8), &[TEST_BUS])
+                } else {
+                    loaded_scoped("b.dbc", MUX_SNAPSHOT_DBC, &[TEST_BUS])
+                }
+            })
+            .collect();
+        if let Some(p) = pick {
+            let mut picks = crate::signal_fingerprint::SignalDbcPicks::new();
+            picks.insert(
+                crate::signal_snapshot::signal_identity(Some(TEST_BUS), 512, false, "Mux", false),
+                p.to_owned(),
+            );
+            *state.signal_dbc_picks.lock().unwrap() = std::sync::Arc::new(picks);
+        }
+        invalidate_derived_caches(&state);
+        // Byte 0 reads 1 (b.dbc's selector), byte 1 reads 7 (a.dbc's).
+        state.trace_store.append(modes_frame(0, 1, 7, 9));
+        state
+    };
+    assert_eq!(
+        selectors_seen(&mux_state(["a.dbc", "b.dbc"], None)),
+        vec![7]
+    );
+    assert_eq!(
+        selectors_seen(&mux_state(["a.dbc", "b.dbc"], Some("b.dbc"))),
+        vec![1],
+        "the pick moves it off load order",
+    );
+    // Reversed, with the pick reversed to match: the same
+    // discrimination the other way round.
+    assert_eq!(
+        selectors_seen(&mux_state(["b.dbc", "a.dbc"], None)),
+        vec![1]
+    );
+    assert_eq!(
+        selectors_seen(&mux_state(["b.dbc", "a.dbc"], Some("a.dbc"))),
+        vec![7],
+    );
+    // A pick naming the database load order already chose changes
+    // nothing.
+    assert_eq!(
+        selectors_seen(&mux_state(["a.dbc", "b.dbc"], Some("a.dbc"))),
+        vec![7],
+    );
 }
 
 #[test]
@@ -5712,9 +5784,13 @@ fn a_collision_resolves_to_one_database_in_the_row_the_plot_the_tables_and_the_c
     };
     let calc_designated = |state: &AppState| -> bool {
         let dbs = state.databases();
-        resolve_effective_calc(&dbs, &calc_request(TEST_BUS, 256), None)
-            .unwrap()
-            .is_some()
+        resolve_effective_calc(
+            &state.decode_model(&dbs),
+            &calc_request(TEST_BUS, 256),
+            None,
+        )
+        .unwrap()
+        .is_some()
     };
 
     // a.dbc first: unit scale, no labels, no designations.
@@ -5776,41 +5852,147 @@ fn a_trace_rows_picked_signal_comes_from_the_database_the_pick_names() {
 
 #[test]
 #[allow(clippy::float_cmp)]
-fn a_signal_only_a_later_database_defines_reaches_the_row_once_the_message_is_picked() {
+fn a_signal_only_a_later_database_defines_reaches_the_row_whether_or_not_anything_is_picked() {
     // `Y` is b.dbc's alone, so it has exactly one definition whatever
-    // the load order. The per-message fast path never reported it —
-    // a.dbc decodes the message and does not define `Y` — and that is
-    // the approximation the fast path is allowed: it costs nothing and
-    // the caches serve `Y` in their own right. Resolving the message
-    // per signal, which a pick makes it do, reports it.
+    // the load order and whatever anyone picked. The row reported it
+    // only when the message carried a pick, which made *whether a
+    // signal appears* depend on a choice made about a different signal
+    // — a second resolution rule wearing a fast path's clothes. Two
+    // databases define 256, so the message resolves per signal, and it
+    // is the same answer the plot has always given.
     let unpicked = collide_state(["a.dbc", "b.dbc"], None);
-    assert_eq!(row_value_of(&unpicked, "Y"), None, "the fast path");
-    assert_eq!(plot_values_of(&unpicked, "Y"), vec![100.0], "…but plotted");
+    assert_eq!(row_value_of(&unpicked, "Y"), Some(100.0), "the row");
+    assert_eq!(plot_values_of(&unpicked, "Y"), vec![100.0], "the plot");
 
     let picked = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
     assert_eq!(row_value_of(&picked, "Y"), Some(100.0));
     assert_eq!(plot_values_of(&picked, "Y"), vec![100.0]);
+
+    // Reversed, `Y` is the *first* database's and the row reported it
+    // all along — the control that says the reading above is the
+    // resolution rule and not the order.
+    let reversed = collide_state(["b.dbc", "a.dbc"], None);
+    assert_eq!(row_value_of(&reversed, "Y"), Some(100.0));
 }
 
 #[test]
-fn a_pick_does_not_yet_reach_the_value_tables_or_the_calculated_fields() {
-    // Both still resolve by load order alone, so a project that has
-    // pinned `A` to b.dbc gets b.dbc's *values* and a.dbc's *labels*.
-    // Pinned rather than fixed: those two sites resolve per message,
-    // and moving them onto the same resolution the decode uses is the
-    // consolidation this change deliberately stops short of.
+fn a_pick_reaches_the_value_tables_and_the_calculated_fields() {
+    // A pick names the file that describes this traffic, so everything
+    // derived from the message follows it, not just the decoded number:
+    // b.dbc's `VAL_` labels and its `CannetCounter` / `CannetCrc`
+    // designation reach a project that chose b.dbc.
+    let labels = |state: &AppState| -> Vec<String> {
+        list_value_tables_inner(state, 256, false, "A", false, Some(TEST_BUS))
+            .into_iter()
+            .map(|e| e.label)
+            .collect()
+    };
+    let calc_designated = |state: &AppState| -> bool {
+        let dbs = state.databases();
+        resolve_effective_calc(
+            &state.decode_model(&dbs),
+            &calc_request(TEST_BUS, 256),
+            None,
+        )
+        .unwrap()
+        .is_some()
+    };
+
     let state = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
-    assert!(
-        list_value_tables_inner(&state, 256, false, "A", false, Some(TEST_BUS)).is_empty(),
-        "the picked definition declares Zero/Three; load order still answers",
-    );
-    let dbs = state.databases();
-    assert!(
-        resolve_effective_calc(&dbs, &calc_request(TEST_BUS, 256), None)
-            .unwrap()
-            .is_none(),
-        "b.dbc designates a counter and a CRC; load order still answers",
-    );
+    assert_eq!(labels(&state), vec!["Zero", "Three"], "the value table");
+    assert!(calc_designated(&state), "the calculated fields");
+
+    // Reversed load order with the pick reversed to match: b.dbc now
+    // wins on order and a.dbc is chosen, so both answers go away again.
+    // The reading above is a choice being honoured, not an order.
+    let state = collide_state(["b.dbc", "a.dbc"], Some("a.dbc"));
+    assert!(labels(&state).is_empty(), "the value table");
+    assert!(!calc_designated(&state), "the calculated fields");
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn the_transmit_panels_message_queries_follow_the_pick() {
+    // Describe, decode and encode all asked "first assigned database
+    // that answers" for themselves. They now resolve through the same
+    // message_source, so the panel cannot describe a row out of one
+    // file while encoding it against another — and a pick moves all
+    // three together.
+    let described = |state: &AppState| -> (usize, bool) {
+        let d = crate::dbc_commands::describe_message_inner(state, Some(TEST_BUS), 256, false)
+            .expect("256 is defined on this bus");
+        (d.signals.len(), d.calc_fields.is_some())
+    };
+    let decoded = |state: &AppState| -> f64 {
+        crate::dbc_commands::decode_frame_inner(
+            state,
+            Some(TEST_BUS),
+            256,
+            false,
+            &[3, 0, 100, 0, 0, 0, 0, 0],
+        )
+        .expect("256 decodes")
+        .signals
+        .iter()
+        .find(|s| s.name == "A")
+        .expect("A is decoded")
+        .value
+    };
+    let encoded = |state: &AppState| -> u8 {
+        crate::dbc_commands::encode_frame_inner(
+            state,
+            Some(TEST_BUS),
+            256,
+            false,
+            &[ipc::EncodeFrameSignal {
+                name: "A".into(),
+                physical: 30.0,
+            }],
+            vec![0u8; 8],
+        )
+        .expect("256 encodes")
+        .bytes[0]
+    };
+
+    // a.dbc supplies the message: three signals, no designation, unit
+    // scale both ways.
+    let state = collide_state(["a.dbc", "b.dbc"], None);
+    assert_eq!(described(&state), (3, false));
+    assert_eq!(decoded(&state), 3.0);
+    assert_eq!(encoded(&state), 30);
+
+    // Pinned to b.dbc: four signals, a designation, and x10 both ways.
+    let state = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
+    assert_eq!(described(&state), (4, true));
+    assert_eq!(decoded(&state), 30.0);
+    assert_eq!(encoded(&state), 3);
+
+    // Reversed load order with the pick reversed to match: the same
+    // discrimination the other way round.
+    let state = collide_state(["b.dbc", "a.dbc"], Some("a.dbc"));
+    assert_eq!(described(&state), (3, false));
+    assert_eq!(decoded(&state), 3.0);
+    assert_eq!(encoded(&state), 30);
+}
+
+#[test]
+fn a_designation_the_defining_database_never_declared_is_not_borrowed() {
+    // The ingest verifier's *default* config index used to enumerate
+    // only the messages that declare calculated fields, so a database
+    // behind the winner could designate a counter on a message it does
+    // not supply. a.dbc defines 256 and designates nothing; b.dbc,
+    // behind it, designates both a counter and a CRC — and the value
+    // being verified decodes from a.dbc, so there is nothing to verify
+    // (ADR 0054).
+    let configured = |order: [&str; 2]| -> bool {
+        let state = collide_state(order, None);
+        crate::app_state::rebuild_verification(&state);
+        state.verifier.wants(&collide_frame())
+    };
+    assert!(!configured(["a.dbc", "b.dbc"]), "a.dbc supplies 256");
+    // Reversed, b.dbc supplies the message and its designation applies
+    // — which is what makes the clean reading above a discrimination.
+    assert!(configured(["b.dbc", "a.dbc"]), "b.dbc supplies 256");
 }
 
 #[test]

@@ -223,6 +223,13 @@ pub(super) fn reconstruct_payload(
 
 /// Whether DBC `d` is scoped to bus `bus_id` — the same scoping rule
 /// the decode path applies ([`crate::filter::dbc_applies`]).
+///
+/// Eligibility, not resolution: the caller below wants **every**
+/// database scoped to the bus, because a rest-of-bus simulation shows
+/// the whole bus's traffic rather than one message's definition. So it
+/// is deliberately not
+/// [`DecodeModel::message_source`](crate::signal_fingerprint::DecodeModel::message_source),
+/// which answers "which one supplies this".
 fn dbc_scoped_to(d: &crate::app_state::LoadedDbc, bus_id: &str) -> bool {
     crate::filter::dbc_applies(&d.buses, Some(bus_id))
 }
@@ -901,8 +908,12 @@ BO_ 1280 AuxFrame: 8 AUX
             let dbs = state.databases.lock().unwrap();
             let mut registry = state.transmit_frames.lock().unwrap();
             for (id, request, spec) in registry.resolution_inputs() {
-                let resolved =
-                    crate::resolve_effective_calc(&dbs, &request, spec.as_ref()).unwrap();
+                let resolved = crate::resolve_effective_calc(
+                    &crate::tests::plain_model(&dbs),
+                    &request,
+                    spec.as_ref(),
+                )
+                .unwrap();
                 registry.set_resolved_calc(&id, resolved);
             }
             let (fired, cycle_ms) = registry.fire_info(&status_id).unwrap();
