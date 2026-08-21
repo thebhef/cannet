@@ -175,9 +175,9 @@ pub(crate) fn add_dbc(
 /// unassigning takes this database out of every candidate chain it was
 /// in, so `invalidate_derived_caches` re-encodes the pyramids it decoded
 /// and **parks** them; assigning puts those chains back, so the same call
-/// **revives** every park whose fingerprint the restored chain answers
-/// for, instead of decoding the capture a second time. What revives one
-/// is the fingerprint, not the file it came from.
+/// **revives** every park whose fingerprint the restored definition
+/// answers for, instead of decoding the capture a second time. What
+/// revives one is the fingerprint, not the file it came from.
 ///
 /// **Unassigning also stops what the database was driving.** Every
 /// periodic still firing that no database assigned to its bus defines
