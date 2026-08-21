@@ -842,3 +842,82 @@ Named here for a ruling, not decided.
 
 **Not touched:** `TraceStore::frame_index_at_ns` (task 91) — nothing in
 this phase reads it.
+
+#### ADR-0031 perf gate
+
+`pnpm --dir apps/gui tauri build --no-bundle`
+(`target/release/cannet-gui.exe`, frontend embedded), `cargo build
+--release -p cannet-perf-measurement`; `examples/ev-zonal` at ~1608 fps,
+`--connect-on-start`, `--perf-interact scrub`, 60 s captures into an
+isolated `--app-data-dir` (`scratch-perf/app-data`), gated by `cargo run
+--release -p cannet-perf-measurement -- check --expected-rx-fps 1608
+--expected-tx-fps 1608` against the committed
+`docs/performance-measurements/baseline.json`. **No baseline was
+promoted and no gate limit was touched.** Reports are review artifacts
+and stay out of the repository.
+
+**The gate did not pass on the first four runs**, so the population was
+extended to twelve. One report of the twelve — run 3 — fails two
+metrics; the other eleven pass all 213 gated metrics with nothing
+regressed and nothing widened.
+
+| run | rx fps | tx fps | `rx_gap` p95 ratio worst | `rx_gap` short-frac worst | `lag_ms` max | `tree_mb` peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1625.5 | 1611.7 | 2.144 | 0.0931 | 13.6 | 732.3 |
+| 2 | 1601.3 | 1601.4 | 1.166 | 0.0032 | 16.7 | 750.8 |
+| **3** | 1627.8 | **1530.6** | **3.307** | **0.2362** | 6.5 | 729.1 |
+| 4 | 1600.4 | 1607.6 | 1.367 | 0.0278 | 17.2 | 728.5 |
+| 5 | 1604.1 | 1608.9 | 1.148 | 0.0070 | 2.7 | 729.3 |
+| 6 | 1602.6 | 1607.3 | 1.183 | 0.0025 | 4.4 | 735.5 |
+| 7 | 1605.8 | 1607.6 | 1.153 | 0.0030 | 7.1 | 724.8 |
+| 8 | 1604.6 | 1609.5 | 1.138 | 0.0045 | 14.3 | 732.4 |
+| 9 | 1603.4 | 1606.9 | 1.168 | 0.0032 | 11.9 | 737.5 |
+| 10 | 1605.5 | 1611.2 | 1.147 | 0.0027 | 12.0 | 729.7 |
+| 11 | 1601.8 | 1609.0 | 1.162 | 0.0033 | 1.2 | 732.1 |
+| 12 | 1608.5 | 1610.3 | 1.176 | 0.0028 | 22.2 | 730.6 |
+
+Limits: `rx_gap_p95_ratio_worst` 2.898, `rx_gap_short_frac_worst` 0.166.
+Run 3 breaches both; run 1 is elevated on both but inside them.
+`ids_measured` is 173 on every run (no sidecar throttling — the
+fingerprint from the gotchas note is 156). The three memory-drift
+metrics gate on the median across reports and are `ok` over all twelve
+(`jsheap` 5.8 vs 24.1, `renderer` 41.9 vs 85.3, `tree` 72.4 vs 139.2),
+as are the tracebuffer / grpc / hardware-peak host modes.
+
+**What the outlier looks like** (observation → hypothesis → experiment →
+data → conclusion, as far as the delegation contract allows):
+
+- *Observation.* Run 3 is the only run of twelve whose **tx** fps sits
+  materially below 1600 (1530.6, ~5 % under) while its **rx** is the
+  second highest of the set (1627.8). Its two failing metrics are both
+  properties of the *inter-arrival distribution per id*, and both name
+  `zonal/` ids.
+- *Hypothesis.* The stutter is on the transmit side — the sidecar
+  producing frames unevenly for 60 s — not on the read path this phase
+  changed. A transmit that under-produces by 5 % widens and shortens
+  inter-arrival gaps by construction, which is exactly what both
+  metrics measure.
+- *Experiment.* Two, since the contract rules out the obvious control
+  (a run on the parent commit would mean switching branches, and a
+  worktree is not permitted): (a) extend the population from four runs
+  to twelve; (b) read what this phase actually added to the ingest and
+  serve paths.
+- *Data.* (a) Runs 4–12 — nine consecutive — are uniform and sit inside
+  the band prior phases reported (p95 ratio 1.14–1.37, short-frac
+  0.0025–0.028). The two elevated runs are 1 and 3, the earliest, taken
+  minutes after two release builds. (b) The diff adds **nothing** to the
+  ingest path (`TraceStore::append`, `decode_against`, the mux
+  extractor, verification are all untouched); on the serve path, with no
+  picks recorded — which is this workload — `picked_index` and
+  `pick_path` return on `picks.is_empty()` before building an identity
+  string, `scan_chunk` builds no pick vectors at all, and the per-name
+  cost inside the existing decode loop is one bounds-checked `get` on an
+  empty slice.
+- *Conclusion.* The evidence says machine contention on the earliest
+  captures, not a regression: the failing metrics track a transmit
+  under-production this change cannot cause, and nine consecutive later
+  runs are indistinguishable from the phase-3 baseline runs. It is
+  **not** discarded and it is **not** ruled harmless by me — the failing
+  report is reported here with the full population so the owner can rule
+  on whether the rx-gap pair is jittery beyond the band its brief
+  currently names (0.002–0.011), which two runs of twelve exceeded.
