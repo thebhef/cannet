@@ -259,31 +259,39 @@ pub fn definition_index<'a>(
 
 /// Every duplicate-id collision across the loaded set, for the
 /// Database panel's warning: every signal identity that more than one
-/// database assigned to the same bus defines. The first definer in
-/// project load order is the winner by construction (it is the one
-/// [`DefinitionIndex`] says resolves the signal), and every later one
-/// is a loser naming that winner.
+/// database assigned to the same bus defines, and which of them wins
+/// the decode.
 ///
-/// This only detects and names a winner; it does not choose one. Which
-/// database's decode should apply to a colliding signal is a
-/// resolution the Database panel does not offer — this is the warning
-/// alone.
+/// The winner is whichever [`DefinitionIndex::resolved`] says resolves
+/// the signal — the database the user chose for it where they chose
+/// one, and project load order otherwise — and every other definer is
+/// a loser naming that winner. Reading the winner through the same
+/// resolution the decode and the encoding fingerprint use is what keeps
+/// this warning from naming a database the decoder does not use once an
+/// ambiguity has been settled.
+///
+/// This detects and names; it does not choose. The choice is the
+/// view-signal panel's ([`crate::view_signals`]); a collision the user
+/// has resolved is still a collision, and the Database panel still
+/// reports it.
 pub fn dbc_collisions<'a>(
     dbs: impl IntoIterator<Item = (&'a str, &'a Database, &'a [String])>,
+    picks: &crate::signal_fingerprint::SignalDbcPicks,
 ) -> Vec<DbcCollision> {
     let index = definition_index(dbs);
     let mut out = Vec::new();
     for (bus_id, message_id, extended, signal_name, definers) in index.ambiguous() {
-        let (winner, losers) = definers
-            .split_first()
-            .expect("ambiguous entries are non-empty");
-        for loser in losers {
+        let identity = signal_identity(Some(bus_id), message_id, extended, signal_name, false);
+        let winner = index
+            .picked(&identity, picks)
+            .unwrap_or_else(|| definers[0]);
+        for loser in definers.iter().filter(|d| **d != winner) {
             out.push(DbcCollision {
                 bus_id: bus_id.to_owned(),
                 message_id,
                 extended,
                 signal_name: signal_name.to_owned(),
-                winner_path: (*winner).to_owned(),
+                winner_path: winner.to_owned(),
                 loser_path: (*loser).to_owned(),
             });
         }
@@ -980,10 +988,13 @@ mod tests {
         // `a` — first in project (iteration) order — wins all three.
         let a = db();
         let b = db();
-        let collisions = dbc_collisions([
-            ("a.dbc", &a, &["power".to_string()][..]),
-            ("b.dbc", &b, &["power".to_string()][..]),
-        ]);
+        let collisions = dbc_collisions(
+            [
+                ("a.dbc", &a, &["power".to_string()][..]),
+                ("b.dbc", &b, &["power".to_string()][..]),
+            ],
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        );
         let mut names: Vec<&str> = collisions.iter().map(|c| c.signal_name.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, vec!["PackTemp", "PackVolts", "TorqueReq"]);
@@ -993,15 +1004,52 @@ mod tests {
     }
 
     #[test]
+    fn dbc_collisions_names_the_winner_the_user_picked() {
+        // The collision is still a collision — two databases really do
+        // define the signal — but once the user has settled which one
+        // decodes it, the warning has to name that one. Otherwise the
+        // Database panel and the decoder disagree about the winner,
+        // which is exactly what one shared `DefinitionIndex` exists to
+        // prevent.
+        let a = db();
+        let b = db();
+        let mut picks = crate::signal_fingerprint::SignalDbcPicks::new();
+        picks.insert(
+            signal_identity(Some("power"), 256, false, "PackVolts", false),
+            "b.dbc".to_owned(),
+        );
+        let dbs = [
+            ("a.dbc", &a, &["power".to_string()][..]),
+            ("b.dbc", &b, &["power".to_string()][..]),
+        ];
+        let collisions = dbc_collisions(dbs, &picks);
+        let picked: Vec<&DbcCollision> = collisions
+            .iter()
+            .filter(|c| c.signal_name == "PackVolts")
+            .collect();
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].winner_path, "b.dbc");
+        assert_eq!(picked[0].loser_path, "a.dbc");
+        // Every other signal still resolves by load order.
+        assert!(collisions
+            .iter()
+            .filter(|c| c.signal_name != "PackVolts")
+            .all(|c| c.winner_path == "a.dbc"));
+    }
+
+    #[test]
     fn dbc_collisions_ignores_a_matching_id_on_a_different_bus() {
         // Same definitions, but assigned to different buses: no bus
         // sees both, so nothing collides.
         let a = db();
         let b = db();
-        let collisions = dbc_collisions([
-            ("a.dbc", &a, &["power".to_string()][..]),
-            ("b.dbc", &b, &["chassis".to_string()][..]),
-        ]);
+        let collisions = dbc_collisions(
+            [
+                ("a.dbc", &a, &["power".to_string()][..]),
+                ("b.dbc", &b, &["chassis".to_string()][..]),
+            ],
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        );
         assert!(collisions.is_empty());
     }
 
@@ -1012,10 +1060,13 @@ mod tests {
         // with nothing.
         let a = db();
         let b = db();
-        let collisions = dbc_collisions([
-            ("a.dbc", &a, &[] as &[String]),
-            ("b.dbc", &b, &["power".to_string()][..]),
-        ]);
+        let collisions = dbc_collisions(
+            [
+                ("a.dbc", &a, &[] as &[String]),
+                ("b.dbc", &b, &["power".to_string()][..]),
+            ],
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        );
         assert!(collisions.is_empty());
     }
 
@@ -1028,7 +1079,10 @@ mod tests {
         // that `a.dbc` loses to `a.dbc`. One database is one candidate.
         let a = Database::parse(MUX_ARMS_DBC).unwrap();
         let power = vec!["power".to_string()];
-        let collisions = dbc_collisions([("a.dbc", &a, power.as_slice())]);
+        let collisions = dbc_collisions(
+            [("a.dbc", &a, power.as_slice())],
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        );
         assert!(collisions.is_empty(), "{collisions:?}");
     }
 
