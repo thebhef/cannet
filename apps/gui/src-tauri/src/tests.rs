@@ -2370,7 +2370,7 @@ fn lowering_the_session_start_keeps_the_frames_and_never_raises_the_anchor() {
 
 /// The rebuild chip's own query on an ordinary session: nothing was
 /// restored, so nothing was discarded, so there is nothing to announce.
-/// The fast-path silence the chip depends on (task 75 item 6).
+/// The fast-path silence the chip depends on.
 #[test]
 fn a_session_with_nothing_restored_is_not_rebuilding_pyramids() {
     let state = test_state();
@@ -2384,7 +2384,7 @@ fn a_session_with_nothing_restored_is_not_rebuilding_pyramids() {
 
 /// `cancel_import` with nothing importing is a no-op, not a panic — the
 /// busy launcher it backs isn't perfectly synchronized with the pump's
-/// own lifetime (task 75's trace-open feedback, click-to-cancel).
+/// own lifetime.
 #[test]
 fn cancel_import_now_is_a_no_op_with_nothing_importing() {
     let state = test_state();
@@ -5113,14 +5113,14 @@ fn a_view_is_restored_by_the_signal_and_its_samples_by_the_fingerprint() {
 
 // ---- A `VAL_` renamed on disk -------------------------------------
 //
-// Task 27's exit criterion, host half. The watcher's `reload_one` is
-// `install_dbc` under the path already loaded, plus the announcement
-// (ADR 0053 §2) — and the announcement needs an `AppHandle`, which this
-// crate cannot build in a test (see the module note under
-// `dbc_watcher::tests`). What *is* testable here is the half the
-// frontend depends on: that after the swap the host answers with the
-// new label rather than the one it was serving a moment ago. The half
-// that carries it to a view is pinned frontend-side.
+// The watcher's `reload_one` is `install_dbc` under the path already
+// loaded, plus the announcement (ADR 0053 §2) — and the announcement
+// needs an `AppHandle`, which this crate cannot build in a test (see
+// the module note under `dbc_watcher::tests`). What *is* testable here
+// is the half the frontend depends on: that after the swap the host
+// answers with the new label rather than the one it was serving a
+// moment ago. The half that carries it to a view is pinned
+// frontend-side.
 
 /// Message 256 with one enum signal `Mode`, whose raw `0` is named
 /// `zero_label` — the one thing a `VAL_` rename moves.
