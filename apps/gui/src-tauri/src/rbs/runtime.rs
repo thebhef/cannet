@@ -93,6 +93,42 @@ pub(super) fn row_id(element: &str, bus_key: &str, msg_key: &str) -> String {
 // Buffer reconstruction
 // ---------------------------------------------------------------------
 
+/// Why one override couldn't be applied — the same three cases
+/// `reconstruct_payload` has always distinguished, named so a caller
+/// can classify without re-parsing the message text (task 89 phase 6:
+/// the signals panel's Not Encoded / Unknown Value split is drawn on
+/// this distinction — a signal the DBC doesn't define is not encoded
+/// at all, one whose *value* isn't recognised still transmits, just
+/// carrying the default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OverrideProblem {
+    /// The override names a signal the message descriptor has none of.
+    UnknownSignal,
+    /// A `0x…` override whose digits don't parse.
+    InvalidHex,
+    /// A text override matching no `VAL_` label.
+    UnknownEnumLabel,
+}
+
+/// One override the encoder could not apply, carrying enough to both
+/// classify it (`problem`) and reproduce today's system-log wording
+/// (`message`) without a second formatting rule to drift from the
+/// first.
+#[derive(Debug, Clone)]
+pub(super) struct OverrideWarning {
+    pub signal: String,
+    pub problem: OverrideProblem,
+    message: String,
+}
+
+impl OverrideWarning {
+    /// The human-readable warning text (unchanged from what
+    /// `reconstruct_payload` has always produced).
+    pub(super) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// Reconstruct one message's payload buffer: fill bit → DBC defaults
 /// (`GenSigStartValue`) → overrides (ADR 0028). Returns the buffer
 /// plus a warning per override that couldn't be applied (unknown
@@ -103,7 +139,7 @@ pub(super) fn reconstruct_payload(
     desc: &cannet_dbc::MessageDescriptor,
     msg: &RbsMessage,
     fill_bit: u8,
-) -> (Vec<u8>, Vec<String>) {
+) -> (Vec<u8>, Vec<OverrideWarning>) {
     let fill = if fill_bit == 0 { 0x00 } else { 0xFF };
     let mut buf = vec![fill; desc.expected_len];
     let mut warnings = Vec::new();
@@ -125,7 +161,11 @@ pub(super) fn reconstruct_payload(
     // Overrides.
     for (name, value) in &msg.signals {
         let Some(sig) = desc.signals.iter().find(|s| &s.name == name) else {
-            warnings.push(format!("unknown signal {name}"));
+            warnings.push(OverrideWarning {
+                signal: name.clone(),
+                problem: OverrideProblem::UnknownSignal,
+                message: format!("unknown signal {name}"),
+            });
             continue;
         };
         let physical = match value {
@@ -144,7 +184,11 @@ pub(super) fn reconstruct_payload(
                         };
                         Some(raw_f.mul_add(sig.factor, sig.offset))
                     } else {
-                        warnings.push(format!("{name}: invalid hex value {text}"));
+                        warnings.push(OverrideWarning {
+                            signal: name.clone(),
+                            problem: OverrideProblem::InvalidHex,
+                            message: format!("{name}: invalid hex value {text}"),
+                        });
                         None
                     }
                 } else {
@@ -156,7 +200,11 @@ pub(super) fn reconstruct_payload(
                     if let Some(raw) = raw {
                         Some((raw as f64).mul_add(sig.factor, sig.offset))
                     } else {
-                        warnings.push(format!("{name}: no enum label \"{t}\""));
+                        warnings.push(OverrideWarning {
+                            signal: name.clone(),
+                            problem: OverrideProblem::UnknownEnumLabel,
+                            message: format!("{name}: no enum label \"{t}\""),
+                        });
                         None
                     }
                 }
@@ -261,10 +309,10 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
                 }
             }
             let msg = entry.map_or(&no_overrides, |(_, m)| m);
-            let (data, mut w) = reconstruct_payload(db, id, desc, msg, element.file.fill_bit);
+            let (data, w) = reconstruct_payload(db, id, desc, msg, element.file.fill_bit);
             warnings.extend(
-                w.drain(..)
-                    .map(|w| format!("{bus_key}/{ecu_name}/{msg_key}: {w}")),
+                w.iter()
+                    .map(|w| format!("{bus_key}/{ecu_name}/{msg_key}: {}", w.message())),
             );
             let calc = if msg.counter.is_some() || msg.crc.is_some() {
                 Some(CalcFieldsSpec {
@@ -607,7 +655,9 @@ BO_ 1280 AuxFrame: 8 AUX
         assert_eq!(u16::from_le_bytes([buf[1], buf[2]]), 4032, "403.2 V / 0.1");
         assert_eq!(buf[6] & 0x0F, 0xA, "hex override is raw bits");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("Nope"));
+        assert_eq!(warnings[0].signal, "Nope");
+        assert_eq!(warnings[0].problem, OverrideProblem::UnknownSignal);
+        assert!(warnings[0].message().contains("Nope"));
 
         // Unknown enum label warns and leaves the default in place.
         let mut msg = RbsMessage::new();
@@ -616,6 +666,18 @@ BO_ 1280 AuxFrame: 8 AUX
         let (buf, warnings) = reconstruct_payload(&database, id, &desc, &msg, 0);
         assert_eq!(buf[0], 2, "default survives a bad override");
         assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].problem, OverrideProblem::UnknownEnumLabel);
+
+        // Malformed hex is its own, distinct problem — the taxonomy
+        // (task 89 phase 6) reads it the same as a bad enum label
+        // (Unknown Value: the signal is real, the text isn't), but the
+        // two are still classified separately rather than collapsed.
+        let mut msg = RbsMessage::new();
+        msg.signals
+            .insert("AliveCtr".into(), RbsValue::Text("0xZZ".into()));
+        let (_, warnings) = reconstruct_payload(&database, id, &desc, &msg, 0);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].problem, OverrideProblem::InvalidHex);
     }
 
     /// A bus may have more than one DBC scoped to it (the `ev-demo`
