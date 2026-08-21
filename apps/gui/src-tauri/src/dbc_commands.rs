@@ -200,6 +200,10 @@ pub(crate) fn set_dbc_buses_inner(state: &AppState, path: &str, buses: Vec<Strin
 /// reaches [`set_dbc_buses_inner`]'s stop rule by the same route.
 /// Returns the ids of the periodics it was driving, now stopped —
 /// `None` when no DBC was loaded under this path.
+///
+/// It is also where a per-signal database pick naming this database is
+/// dropped from the project — silently, because what is left is the
+/// load-order default the signal had before anyone chose.
 pub(crate) fn remove_dbc_inner(state: &AppState, path: &str) -> Option<Vec<String>> {
     let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state);
     let removed = {
@@ -211,6 +215,12 @@ pub(crate) fn remove_dbc_inner(state: &AppState, path: &str) -> Option<Vec<Strin
     if !removed {
         return None;
     }
+    // A per-signal database pick naming this database has lost its
+    // subject: drop it, silently, so the signal falls back to the
+    // load-order default (`AppState::forget_dbc_picks`). Before the
+    // invalidation below, so the pyramids are re-judged against the
+    // model the pick no longer shortens.
+    state.forget_dbc_picks(path);
     invalidate_derived_caches(state);
     Some(crate::transmit_commands::stop_periodics_left_unbacked(
         state,
