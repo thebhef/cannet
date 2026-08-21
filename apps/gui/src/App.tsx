@@ -101,6 +101,7 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { suppressDbcChanges, useDbcGeneration } from "./dbcChanged";
+import { useViewSignalsAttentionCount } from "./viewSignalsAttention";
 import { SignalGeneratorProvider } from "./signalGeneratorContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { ServersPanel } from "./ServersPanel";
@@ -992,6 +993,11 @@ export function App() {
     seenDbcGenerationRef.current = dbcGeneration;
     invalidateCache();
   }, [dbcGeneration, invalidateCache]);
+
+  // The view-signals launcher badge's live count (task 89 phase 3): read
+  // here, independently of whether the view-signals panel is mounted,
+  // so the toolbar button stays live with the panel closed.
+  const viewSignalsAttentionCount = useViewSignalsAttentionCount();
 
   // The unfiltered `RowPage` read: raw chronological rows for an
   // absolute index range. A trace window translates its local offset
@@ -3263,12 +3269,14 @@ export function App() {
   // recent-tracking and context gate as the palette and keyboard. The few
   // buttons that carry view-extras (the Connect/Disconnect toggle, the
   // disabled-while-empty Clear/Save, the Recent-captures dropdown, the
-  // unread badge) stay bespoke, keyed by a sentinel and interleaved in order.
+  // unread badge, the view-signals attention badge) stay bespoke, keyed
+  // by a sentinel and interleaved in order.
   type ToolbarItem =
     | "sep"
     | "connection"
     | "recentCaptures"
     | "systemMessages"
+    | "viewSignals"
     | { id: string; label: string; disabled?: boolean; busy?: boolean };
   // The capture whose census is walking right now, in whichever format
   // — one trace-open at a time, so at most one of the two is set.
@@ -3311,7 +3319,7 @@ export function App() {
     { id: "panel.add.colormap", label: "Add color map" },
     { id: "panel.add.generator", label: "Add generator" },
     { id: "panel.show.dbc", label: "Database panel" },
-    { id: "panel.show.viewSignals", label: "View signals" },
+    "viewSignals",
     { id: "panel.show.projectGraph", label: "Graph panel" },
     { id: "panel.show.events", label: "Events panel" },
     { id: "panel.show.project", label: "Project panel" },
@@ -3388,6 +3396,31 @@ export function App() {
           {unread > 0 && (
             <span className="system-messages-badge" aria-hidden="true">
               {unread > 99 ? "99+" : unread}
+            </span>
+          )}
+        </button>
+      );
+    }
+    if (item === "viewSignals") {
+      // The launcher badge (task 89 phase 3): the same needing-attention
+      // count `list_view_signals` gives the panel, live whether or not
+      // the panel is open (`useViewSignalsAttentionCount`), quiet at
+      // zero.
+      return (
+        <button
+          key="view-signals"
+          onClick={() => runCommand("panel.show.viewSignals")}
+          className="view-signals-button"
+          aria-label={
+            viewSignalsAttentionCount > 0
+              ? `View signals (${viewSignalsAttentionCount} need attention)`
+              : "View signals"
+          }
+        >
+          View signals
+          {viewSignalsAttentionCount > 0 && (
+            <span className="view-signals-badge" aria-hidden="true">
+              {viewSignalsAttentionCount > 99 ? "99+" : viewSignalsAttentionCount}
             </span>
           )}
         </button>
