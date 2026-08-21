@@ -3967,7 +3967,7 @@ describe("PlotPanel hidden signal rows", () => {
       shown.querySelector(".plot-signal-remove") ?? shown.querySelector(".plot-signal-pattern-badge"),
     ).not.toBeNull();
 
-    // The swatch is the only un-hide affordance phase 4 relies on — same
+    // The swatch is the only un-hide affordance (ADR 0026) — same
     // gesture, no new control.
     fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
     const hidden = row("EngineSpeed");
@@ -3992,7 +3992,7 @@ describe("PlotPanel hidden signal rows", () => {
   });
 
   it("still shows compact rows when every signal on the axis is hidden", () => {
-    // ADR 0026 / phase 4: an all-hidden axis keeps its rows rather than
+    // ADR 0026: an all-hidden axis keeps its rows rather than
     // reducing to a heading — a swatch in one of them is the only way
     // back. They compact exactly like any other hidden row.
     const bothHidden = makeRegistry({

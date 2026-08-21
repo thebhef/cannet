@@ -1560,9 +1560,9 @@ BU_: Ecu
 
     #[test]
     fn a_path_that_does_not_define_the_signal_is_no_pick() {
-        // A remap candidate (phase 5's job), a database assigned
-        // elsewhere, and one that was never loaded all name nothing
-        // that could decode this signal, so no entry is kept.
+        // A remap candidate, a database assigned elsewhere, and one
+        // that was never loaded all name nothing that could decode
+        // this signal, so no entry is kept.
         let state = ambiguous_state();
         assert!(!set_signal_dbc_pick_inner(
             &state,
