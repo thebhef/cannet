@@ -45,7 +45,11 @@
 //!    defines the signal, so which one decodes it is settled silently by
 //!    project load order. Invisible everywhere else: the signal catalog
 //!    deduplicates the collision away, and the decoder just takes the
-//!    first database that answers.
+//!    first database that answers. This is the one status the panel can
+//!    *resolve*: recording a database for the signal
+//!    ([`set_signal_dbc_pick`]) settles the choice, and the row leaves
+//!    Ambiguous because there is no longer more than one candidate in
+//!    its chain.
 //! 4. **Stale** — it decodes, on the scale the view expects, but the
 //!    decoder differs from the view's configuration in some other
 //!    recorded way — today, the message it belongs to has been renamed.
@@ -239,16 +243,26 @@ pub struct ViewSignalRow {
     /// The serving database's unit, or the one the view recorded when
     /// nothing decodes the signal.
     pub unit: String,
-    /// The database that decodes this signal today — the first one
-    /// assigned to the bus that defines it. `None` when nothing does.
+    /// The database that decodes this signal today: the one the user
+    /// picked for it, or — with no pick — the first assigned to the bus
+    /// that defines it. `None` when nothing does.
     pub serving_dbc: Option<String>,
+    /// The database the user chose for this signal, when they have
+    /// chosen one that still defines it. `None` is the load-order
+    /// default, which is what an untouched project has everywhere.
+    /// The panel shows the pick as the picker's current value, and
+    /// needs to be able to tell "chosen, and it happens to be first"
+    /// from "nobody chose".
+    pub picked_dbc: Option<String>,
     /// The views that reference this signal, by name. **Blast radius**,
     /// not a to-do list: one signal is one row and a repair applies
     /// everywhere it is referenced.
     pub used_by: Vec<String>,
     /// The choices available for this row, empty where there is no
     /// choice to make (a `Decoded` row is already what the view asked
-    /// for).
+    /// for) — **unless a pick is in force**, which a Decoded row keeps
+    /// its candidates for, since the pick has to stay reversible from
+    /// the same control that made it.
     pub candidates: Vec<ViewSignalCandidate>,
     /// Every field where the serving database differs from what the
     /// views recorded. Empty for `Decoded` and `Not Decoded`.
@@ -286,11 +300,15 @@ struct Aggregate<'a> {
 /// taxonomy is testable without a Tauri app.
 ///
 /// `dbs` is the loaded set in project load order, each with the buses it
-/// is assigned to; `bus_names` maps bus id to the project's name for it.
+/// is assigned to; `bus_names` maps bus id to the project's name for it;
+/// `picks` is the per-signal database choices the decode also resolves
+/// through, so the serving database this reports is the one that really
+/// decodes.
 fn build_rows<'a>(
     registry: &'a ViewSignalRegistry,
     dbs: &[(&'a str, &'a Database, &'a [String])],
     bus_names: &HashMap<String, String>,
+    picks: &crate::signal_fingerprint::SignalDbcPicks,
 ) -> Vec<ViewSignalRow> {
     // The one detector for "which assigned databases define this",
     // shared with the Database panel's duplicate-id warning.
@@ -338,7 +356,8 @@ fn build_rows<'a>(
                 &id,
                 r,
                 &agg.used_by,
-                index.defining(&id),
+                index.resolved(&id, picks),
+                index.picked(&id, picks),
                 described,
                 bus_names,
             )
@@ -380,11 +399,14 @@ fn row(
     reference: &ViewSignalRef,
     used_by: &BTreeSet<&str>,
     definers: &[&str],
+    picked: Option<&str>,
     described: &[(&str, MessageDescriptor)],
     bus_names: &HashMap<String, String>,
 ) -> ViewSignalRow {
-    // The serving database is the first that defines the signal, which
-    // is the one the decoder resolves it from.
+    // The serving database is the first of the *resolved* chain — the
+    // one the user picked where they picked one, and otherwise the
+    // first that defines the signal. Either way it is the one the
+    // decoder resolves it from (`DefinitionIndex::resolved`).
     let serving = definers.first().and_then(|path| {
         described
             .iter()
@@ -482,8 +504,9 @@ fn row(
             |(_, _, s)| s.unit.clone(),
         ),
         serving_dbc: serving.map(|(p, _, _)| p.to_owned()),
+        picked_dbc: picked.map(ToOwned::to_owned),
         used_by: used_by.iter().map(|v| (*v).to_owned()).collect(),
-        candidates: if status == ViewSignalStatus::Decoded {
+        candidates: if status == ViewSignalStatus::Decoded && picked.is_none() {
             Vec::new()
         } else {
             candidates(described)
@@ -753,7 +776,10 @@ pub(crate) fn list_view_signals_inner(
         .iter()
         .map(|d| (d.path.as_str(), d.db.as_ref(), d.buses.as_slice()))
         .collect();
-    let mut rows = build_rows(&registry, &borrowed, &names);
+    // Lock order: the DBC set before the picks, as `decode_model`
+    // takes them.
+    let picks = state.picks_snapshot();
+    let mut rows = build_rows(&registry, &borrowed, &names, &picks);
     drop(dbs);
     drop(registry);
     sort_rows(&mut rows, sort_key, sort_dir);
@@ -837,7 +863,27 @@ mod tests {
         registry: &ViewSignalRegistry,
         dbs: &[(&str, &Database, &[String])],
     ) -> Vec<ViewSignalRow> {
-        build_rows(registry, dbs, &names())
+        build_rows(
+            registry,
+            dbs,
+            &names(),
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        )
+    }
+
+    /// [`build`] with one signal's database chosen by the user.
+    fn build_picked(
+        registry: &ViewSignalRegistry,
+        dbs: &[(&str, &Database, &[String])],
+        signal: &str,
+        path: &str,
+    ) -> Vec<ViewSignalRow> {
+        let mut picks = crate::signal_fingerprint::SignalDbcPicks::new();
+        picks.insert(
+            signal_identity(Some("power"), 256, false, signal, false),
+            path.to_owned(),
+        );
+        build_rows(registry, dbs, &names(), &picks)
     }
 
     #[test]
@@ -1002,6 +1048,129 @@ mod tests {
                 ("b.dbc", "PackVolts"),
                 ("b.dbc", "Other"),
             ]
+        );
+    }
+
+    #[test]
+    fn a_pick_settles_the_ambiguity_and_names_the_database_it_chose() {
+        // The resolution the panel exists for: with a database chosen,
+        // there is no longer more than one candidate in the signal's
+        // chain, so the row leaves Ambiguous and reports the chosen
+        // database as the one that serves it — which is the same
+        // database the decode resolves through
+        // (`DefinitionIndex::resolved`).
+        let a = plain();
+        let b = plain();
+        let buses = power();
+        let reg = registry(&[(
+            "v1",
+            "Plot 1",
+            vec![recorded("PackVolts", "PackStatus", "V", 0.1)],
+        )]);
+        let dbs = [
+            ("a.dbc", &a, buses.as_slice()),
+            ("b.dbc", &b, buses.as_slice()),
+        ];
+
+        let rows = build_picked(&reg, &dbs, "PackVolts", "b.dbc");
+        assert_eq!(rows[0].status, ViewSignalStatus::Decoded);
+        assert_eq!(rows[0].serving_dbc.as_deref(), Some("b.dbc"));
+        assert_eq!(rows[0].picked_dbc.as_deref(), Some("b.dbc"));
+        // A Decoded row normally offers nothing, but a picked one has
+        // to stay reversible from the control that made the pick.
+        assert!(
+            rows[0]
+                .candidates
+                .iter()
+                .any(|c| c.dbc_path == "a.dbc" && c.signal_name == "PackVolts"),
+            "the way back to the other database has to stay on offer"
+        );
+
+        // A pick against the database load order already picks is
+        // reported as a pick, not as nothing — the panel's control
+        // shows what was chosen.
+        let same = build_picked(&reg, &dbs, "PackVolts", "a.dbc");
+        assert_eq!(same[0].serving_dbc.as_deref(), Some("a.dbc"));
+        assert_eq!(same[0].picked_dbc.as_deref(), Some("a.dbc"));
+        assert_eq!(same[0].status, ViewSignalStatus::Decoded);
+    }
+
+    #[test]
+    fn a_pick_on_a_database_that_no_longer_defines_the_signal_is_ignored() {
+        // The stale pick, three ways: not loaded, assigned elsewhere,
+        // or edited until it no longer defines the signal. All three
+        // fall back to the load-order default, which still reads
+        // Ambiguous because nothing has resolved it.
+        let a = plain();
+        let b = plain();
+        let elsewhere = vec!["chassis".to_string()];
+        let buses = power();
+        let reg = registry(&[(
+            "v1",
+            "Plot 1",
+            vec![recorded("PackVolts", "PackStatus", "V", 0.1)],
+        )]);
+
+        let gone = build_picked(
+            &reg,
+            &[
+                ("a.dbc", &a, buses.as_slice()),
+                ("b.dbc", &b, buses.as_slice()),
+            ],
+            "PackVolts",
+            "removed.dbc",
+        );
+        assert_eq!(gone[0].status, ViewSignalStatus::Ambiguous);
+        assert_eq!(gone[0].serving_dbc.as_deref(), Some("a.dbc"));
+        assert_eq!(gone[0].picked_dbc, None);
+
+        let unassigned = build_picked(
+            &reg,
+            &[
+                ("a.dbc", &a, buses.as_slice()),
+                ("b.dbc", &b, elsewhere.as_slice()),
+            ],
+            "PackVolts",
+            "b.dbc",
+        );
+        assert_eq!(unassigned[0].status, ViewSignalStatus::Decoded);
+        assert_eq!(unassigned[0].serving_dbc.as_deref(), Some("a.dbc"));
+        assert_eq!(unassigned[0].picked_dbc, None);
+    }
+
+    #[test]
+    fn a_pick_can_put_a_row_into_scale_by_choosing_a_different_scaling() {
+        // Choosing the other database is a real change of encoding, and
+        // the panel reports what the choice cost: the picked database
+        // scales the signal differently from what the view recorded, so
+        // the row reads Scale and names both sides.
+        let a = plain();
+        let b = dbc("PackStatus", "PackVolts", "V", "0.5");
+        let buses = power();
+        let reg = registry(&[(
+            "v1",
+            "Plot 1",
+            vec![recorded("PackVolts", "PackStatus", "V", 0.1)],
+        )]);
+        let rows = build_picked(
+            &reg,
+            &[
+                ("a.dbc", &a, buses.as_slice()),
+                ("b.dbc", &b, buses.as_slice()),
+            ],
+            "PackVolts",
+            "b.dbc",
+        );
+        assert_eq!(rows[0].status, ViewSignalStatus::Scale);
+        assert_eq!(rows[0].serving_dbc.as_deref(), Some("b.dbc"));
+        let factor = rows[0]
+            .diffs
+            .iter()
+            .find(|d| d.field == "factor")
+            .expect("the scaling difference is reported");
+        assert_eq!(
+            (factor.mapped.as_str(), factor.decoded.as_str()),
+            ("0.1", "0.5")
         );
     }
 

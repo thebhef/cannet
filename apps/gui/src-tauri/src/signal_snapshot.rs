@@ -145,6 +145,56 @@ impl<'a> DefinitionIndex<'a> {
             .map_or(&[][..], |e| e.definers.as_slice())
     }
 
+    /// The candidate chain for `identity` **once the user's pick is
+    /// applied**: the database a pick names, alone, where it names one
+    /// of the definers — and otherwise the definers in load order,
+    /// which is the default.
+    ///
+    /// The same rule
+    /// [`DecodeModel::picked_index`](crate::signal_fingerprint::DecodeModel::picked_index)
+    /// applies to the decode and to the encoding fingerprint, expressed
+    /// here over an already-built definer list. Both read "assigned to
+    /// the bus and defining the signal, in load order", so the panel
+    /// cannot name a serving database the decoder does not use. A pick
+    /// naming something that is not a definer — removed, unassigned,
+    /// or edited until it no longer defines the signal — is ignored,
+    /// exactly as the decode ignores it.
+    #[must_use]
+    pub fn resolved<'s>(
+        &'s self,
+        identity: &str,
+        picks: &crate::signal_fingerprint::SignalDbcPicks,
+    ) -> &'s [&'a str] {
+        let all = self.defining(identity);
+        self.pick_in_force(identity, picks)
+            .map_or(all, |i| &all[i..=i])
+    }
+
+    /// The database a pick names for `identity` **where that pick is in
+    /// force** — `None` both when nothing was chosen and when what was
+    /// chosen is no longer a definer. The panel shows this as its
+    /// picker's current value, so a pick that resolves to nothing must
+    /// not appear there either.
+    #[must_use]
+    pub fn picked(
+        &self,
+        identity: &str,
+        picks: &crate::signal_fingerprint::SignalDbcPicks,
+    ) -> Option<&'a str> {
+        self.pick_in_force(identity, picks)
+            .map(|i| self.defining(identity)[i])
+    }
+
+    /// Where in the definer list the pick lands, if it lands at all.
+    fn pick_in_force(
+        &self,
+        identity: &str,
+        picks: &crate::signal_fingerprint::SignalDbcPicks,
+    ) -> Option<usize> {
+        let pick = picks.get(identity)?;
+        self.defining(identity).iter().position(|d| d == pick)
+    }
+
     /// Every indexed identity that more than one database defines, as
     /// `(bus, message id, extended, signal name, definers)`. Sorted, so
     /// a consumer's output order does not depend on hash iteration.
