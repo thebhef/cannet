@@ -48,6 +48,11 @@ pub use view::{
     __tauri_command_name_rbs_view,
 };
 
+mod signals;
+
+pub use signals::rbs_signal_rows;
+pub use signals::{__cmd__rbs_signal_rows, __tauri_command_name_rbs_signal_rows};
+
 pub(crate) mod watch;
 
 mod commands;
