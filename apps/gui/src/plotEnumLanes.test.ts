@@ -9,6 +9,7 @@ import {
   stripeOverlay,
   stripedOverlap,
   EXTRAPOLATION_STRIPE_PERIOD_PX,
+  fitTileLabel,
   measureTileLabel,
   normalizeIntoLane,
   tileLabelX,
@@ -352,5 +353,46 @@ describe("stripedOverlap", () => {
     expect(stripedOverlap(0, 10, [10, 20])).toBeNull();
     expect(stripedOverlap(0, 10, [-5, 0])).toBeNull();
     expect(stripedOverlap(0, 10, [20, 30])).toBeNull();
+  });
+});
+
+describe("fitTileLabel", () => {
+  /// A 2d context stand-in, 10 px a character, with a font unique per
+  /// call so `measureTileLabel`'s memo can't serve another test's
+  /// widths.
+  let fonts = 0;
+  function ctx(): CanvasRenderingContext2D {
+    return {
+      font: `10px fit-${fonts++}`,
+      measureText: (s: string) => ({ width: 10 * s.length }),
+    } as unknown as CanvasRenderingContext2D;
+  }
+
+  it("returns a label that fits unchanged", () => {
+    // The control: no ellipsis where none is needed, so an ellipsis
+    // below reads as the width and not as the helper.
+    expect(fitTileLabel(ctx(), "Drive", 100)).toEqual({ text: "Drive", width: 50 });
+    // Exactly filling the space still fits.
+    expect(fitTileLabel(ctx(), "Drive", 50)).toEqual({ text: "Drive", width: 50 });
+  });
+
+  it("cuts the end and marks it, never wider than what it was given", () => {
+    const got = fitTileLabel(ctx(), "TractionInverterStatorWinding", 95)!;
+    expect(got.text).toBe("Traction…");
+    expect(got.width).toBe(90);
+    expect(got.width).toBeLessThanOrEqual(95);
+  });
+
+  it("keeps as many characters as the width allows, not one fewer", () => {
+    // 10 px a character and one for the ellipsis: 80 px is 7 characters
+    // plus the mark.
+    expect(fitTileLabel(ctx(), "abcdefghijkl", 80)!.text).toBe("abcdefg…");
+  });
+
+  it("gives up only when not even one character and the mark fit", () => {
+    expect(fitTileLabel(ctx(), "abcdefghijkl", 19)).toBeNull();
+    expect(fitTileLabel(ctx(), "abcdefghijkl", 20)!.text).toBe("a…");
+    expect(fitTileLabel(ctx(), "abcdefghijkl", 0)).toBeNull();
+    expect(fitTileLabel(ctx(), "abcdefghijkl", -5)).toBeNull();
   });
 });

@@ -35,7 +35,9 @@ export function SignalValueText({
     <>
       <span className="signal-value-number">{formatSignalValue(value, hex)}</span>
       {unit ? <span className="signal-value-unit">{unit}</span> : null}
-      {label ? <span className="signal-value-label">{`"${label}"`}</span> : null}
+      {label ? (
+        <span className="signal-value-label" title={label}>{`"${label}"`}</span>
+      ) : null}
     </>
   );
 }

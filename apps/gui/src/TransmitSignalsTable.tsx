@@ -296,6 +296,7 @@ function EnumValueCell({
     <Combobox
       className="tx-col-value tx-signal-input"
       options={options}
+      proseLabels
       value={currentLabel ?? ""}
       placeholder={display}
       onChange={(v) => {
