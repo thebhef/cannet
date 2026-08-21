@@ -256,7 +256,7 @@ describe("ColorMapPanel rehydration", () => {
   });
 });
 
-describe("view-signals push (task 89)", () => {
+describe("view-signals push", () => {
   it("pushes nothing before a target is picked, and its target once one is", () => {
     renderPanel({ signalName: "PackCurrent", messageId: 0x2a0, busId: "b1" });
     expect(invoke).toHaveBeenCalledWith(

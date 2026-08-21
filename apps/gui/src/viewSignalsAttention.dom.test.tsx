@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The launcher badge's live count (task 89 phase 3): it must be
+// The launcher badge's live count: it must be
 // correct on mount, refetch on `view-signals-changed`, and refetch on
 // the DBC-change generation (ADR 0053) — the same two triggers
 // `ViewSignalsPanel` itself refetches on — with no panel mounted at
@@ -73,8 +73,8 @@ describe("useViewSignalsAttentionCount", () => {
     // its listener attaches (closing the launch race) — that pair is
     // its own contract, not this hook's to avoid. What this hook must
     // not add is a *third* mount fetch by treating dbcGeneration's
-    // initial value as a change, the same shape phase 2's panel caught
-    // (two effects both firing on mount).
+    // initial value as a change, the same shape a prior bug in the
+    // panel's own effects took (two effects both firing on mount).
     renderHook(() => useViewSignalsAttentionCount());
     await waitFor(() => expect(listCalls().length).toBeGreaterThan(0));
     await new Promise((r) => setTimeout(r, 20));

@@ -1,5 +1,5 @@
-/// The view-signals panel's column model (task 89): the same
-/// defs-parameterized arithmetic the trace tables and the signal view
+/// The view-signals panel's column model: the same defs-parameterized
+/// arithmetic the trace tables and the signal view
 /// use (`traceColumns.ts`), bound to `list_view_signals`'s row shape.
 /// Sort keys travel to the host verbatim (`view_signals::sort_rows`);
 /// `source` and `detail` carry no host sort (there is nothing to order

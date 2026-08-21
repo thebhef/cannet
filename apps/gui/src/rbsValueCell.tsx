@@ -1,6 +1,6 @@
 /// The RBS signal value editor, shared between the RBS panel's own
 /// tree (`RbsPanel.tsx`) and the RBS signals grid
-/// (`RbsSignalsPanel.tsx`, task 89 phase 6) — **one** implementation so
+/// (`RbsSignalsPanel.tsx`) — **one** implementation so
 /// the two can't disagree at the boundary. Both edit the same override
 /// through the same `rbs_set_signal` command; a signal cell here is
 /// the enum `Combobox` / free-text `ValidatedInput` split
@@ -65,9 +65,9 @@ export function RbsValueCell({
   const cellClassName = className ?? "rbs-signal-input";
 
   const commit = (value: string | number) => {
-    // Clamp on entry (task 89 phase 6, grooming resolution "Out of
-    // Range is a frontend concern, and clamping is shared code"): a
-    // plain number is a physical value and must land in the signal's
+    // Clamp on entry ("Out of Range is a frontend concern, and
+    // clamping is shared code"): a plain number is a physical value
+    // and must land in the signal's
     // range before it's ever sent; a VAL_ label or 0x… raw value has
     // no such range to be out of.
     onCommit(typeof value === "number" ? clampToSignalRange(value, s) : value);
@@ -140,7 +140,7 @@ export function parseSignalText(
   // valid JS numeric literal (10), so testing it first would silently
   // reinterpret every well-formed hex override as a physical number
   // and never reach the raw-bits path `reconstruct_payload` gives it
-  // (task 89 phase 6 — found while extracting this into shared code).
+  // (found while extracting this into shared code).
   if (/^0x[0-9a-fA-F]+$/i.test(t)) return t;
   const n = Number(t);
   if (Number.isFinite(n)) return n;

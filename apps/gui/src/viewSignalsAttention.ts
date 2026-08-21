@@ -1,7 +1,7 @@
-/// The view-signals launcher badge's live count (task 89 phase 3): the
-/// same `attentionCount` `list_view_signals` gives `ViewSignalsPanel`,
-/// read independently of whether the panel is mounted — the whole
-/// reason phase 1 put the count host-side
+/// The view-signals launcher badge's live count: the same
+/// `attentionCount` `list_view_signals` gives `ViewSignalsPanel`, read
+/// independently of whether the panel is mounted — the whole reason
+/// the count lives host-side
 /// (`view_signals::list_view_signals_inner`, `attention_count`) is that
 /// it stays live with the panel closed, and this hook is the one place
 /// that reads it for the toolbar button.
@@ -11,8 +11,8 @@
 /// *when* to ask, on top of already sharing *what* they ask
 /// (`list_view_signals`'s one `attentionCount` field): the
 /// `view-signals-changed` event (a view's pushed references changed)
-/// and the DBC-change generation (ADR 0053 §2/§3, which already covers
-/// assignment changes since task 88). The `view-signals-changed` half
+/// and the DBC-change generation (ADR 0053 §2/§3, which also covers
+/// assignment changes). The `view-signals-changed` half
 /// reuses the shared host-mirror pattern (`useHostMirror.ts`) for its
 /// fetch/listen/launch-race machinery; the generation half is folded on
 /// top the same way `ViewSignalsPanel` folds it onto its own fetch
@@ -26,8 +26,7 @@
 /// two events above, never on a timer, so it does not compound with
 /// capture length or session time the way a poll would. A count-only
 /// command would remove the row payload; not built here because the
-/// event-gated cost was not judged obviously real (task 89 phase 3's
-/// status log).
+/// event-gated cost was not judged obviously real.
 
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";

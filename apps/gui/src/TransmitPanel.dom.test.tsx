@@ -856,7 +856,7 @@ describe("TransmitPanel rehydration", () => {
   });
 });
 
-describe("view-signals push (task 89)", () => {
+describe("view-signals push", () => {
   it("pushes nothing for a frame with no calculated-field spec", async () => {
     POOL = [frame("a")];
     renderPanel("el", ["a"]);
