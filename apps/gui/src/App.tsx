@@ -2729,6 +2729,19 @@ export function App() {
     }
     rbsHostStateRef.current = current;
   }, [registry, queueRbsOp]);
+  // The host turns an element's Run off when a database it was
+  // transmitting from reloads underneath it (ADR 0053 §1's swap
+  // exception). Run is the *project's* flag mirrored onto the host, so
+  // the project follows the host here — otherwise the panel's Run
+  // control would read on while nothing is being sent.
+  useEffect(() => {
+    const un = listen<string[]>("rbs-run-stopped", (event) => {
+      for (const id of event.payload) updateElement(id, { kind: "rbs", run: false });
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, [updateElement]);
   // The global RBS kill-switch is runtime-only host state; mirror it
   // through its dedicated event so the palette toggle and the panel
   // button stay in sync.
