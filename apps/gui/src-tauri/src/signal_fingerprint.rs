@@ -158,19 +158,31 @@ pub struct DecodeModel<'a> {
     /// exact "does a later database define a signal the winner does
     /// not" would mean walking every signal of every database instead
     /// of every message.
-    split_messages: HashSet<(u32, bool)>,
+    split_messages: Arc<SplitMessages>,
 }
 
-/// The messages more than one of `dbcs` defines — see
-/// [`DecodeModel::split_messages`]. One walk of each database's message
-/// ids, and none at all below two databases, so a single-database
-/// project pays nothing for the index or for the branch it feeds.
-fn split_messages(dbcs: &[DbcScope<'_>]) -> HashSet<(u32, bool)> {
+/// The `(message id, extended)` pairs more than one loaded database
+/// defines — see [`DecodeModel::message_spans_databases`] for what it
+/// gates. A pure function of the loaded set, so it is cached against
+/// that set rather than rebuilt per serve
+/// ([`AppState::split_message_index`](crate::app_state::AppState::split_message_index)).
+pub type SplitMessages = HashSet<(u32, bool)>;
+
+/// The messages more than one of `dbcs` defines. One walk of each
+/// database's message ids, and none at all below two databases, so a
+/// single-database project pays nothing for the index or for the
+/// branch it feeds.
+///
+/// Not free above that: two 500-message databases cost tens of
+/// microseconds to index, which is why the result is cached against
+/// the DBC set instead of built per serve.
+#[must_use]
+pub fn split_messages(dbcs: &[DbcScope<'_>]) -> SplitMessages {
     if dbcs.len() < 2 {
         return HashSet::new();
     }
-    let mut seen: HashSet<(u32, bool)> = HashSet::new();
-    let mut split: HashSet<(u32, bool)> = HashSet::new();
+    let mut seen: SplitMessages = SplitMessages::new();
+    let mut split: SplitMessages = SplitMessages::new();
     for d in dbcs {
         for (id, extended, _) in d.db.message_names() {
             if !seen.insert((id, extended)) {
@@ -222,7 +234,29 @@ impl<'a> DecodeModel<'a> {
             .keys()
             .filter_map(|k| crate::signal_snapshot::identity_message(k))
             .collect();
-        let split_messages = split_messages(&dbcs);
+        let split_messages = Arc::new(split_messages(&dbcs));
+        Self {
+            dbcs,
+            picks,
+            message_picks,
+            split_messages,
+        }
+    }
+
+    /// The set, the picks, and a **shared** split-message index — the
+    /// per-serve constructor. The index is a pure function of the set,
+    /// so it is built once per DBC-set change and `Arc`-cloned here
+    /// rather than recomputed per serve (ADR 0033).
+    #[must_use]
+    pub fn with_split(
+        dbcs: Vec<DbcScope<'a>>,
+        picks: Arc<SignalDbcPicks>,
+        split_messages: Arc<SplitMessages>,
+    ) -> Self {
+        let message_picks = picks
+            .keys()
+            .filter_map(|k| crate::signal_snapshot::identity_message(k))
+            .collect();
         Self {
             dbcs,
             picks,
@@ -234,7 +268,7 @@ impl<'a> DecodeModel<'a> {
     /// The set with no picks — the load-order default everywhere.
     #[must_use]
     pub fn plain(dbcs: Vec<DbcScope<'a>>) -> Self {
-        let split_messages = split_messages(&dbcs);
+        let split_messages = Arc::new(split_messages(&dbcs));
         Self {
             dbcs,
             picks: Arc::default(),

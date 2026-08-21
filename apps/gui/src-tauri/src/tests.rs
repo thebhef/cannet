@@ -621,6 +621,7 @@ pub(crate) fn test_state() -> AppState {
     AppState {
         databases: Mutex::new(Vec::new()),
         descriptor_snapshot: Mutex::new(None),
+        split_messages: Mutex::new(None),
         remote_sessions: Mutex::new(HashMap::new()),
         trace_store: Arc::new(TraceStore::new()),
         signal_caches: SignalCacheStore::new(signals_dir),
@@ -757,7 +758,7 @@ pub(crate) fn test_bus_scope() -> Vec<String> {
 /// the load-order default, which is what a test that isn't about
 /// ambiguity resolution wants.
 pub(crate) fn plain_model(dbs: &[LoadedDbc]) -> crate::signal_fingerprint::DecodeModel<'_> {
-    crate::app_state::decode_model(dbs, std::sync::Arc::default())
+    crate::signal_fingerprint::DecodeModel::plain(crate::app_state::dbc_scopes(dbs))
 }
 
 pub(crate) fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {

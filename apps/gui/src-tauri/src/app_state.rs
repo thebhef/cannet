@@ -73,6 +73,13 @@ pub(crate) struct AppState {
     /// the first `fetch_signal_page`; dropped by
     /// [`invalidate_derived_caches`] on any DBC-set change.
     pub(crate) descriptor_snapshot: Mutex<Option<signal_snapshot::DescriptorSnapshot>>,
+    /// Cached "which message ids more than one loaded database defines"
+    /// index — see
+    /// [`signal_fingerprint::split_messages`](crate::signal_fingerprint::split_messages).
+    /// A pure function of the DBC set, like the descriptor universe
+    /// above, and dropped by [`invalidate_derived_caches`] on the same
+    /// events. `None` until the first decode model is built.
+    pub(crate) split_messages: Mutex<Option<Arc<crate::signal_fingerprint::SplitMessages>>>,
     /// Active remote sessions, keyed by server address. Each value is
     /// the gRPC [`SessionHandle`] (drop to disconnect), a
     /// [`SessionTransmitter`] the transmit panel uses to push frames
@@ -287,7 +294,9 @@ impl AppState {
         &self,
         dbcs: &'a [LoadedDbc],
     ) -> crate::signal_fingerprint::DecodeModel<'a> {
-        decode_model(dbcs, self.picks_snapshot())
+        let scopes = dbc_scopes(dbcs);
+        let split = self.split_message_index(&scopes);
+        crate::signal_fingerprint::DecodeModel::with_split(scopes, self.picks_snapshot(), split)
     }
 
     /// Forget every per-signal database pick naming `path`, and say
@@ -321,6 +330,38 @@ impl AppState {
         self.descriptor_snapshot
             .lock()
             .expect("descriptor_snapshot mutex poisoned")
+    }
+
+    pub(crate) fn split_messages(
+        &self,
+    ) -> MutexGuard<'_, Option<Arc<crate::signal_fingerprint::SplitMessages>>> {
+        self.split_messages
+            .lock()
+            .expect("split_messages mutex poisoned")
+    }
+
+    /// The split-message index for `scopes` — built on first use and
+    /// reused until the DBC set changes, exactly like
+    /// [`Self::scoped_descriptor_snapshot`] and for the same reason:
+    /// it is a pure function of the set, and building it walks every
+    /// message of every database, which is tens of microseconds on a
+    /// project with two large databases and far too much to pay per
+    /// serve.
+    ///
+    /// Deliberately holds only one lock at a time (check, release,
+    /// build, store), so it adds no edge to the documented lock order.
+    /// Two concurrent misses may each build one; they are equal by
+    /// construction.
+    pub(crate) fn split_message_index(
+        &self,
+        scopes: &[crate::signal_fingerprint::DbcScope<'_>],
+    ) -> Arc<crate::signal_fingerprint::SplitMessages> {
+        if let Some(hit) = self.split_messages().as_ref().map(Arc::clone) {
+            return hit;
+        }
+        let built = Arc::new(crate::signal_fingerprint::split_messages(scopes));
+        *self.split_messages() = Some(Arc::clone(&built));
+        built
     }
 
     /// The bus-expanded descriptor universe — built on first use and
@@ -402,6 +443,10 @@ impl AppState {
 /// so the new set is what decides which of them are stale, which keep
 /// decoding, and which are parked against their definition's return.
 pub(crate) fn invalidate_derived_caches(state: &AppState) {
+    // Before anything reads a model off the new set: the split-message
+    // index is a function of that set, and `decode_model` below builds
+    // one.
+    *state.split_messages() = None;
     // Lock order: the DBC set before the signal caches, as every other
     // path that needs both takes them (`persist_pyramids`, `restore`,
     // `sample_signals`).
@@ -436,31 +481,23 @@ pub(crate) fn pyramid_validity(state: &AppState) -> Option<crate::signal_cache::
     })
 }
 
-/// The model a signal decodes against: each database with the buses it
-/// is scoped to, **in load order** (the order is the "first DBC that
-/// decodes wins" priority, so it is part of what a signal decodes to),
-/// plus the per-signal database picks that override that order where
-/// the user has made a choice
-/// ([`crate::signal_fingerprint::DecodeModel`]). Borrowed from the guard
-/// the caller holds, so the set cannot move under the fingerprints taken
-/// from it.
+/// The loaded set as the borrowed scopes a decode model is built from:
+/// each database with the buses it is scoped to, **in load order** (the
+/// order is the "first DBC that decodes wins" priority, so it is part
+/// of what a signal decodes to). Borrowed from the guard the caller
+/// holds, so the set cannot move under the fingerprints taken from it.
 ///
-/// `picks` is a cheap `Arc` clone off [`AppState::signal_dbc_picks`], so
-/// this stays callable per serve.
-pub(crate) fn decode_model(
-    dbcs: &[LoadedDbc],
-    picks: Arc<crate::signal_fingerprint::SignalDbcPicks>,
-) -> crate::signal_fingerprint::DecodeModel<'_> {
-    crate::signal_fingerprint::DecodeModel::new(
-        dbcs.iter()
-            .map(|d| crate::signal_fingerprint::DbcScope {
-                path: &d.path,
-                db: d.db.as_ref(),
-                buses: &d.buses,
-            })
-            .collect(),
-        picks,
-    )
+/// [`AppState::decode_model`] joins these to the per-signal picks and
+/// the cached split-message index; a test that is not about ambiguity
+/// pairs them with [`DecodeModel::plain`](crate::signal_fingerprint::DecodeModel::plain).
+pub(crate) fn dbc_scopes(dbcs: &[LoadedDbc]) -> Vec<crate::signal_fingerprint::DbcScope<'_>> {
+    dbcs.iter()
+        .map(|d| crate::signal_fingerprint::DbcScope {
+            path: &d.path,
+            db: d.db.as_ref(),
+            buses: &d.buses,
+        })
+        .collect()
 }
 
 /// (Re)install the trace store's multiplexor-selector extractor from
