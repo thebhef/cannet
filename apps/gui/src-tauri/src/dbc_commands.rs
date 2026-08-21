@@ -3,9 +3,10 @@
 //! Loading / scoping / removing DBCs (`add_dbc` …), the DBC-content and
 //! signal catalogs the discovery / picker panels read, per-signal value
 //! tables, and the panel-side describe / encode / decode-frame surface —
-//! plus the shared `decode_against` / `decode_raw_frame` helpers that
-//! turn a raw frame into a decoded record against the loaded DBC set.
+//! plus the shared `decode_resolved` / `decode_against` helpers that
+//! turn a raw frame into a decoded message against the loaded DBC set.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, State};
@@ -351,15 +352,126 @@ pub(crate) fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
         }
     }
 }
-/// Decode a raw frame against the loaded DBCs, in order — the first
-/// one that recognises the arbitration id wins. Skips any DBC not
-/// assigned to the frame's bus ([`filter::dbc_applies`]), which
-/// includes every DBC assigned to no bus at all. `None` if no DBC
-/// decodes.
-pub(crate) fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option<DecodedRecord> {
-    dbs.iter()
-        .filter(|d| filter::dbc_applies(&d.buses, frame.bus_id.as_deref()))
-        .find_map(|d| decode_raw_frame(&d.db, frame))
+/// Decode a raw frame for the wire — [`decode_resolved`] rendered as a
+/// [`DecodedRecord`]. `None` when nothing decodes it.
+pub(crate) fn decode_against(
+    dbs: &crate::signal_fingerprint::DecodeModel<'_>,
+    frame: &RawTraceFrame,
+) -> Option<DecodedRecord> {
+    decode_resolved(dbs, frame).map(|m| DecodedRecord {
+        name: m.name.to_string(),
+        transmitter: m.transmitter.map(str::to_string),
+        signals: m.signals.iter().map(signal_to_wire).collect(),
+    })
+}
+
+/// Decode a raw frame against the model, skipping any database not
+/// assigned to the frame's bus ([`filter::dbc_applies`]) — which
+/// includes every database assigned to no bus at all. `None` when none
+/// of them recognises the arbitration id.
+///
+/// **Which database supplies which signal is decided per signal, not
+/// per message**
+/// ([ADR 0054](../../../docs/adr/0054-a-decoded-value-has-one-definition.md)):
+/// a decoded value has exactly one definition, so a row has to name the
+/// same one the caches and the plot do. Two databases assigned to a bus
+/// can define one message between them and the user can pin a single
+/// signal of it to the second — so a row may legitimately carry signals
+/// from two files. That is the rule working, not a fault.
+///
+/// Resolving that way on every frame would cost every project a decode
+/// per eligible database to settle an ambiguity almost none of them
+/// have. So a message **no signal of which carries a pick** keeps the
+/// single `decode_raw` call it always had
+/// ([`DecodeModel::message_has_pick`](crate::signal_fingerprint::DecodeModel::message_has_pick)
+/// is the per-frame test, and it costs nothing where no pick exists at
+/// all). Without a pick the two resolutions agree on every signal the
+/// first defining database defines, and differ only in the ones it does
+/// not — which this path has never reported and which the caches serve
+/// in their own right.
+///
+/// The picked case pays for its answer: each eligible database decodes
+/// the message once, and each signal comes from the database a pick
+/// names, or from the first that defines it. A signal the winning
+/// definition withholds for this payload is absent rather than borrowed
+/// from behind it — that definition produced no value, so there is
+/// none.
+pub(crate) fn decode_resolved<'a>(
+    dbs: &crate::signal_fingerprint::DecodeModel<'a>,
+    frame: &RawTraceFrame,
+) -> Option<cannet_dbc::DecodedMessage<'a>> {
+    let id = CanId::new(frame.id, frame.extended).ok()?;
+    let bus_id = frame.bus_id.as_deref();
+    let data = frame.payload.data();
+    let mut eligible = dbs
+        .iter()
+        .filter(|d| filter::dbc_applies(d.buses, bus_id))
+        .map(|d| d.db);
+    if !dbs.message_has_pick(frame.id, frame.extended) {
+        return eligible.find_map(|db| db.decode_raw(id, data));
+    }
+    let eligible: Vec<&'a Database> = eligible.collect();
+    let decoded: Vec<Option<cannet_dbc::DecodedMessage<'a>>> =
+        eligible.iter().map(|db| db.decode_raw(id, data)).collect();
+    // The message's own identity — name, transmitter, declared length —
+    // is the first defining database's. A pick moves where a *signal's*
+    // definition comes from, not the message's.
+    let base_index = decoded.iter().position(Option::is_some)?;
+    let base = decoded[base_index].as_ref()?;
+    let picked = |name: &str| dbs.picked_index(bus_id, frame.id, frame.extended, name);
+
+    let mut signals: Vec<DecodedSignal<'a>> = Vec::with_capacity(base.signals.len());
+    let mut base_names: HashSet<&str> = HashSet::with_capacity(base.signals.len());
+    // Every signal the base yields, in the order it declares them, from
+    // whichever database supplies its definition. Only a pick can move
+    // one: a database ahead of the base defines neither this message nor
+    // any signal on it, so load order already lands on the base.
+    for sig in &base.signals {
+        base_names.insert(sig.name);
+        match picked(sig.name) {
+            Some(winner) if winner != base_index => {
+                if let Some(from) = decoded[winner]
+                    .as_ref()
+                    .and_then(|m| m.signals.iter().find(|s| s.name == sig.name))
+                {
+                    signals.push(from.clone());
+                }
+                // Withheld by the picked database for this payload: no
+                // value, rather than one from a definition that is not
+                // this signal's.
+            }
+            _ => signals.push(sig.clone()),
+        }
+    }
+    // Signals the base does not define at all. Their one definition is
+    // a later database's, so the row reports them the way the catalog
+    // and the caches already do.
+    for (i, m) in decoded.iter().enumerate() {
+        if i == base_index {
+            continue;
+        }
+        let Some(m) = m else { continue };
+        for sig in &m.signals {
+            if base_names.contains(sig.name) {
+                continue;
+            }
+            let winner = picked(sig.name).or_else(|| {
+                eligible
+                    .iter()
+                    .position(|db| db.defines_signal(frame.id, frame.extended, sig.name))
+            });
+            if winner == Some(i) {
+                signals.push(sig.clone());
+            }
+        }
+    }
+    Some(cannet_dbc::DecodedMessage {
+        name: base.name,
+        transmitter: base.transmitter,
+        expected_len: base.expected_len,
+        actual_len: base.actual_len,
+        signals,
+    })
 }
 /// Every `(bus, message, signal)` triple the loaded DBCs define, for
 /// a plot panel's signal picker. One record per matching project bus
@@ -565,15 +677,6 @@ fn attribute_record(a: cannet_dbc::DbcAttribute) -> DbcAttributeRecord {
         name: a.name,
         value: a.value,
     }
-}
-fn decode_raw_frame(db: &Database, frame: &RawTraceFrame) -> Option<DecodedRecord> {
-    let id = CanId::new(frame.id, frame.extended).ok()?;
-    let data = frame.payload.data();
-    db.decode_raw(id, data).map(|m| DecodedRecord {
-        name: m.name.to_string(),
-        transmitter: m.transmitter.map(str::to_string),
-        signals: m.signals.iter().map(signal_to_wire).collect(),
-    })
 }
 /// Look up the full value table for one signal. Returns an empty vec
 /// when the signal has none. The plot panel's symbolic y-axis ticks,
