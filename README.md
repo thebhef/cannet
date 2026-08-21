@@ -1069,6 +1069,23 @@ One signal is one row, so a repair is never made per view, and nothing
 durable is left behind mapping the old name onto the new one — revert
 the database and the panel reports the difference the other way round.
 
+Each RBS panel's toolbar carries its own **Signals** button, opening
+that config's signals grid — the same gridview as View signals, scoped
+to one `.cannet_rbs` instead of combined across every view (two RBS
+sims are meant to hold different values and timings, so their rows
+never merge). One row per field the config transmits, with the
+encoder's own taxonomy naming where its bits came from: Not Encoded
+(nothing defines it — an override naming a signal or message no
+assigned database has), Out of Range (an applied override outside the
+signal's declared range — flagged and clamped here, on entry, since
+truncation on transmit is otherwise silent), Unknown Value (an
+override the encoder couldn't resolve — a bad hex string, an
+unrecognised enum label — so the default went out instead), Override,
+Default (the DBC's start value, or the file's fill bit — neither is
+something you set), and Muted (the message won't play). The value cell
+is the same editor the RBS panel's own tree uses, so an edit here and
+an edit there can never disagree.
+
 New panels arrive as a tab
 in the active group — drag a
 panel by its tab and drop it against an edge of the area to split it
@@ -1868,8 +1885,16 @@ In the panel:
 - Signal cells show the live decode of the message's payload buffer;
   editing partial-encodes into it (enum labels and `0x…` raw hex are
   accepted), an overridden cell is marked and a light **×** clears
-  it back to DBC-tracking. The fzf filter narrows by message /
+  it back to DBC-tracking. A plain numeric entry is **clamped to the
+  signal's declared range on entry** — truncation to the signal's bit
+  width is correct on transmit, so this is where an out-of-range value
+  is caught before it's ever sent. The fzf filter narrows by message /
   signal name; **Ctrl/⌘+F** focuses it from anywhere in the panel.
+- **Signals** (toolbar) opens this config's signals grid — every field
+  it transmits and where each value came from, with the encoder's own
+  taxonomy (Not Encoded / Out of Range / Unknown Value / Override /
+  Default / Muted). See the View signals section above for the shared
+  gridview it reuses.
 - **Run** (persisted in the project, default off) starts the enabled
   messages on the host scheduler; actual transmission gates on
   per-bus connectivity (a bus that connects starts its messages, a
