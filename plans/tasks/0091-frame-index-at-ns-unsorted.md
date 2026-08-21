@@ -85,6 +85,20 @@ call — see below.
   store for other searches or assumptions that assume monotonic append
   order.
 
+## Phase (overseer, 2026-08-21)
+
+**One phase.** The contract is already written down — the store's own
+test states it and the scope section rules that implementing it is not
+a design question — so there is nothing to slice into an investigation
+phase ahead of the fix. What remains is a measurement, and it is
+cheaper to take it inside the phase that can act on it than to hand a
+verdict across a phase boundary.
+
+The order inside the phase is fixed, though: failing test from the
+store's own fixture, then the reference implementation, then the
+measurement, and only then an index if the measurement demands one.
+An index built before the measurement is a guess.
+
 ## Exit criteria (draft — firm at grooming)
 
 - `frame_index_at_ns` returns the correct index for a non-monotonic
