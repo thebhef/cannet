@@ -433,16 +433,39 @@ cargo run -p cannet-server                      # from a source checkout
 tar xzf cannet-server-vX.Y.Z-<target>.tar.gz    # macOS / Linux archive
 # or: Expand-Archive cannet-server-vX.Y.Z-<target>.zip   # Windows archive
 cd cannet-server-vX.Y.Z-<target>
-./cannet-server --bind 0.0.0.0:50051            # from a distribution archive
+./cannet-server                                 # from a distribution archive
 # → 2026-08-13T09:12:44.108Z INFO hardware proxy: certificate fingerprint SHA256:qF3…RmA
-# → hardware proxy: client token chug-pruning-unclad-hazard-morphine
+# → 2026-08-13T09:12:44.108Z INFO hardware proxy: a client token is required on every RPC; its value was printed to the console
 # → 2026-08-13T09:12:44.109Z INFO hardware proxy: listening on 0.0.0.0:50051 (tls)
+# →
+# → connect a cannet GUI to this server:
+# →   address      bench:50051
+# →   fingerprint  SHA256:qF3…RmA
+# →   token        chug-pruning-unclad-hazard-morphine
+# →
 # → 2026-08-13T09:12:44.771Z INFO sidecar:python-can: sidecar started (pid 61024)
 # → 2026-08-13T09:12:45.402Z INFO sidecar:python-can: upstream ready on 127.0.0.1:60481
 ```
 
-Every line but the token one is also written to a rolling logfile — see
-[Logs](#logs) below.
+**No flags needed.** A bare `cannet-server` binds `0.0.0.0:50051` —
+every interface, which is the case anyone runs this for: the hardware
+is on the bench machine and the GUI is on a laptop. That is a routable
+bind, so it auto-enables TLS and a bearer token
+([ADR 0041](docs/adr/0041-remote-connection-security.md)), generating
+both on first run and reloading the same pair on every later start. The
+three strings a client needs — address, fingerprint, token — are
+printed together in one block, in the form the GUI's Servers panel asks
+for. `--bind 127.0.0.1:50051` is the loopback-only, plaintext case; the
+default is not it.
+
+The first bare launch on Windows opens a listening TCP socket on a
+routable address, so Defender Firewall prompts once for the binary
+(Allow on Private/Domain; the Public profile is blocked silently). This
+is the same prompt the mDNS socket triggers, for a different port.
+
+Every line but the connect block is also written to a rolling logfile —
+see [Logs](#logs) below. The block is console-only, because it carries
+the token.
 
 It spawns and supervises one `cannet-python-can` sidecar on loopback
 (the same one the GUI runs for local dongles) and relays all three
@@ -455,8 +478,8 @@ the one arbitrating who gets it. Point the GUI's connection panel at
 
 Flags:
 
-- `--bind <addr>` — listen address, default `127.0.0.1:50051`. Serving
-  anything but loopback is a deliberate choice, and it auto-enables TLS
+- `--bind <addr>` — listen address, default `0.0.0.0:50051` — every
+  interface. That is a routable bind, so it auto-enables TLS
   and a bearer token with nothing else said
   ([ADR 0041](docs/adr/0041-remote-connection-security.md)): no
   certificate authority and no setup, the server generates a keypair
@@ -465,8 +488,8 @@ Flags:
   on Windows, `~/.local/share/cannet-server` on Linux,
   `~/Library/Application Support/cannet-server` on macOS), so the
   identity is the same on every later run. The private key file is
-  created readable by its owner only. A loopback bind stays plaintext
-  by default, unchanged.
+  created readable by its owner only. `--bind 127.0.0.1:50051` restricts
+  the server to its own machine and stays plaintext.
 - `--no-tls` — serve a routable bind in the clear anyway: no TLS, no
   token. The one escape hatch, for an operator who wants the hardware
   unprotected and says so out loud. Has no effect on a loopback bind,
@@ -563,12 +586,12 @@ launches it: starting a server stays an explicit terminal act.
 
 ```powershell
 # Windows, default per-user install location
-& "$env:LOCALAPPDATA\cannet\cannet-server.exe" --bind 0.0.0.0:50051
+& "$env:LOCALAPPDATA\cannet\cannet-server.exe"
 ```
 
 ```sh
 # macOS
-/Applications/cannet.app/Contents/Resources/cannet-server --bind 0.0.0.0:50051
+/Applications/cannet.app/Contents/Resources/cannet-server
 ```
 
 Its flags, logs, certificate and token are the ones documented above —
@@ -673,9 +696,11 @@ The GUI does the same thing, with the comparison put in front of you.
 Start the server on the bench machine and leave its console visible:
 
 ```sh
-./cannet-server --bind 0.0.0.0:50051
-# → 2026-08-13T09:12:44.108Z INFO hardware proxy: certificate fingerprint SHA256:qF3…RmA
-# → hardware proxy: client token chug-pruning-unclad-hazard-morphine
+./cannet-server
+# → connect a cannet GUI to this server:
+# →   address      bench:50051
+# →   fingerprint  SHA256:qF3…RmA
+# →   token        chug-pruning-unclad-hazard-morphine
 ```
 
 In the GUI, open the **Servers** panel — *Go to view…* → *Servers*, or

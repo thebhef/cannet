@@ -3,11 +3,16 @@
 //! Bare invocation is the production hardware proxy (ADR 0040): it
 //! supervises the `cannet-python-can` sidecar on loopback and relays
 //! the sidecar's interfaces, under their real identities, to one
-//! network endpoint. Leaving loopback auto-enables TLS and a bearer
-//! token (ADR 0041), under the server's own generated certificate or
-//! operator-supplied material; `--no-tls` serves the endpoint in the
-//! clear instead. Unless `--no-mdns` is given, it also advertises
-//! `_cannet._tcp` so the GUI's browse can find it.
+//! network endpoint. It serves every interface by default, because a
+//! server only its own machine can reach serves nobody; that is a
+//! routable bind, so it auto-enables TLS and a bearer token
+//! (ADR 0041), under the server's own generated certificate or
+//! operator-supplied material, and prints the address, fingerprint
+//! and token together at startup. `--no-tls` serves the endpoint in
+//! the clear instead, and `--bind 127.0.0.1` keeps it on this machine.
+//! Unless `--no-mdns` is given, it also advertises `_cannet._tcp`, on
+//! the addresses the bind actually serves, so the GUI's browse can
+//! find it.
 //!
 //! Everything it says goes to two sinks — the operator's stderr and a
 //! rolling `cannet-server.log` in the same per-user directory that holds
@@ -68,11 +73,14 @@ struct Cli {
 /// `Debug` — see [`Cli`].
 #[derive(Args)]
 struct ProxyArgs {
-    /// Address to bind the gRPC service on. The default is loopback:
-    /// serving the network is an explicit choice, and a non-loopback
-    /// bind auto-enables TLS and a bearer token (ADR 0041), unless
-    /// `--no-tls` says otherwise.
-    #[arg(long, default_value = "127.0.0.1:50051")]
+    /// Address to bind the gRPC service on. The default serves every
+    /// interface, because a server whose hardware only its own machine
+    /// can reach is not the case anyone runs this for. That is a
+    /// routable bind, so it auto-enables TLS and a bearer token
+    /// (ADR 0041) — both generated on first run and printed at
+    /// startup — unless `--no-tls` says otherwise. `--bind 127.0.0.1`
+    /// is the loopback-only, plaintext case.
+    #[arg(long, default_value = "0.0.0.0:50051")]
     bind: SocketAddr,
     /// The supervised sidecar's own `--log-level`, which governs how
     /// much it writes to stderr — and so how much of this server's log
@@ -219,6 +227,43 @@ impl Protections {
         }
         missing
     }
+}
+
+/// The `host:port` a client types to reach this endpoint.
+///
+/// A bind that names one address is that address. The wildcard answers
+/// on every address this host has, so no single one of them is *the*
+/// address — this machine's own name is, and it is what the browse list
+/// shows and what a user pastes. `hostname` is a parameter so this is
+/// testable without the machine it runs on.
+fn connect_address(bind: SocketAddr, hostname: Option<&str>) -> String {
+    match hostname {
+        Some(host) if bind.ip().is_unspecified() => format!("{host}:{}", bind.port()),
+        _ => bind.to_string(),
+    }
+}
+
+/// This machine's name, or `None` when the system cannot report one
+/// that is valid UTF-8. Only ever used to make a printed address more
+/// useful than the wildcard it was bound to, so there is nothing to
+/// fail over.
+fn hostname() -> Option<String> {
+    hostname::get().ok()?.into_string().ok()
+}
+
+/// The block a protected endpoint prints at startup: the three strings
+/// the GUI's connect surface asks for, together, once.
+///
+/// Console-only by construction of its caller — it carries the token,
+/// which never reaches the logfile. A default that generates a
+/// credential the operator cannot find has moved the friction rather
+/// than removed it, so the credential is printed where they launched
+/// the server, next to the address and fingerprint it belongs to.
+fn connect_summary(address: &str, fingerprint: &str, token: &str) -> String {
+    // One literal with explicit newlines rather than a multi-line
+    // string: the block's own indentation is data, and a source-shaped
+    // literal hands it to whatever the file happens to be indented by.
+    format!("\nconnect a cannet GUI to this server:\n  address      {address}\n  fingerprint  {fingerprint}\n  token        {token}\n")
 }
 
 /// True when `ip` names this machine's loopback interface, including
@@ -638,12 +683,7 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
             format!("certificate fingerprint {}", identity.fingerprint()),
         );
     }
-    if let Some(token) = &token {
-        // The value goes to the operator's console and nowhere else: it
-        // is the string they carry to the client, and a bearer token in
-        // a file that gets attached to bug reports is a credential leak
-        // with a long tail. The log gets the fact, not the secret.
-        logging::console_only(&format!("hardware proxy: client token {}", token.as_str()));
+    if token.is_some() {
         logging::info(PROXY, logging::token_configured_note());
     } else if token_was_supplied {
         // Saying nothing here would let an operator believe they had
@@ -668,6 +708,18 @@ async fn run_proxy(args: ProxyArgs) -> Result<(), Box<dyn std::error::Error>> {
             }
         ),
     );
+    if let (Some(identity), Some(token)) = (&identity, &token) {
+        // The whole credential set in one block, on the console and
+        // nowhere else: it carries the token, and a bearer token in a
+        // file that gets attached to bug reports is a credential leak
+        // with a long tail. The log already has the address and the
+        // fingerprint, plus the fact that a token is required.
+        logging::console_only(&connect_summary(
+            &connect_address(args.bind, hostname().as_deref()),
+            &identity.fingerprint().to_string(),
+            token.as_str(),
+        ));
+    }
 
     let upstream = Arc::clone(&supervisor);
     let service = ProxyServerImpl::new(move || upstream.status().address).into_service();
@@ -830,26 +882,119 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bare_invocation_is_the_proxy_with_a_loopback_default() {
-        // Loopback by default: exposing the hardware to the network is
-        // an explicit `--bind`, never something a bare launch does.
+    fn bare_invocation_is_the_proxy_serving_every_interface() {
+        // The mainstream case is a server on a bench machine and a GUI
+        // on a laptop, so that is what a bare launch does. It is not a
+        // relaxation of ADR 0041: a routable bind is the ADR's
+        // protected branch, so the default lands there rather than
+        // moving the line.
+        let dir = tempfile::tempdir().unwrap();
         let cli = Cli::try_parse_from(["cannet-server"]).expect("bare invocation should parse");
         assert!(cli.command.is_none());
         assert_eq!(
             cli.proxy.bind,
-            "127.0.0.1:50051".parse::<SocketAddr>().unwrap()
+            "0.0.0.0:50051".parse::<SocketAddr>().unwrap()
         );
         assert_eq!(cli.proxy.sidecar_log_level, "info");
         assert_eq!(cli.proxy.sidecar_restart_budget, 3);
-        // Plaintext by default: a loopback endpoint is the dev and
-        // local-GUI path (ADR 0041). An unused directory proves the
-        // generated-identity path is never even reached for it.
-        assert!(cli
-            .proxy
-            .identity(Path::new("/should-not-be-touched"))
-            .unwrap()
-            .is_none());
-        assert!(cli.proxy.token.is_none());
+        // TLS and a token by default, with nothing said on the command
+        // line, both generated into the per-user directory on first run.
+        assert!(
+            cli.proxy.identity(dir.path()).unwrap().is_some(),
+            "a bare launch is routable, so it auto-enables TLS"
+        );
+        assert!(cli.proxy.token.is_none(), "no --token was given");
+        let token = cli.proxy.access_token(dir.path(), None).unwrap();
+        assert!(!token.as_str().is_empty());
+    }
+
+    #[test]
+    fn a_bare_launch_never_serves_the_hardware_unprotected() {
+        // The invariant ADR 0041 states, checked against the default
+        // rather than against a bind someone typed: whatever the
+        // default is, it may not be both routable and unprotected.
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["cannet-server"]).unwrap();
+        let identity = cli.proxy.identity(dir.path()).unwrap();
+        let protections = Protections {
+            tls: identity.is_some(),
+            token: identity.is_some(),
+        };
+        guard_bind(cli.proxy.bind, protections, false)
+            .expect("the default bind must satisfy the guard with no flags");
+    }
+
+    #[test]
+    fn the_loopback_bind_is_still_one_flag_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from(["cannet-server", "--bind", "127.0.0.1:50051"]).unwrap();
+        assert!(cli.proxy.identity(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_wildcard_bind_is_advertised_as_this_machines_name() {
+        // What a client types. The wildcard answers on every address
+        // this host has, so no single bound address is *the* one — the
+        // machine's own name is what a user pastes and what the browse
+        // list shows.
+        assert_eq!(
+            connect_address(addr("0.0.0.0:50051"), Some("bench")),
+            "bench:50051"
+        );
+        assert_eq!(
+            connect_address(addr("[::]:50051"), Some("bench")),
+            "bench:50051"
+        );
+    }
+
+    #[test]
+    fn a_bind_naming_one_address_is_reported_as_that_address() {
+        assert_eq!(
+            connect_address(addr("192.168.1.10:50051"), Some("bench")),
+            "192.168.1.10:50051"
+        );
+        assert_eq!(
+            connect_address(addr("127.0.0.1:50051"), Some("bench")),
+            "127.0.0.1:50051"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_readable_name_falls_back_to_the_bind() {
+        // Worse than a name, better than nothing: the operator still
+        // sees the port, and the browse list still carries the rest.
+        assert_eq!(
+            connect_address(addr("0.0.0.0:50051"), None),
+            "0.0.0.0:50051"
+        );
+    }
+
+    #[test]
+    fn the_connect_summary_carries_everything_a_client_needs_and_nothing_else() {
+        // "Just start the server" only holds if the credentials the
+        // default generates are readable off the console, together, in
+        // the form the GUI's connect surface asks for.
+        let summary = connect_summary("bench:50051", "SHA256:qF3RmA", "chug-pruning-unclad");
+        assert!(summary.contains("bench:50051"), "{summary}");
+        assert!(summary.contains("SHA256:qF3RmA"), "{summary}");
+        assert!(summary.contains("chug-pruning-unclad"), "{summary}");
+        assert_eq!(
+            summary.matches("chug-pruning-unclad").count(),
+            1,
+            "the token is printed once: {summary}"
+        );
+        // The block's indentation is data, not source layout: a
+        // reformat that folded it into the file's own indentation would
+        // print a ragged block to the operator's console.
+        for line in ["  address", "  fingerprint", "  token"] {
+            assert!(
+                summary.contains(&format!(
+                    "
+{line}"
+                )),
+                "{line} should be indented by exactly two spaces: {summary:?}"
+            );
+        }
     }
 
     #[test]
