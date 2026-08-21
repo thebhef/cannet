@@ -19,6 +19,7 @@ use cannet_spill::{DiskRawStore, MemRawStore, RawStore};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::anchor::TsAnchorIndex;
 use super::rate::{RateEstimate, RateTrack};
 use super::scratch::dir_footprint;
 use super::{FrameKey, Inner, PerKey, RawTraceFrame, TraceStore};
@@ -485,6 +486,9 @@ impl TraceStore {
         inner.latest_mux = HashMap::new();
         inner.mux_rates = HashMap::new();
         inner.mux_index_from = inner.raw.len();
+        // Same for the anchor index: it was folded from the buffer this
+        // reload just replaced, so it describes no row that now exists.
+        inner.ts_anchor = TsAnchorIndex::default();
         // Restore the derived state the by-id view and filter resolution
         // read. Rates are left with only their count (a reloaded trace is
         // stopped, so every rate reads zero); the newest-index and frame are
@@ -568,6 +572,9 @@ impl Inner {
         self.session_start_ns = 0;
         self.session_started = false;
         self.agg_rate = RateTrack::default();
+        // The sampled prefix maxima describe rows that are gone; a fold
+        // outliving its capture would anchor events against it.
+        self.ts_anchor = TsAnchorIndex::default();
         self.per_key = HashMap::new();
         self.key_generation = self.key_generation.wrapping_add(1);
         // The mux index empties with the buffer; the extractor itself

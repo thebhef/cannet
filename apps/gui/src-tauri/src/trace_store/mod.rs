@@ -68,11 +68,13 @@ use cannet_spill::{CandidateSource, DiskRawStore, FilterIndex, MemRawStore, RawS
 
 use crate::filter::CandidateSet;
 
+mod anchor;
 mod byid;
 mod flush;
 mod rate;
 mod scratch;
 
+use anchor::TsAnchorIndex;
 use rate::{RateEstimate, RateTrack};
 
 /// One coherent read of a trace window's x-axis anchors. See
@@ -215,6 +217,11 @@ struct Inner {
     /// production. Owns the always-on `by-id` index too (on disk for the
     /// disk store), so it serves [`Self::matching_frames_indexed`].
     raw: Box<dyn RawStore>,
+    /// Sampled prefix maxima of `raw`'s timestamp column — what makes
+    /// [`TraceStore::frame_index_at_ns`] a bounded search over a store
+    /// that arrival order leaves unsorted. Folded lazily from the
+    /// `[through, len)` delta on query, not on append; see [`anchor`].
+    ts_anchor: TsAnchorIndex,
     /// Aggregate append-rate tracker: the running total-frame count and its
     /// rolling rate-sample window, folded in by [`Self::append`] and read by
     /// [`Self::frames_per_second`]. A [`RateTrack`] like the per-bus and
@@ -329,6 +336,7 @@ impl TraceStore {
                 session_start_ns: 0,
                 session_started: false,
                 raw,
+                ts_anchor: TsAnchorIndex::default(),
                 agg_rate: RateTrack::default(),
                 per_key: HashMap::new(),
                 key_generation: 0,
@@ -570,25 +578,20 @@ impl TraceStore {
     /// multi-bus capture interleaves deliveries, so the timestamp column
     /// dips below its own running max and recovers routinely (ADR 0024
     /// measured ~1.1 s, several times a minute, on a 23-hour two-bus
-    /// capture). So this is an `O(n)` forward scan over
-    /// `[first_index, len)`, not a binary search: a bound that only ever
-    /// narrows rightwards walks straight past an exact match sitting
-    /// behind a dip and reports it as absent.
+    /// capture). A lower bound over those timestamps is therefore not
+    /// just imprecise but wrong: narrowing only rightwards walks straight
+    /// past an exact match sitting behind a dip and reports it absent.
+    ///
+    /// A forward scan is the contract read literally, and it is what the
+    /// tests check against, but it is `O(n)` with the append mutex held —
+    /// ~10 ms per call at 1 M rows. So the search runs over sampled
+    /// prefix maxima, which *are* monotone whatever the arrival order,
+    /// and finishes with a bounded scan; see [`anchor`].
     #[must_use]
     pub fn frame_index_at_ns(&self, ts: u64) -> usize {
-        let inner = self.lock_inner();
-        let (first, len) = (inner.raw.first_index(), inner.raw.len());
-        // `frame_timestamps(i, i+1).0` is the timestamp at `i`, read from
-        // the meta mapping without cloning the frame.
-        (first..len)
-            .find(|&i| {
-                inner
-                    .raw
-                    .frame_timestamps(i, i + 1)
-                    .0
-                    .is_some_and(|t| t >= ts)
-            })
-            .unwrap_or(len)
+        let mut inner = self.lock_inner();
+        let Inner { raw, ts_anchor, .. } = &mut *inner;
+        ts_anchor.frame_index_at_ns(raw.as_ref(), ts)
     }
 
     /// Wall-clock span of the buffered frames, in seconds: the timestamp
