@@ -168,8 +168,16 @@ order.
   the window; the `wall-clock-out-of-order.blf` case is a regression
   test.
 - `cargo test --workspace` (parallel, examples included) is green.
-- `frame_index_at_ns`'s documentation states what the function
-  guarantees, verified against non-monotonic input rather than assumed.
+- ~~`frame_index_at_ns`'s documentation states what the function
+  guarantees, verified against non-monotonic input rather than
+  assumed.~~ **Superseded 2026-08-20.** Phase 2 did the verification
+  the criterion demanded and the code, not the comment, turned out to
+  be wrong: the search is a `lower_bound` over a store that is
+  routinely unsorted, and it mis-anchors or silently drops timeline
+  markers. Correcting the prose would have documented a defect instead
+  of fixing it. Split out as
+  [task 91](0091-frame-index-at-ns-unsorted.md) by owner instruction;
+  this criterion is retired rather than met.
 - A scratch whose manifest version does not match is rejected, or the
   constant's doc comment says what the code actually does.
 
