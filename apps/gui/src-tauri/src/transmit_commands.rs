@@ -314,6 +314,41 @@ pub(crate) fn stop_periodics_left_unbacked(
     stopped
 }
 
+/// Stop every periodic the database at `path` was driving — or is
+/// driving now — and return the ids stopped in pool order.
+///
+/// The reload counterpart to [`stop_periodics_left_unbacked`]. A
+/// database reloaded in place can change or drop the very definitions a
+/// row is transmitting from, so continuing to put those frames on a
+/// real bus is [ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+/// §1's uncommanded send — reached by a file changing underneath rather
+/// than by a deliberate gesture, which makes it more surprising, not
+/// less. The reload itself still applies; the stop happens first.
+///
+/// "Driven by" is the same per-bus priority scan asked either side of
+/// the swap, so a row a *different* assigned database defines is none
+/// of the reload's business, and a row the reload makes this database
+/// the new winner for is.
+pub(crate) fn stop_periodics_driven_by(
+    state: &AppState,
+    backed_before: &[BackedPeriodic],
+    path: &str,
+) -> Vec<String> {
+    let running = state.transmit_frames().running_periodics();
+    let mut stopped = Vec::new();
+    for p in running {
+        let before = backed_before
+            .iter()
+            .find(|b| b.id == p.id)
+            .map(|b| b.dbc_path.as_str());
+        if before == Some(path) || backing_dbc(state, &p).as_deref() == Some(path) {
+            stop_periodic_transmit_inner(state, &p.id);
+            stopped.push(p.id);
+        }
+    }
+    stopped
+}
+
 /// The next fixed-rate deadline. The schedule advances `prev` by one
 /// `period` each tick, so the time spent doing the transmit work (and
 /// any sleep overshoot) is absorbed instead of being added on top of

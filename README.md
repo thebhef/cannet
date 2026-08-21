@@ -2229,6 +2229,18 @@ rule the same way. A stopped transmit row keeps its configuration and is
 restarted with its own Run control; a rest-of-bus row is rebuilt by its
 element, so it resumes when the element's Run is still on.
 
+**Reloading a database stops what it was driving, too.** A DBC is
+re-read whenever the file changes on disk (with `dbc_auto_reload` on) or
+when you reload it from the Database panel, and the new definitions
+replace the old ones in place. What a periodic transmit row is
+transmitting can therefore change — or disappear — without anyone
+asking, so every row the reloaded database was driving stops first, and
+a rest-of-bus element driven by it has its Run turned off. The reload
+still applies, and one line in the System Messages panel says how many
+rows stopped. Rows another database on the bus defines, and hand-typed
+CAN ids no database describes, keep firing: the reload is only ever the
+business of what it was actually driving.
+
 **Default: receive from every bus**. Each consumer (trace, plot, filter) carries a
 `sources: string[]` list of upstream producer ids — bus ids or filter
 ids — with the literal `"*"` as a wildcard meaning "every bus in the
