@@ -172,9 +172,9 @@ fn the_headers_last_object_time_is_the_latest_event_not_the_last_appended() {
 }
 
 /// A time-range import over an out-of-order file returns every frame in
-/// the range (task 90 phase 1). Before the fix, `WindowedSource` stopped
-/// at the first frame past `end_ns` and never called the inner source
-/// again: on this fixture, `end_ns = start + 1000 ms` kept only 31 of
+/// the range. Before the fix, `WindowedSource` stopped at the first
+/// frame past `end_ns` and never called the inner source again: on
+/// this fixture, `end_ns = start + 1000 ms` kept only 31 of
 /// the file's 121 frames, silently dropping its two *earliest* frames
 /// (+120 ms, +300 ms) even though both are inside the requested window
 /// — they arrive as the file's last two objects (see
