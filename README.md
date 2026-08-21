@@ -1060,7 +1060,10 @@ surface as well as a report, and the **source** column is where both
 repairs are made, with no apply step. Choosing the *same* signal under a
 different database settles the ambiguous case: the choice is recorded in
 the project against the signal, and is the one the decoder resolves it
-through (ADR 0054). Choosing a *different* signal of the same message is
+through (ADR 0054) — every decoded value of that signal, so the plotted
+series, the trace row's column and the latest-value table all read the
+database you chose, even where the rest of that message's signals come
+from another one. Choosing a *different* signal of the same message is
 the **remap** — what a renamed signal needs — and it rewrites every
 persisted reference to the old name at once: every plot's series, every
 signals view's selection and sections, every colour map's target, the
