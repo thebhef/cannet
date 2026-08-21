@@ -53,3 +53,21 @@ describe("splitName", () => {
     expect(splitName(n)).toEqual({ head: "a".repeat(40), tail: "a".repeat(10) });
   });
 });
+
+describe("splitName on an absurd name", () => {
+  it("caps the head at what no column could show, keeping the tail", () => {
+    // Nothing refuses a length — the tail is still the tail and the
+    // caller still has the whole name for the tooltip. The cap is only
+    // about how much text the engine is asked to shape behind an
+    // `overflow: hidden` edge.
+    const name = "Bms" + "Segment".repeat(2000);
+    const { head, tail } = splitName(name);
+    expect(head.length).toBe(200);
+    expect(name.startsWith(head)).toBe(true);
+    expect(name.endsWith(tail)).toBe(true);
+    // The control: a realistic long name is not capped, so its two
+    // halves still reconstruct it exactly.
+    const real = splitName("HighVoltageBatteryPackCoolantInletTemperature");
+    expect(real.head + real.tail).toBe("HighVoltageBatteryPackCoolantInletTemperature");
+  });
+});
