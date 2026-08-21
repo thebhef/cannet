@@ -270,10 +270,12 @@ export function TracePanel(props: IDockviewPanelProps) {
   // event's frame through the active filter index, ADR 0002 DS-3) — the raw
   // frame anchors don't index the filtered stream. We refetch when the event
   // set, the filter, or the window start changes; an event's anchor is
-  // otherwise stable as frames append (frames arrive in increasing time, so a
-  // newer frame never moves an older event's row). `anchors` lags `events` by
-  // one async tick; the merge treats a length mismatch as "no events yet"
-  // (frames only) until it catches up.
+  // otherwise stable as frames append. Not because frames arrive in time order
+  // — they do not, a multi-bus capture interleaves deliveries (ADR 0024) — but
+  // because the anchor is the *first* row at or after the event, and appending
+  // to the end cannot put a row in front of one that already qualified.
+  // `anchors` lags `events` by one async tick; the merge treats a length
+  // mismatch as "no events yet" (frames only) until it catches up.
   const [anchors, setAnchors] = useState<number[]>([]);
   useEffect(() => {
     let live = true;
