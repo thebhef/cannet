@@ -213,6 +213,89 @@ the panel — but "visible" is not "working".
   something durable to check against — the absence of exactly that is
   what let eleven copies drift.
 
+## Shape D ruled: accept the fall-through, make the pick reach everywhere (owner, 2026-08-21)
+
+**The ruling, in the owner's words:** *"User can cure anything that
+doesn't match using the signal view. A special case on mux arm is pretty
+esoteric and I'm ok with it being wrong given you can just fix it."*
+
+So the per-frame fall-through **stays**. Neither
+`signal_sampler::sample_shared` nor `app_state::refresh_mux_extractor`
+is changed to withhold a value the winning definition does not cover,
+and the two tests pinning the exposure —
+`a_value_the_winner_withholds_is_outside_the_fingerprint` and
+`a_selector_the_winner_withholds_is_read_from_the_next_database` — stand
+as the record of an accepted trade, not as bugs awaiting a fix.
+
+The reasoning is the affordance, not the rarity: a user who sees a value
+resolved against the wrong file picks the right one in the signal view,
+and the pick is honoured. Closing the fall-through instead would empty
+series that show samples today, to spare a case the user can already
+fix in one gesture.
+
+**One correction to the premise, verified before recording this.** The
+cure is real at the sampler and only there:
+
+- `sample_shared` honours picks exactly as the ruling assumes. Its own
+  rustdoc states the contract — *"A pinned name takes its value from
+  that database or from none: falling through to the next database
+  would put back exactly the silent substitution the pick was made to
+  stop"* — and the walk skips every database but the picked one.
+- `refresh_mux_extractor` **does not consult picks at all.** It
+  snapshots every database with a multiplexor and resolves by load
+  order, so a user seeing the wrong mux arm cannot currently pick their
+  way out of it.
+- Phases 1 and 2 found the same gap at `list_value_tables_inner` and at
+  the three calculated-field sites: all resolve without reference to
+  the pick map.
+
+The ruling still lands where it was aimed — the owner named the mux-arm
+case specifically as the esoteric one they accept wrong. But *"you can
+just fix it"* is not true at three of the four sites today, and the
+ruling's whole justification is that it is. **So the consequence for
+phase 3 is to make the premise true rather than to close Shape D:**
+route every site that answers "which database supplies this" through a
+resolver that honours picks. Nothing a user sees changes unless they
+make a pick — no series goes empty, no value moves — and the cure the
+owner is relying on becomes universal instead of covering one site in
+four.
+
+## Phase 2's asymmetry: close it (overseer, 2026-08-21)
+
+Phase 2 recorded a real consequence of reading "that message resolves
+per signal" literally: a picked message's row also reports signals the
+message's first defining database does not define, so **whether a row
+reports such a signal depends on whether the message carries a pick**.
+The phase asked phase 3 to decide.
+
+**Decided: close it, by making the fast path exact.** The literal
+reading was right — the rejected alternative did invent a third rule,
+neither per message nor per signal — but the asymmetry it leaves is not
+something to keep. A signal that only a later database defines has, by
+ADR 0054, exactly one definition; whether some *other* signal in the
+same message carries a pick has nothing to do with it. A fast path that
+changes which signals appear is not an optimisation, it is a second
+resolution rule wearing an optimisation's clothes, which is the exact
+thing this task exists to end.
+
+**How, without paying for it per frame.** Which signals a message can
+yield is a property of the loaded set, not of the picks or the payload,
+so it is answerable once per `DecodeModel` — the same shape as phase
+2's `message_has_pick`: *does any eligible database define a signal
+this message's winner does not?* Overwhelmingly the answer is no, and
+that message keeps today's single `decode_raw` call. Where the answer
+is yes, the message resolves per signal exactly as a picked one does.
+The branch stays a lookup with an emptiness short-circuit, and the
+no-collision project — every project that has never loaded two
+databases defining one message — pays nothing.
+
+Measure it the way phase 2 measured its branch: in-process, against the
+real pre-change build, min and median ns/frame. If the precomputation
+turns out not to be cheap, say so with the numbers and keep the
+asymmetry rather than paying for exactness on the serve path — but
+measure before conceding it.
+
+
 ## Phases (overseer, 2026-08-21)
 
 Investigation before change, then the settled ruling, then the
@@ -235,10 +318,22 @@ knows what that site is supposed to do.
 3. **One shared resolver.** Reduce the copies, move every verified site
    onto it, express the per-signal-versus-per-message distinction in
    its API rather than leaving each caller to imply it, and cite
-   ADR 0054 from its rustdoc.
+   ADR 0054 from its rustdoc. It carries three things the earlier
+   phases deliberately left it:
+   - **The pick reaches every site.** `list_value_tables_inner`, the
+     three calculated-field sites and `refresh_mux_extractor` all
+     resolve without consulting the pick map. This is what makes the
+     owner's Shape D ruling true rather than nearly true — see the
+     ruling above.
+   - **Phase 2's asymmetry closes**, by making the per-message fast
+     path exact rather than by keeping a second resolution rule.
+   - Phase 2's `decode_snapshot_frame` removal is the pattern: the
+     copies go away by moving onto shared resolution, not by adding a
+     wrapper over them.
 
-**Shape D is not in any of these phases.** It needs an owner ruling
-first, and closing it changes decoded values.
+**Shape D is not closed in any of these phases** — ruled 2026-08-21,
+the fall-through stays. What phase 3 owes it is the pick reaching
+every site, not a fix.
 
 ## Exit criteria (draft — firm at grooming)
 
