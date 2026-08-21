@@ -63,7 +63,7 @@
 //! compared bit-wise, so the fingerprint moves on a `0.0` → `-0.0` edit
 //! that changes no value — conservative in the safe direction.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -130,13 +130,34 @@ pub type SignalDbcPicks = HashMap<String, String>;
 pub struct DecodeModel<'a> {
     dbcs: Vec<DbcScope<'a>>,
     picks: Arc<SignalDbcPicks>,
+    /// The messages **some** signal of which carries a pick, as
+    /// `(message id, extended)` — the index behind
+    /// [`Self::message_has_pick`]. Derived from `picks` when the model
+    /// is built, so it is empty exactly when `picks` is.
+    ///
+    /// The bus is deliberately not part of the key. A per-frame test
+    /// that had to name one would have to build the bus-qualified
+    /// identity string per frame; dropping it makes the test one hash
+    /// of eight bytes, at the price of over-answering `true` for a
+    /// frame of the same message on a bus no pick names — where the
+    /// per-signal resolution it selects reads the picks for *that*
+    /// bus and so still lands on the load-order default.
+    message_picks: HashSet<(u32, bool)>,
 }
 
 impl<'a> DecodeModel<'a> {
     /// The set plus the picks that apply to it.
     #[must_use]
     pub fn new(dbcs: Vec<DbcScope<'a>>, picks: Arc<SignalDbcPicks>) -> Self {
-        Self { dbcs, picks }
+        let message_picks = picks
+            .keys()
+            .filter_map(|k| crate::signal_snapshot::identity_message(k))
+            .collect();
+        Self {
+            dbcs,
+            picks,
+            message_picks,
+        }
     }
 
     /// The set with no picks — the load-order default everywhere.
@@ -145,7 +166,21 @@ impl<'a> DecodeModel<'a> {
         Self {
             dbcs,
             picks: Arc::default(),
+            message_picks: HashSet::new(),
         }
+    }
+
+    /// Whether any signal of this message carries a pick — the question
+    /// a per-message decode asks per frame to know whether it may take
+    /// the whole message from one database (ADR 0054's resolution is
+    /// per signal, and only a pick can make the two disagree).
+    ///
+    /// A **lookup**, never a scan of the picks: the index is built once
+    /// per model, and a project that has never resolved an ambiguity
+    /// answers `false` off an emptiness check without hashing anything.
+    #[must_use]
+    pub fn message_has_pick(&self, message_id: u32, extended: bool) -> bool {
+        !self.message_picks.is_empty() && self.message_picks.contains(&(message_id, extended))
     }
 
     /// The picks this model resolves against.
@@ -660,6 +695,25 @@ mod tests {
             path.to_owned(),
         );
         DecodeModel::new(dbcs, Arc::new(picks))
+    }
+
+    #[test]
+    fn message_has_pick_answers_for_the_message_a_pick_names_and_no_other() {
+        // The per-frame branch a per-message decode takes: it must be
+        // false for every message in a project that never resolved an
+        // ambiguity, and true only for the message the pick's signal
+        // belongs to.
+        let a = parse(&message(&[PLAIN]));
+        let bus = fp_bus();
+        let both = || vec![scope("a.dbc", &a, &bus)];
+
+        let default = plain(both());
+        assert!(!default.message_has_pick(256, false), "no picks at all");
+
+        let picked = pinned(both(), "a.dbc");
+        assert!(picked.message_has_pick(256, false));
+        assert!(!picked.message_has_pick(256, true), "the other id width");
+        assert!(!picked.message_has_pick(257, false), "another message");
     }
 
     #[test]
