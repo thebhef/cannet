@@ -411,6 +411,39 @@ pub(super) fn sync_schedules(state: &AppState) {
     }
 }
 
+/// Clear the Run flag of every element that owned one of `stopped_rows`,
+/// and return those element ids in element order.
+///
+/// An RBS row is a periodic like any other and stops through the same
+/// path a project row does — but an element's rows are *derived*: the
+/// rebuild that follows a DBC change puts them back and
+/// [`sync_schedules`] re-derives their running state from the element's
+/// Run flag, so a row-level stop alone would last until the next
+/// reconcile. Stopping the element is what stopping its rows means, and
+/// the flag cleared here is the one the panel's own Run toggle writes.
+pub(crate) fn stop_elements_owning(state: &AppState, stopped_rows: &[String]) -> Vec<String> {
+    let mut owners: Vec<String> = {
+        let registry = state.transmit_frames();
+        registry
+            .rbs_rows()
+            .into_iter()
+            .filter(|row| stopped_rows.contains(&row.id))
+            .map(|row| row.element)
+            .collect()
+    };
+    owners.sort();
+    owners.dedup();
+    let mut rbs = state.rbs();
+    owners.retain(|id| match rbs.elements.get_mut(id) {
+        Some(element) if element.run => {
+            element.run = false;
+            true
+        }
+        _ => false,
+    });
+    owners
+}
+
 /// The light mutation tail for edits that only change *scheduling*
 /// (enable toggles, run flag, kill-switch): reconcile and notify —
 /// no row rebuild, no calc re-resolution, no verification rebuild.
@@ -1116,6 +1149,106 @@ BO_ 1280 AuxFrame: 8 AUX
                 .len(),
             2
         );
+    }
+
+    /// An element with `run` set and one message enabled, its rows built
+    /// and scheduled — the state a reload has to interrupt.
+    fn running_element(state: &AppState) {
+        let file = RbsFile::parse(
+            r#"{ "schema_version": 1, "buses": {
+                 "Powertrain": { "ecus": { "BMS": { "messages": { "0x123": {} } } } }
+             } }"#,
+        )
+        .unwrap();
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
+            rbs.elements.insert(
+                "el1".into(),
+                RbsElementState {
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
+                    file,
+                    dirty: false,
+                    run: true,
+                },
+            );
+        }
+        rebuild_element_rows(state, "el1");
+        sync_schedules(state);
+    }
+
+    #[test]
+    fn reloading_a_database_stops_the_rbs_element_it_was_driving() {
+        // The ruling: a database an element transmits from changing
+        // underneath it is the uncommanded send ADR 0053 §1 exists to
+        // prevent, so the element stops. Stopping its *rows* is not
+        // enough — they are derived, and the rebuild the announcement
+        // runs puts them straight back.
+        let state = crate::tests::test_state();
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+        running_element(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
+
+        // The file is edited outside the app and re-read under the same
+        // identity — what every reload path does to the loaded set.
+        let backed_before = crate::transmit_commands::dbc_backed_running_periodics(&state);
+        let installed = crate::dbc_commands::install_dbc(&state, "a.dbc", RBS_DBC).unwrap();
+        assert!(installed.reloaded, "same identity -> a swap");
+        let stopped =
+            crate::transmit_commands::stop_periodics_driven_by(&state, &backed_before, "a.dbc");
+        let elements = stop_elements_owning(&state, &stopped);
+
+        assert!(stopped.contains(&status_id), "{stopped:?}");
+        assert_eq!(elements, vec!["el1".to_string()]);
+        assert!(!state.rbs.lock().unwrap().elements["el1"].run);
+        // The rebuild the announcement runs keeps the row — the message
+        // is still defined — and leaves it stopped, which is the state
+        // only a stopped *element* produces.
+        rebuild_element_rows(&state, "el1");
+        sync_schedules(&state);
+        assert!(
+            state
+                .transmit_frames
+                .lock()
+                .unwrap()
+                .rbs_row_ids("el1")
+                .contains(&status_id),
+            "the reloaded database still defines the message",
+        );
+        assert!(!state.transmit_frames.lock().unwrap().is_running(&status_id));
+    }
+
+    #[test]
+    fn reloading_a_database_an_element_does_not_transmit_from_leaves_it_running() {
+        // The element is only stopped by a reload of a database it is
+        // actually driven from — measured by the same per-bus priority
+        // scan, so a second database loaded on another bus is none of
+        // its business.
+        let state = crate::tests::test_state();
+        {
+            let mut dbs = state.databases.lock().unwrap();
+            dbs.push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+            dbs.push(crate::tests::loaded_scoped("other.dbc", RBS_DBC, &["p2"]));
+        }
+        running_element(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+
+        let backed_before = crate::transmit_commands::dbc_backed_running_periodics(&state);
+        crate::dbc_commands::install_dbc(&state, "other.dbc", RBS_DBC).unwrap();
+        let stopped =
+            crate::transmit_commands::stop_periodics_driven_by(&state, &backed_before, "other.dbc");
+        let elements = stop_elements_owning(&state, &stopped);
+
+        assert!(stopped.is_empty(), "{stopped:?}");
+        assert!(elements.is_empty(), "{elements:?}");
+        assert!(state.rbs.lock().unwrap().elements["el1"].run);
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
     }
 
     #[test]
