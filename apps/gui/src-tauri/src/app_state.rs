@@ -470,13 +470,36 @@ pub(crate) fn decode_model(
 /// append path never takes the `databases` lock; a DBC-set change just
 /// swaps the closure (and resets the index) here. `None` when no loaded
 /// DBC has a multiplexed message — the common case pays nothing.
+///
+/// **The one resolution site that cannot hold a
+/// [`DecodeModel`](crate::signal_fingerprint::DecodeModel)**, for that
+/// reason: a model borrows the loaded set, and this runs per appended
+/// frame. So it snapshots the picks alongside the databases and applies
+/// the rule through
+/// [`signal_fingerprint::picked_path`](crate::signal_fingerprint::picked_path),
+/// which is where that rule is written down. A candidate whose
+/// multiplexor signal is pinned to a *different* database is not a
+/// candidate for it — that is the per-signal half of ADR 0054 — so a
+/// user who sees the wrong arm can pick their way out of it. A pick
+/// change re-installs the closure, because it goes through
+/// [`invalidate_derived_caches`] like any other change to what the set
+/// decodes.
+///
+/// The fall-through behind the winner stays: a database that defines
+/// the multiplexor but cannot read it out of *this* payload lets the
+/// next one answer. That is an accepted exposure of the per-frame
+/// decode path, not the per-signal question this resolves.
 fn refresh_mux_extractor(state: &AppState) {
-    let snap: Vec<(Arc<Database>, Vec<String>)> = {
+    // Lock order: the DBC set before the picks, as `decode_model` takes
+    // them.
+    let (snap, picks) = {
         let dbs = state.databases();
-        dbs.iter()
+        let snap: Vec<(String, Arc<Database>, Vec<String>)> = dbs
+            .iter()
             .filter(|d| d.db.has_multiplexor())
-            .map(|d| (d.db.clone(), d.buses.clone()))
-            .collect()
+            .map(|d| (d.path.clone(), d.db.clone(), d.buses.clone()))
+            .collect();
+        (snap, state.picks_snapshot())
     };
     if snap.is_empty() {
         state.trace_store.set_mux_extractor(None);
@@ -486,9 +509,24 @@ fn refresh_mux_extractor(state: &AppState) {
         .trace_store
         .set_mux_extractor(Some(Arc::new(move |f: &RawTraceFrame| {
             let id = CanId::new(f.id, f.extended).ok()?;
+            let bus_id = f.bus_id.as_deref();
             snap.iter()
-                .filter(|(_, buses)| filter::dbc_applies(buses, f.bus_id.as_deref()))
-                .find_map(|(db, _)| db.decode_mux_selector(id, f.payload.data()))
+                .filter(|(_, _, buses)| filter::dbc_applies(buses, bus_id))
+                .find_map(|(path, db, _)| {
+                    // Costs nothing where no pick exists at all, which
+                    // is every project that has never met an ambiguity.
+                    if !picks.is_empty() {
+                        let chosen = db.multiplexor_signal_name(id).and_then(|name| {
+                            crate::signal_fingerprint::picked_path(
+                                &picks, bus_id, f.id, f.extended, name,
+                            )
+                        });
+                        if chosen.is_some_and(|c| c != path) {
+                            return None;
+                        }
+                    }
+                    db.decode_mux_selector(id, f.payload.data())
+                })
         })));
 }
 /// Rebuild the ingest-time verifier's config index from the loaded
