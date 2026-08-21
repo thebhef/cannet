@@ -436,6 +436,88 @@ Recorded by phase 2, 2026-08-21.
   could not build one. Test-only, to keep a warning-free non-test
   build; if a production caller ever needs it the `cfg` comes off.
 
+Recorded by phase 3, 2026-08-21.
+
+- **A sixth Shape A site the sweep never listed, and the one place
+  phase 3 changed an answer with no pick in sight.**
+  `VerificationState::rebuild_configs`'s *default* loop enumerated
+  `Database::calculated_field_messages()` — which filters to the
+  messages that **declare** calculated fields — and took the first
+  entry per `(bus, id)`. So a database behind the winner could
+  designate a counter on a message it does not supply. It applies no
+  `dbc_applies` filter (it iterates `loaded.buses` directly), which is
+  why the thirteen-site sweep did not see it. Measured before
+  changing it: with `a.dbc` supplying `256` and designating nothing and
+  `b.dbc` behind it designating both, `verifier.wants` said **true**
+  while `resolve_effective_calc` said **none**; reversed, both said
+  yes. So the ingest verifier and the transmit path disagreed about the
+  same message. Fixed and pinned as
+  `a_designation_the_defining_database_never_declared_is_not_borrowed`.
+  Named prominently because it is the single deviation from "nothing a
+  user sees changes unless they have made a pick": a project relying on
+  a designation borrowed from a non-supplying database loses that
+  verification, which is exactly what phase 1's `list_value_tables`
+  fix did to borrowed enum labels.
+- **Calculated-field resolution stays per message — decided, not
+  inherited.** Phase 1 asked phase 3 to take this deliberately. Taken:
+  `DecodeModel::message_source` is per message and its rustdoc says
+  why. A `CannetCounter` designation names a signal and resolves to a
+  bit placement *on the message entry that declared it*
+  (`Database::resolve_calculated_fields`), so counter-from-one-file
+  plus CRC-from-another is not a statement any database made. The pick
+  still reaches it: a pick on **any** signal of the message selects
+  that database for the message-level facts, and where two picks on one
+  message name two databases the earlier in load order wins, so the
+  answer is a function of the project rather than of map iteration
+  order.
+- **`message_spans_databases` is a gate, not the exact question.** The
+  overseer's ruling asks "does any eligible database define a signal
+  this message's winner does not"; the index answers the cheaper
+  superset "does more than one loaded database define this id", over
+  message ids rather than signals, and ignores buses. Where it
+  over-answers, the message resolves per signal and lands on the same
+  values — a slower decode of one message, never a different answer.
+  Computing the exact question would mean walking every signal of every
+  database instead of every message.
+- **The split-message index is a third thing
+  `invalidate_derived_caches` must drop.** It costs 63.6 µs to build
+  for two 500-message databases and 140.2 µs for five, so it is cached
+  against the DBC set beside `DescriptorSnapshot` rather than built per
+  serve. That gives it `DescriptorSnapshot`'s failure mode too: a
+  future path that mutates the loaded set without going through
+  `invalidate_derived_caches` would serve a stale index — which for
+  this one means a message that has just become ambiguous keeping the
+  fast path until something else invalidates.
+- **`signal_snapshot::DefinitionIndex::resolved` still expresses the
+  pick rule a second time.** Deliberately not folded in: it resolves
+  over an already-built definer list (`Vec<&str>` of paths) for the
+  panel that *reports* the ambiguity, and its consumers — the collision
+  detector and the panel model — need the whole candidate list, which
+  `signal_source` deliberately does not return. Its rustdoc names
+  `DecodeModel::picked_index` as the rule it mirrors. Named so a reader
+  knows it is a mirror rather than a fourth rule; folding it in would
+  mean giving the resolver a "return the chain, not the winner" mode,
+  which is the API shape this task exists to avoid.
+- **The mux extractor resolves the pick against each candidate's own
+  multiplexor signal name.** Where two databases name their multiplexor
+  differently, a pick on one does not exclude the other and the
+  per-frame fall-through decides between them. Consistent with the
+  accepted Shape D trade, and more esoteric than the case the owner
+  already ruled on; no case was built for it.
+- **`decode_frame` and `encode_frame` can now disagree in one narrow
+  case.** The panel's decode resolves per signal
+  (`decode_resolved`, ADR 0054), its encode per message
+  (`message_source`), because `Database::encode_frame` writes a whole
+  payload from one database's message entry. With two databases
+  defining one message on one bus and a pick on one of its signals,
+  the panel would report the *other* signals from the first defining
+  database while encoding them through the picked one. Before this
+  phase both were per message and agreed; the divergence is the price
+  of putting the decode on the rule ADR 0054 states. No case was built
+  for it — it needs a collision *and* a pick *and* an edit to a signal
+  the two databases place differently — and closing it would mean
+  splitting one encode across two databases.
+
 ## Status log
 
 ### 2026-08-21 — Phase 1: verifying the Shape A sites (branch `task-92-phase-1-shape-a`)
@@ -641,3 +723,143 @@ phase of this task;
 `a_selector_the_winner_withholds_is_read_from_the_next_database` still
 stand. Phase 1's four pinned sites were not touched. What phase 2 found
 and did not close is under Blockers / side effects.
+
+### 2026-08-21 — Phase 3: one shared resolver (branch `task-92-phase-3-shared-resolver`)
+
+Branched from `task-92-phase-2-shape-b` at `b11744da`. Baseline
+`cargo test -p cannet-gui`: **826 passed, 6 ignored**; `cargo test -p
+cannet-dbc --lib`: **110**; clippy and fmt clean.
+
+**Observations, before anything was changed.** Throw-away printing
+tests, each with a reversed-load-order control, run against the
+collision fixture (`a.dbc` and `b.dbc` both on `bus0` defining
+`256/Msg`, a.dbc at unit scale designating nothing, b.dbc ×10 with a
+`VAL_` table, `CannetCounter`, `CannetCrc` and an extra signal `Y`) and
+against the mux fixture (`a.dbc` reading 512's selector from byte 1,
+`b.dbc` from byte 0). The scratch tests were reverted before anything
+was written for keeps.
+
+| site | a-first | b-first | with a pick |
+|---|---|---|---|
+| `verifier.wants` (the ingest verifier's default config) | **true** | true | — |
+| `resolve_effective_calc` | none | some | none under either pick |
+| mux selector | 7 | 1 | **7 / 1, unmoved by any pick** |
+| `decode_frame_inner` | `A`=3, three signals | `A`=30, four signals | **unmoved by any pick** |
+| `describe_message_inner` | 3 signals, no designation | 4 signals, designated | **unmoved by any pick** |
+
+Row 1 is a **new finding**: the verifier answered `true` where
+`resolve_effective_calc` answered `none` for the same message, and the
+reversed control had both answering yes — so the clean reading is a
+discrimination, and the two sites genuinely disagreed. Rows 3–5 are the
+gap the owner's Shape D ruling depends on not existing.
+
+**What landed.**
+
+- `fb6cba0a` — **the shared resolver.** `DecodeModel::signal_source`
+  (ADR 0054 per signal: eligible for the bus, then load order over the
+  databases that *define the signal*, unless a pick names one) and
+  `DecodeModel::message_source` (deliberately per message, with the
+  reason in its rustdoc), plus `DecodeModel::eligible`, the scan both
+  start from. `Database::defines_message` and
+  `Database::multiplexor_signal_name` in `cannet-dbc`.
+  `list_value_tables_inner` moved onto `signal_source`;
+  `resolve_effective_calc`, `rebuild_verification`'s DBC default and
+  **both halves** of `VerificationState::rebuild_configs` onto
+  `message_source`.
+  `a_pick_does_not_yet_reach_the_value_tables_or_the_calculated_fields`
+  turned around into
+  `a_pick_reaches_the_value_tables_and_the_calculated_fields`.
+- `2835986d` — **the mux extractor honours picks.** It is the one
+  resolution site that cannot hold a `DecodeModel` (a model borrows the
+  loaded set; this runs per appended frame), so it snapshots the picks
+  beside the databases and applies the rule through the new free
+  function `signal_fingerprint::picked_path`, which `DecodeModel`'s own
+  `pick_path` now reads too. A candidate whose multiplexor signal is
+  pinned to a different database is not a candidate for it. The
+  fall-through behind the winner stays, per the ruling.
+- `866df603` — **phase 2's asymmetry closed.**
+  `DecodeModel::message_spans_databases`, an index of the ids more than
+  one loaded database defines, built with the model and empty below two
+  databases. `decode_resolved` takes the resolved path when *either*
+  that or `message_has_pick` answers true, so whether a row reports a
+  signal only a later database defines no longer depends on whether
+  some other signal was pinned.
+  `a_signal_only_a_later_database_defines_reaches_the_row_once_the_message_is_picked`
+  turned around and renamed.
+- `13e766fd` — **the index is cached against the DBC set.** Measured
+  after landing it: building it per model cost 0 ns at one database but
+  **63.6 µs** at two 500-message databases and **140.2 µs** at five, and
+  a model is built per serve. Cached beside `DescriptorSnapshot` and
+  dropped by `invalidate_derived_caches` (ADR 0033); building a model is
+  back to **100 ns** — the timer's floor — at one, two and five
+  databases alike. The free `app_state::decode_model` went with it, so
+  `AppState::decode_model` is the only production way to build one and a
+  serve cannot accidentally build an uncached model.
+- `34687873` — **the transmit panel's queries.**
+  `AppState::first_dbc_on_bus` was the last copy of the rule: a generic
+  "first assigned database whose closure answers", whose four closures
+  all answered exactly when the database defines the message.
+  `describe_message`, `encode_frame` and the periodic-backing lookup
+  moved onto `message_source`; `decode_frame` onto `decode_resolved`,
+  which now takes the frame's parts so a panel-side payload and a
+  captured one go through one function. The helper was deleted.
+- `255fdf9d` — **the eligibility scan, spelled once.** The encoding
+  fingerprint's walk, `picked_index`'s position, the trace decode's
+  candidate list and the signal cache's per-frame eligible list all read
+  `DecodeModel::eligible`. Thirteen `filter::dbc_applies` call sites are
+  down to **four**: `eligible` itself, and three documented as
+  deliberately not resolution — the rest-of-bus simulation and the
+  signal-mapping panel's `describe_on_bus`, both of which want *every*
+  candidate, and the mux extractor, which cannot hold a model.
+
+**Falsification control.** Each knob turned off in turn, suite re-run:
+forcing `message_spans_databases` to `false` reddens **2** tests (the
+lookup's own and the turned-around row test); making the resolver ignore
+picks reddens **4** (`signal_source`'s and `message_source`'s unit
+tests, the value-table / calc-field test and the transmit-panel test);
+disabling the mux extractor's pick check reddens **1**. No other test
+moves, so the suite discriminates the change rather than describing it.
+
+**Fast-path measurement** (release, in-process, against the real
+pre-change build `2835986d`, restored file by file out of git rather
+than replicated by hand — the trap phase 2 documented).
+`collect_trace_records` over 200 000 frames, three runs per invocation,
+four invocations per build; `min` is the stable statistic.
+
+| project | build | min ns/frame (best of four) | per-invocation minima |
+|---|---|---|---|
+| one DBC, 10 messages | pre | 2023.4 | 2023.4 – 2151.4 |
+| one DBC, 10 messages | after | 2031.6 | 2031.6 – 2063.6 |
+| two DBCs, 500 messages each, disjoint ids | pre | 2011.2 | 2011.2 – 2075.1 |
+| two DBCs, 500 messages each, disjoint ids | after | 2057.4 | 2057.4 – 2104.2 |
+
++0.4 % and +2.3 % on the best-of-four minima, both inside the
+run-to-run spread of either build. The new per-frame lookup measures
+**0.55 ns**, against 0.54 ns for `message_has_pick` beside it, so it
+cannot account for a 46 ns/frame difference — that is machine noise.
+Model construction is 100 ns at one, two and five databases. The
+render-tier perf harness was **not** run — the overseer owns it.
+
+**Gates.** `cargo test -p cannet-gui`: 826 → **832 passed, 6 ignored**.
+`cargo test -p cannet-dbc --lib`: 110 → **112**. `cargo clippy -p
+cannet-gui --all-targets`, `cargo fmt --all -- --check` and `cargo test
+--workspace` clean. Frontend untouched. README updated where it
+describes what the signal-mapping panel's choice reaches.
+
+**Left where they were, deliberately.** Shape D stays open per the
+2026-08-21 ruling:
+`a_value_the_winner_withholds_is_outside_the_fingerprint` and
+`a_selector_the_winner_withholds_is_read_from_the_next_database` are
+both still green, and neither `sample_shared` nor the mux extractor
+withholds a value its winner does not cover. What phase 3 found and
+decided rather than inherited is under Blockers / side effects.
+
+**Exit criteria.**
+
+| criterion | verdict | what earns it |
+|---|---|---|
+| One shared resolver; every `dbc_applies` site that answers "which database supplies this" goes through it, or is documented as deliberately different | **met** | `DecodeModel::signal_source` / `message_source` / `eligible`; 13 sites → 4, three of them carrying their reason in rustdoc |
+| A collision resolves to the same database in the trace row, the plot, the value tables and the calculated fields; tested | **met** | `a_collision_resolves_to_one_database_in_the_row_the_plot_the_tables_and_the_calc_fields` (no pick), `a_pick_reaches_the_value_tables_and_the_calculated_fields` and `a_trace_rows_picked_signal_comes_from_the_database_the_pick_names` (picked, both load orders) |
+| No derived attribute comes from a database other than the one decoding the value; a case per Shape A site | **met** | phase 1's five pins, plus `a_designation_the_defining_database_never_declared_is_not_borrowed` for the sixth site phase 3 found |
+| Shape D closed, **or** left open with the ruling recorded and the test still pinning the exposure | **met, second branch** | the ruling is recorded above; both exposure pins are green |
+| The shared resolver's rustdoc cites ADR 0054 | **met** | `signal_source` and `message_source` both cite it by name, and `message_source` cites it for the part it deliberately reads differently |
