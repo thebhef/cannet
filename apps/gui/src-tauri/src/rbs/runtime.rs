@@ -901,8 +901,12 @@ BO_ 1280 AuxFrame: 8 AUX
             let dbs = state.databases.lock().unwrap();
             let mut registry = state.transmit_frames.lock().unwrap();
             for (id, request, spec) in registry.resolution_inputs() {
-                let resolved =
-                    crate::resolve_effective_calc(&dbs, &request, spec.as_ref()).unwrap();
+                let resolved = crate::resolve_effective_calc(
+                    &crate::tests::plain_model(&dbs),
+                    &request,
+                    spec.as_ref(),
+                )
+                .unwrap();
                 registry.set_resolved_calc(&id, resolved);
             }
             let (fired, cycle_ms) = registry.fire_info(&status_id).unwrap();

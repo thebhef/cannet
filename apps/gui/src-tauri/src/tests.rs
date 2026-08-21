@@ -4180,7 +4180,7 @@ fn calc_request(bus: &str, id: u32) -> ipc::TransmitRequest {
 #[test]
 fn effective_calc_uses_dbc_defaults_when_no_override() {
     let dbs = vec![loaded_scoped("a.dbc", CALC_ATTR_DBC, &["p"])];
-    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+    let resolved = resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), None)
         .unwrap()
         .expect("DBC-declared fields resolve");
     // Counter at bits 40..44 (byte 5 low nibble), CRC in byte 7.
@@ -4191,9 +4191,11 @@ fn effective_calc_uses_dbc_defaults_when_no_override() {
     assert_ne!(payload[7], 0);
     // A message without any designation resolves to None.
     let dbs2 = vec![loaded_scoped("b.dbc", &tiny_dbc(291, "Plain", "S"), &["p"])];
-    assert!(resolve_effective_calc(&dbs2, &calc_request("p", 291), None)
-        .unwrap()
-        .is_none());
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs2), &calc_request("p", 291), None)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -4209,7 +4211,7 @@ fn override_replaces_the_dbc_default_per_field() {
         }),
         crc: None,
     };
-    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&spec))
+    let resolved = resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), Some(&spec))
         .unwrap()
         .unwrap();
     let mut payload = [0u8; 8];
@@ -4225,12 +4227,16 @@ fn effective_calc_respects_bus_scoping_and_reports_errors() {
     // The DBC declaring the fields is scoped to bus "q" — a frame
     // on bus "p" doesn't see it.
     let dbs = vec![loaded_scoped("a.dbc", CALC_ATTR_DBC, &["q"])];
-    assert!(resolve_effective_calc(&dbs, &calc_request("p", 291), None)
-        .unwrap()
-        .is_none());
-    assert!(resolve_effective_calc(&dbs, &calc_request("q", 291), None)
-        .unwrap()
-        .is_some());
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("q", 291), None)
+            .unwrap()
+            .is_some()
+    );
     // An override naming an unknown signal is an error, not a
     // silent no-op …
     let bad = ipc::CalcFieldsSpec {
@@ -4241,9 +4247,13 @@ fn effective_calc_respects_bus_scoping_and_reports_errors() {
         }),
         crc: None,
     };
-    assert!(resolve_effective_calc(&dbs, &calc_request("q", 291), Some(&bad)).is_err());
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("q", 291), Some(&bad)).is_err()
+    );
     // … and so is an override on a message no DBC defines.
-    assert!(resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&bad)).is_err());
+    assert!(
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), Some(&bad)).is_err()
+    );
 }
 
 /// 291 `Status` with `AliveCtr` at `ctr_start`, and the cannet
@@ -4279,7 +4289,7 @@ fn a_transmit_rows_calculated_fields_come_from_the_defining_database() {
         loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
     ];
     assert!(
-        resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+        resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), None)
             .unwrap()
             .is_none(),
         "b.dbc's designations are not borrowed onto a.dbc's message",
@@ -4295,7 +4305,7 @@ fn a_transmit_rows_calculated_fields_come_from_the_defining_database() {
         }),
         crc: None,
     };
-    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&spec))
+    let resolved = resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), Some(&spec))
         .unwrap()
         .expect("the override configures the message");
     let mut payload = [0u8; 8];
@@ -4309,7 +4319,7 @@ fn a_transmit_rows_calculated_fields_come_from_the_defining_database() {
         loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
         loaded_scoped("a.dbc", &calc_placement_dbc(48, false), &["p"]),
     ];
-    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+    let resolved = resolve_effective_calc(&plain_model(&dbs), &calc_request("p", 291), None)
         .unwrap()
         .expect("b.dbc designates a counter and a CRC");
     let mut payload = [0u8; 8];
@@ -5712,9 +5722,13 @@ fn a_collision_resolves_to_one_database_in_the_row_the_plot_the_tables_and_the_c
     };
     let calc_designated = |state: &AppState| -> bool {
         let dbs = state.databases();
-        resolve_effective_calc(&dbs, &calc_request(TEST_BUS, 256), None)
-            .unwrap()
-            .is_some()
+        resolve_effective_calc(
+            &state.decode_model(&dbs),
+            &calc_request(TEST_BUS, 256),
+            None,
+        )
+        .unwrap()
+        .is_some()
     };
 
     // a.dbc first: unit scale, no labels, no designations.
@@ -5793,24 +5807,58 @@ fn a_signal_only_a_later_database_defines_reaches_the_row_once_the_message_is_pi
 }
 
 #[test]
-fn a_pick_does_not_yet_reach_the_value_tables_or_the_calculated_fields() {
-    // Both still resolve by load order alone, so a project that has
-    // pinned `A` to b.dbc gets b.dbc's *values* and a.dbc's *labels*.
-    // Pinned rather than fixed: those two sites resolve per message,
-    // and moving them onto the same resolution the decode uses is the
-    // consolidation this change deliberately stops short of.
+fn a_pick_reaches_the_value_tables_and_the_calculated_fields() {
+    // A pick names the file that describes this traffic, so everything
+    // derived from the message follows it, not just the decoded number:
+    // b.dbc's `VAL_` labels and its `CannetCounter` / `CannetCrc`
+    // designation reach a project that chose b.dbc.
+    let labels = |state: &AppState| -> Vec<String> {
+        list_value_tables_inner(state, 256, false, "A", false, Some(TEST_BUS))
+            .into_iter()
+            .map(|e| e.label)
+            .collect()
+    };
+    let calc_designated = |state: &AppState| -> bool {
+        let dbs = state.databases();
+        resolve_effective_calc(
+            &state.decode_model(&dbs),
+            &calc_request(TEST_BUS, 256),
+            None,
+        )
+        .unwrap()
+        .is_some()
+    };
+
     let state = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
-    assert!(
-        list_value_tables_inner(&state, 256, false, "A", false, Some(TEST_BUS)).is_empty(),
-        "the picked definition declares Zero/Three; load order still answers",
-    );
-    let dbs = state.databases();
-    assert!(
-        resolve_effective_calc(&dbs, &calc_request(TEST_BUS, 256), None)
-            .unwrap()
-            .is_none(),
-        "b.dbc designates a counter and a CRC; load order still answers",
-    );
+    assert_eq!(labels(&state), vec!["Zero", "Three"], "the value table");
+    assert!(calc_designated(&state), "the calculated fields");
+
+    // Reversed load order with the pick reversed to match: b.dbc now
+    // wins on order and a.dbc is chosen, so both answers go away again.
+    // The reading above is a choice being honoured, not an order.
+    let state = collide_state(["b.dbc", "a.dbc"], Some("a.dbc"));
+    assert!(labels(&state).is_empty(), "the value table");
+    assert!(!calc_designated(&state), "the calculated fields");
+}
+
+#[test]
+fn a_designation_the_defining_database_never_declared_is_not_borrowed() {
+    // The ingest verifier's *default* config index used to enumerate
+    // only the messages that declare calculated fields, so a database
+    // behind the winner could designate a counter on a message it does
+    // not supply. a.dbc defines 256 and designates nothing; b.dbc,
+    // behind it, designates both a counter and a CRC — and the value
+    // being verified decodes from a.dbc, so there is nothing to verify
+    // (ADR 0054).
+    let configured = |order: [&str; 2]| -> bool {
+        let state = collide_state(order, None);
+        crate::app_state::rebuild_verification(&state);
+        state.verifier.wants(&collide_frame())
+    };
+    assert!(!configured(["a.dbc", "b.dbc"]), "a.dbc supplies 256");
+    // Reversed, b.dbc supplies the message and its designation applies
+    // — which is what makes the clean reading above a discrimination.
+    assert!(configured(["b.dbc", "a.dbc"]), "b.dbc supplies 256");
 }
 
 #[test]

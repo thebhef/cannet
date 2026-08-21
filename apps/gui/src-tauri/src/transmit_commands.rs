@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use cannet_core::CanId;
 
-use crate::app_state::{refresh_calc_resolutions, AppState, LoadedDbc};
+use crate::app_state::{refresh_calc_resolutions, AppState};
 use crate::ipc;
 use crate::session::{resolve_bus_route, BusRoute};
 use crate::trace_store::RawTraceFrame;
@@ -60,11 +60,15 @@ pub(crate) fn merge_calc_override(
 /// message (ADR 0027): the DBC-declared defaults (`CannetCounter` /
 /// `CannetCrc` attributes) with the message's override spec layered
 /// on top — an override replaces the DBC default wholesale for that
-/// field. The resolving DBC is the first one scoped to the request's
-/// bus that defines the message id. `Ok(None)` when nothing is
-/// configured for the message.
+/// field. The resolving DBC is
+/// [`DecodeModel::message_source`](crate::signal_fingerprint::DecodeModel::message_source)'s
+/// — the database that supplies the message on the request's bus, so a
+/// designation can only come from the file that decodes the traffic it
+/// is designating (ADR 0054), and a pick on one of the message's
+/// signals moves it. `Ok(None)` when nothing is configured for the
+/// message.
 pub(crate) fn resolve_effective_calc(
-    dbs: &[LoadedDbc],
+    dbs: &crate::signal_fingerprint::DecodeModel<'_>,
     request: &ipc::TransmitRequest,
     override_spec: Option<&ipc::CalcFieldsSpec>,
 ) -> Result<Option<cannet_dbc::ResolvedCalculatedFields>, String> {
@@ -74,10 +78,8 @@ pub(crate) fn resolve_effective_calc(
         // the transmit path itself will surface the id error.
         return Ok(None);
     };
-    let Some(loaded) = dbs
-        .iter()
-        .filter(|d| crate::filter::dbc_applies(&d.buses, Some(request.bus_id.as_str())))
-        .find(|d| d.db.dbc_calculated_fields(id).is_some())
+    let Some(loaded) =
+        dbs.message_source(Some(request.bus_id.as_str()), request.id, request.extended)
     else {
         return if no_override {
             Ok(None)
