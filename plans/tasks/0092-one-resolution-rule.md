@@ -68,6 +68,16 @@ series can be sourced from **different databases for the same signal**.
 Same value, two answers, no warning. This is the sharpest finding in
 the sweep and should be verified first.
 
+**Measured and fixed 2026-08-21 (phase 2).** Two databases on one bus
+both defining `256/"A"`, a.dbc at unit scale and b.dbc at ×10, with the
+project pinning `A` to b.dbc: the row read **3** and the plot read
+**30.0** — one value, two answers. Reversing the load order and the
+pick reversed the divergence (row **30**, plot **3.0**), so it was the
+resolution rule and not the order. Both now read the picked database's
+definition. The same walk backed the signals view's latest value
+(`decode_snapshot_frame`) and it moved with it. Details in the status
+log.
+
 ### Shape C — the canonical one
 
 `signal_cache.rs:1009` builds the eligible list and then resolves
@@ -281,6 +291,50 @@ Recorded by phase 1, 2026-08-21.
   task's own "Why this is load-bearing" section describes from the
   other side, and closing it belongs to phase 3's shared resolver,
   where picks are already honoured.
+Recorded by phase 2, 2026-08-21.
+
+- **How "resolves per signal" was read on the slow path.** The ruling
+  says a picked message "resolves per signal". Taken literally, that is
+  the same resolution the catalog and the caches use — every signal any
+  eligible database yields, from the first that *defines* it, or from
+  the one a pick names. So a picked message's row also reports signals
+  the message's first defining database does not define, which the
+  fast path has never reported. The alternative reading — substitute
+  only the picked signals into the first database's decode — was
+  rejected because it invents a third resolution rule, one that is
+  neither per message nor per signal, for the single case where the
+  code has just been told to be exact. The consequence is named
+  because it is a real asymmetry: **whether a row reports such a signal
+  now depends on whether the message carries a pick.** It is additive
+  (no value that appeared before changes, and the ones that appear are
+  the ones the plot has always shown), and it is pinned by
+  `a_signal_only_a_later_database_defines_reaches_the_row_once_the_message_is_picked`.
+  Phase 3 should decide whether the shared resolver keeps the
+  asymmetry or closes it by making the fast path exact.
+- **A pick still does not reach the value tables or the calculated
+  fields.** Phase 1 recorded the `list_value_tables` half; the three
+  calculated-field sites are the same. Measured: with `A` pinned to
+  b.dbc, the row and the plot both read b.dbc's ×10 value while
+  `list_value_tables_inner` answers a.dbc's (empty) table and
+  `resolve_effective_calc` answers a.dbc's (absent) designation — so
+  b.dbc's `VAL_` labels and its `CannetCounter` / `CannetCrc` are
+  invisible to a project that chose it. Pinned as
+  `a_pick_does_not_yet_reach_the_value_tables_or_the_calculated_fields`
+  rather than fixed: both resolve per *message*, and moving them onto
+  the resolution the decode uses is phase 3's shared resolver. This is
+  the remaining half of the motivating case in "Why this is
+  load-bearing" — the private DBC now decodes the value **and** labels
+  it in the trace row (the label rides on the decoded signal), but the
+  plot's symbolic axis and the enum dropdowns still read the
+  client-facing file's table.
+- **Four more serve paths now build a `DecodeModel` per serve.** The
+  trace page, the filtered page, the by-id snapshot and the filter
+  index's refresh each build one where they previously passed the
+  loaded-set guard straight through. Measured at **77–143 ns per
+  serve** (one `DbcScope` vec plus an `Arc` clone of an empty pick
+  map), against a serve that decodes hundreds to hundreds of thousands
+  of frames. Named rather than optimised: phase 3's shared resolver is
+  where a cheaper carrier would belong if one is ever wanted.
 - **`RbsElementState` is re-exported `#[cfg(test)]` from `rbs`.** It is
   the value type of `RbsRuntime::elements`, a public field, and was not
   nameable outside `rbs` — so a test standing host state up by hand
@@ -394,3 +448,101 @@ per-frame exposure.**
 (lib): 109 → **110**. `cargo clippy -p cannet-gui --all-targets` and
 `cargo fmt --all -- --check` clean. `cargo test --workspace` clean.
 Frontend untouched. Perf harness not run — the overseer owns it.
+
+### 2026-08-21 — Phase 2: the trace row resolves per signal (branch `task-92-phase-2-shape-b`)
+
+Branched from `task-92-phase-1-shape-a` at `ab1178ad`. Baseline
+`cargo test -p cannet-gui`: **818 passed, 6 ignored**; `cargo test -p
+cannet-dbc --lib`: **110**; clippy and fmt clean.
+
+**Observation, before anything was changed.** A throw-away printing
+test, with a reversed-load-order control, put both databases on bus
+`bus0`: `a.dbc` defines `256/"Msg"` with `A` at unit scale; `b.dbc`
+defines the same message with `A` ×10, a `VAL_` table for it, and an
+extra signal `Y`. One frame, `A` raw 3 and `Y` raw 100. Each line is
+row / plot, for the same signal in the same instant:
+
+| load order | pick for `A` | trace row `A` | plotted `A` |
+|---|---|---|---|
+| a, b | none | 3 | 3.0 |
+| b, a | none | 30 | 30.0 |
+| a, b | **b.dbc** | **3** | **30.0** |
+| a, b | a.dbc | 3 | 3.0 |
+| b, a | **a.dbc** | **30** | **3.0** |
+
+Rows 3 and 5 are the defect: **one value, two answers**, and they are
+mirror images, so the reading is a discrimination and not an artefact
+of load order. Rows 1, 2 and 4 are the controls that say a pick
+agreeing with load order costs nothing. The row's `Y` was absent in
+every case; the plot's was 100.0 throughout.
+
+**Conclusion.** `decode_against` and `decode_snapshot_frame` resolved
+per message — the first eligible database that recognised the id
+supplied every column — while the caches, the plot and the encoding
+fingerprints resolve per signal and honour the pick. ADR 0054 says a
+decoded value has exactly one definition, so the row was wrong, not
+merely different.
+
+**What landed.**
+
+- `841f2c9b` — `DecodeModel::message_has_pick(id, extended)`, the
+  per-frame branch. A `(message id, extended)` set derived once when
+  the model is built, from the pick map's keys via the new
+  `signal_snapshot::identity_message` (the inverse of the middle of
+  `signal_identity`, round-trip tested including a bus id containing
+  `|` and `:`). No bus in the key: a bus-qualified test would have to
+  format an identity string per frame, and over-answering `true` for a
+  frame on a bus no pick names is free, because the per-signal
+  resolution it selects reads *that* bus's picks and lands back on the
+  load-order default. An empty map answers `false` off an emptiness
+  check, hashing nothing.
+- `6993735b` — `decode_resolved` replaces the per-message walk in
+  `dbc_commands`, and `trace_query`'s `decode_snapshot_frame` folds
+  into it. A message no signal of which carries a pick keeps the single
+  `decode_raw` call; a message that does gets one decode per eligible
+  database, with each signal taken from the database a pick names or
+  the first that *defines* it. Signals come out in the base message's
+  own declaration order, so the row's columns do not reshuffle. A
+  signal the picked database withholds for this payload has **no**
+  value rather than one borrowed from behind it. README updated where
+  it describes what the signal-mapping panel's choice reaches.
+
+**Falsification control.** With `message_has_pick` forced to `false`,
+**five** of the six new tests go red — the four behaviour pins and the
+lookup's own test — and the two that pin pre-existing behaviour
+(the un-picked collision, and the value-table / calc-field gap) stay
+green. So the suite discriminates the change rather than describing it.
+
+**Fast-path measurement** (release, in-process, no picks anywhere:
+one database, ten messages of eight signals, 200 000 frames, timing
+`collect_trace_records` — the real serve path, whose signature is the
+same on both builds). Three runs per build, nine timings each; `min`
+is the stable statistic, medians overlap:
+
+| build | min ns/frame | median ns/frame |
+|---|---|---|
+| pre-change (`ab1178ad`) | 3062.9 / 3088.6 / 3038.5 | 3711.9 / 3663.5 / 3608.1 |
+| after (`6993735b`) | 2997.8 / 3018.5 / 3021.7 | 3683.3 / 3687.4 / 3652.0 |
+
+The fast path is **0.5–2.9 % faster on min and level on median** — no
+regression. The two costs it adds, measured directly: the per-frame
+branch is **0.81–0.98 ns** (≈0.03 % of a 3 µs frame) and building the
+`DecodeModel` is **77–143 ns per serve**. An earlier within-build A/B
+against a hand-copied replica of the old loop read +2–5 %; the replica
+was a fresh local function the optimiser inlined differently, so that
+control was discarded for the real pre-change build. The render-tier
+perf harness was **not** run — the overseer owns it.
+
+**Gates.** `cargo test -p cannet-gui`: 818 → **826 passed, 6 ignored**
+(1 identity parser, 1 lookup, 6 behaviour/pin tests). `cargo test -p
+cannet-dbc --lib`: **110**, unchanged. `cargo clippy -p cannet-gui
+--all-targets`, `cargo fmt --all -- --check` and `cargo test
+--workspace` clean. Frontend untouched.
+
+**Left where they were, deliberately.** Shape D and the mux
+extractor's per-frame fall-through are an owner ruling and out of every
+phase of this task;
+`a_value_the_winner_withholds_is_outside_the_fingerprint` and
+`a_selector_the_winner_withholds_is_read_from_the_next_database` still
+stand. Phase 1's four pinned sites were not touched. What phase 2 found
+and did not close is under Blockers / side effects.
