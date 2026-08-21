@@ -66,12 +66,65 @@ the sweep and should be verified first.
 per signal, honouring picks. This is the behaviour ADR 0054 describes,
 and it is the one the others should reduce to.
 
+### Shape D — resolving per *frame* where the rule is per *signal*
+
+Found by [task 88 phase 8](0088-bus-assignment-governs-decode.md) on
+2026-08-21, while making the encoding fingerprint identify the winning
+definition. It is the sharpest of the four because it is **measured,
+not inferred from code shape**, and because it is what makes Shape B's
+fix incomplete on its own.
+
+`signal_sampler::sample_shared` takes the first eligible database that
+yields the signal **for that payload**. A database can withhold it — a
+multiplexor arm that does not match, a payload too short — and the next
+one answers. So the database that decodes a signal can differ *frame to
+frame within one series*.
+
+**The measurement** (phase 8, pinned as
+`a_value_the_winner_withholds_is_outside_the_fingerprint`): `a.dbc`
+defines `S` only in mux arm 0, `b.dbc` defines it plainly, both assigned
+to the same bus with `a.dbc` first. A frame in arm 1 decodes to 7.0 via
+`b.dbc`. Editing `b.dbc` moves that sample to 18.0 — and the series'
+fingerprint sits at `476b04dbda88b07e` either way.
+
+**Two things are wrong at once, and only one is the fingerprint's
+fault.**
+
+1. *Under-invalidation.* An edit to `b.dbc` moves samples the
+   fingerprint cannot see, so the pyramid is not rebuilt. Narrow —
+   two assigned databases, one signal, one bus, the second reached only
+   through an arm the first withholds — but real.
+2. *The value has two definitions.* Which is what ADR 0054 says cannot
+   happen. Under the ADR, if the winner withholds a value for this
+   payload then there is no value, the same way there are no enum
+   labels when the winner carries no `VAL_` table (Shape A). The
+   fall-through is the defect; the fingerprint is merely honest about
+   only knowing the winner.
+
+**Why it belongs here rather than in task 88.** Closing it means
+removing the decode fall-through, which *changes decoded values* — a
+series that shows samples today would show gaps. Phase 8 correctly
+implemented its ruling as written, named the exposure in ADR 0047's
+amendment, and pinned it so a future change has to move the test
+deliberately. Taking the decision is this task's job, because it is the
+same decision as Shape A's and Shape B's: **one rule, applied per
+signal, at every site.**
+
+**This is an owner decision, not an implementer's.** Removing the
+fall-through is the reading ADR 0054 requires and it makes a currently
+populated series go empty in the mux case. Surface it before
+implementing; do not let a phase agent choose.
+
 ### Already accounted for elsewhere
 
-`signal_fingerprint.rs:205` and `:373` are
+`signal_fingerprint.rs`'s two sites were
 [task 88 phase 8](0088-bus-assignment-governs-decode.md)'s work — the
 fingerprint hashing the candidate's whole bus list and every eligible
-candidate rather than the winner. Not duplicated here.
+candidate rather than the winner — and **landed 2026-08-21**
+(`d739e419`). `dbc_encoding` now walks in load order, honours a pick by
+its index over the eligible sequence, and `break`s at the winner. Not
+duplicated here; but the phase's own measurement of what that walk
+cannot see is Shape D above, which *is* this task's.
 
 ## Why this is load-bearing, not tidying (2026-08-20)
 
@@ -123,6 +176,14 @@ the panel — but "visible" is not "working".
     plot, value tables, calculated fields.
   - Measure the fast path against the pre-change build; a project with
     no picks must not regress.
+- **Shape D needs an owner ruling before any code.** Removing the
+  per-frame fall-through is what ADR 0054 requires and it makes a
+  currently populated series go empty where the winner withholds the
+  value in a mux arm. Put the question to the owner with the phase 8
+  measurement in hand (7.0 → 18.0 under an unchanged fingerprint), and
+  do not let the implementing phase choose. If the ruling is to close
+  it, `a_value_the_winner_withholds_is_outside_the_fingerprint` is the
+  test that has to be turned around, deliberately.
 - **Reduce the copies to one shared resolver.** `first_dbc_on_bus`
   (`app_state.rs:369`) is the nearest existing thing and already honours
   assignment-filtered load order; `signal_snapshot::definition_index`
@@ -143,4 +204,8 @@ the panel — but "visible" is not "working".
   the value tables and the calculated fields; tested.
 - No derived attribute comes from a database other than the one
   decoding the value; a case per Shape A site.
+- Shape D is either closed — a value the winning definition withholds
+  is no value, and `a_value_the_winner_withholds_is_outside_the_fingerprint`
+  is turned around to say so — or left open with the owner's ruling
+  recorded and the test still pinning the accepted exposure.
 - The shared resolver's rustdoc cites ADR 0054.
