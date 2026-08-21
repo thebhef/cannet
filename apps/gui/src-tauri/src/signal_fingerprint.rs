@@ -1167,6 +1167,57 @@ mod tests {
     }
 
     #[test]
+    fn a_value_the_winner_withholds_is_outside_the_fingerprint() {
+        // The corner the one-definition rule gives up, pinned so it is
+        // a known trade rather than a discovery. Decode resolves per
+        // *frame*: `sample_shared` falls through to the next assigned
+        // database where the winning definition withholds a value (here
+        // a multiplexor arm that does not match), so that database can
+        // still put samples in a pyramid — and the fingerprint, which is
+        // the winner's specification alone (ADR 0054), cannot see it
+        // change. ADR 0047's 2026-08-21 amendment names the exposure.
+        let a = parse(&message(&[
+            "Sel M : 0|8@1+ (1,0) [0|0] \"\" ECU2",
+            "S m0 : 8|16@1+ (1,0) [0|0] \"\" ECU2",
+        ]));
+        let b = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let b_edited = parse(&message(&["S : 32|8@1+ (2,0) [0|0] \"\" ECU2"]));
+        let bus = fp_bus();
+        // Selector 1, so `a`'s arm-0 definition of `S` does not answer.
+        let frame = RawTraceFrame {
+            timestamp_ns: 0,
+            channel: 0,
+            id: 256,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Classic(vec![1, 0, 0, 7, 9, 0, 0, 0]),
+            bus_id: Some(FP_BUS.to_string()),
+        };
+        let sampled = |second: &Database| {
+            let mut out = Vec::new();
+            signal_sampler::sample_shared(&frame, &[&a, second], 256, false, &["S"], &[], &mut out);
+            out
+        };
+        assert_eq!(sampled(&b), vec![Some(7.0)], "the second database answers");
+        assert_eq!(
+            sampled(&b_edited),
+            vec![Some(18.0)],
+            "…so editing it moves the value",
+        );
+
+        let fp = |second: &Database| {
+            dbc_encoding(
+                &plain(vec![scope("a.dbc", &a, &bus), scope("b.dbc", second, &bus)]),
+                Some(FP_BUS),
+                256,
+                false,
+                "S",
+            )
+        };
+        assert_eq!(fp(&b), fp(&b_edited), "and the fingerprint does not move");
+    }
+
+    #[test]
     fn a_file_backed_signal_fingerprints_against_its_source_not_the_dbc_set() {
         let info = |source: &str, group: u32, name: &str| FileSignalInfo {
             source_path: source.to_string(),
