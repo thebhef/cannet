@@ -126,22 +126,48 @@ impl Database {
         extended: bool,
         signal_name: &str,
     ) -> Option<&[ValueTableEntry]> {
-        let key = canid_to_message_id(if extended {
-            cannet_core::CanId::extended(message_id).ok()?
-        } else {
-            cannet_core::CanId::standard(message_id).ok()?
-        })?;
-        let entry = self.messages.get(&key)?;
-        let sig = entry
-            .signals
-            .iter()
-            .find(|s| s.signal.name == signal_name)?;
+        let sig = self.signal_entry(message_id, extended, signal_name)?;
         if sig.value_table.is_empty() {
             None
         } else {
             Some(&sig.value_table)
         }
     }
+
+    /// Whether this database defines `(message_id, extended,
+    /// signal_name)` at all — the question "is this the file a value
+    /// of that signal would decode from", which is not the same as
+    /// any particular attribute of it being present. A signal with no
+    /// `VAL_` table, no unit and no cannet attributes is still
+    /// defined here, and [`Database::value_table_for_signal`]
+    /// returning `None` does not mean some other file's table applies.
+    #[must_use]
+    pub fn defines_signal(&self, message_id: u32, extended: bool, signal_name: &str) -> bool {
+        self.signal_entry(message_id, extended, signal_name)
+            .is_some()
+    }
+
+    /// The stored signal for one `(message_id, extended,
+    /// signal_name)`, or `None` if the database defines no such
+    /// message or no such signal on it.
+    fn signal_entry(
+        &self,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+    ) -> Option<&crate::model::SignalEntry> {
+        let key = canid_to_message_id(if extended {
+            cannet_core::CanId::extended(message_id).ok()?
+        } else {
+            cannet_core::CanId::standard(message_id).ok()?
+        })?;
+        self.messages
+            .get(&key)?
+            .signals
+            .iter()
+            .find(|s| s.signal.name == signal_name)
+    }
+
     /// Rich descriptor for one message — everything the transmit
     /// panel's signal table needs to render rows (factor / offset /
     /// size / range / mux indicator / float kind) without

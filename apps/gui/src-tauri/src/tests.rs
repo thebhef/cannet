@@ -1010,6 +1010,54 @@ fn list_value_tables_inner_resolves_per_bus() {
 }
 
 #[test]
+fn enum_labels_come_from_the_database_that_defines_the_signal() {
+    // Two databases assigned to one bus both define 256 / "A", and
+    // only the second carries a `VAL_` table for it. The first
+    // defines the signal, so it is the one definition every decoded
+    // value of A comes from — and the labels attached to that value
+    // are its own (ADR 0054). Borrowing the other file's table would
+    // label a value that database never produced.
+    let state = test_state();
+    let plain = tiny_dbc(256, "Msg", "A");
+    let labelled = format!(
+        "{}VAL_ 256 A 0 \"Zero\" 1 \"One\" ;\n",
+        tiny_dbc(256, "Msg", "A"),
+    );
+    let labels = |state: &AppState| -> Vec<String> {
+        list_value_tables_inner(state, 256, false, "A", false, Some("p"))
+            .into_iter()
+            .map(|e| e.label)
+            .collect()
+    };
+
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("a.dbc", &plain, &["p"]),
+        loaded_scoped("b.dbc", &labelled, &["p"]),
+    ];
+    assert!(
+        labels(&state).is_empty(),
+        "a.dbc decodes A and names no labels, so A has none",
+    );
+
+    // Load order reversed: the labelled database now supplies the
+    // definition, so its table is the answer.
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("b.dbc", &labelled, &["p"]),
+        loaded_scoped("a.dbc", &plain, &["p"]),
+    ];
+    assert_eq!(labels(&state), vec!["Zero", "One"]);
+
+    // A database ahead of the winner that does not define the signal
+    // at all is not a competing definition — it just isn't in the
+    // running, and the first one that *does* define A still answers.
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("other.dbc", &tiny_dbc(512, "Other", "Z"), &["p"]),
+        loaded_scoped("b.dbc", &labelled, &["p"]),
+    ];
+    assert_eq!(labels(&state), vec!["Zero", "One"]);
+}
+
+#[test]
 fn decode_candidates_resolve_name_and_signal_leaves_to_ids() {
     let dbs = vec![
         loaded("a.dbc", &tiny_dbc(256, "String1JustDetectedFault", "Sa")),
