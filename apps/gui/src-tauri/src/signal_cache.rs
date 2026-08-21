@@ -6671,6 +6671,88 @@ mod tests {
 
     #[test]
     #[allow(clippy::cast_possible_truncation)]
+    fn unassigning_a_database_from_another_bus_leaves_this_series_decoding() {
+        // A series takes one bus's frames and decodes them against one
+        // definition; what else the database holding that definition is
+        // assigned to is no part of it (ADR 0054). Unchecking some
+        // *other* bus must therefore cost nothing at all — not a park,
+        // not a revival, not a rebuild.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let db = dbc_ab(1);
+        let both = bus_set(&[TEST_BUS, "other"]);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        for signal in ["A", "B"] {
+            let built = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &assigned_to(&[&db], &both),
+            );
+            assert_eq!(built.len(), 200, "{signal} built");
+        }
+
+        cache.invalidate_dbcs(&on_test_bus(&[&db]));
+        let usage = cache.usage();
+        assert_eq!(usage.live, 2, "both series still decode");
+        assert_eq!(usage.retained, 0, "nothing was parked");
+        assert_eq!(usage.revivals, 0, "…so nothing had to be handed back");
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_database_that_does_not_win_leaves_the_series_decoding() {
+        // Decode is first-eligible-wins per signal, so a further
+        // database defining the same signal behind the incumbent
+        // supplies no sample and is no part of what these samples were
+        // decoded under (ADR 0054). Loading it must leave the pyramids
+        // alone — and putting it in front, which *is* a change of
+        // definition, must park the signal it disagrees about.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let first = dbc_ab(1);
+        let second = dbc_ab(2);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        for signal in ["A", "B"] {
+            let built = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &on_test_bus(&[&first]),
+            );
+            assert_eq!(built.len(), 200, "{signal} built");
+        }
+
+        cache.invalidate_dbcs(&on_test_bus(&[&first, &second]));
+        let usage = cache.usage();
+        assert_eq!(usage.live, 2, "the incumbent still decodes both");
+        assert_eq!(usage.retained, 0, "the database behind it parked nothing");
+
+        // In front, it decodes `B` at another scale and `A` exactly as
+        // the incumbent does: one park, and only one.
+        cache.invalidate_dbcs(&on_test_bus(&[&second, &first]));
+        assert_eq!(cache.usage().live, 1, "A decodes the same either way");
+        assert_eq!(cache.retained_signals(), vec!["B".to_string()]);
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn a_park_is_revived_by_the_fingerprint_not_by_the_file_it_came_from() {
         // What restores a parked pyramid is the *encoding*, not the
         // identity of the database that produced it. A second, separately
