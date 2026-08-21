@@ -42,7 +42,11 @@ patterns.
 
 **The path is presentation and matching only.** The internal descriptor
 key `(bus, message id, extended, signal name)` remains the stable
-identity for persistence, host queries, and equality. A stored
+identity for persistence, host queries, and equality. This ADR decides
+what a signal is *called*; where its value comes from — one definition,
+in one database, resolved by bus assignment and project load order — is
+[ADR 0054](0054-a-decoded-value-has-one-definition.md), which also
+governs anything derived from that value. A stored
 selection stores keys (manual picks) or pattern strings (regex) — never
 resolved paths.
 
