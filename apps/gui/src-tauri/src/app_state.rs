@@ -392,36 +392,6 @@ impl AppState {
         });
         built
     }
-
-    /// First loaded DBC **assigned to `bus_id`** (in priority order) for
-    /// which `f` yields a value — the per-bus "first assigned database
-    /// that answers wins" scan the transmit panel's describe / decode /
-    /// encode queries share, and the same priority the decode path
-    /// applies to a frame. A query naming no bus resolves through
-    /// nothing, because no assignment contains "no bus"
-    /// ([`filter::dbc_applies`]).
-    pub(crate) fn first_dbc_on_bus<T>(
-        &self,
-        bus_id: Option<&str>,
-        f: impl FnMut(&Database) -> Option<T>,
-    ) -> Option<T> {
-        self.first_dbc_on_bus_with_path(bus_id, f).map(|(_, v)| v)
-    }
-
-    /// [`Self::first_dbc_on_bus`], naming the database that answered as
-    /// well as its answer. One scan, two projections: "what does this
-    /// bus say?" and "which database is saying it?" can never disagree,
-    /// which is what makes the second usable as provenance.
-    pub(crate) fn first_dbc_on_bus_with_path<T>(
-        &self,
-        bus_id: Option<&str>,
-        mut f: impl FnMut(&Database) -> Option<T>,
-    ) -> Option<(String, T)> {
-        self.databases()
-            .iter()
-            .filter(|loaded| filter::dbc_applies(&loaded.buses, bus_id))
-            .find_map(|loaded| f(loaded.db.as_ref()).map(|v| (loaded.path.clone(), v)))
-    }
 }
 
 /// Drop the derived, lazily-built decode state after a DBC-set change:

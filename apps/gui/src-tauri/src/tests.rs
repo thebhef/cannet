@@ -5387,9 +5387,12 @@ fn reloading_a_database_stops_the_periodics_it_was_driving() {
     drop(registry);
     // And the reload itself applied: the swapped scale is what the bus
     // now answers with.
+    let dbs = state.databases();
     let a_factor = state
-        .first_dbc_on_bus(Some("pt"), |db| {
-            db.describe_message(cannet_core::CanId::new(256, false).unwrap())
+        .decode_model(&dbs)
+        .message_source(Some("pt"), 256, false)
+        .and_then(|d| {
+            d.db.describe_message(cannet_core::CanId::new(256, false).unwrap())
         })
         .expect("the reloaded database still backs the bus")
         .signals
@@ -5905,6 +5908,71 @@ fn a_pick_reaches_the_value_tables_and_the_calculated_fields() {
     let state = collide_state(["b.dbc", "a.dbc"], Some("a.dbc"));
     assert!(labels(&state).is_empty(), "the value table");
     assert!(!calc_designated(&state), "the calculated fields");
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn the_transmit_panels_message_queries_follow_the_pick() {
+    // Describe, decode and encode all asked "first assigned database
+    // that answers" for themselves. They now resolve through the same
+    // message_source, so the panel cannot describe a row out of one
+    // file while encoding it against another — and a pick moves all
+    // three together.
+    let described = |state: &AppState| -> (usize, bool) {
+        let d = crate::dbc_commands::describe_message_inner(state, Some(TEST_BUS), 256, false)
+            .expect("256 is defined on this bus");
+        (d.signals.len(), d.calc_fields.is_some())
+    };
+    let decoded = |state: &AppState| -> f64 {
+        crate::dbc_commands::decode_frame_inner(
+            state,
+            Some(TEST_BUS),
+            256,
+            false,
+            &[3, 0, 100, 0, 0, 0, 0, 0],
+        )
+        .expect("256 decodes")
+        .signals
+        .iter()
+        .find(|s| s.name == "A")
+        .expect("A is decoded")
+        .value
+    };
+    let encoded = |state: &AppState| -> u8 {
+        crate::dbc_commands::encode_frame_inner(
+            state,
+            Some(TEST_BUS),
+            256,
+            false,
+            &[ipc::EncodeFrameSignal {
+                name: "A".into(),
+                physical: 30.0,
+            }],
+            vec![0u8; 8],
+        )
+        .expect("256 encodes")
+        .bytes[0]
+    };
+
+    // a.dbc supplies the message: three signals, no designation, unit
+    // scale both ways.
+    let state = collide_state(["a.dbc", "b.dbc"], None);
+    assert_eq!(described(&state), (3, false));
+    assert_eq!(decoded(&state), 3.0);
+    assert_eq!(encoded(&state), 30);
+
+    // Pinned to b.dbc: four signals, a designation, and x10 both ways.
+    let state = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
+    assert_eq!(described(&state), (4, true));
+    assert_eq!(decoded(&state), 30.0);
+    assert_eq!(encoded(&state), 3);
+
+    // Reversed load order with the pick reversed to match: the same
+    // discrimination the other way round.
+    let state = collide_state(["b.dbc", "a.dbc"], Some("a.dbc"));
+    assert_eq!(described(&state), (3, false));
+    assert_eq!(decoded(&state), 3.0);
+    assert_eq!(encoded(&state), 30);
 }
 
 #[test]
