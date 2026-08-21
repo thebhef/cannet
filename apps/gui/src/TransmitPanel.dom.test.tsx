@@ -424,6 +424,20 @@ describe("TransmitPanel (thin view over host registry)", () => {
     });
   });
 
+  it("clicking a signal name in the disclosed face does not collapse the row", async () => {
+    // The same rule the trace views now keep: what a row disclosed is
+    // not part of the row's toggle. The signal name is a plain span, so
+    // before this it read as a click on the tile's background and shut
+    // the face the user was reading.
+    POOL = [frame("a")];
+    DESCRIBE = twoSignalDescriptor();
+    renderPanel("el", ["a"]);
+    fireEvent.click(await screen.findByTitle("expand"));
+    const name = await screen.findByTitle("AliveCtr");
+    fireEvent.click(name);
+    expect(document.querySelector(".tx-expanded")).toBeInTheDocument();
+  });
+
   it("clicking the calc editor's own chrome does not collapse the row under it", async () => {
     POOL = [frame("a")];
     DESCRIBE = twoSignalDescriptor();
