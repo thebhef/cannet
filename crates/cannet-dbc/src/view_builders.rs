@@ -147,6 +147,30 @@ impl Database {
             .is_some()
     }
 
+    /// Whether this database defines the message `id` addresses at
+    /// all — the message-level counterpart of
+    /// [`Database::defines_signal`], and the question "is this the
+    /// file whose statement about this message applies". A message
+    /// that declares no calculated fields and no attributes is still
+    /// defined here, so an absent attribute is never a reason to read
+    /// on to another file.
+    #[must_use]
+    pub fn defines_message(&self, id: cannet_core::CanId) -> bool {
+        canid_to_message_id(id).is_some_and(|key| self.messages.contains_key(&key))
+    }
+
+    /// The name of the multiplexor signal on the message `id`
+    /// addresses, or `None` when the database defines no such message
+    /// or the message has no multiplexor. Pairs with
+    /// [`Database::decode_mux_selector`]: it names the signal whose
+    /// definition that call reads, so a caller resolving "which
+    /// database supplies this signal" has a name to resolve.
+    #[must_use]
+    pub fn multiplexor_signal_name(&self, id: cannet_core::CanId) -> Option<&str> {
+        let entry = self.messages.get(&canid_to_message_id(id)?)?;
+        Some(entry.signals.get(entry.multiplexor?)?.signal.name.as_str())
+    }
+
     /// The stored signal for one `(message_id, extended,
     /// signal_name)`, or `None` if the database defines no such
     /// message or no such signal on it.

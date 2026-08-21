@@ -145,6 +145,39 @@ pub struct DecodeModel<'a> {
     message_picks: HashSet<(u32, bool)>,
 }
 
+/// What a pick says about one signal, over a bare picks map: the loaded
+/// path the user chose, or `None` where they chose nothing.
+///
+/// A free function because one consumer — the trace store's
+/// multiplexor-selector extractor — runs on the append path and cannot
+/// hold a [`DecodeModel`] (that would mean taking the `databases` lock
+/// per frame), so it carries a snapshot of the picks instead. The rule
+/// itself is spelled once, here.
+///
+/// Costs nothing — not even the identity string — in a project with no
+/// picks at all.
+#[must_use]
+pub fn picked_path<'p>(
+    picks: &'p SignalDbcPicks,
+    bus_id: Option<&str>,
+    message_id: u32,
+    extended: bool,
+    signal_name: &str,
+) -> Option<&'p str> {
+    if picks.is_empty() {
+        return None;
+    }
+    picks
+        .get(&signal_identity(
+            bus_id,
+            message_id,
+            extended,
+            signal_name,
+            false,
+        ))
+        .map(String::as_str)
+}
+
 impl<'a> DecodeModel<'a> {
     /// The set plus the picks that apply to it.
     #[must_use]
@@ -199,18 +232,124 @@ impl<'a> DecodeModel<'a> {
         extended: bool,
         signal_name: &str,
     ) -> Option<&str> {
-        if self.picks.is_empty() {
-            return None;
+        picked_path(&self.picks, bus_id, message_id, extended, signal_name)
+    }
+
+    /// The databases eligible to decode a frame on `bus_id`, in project
+    /// load order — the first half of ADR 0054's resolution rule, and
+    /// the one scan every "which database supplies this" question
+    /// starts from. A database assigned to no bus, or to other buses
+    /// only, decodes nothing here ([`filter::dbc_applies`]).
+    pub fn eligible<'s, 'b>(
+        &'s self,
+        bus_id: Option<&'b str>,
+    ) -> impl Iterator<Item = &'s DbcScope<'a>> + use<'s, 'b, 'a> {
+        self.dbcs
+            .iter()
+            .filter(move |d| filter::dbc_applies(d.buses, bus_id))
+    }
+
+    /// **Which database supplies one signal's definition** — ADR 0054's
+    /// resolution rule, whole: eligible for the bus, then project load
+    /// order over the databases that *define the signal*, unless a
+    /// per-signal pick names one of them.
+    ///
+    /// This is the answer for anything that belongs to a decoded
+    /// **value**: its bits, its scaling, its `VAL_` labels, its unit.
+    /// Reading past the winner because it lacks the attribute being
+    /// looked for would attach that attribute to a value the file it
+    /// came from never produced, which ADR 0054 part 3 forbids — so a
+    /// winner that declares nothing answers *nothing*, and does not
+    /// defer to the file behind it.
+    ///
+    /// A pick naming a database that is not a definer — removed,
+    /// unassigned, or edited until it no longer defines the signal — is
+    /// ignored, exactly as the decode ignores it: a stale pick must
+    /// never silence a signal something still defines.
+    #[must_use]
+    pub fn signal_source(
+        &self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+        signal_name: &str,
+    ) -> Option<&DbcScope<'a>> {
+        let pick = self.pick_path(bus_id, message_id, extended, signal_name);
+        let mut first = None;
+        for d in self.eligible(bus_id) {
+            if !d.db.defines_signal(message_id, extended, signal_name) {
+                continue;
+            }
+            if pick == Some(d.path) {
+                return Some(d);
+            }
+            if first.is_none() {
+                if pick.is_none() {
+                    return Some(d);
+                }
+                first = Some(d);
+            }
         }
-        self.picks
-            .get(&signal_identity(
-                bus_id,
-                message_id,
-                extended,
-                signal_name,
-                false,
-            ))
-            .map(String::as_str)
+        first
+    }
+
+    /// **Which database supplies a whole message's statement about
+    /// itself** — its name, its transmitter, its declared length, and
+    /// the calculated-field designation ADR 0027 reads off it: eligible
+    /// for the bus, then load order over the databases that *define the
+    /// message*, unless a pick on one of its signals names one of them.
+    ///
+    /// **Deliberately per message, where [`Self::signal_source`] is per
+    /// signal.** ADR 0054 resolves a decoded *value*, and these facts
+    /// are not values: a `CannetCounter` designation names a signal and
+    /// resolves to a bit placement *on the message entry that declared
+    /// it*, so counter-from-one-file plus CRC-from-another is not a
+    /// statement any database made. One file describes the message.
+    ///
+    /// The pick still reaches it, because the pick is how a user says
+    /// which file describes this traffic: where any signal of the
+    /// message is pinned to an eligible database that defines the
+    /// message, that database supplies the message-level facts too.
+    /// Without a pick — every project that has never resolved an
+    /// ambiguity — the answer is the first defining database, exactly
+    /// as it always was. Where two picks on one message name two
+    /// databases, the earlier in load order wins, so the answer stays a
+    /// function of the project rather than of map iteration order.
+    #[must_use]
+    pub fn message_source(
+        &self,
+        bus_id: Option<&str>,
+        message_id: u32,
+        extended: bool,
+    ) -> Option<&DbcScope<'a>> {
+        let id = CanId::new(message_id, extended).ok()?;
+        if !self.message_has_pick(message_id, extended) {
+            return self.eligible(bus_id).find(|d| d.db.defines_message(id));
+        }
+        // Only reached for a message some pick names, so the scan over
+        // the pick map is paid by the ambiguity that provoked it. The
+        // prefix is `signal_identity` with the signal name cut off, so
+        // the two spellings of the key cannot drift apart.
+        let prefix = signal_identity(bus_id, message_id, extended, "", false);
+        let named: Vec<&str> = self
+            .picks
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let mut first = None;
+        for d in self.eligible(bus_id) {
+            if !d.db.defines_message(id) {
+                continue;
+            }
+            if named.contains(&d.path) {
+                return Some(d);
+            }
+            if first.is_none() {
+                first = Some(d);
+            }
+        }
+        first
     }
 
     /// **The resolution rule, once.** Where a pick names a database that
@@ -695,6 +834,96 @@ mod tests {
             path.to_owned(),
         );
         DecodeModel::new(dbcs, Arc::new(picks))
+    }
+
+    #[test]
+    fn signal_source_is_the_first_defining_database_or_the_one_a_pick_names() {
+        // The per-signal half of the resolution rule, on its own. `a`
+        // defines `S` and declares no `VAL_` table; `b`, behind it,
+        // defines `S` too. The winner is `a` — an attribute it lacks
+        // is not a reason to read on (ADR 0054).
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&format!(
+            "{}VAL_ 256 S 0 \"Zero\" ;{nl}",
+            message(&[PLAIN]),
+            nl = "
+",
+        ));
+        let bus = fp_bus();
+        let elsewhere = vec!["other".to_string()];
+        let set = || {
+            vec![
+                scope("a.dbc", &a, &bus),
+                scope("b.dbc", &b, &bus),
+                scope("c.dbc", &b, &elsewhere),
+            ]
+        };
+        let path = |m: &DecodeModel<'_>| {
+            m.signal_source(Some(FP_BUS), 256, false, "S")
+                .map(|d| d.path.to_string())
+        };
+        assert_eq!(path(&plain(set())), Some("a.dbc".into()), "load order");
+        assert_eq!(
+            path(&pinned(set(), "b.dbc")),
+            Some("b.dbc".into()),
+            "the pick overrides load order"
+        );
+        // A pick naming a database that is not a definer here — `c` is
+        // assigned to another bus — is ignored, not honoured-and-empty.
+        assert_eq!(
+            path(&pinned(set(), "c.dbc")),
+            Some("a.dbc".into()),
+            "a pick that names no eligible definer"
+        );
+        // Nothing defines the signal, and no bus at all.
+        assert!(plain(set())
+            .signal_source(Some(FP_BUS), 256, false, "Nope")
+            .is_none());
+        assert!(plain(set()).signal_source(None, 256, false, "S").is_none());
+    }
+
+    #[test]
+    fn message_source_is_the_first_defining_database_or_the_one_a_pick_names() {
+        // The per-message half. `a` defines 256 and declares nothing
+        // about it; `b`, behind it, defines 256 too. Without a pick the
+        // answer is `a`; a pick on any *signal* of the message moves it,
+        // because a pick is how a user says which file describes this
+        // traffic.
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&message(&[PLAIN]));
+        let bus = fp_bus();
+        let set = || vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)];
+        let path = |m: &DecodeModel<'_>| {
+            m.message_source(Some(FP_BUS), 256, false)
+                .map(|d| d.path.to_string())
+        };
+        assert_eq!(path(&plain(set())), Some("a.dbc".into()), "load order");
+        assert_eq!(
+            path(&pinned(set(), "b.dbc")),
+            Some("b.dbc".into()),
+            "picked"
+        );
+        assert_eq!(
+            path(&pinned(set(), "a.dbc")),
+            Some("a.dbc".into()),
+            "a pick agreeing with load order changes nothing"
+        );
+        // A pick on *another* message leaves this one on load order,
+        // even though the picks map is no longer empty.
+        let mut picks = SignalDbcPicks::new();
+        picks.insert(
+            signal_identity(Some(FP_BUS), 257, false, "S", false),
+            "b.dbc".to_owned(),
+        );
+        assert_eq!(
+            path(&DecodeModel::new(set(), Arc::new(picks))),
+            Some("a.dbc".into()),
+        );
+        // No message, and no bus.
+        assert!(plain(set())
+            .message_source(Some(FP_BUS), 999, false)
+            .is_none());
+        assert!(plain(set()).message_source(None, 256, false).is_none());
     }
 
     #[test]

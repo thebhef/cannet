@@ -500,6 +500,7 @@ pub(crate) fn rebuild_verification(state: &AppState) {
     let overrides: Vec<(String, u32, bool, cannet_dbc::CalculatedFieldsConfig)> = {
         let rbs_guard = state.rbs();
         let dbs = state.databases();
+        let model = state.decode_model(&dbs);
         let mut out = Vec::new();
         for element in rbs_guard.elements.values() {
             for (bus_key, bus) in &element.file.buses {
@@ -529,11 +530,14 @@ pub(crate) fn rebuild_verification(state: &AppState) {
                         let Ok(override_config) = spec.to_config() else {
                             continue;
                         };
-                        // Per-field layering over the DBC default.
-                        let dbc_default = dbs
-                            .iter()
-                            .filter(|d| filter::dbc_applies(&d.buses, Some(bus_id.as_str())))
-                            .find_map(|d| d.db.dbc_calculated_fields(can_id))
+                        // Per-field layering over the DBC default —
+                        // the *defining* database's, resolved once
+                        // (ADR 0054), so a designation never comes
+                        // from a file that does not describe this
+                        // message.
+                        let dbc_default = model
+                            .message_source(Some(bus_id.as_str()), id, extended)
+                            .and_then(|d| d.db.dbc_calculated_fields(can_id))
                             .cloned()
                             .unwrap_or_default();
                         let merged = merge_calc_override(dbc_default, Some(override_config));
@@ -547,7 +551,9 @@ pub(crate) fn rebuild_verification(state: &AppState) {
         out
     };
     let dbs = state.databases();
-    state.verifier.rebuild_configs(&dbs, &overrides);
+    state
+        .verifier
+        .rebuild_configs(&state.decode_model(&dbs), &overrides);
 }
 
 /// Re-resolve every TX-registry entry's calculated fields against the
@@ -559,9 +565,10 @@ pub(crate) fn rebuild_verification(state: &AppState) {
 pub(crate) fn refresh_calc_resolutions(app: &AppHandle) {
     let state: State<'_, AppState> = app.state();
     let dbs = state.databases();
+    let model = state.decode_model(&dbs);
     let mut registry = state.transmit_frames();
     for (id, request, spec) in registry.resolution_inputs() {
-        match resolve_effective_calc(&dbs, &request, spec.as_ref()) {
+        match resolve_effective_calc(&model, &request, spec.as_ref()) {
             Ok(resolved) => registry.set_resolved_calc(&id, resolved),
             Err(e) => {
                 registry.set_resolved_calc(&id, None);

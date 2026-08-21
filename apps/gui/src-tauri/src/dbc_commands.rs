@@ -717,20 +717,22 @@ pub(crate) fn list_value_tables(
 ///
 /// `bus_id` scopes the DBC-backed branch exactly the way decode does:
 /// the labels come from the databases `filter::dbc_applies` admits for
-/// that bus, first-match-wins within that set, so a lane's labels can
-/// only ever come from a database that could have decoded it. A lookup
+/// that bus, resolved per signal within that set, so a lane's labels
+/// can only ever come from the database that decoded it. A lookup
 /// naming no bus therefore resolves through nothing — every frame has a
 /// bus, so a DBC-backed series is never in the "bus unknown" state the
 /// old fall-back-to-every-database answer was guessing for. The
 /// file-backed branch is unaffected — no DBC bears on a file-backed
 /// series.
 ///
-/// Within that set the winner is the first database that **defines the
-/// signal**, and the labels are whatever that one says — none, if it
-/// declares no `VAL_` table. A value has one definition and its labels
-/// belong to that definition (ADR 0054), so reading on to a later file
-/// that happens to carry a table would label a value that file never
-/// produced.
+/// Within that set the winner is
+/// [`DecodeModel::signal_source`](crate::signal_fingerprint::DecodeModel::signal_source)
+/// — the database that supplies the signal's definition, which is the
+/// one a pick names or the first that defines it — and the labels are
+/// whatever that one says, none if it declares no `VAL_` table. A value
+/// has one definition and its labels belong to that definition
+/// (ADR 0054), so reading on to a later file that happens to carry a
+/// table would label a value that file never produced.
 pub(crate) fn list_value_tables_inner(
     state: &AppState,
     message_id: u32,
@@ -744,11 +746,10 @@ pub(crate) fn list_value_tables_inner(
             .signal_caches
             .file_signal_value_table(message_id, signal_name);
     }
-    state
-        .databases()
-        .iter()
-        .filter(|d| filter::dbc_applies(&d.buses, bus_id))
-        .find(|d| d.db.defines_signal(message_id, extended, signal_name))
+    let dbs = state.databases();
+    let model = state.decode_model(&dbs);
+    model
+        .signal_source(bus_id, message_id, extended, signal_name)
         .and_then(|d| {
             d.db.value_table_for_signal(message_id, extended, signal_name)
         })
