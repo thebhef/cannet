@@ -80,7 +80,10 @@ it does not reach the views.
   keep the entry's bus scoping and priority position. The
   `dbc_auto_reload` setting is the opt-out, and the existing failure
   semantics stand: a broken parse logs and leaves the working copy
-  intact; a deleted file logs and stays loaded.
+  intact; a deleted file logs and stays loaded. **The swap carries one
+  exception: what the old content was transmitting stops first** — a
+  firing periodic and a running RBS element driven by that database
+  (see the second amendment below).
 - **Project and RBS — apply only when nothing of the user's is at
   risk, otherwise notify.** "Notify" means a visible, dismissible
   statement that the file changed on disk, carrying the explicit action
@@ -242,6 +245,39 @@ still defines keeps firing, and a row no database on the bus ever
 described — a CAN id typed by hand — is none of the change's business.
 Removing a database from the project removes it from its assigned buses,
 so it reaches this rule by the same route.
+
+## Amendment (2026-08-20) — a DBC swap stops what it was driving
+
+The amendment above covers the deliberate gesture. The undeliberate one
+turns out to need the same answer, and §1's "swap in place" is where it
+is missing: a DBC reloaded in place can change or remove the very
+definitions a periodic is transmitting from, and the frames keep going
+out under the new meaning. That is the same uncommanded send, and the
+only difference from an unassign is that the user did not type
+anything — which makes it *more* surprising, not less.
+
+So a database reloaded in place — from the filesystem watcher, from a
+reload requested in the app, or from a capture re-imported under the
+same identity:
+
+- **Stops every periodic it was driving**, by the same
+  `stop_periodic_transmit_inner` path an unassign and the user's own
+  Stop take. There is no second stop and no reload-only state.
+- **Stops a running RBS element it was driving.** An element's rows are
+  derived, and the rebuild that follows every DBC change re-derives
+  their running state from the element's Run flag — so for an element,
+  stopping its rows *means* clearing that flag, the same one the panel's
+  Run toggle writes.
+- **Applies anyway.** §1 still governs the swap: the new definitions go
+  in, and the stop happens first rather than instead.
+- **Says so in one system-log entry**, as the amendment above
+  established.
+
+"Driven by" is the same per-bus priority scan, asked either side of the
+swap: a row a different assigned database defines is none of the
+reload's business, a hand-typed CAN id no database describes is none of
+anybody's, and a reload that makes this database the *new* winner for an
+id is caught by the same question.
 
 ## Consequences
 
