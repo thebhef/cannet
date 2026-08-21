@@ -306,3 +306,48 @@ fn extended_e2e_command_is_present() {
         "expected at least one extended-id message in the schedule"
     );
 }
+
+/// The example's long-name case. `bms.dbc`'s `BmsThermDerateAdv`
+/// carries a `SystemMessageLongSymbol` and two
+/// `SystemSignalLongSymbol` attributes, plus `VAL_` labels longer than
+/// any DBC identifier may be — so the workload the harness drives puts
+/// long names through the render path instead of leaving them to a
+/// unit-test string. Short names in the same message are the control.
+#[test]
+fn example_carries_the_long_name_case() {
+    let ex = load_example(&default_example_dir()).expect("load example");
+    let bms = ex
+        .dbcs
+        .iter()
+        .find(|d| d.path.file_name().is_some_and(|n| n == "bms.dbc"))
+        .expect("bms.dbc loaded");
+
+    let content = bms.db.dbc_content();
+    let msg = content
+        .iter()
+        .find(|m| m.name == "BatteryManagementSystemThermalDerateAdvisory")
+        .expect("the long message name resolves");
+    assert!(
+        !content.iter().any(|m| m.name == "BmsThermDerateAdv"),
+        "the truncated identifier must not survive as a name"
+    );
+
+    let names: Vec<&str> = msg.signals.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"BatteryPackThermalDerateRequestLevelPercent"));
+    assert!(names.contains(&"BatteryPackThermalDerateRequestingSubsystem"));
+    assert!(names.contains(&"DerateActive"), "the short-name control");
+
+    let source = msg
+        .signals
+        .iter()
+        .find(|s| s.name == "BatteryPackThermalDerateRequestingSubsystem")
+        .expect("the enum signal");
+    assert!(source
+        .value_table
+        .iter()
+        .any(|e| e.label == "NoDerateRequestedNominalThermalEnvelope"));
+    assert!(
+        source.value_table.iter().any(|e| e.label == "Fault"),
+        "a short label beside the long ones"
+    );
+}

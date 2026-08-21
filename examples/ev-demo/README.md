@@ -32,7 +32,7 @@ Seven ECUs, four DBCs (one per ECU group), scoped per bus:
 | --- | --- | --- | --- |
 | Powertrain | VCU | `dbc/vcu.dbc` | VcuStatus (0x100, 10 ms), VcuTorqueCmd (0x110, 10 ms), VcuBmsCommand (0x18FF50A3 ext, 50 ms) |
 | Powertrain | MotorFront, MotorRear | `dbc/traction-motor.dbc` | MotorFrontStatus (0x200, 10 ms), MotorRearStatus (0x201, 10 ms) |
-| Battery | BMS | `dbc/bms.dbc` | BmsState (0x300, 20 ms), BmsCellSummary (0x301, 100 ms), BmsLimits (0x302, 100 ms) |
+| Battery | BMS | `dbc/bms.dbc` | BmsState (0x300, 20 ms), BmsCellSummary (0x301, 100 ms), BmsLimits (0x302, 100 ms), BmsThermDerateAdv (0x303, 200 ms) |
 | Battery | ThermalMgr, DCDC, OBC | `dbc/thermal.dbc` | ThermalState (0x400, 100 ms), DcdcState (0x410, 100 ms), ObcState (0x420, 200 ms) |
 
 Send/receive is explicit in each DBC (the `BO_` transmitter and the
@@ -46,6 +46,16 @@ limits the inverters clamp torque to. Aggregate steady-state rate is
 is a rolling counter and `Crc8` a CRC-8/SAE-J1850 over the payload
 (ADR 0027 calculated fields), so the example also exercises the
 counter/CRC path.
+
+`BmsThermDerateAdv` (0x303) is the **long-name** case. The classic DBC
+format caps `BO_` / `SG_` identifiers at 32 characters, so the lines
+carry truncations and `BA_ "SystemMessageLongSymbol"` /
+`"SystemSignalLongSymbol"` carry the real ones — the message reads as
+`BatteryManagementSystemThermalDerateAdvisory`, its signals as
+`BatteryPackThermalDerateRequestLevelPercent` and
+`BatteryPackThermalDerateRequestingSubsystem`. The latter's `VAL_`
+labels run to 44 characters, which no DBC rule bounds. `DerateActive`
+and the `Fault` label are the short-named controls beside them.
 
 Each enum signal in the DBCs carries a value→color map (ADR 0029),
 authored as `colormap` project elements: `Gear`, `ContactorReq`,

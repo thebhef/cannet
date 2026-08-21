@@ -54,18 +54,34 @@ BO_ 770 BmsLimits: 8 BMS
  SG_ DischargeCurrentLimit : 16|16@1+ (0.1,0) [0|6553.5] "A" VCU,MotorFront,MotorRear
  SG_ ContactorState : 32|2@1+ (1,0) [0|3] "" VCU
 
+BO_ 771 BmsThermDerateAdv: 8 BMS
+ SG_ ThermDerateLevelPct : 0|8@1+ (0.5,0) [0|127.5] "%" VCU,ThermalMgr
+ SG_ ThermDerateSource : 8|8@1+ (1,0) [0|255] "" VCU,ThermalMgr
+ SG_ DerateActive : 16|1@1+ (1,0) [0|1] "" VCU
+
 CM_ BO_ 768 "Battery pack state, 20 ms cadence on the battery bus, standard 11-bit ID. Read by the VCU (across the bridge) and the thermal manager.";
 CM_ BO_ 769 "Cell voltage/temperature extremes, 100 ms cadence.";
 CM_ BO_ 770 "Charge/discharge current limits, 100 ms cadence. The inverters clamp torque to the discharge limit.";
 CM_ SG_ 770 ContactorState "0=Open 1=Precharge 2=Closed 3=Fault.";
+CM_ BO_ 771 "Thermal derate advisory, 200 ms cadence. Uses the DBC long-name extension: the BO_/SG_ lines carry truncated identifiers and the System...LongSymbol attributes below carry the real names.";
 
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_ BO_ "SystemMessageLongSymbol" STRING ;
+BA_DEF_ SG_ "SystemSignalLongSymbol" STRING ;
 BA_DEF_ SG_ "GenSigStartValue" FLOAT 0 100000;
 BA_DEF_DEF_ "GenMsgCycleTime" 0;
 BA_DEF_DEF_ "GenSigStartValue" 0;
+BA_DEF_DEF_ "SystemMessageLongSymbol" "";
+BA_DEF_DEF_ "SystemSignalLongSymbol" "";
 BA_ "GenMsgCycleTime" BO_ 768 20;
 BA_ "GenMsgCycleTime" BO_ 769 100;
 BA_ "GenMsgCycleTime" BO_ 770 100;
+BA_ "GenMsgCycleTime" BO_ 771 200;
+BA_ "SystemMessageLongSymbol" BO_ 771 "BatteryManagementSystemThermalDerateAdvisory";
+BA_ "SystemSignalLongSymbol" SG_ 771 ThermDerateLevelPct "BatteryPackThermalDerateRequestLevelPercent";
+BA_ "SystemSignalLongSymbol" SG_ 771 ThermDerateSource "BatteryPackThermalDerateRequestingSubsystem";
 
 VAL_ 768 PackStatus 0 "Init" 1 "Idle" 2 "Drive" 3 "Charge" 4 "Fault";
 VAL_ 770 ContactorState 0 "Open" 1 "Precharge" 2 "Closed" 3 "Fault";
+VAL_ 771 ThermDerateSource 0 "NoDerateRequestedNominalThermalEnvelope" 1 "CellTemperatureUpperLimitApproaching" 2 "CoolantInletTemperatureAboveThreshold" 3 "ChargerThermalLimitRequestedByObc" 4 "Fault";
+VAL_ 771 DerateActive 0 "Off" 1 "On";
