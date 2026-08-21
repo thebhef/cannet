@@ -8,11 +8,13 @@
 /// indexes recycle under scroll, sort and refresh, so index-keyed
 /// interaction state is either broken already or one sort away from it.
 
-/// A row either structures other rows or it doesn't. Expanding a
-/// **branch** edits the row space — its children appear and disappear.
-/// A **leaf** never adds rows; a leaf that is expandable grows in place,
-/// disclosing a content block (a trace row's decoded signals, an RBS
-/// message's value table).
+/// A row either structures other rows or it doesn't. Either way,
+/// expanding it edits the row space: a **branch**'s children appear and
+/// disappear, and a **leaf**'s content is rows too — a trace row's
+/// decoded signals are rows of the space, each with an id and a place
+/// in the order (`gridviewContentRows.ts` is the arithmetic that
+/// splices them in). The distinction is what the rows *are*, not
+/// whether expanding produces any.
 export type GridviewRowKind = "branch" | "leaf";
 
 /// One row of the space. `kind` and `expandable` are orthogonal: a
@@ -158,9 +160,10 @@ export function cursorAction(
       return moveTo(index - page);
     case "ArrowRight": {
       if (row.expandable && !space.isExpanded(row.id)) return { type: "expand", id: row.id };
-      // An open branch steps into its first child. An open leaf has no
-      // children to step into, and a plain leaf has nothing at all.
-      if (row.kind === "branch" && space.isExpanded(row.id)) {
+      // An open row steps into its first child — a branch's children or
+      // the rows a leaf discloses, which are rows of the space either
+      // way. A plain leaf has nothing at all.
+      if (space.isExpanded(row.id)) {
         const nextId = space.rowIdAt(index + 1);
         const next = nextId == null ? null : space.rowAt(nextId);
         if (next != null && next.depth === row.depth + 1) {

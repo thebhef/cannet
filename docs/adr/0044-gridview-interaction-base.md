@@ -31,12 +31,22 @@ Rendering and scrolling stay per-panel — both virtualizers
 non-virtualized panels sit unchanged beneath it.
 
 **Node model.** A row is `{id, kind: branch | leaf, expandable,
-depth}`. Branch expansion edits the row space (children appear and
-disappear). A leaf with content expands in place — the content block
-(a trace row's decoded signals, an RBS message's value table) grows
-the row and adds no rows. There is no branch-with-content variant;
-`kind` and content-expandability are orthogonal fields, so adding one
-later is additive.
+depth}`. Expansion edits the row space whichever kind is expanded: a
+branch's children appear and disappear, and **a leaf's content is rows
+too** — a trace row's decoded signals are rows of the space, each with
+its own id, a place in the order, and a share of the cursor and the
+selection. `kind` says what the rows *are* (a branch structures rows
+below it; a leaf's content belongs to it), not whether expanding
+produces any. There is no branch-with-content variant; `kind` and
+content-expandability are orthogonal fields, so adding one later is
+additive.
+
+*(Amended 2026-08-21. Content was originally a block that grew the row
+and added no rows. That made it a blob inside one row: the row owned
+the click, so clicking a decoded signal collapsed the message the user
+was reading, and nothing in the content could be selected or reached by
+the cursor. Content-as-rows deletes the special case instead of
+guarding it.)*
 
 **Cursor and selection are separate, and the cursor is
 row-granular.** One active row per gridview, keyed by id; the
@@ -55,7 +65,7 @@ content inside a row is reached by Tab, not by the grid cursor.
 | Key | Branch | Leaf with content | Plain leaf |
 | --- | --- | --- | --- |
 | Up/Down | move cursor (selection collapses to it) | ″ | ″ |
-| Right | closed → expand; open → first child | closed → expand content; open → no-op | no-op |
+| Right | closed → expand; open → first child | closed → expand content; open → first content row | no-op |
 | Left | open → collapse; closed → parent | open → collapse content; closed → parent | parent |
 | Space | panel-defined primary action (default none) | ″ | ″ |
 | Enter | unbound (user-customizable) | ″ | ″ |
