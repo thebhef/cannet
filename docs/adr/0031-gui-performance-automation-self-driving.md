@@ -312,3 +312,24 @@ is not a finding to report. It stays **gated at its existing limit**
 its own) on the same terms as `rx_gap_short_frac_worst` — optimized and
 noisy, and it should not get worse. A run that actually breaches the
 limit is still a stop; readings under it are not.
+
+## Amendment (2026-08-20) — an unreproducible outlier is documented, not chased
+
+A gate run occasionally produces a reading that no later run reproduces
+and no mechanism explains: one observed case was `tree_mb_peak` at
+8233 MB against a 1492 MB limit, on a build whose change was a
+presentational component, with six subsequent runs on the same binary
+reading 705–768 MB.
+
+**The rule: document it in `plans/backlog.md` and move on. Do not
+duplicate an outlier that is already recorded there.** Check the
+backlog before writing a new entry; a second sighting of the same
+metric belongs as a note on the existing entry, because the thing worth
+knowing is how often it recurs, not how many times it was written down.
+
+What this does *not* license: promoting a baseline, widening a limit,
+or quietly dropping the failing run from the set that gets reported.
+Limits still ratchet down only. The outlier run is reported with the
+rest of the distribution — the record says "this happened once and
+these five runs did not", and the next reader can see the pattern
+forming if it is forming.
