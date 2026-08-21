@@ -79,8 +79,9 @@ fn descriptor_key(
 /// One duplicate-id collision [`dbc_collisions`] found: two or more
 /// databases assigned to `bus_id` define the same `(message id,
 /// extended, signal name)`. `winner_path` is whichever of them
-/// [`scoped_descriptors`]' dedup — and every other "first assigned
-/// database that answers wins" scan, `AppState::first_dbc_on_bus`
+/// [`scoped_descriptors`]' dedup — and every other per-signal
+/// resolution,
+/// [`DecodeModel::signal_source`](crate::signal_fingerprint::DecodeModel::signal_source)
 /// included — actually resolves the id from; this record is attached
 /// to the `loser_path` it also names, so a database's own rows carry
 /// only the collisions it is losing.
@@ -110,8 +111,10 @@ pub struct DbcCollision {
 ///
 /// Entries are in **project load order**, restricted per bus by
 /// [`filter::dbc_applies`] — the same filter and the same order
-/// `scoped_descriptors`' dedup and `AppState::first_dbc_on_bus` apply,
-/// so the first entry is the database that resolves the signal today.
+/// `scoped_descriptors`' dedup and
+/// [`DecodeModel::signal_source`](crate::signal_fingerprint::DecodeModel::signal_source)
+/// apply, so the first entry is the database that resolves the signal
+/// today.
 /// A database appears at most once per identity however many times it
 /// declares the name (a message may declare one name in several
 /// multiplexor arms), because "which database serves this" is not a
