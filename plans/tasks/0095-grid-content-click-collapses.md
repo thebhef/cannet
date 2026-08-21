@@ -81,3 +81,84 @@ an expanded row.
 - Every gridview with expandable rows is either fixed or has a test
   pinning that it was already correct.
 - One shared implementation — no per-panel copy of the click rule.
+
+## Status log
+
+### 2026-08-21 — (branch `task-95-grid-content-rows`)
+
+**Diagnosis, before changing anything.** Observation: with a trace row
+open, `fireEvent.click` on a `.signals .signal` line left
+`.trace-row.expanded` empty — the row collapsed. Hypothesis: the click
+reaches the row's own `onClick` by DOM bubbling, because the content is
+a descendant of the row element. Experiment (a throwaway printing test
+with two controls that discriminate): (A) click the `.trace-rows`
+container background — a delegated container-level handler would
+collapse the row here too; (B) click the signal line, first printing
+`row.contains(line)`; (C) click the message line. Data: A left the row
+open, `contains` was `true`, B collapsed it, C reopened it. Conclusion:
+the collapse comes from the row element's own handler reached by
+bubbling — not from delegation, and not from anything the content does.
+The row's whole footprint was the toggle, and the content sat inside
+that footprint.
+
+**Phase 1 — the machinery** (`acac3c6e`). `gridviewContentRows.ts`
+splices an open row's disclosed rows into the base space a view
+indexes, both directions, and names them from their row's id.
+`cursorAction`'s Right on an open leaf now steps into its first content
+row, and Left walks back out — the same moves a branch already had. The
+pure-layer fixture's "an expanded leaf still occupies exactly one row"
+was turned around deliberately: it asserted the model this task
+reverses. ADR 0044's node model amended in the same commit.
+
+**Phase 2 — the two trace views** (`e14218f4`). A disclosed signal is a
+row of the space with its own id, rendered as a *sibling* of the
+message row rather than nested in it, so there is no click to swallow
+and no guard to write. Row counting: `TraceView` and `ByIdTable` build
+`openRuns` from the walk they already did for `expandedPositions`, and
+their adapters' `count` / `rowIdAt` / `indexOf` / `scrollToRow` go
+through `contentRowSpace`. Virtualisation: unchanged — a placement's
+`height` is still the whole block, so the anchor bound, the spacer and
+the sticky viewport measure what they measured before; the message row
+is drawn one row tall and the disclosed rows stack under it to the same
+total. The runs are the ones the view can *locate*, i.e. the loaded
+window; an open row scrolled out of it still contributes its height
+through `extraHeight`, exactly as before, and its id resolves to
+nothing while it is gone, exactly as every other id outside the window
+does. Nothing capture-sized entered frontend state. Selection:
+`selectionOrder` lists the loaded page's messages each followed by its
+disclosed rows, so Ctrl+A and Shift+click range across them.
+
+**Phase 3 — the sweep** (`6225510f`). The transmit panel had the same
+defect by a different route: its expanded face is inside the tile
+element and the tile toggles on any click that isn't an interactive
+control, so a click on a signal's *name* span collapsed it. Fixed by
+excluding the disclosed face from the toggle. The RBS panel, the
+Database panel and the signal view were already correct — content is a
+sibling of the row, or already real rows — and each now has a test
+saying so. ADR 0044 states the rule that covers both content shapes.
+
+**Exit criteria.**
+
+| Criterion | Verdict | Earned by |
+| --- | --- | --- |
+| Clicking a signal inside an expanded trace row does not collapse it | met | `TraceView.gridview.dom.test.tsx` → "selects a disclosed signal rather than collapsing the message"; `ByIdTable.gridview.dom.test.tsx` → same name |
+| Clicking the message line still collapses it | met | both files → "still collapses the message when the message line is clicked" |
+| Every gridview with expandable rows is fixed or pinned | met | fixed: the two trace views, `TransmitPanel.dom.test.tsx` → "clicking a signal name in the disclosed face does not collapse the row". pinned: `RbsPanel.gridview.dom.test.tsx` → "clicking inside a disclosed signal table leaves the message open"; `SignalsPanel.gridview.dom.test.tsx` → "clicking a signal inside a section leaves the section open"; `DatabasePanel.dom.test.tsx` → "clicking a row's detail block leaves the row it belongs to open" |
+| One shared implementation, no per-panel copy of the click rule | met | `gridviewContentRows.ts` + `DecodedSignalCell` carry the row identity, the placement and the click for both trace views; ADR 0044 states the rule once |
+
+Frontend suite: 2430 → 2449 passing, 185 → 186 files, all green;
+`npx tsc --noEmit` and `vite build` clean. No Rust touched.
+
+## Blockers / side effects
+
+- **The ruling reads narrower than "all disclosed content".** Two
+  panels disclose an *editor face* rather than a list — the transmit
+  tile's frame-shape / byte editors and the RBS message's value cells —
+  and those are reached by Tab, not the cursor (ADR 0044 says so
+  explicitly, and making them rows would collide with that). They keep
+  the same guarantee by the other half of the rule: the toggle is the
+  row's own line. Recorded rather than silently redesigned.
+- **A disclosed row's clickable width is the line's width (32 rem),**
+  not the panel's, because that is where its border and layout already
+  were. Clicking to the right of a disclosed line now does nothing
+  where it used to collapse the message; it does not select either.
