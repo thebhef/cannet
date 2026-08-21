@@ -89,6 +89,7 @@ export function RbsValueCell({
       {s.hasValueTable ? (
         <Combobox
           options={enumOptions}
+          proseLabels
           value={s.label ?? ""}
           placeholder={display === "—" ? "" : display}
           onChange={(v) => {

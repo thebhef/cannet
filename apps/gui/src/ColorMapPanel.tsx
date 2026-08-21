@@ -175,7 +175,9 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
                 onChange={(hex) => setColorForRaw(v.raw, hex)}
                 swatchAriaLabel={`${v.label} color`}
               />
-              <span className="colormap-enum-label">{v.label}</span>
+              <span className="colormap-enum-label" title={v.label}>
+                {v.label}
+              </span>
               <span className="colormap-enum-raw">{v.raw}</span>
             </li>
           ))}

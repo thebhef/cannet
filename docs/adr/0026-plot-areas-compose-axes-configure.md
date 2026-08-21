@@ -180,6 +180,18 @@ and the stripes and does the halo's job. Such a theme asks for **no**
 passes: its count is 0, so the count and the box agree instead of the
 box quietly overriding a number.
 
+**A name is cut in the middle; a `VAL_` label is cut at the end.** DBC
+symbols share prefixes by construction, so end-truncation on a signal
+or message name reliably hides the part that tells two apart — every
+name-bearing surface therefore renders through `NameText`, which splits
+a name past the classic 32-character identifier limit into a
+shrinkable head and a kept tail and carries the whole of it as a
+tooltip. Enum labels are prose, read left to right, with their
+distinguishing word at the front, so they keep ordinary end-ellipsis
+and a tooltip — on the canvas as much as in the DOM, which is what
+`fitTileLabel` does for a lane tile. A name's rendered width comes from
+the column model and never from the name.
+
 **A tile label is drawn on a box whose opacity the theme carries.** The
 box is filled in the canvas chip color — effectively the canvas color,
 the same backing the cursor and Δ chips take — with the chips' own
@@ -590,9 +602,12 @@ below:
   the table's raw codes thinned to uPlot's chosen increment
   (`plotAxisScale.ts::enumTickSplits`), sizing its gutter from the
   numbers it actually draws. Pure `enumSegments()`
-  walks the (t, v) arrays; segments narrower than the label width draw
-  the colored tile without text — and without a box, since a plate with
-  no text on it is just a hole in the tile's color. Tile labels centre
+  walks the (t, v) arrays; a segment narrower than its label draws as
+  much of the label as fits, cut at the end and marked with an ellipsis
+  (`fitTileLabel`), and only a segment too narrow for even one
+  character plus the mark draws the colored tile without text — and
+  without a box, since a plate with no text on it is just a hole in the
+  tile's color. Tile labels centre
   on the midpoint of
   the tile's **visible** part (`tileLabelX`), rounded to whole pixels so
   glyphs aren't re-rasterised at a new subpixel phase each frame.
