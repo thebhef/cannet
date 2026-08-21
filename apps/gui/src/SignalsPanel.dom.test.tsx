@@ -12,6 +12,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 import type { SignalSnapshotRecord } from "./types";
 
+import {
+  LONG_MESSAGE_NAME,
+  LONG_MESSAGE_TAIL,
+  LONG_SIGNAL_NAME,
+  LONG_SIGNAL_TAIL,
+  expectMiddleEllipsis,
+} from "./longNameTestKit";
+
 const DEFAULT_ROWS: SignalSnapshotRecord[] = [
   {
     bus_id: "p",
@@ -474,5 +482,25 @@ describe("SignalsPanel tail reachability", () => {
     const last = await screen.findByTitle(/^Sig199 —/);
     const row = last.closest(".trace-row") as HTMLElement;
     expect(Number.parseFloat(row.style.top)).toBeLessThan(VH);
+  });
+});
+
+describe("SignalsPanel with long names", () => {
+  it("splits the signal and message names, and leaves a short one alone", async () => {
+    ROWS = [
+      { ...DEFAULT_ROWS[0], signal_name: LONG_SIGNAL_NAME, message_name: LONG_MESSAGE_NAME },
+      { ...DEFAULT_ROWS[0], signal_name: "EngineSpeed", message_name: "EngineData" },
+    ];
+    renderPanel();
+    await waitFor(() => expect(document.querySelectorAll(".trace-row")).toHaveLength(2));
+    const rows = document.querySelectorAll(".trace-row");
+    expectMiddleEllipsis(rows[0].querySelector(".col-signal"), LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    expectMiddleEllipsis(rows[0].querySelector(".col-msg"), LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL);
+    // The name's own tooltip keeps the drag/recolor hint the column
+    // already carried, so the affordance is not traded for the name.
+    expect(
+      rows[0].querySelector(".col-signal .name-text")!.getAttribute("title"),
+    ).toBe(`${LONG_SIGNAL_NAME} — drag to a plot; right-click to recolor`);
+    expect(rows[1].querySelector(".name-text")).toBeNull();
   });
 });

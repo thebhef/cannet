@@ -33,9 +33,10 @@ describe("splitName", () => {
   it("cuts on a word boundary so the tail reads as a word", () => {
     expect(splitName("HighVoltageBatteryPackCoolantInletTemperature").tail).toBe("Temperature");
     expect(splitName("BMS_Pack_Current_Filtered_HighResolution").tail).toBe("Resolution");
-    // The search stops 16 characters back, so a boundary that far
-    // out is still taken but nothing further is.
-    expect(splitName("PackCurrentFilteredMeasured_HighRes").tail).toBe("Measured_HighRes");
+    expect(splitName("PackCurrentFilteredMeasured_HighRes").tail).toBe("_HighRes");
+    // Searched outward, so a boundary just *past* the preferred cut
+    // wins over one far short of it.
+    expect(splitName("CentralComputeThermalDerateAdvisoryBroadcast").tail).toBe("Broadcast");
     expect(splitName("PropulsionInverterThermalDerateRequestLevel").tail).toBe("RequestLevel");
   });
 

@@ -413,6 +413,7 @@ import { FIRST_SAMPLE_INDICATOR_MS } from "./useFirstSampleWait";
 import { hydrateSettings, updateSettings } from "./hostSettings";
 import { THEMES, activeTheme, setActiveTheme } from "./theme";
 import { startThemeSync } from "./themeSync";
+import { LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL, expectMiddleEllipsis } from "./longNameTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -7448,5 +7449,26 @@ describe("single-enum y axis", () => {
       unmeasure();
       restore();
     }
+  });
+});
+
+describe("plot legend with long names", () => {
+  it("splits a long signal name and the message line beneath it", () => {
+    renderPanel();
+    dropSignal("Area 1", LONG_SIGNAL_NAME, "degC");
+    dropSignal("Area 1", "TopSignal", "rpm");
+    const rows = document.querySelectorAll(".plot-signal-row");
+    expectMiddleEllipsis(
+      rows[0].querySelector(".plot-signal-name"),
+      LONG_SIGNAL_NAME,
+      LONG_SIGNAL_TAIL,
+    );
+    // The message line carries the composed `bus · ecu · message`
+    // label; this fixture's is short, so it stays one text node — the
+    // same rule, applied to a different string.
+    expect(rows[0].querySelector(".plot-signal-message .name-text")).toBeNull();
+    // The control: the short signal beside it is still one text node.
+    expect(rows[1].querySelector(".plot-signal-name .name-text")).toBeNull();
+    expect(rows[1].querySelector(".plot-signal-name")!.textContent).toBe("TopSignal");
   });
 });

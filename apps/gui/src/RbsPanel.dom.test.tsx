@@ -73,6 +73,7 @@ import {
 import type { ProjectElement } from "./types";
 import type { TraceState } from "./trace";
 import { PanelCommandsContext, createPanelCommandRegistry } from "./panelCommands";
+import { LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL, expectMiddleEllipsis } from "./longNameTestKit";
 
 const projectCtx = {
   buses: [
@@ -623,5 +624,20 @@ describe("RbsPanel rehydration", () => {
       control.update("el", { kind: "rbs", path: "/tmp/sim.cannet_rbs" } as never);
     });
     expect(document.querySelector(".rbs-path")).toHaveTextContent("sim.cannet_rbs");
+  });
+});
+
+describe("RbsPanel with long names", () => {
+  it("splits a long signal name in the per-message table, leaving a short one alone", async () => {
+    const view = sampleView();
+    view.buses[0].ecus[0].messages[0].signals[0].name = LONG_SIGNAL_NAME;
+    VIEW = view;
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    const names = document.querySelectorAll(".rbs-sig-name");
+    expectMiddleEllipsis(names[0], LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    // The control: the next signal down keeps its short name whole.
+    expect(names[1].querySelector(".name-text")).toBeNull();
+    expect(names[1].textContent).toBe("PackVoltage");
   });
 });

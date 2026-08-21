@@ -13,6 +13,7 @@ import {
   hasWallClockAnchor,
   type CanIdFormat,
 } from "./format";
+import { NameText } from "./NameText";
 
 /// The content for one trace cell, given the column. The `#` column is
 /// the row's 1-based index in the chronological view, and the total
@@ -63,7 +64,7 @@ export function cellContent(
     case "msg":
       // No caret: the row itself is the disclosure (ADR 0044's "no
       // separate expander control"), matching ByIdTable's settled call.
-      return frame.decoded ? frame.decoded.name : "";
+      return frame.decoded ? <NameText name={frame.decoded.name} /> : "";
   }
 }
 
