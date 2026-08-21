@@ -4238,6 +4238,79 @@ fn effective_calc_respects_bus_scoping_and_reports_errors() {
     assert!(resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&bad)).is_err());
 }
 
+/// 291 `Status` with `AliveCtr` at `ctr_start`, and the cannet
+/// counter / CRC attributes only when `with_attrs`.
+fn calc_placement_dbc(ctr_start: u32, with_attrs: bool) -> String {
+    let attrs = if with_attrs {
+        "BA_DEF_ SG_ \"CannetCounter\" STRING ;\n\
+         BA_DEF_ SG_ \"CannetCrc\" STRING ;\n\
+         BA_DEF_DEF_ \"CannetCounter\" \"\";\n\
+         BA_DEF_DEF_ \"CannetCrc\" \"\";\n\
+         BA_ \"CannetCounter\" SG_ 291 AliveCtr \"increment=1;rollover=15\";\n\
+         BA_ \"CannetCrc\" SG_ 291 Crc8 \"alg=CRC-8/SAE-J1850;range=0:56\";\n"
+    } else {
+        ""
+    };
+    format!(
+        "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
+         BO_ 291 Status: 8 ECU\n\
+         \x20SG_ Mode : 0|8@1+ (1,0) [0|255] \"\" ECU\n\
+         \x20SG_ AliveCtr : {ctr_start}|4@1+ (1,0) [0|15] \"\" ECU\n\
+         \x20SG_ Crc8 : 56|8@1+ (1,0) [0|255] \"\" ECU\n\n{attrs}"
+    )
+}
+
+#[test]
+fn a_transmit_rows_calculated_fields_come_from_the_defining_database() {
+    // `a.dbc` defines 291 and designates nothing; `b.dbc`, behind it
+    // on the same bus, defines 291 and designates a counter and a CRC.
+    // The row transmits a.dbc's message, so a.dbc's designations —
+    // none — are the ones in force (ADR 0054).
+    let dbs = vec![
+        loaded_scoped("a.dbc", &calc_placement_dbc(48, false), &["p"]),
+        loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
+    ];
+    assert!(
+        resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+            .unwrap()
+            .is_none(),
+        "b.dbc's designations are not borrowed onto a.dbc's message",
+    );
+
+    // With an override, the signal it names is placed where the
+    // defining database puts it: bit 48, byte 6's low nibble.
+    let spec = ipc::CalcFieldsSpec {
+        counter: Some(ipc::CounterSpec {
+            signal: "AliveCtr".into(),
+            increment: 1,
+            rollover: Some(15),
+        }),
+        crc: None,
+    };
+    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), Some(&spec))
+        .unwrap()
+        .expect("the override configures the message");
+    let mut payload = [0u8; 8];
+    let mut counter = 0;
+    resolved.apply(&mut counter, &mut payload).unwrap();
+    assert_eq!(payload, [0, 0, 0, 0, 0, 0, 1, 0]);
+
+    // Reversed, b.dbc defines the message and both of its designations
+    // apply — which is what makes the two assertions above evidence.
+    let dbs = vec![
+        loaded_scoped("b.dbc", &calc_placement_dbc(40, true), &["p"]),
+        loaded_scoped("a.dbc", &calc_placement_dbc(48, false), &["p"]),
+    ];
+    let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), None)
+        .unwrap()
+        .expect("b.dbc designates a counter and a CRC");
+    let mut payload = [0u8; 8];
+    let mut counter = 0;
+    resolved.apply(&mut counter, &mut payload).unwrap();
+    assert_eq!(payload[5] & 0x0F, 1, "b.dbc's counter, four bits away");
+    assert_ne!(payload[7], 0, "and the CRC it designates");
+}
+
 /// The spec types round-trip through JSON in ADR 0028's file shape
 /// (`snake_case` keys, `range_bits` array, hex-string CRC params).
 #[test]
@@ -5396,4 +5469,110 @@ fn set_dbc_buses_wires_up_a_bus_collision_the_real_load_and_assign_path_produces
     assert!(collisions.iter().all(|c| c.bus_id == "pt"));
     assert!(collisions.iter().all(|c| c.winner_path == "a.dbc"));
     assert!(collisions.iter().all(|c| c.loser_path == "b.dbc"));
+}
+
+// ---- Whose definition supplies the multiplexor selector ------------
+
+/// 512 `Modes`, multiplexed, with the selector byte at `sel_bit` and
+/// two one-byte arms behind it.
+fn mux_at(sel_bit: u32) -> String {
+    format!(
+        "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Zonal\n\n\
+         BO_ 512 Modes: 8 Zonal\n\
+         \x20SG_ Mux M : {sel_bit}|8@1+ (1,0) [0|0] \"\" Zonal\n\
+         \x20SG_ ModeA m0 : 16|8@1+ (1,0) [0|0] \"\" Zonal\n\
+         \x20SG_ ModeB m1 : 16|8@1+ (1,0) [0|0] \"\" Zonal\n"
+    )
+}
+
+/// The selector values the mux index found for 512 over the whole
+/// trace.
+fn selectors_seen(state: &AppState) -> Vec<u64> {
+    let mut found: Vec<u64> = state
+        .trace_store
+        .latest_mux_in_window(Some(TEST_BUS), 512, false, &[0, 1, 7, 9], 0, usize::MAX)
+        .into_keys()
+        .collect();
+    found.sort_unstable();
+    found
+}
+
+#[test]
+fn the_mux_selector_comes_from_the_database_that_defines_the_multiplexor() {
+    // Two databases on one bus define 512 multiplexed, each reading
+    // the selector from a different byte. The first defines `Mux`, so
+    // its reading is the one the mux index carries (ADR 0054).
+    let state = test_state();
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("a.dbc", &mux_at(8), &[TEST_BUS]),
+        loaded_scoped("b.dbc", MUX_SNAPSHOT_DBC, &[TEST_BUS]),
+    ];
+    invalidate_derived_caches(&state);
+    // Byte 0 reads 1 (b.dbc's selector), byte 1 reads 7 (a.dbc's).
+    state.trace_store.append(modes_frame(0, 1, 7, 9));
+    assert_eq!(selectors_seen(&state), vec![7]);
+
+    // Order reversed, b.dbc's byte-0 selector is the definition.
+    let state = test_state();
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("b.dbc", MUX_SNAPSHOT_DBC, &[TEST_BUS]),
+        loaded_scoped("a.dbc", &mux_at(8), &[TEST_BUS]),
+    ];
+    invalidate_derived_caches(&state);
+    state.trace_store.append(modes_frame(0, 1, 7, 9));
+    assert_eq!(selectors_seen(&state), vec![1]);
+}
+
+#[test]
+fn a_multiplexor_only_one_database_defines_is_still_that_databases_to_supply() {
+    // `a.dbc` is ahead on the bus and defines 512 with no multiplexor
+    // at all, so it defines no `Mux`, `ModeA` or `ModeB` — those
+    // signals have exactly one definition on this bus and it is
+    // b.dbc's. Reading the selector from b.dbc is therefore the rule
+    // applied, not skipped: resolution is per signal, and a database
+    // that does not define a signal is not a candidate for it.
+    let state = test_state();
+    let plain = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Zonal\n\n\
+        BO_ 512 Modes: 8 Zonal\n\
+        \x20SG_ Always : 24|8@1+ (1,0) [0|0] \"\" Zonal\n";
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("a.dbc", plain, &[TEST_BUS]),
+        loaded_scoped("b.dbc", MUX_SNAPSHOT_DBC, &[TEST_BUS]),
+    ];
+    invalidate_derived_caches(&state);
+    state.trace_store.append(modes_frame(0, 1, 7, 9));
+    assert_eq!(selectors_seen(&state), vec![1]);
+}
+
+#[test]
+fn a_selector_the_winner_withholds_is_read_from_the_next_database() {
+    // A measured exposure, pinned so a change to it has to be
+    // deliberate. `a.dbc` defines 512's multiplexor and is ahead of
+    // `b.dbc` on the bus, so `Mux` is a.dbc's signal — but its
+    // selector sits in byte 7, and a three-byte frame does not carry
+    // it. The extractor asks the next eligible database instead, and
+    // the mux index ends up holding a selector a.dbc never produced.
+    //
+    // Under ADR 0054 a payload the winning definition cannot read a
+    // value out of has no value, so this fall-through is wrong. Fixing
+    // it changes what the per-signal latest-value view shows — the
+    // same decision as the per-frame fall-through in the sampler — so
+    // it is recorded rather than taken here.
+    let state = test_state();
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("a.dbc", &mux_at(56), &[TEST_BUS]),
+        loaded_scoped("b.dbc", MUX_SNAPSHOT_DBC, &[TEST_BUS]),
+    ];
+    invalidate_derived_caches(&state);
+    let short = RawTraceFrame {
+        timestamp_ns: 0,
+        payload: CanFramePayload::Classic(vec![1, 7, 0]),
+        ..dummy_frame(0, 512)
+    };
+    state.trace_store.append(short);
+    assert_eq!(
+        selectors_seen(&state),
+        vec![1],
+        "b.dbc's byte-0 selector, from a database that does not define this Mux",
+    );
 }
