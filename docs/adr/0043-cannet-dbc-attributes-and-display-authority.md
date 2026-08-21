@@ -100,7 +100,7 @@ formatted on its own.
 A display fact that applies **per axis** — a log scale — cannot. Every
 series drawn on an axis shares its mapping from range to pixels
 ([ADR 0026](0026-plot-areas-compose-axes-configure.md)), so two
-signals sharing a unit group in `per-unit` mode, one declaring a log
+signals sharing an axis in `per-unit` mode, one declaring a log
 scale and one not, leave the axis with no consistent answer. Log scale
 is therefore an **axis** property, and no DBC hint may override an
 explicit per-axis setting.

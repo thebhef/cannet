@@ -3,11 +3,11 @@
  * flag, plus the maths that turns them into the range an axis actually
  * draws (ADR 0026).
  *
- * An axis normally derives its scale from its data — the unit-group
- * union in `plotData.ts::groupScaleRanges`, widened when a group holds
- * a single constant value. This module is the *override* on top of
- * that: a user-set min, a user-set max, and whether the axis maps its
- * range logarithmically. All three are view configuration, so they ride
+ * An axis normally derives its scale from its data — the union of
+ * every series on it (`plotData.ts::axisAutoRange`), widened when the
+ * axis holds a single constant value. This module is the *override* on
+ * top of that: a user-set min, a user-set max, and whether the axis
+ * maps its range logarithmically. All three are view configuration, so they ride
  * the plot panel's persisted config keyed by derived-axis id, exactly
  * as `axisWeights` does.
  *
@@ -143,9 +143,10 @@ function decadeCeil(v: number): number {
 
 /**
  * The range an axis actually draws, given the range its data derived
- * (`auto`, already unit-grouped and constant-widened — `null` when
- * nothing has decoded), the user's overrides, and — on a log axis —
- * the smallest positive value present in the data (`minPositive`).
+ * (`auto`, already unioned across the axis and constant-widened —
+ * `null` when nothing has decoded), the user's overrides, and — on a
+ * log axis — the smallest positive value present in the data
+ * (`minPositive`).
  *
  * Precedence: **a manual bound beats everything automatic.** Either
  * bound may stand alone; the other stays automatic. A manual bound the
@@ -181,7 +182,7 @@ export function resolveAxisRange(
   if (lo == null || hi == null) return null;
   if (hi > lo) return { lo, hi, log: false };
   // No span left: anchor on whichever bound the user pinned (the min
-  // when both are) and widen it the way a constant group is widened.
+  // when both are) and widen it the way a constant axis is widened.
   const anchor = setting?.min ?? setting?.max ?? lo;
   return { ...constantRange(anchor), log: false };
 }
