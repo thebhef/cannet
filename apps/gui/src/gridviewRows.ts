@@ -8,13 +8,14 @@
 /// indexes recycle under scroll, sort and refresh, so index-keyed
 /// interaction state is either broken already or one sort away from it.
 
-/// A row either structures other rows or it doesn't. Either way,
-/// expanding it edits the row space: a **branch**'s children appear and
-/// disappear, and a **leaf**'s content is rows too — a trace row's
-/// decoded signals are rows of the space, each with an id and a place
-/// in the order (`gridviewContentRows.ts` is the arithmetic that
-/// splices them in). The distinction is what the rows *are*, not
-/// whether expanding produces any.
+/// A row either structures other rows or it doesn't. A **branch**'s
+/// children appear in and disappear from the space as it opens. A
+/// **leaf**'s content is rows too wherever that content is a list — a
+/// trace row's decoded signals are rows of the space, each with an id
+/// and a place in the order (`gridviewContentRows.ts` is the arithmetic
+/// that splices them in); content that is an editor face instead stays
+/// a block reached by Tab. Either way the toggle is the row's own line,
+/// never the footprint of what it disclosed (ADR 0044).
 export type GridviewRowKind = "branch" | "leaf";
 
 /// One row of the space. `kind` and `expandable` are orthogonal: a
