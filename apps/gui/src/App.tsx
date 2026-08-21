@@ -48,6 +48,7 @@ import { PlotPanel } from "./PlotPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
+import { RbsSignalsPanel } from "./RbsSignalsPanel";
 import { ChangedOnDiskNotice } from "./ChangedOnDiskNotice";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { GeneratorPanel } from "./GeneratorPanel";
@@ -142,6 +143,7 @@ import {
   COLORMAP_PANEL_COMPONENT,
   GENERATOR_PANEL_COMPONENT,
   RBS_PANEL_COMPONENT,
+  RBS_SIGNALS_PANEL_COMPONENT,
   SETTINGS_PANEL_COMPONENT,
   ABOUT_PANEL_COMPONENT,
   EVENTS_PANEL_COMPONENT,
@@ -153,7 +155,9 @@ import {
   TRANSMIT_PANEL_COMPONENT,
   VIEW_SIGNALS_PANEL_COMPONENT,
   elementPanelComponent,
+  elementPanelTitle,
   normalizeSingletonTitles,
+  panelsForElementId,
   stripMaximizedNode,
   validateLayout,
 } from "./dockLayout";
@@ -253,6 +257,7 @@ const DOCK_COMPONENTS = {
   [SIGNALS_PANEL_COMPONENT]: SignalsPanel,
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
   [RBS_PANEL_COMPONENT]: RbsPanel,
+  [RBS_SIGNALS_PANEL_COMPONENT]: RbsSignalsPanel,
   [COLORMAP_PANEL_COMPONENT]: ColorMapPanel,
   [GENERATOR_PANEL_COMPONENT]: GeneratorPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
@@ -849,10 +854,13 @@ export function App() {
         if (removed) pendingElementEditRef.current = true;
         setRegistry((prev) => prev.filter((e) => e.element.id !== id));
         const api = dockApiRef.current;
-        const panel = api?.panels.find(
-          (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
-        );
-        if (api && panel) api.removePanel(panel);
+        // An RBS element can carry a second panel over the same
+        // elementId (its signals grid, task 89 phase 6) —
+        // `panelsForElementId`, not a single `.find`, so removing the
+        // element closes every panel referencing it rather than
+        // leaking the second one.
+        const panels = panelsForElementId(api?.panels ?? [], id);
+        if (api) for (const panel of panels) api.removePanel(panel);
       } finally {
         endGesture();
       }
@@ -2752,10 +2760,10 @@ export function App() {
       if (typeof elementId !== "string") continue;
       const entry = registry.find((e) => e.element.id === elementId);
       if (!entry) continue;
-      const label = elementLabel(entry.element);
-      if (panel.title !== label) {
+      const title = elementPanelTitle(panel.id, elementLabel(entry.element));
+      if (panel.title !== title) {
         diagCount("dockview.setTitle"); // DIAG
-        panel.api.setTitle(label);
+        panel.api.setTitle(title);
       }
     }
   }, [registry]);
