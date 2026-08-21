@@ -108,7 +108,8 @@ function makeRegistry(elementId: string, path: string | null, run: boolean) {
 function renderPanel(path: string | null, run = false) {
   const { registry, updates } = makeRegistry("el", path, run);
   const api = { updateParameters: vi.fn() };
-  const props = { params: { elementId: "el" }, api } as unknown as Parameters<
+  const containerApi = { panels: [] as unknown[], addPanel: vi.fn() };
+  const props = { params: { elementId: "el" }, api, containerApi } as unknown as Parameters<
     typeof RbsPanel
   >[0];
   render(
@@ -118,7 +119,7 @@ function renderPanel(path: string | null, run = false) {
       </ElementRegistryContext.Provider>
     </ProjectContext.Provider>,
   );
-  return { updates };
+  return { updates, containerApi };
 }
 
 function lastCall(cmd: string) {
@@ -267,6 +268,20 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
       expect(lastCall("rbs_save_as")?.args).toMatchObject({
         elementId: "el",
         path: "/tmp/picked.cannet_rbs",
+      }),
+    );
+  });
+
+  it("the Signals button opens (or focuses) this element's own signals panel, not a second copy", async () => {
+    VIEW = sampleView();
+    const { containerApi } = renderPanel("/tmp/sim.cannet_rbs");
+    await screen.findByText("Powertrain");
+    fireEvent.click(screen.getByRole("button", { name: "Signals" }));
+    expect(containerApi.addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "rbs-signals-el",
+        component: "rbs-signals",
+        params: { elementId: "el" },
       }),
     );
   });
