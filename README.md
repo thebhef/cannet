@@ -1011,7 +1011,9 @@ and appears once, under an "(Unassigned)" group saying so — this row
 is the only discoverability the app offers for an unassigned database,
 by design. Two databases assigned to the same bus that define the same
 message/signal id is a rare mistake the panel warns about, naming
-which one wins the decode). Type any fragment of a signal
+which one wins the decode — by project load order, unless the signal
+has been given a database of its own in the view-signals panel, in
+which case that is the one named and the one that decodes). Type any fragment of a signal
 name, ECU, comment, value-table label, message id (hex or decimal),
 or attribute, and the tree filters to the matches: ancestors of a
 match auto-expand and everything else is hidden, so a filtered

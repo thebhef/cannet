@@ -1570,6 +1570,41 @@ BU_: Ecu
     }
 
     #[test]
+    fn clearing_the_whole_set_keeps_the_picks_the_project_just_installed() {
+        // `clear_dbcs` is the first half of an *open project*: the
+        // frontend clears the set and re-adds the project's databases
+        // one at a time, after `open_project` has already installed the
+        // project's picks. Pruning there would wipe every pick the file
+        // carried before its databases were back. Only an explicit
+        // `remove_dbc` drops one.
+        let state = ambiguous_state();
+        assert!(set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("b.dbc".into())
+        ));
+        state.databases().clear();
+        crate::app_state::invalidate_derived_caches(&state);
+        assert_eq!(pick_of(&state).as_deref(), Some("b.dbc"));
+
+        // …and it comes back into force the moment its database does.
+        crate::dbc_commands::install_dbc(&state, "a.dbc", &dbc_text("0.1", "V")).unwrap();
+        crate::dbc_commands::install_dbc(&state, "b.dbc", &dbc_text("0.5", "V")).unwrap();
+        crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["power".to_string()]);
+        crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["power".to_string()]);
+        state.view_signals().set(
+            "v1".into(),
+            ViewSignalRefs {
+                view_name: "Plot 1".into(),
+                refs: vec![recorded("PackVolts", "PackStatus", "V", 0.1)],
+            },
+        );
+        let rows = page(&state).rows;
+        assert_eq!(rows[0].picked_dbc.as_deref(), Some("b.dbc"));
+        assert_eq!(rows[0].serving_dbc.as_deref(), Some("b.dbc"));
+    }
+
+    #[test]
     fn removing_the_picked_database_drops_the_pick_silently() {
         // Owner ruling: the entry is dropped from the project when the
         // selected DBC is removed, falling back to the load-order

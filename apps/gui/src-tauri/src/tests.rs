@@ -5204,6 +5204,7 @@ fn set_dbc_buses_wires_up_a_bus_collision_the_real_load_and_assign_path_produces
     let collisions = crate::signal_snapshot::dbc_collisions(
         dbs.iter()
             .map(|d| (d.path.as_str(), d.db.as_ref(), d.buses.as_slice())),
+        &crate::signal_fingerprint::SignalDbcPicks::new(),
     );
     drop(dbs);
 

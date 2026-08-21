@@ -428,7 +428,8 @@ pub(crate) fn list_dbc_content(state: State<'_, AppState>) -> Vec<DbcContentReco
 /// Duplicate-id collisions across the loaded set, for the Database
 /// panel's warning: every `(bus, message id, extended, signal name)`
 /// two or more assigned databases define, naming the database whose
-/// signal wins today. Detected host-side
+/// signal wins today — the one the user chose for it in the
+/// view-signal panel, or project load order where they have not. Detected host-side
 /// ([`signal_snapshot::dbc_collisions`]) so the panel renders what the
 /// host reports rather than re-scanning the loaded DBCs' contents in
 /// JS.
@@ -436,9 +437,13 @@ pub(crate) fn list_dbc_content(state: State<'_, AppState>) -> Vec<DbcContentReco
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn list_dbc_collisions(state: State<'_, AppState>) -> Vec<DbcCollisionRecord> {
     let dbs = state.databases();
+    // Lock order: the DBC set before the picks, as `decode_model` takes
+    // them. The picks decide who wins a collision the user has settled.
+    let picks = state.picks_snapshot();
     signal_snapshot::dbc_collisions(
         dbs.iter()
             .map(|d| (d.path.as_str(), d.db.as_ref(), d.buses.as_slice())),
+        &picks,
     )
     .into_iter()
     .map(|c| DbcCollisionRecord {
