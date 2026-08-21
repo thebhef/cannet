@@ -97,7 +97,6 @@ use cannet_dbc::Database;
 use cannet_spill::{lower_bound, SampleSeq, SAMPLE_ENTRY_BYTES};
 use serde::{Deserialize, Serialize};
 
-use crate::filter;
 use crate::signal_fingerprint::{self, DecodeModel};
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::{read_json, write_json, RawTraceFrame, TraceStore};
@@ -997,18 +996,14 @@ fn scan_chunk(
         if pending.is_empty() {
             continue;
         }
-        // Which databases may decode *this* frame: the same
-        // `dbc_applies` scoping every other decode consumer uses, judged
-        // against the frame's own bus. A database scoped to bus B never
-        // supplies a value for a frame on bus A, however the series that
-        // wants it is scoped.
+        // Which databases may decode *this* frame: the shared
+        // eligibility scan (`DecodeModel::eligible`), judged against the
+        // frame's own bus. A database scoped to bus B never supplies a
+        // value for a frame on bus A, however the series that wants it
+        // is scoped.
         if eligible_for.as_ref().map(Option::as_deref) != Some(frame.bus_id.as_deref()) {
             eligible.clear();
-            eligible.extend(
-                dbs.iter()
-                    .filter(|d| filter::dbc_applies(d.buses, frame.bus_id.as_deref()))
-                    .map(|d| d.db),
-            );
+            eligible.extend(dbs.eligible(frame.bus_id.as_deref()).map(|d| d.db));
             // Which database a pick pins each target to, as an index
             // into the `eligible` list just built. A target whose bus
             // is not this frame's never reaches `pending`, so resolving

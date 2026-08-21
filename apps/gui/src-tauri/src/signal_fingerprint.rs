@@ -468,9 +468,7 @@ impl<'a> DecodeModel<'a> {
     ) -> Option<usize> {
         let pick = self.pick_path(bus_id, message_id, extended, signal_name)?;
         let id = CanId::new(message_id, extended).ok()?;
-        self.dbcs
-            .iter()
-            .filter(|d| filter::dbc_applies(d.buses, bus_id))
+        self.eligible(bus_id)
             .position(|d| d.path == pick && !d.db.signal_decode_specs(id, signal_name).is_empty())
     }
 }
@@ -639,22 +637,16 @@ pub fn dbc_encoding(
     };
     if let Ok(id) = id {
         let picked = dbcs.picked_index(bus_id, message_id, extended, signal_name);
-        let mut eligible = 0usize;
-        for dbc in dbcs.iter() {
-            // Only the databases that can decode *this* series: its
-            // frames arrive on one bus, so a database
-            // `filter::dbc_applies` rejects for that bus can never
-            // supply one of its samples — editing it must not force a
-            // rebuild that provably cannot move a value.
-            if !filter::dbc_applies(dbc.buses, bus_id) {
-                continue;
-            }
-            // The pick's position is counted over the same eligible
-            // sequence the decode walks (`signal_sampler::sample_shared`
-            // over `scan_chunk`'s `eligible`), so the chain hashed here
-            // is the chain that decodes.
-            let this = eligible;
-            eligible += 1;
+        // Only the databases that can decode *this* series: its frames
+        // arrive on one bus, so a database `DecodeModel::eligible`
+        // rejects for that bus can never supply one of its samples —
+        // editing it must not force a rebuild that provably cannot move
+        // a value. The pick's position is counted over the same
+        // eligible sequence the decode walks
+        // (`signal_sampler::sample_shared` over `scan_chunk`'s
+        // `eligible`), so the chain hashed here is the chain that
+        // decodes.
+        for (this, dbc) in dbcs.eligible(bus_id).enumerate() {
             if picked.is_some_and(|p| p != this) {
                 continue;
             }
