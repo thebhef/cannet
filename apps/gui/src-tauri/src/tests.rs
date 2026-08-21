@@ -5848,20 +5848,27 @@ fn a_trace_rows_picked_signal_comes_from_the_database_the_pick_names() {
 
 #[test]
 #[allow(clippy::float_cmp)]
-fn a_signal_only_a_later_database_defines_reaches_the_row_once_the_message_is_picked() {
+fn a_signal_only_a_later_database_defines_reaches_the_row_whether_or_not_anything_is_picked() {
     // `Y` is b.dbc's alone, so it has exactly one definition whatever
-    // the load order. The per-message fast path never reported it —
-    // a.dbc decodes the message and does not define `Y` — and that is
-    // the approximation the fast path is allowed: it costs nothing and
-    // the caches serve `Y` in their own right. Resolving the message
-    // per signal, which a pick makes it do, reports it.
+    // the load order and whatever anyone picked. The row reported it
+    // only when the message carried a pick, which made *whether a
+    // signal appears* depend on a choice made about a different signal
+    // — a second resolution rule wearing a fast path's clothes. Two
+    // databases define 256, so the message resolves per signal, and it
+    // is the same answer the plot has always given.
     let unpicked = collide_state(["a.dbc", "b.dbc"], None);
-    assert_eq!(row_value_of(&unpicked, "Y"), None, "the fast path");
-    assert_eq!(plot_values_of(&unpicked, "Y"), vec![100.0], "…but plotted");
+    assert_eq!(row_value_of(&unpicked, "Y"), Some(100.0), "the row");
+    assert_eq!(plot_values_of(&unpicked, "Y"), vec![100.0], "the plot");
 
     let picked = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
     assert_eq!(row_value_of(&picked, "Y"), Some(100.0));
     assert_eq!(plot_values_of(&picked, "Y"), vec![100.0]);
+
+    // Reversed, `Y` is the *first* database's and the row reported it
+    // all along — the control that says the reading above is the
+    // resolution rule and not the order.
+    let reversed = collide_state(["b.dbc", "a.dbc"], None);
+    assert_eq!(row_value_of(&reversed, "Y"), Some(100.0));
 }
 
 #[test]
