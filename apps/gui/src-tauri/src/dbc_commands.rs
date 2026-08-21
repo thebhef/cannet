@@ -381,18 +381,27 @@ pub(crate) fn decode_against(
 ///
 /// Resolving that way on every frame would cost every project a decode
 /// per eligible database to settle an ambiguity almost none of them
-/// have. So a message **no signal of which carries a pick** keeps the
-/// single `decode_raw` call it always had
-/// ([`DecodeModel::message_has_pick`](crate::signal_fingerprint::DecodeModel::message_has_pick)
-/// is the per-frame test, and it costs nothing where no pick exists at
-/// all). Without a pick the two resolutions agree on every signal the
-/// first defining database defines, and differ only in the ones it does
-/// not — which this path has never reported and which the caches serve
-/// in their own right.
+/// have. So a message **only one loaded database defines, no signal of
+/// which carries a pick** keeps the single `decode_raw` call it always
+/// had. Both halves are per-frame lookups that cost nothing where the
+/// condition cannot arise —
+/// [`DecodeModel::message_spans_databases`](crate::signal_fingerprint::DecodeModel::message_spans_databases)
+/// and
+/// [`DecodeModel::message_has_pick`](crate::signal_fingerprint::DecodeModel::message_has_pick)
+/// — and where only one database defines the message, its decode *is*
+/// the per-signal resolution: every signal of that message is its, and
+/// there is nothing behind it to disagree.
 ///
-/// The picked case pays for its answer: each eligible database decodes
-/// the message once, and each signal comes from the database a pick
-/// names, or from the first that defines it. A signal the winning
+/// The two questions are separate on purpose. A signal only a later
+/// database defines has exactly one definition whatever the picks say,
+/// so whether the row reports it must not depend on whether some
+/// *other* signal of the message was pinned — a fast path that changes
+/// which signals appear is a second resolution rule, not an
+/// optimisation.
+///
+/// The resolved case pays for its answer: each eligible database
+/// decodes the message once, and each signal comes from the database a
+/// pick names, or from the first that defines it. A signal the winning
 /// definition withholds for this payload is absent rather than borrowed
 /// from behind it — that definition produced no value, so there is
 /// none.
@@ -407,7 +416,9 @@ pub(crate) fn decode_resolved<'a>(
         .iter()
         .filter(|d| filter::dbc_applies(d.buses, bus_id))
         .map(|d| d.db);
-    if !dbs.message_has_pick(frame.id, frame.extended) {
+    if !dbs.message_spans_databases(frame.id, frame.extended)
+        && !dbs.message_has_pick(frame.id, frame.extended)
+    {
         return eligible.find_map(|db| db.decode_raw(id, data));
     }
     let eligible: Vec<&'a Database> = eligible.collect();

@@ -143,6 +143,42 @@ pub struct DecodeModel<'a> {
     /// per-signal resolution it selects reads the picks for *that*
     /// bus and so still lands on the load-order default.
     message_picks: HashSet<(u32, bool)>,
+    /// The messages **more than one loaded database defines**, as
+    /// `(message id, extended)` — the index behind
+    /// [`Self::message_spans_databases`]. Derived from the set when the
+    /// model is built, so it is empty in every project that never
+    /// loaded two databases claiming one id, which is almost all of
+    /// them.
+    ///
+    /// Neither the bus nor the signal lists are part of it. It is a
+    /// *gate*: where it answers `true` the caller resolves per signal,
+    /// which is exact whatever the buses and whatever the two
+    /// databases declare — over-answering costs a slower decode of one
+    /// message and can never change an answer, while computing the
+    /// exact "does a later database define a signal the winner does
+    /// not" would mean walking every signal of every database instead
+    /// of every message.
+    split_messages: HashSet<(u32, bool)>,
+}
+
+/// The messages more than one of `dbcs` defines — see
+/// [`DecodeModel::split_messages`]. One walk of each database's message
+/// ids, and none at all below two databases, so a single-database
+/// project pays nothing for the index or for the branch it feeds.
+fn split_messages(dbcs: &[DbcScope<'_>]) -> HashSet<(u32, bool)> {
+    if dbcs.len() < 2 {
+        return HashSet::new();
+    }
+    let mut seen: HashSet<(u32, bool)> = HashSet::new();
+    let mut split: HashSet<(u32, bool)> = HashSet::new();
+    for d in dbcs {
+        for (id, extended, _) in d.db.message_names() {
+            if !seen.insert((id, extended)) {
+                split.insert((id, extended));
+            }
+        }
+    }
+    split
 }
 
 /// What a pick says about one signal, over a bare picks map: the loaded
@@ -186,20 +222,24 @@ impl<'a> DecodeModel<'a> {
             .keys()
             .filter_map(|k| crate::signal_snapshot::identity_message(k))
             .collect();
+        let split_messages = split_messages(&dbcs);
         Self {
             dbcs,
             picks,
             message_picks,
+            split_messages,
         }
     }
 
     /// The set with no picks — the load-order default everywhere.
     #[must_use]
     pub fn plain(dbcs: Vec<DbcScope<'a>>) -> Self {
+        let split_messages = split_messages(&dbcs);
         Self {
             dbcs,
             picks: Arc::default(),
             message_picks: HashSet::new(),
+            split_messages,
         }
     }
 
@@ -214,6 +254,27 @@ impl<'a> DecodeModel<'a> {
     #[must_use]
     pub fn message_has_pick(&self, message_id: u32, extended: bool) -> bool {
         !self.message_picks.is_empty() && self.message_picks.contains(&(message_id, extended))
+    }
+
+    /// Whether more than one loaded database defines this message — the
+    /// other question a per-message decode asks per frame, and the one
+    /// that makes its fast path exact rather than merely cheap.
+    ///
+    /// Which signals a message can yield is a property of the loaded
+    /// set: not of the picks, not of the payload. Where one database
+    /// defines the message, every signal of it is that database's and
+    /// decoding it once is the whole answer. Where two do, a signal
+    /// only the later one defines still has exactly one definition
+    /// (ADR 0054), and reporting it must not depend on whether some
+    /// *other* signal of the message happens to carry a pick.
+    ///
+    /// A **lookup**, never a scan: the index is built once per model,
+    /// and a project that has never loaded two databases claiming one
+    /// id answers `false` off an emptiness check without hashing
+    /// anything.
+    #[must_use]
+    pub fn message_spans_databases(&self, message_id: u32, extended: bool) -> bool {
+        !self.split_messages.is_empty() && self.split_messages.contains(&(message_id, extended))
     }
 
     /// The picks this model resolves against.
@@ -924,6 +985,32 @@ mod tests {
             .message_source(Some(FP_BUS), 999, false)
             .is_none());
         assert!(plain(set()).message_source(None, 256, false).is_none());
+    }
+
+    #[test]
+    fn message_spans_databases_answers_for_the_ids_two_databases_claim() {
+        // The other per-frame branch a per-message decode takes. It is
+        // a property of the loaded set alone, so no pick moves it, and
+        // a one-database project answers false without an index at all.
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&dbc_text(&format!("BO_ 257 N: 8 ECU\n SG_ {PLAIN}\n")));
+        let bus = fp_bus();
+
+        let one = plain(vec![scope("a.dbc", &a, &bus)]);
+        assert!(!one.message_spans_databases(256, false), "one database");
+
+        let disjoint = plain(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]);
+        assert!(!disjoint.message_spans_databases(256, false));
+        assert!(!disjoint.message_spans_databases(257, false));
+
+        let shared = plain(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &a, &bus)]);
+        assert!(shared.message_spans_databases(256, false));
+        assert!(!shared.message_spans_databases(256, true), "id width");
+        assert!(!shared.message_spans_databases(257, false), "another id");
+        // A pick is not an input: the set decides.
+        assert!(
+            !pinned(vec![scope("a.dbc", &a, &bus)], "a.dbc").message_spans_databases(256, false)
+        );
     }
 
     #[test]
