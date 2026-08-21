@@ -21,7 +21,7 @@ use crate::ipc::{
     SignalDescriptorRecord, SignalRecord, ValueTableEntryRecord,
 };
 use crate::trace_store::RawTraceFrame;
-use crate::{filter, rbs, signal_snapshot};
+use crate::{rbs, signal_snapshot};
 use crate::{sys_error, sys_info, sys_warn};
 
 /// The loaded-DBC list as IPC records (each one's path + message
@@ -426,10 +426,7 @@ pub(crate) fn decode_resolved<'a>(
     data: &[u8],
 ) -> Option<cannet_dbc::DecodedMessage<'a>> {
     let id = CanId::new(message_id, extended).ok()?;
-    let mut eligible = dbs
-        .iter()
-        .filter(|d| filter::dbc_applies(d.buses, bus_id))
-        .map(|d| d.db);
+    let mut eligible = dbs.eligible(bus_id).map(|d| d.db);
     if !dbs.message_spans_databases(message_id, extended)
         && !dbs.message_has_pick(message_id, extended)
     {
