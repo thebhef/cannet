@@ -2073,6 +2073,39 @@ header {
   box-shadow: 0 4px 12px var(--shadow-menu);
 }
 
+/* Long entity names (NameText) ------------------------------------------*/
+/* A message / signal / ECU name past the classic 32-character DBC
+   identifier limit, split so the *middle* is what an over-narrow column
+   drops. The head is the only flex item that shrinks and the only one
+   carrying `text-overflow`, so `BmsPackCurrentF...HighRes` is what a
+   squeeze produces — DBC symbols share prefixes by construction, so
+   end-truncation reliably hides the part that tells two apart.
+
+   `max-width: 100%` is what keeps the width a *column* fact: the box
+   never grows past the cell it sits in, so a pathological name cannot
+   reflow the panel around it. Names within the limit never reach this
+   rule at all — they render as a plain text node. */
+.name-text {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: bottom;
+}
+
+.name-text-head {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Never shrinks, and never long enough to need to: the split keeps the
+   tail to at most 16 characters. */
+.name-text-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* Trace table -----------------------------------------------------------*/
 .trace {
   /* The header's and the rows' shared horizontal padding. Named because
@@ -2492,11 +2525,27 @@ button.color-chip {
   background: var(--surface-row-selected);
 }
 
+/* The two halves of a disclosed signal line. Both clip: the row is a
+   fixed-width box (`left: 0; right: 0` inside the viewport, capped at
+   32rem by `.signal`), and a flex item that does not clip refuses to
+   shrink below its content — so a long signal name used to push the
+   value out of the row instead of ellipsizing. The name yields first;
+   the value is the shorter of the two and the reason the row exists. */
 .signal-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-secondary);
 }
 
 .signal-value {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-signal-value);
 }
 
@@ -3285,6 +3334,11 @@ button.color-chip {
   font-size: 0.75rem;
   color: var(--text-primary);
   white-space: nowrap;
+  /* A long `VAL_` label ellipsizes here rather than running off the
+     row: `.dbc-row` clips, but clipping alone cuts mid-glyph with
+     nothing to say the value continues. */
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .dbc-row-value .signal-value-cell {
   border-radius: 3px;
@@ -4715,6 +4769,14 @@ button.color-chip {
   justify-content: center;
   min-width: 24px;
 }
+/* The name on a Database-panel row. `.dbc-row` clips, but clipping
+   alone cuts a long name mid-glyph with nothing to mark it, so the
+   label ellipsizes and the cut becomes legible. */
+.dbc-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .dbc-row-bus .dbc-row-label {
   color: var(--warn-text);
   font-weight: 600;
@@ -4968,7 +5030,17 @@ button.color-chip {
   border-collapse: collapse;
 }
 .rbs-signals td { padding: 1px 8px 1px 0; }
-.rbs-sig-name { color: var(--text-muted); min-width: 140px; }
+/* A `<td>` needs a `max-width` for `text-overflow` to have anything to
+   overflow — table layout otherwise widens the column to the longest
+   name and the whole table scrolls sideways. */
+.rbs-sig-name {
+  color: var(--text-muted);
+  min-width: 140px;
+  max-width: 18rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .rbs-sig-unit { color: var(--text-faint); }
 .rbs-signal-input {
   width: 110px;
