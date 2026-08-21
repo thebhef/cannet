@@ -195,6 +195,33 @@ the panel — but "visible" is not "working".
   something durable to check against — the absence of exactly that is
   what let eleven copies drift.
 
+## Phases (overseer, 2026-08-21)
+
+Investigation before change, then the settled ruling, then the
+consolidation — so no site moves onto a shared resolver before anyone
+knows what that site is supposed to do.
+
+1. **Verify the five Shape A sites.** Build the constructed case per
+   site (the winner defines the signal but carries no `VAL_` / no calc
+   fields; a later eligible database carries both) and let the data
+   decide. A site that is already correct gets a test pinning it and
+   nothing else. No fixes in this phase beyond what a confirmed case
+   demands — the point is to know which of the five are defects before
+   designing anything.
+2. **Shape B: per signal, with a per-message fast path.** The owner's
+   ruling of 2026-08-20, implemented as written, including the three
+   consequences the scope names — a row may legitimately show signals
+   from two databases, the "does this message carry a pick" test must
+   be a lookup rather than a scan, and an empty pick map must
+   short-circuit to today's path at no measurable cost.
+3. **One shared resolver.** Reduce the copies, move every verified site
+   onto it, express the per-signal-versus-per-message distinction in
+   its API rather than leaving each caller to imply it, and cite
+   ADR 0054 from its rustdoc.
+
+**Shape D is not in any of these phases.** It needs an owner ruling
+first, and closing it changes decoded values.
+
 ## Exit criteria (draft — firm at grooming)
 
 - One shared resolver; every `dbc_applies` site that answers "which
