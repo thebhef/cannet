@@ -1,5 +1,5 @@
-/// The RBS signal value clamp (task 89 phase 6, grooming resolution
-/// "Out of Range is a frontend concern, and clamping is shared code").
+/// The RBS signal value clamp ("Out of Range is a frontend concern,
+/// and clamping is shared code").
 ///
 /// Truncation to a signal's bit width is correct on transmit — it's
 /// what the bus would see — so `reconstruct_payload` (the host encoder)

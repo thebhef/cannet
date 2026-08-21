@@ -140,8 +140,8 @@ describe("useValueTables", () => {
   });
 
   it("refetches when the host announces a DBC-set change, so a panel that mounted first is not stuck", async () => {
-    // Task 86 item 3, measured: a panel mounts and asks before the
-    // project's DBCs are installed, gets "no table", and — keying its
+    // Measured: a panel mounts and asks before the project's DBCs are
+    // installed, gets "no table", and — keying its
     // fetch on the signal set alone — never asks again. The enum lane
     // stays numeric until the view is closed and reopened. The DBC set
     // changing is the carrier that has to reach it (ADR 0053 §4).

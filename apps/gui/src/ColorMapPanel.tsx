@@ -81,8 +81,8 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
   const [valueTable = []] = useValueTables(targetSignals).values();
 
   // Push this element's one target signal to the host's view-signal
-  // panel model (task 89) — identity only, since a colormap records no
-  // message name or unit for a target to have drifted from.
+  // panel model — identity only, since a colormap records no message
+  // name or unit for a target to have drifted from.
   const viewSignalRefs = useMemo(
     () => colorMapViewSignalRefs({ busId: element?.busId ?? null, messageId, extended, signalName }),
     [element?.busId, messageId, extended, signalName],

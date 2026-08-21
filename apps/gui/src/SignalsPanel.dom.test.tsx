@@ -372,7 +372,7 @@ describe("SignalsPanel", () => {
     });
   });
 
-  describe("view-signals push (task 89)", () => {
+  describe("view-signals push", () => {
     it("pushes its manual selection on mount, and un-pushes on unmount", async () => {
       renderPanel({ params: { elementId: "el-view-signals" } });
       await waitFor(() => {

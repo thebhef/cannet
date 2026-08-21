@@ -5,8 +5,11 @@
 // shared subscription, and re-anchors the trace model. Every windowed
 // view and the plot's decimated source fold that epoch into their fetch
 // descriptors, so this one translation is what carries a DBC edited on
-// *disk* to all of them — the path the frontend cannot know about, and
-// the one the plot was still missing after task 86 phase 3.
+// *disk* to all of them — the path the frontend cannot know about. The
+// plot's own resample loop learned to follow the model epoch on a
+// frontend-initiated DBC change, but nothing translated the watcher's
+// `dbc-changed` into that same epoch bump, so an on-disk edit still left
+// the plot on the old decode until this seam closed the gap.
 //
 // Mounts the REAL App with the Tauri IPC mocked, drives a session with
 // synthetic `trace-grew` events, adds a trace panel through the real

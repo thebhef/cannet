@@ -302,7 +302,7 @@ describe("Recent captures", () => {
   });
 });
 
-describe("Recent captures — dismissal (task 75 item 4)", () => {
+describe("Recent captures — dismissal like any other transient popup (click-outside, Escape)", () => {
   it("closes on an outside click, without opening anything", async () => {
     seededRecents = ["/old/legacy.blf"];
     await hydrateState();
@@ -353,7 +353,7 @@ describe("Recent captures — dismissal (task 75 item 4)", () => {
   });
 });
 
-describe("Recent captures — command palette (task 75 item 5)", () => {
+describe("Recent captures — reachable from the command palette", () => {
   async function openCommandPalette() {
     await act(async () => {
       fireEvent.keyDown(document.activeElement ?? document.body, {
