@@ -260,15 +260,17 @@ pub(crate) struct BackedPeriodic {
 
 /// The database assigned to this periodic's bus that defines the
 /// message it transmits — i.e. what the loaded set is driving the row
-/// from, or `None` if nothing is. The same per-bus priority scan the
-/// transmit panel's describe / decode / encode queries use, so the
-/// answer is exactly "which database does the app show this row a
-/// message out of".
+/// from, or `None` if nothing is. The same
+/// [`DecodeModel::message_source`](crate::signal_fingerprint::DecodeModel::message_source)
+/// the transmit panel's describe / decode / encode queries resolve
+/// through, so the answer is exactly "which database does the app show
+/// this row a message out of".
 fn backing_dbc(state: &AppState, p: &transmit_frames::RunningPeriodic) -> Option<String> {
-    let id = CanId::new(p.can_id, p.extended).ok()?;
+    let dbs = state.databases();
     state
-        .first_dbc_on_bus_with_path(Some(&p.bus_id), |db| db.describe_message(id))
-        .map(|(path, _)| path)
+        .decode_model(&dbs)
+        .message_source(Some(&p.bus_id), p.can_id, p.extended)
+        .map(|d| d.path.to_owned())
 }
 
 /// The periodics the current DBC set is driving: firing right now, and
