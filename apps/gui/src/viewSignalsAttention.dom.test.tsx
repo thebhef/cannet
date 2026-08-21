@@ -68,6 +68,19 @@ describe("useViewSignalsAttentionCount", () => {
     expect(listCalls().length).toBeGreaterThan(0);
   });
 
+  it("does not pay a third fetch for folding the DBC generation onto useHostMirror's own mount + launch-race pair", async () => {
+    // `useHostMirror` already fetches once on mount and once more when
+    // its listener attaches (closing the launch race) — that pair is
+    // its own contract, not this hook's to avoid. What this hook must
+    // not add is a *third* mount fetch by treating dbcGeneration's
+    // initial value as a change, the same shape phase 2's panel caught
+    // (two effects both firing on mount).
+    renderHook(() => useViewSignalsAttentionCount());
+    await waitFor(() => expect(listCalls().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(listCalls().length).toBe(2);
+  });
+
   it("is zero when nothing needs attention", async () => {
     ATTENTION_COUNT = 0;
     const { result } = renderHook(() => useViewSignalsAttentionCount());
