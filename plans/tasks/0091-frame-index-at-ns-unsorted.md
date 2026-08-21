@@ -110,3 +110,87 @@ An index built before the measurement is a guess.
   size, not asserted.
 - Any other code resting on the monotonic-append assumption is either
   fixed or recorded.
+
+## Status log
+
+### 2026-08-21 — (branch `task-91-frame-index-unsorted`)
+
+Branched from `task-92-stale-resolver-refs` at `77b35661`. Commits are
+`--no-verify` with the hooks' work run by hand first (`pre-commit`
+stashes and restores the unstaged tree around a multi-minute run, which
+clobbers concurrent edits).
+
+#### Observation — the defect, reproduced with a control
+
+Throw-away printing test over two stores built from the same six
+probes; the **control** is the same timestamps sorted, where a binary
+search is valid, so a "correct" reading discriminates rather than
+merely failing to fire.
+
+```
+--- CONTROL monotonic: store order [5e9, 7e9, 8e9, 9e9]
+    probe  5e9  binary_search -> 0   linear_scan -> 0   agree
+    probe  6e9  binary_search -> 1   linear_scan -> 1   agree
+    probe  7e9  binary_search -> 1   linear_scan -> 1   agree
+    probe  8e9  binary_search -> 2   linear_scan -> 2   agree
+    probe  9e9  binary_search -> 3   linear_scan -> 3   agree
+    probe 10e9  binary_search -> 4   linear_scan -> 4   agree
+--- SUBJECT non-monotonic: store order [5e9, 9e9, 7e9, 8e9]
+    probe  5e9  binary_search -> 0   linear_scan -> 0   agree
+    probe  6e9  binary_search -> 1   linear_scan -> 1   agree
+    probe  7e9  binary_search -> 1   linear_scan -> 1   agree
+    probe  8e9  binary_search -> 3   linear_scan -> 1   DIFFER
+    probe  9e9  binary_search -> 4   linear_scan -> 1   DIFFER
+    probe 10e9  binary_search -> 4   linear_scan -> 4   agree
+```
+
+The control agreed on all six probes, so the disagreement is the
+unsorted input, not the harness. `9e9` is an **exact match at index 1**
+and the search returned `4` — `len()`, which every caller reads as "past
+the tail". This reproduces the task file's recorded numbers exactly.
+
+#### Experiment — the reference implementation
+
+`frame_index_at_ns` replaced with a forward scan over
+`[first_index, len)`, the contract stated verbatim by the store's own
+`live_edge_...`-adjacent test comment (ADR 0035: the first frame with
+ts >= the event's ts). `frame_index_at_ns_lower_bounds_a_non_monotonic_store`
+was written first and watched fail on the sharper case
+(`left: 4, right: 1`, "exact match behind a dip") before the change.
+
+#### Data — what the reference implementation costs
+
+In-process, `--release`, 21 reps per probe, min and median, on this
+machine. **Control = the `head` probe**, which returns at index 0
+without walking the store: if the timing loop measured nothing it would
+read the same as `tail`, and it does not (0.0 µs vs 9.7 ms).
+
+| store | n | probe | result | min | median |
+| --- | --- | --- | --- | --- | --- |
+| disk | 1 M | head (CONTROL) | `0` | 0.0 µs | 0.0 µs |
+| mem | 1 M | head (CONTROL) | `0` | 0.0 µs | 0.0 µs |
+| disk | 1 M | middle | `500 000` | 4 877 µs | 5 000 µs |
+| mem | 1 M | middle | `500 000` | 3 636 µs | 3 971 µs |
+| disk | 1 M | tail (full scan) | `len()` | 9 651 µs | 9 961 µs |
+| mem | 1 M | tail (full scan) | `len()` | 7 751 µs | 8 044 µs |
+| disk | 8 M | head (CONTROL) | `0` | 0.0 µs | 0.1 µs |
+| disk | 8 M | middle | `4 000 000` | 47 354 µs | 56 818 µs |
+| disk | 8 M | tail (full scan) | `len()` | 92 255 µs | 99 790 µs |
+
+Cost is linear in rows walked at **~12.5 ns/row** and independent of
+which raw store backs it (the disk store's meta mapping is read without
+rebuilding a frame).
+
+#### Conclusion — the measurement demands an index
+
+A full scan is **10 ms at 1 M frames and 100 ms at 8 M**, and this is
+the serve path: `frame_indices_at_ns` maps a *batch* — one timestamp per
+timeline event — and every call holds the store's append mutex, the same
+mutex whose buffer-wide hold starved RX ingest and forced `scan_chunk`'s
+chunking. Twenty events on an 8 M-frame capture is two seconds of held
+mutex. The scan is also not fixable by micro-optimisation: at 8 M rows
+it touches ~208 MB of strided meta bytes, so even a perfect scan stays
+in the tens of ms.
+
+So the linear scan ships as the **reference**, in tests, and an index
+carries the serve path — built after the measurement, not before it.
