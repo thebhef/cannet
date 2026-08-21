@@ -227,8 +227,13 @@ describe("chronological cursor and selection", () => {
     fireEvent.keyDown(grid(), { key: "ArrowDown" });
     fireEvent.keyDown(grid(), { key: "ArrowRight" });
     expect(expandedIds()).toEqual([`s:${(0x100).toString(16)}`]);
-    // No row was added — the leaf grew in place.
-    expect(document.querySelectorAll(".trace-row")).toHaveLength(10);
+    // What it disclosed is rows: the two signals joined the space
+    // (ADR 0044), and Right again steps onto the first of them.
+    expect(document.querySelectorAll(".trace-content-row")).toHaveLength(2);
+    fireEvent.keyDown(grid(), { key: "ArrowRight" });
+    expect(activeRow()).toBe(document.querySelectorAll(".trace-content-row")[0]);
+    fireEvent.keyDown(grid(), { key: "ArrowLeft" });
+    expect(activeRow()).toBe(rowShowing(0));
     fireEvent.keyDown(grid(), { key: "ArrowLeft" });
     expect(expandedIds()).toEqual([]);
   });
@@ -288,6 +293,72 @@ describe("chronological cursor and selection", () => {
   });
 });
 
+describe("chronological content rows", () => {
+  /// The rows a message discloses, by the signal name each one shows.
+  function contentNames(): (string | null)[] {
+    return [...document.querySelectorAll(".trace-content-row")].map(
+      (el) => el.querySelector(".signal-name")?.textContent ?? null,
+    );
+  }
+
+  it("selects a disclosed signal rather than collapsing the message", () => {
+    render(view({ count: 10, getRow: (d) => frameRow(d) }));
+    fireEvent.click(rowShowing(3));
+    expect(expandedIds()).toEqual([`s:${(0x103).toString(16)}`]);
+
+    const line = document.querySelectorAll<HTMLElement>(".trace-content-row")[1];
+    fireEvent.click(line);
+
+    // The message the user was reading is still open, and the row they
+    // clicked is the one that is selected.
+    expect(expandedIds()).toEqual([`s:${(0x103).toString(16)}`]);
+    expect(line).toHaveAttribute("aria-selected", "true");
+    expect(selectedIds()).toEqual([]); // no message row is selected
+    expect(activeRow()).toBe(line);
+  });
+
+  it("still collapses the message when the message line is clicked", () => {
+    render(view({ count: 10, getRow: (d) => frameRow(d) }));
+    fireEvent.click(rowShowing(3));
+    expect(contentNames()).toEqual(["Sig0", "Sig1"]);
+    fireEvent.click(rowShowing(3).querySelector(".col-id")!);
+    expect(expandedIds()).toEqual([]);
+    expect(contentNames()).toEqual([]);
+  });
+
+  it("puts the disclosed rows in the space, between the message and the next", () => {
+    render(view({ count: 10, getRow: (d) => frameRow(d) }));
+    fireEvent.click(rowShowing(1));
+    fireEvent.keyDown(grid(), { key: "Home" });
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(activeRow()).toBe(rowShowing(1));
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(activeRow()?.querySelector(".signal-name")?.textContent).toBe("Sig0");
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(activeRow()?.querySelector(".signal-name")?.textContent).toBe("Sig1");
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(activeRow()).toBe(rowShowing(2));
+  });
+
+  it("ranges across content rows like any other rows", () => {
+    render(view({ count: 10, getRow: (d) => frameRow(d) }));
+    fireEvent.click(rowShowing(1)); // opens it and anchors the range
+    fireEvent.click(rowShowing(2), { shiftKey: true });
+    // The message, the two rows it disclosed, and the message after them.
+    expect(document.querySelectorAll('[aria-selected="true"]')).toHaveLength(4);
+  });
+
+  it("stacks the disclosed rows under the message, one line each", () => {
+    render(view({ count: 10, getRow: (d) => frameRow(d) }));
+    fireEvent.click(rowShowing(2));
+    const lines = [...document.querySelectorAll<HTMLElement>(".trace-content-row")];
+    expect(lines.map((el) => el.style.top)).toEqual([`${2 * 22 + 22}px`, `${2 * 22 + 40}px`]);
+    // The row after the open one starts below the whole block.
+    expect(rowShowing(3).style.top).toBe(`${3 * 22 + 2 * 18}px`);
+  });
+
+});
+
 describe("chronological drag identity (D9)", () => {
   it("drags the message from the row itself", () => {
     render(view({ count: 10, getRow: (d) => frameRow(d) }));
@@ -331,7 +402,7 @@ describe("chronological drag identity (D9)", () => {
   it("still drags one signal from a line inside the expanded block", () => {
     render(view({ count: 10, getRow: (d) => frameRow(d) }));
     fireEvent.click(rowShowing(0));
-    const line = document.querySelectorAll<HTMLElement>(".signals .signal")[1];
+    const line = document.querySelectorAll<HTMLElement>(".trace-content-row")[1];
     const dt = fakeDataTransfer();
     fireEvent.dragStart(line, { dataTransfer: dt });
     const payload = JSON.parse(dt.getData(SIGNAL_DND_MIME));

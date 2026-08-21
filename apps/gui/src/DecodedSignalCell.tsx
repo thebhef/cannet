@@ -1,16 +1,19 @@
-/// One decoded signal sub-row inside an expanded trace row, sized to
-/// `SIGNAL_LINE_HEIGHT` so the line stack matches the placement
-/// arithmetic (`expandedRowHeight`). It is
-/// a drag source — dragging onto a plot area adds the
-/// signal as a series. Click events still fall through to the row
-/// (`stopPropagation` would prevent the expand-collapse toggle from
-/// retracting); dragging is initiated by the browser only when the
-/// mouse actually leaves the source, so plain clicks aren't
-/// hijacked.
+/// One row of a frame's disclosed decoded signals — a row of the
+/// gridview's space like any other (ADR 0044): it carries the DOM id the
+/// cursor names it by, shows the selection, and **its click is its own**,
+/// so clicking a signal selects that signal instead of acting on the
+/// message that disclosed it. Sized to `SIGNAL_LINE_HEIGHT` and placed by
+/// the view's stacking arithmetic, so the lines can't drift from it.
+///
+/// It is also a drag source — dragging onto a plot area adds the signal
+/// as a series. Dragging is initiated by the browser only when the mouse
+/// actually leaves the source, so plain clicks aren't hijacked.
 ///
 /// Shared by `TraceView` (chronological) and `ByIdTable` (per-message-id):
-/// both expand a frame's decoded signals the same way, so the row body
-/// lives here once instead of twice.
+/// both disclose a frame's decoded signals the same way, so the row — and
+/// what clicking it means — lives here once instead of twice.
+
+import { memo, type MouseEvent } from "react";
 
 import type { SignalRecord, TraceFrameRecord } from "./types";
 import { SignalValueText } from "./SignalValueText";
@@ -18,17 +21,32 @@ import { type ColorResolver, colorMapTint } from "./colorMap";
 import { setSignalDragData } from "./dragSignals";
 import { SIGNAL_LINE_HEIGHT } from "./traceViewport";
 
-export function DecodedSignalCell({
-  frame,
-  messageName,
-  sig,
-  resolveColor,
-}: {
+export interface DecodedSignalCellProps {
   frame: TraceFrameRecord;
   messageName: string;
   sig: SignalRecord;
   resolveColor: ColorResolver | null;
-}) {
+  /// Where this row sits inside the view's sticky viewport, in px.
+  top: number;
+  /// This row's id in the gridview's row space.
+  rowId: string;
+  /// The DOM id `aria-activedescendant` names this row by.
+  domId: string;
+  selected: boolean;
+  onSelect: (rowId: string, e: MouseEvent) => void;
+}
+
+export const DecodedSignalCell = memo(function DecodedSignalCell({
+  frame,
+  messageName,
+  sig,
+  resolveColor,
+  top,
+  rowId,
+  domId,
+  selected,
+  onSelect,
+}: DecodedSignalCellProps) {
   const tint = resolveColor?.(
     {
       messageId: frame.id,
@@ -40,16 +58,16 @@ export function DecodedSignalCell({
   );
   return (
     <div
-      className="signal"
-      style={{ height: SIGNAL_LINE_HEIGHT }}
+      className={selected ? "signal trace-content-row selected" : "signal trace-content-row"}
+      id={domId}
+      aria-selected={selected}
+      style={{ position: "absolute", top, left: 0, right: 0, height: SIGNAL_LINE_HEIGHT }}
       draggable
+      onClick={(e) => onSelect(rowId, e)}
       onDragStart={(e) => {
-        // Stop the parent row's drag from also firing — there isn't
-        // a row-level drag today, but the convention pre-empts a
-        // surprising one. The drag payload is a single ref; the
-        // bus comes from the frame's own routing decision (the
-        // host's `bus_id`) so a frame on bus A drops as a signal
-        // bound to bus A.
+        // The drag payload is a single ref; the bus comes from the
+        // frame's own routing decision (the host's `bus_id`) so a frame
+        // on bus A drops as a signal bound to bus A.
         e.stopPropagation();
         setSignalDragData(e, [
           {
@@ -77,4 +95,4 @@ export function DecodedSignalCell({
       </span>
     </div>
   );
-}
+});
