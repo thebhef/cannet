@@ -595,10 +595,17 @@ impl TraceStore {
     }
 
     /// Wall-clock span of the buffered frames, in seconds: the timestamp
-    /// gap between the oldest and newest frame currently stored. Zero
-    /// when fewer than two frames are buffered. Drives the "N s buffered"
-    /// readout in the status line. Frames are appended in arrival order,
-    /// so `first` is the oldest and `last` the newest.
+    /// gap between the capture's live edge and its oldest retained row.
+    /// Zero when fewer than two frames are buffered. Drives the "N s
+    /// buffered" readout in the status line.
+    ///
+    /// Arrival order does not sort the timestamps, so "newest" is the
+    /// running max ([`cannet_spill::RawStore::max_ts`]) and not the last
+    /// row — a span taken between two row timestamps would shrink and
+    /// grow again every time the column dipped (ADR 0024). The floor is
+    /// the first *retained* row's timestamp, the same x-axis origin
+    /// [`Self::window_anchors`] reports; both come from
+    /// [`cannet_spill::RawStore::first_last_ts`].
     #[must_use]
     pub fn buffer_seconds(&self) -> f64 {
         let inner = self.lock_inner();
