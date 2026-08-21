@@ -1464,9 +1464,9 @@ struct PersistedSignal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file: Option<FileSignalInfo>,
     /// Fingerprint of the encoding these samples were decoded under
-    /// ([`crate::signal_fingerprint`]) — for a DBC-backed row its
-    /// candidate chain through the loaded set, for a file-backed one the
-    /// source it was imported from. This is what
+    /// ([`crate::signal_fingerprint`]) — for a DBC-backed row the
+    /// definition that decoded it, for a file-backed one the source it
+    /// was imported from. This is what
     /// [`SignalCacheStore::restore`] judges the row by, alone.
     ///
     /// `#[serde(default)]` so a manifest written before fingerprints
@@ -2092,7 +2092,7 @@ impl SignalCacheStore {
     /// Three outcomes per DBC-backed cache, and they are the per-signal
     /// judgement applied in-session:
     ///
-    /// - **Its candidate chain has not moved** — the new set decodes it
+    /// - **Its definition has not moved** — the new set decodes it
     ///   exactly as the old one did, so it keeps decoding. (A whole-set
     ///   drop used to discard it here, which is the same waste, one
     ///   session earlier, that the touched-DBC case was.)
@@ -5994,8 +5994,8 @@ mod tests {
     #[test]
     fn a_persisted_signal_records_the_encoding_it_was_decoded_under() {
         // The manifest row says what the samples were decoded *from*, per
-        // signal — a DBC-backed row its candidate chain through the
-        // loaded set, a file-backed one the source it was imported from.
+        // signal — a DBC-backed row the definition that decoded it, a
+        // file-backed one the source it was imported from.
         let store = TraceStore::new();
         for i in 0..50u64 {
             store.append(val_frame(i * S, (i % 50) as u16));
@@ -6026,7 +6026,7 @@ mod tests {
         assert_eq!(
             row("X").encoding.as_deref(),
             Some(signal_fingerprint::dbc_encoding(&scopes, None, 256, false, "X").as_str()),
-            "the DBC-backed row carries its candidate chain's fingerprint"
+            "the DBC-backed row carries its definition's fingerprint"
         );
         assert_eq!(
             row("Speed").encoding.as_deref(),
@@ -7705,7 +7705,7 @@ mod tests {
         );
         cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
 
-        // A set in which nothing defines `X`: its candidate chain empties,
+        // A set in which nothing defines `X`: it has no definition left,
         // so it stops being live and is parked for the definition's return.
         cache.invalidate_dbcs(&no_dbcs());
 

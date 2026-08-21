@@ -215,7 +215,7 @@ longer answers to the loaded set moves to a **retention pool**:
   ever be thrown away.
 - **This applies in-session too.** A DBC-set change judges the live
   pyramids the same way a restore judges persisted ones: one whose
-  candidate chain has not moved keeps decoding, one whose has is parked,
+  definition has not moved keeps decoding, one whose has is parked,
   and one the pool can answer for is revived — all in the one call. **A
   cache is stamped where it is created**, against the set that is about to
   decode it, so a pyramid built in the current session parks like any
