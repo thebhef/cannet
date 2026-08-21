@@ -321,7 +321,7 @@ pub(crate) fn persist_pyramids(state: &AppState, harden: Harden) {
         let dbcs = state.databases();
         state
             .signal_caches
-            .persist(&validity, &crate::app_state::dbc_scopes(&dbcs), harden);
+            .persist(&validity, &state.decode_model(&dbcs), harden);
     }
 }
 /// Snapshot the host-side system log. Returns every message

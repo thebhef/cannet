@@ -642,6 +642,7 @@ pub(crate) fn test_state() -> AppState {
         active_project_id: Mutex::new(None),
         watched_project: Mutex::new(crate::watched_file::WatchedFile::default()),
         view_signals: Mutex::new(crate::view_signals::ViewSignalRegistry::default()),
+        signal_dbc_picks: Mutex::new(std::sync::Arc::default()),
     }
 }
 
@@ -778,7 +779,7 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
         }
         state.trace_store.append(f);
     }
-    let slice = |dbs: &[crate::signal_fingerprint::DbcScope<'_>]| {
+    let slice = |dbs: &crate::signal_fingerprint::DecodeModel<'_>| {
         state.signal_caches.slice(
             Some(TEST_BUS),
             256,
@@ -793,7 +794,10 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     };
     // Serve with NO DBC loaded: the cache catches up empty and pins its
     // decode cursor at the tip.
-    assert!(slice(&[]).is_empty(), "no DBC -> nothing decodes");
+    assert!(
+        slice(&crate::signal_fingerprint::DecodeModel::plain(Vec::new())).is_empty(),
+        "no DBC -> nothing decodes"
+    );
 
     // The DBC arrives — into the *project*, assigned to the bus the
     // frames are on, because that is the set `invalidate_derived_caches`
@@ -825,10 +829,13 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     );
     // The rebuilt cache now decodes the whole series.
     assert_eq!(
-        slice(&[crate::signal_fingerprint::DbcScope {
-            db: db.as_ref(),
-            buses: &test_bus_scope(),
-        }])
+        slice(&crate::signal_fingerprint::DecodeModel::plain(vec![
+            crate::signal_fingerprint::DbcScope {
+                path: "late.dbc",
+                db: db.as_ref(),
+                buses: &test_bus_scope(),
+            }
+        ]))
         .len(),
         10,
         "DBC now back-fills the full series"
@@ -1528,7 +1535,7 @@ fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
     // The signal cache for `(bus=p, id=0x123, "Sig")` must include
     // the tx-confirm's decoded value (42).
     let dbs_guard = state.databases.lock().unwrap();
-    let db_refs = crate::app_state::dbc_scopes(&dbs_guard);
+    let db_refs = state.decode_model(&dbs_guard);
     let samples = state.signal_caches.slice(
         Some("p"),
         0x123,
@@ -1667,7 +1674,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
     );
 
     let dbs_guard = state.databases.lock().unwrap();
-    let db_refs = crate::app_state::dbc_scopes(&dbs_guard);
+    let db_refs = state.decode_model(&dbs_guard);
 
     // Plot scoped to "p" sees the tx-confirm.
     let samples_p = state.signal_caches.slice(
@@ -4605,7 +4612,7 @@ fn ab_state(scratch: &std::path::Path, bus: Option<&str>, n: u64) -> AppState {
 /// then came from a pyramid, not from a rebuild.
 fn ab_serve(state: &AppState, store: &TraceStore, bus: Option<&str>, signal: &str) -> usize {
     let dbcs = state.databases();
-    let scopes = crate::app_state::dbc_scopes(&dbcs);
+    let scopes = state.decode_model(&dbcs);
     state
         .signal_caches
         .slice(

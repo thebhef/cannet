@@ -98,7 +98,7 @@ use cannet_spill::{lower_bound, SampleSeq, SAMPLE_ENTRY_BYTES};
 use serde::{Deserialize, Serialize};
 
 use crate::filter;
-use crate::signal_fingerprint::{self, DbcScope};
+use crate::signal_fingerprint::{self, DecodeModel};
 use crate::signal_sampler::{self, SamplePoint};
 use crate::trace_store::{read_json, write_json, RawTraceFrame, TraceStore};
 
@@ -728,7 +728,7 @@ impl SignalCache {
     /// was decoded with once the set moves on, and a DBC-set change has
     /// to judge the cache after that has happened.
     #[allow(clippy::cast_possible_truncation)]
-    fn snapshot(&mut self, key: &SignalKey, dbcs: &[DbcScope<'_>]) -> PersistedSignal {
+    fn snapshot(&mut self, key: &SignalKey, dbcs: &DecodeModel<'_>) -> PersistedSignal {
         let encoding = match &self.file {
             Some(file) => signal_fingerprint::file_source(file),
             None => signal_fingerprint::dbc_encoding(
@@ -920,7 +920,10 @@ struct ChunkSample {
 ///   each signal name against the first loaded database that yields
 ///   *that name*, so two signals of one message may come from two
 ///   different databases exactly as they did when each was decoded on
-///   its own.
+///   its own. Where the model records a per-signal database pick
+///   ([`DecodeModel::picked_index`]), that target takes its value from
+///   the chosen database and from no other — resolved once per bus
+///   turnover, alongside the eligible set it indexes into.
 /// - **Bus scoping**, which is two questions with two different
 ///   answers. *Which frames a target takes* is the target's own filter,
 ///   not the group's: two series on one message id can be scoped to
@@ -944,7 +947,7 @@ fn scan_chunk(
     extended: bool,
     targets: &[GroupTarget<'_>],
     chunk: std::ops::Range<usize>,
-    dbs: &[DbcScope<'_>],
+    dbs: &DecodeModel<'_>,
     fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     out: &mut [Vec<ChunkSample>],
 ) -> usize {
@@ -957,6 +960,7 @@ fn scan_chunk(
     // names to decode for them, and the values that came back.
     let mut pending: Vec<usize> = Vec::with_capacity(targets.len());
     let mut wanted: Vec<&str> = Vec::with_capacity(targets.len());
+    let mut wanted_picks: Vec<Option<usize>> = Vec::with_capacity(targets.len());
     let mut values: Vec<Option<f64>> = Vec::with_capacity(targets.len());
     // The databases eligible for the frame in hand, and the bus they
     // were selected for. Frames of one message overwhelmingly arrive on
@@ -964,6 +968,12 @@ fn scan_chunk(
     // and never for the common set where nothing is scoped.
     let mut eligible: Vec<&Database> = Vec::with_capacity(dbs.len());
     let mut eligible_for: Option<Option<String>> = None;
+    // Per target, the index into `eligible` of the database a pick names
+    // for it — resolved with `eligible` itself, since it indexes into
+    // it. Left empty in a project with no picks at all, which is what
+    // keeps the ordinary decode exactly as costly as it was.
+    let has_picks = !dbs.picks().is_empty();
+    let mut picks: Vec<Option<usize>> = Vec::new();
     for (index, frame) in fetch(message_id, extended, chunk.start, chunk.end) {
         scanned += 1;
         pending.clear();
@@ -999,7 +1009,23 @@ fn scan_chunk(
                     .filter(|d| filter::dbc_applies(d.buses, frame.bus_id.as_deref()))
                     .map(|d| d.db),
             );
+            // Which database a pick pins each target to, as an index
+            // into the `eligible` list just built. A target whose bus
+            // is not this frame's never reaches `pending`, so resolving
+            // against the frame's bus is resolving against its own.
+            if has_picks {
+                picks.clear();
+                picks.extend(
+                    targets
+                        .iter()
+                        .map(|t| dbs.picked_index(t.bus_id, message_id, extended, t.signal_name)),
+                );
+            }
             eligible_for = Some(frame.bus_id.clone());
+        }
+        wanted_picks.clear();
+        if has_picks {
+            wanted_picks.extend(pending.iter().map(|&i| picks[i]));
         }
         signal_sampler::sample_shared(
             &frame,
@@ -1007,6 +1033,7 @@ fn scan_chunk(
             message_id,
             extended,
             &wanted,
+            &wanted_picks,
             &mut values,
         );
         #[allow(clippy::cast_precision_loss)]
@@ -1675,7 +1702,7 @@ impl CacheQuery<'_> {
 fn ensure_caches(
     caches: &mut Caches,
     queries: &[CacheQuery<'_>],
-    dbcs: &[DbcScope<'_>],
+    dbcs: &DecodeModel<'_>,
 ) -> Vec<SignalKey> {
     let Caches { root, by_key, .. } = caches;
     queries
@@ -1894,7 +1921,7 @@ fn park(caches: &mut Caches, key: &SignalKey, row: PersistedSignal) {
 /// A key that is already live is left parked rather than revived: the
 /// live cache is the current decode of that signal, and two pyramids
 /// cannot share one key (or one set of level files).
-fn revive_retained(caches: &mut Caches, dbcs: &[DbcScope<'_>]) -> usize {
+fn revive_retained(caches: &mut Caches, dbcs: &DecodeModel<'_>) -> usize {
     let mut revived = 0;
     let mut i = 0;
     while i < caches.retained.len() {
@@ -2091,7 +2118,7 @@ impl SignalCacheStore {
     /// sequence loads a project's DBCs before it restores that project's
     /// capture, so wiping here would mean no persisted pyramid could ever
     /// be reused.
-    pub fn invalidate_dbcs(&self, dbcs: &[DbcScope<'_>]) {
+    pub fn invalidate_dbcs(&self, dbcs: &DecodeModel<'_>) {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         let mut park_keys: Vec<SignalKey> = Vec::new();
         let mut drop_keys: Vec<SignalKey> = Vec::new();
@@ -2224,7 +2251,7 @@ impl SignalCacheStore {
     pub fn persist(
         &self,
         validity: &PyramidValidity,
-        dbcs: &[DbcScope<'_>],
+        dbcs: &DecodeModel<'_>,
         harden: Harden,
     ) -> bool {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
@@ -2320,7 +2347,7 @@ impl SignalCacheStore {
     pub fn restore(
         &self,
         validity: &PyramidValidity,
-        dbcs: &[DbcScope<'_>],
+        dbcs: &DecodeModel<'_>,
         store_len: usize,
     ) -> RestoreOutcome {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
@@ -2656,7 +2683,7 @@ impl SignalCacheStore {
     /// the queries' keys in request order (duplicates included — the
     /// result of a batch is index-parallel with it). One short hold of
     /// the lock, taken and released before any decoding starts.
-    fn ensure_caches(&self, queries: &[CacheQuery<'_>], dbcs: &[DbcScope<'_>]) -> Vec<SignalKey> {
+    fn ensure_caches(&self, queries: &[CacheQuery<'_>], dbcs: &DecodeModel<'_>) -> Vec<SignalKey> {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         ensure_caches(&mut caches, queries, dbcs)
     }
@@ -2699,7 +2726,7 @@ impl SignalCacheStore {
         &self,
         keys: &[SignalKey],
         store_len: usize,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
         limit: &ServeLimit,
     ) {
@@ -2811,7 +2838,7 @@ impl SignalCacheStore {
         &self,
         group: &mut GroupCatchUp<'_>,
         store_len: usize,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
         generation: u64,
     ) -> Option<usize> {
@@ -2890,7 +2917,7 @@ impl SignalCacheStore {
         to_seconds: f64,
         max_points: usize,
         store: &TraceStore,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
     ) -> Vec<SamplePoint> {
         let query = CacheQuery {
             bus_id,
@@ -2948,7 +2975,7 @@ impl SignalCacheStore {
         max_points: usize,
         reduction: Reduction,
         store: &TraceStore,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
     ) -> ServedWindows {
         let keys = self.ensure_caches(queries, dbs);
         // One tip for the whole batch, and the same one completeness is
@@ -3006,7 +3033,7 @@ impl SignalCacheStore {
         extended: bool,
         signal_name: &str,
         store: &TraceStore,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
     ) -> Option<(f64, f64)> {
         let query = CacheQuery {
             bus_id,
@@ -3035,7 +3062,7 @@ impl SignalCacheStore {
         &self,
         queries: &[CacheQuery<'_>],
         store: &TraceStore,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
     ) -> Vec<Option<(f64, f64)>> {
         let keys = self.ensure_caches(queries, dbs);
         self.catch_up_keys(
@@ -3115,6 +3142,7 @@ fn caught_up(caches: &Caches, keys: &[SignalKey], store_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signal_fingerprint::DbcScope;
     use crate::trace_store::RawTraceFrame;
     use cannet_core::{CanFramePayload, Direction};
     use tempfile::TempDir;
@@ -3352,14 +3380,49 @@ mod tests {
     /// The loaded set assigned to the bus the test frames arrive on —
     /// what a test that isn't about scoping wants, now that a database
     /// assigned to no bus decodes nothing.
-    fn on_test_bus<'a>(dbs: &[&'a Database]) -> Vec<DbcScope<'a>> {
+    fn on_test_bus<'a>(dbs: &[&'a Database]) -> DecodeModel<'a> {
         assigned_to(dbs, &TEST_BUS_SCOPE)
+    }
+
+    /// An empty loaded set — for the tests that persist or invalidate
+    /// with no database in play at all.
+    fn no_dbcs<'a>() -> DecodeModel<'a> {
+        DecodeModel::plain(Vec::new())
+    }
+
+    /// Stand-in loaded paths for the hand-built test sets. A
+    /// [`DbcScope`] carries the identity a per-signal pick names, so
+    /// every set needs one per database — positional, so `dbs[0]` is
+    /// always `a.dbc`.
+    const TEST_DBC_PATHS: [&str; 4] = ["a.dbc", "b.dbc", "c.dbc", "d.dbc"];
+
+    /// The loaded set assigned to `buses`, as scopes.
+    fn scope_list<'a>(dbs: &[&'a Database], buses: &'a [String]) -> Vec<DbcScope<'a>> {
+        dbs.iter()
+            .enumerate()
+            .map(|(i, db)| DbcScope {
+                path: TEST_DBC_PATHS[i],
+                db,
+                buses,
+            })
+            .collect()
     }
 
     /// The loaded set assigned to `buses` — for the tests that name the
     /// buses their frames arrive on rather than using [`TEST_BUS`].
-    fn assigned_to<'a>(dbs: &[&'a Database], buses: &'a [String]) -> Vec<DbcScope<'a>> {
-        dbs.iter().map(|db| DbcScope { db, buses }).collect()
+    fn assigned_to<'a>(dbs: &[&'a Database], buses: &'a [String]) -> DecodeModel<'a> {
+        DecodeModel::plain(scope_list(dbs, buses))
+    }
+
+    /// The [`TEST_BUS`] set with `signal` of message 256 pinned to the
+    /// database loaded under `path` — one user-made ambiguity pick.
+    fn picked_on_test_bus<'a>(dbs: &[&'a Database], signal: &str, path: &str) -> DecodeModel<'a> {
+        let mut picks = crate::signal_fingerprint::SignalDbcPicks::new();
+        picks.insert(
+            crate::signal_snapshot::signal_identity(Some(TEST_BUS), 256, false, signal, false),
+            path.to_owned(),
+        );
+        DecodeModel::new(scope_list(dbs, &TEST_BUS_SCOPE), std::sync::Arc::new(picks))
     }
 
     /// `buses` as an assignment set.
@@ -3434,6 +3497,138 @@ mod tests {
         );
     }
 
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_signals_database_pick_outranks_load_order() {
+        // The ambiguity pick: both databases define `A` in message 256,
+        // the first at unit scale and the second ×10, and load order
+        // would settle it silently for the first. A pick naming the
+        // second is what the user's choice means — that database
+        // decodes this signal — so the samples are the second's.
+        let store = TraceStore::new();
+        store.append(ab_frame(0, 3, 100));
+        store.append(ab_frame(S, 4, 200));
+        let (first, second) = (dbc_a_only(), dbc_a_and_b());
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let picked = &picked_on_test_bus(&[&first, &second], "A", "b.dbc");
+        let a = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            picked,
+        );
+        assert_eq!(
+            a.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![30.0, 40.0],
+            "the picked database's scaling, not load order's"
+        );
+
+        // A pick is per signal, not per message: `B` rides the same
+        // message and takes the load-order answer as it always did.
+        let b = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "B",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            picked,
+        );
+        assert_eq!(
+            b.iter().map(|p| p.value).collect::<Vec<_>>(),
+            vec![100.0, 200.0]
+        );
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_pick_naming_a_database_that_does_not_define_the_signal_is_ignored() {
+        // A pick can go stale — the database it names is unassigned,
+        // removed, or edited until it no longer defines the signal. It
+        // must fall back to the load-order default, never silence a
+        // signal something still decodes.
+        let store = TraceStore::new();
+        store.append(ab_frame(0, 3, 100));
+        let (first, second) = (dbc_a_only(), dbc_a_and_b());
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        // `a.dbc` (the first) defines `A` but not `B`, so a pick of it
+        // for `B` names a database that cannot answer.
+        let picked = &picked_on_test_bus(&[&first, &second], "B", "a.dbc");
+        let b = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "B",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            picked,
+        );
+        assert_eq!(b.iter().map(|p| p.value).collect::<Vec<_>>(), vec![100.0]);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn a_pick_retires_the_pyramid_the_other_database_decoded() {
+        // The cache half of the pick, and the one that would be a
+        // silent wrong answer if it were missed: a pyramid already
+        // built under the load-order default holds the *other*
+        // database's samples. The pick changes the encoding
+        // fingerprint, so `invalidate_dbcs` retires that pyramid and the
+        // next serve rebuilds it — no sample of the old scaling
+        // survives the change.
+        let store = TraceStore::new();
+        store.append(ab_frame(0, 3, 100));
+        store.append(ab_frame(S, 4, 200));
+        let (first, second) = (dbc_a_only(), dbc_a_and_b());
+        let tmp = TempDir::new().unwrap();
+        let cache = SignalCacheStore::new(tmp.path());
+        let serve = |model: &DecodeModel<'_>| {
+            cache
+                .slice(
+                    Some(TEST_BUS),
+                    256,
+                    false,
+                    "A",
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &store,
+                    model,
+                )
+                .iter()
+                .map(|p| p.value)
+                .collect::<Vec<_>>()
+        };
+
+        let plain = on_test_bus(&[&first, &second]);
+        assert_eq!(serve(&plain), vec![3.0, 4.0], "load order decodes first");
+
+        let picked = picked_on_test_bus(&[&first, &second], "A", "b.dbc");
+        cache.invalidate_dbcs(&picked);
+        assert_eq!(
+            serve(&picked),
+            vec![30.0, 40.0],
+            "a stale pyramid served the retired database's samples"
+        );
+
+        // And back: reverting to the default restores the encoding the
+        // parked pyramid was decoded under, so it revives rather than
+        // re-decoding into a third answer.
+        cache.invalidate_dbcs(&plain);
+        assert_eq!(serve(&plain), vec![3.0, 4.0]);
+    }
+
     /// The same `ab_frame` payload, carried on a named bus.
     fn ab_frame_on(bus: &str, ts_ns: u64, a: u16, b: u16) -> RawTraceFrame {
         RawTraceFrame {
@@ -3458,16 +3653,18 @@ mod tests {
         store.append(ab_frame_on("chassis", S, 4, 200));
         let (first, second) = (dbc_a_only(), dbc_a_and_b());
         let (pt, ch) = (vec!["powertrain".to_string()], vec!["chassis".to_string()]);
-        let dbs = &[
+        let dbs = &DecodeModel::plain(vec![
             DbcScope {
+                path: TEST_DBC_PATHS[0],
                 db: &first,
                 buses: &pt,
             },
             DbcScope {
+                path: TEST_DBC_PATHS[1],
                 db: &second,
                 buses: &ch,
             },
-        ];
+        ]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let pt_a = cache.slice(
@@ -3525,16 +3722,18 @@ mod tests {
         store.append(ab_frame_on("chassis", S, 4, 200));
         let (first, second) = (dbc_a_only(), dbc_a_and_b());
         let (pt, ch) = (vec!["powertrain".to_string()], vec!["chassis".to_string()]);
-        let dbs = &[
+        let dbs = &DecodeModel::plain(vec![
             DbcScope {
+                path: TEST_DBC_PATHS[0],
                 db: &first,
                 buses: &pt,
             },
             DbcScope {
+                path: TEST_DBC_PATHS[1],
                 db: &second,
                 buses: &ch,
             },
-        ];
+        ]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -3559,10 +3758,11 @@ mod tests {
         store.append(ab_frame_on("chassis", 0, 3, 100));
         let db = dbc_a_only();
         let pt = vec!["powertrain".to_string()];
-        let dbs = &[DbcScope {
+        let dbs = &DecodeModel::plain(vec![DbcScope {
+            path: TEST_DBC_PATHS[0],
             db: &db,
             buses: &pt,
-        }];
+        }]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -3772,7 +3972,7 @@ mod tests {
         to: f64,
         max_points: usize,
         store: &TraceStore,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
     ) -> Vec<(f64, u32)> {
         cache
             .slice_many(
@@ -4111,7 +4311,7 @@ mod tests {
         to: f64,
         max_points: usize,
         store: &TraceStore,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
     ) -> Vec<(f64, f64)> {
         cache
             .slice_many(
@@ -5072,7 +5272,7 @@ mod tests {
         store: &SignalCacheStore,
         queries: &[CacheQuery<'_>],
         store_len: usize,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
         fetch: impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
     ) -> Vec<SignalKey> {
         let keys = store.ensure_caches(queries, dbs);
@@ -5561,7 +5761,7 @@ mod tests {
     /// both threads always join.
     fn while_a_cold_rebuild_runs(
         cache: &SignalCacheStore,
-        dbs: &[DbcScope<'_>],
+        dbs: &DecodeModel<'_>,
         store_len: usize,
         probe: impl FnOnce() + Send,
     ) -> bool {
@@ -5662,7 +5862,7 @@ mod tests {
 
         let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
             assert!(cache.needs_persist());
-            assert!(cache.persist(&v, &[], Harden::All));
+            assert!(cache.persist(&v, &no_dbcs(), Harden::All));
             cache.clear();
         });
         assert!(finished, "the exit path waited for the rebuild");
@@ -5687,11 +5887,12 @@ mod tests {
 
     /// The loaded set as the per-signal fingerprints see it: `db`
     /// alone, assigned to [`TEST_BUS`].
-    fn scopes(db: &Database) -> Vec<DbcScope<'_>> {
-        vec![DbcScope {
+    fn scopes(db: &Database) -> DecodeModel<'_> {
+        DecodeModel::plain(vec![DbcScope {
+            path: TEST_DBC_PATHS[0],
             db,
             buses: &TEST_BUS_SCOPE,
-        }]
+        }])
     }
 
     /// A restore's three counts, for the tests that assert on the split
@@ -5806,10 +6007,11 @@ mod tests {
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         cache.fill_file_backed(&file_info(7, "Speed"), &ramp(10));
 
-        let scopes = [DbcScope {
+        let scopes = DecodeModel::plain(vec![DbcScope {
+            path: TEST_DBC_PATHS[0],
             db: &db,
             buses: &[],
-        }];
+        }]);
         assert!(cache.persist(&validity("capture-a", 0), &scopes, Harden::All));
 
         let manifest: PyramidManifest =
@@ -6498,7 +6700,7 @@ mod tests {
         assert_eq!(built.len(), 200);
 
         // The database it was decoded against leaves the project entirely.
-        cache.invalidate_dbcs(&[]);
+        cache.invalidate_dbcs(&no_dbcs());
         assert_eq!(cache.retained_signals(), vec!["A".to_string()]);
         drop(first);
 
@@ -6772,7 +6974,7 @@ mod tests {
 
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(cache.unflushed() > 0, "a fresh pyramid owes its pages");
-        assert!(cache.persist(&v, &[], Harden::All));
+        assert!(cache.persist(&v, &no_dbcs(), Harden::All));
         assert_eq!(
             cache.unflushed(),
             0,
@@ -6782,7 +6984,7 @@ mod tests {
         // And with nothing appended since, the next one has nothing to do.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         assert_eq!(cache.unflushed(), 0);
-        assert!(cache.persist(&v, &[], Harden::All));
+        assert!(cache.persist(&v, &no_dbcs(), Harden::All));
         assert_eq!(cache.unflushed(), 0);
     }
 
@@ -6810,7 +7012,7 @@ mod tests {
         let owed = cache.unflushed();
         assert!(owed > 0);
         assert!(
-            cache.persist(&v, &[], Harden::live_budget()),
+            cache.persist(&v, &no_dbcs(), Harden::live_budget()),
             "the manifest is written"
         );
         let after = cache.unflushed();
@@ -6820,12 +7022,12 @@ mod tests {
         // Running it again with nothing sealed since is free and changes
         // nothing — the property the live regime depends on.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
-        assert!(cache.persist(&v, &[], Harden::live_budget()));
+        assert!(cache.persist(&v, &no_dbcs(), Harden::live_budget()));
         assert_eq!(cache.unflushed(), after);
 
         // The quit behind it still takes everything.
         cache.evict_below(f64::NEG_INFINITY);
-        assert!(cache.persist(&v, &[], Harden::All));
+        assert!(cache.persist(&v, &no_dbcs(), Harden::All));
         assert_eq!(cache.unflushed(), 0);
     }
 
@@ -7021,7 +7223,7 @@ mod tests {
         let len = build_and_persist(root.path(), &v);
 
         let reopened = SignalCacheStore::new(root.path());
-        reopened.invalidate_dbcs(&[]);
+        reopened.invalidate_dbcs(&no_dbcs());
         assert_eq!(
             reopened.restore(&v, &scopes(&load_dbc()), len).reopened,
             1,
@@ -7030,7 +7232,7 @@ mod tests {
 
         // Once the set is live, a DBC change that re-encodes it drops it
         // — into the retention pool, since its definition may come back.
-        reopened.invalidate_dbcs(&[]);
+        reopened.invalidate_dbcs(&no_dbcs());
         assert_eq!(reopened.usage().live, 0, "no longer decoded state");
         assert_eq!(
             reopened.retained_signals(),
@@ -7060,7 +7262,7 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(
-            !reopened.persist(&validity("capture-b", 0), &[], Harden::All),
+            !reopened.persist(&validity("capture-b", 0), &no_dbcs(), Harden::All),
             "nothing is written while a candidate is unjudged",
         );
         // …so the candidate is still there to be judged.
@@ -7423,7 +7625,7 @@ mod tests {
 
         // A set in which nothing defines `X`: its candidate chain empties,
         // so it stops being live and is parked for the definition's return.
-        cache.invalidate_dbcs(&[]);
+        cache.invalidate_dbcs(&no_dbcs());
 
         assert_eq!(
             cache
@@ -7698,7 +7900,7 @@ mod tests {
             // …and then the flusher's tick.
             let at = std::time::Instant::now();
             assert!(cache.needs_persist(), "a served pyramid is dirty");
-            assert!(cache.persist(&validity, &[], Harden::live_budget()));
+            assert!(cache.persist(&validity, &no_dbcs(), Harden::live_budget()));
             per_tick_ms.push(at.elapsed().as_secs_f64() * 1000.0);
         }
 
@@ -7717,7 +7919,7 @@ mod tests {
         // The exit flush that follows such a session.
         cache.evict_below(f64::NEG_INFINITY); // marks dirty, trims nothing
         let at = std::time::Instant::now();
-        assert!(cache.persist(&validity, &[], Harden::All));
+        assert!(cache.persist(&validity, &no_dbcs(), Harden::All));
         println!(
             "[bench] the quit after it: {:.1} ms",
             at.elapsed().as_secs_f64() * 1000.0,
