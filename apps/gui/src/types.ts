@@ -1353,7 +1353,7 @@ export interface ViewSignalRow {
 }
 
 /// `list_view_signals`'s answer: the rows, already host-sorted, plus
-/// the single number the launcher badge (phase 3) reads. Mirrors
+/// the single number the launcher badge reads. Mirrors
 /// `view_signals::ViewSignalPage`.
 export interface ViewSignalPage {
   rows: ViewSignalRow[];
