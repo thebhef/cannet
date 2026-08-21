@@ -508,6 +508,14 @@ Flags:
   `host:port`. `debug replay` and `debug vbus` never advertise, with
   or without this flag.
 
+The advertisement carries only addresses the bind actually serves. A
+wildcard bind serves every interface, so it advertises every address
+this host has, kept current as interfaces come and go. A bind that
+names one address advertises that address and nothing else — so a
+`--bind 127.0.0.1` server is discoverable on the machine it runs on
+and advertises no LAN or VM-adapter address a client would dial in
+vain.
+
 With TLS on, the server prints two strings at startup and both are
 meant to be read off the console:
 
