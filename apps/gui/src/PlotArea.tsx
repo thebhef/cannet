@@ -3593,7 +3593,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             />
           )}
           {subtitle != null && !areaCollapsed && (
-            <span className="plot-area-axis-label">{subtitle}</span>
+            <span className="plot-area-axis-label" title={subtitle}>
+              <NameText name={subtitle} title={subtitle} />
+            </span>
           )}
           {headingOnly && (
             // What the collapsed row says instead of its rows: how many

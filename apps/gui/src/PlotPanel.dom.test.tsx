@@ -7472,3 +7472,19 @@ describe("plot legend with long names", () => {
     expect(rows[1].querySelector(".plot-signal-name")!.textContent).toBe("TopSignal");
   });
 });
+
+describe("a plot area's axis label with a long name", () => {
+  it("splits the signal name an individual axis is labelled with", async () => {
+    // In `individual` mode the axis label *is* a signal name, so it
+    // takes the same treatment as every other name surface.
+    renderPanel();
+    dropSignal("Area 1", LONG_SIGNAL_NAME, "degC");
+    dropSignal("Area 1", "TopSignal", "rpm");
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "individual");
+    const labels = document.querySelectorAll(".plot-area-axis-label");
+    expectMiddleEllipsis(labels[0], LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    // The control: a short one stays a plain text node.
+    expect(labels[1].querySelector(".name-text")).toBeNull();
+    expect(labels[1].textContent).toBe("TopSignal");
+  });
+});
