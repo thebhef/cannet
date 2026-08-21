@@ -1059,3 +1059,46 @@ consequence and nothing more.
 
 **Not touched:** `TraceStore::frame_index_at_ns` (task 91) — nothing in
 this phase reads it.
+
+#### ADR-0031 perf gate
+
+`pnpm --dir apps/gui tauri build --no-bundle`
+(`target/release/cannet-gui.exe`, frontend embedded), `cargo build
+--release -p cannet-perf-measurement`; `examples/ev-zonal` at ~1608 fps,
+`--connect-on-start`, `--perf-interact scrub`, four 60 s captures into
+an isolated `--app-data-dir` (`scratch-perf/app-data`), gated by `cargo
+run --release -p cannet-perf-measurement -- check --expected-rx-fps 1608
+--expected-tx-fps 1608` (one `--frontend-report` per run) against the
+committed `docs/performance-measurements/baseline.json`. **No baseline
+was promoted and no gate limit was touched.** Reports are review
+artifacts and stay out of the repository.
+
+Four runs, `check` over all four: **passed, 87 metrics gated.** Every
+metric read `ok`; nothing regressed and nothing widened.
+
+| run | rx fps | tx fps | `rx_gap` p95 ratio worst | `rx_gap` short-frac worst | `lag_ms` max | `tree_mb` peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1607.2 | 1611.5 | 1.155 | 0.0008 | 3.1 | 724.5 |
+| 2 | 1606.0 | 1608.8 | 1.167 | 0.0018 | 1.4 | **982.2** |
+| 3 | 1602.4 | 1604.8 | 1.165 | 0.0007 | 21.7 | 732.6 |
+| 4 | 1604.2 | 1607.1 | 1.168 | 0.0012 | 4.3 | 729.7 |
+
+`ids_measured` is 173 on every run (no sidecar throttling — the
+throttled fingerprint is 156). The rx-gap pair, the metric brief flagged
+as twice having spiked unreproducibly, is the tightest and most uniform
+of any phase so far: p95 ratio 1.155–1.168 against a 2.898 limit,
+short-frac 0.0007–0.0018 against 0.166, with no run near either. The
+three memory-drift metrics gate on the median across the four reports
+and are all `ok` (`jsheap` 5.1 vs 24.1, `renderer` 38.4 vs 85.3, `tree`
+70.3 vs 139.2), as are the tracebuffer / grpc / hardware-peak host
+modes.
+
+**One elevated reading, reported not chased:** run 2's `tree_mb_peak` is
+982.2 MB against a 1492 limit, where the other three sit at 724.5–732.6
+and prior phases reported 705–768. It passes, and it is nowhere near the
+8233 MB sighting the brief names as unexplained; the other three runs of
+this same build are inside the usual band, and this phase adds no
+allocation to any path a capture exercises (the rewrite runs once per
+user gesture, in the frontend, over the element registry). Recorded here
+with the full distribution rather than discarded, per ADR 0031's
+unreproducible-outlier rule.
