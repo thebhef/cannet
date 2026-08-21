@@ -77,6 +77,13 @@ import {
 import type { ProjectElement } from "./types";
 import type { TraceState } from "./trace";
 import { SignalCatalogProvider } from "./signalCatalogContext";
+import {
+  LONG_MESSAGE_NAME,
+  LONG_MESSAGE_TAIL,
+  LONG_SIGNAL_NAME,
+  LONG_SIGNAL_TAIL,
+  expectMiddleEllipsis,
+} from "./longNameTestKit";
 
 function frame(
   id: string,
@@ -911,5 +918,39 @@ describe("view-signals push", () => {
     await waitFor(() => expect(lastCall("set_view_signals")).toBeDefined());
     cleanup();
     expect(lastCall("remove_view_signals")?.args).toEqual({ viewId: "el" });
+  });
+});
+
+describe("TransmitPanel with long names", () => {
+  it("splits the message name on the row and the signal names in the table", async () => {
+    POOL = [frame("a")];
+    SIGNALS = [
+      {
+        bus_id: "b1",
+        message_id: 0x100,
+        extended: false,
+        message_name: LONG_MESSAGE_NAME,
+        signal_name: LONG_SIGNAL_NAME,
+        unit: "degC",
+      } as unknown as SignalDescriptorRecord,
+    ];
+    const d = twoSignalDescriptor();
+    DESCRIBE = {
+      ...d,
+      name: LONG_MESSAGE_NAME,
+      signals: [{ ...d.signals[0], name: LONG_SIGNAL_NAME }, d.signals[1]],
+    };
+    renderPanel("el", ["a"]);
+    // The collapsed row resolves the DBC message name from the catalog.
+    const dbcName = await screen.findByTitle("DBC message name");
+    expectMiddleEllipsis(dbcName, LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL);
+
+    fireEvent.click(await screen.findByTitle("expand"));
+    await screen.findByText("RollCtr");
+    const names = document.querySelectorAll(".tx-signal-row .tx-col-name");
+    expectMiddleEllipsis(names[0], LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    // The control: the second signal keeps its short name as one node.
+    expect(names[1].querySelector(".name-text")).toBeNull();
+    expect(names[1].textContent).toBe("RollCtr");
   });
 });

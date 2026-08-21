@@ -13,6 +13,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useRef } from "react";
 
 import { Combobox, type ComboboxOption } from "./Combobox";
+import { LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL, expectMiddleEllipsis } from "./longNameTestKit";
 
 afterEach(cleanup);
 
@@ -322,5 +323,24 @@ describe("Combobox", () => {
     expect(option.isConnected).toBe(true);
     fireEvent.click(option);
     expect(onChange).toHaveBeenCalledWith("y");
+  });
+});
+
+describe("Combobox with a long option label", () => {
+  it("splits the trigger's label and the option's, leaving short ones alone", () => {
+    const { trigger } = renderFlat({
+      options: [
+        { value: "long", label: LONG_SIGNAL_NAME },
+        { value: "short", label: "Gear" },
+      ],
+      value: "long",
+    });
+    expectMiddleEllipsis(trigger.querySelector(".combobox-trigger-label"), LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    fireEvent.click(trigger);
+    const options = document.querySelectorAll('[role="option"]');
+    expectMiddleEllipsis(options[0], LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    // The control: a short label is still one text node.
+    expect(options[1].querySelector(".name-text")).toBeNull();
+    expect(options[1].textContent).toBe("Gear");
   });
 });

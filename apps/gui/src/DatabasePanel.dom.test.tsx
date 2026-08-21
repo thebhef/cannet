@@ -47,6 +47,14 @@ const MESSAGE_DEFAULTS = {
   transmitter: null,
 };
 
+import {
+  LONG_MESSAGE_NAME,
+  LONG_MESSAGE_TAIL,
+  LONG_SIGNAL_NAME,
+  LONG_SIGNAL_TAIL,
+  expectMiddleEllipsis,
+} from "./longNameTestKit";
+
 const DBC_CONTENT: DbcContentRecord[] = [
   {
     dbcPath: "/tmp/powertrain.dbc",
@@ -1537,5 +1545,46 @@ describe("DatabasePanel command registration (panel.find)", () => {
     expect(document.activeElement).toBe(search);
     expect(search.selectionStart).toBe(0);
     expect(search.selectionEnd).toBe(search.value.length);
+  });
+});
+
+describe("DatabasePanel with long names", () => {
+  it("splits a long message and signal name, and leaves a short one alone", async () => {
+    const core = await import("@tauri-apps/api/core");
+    (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_file_backed_content") return [];
+      if (cmd === "list_dbc_content")
+        return [
+          {
+            dbcPath: "/tmp/zonal.dbc",
+            messages: [
+              {
+                ...DBC_CONTENT[0].messages[0],
+                name: LONG_MESSAGE_NAME,
+                signals: [
+                  { ...DBC_CONTENT[0].messages[0].signals[0], name: LONG_SIGNAL_NAME },
+                  { ...DBC_CONTENT[0].messages[0].signals[1], name: "DerateActive" },
+                ],
+              },
+            ],
+          },
+        ];
+      return undefined;
+    });
+    renderPanel();
+    // The name is split across two spans, so it is reachable by its
+    // tooltip rather than by its text — which is the point: the
+    // tooltip is what keeps the full name available.
+    const msgName = await screen.findByTitle(LONG_MESSAGE_NAME);
+    expectMiddleEllipsis(msgName, LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL);
+    const chevron = msgName
+      .closest(".dbc-row")!
+      .querySelector(".dbc-row-chevron") as HTMLElement;
+    fireEvent.click(chevron);
+    const sigName = await screen.findByTitle(LONG_SIGNAL_NAME);
+    expectMiddleEllipsis(sigName, LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    // The control: the short signal beside it stays a plain text node.
+    const short = screen.getByText("DerateActive");
+    expect(short.querySelector(".name-text")).toBeNull();
   });
 });
