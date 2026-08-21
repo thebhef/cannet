@@ -235,3 +235,46 @@ export function logDecadeSplits(r: ResolvedAxisRange | null): number[] {
   }
   return out;
 }
+
+/**
+ * Tick positions for a single-enum axis: the value table's raw codes,
+ * thinned to the density uPlot itself would draw at.
+ *
+ * An enum axis plots raw codes against a scale pinned to the table's
+ * own range, so the only meaningful tick positions are the raw values —
+ * a tick at 1.5 names nothing. But a table is as long as it likes, and
+ * one tick per row paints a several-hundred-value table as a solid bar
+ * of labels. uPlot's own numeric axis has no such problem because it
+ * picks an increment that clears its minimum pixel spacing; a custom
+ * `splits` callback opts out of that, so the density has to come back
+ * in some other way.
+ *
+ * It comes back from uPlot regardless: a `splits` callback is handed
+ * the increment uPlot chose for this axis at its current pixel height
+ * (`foundIncr`), which is by construction the finest step whose ticks
+ * still clear the axis's minimum spacing. Keeping a raw value only when
+ * it is at least that far from the last one kept therefore draws
+ * exactly as many ticks as uPlot would have, at positions the enum
+ * codes actually occupy.
+ *
+ * Spacing by *value* rather than by table position matters for a sparse
+ * table: `0, 1, 2, 255` strided every fourth entry keeps all four and
+ * stacks three labels in the bottom 1 % of the axis, which is the
+ * crowding this is here to prevent.
+ */
+export function enumTickSplits(
+  raws: readonly number[],
+  scaleMin: number,
+  scaleMax: number,
+  foundIncr: number,
+): number[] {
+  const out: number[] = [];
+  let last: number | null = null;
+  for (const v of [...raws].sort((a, b) => a - b)) {
+    if (v < scaleMin || v > scaleMax) continue;
+    if (last != null && v - last < foundIncr) continue;
+    out.push(v);
+    last = v;
+  }
+  return out;
+}
