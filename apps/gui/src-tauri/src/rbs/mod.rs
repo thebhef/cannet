@@ -34,6 +34,11 @@ pub use file_model::{format_message_key, parse_message_key, RbsFile, RbsMessage,
 mod runtime;
 
 pub use runtime::RbsRuntime;
+// The value type of `RbsRuntime::elements`. Nothing outside this module
+// builds one in a running app — the load / seed paths do — so it is
+// nameable only where a test has to stand host state up by hand.
+#[cfg(test)]
+pub(crate) use runtime::RbsElementState;
 pub(crate) use runtime::{refresh_all_elements, stop_elements_owning};
 
 mod view;
