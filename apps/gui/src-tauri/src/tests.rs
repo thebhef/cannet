@@ -2542,7 +2542,7 @@ fn mdf_import_lands_frames_with_absolute_timestamps_and_mapped_buses() {
         store.append(raw);
         n += 1;
     }
-    assert_eq!(n, 60, "phase 2 pinned this fixture at 60 frames");
+    assert_eq!(n, 60, "measured directly against the fixture, not assumed");
 
     let kept = store.slice(0, store.len());
     assert_eq!(kept.len(), 60);
