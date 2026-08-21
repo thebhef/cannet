@@ -43,6 +43,11 @@ function renderDecoded(sig: SignalRecord) {
       messageName="Battery"
       sig={sig}
       resolveColor={null}
+      top={0}
+      rowId={`b1:256:s/${sig.name}`}
+      domId={`byid-b1:256:s/${sig.name}`}
+      selected={false}
+      onSelect={() => {}}
     />,
   );
 }

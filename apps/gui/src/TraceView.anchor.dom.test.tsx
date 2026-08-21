@@ -399,8 +399,14 @@ describe("TraceView expanded tail reachability", () => {
     const after = stack(container);
     const last = after[after.length - 1];
     expect(last.abs).toBe(count - 1);
-    expect(last.bottom - last.top).toBeGreaterThan(VH); // the row really is taller
+    // The block is the message line plus the rows it disclosed, so its
+    // bottom is the last disclosed row's.
+    const lines = [...container.querySelectorAll<HTMLElement>(".trace-content-row")];
+    const lastLine = lines[lines.length - 1]!;
+    const blockBottom =
+      Number.parseFloat(lastLine.style.top) + Number.parseFloat(lastLine.style.height);
+    expect(blockBottom - last.top).toBeGreaterThan(VH); // the block really is taller
     const sticky = container.querySelector<HTMLElement>(".trace-rows div[style*='sticky']");
-    expect(Number.parseFloat(sticky!.style.height)).toBeGreaterThanOrEqual(last.bottom);
+    expect(Number.parseFloat(sticky!.style.height)).toBeGreaterThanOrEqual(blockBottom);
   });
 });

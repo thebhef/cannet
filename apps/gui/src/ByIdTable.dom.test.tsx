@@ -159,10 +159,11 @@ describe("ByIdTable scroll extent", () => {
     const rows = manyRows(10, 6);
     const { container } = renderRows(rows, new Set([byIdRowKey(rows[0].frame)]));
     const sticky = container.querySelector(".trace-rows > div > div") as HTMLElement;
-    const stack = [...container.querySelectorAll<HTMLElement>(".trace-row")].reduce(
-      (h, el) => h + parseFloat(el.style.height),
-      0,
-    );
+    // Everything stacked inside it: the message rows and the rows they
+    // disclosed alike.
+    const stack = [
+      ...container.querySelectorAll<HTMLElement>(".trace-row, .trace-content-row"),
+    ].reduce((h, el) => h + parseFloat(el.style.height), 0);
     expect(stack).toBeGreaterThan(VH);
     expect(parseFloat(sticky.style.height)).toBe(stack);
   });
