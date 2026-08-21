@@ -671,6 +671,36 @@ pub fn signal_identity(
     )
 }
 
+/// The CAN message a [`signal_identity`] key names: `(message id,
+/// extended)`, or `None` when the key names no CAN message — a
+/// file-backed signal, whose number is its source file's channel-group
+/// index rather than an arbitration id, or a string that is not an
+/// identity at all.
+///
+/// The inverse of the `flag:message_id:` middle of [`signal_identity`],
+/// and the only thing that reads that format back. The bus segment is
+/// deliberately not recovered: it is the one segment whose content is
+/// arbitrary (a project bus id), while the flag, the id and the signal
+/// name are all drawn from alphabets that exclude `|` and `:` — so
+/// taking the text after the *last* `|` is exact however the bus id is
+/// spelled.
+#[must_use]
+pub fn identity_message(identity: &str) -> Option<(u32, bool)> {
+    let rest = identity.rsplit('|').next()?;
+    let mut parts = rest.splitn(3, ':');
+    let extended = match parts.next()? {
+        "s" => false,
+        "x" => true,
+        // "f" (file-backed) or anything else: not a CAN message.
+        _ => return None,
+    };
+    let message_id = parts.next()?.parse().ok()?;
+    // A third segment must be there: `flag:id` with no signal name is
+    // not an identity.
+    parts.next()?;
+    Some((message_id, extended))
+}
+
 /// The view's selection widened by every live section's own patterns.
 ///
 /// A section's patterns are part of what the view *selects*, not merely
@@ -1124,6 +1154,31 @@ mod tests {
                 false
             ))
             .is_empty());
+    }
+
+    #[test]
+    fn identity_message_reads_back_what_signal_identity_wrote() {
+        // Round-trip, including the bus ids that make a naive split
+        // wrong: one carrying the separators the format itself uses.
+        for (bus, id, extended) in [
+            (Some("power"), 256u32, false),
+            (Some("power"), 0x1234_5678, true),
+            (None, 17, false),
+            (Some("a|b:c"), 999, true),
+        ] {
+            let key = signal_identity(bus, id, extended, "PackVolts", false);
+            assert_eq!(identity_message(&key), Some((id, extended)), "{key}");
+        }
+        // A file-backed key's number is a channel-group index, not a
+        // CAN id, so it names no message.
+        assert_eq!(
+            identity_message(&signal_identity(None, 3, false, "Speed", true)),
+            None,
+        );
+        // Not an identity at all.
+        assert_eq!(identity_message(""), None);
+        assert_eq!(identity_message("power|s:256"), None);
+        assert_eq!(identity_message("power|s:notanid:A"), None);
     }
 
     #[test]
