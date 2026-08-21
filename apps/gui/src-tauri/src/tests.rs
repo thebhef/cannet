@@ -589,7 +589,7 @@ fn decode_against_carries_the_transmitter() {
         db: Arc::new(db),
         buses: vec![TEST_BUS.to_string()],
     }];
-    let decoded = decode_against(&dbs, &frame_with_data(0x100)).unwrap();
+    let decoded = decode_against(&plain_model(&dbs), &frame_with_data(0x100)).unwrap();
     assert_eq!(decoded.transmitter.as_deref(), Some("ECU"));
 }
 
@@ -751,6 +751,13 @@ pub(crate) fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
 /// `DbcScope` its buses directly.
 pub(crate) fn test_bus_scope() -> Vec<String> {
     vec![TEST_BUS.to_string()]
+}
+
+/// The loaded set as a decode model with **no** per-signal picks —
+/// the load-order default, which is what a test that isn't about
+/// ambiguity resolution wants.
+pub(crate) fn plain_model(dbs: &[LoadedDbc]) -> crate::signal_fingerprint::DecodeModel<'_> {
+    crate::app_state::decode_model(dbs, std::sync::Arc::default())
 }
 
 pub(crate) fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
@@ -1108,11 +1115,12 @@ fn filtered_scan_with_candidate_gating_matches_unconditional_decode() {
         .collect();
 
     let candidates = decode_candidate_ids(&dbs, &filter);
+    let model = plain_model(&dbs);
     let gated: Vec<bool> = frames
         .iter()
         .map(|f| {
             let decoded = if candidates.contains(&f.id) {
-                decode_against(&dbs, f)
+                decode_against(&model, f)
             } else {
                 None
             };
@@ -1121,7 +1129,7 @@ fn filtered_scan_with_candidate_gating_matches_unconditional_decode() {
         .collect();
     let unconditional: Vec<bool> = frames
         .iter()
-        .map(|f| filter.matches(f, decode_against(&dbs, f).as_ref()))
+        .map(|f| filter.matches(f, decode_against(&model, f).as_ref()))
         .collect();
     assert_eq!(gated, unconditional);
     assert_eq!(gated, vec![true, false, false, true]);
@@ -5575,4 +5583,295 @@ fn a_selector_the_winner_withholds_is_read_from_the_next_database() {
         vec![1],
         "b.dbc's byte-0 selector, from a database that does not define this Mux",
     );
+}
+
+/// Two databases that both define `256/"Msg"` and its signal `A`, and
+/// differ in every answer that hangs off it: `a.dbc` reads `A` at unit
+/// scale, names no labels and designates no calculated fields; `b.dbc`
+/// reads it x10, carries a `VAL_` table for it, designates a counter
+/// and a CRC, and adds a signal `Y` that `a.dbc` has never heard of.
+/// So whichever database resolves the collision is visible in the
+/// decoded row, in the plotted samples, in the value table and in the
+/// calculated-field default alike.
+fn collide_a() -> String {
+    format!(
+        "{}\x20SG_ Ctr : 40|4@1+ (1,0) [0|15] \"\" ECU\n\
+         \x20SG_ Crc8 : 56|8@1+ (1,0) [0|255] \"\" ECU\n",
+        tiny_dbc_named(256, "Msg", "A : 0|16@1+ (1,0) [0|0] \"\" ECU"),
+    )
+}
+
+fn collide_b() -> String {
+    format!(
+        "{}\x20SG_ Ctr : 40|4@1+ (1,0) [0|15] \"\" ECU\n\
+         \x20SG_ Crc8 : 56|8@1+ (1,0) [0|255] \"\" ECU\n\
+         \x20SG_ Y : 16|16@1+ (1,0) [0|0] \"\" ECU\n\
+         VAL_ 256 A 0 \"Zero\" 3 \"Three\" ;\n\
+         BA_DEF_ SG_ \"CannetCounter\" STRING ;\n\
+         BA_DEF_ SG_ \"CannetCrc\" STRING ;\n\
+         BA_DEF_DEF_ \"CannetCounter\" \"\";\n\
+         BA_DEF_DEF_ \"CannetCrc\" \"\";\n\
+         BA_ \"CannetCounter\" SG_ 256 Ctr \"increment=1;rollover=15\";\n\
+         BA_ \"CannetCrc\" SG_ 256 Crc8 \"alg=CRC-8/SAE-J1850;range=0:56\";\n",
+        tiny_dbc_named(256, "Msg", "A : 0|16@1+ (10,0) [0|0] \"\" ECU"),
+    )
+}
+
+/// A one-message DBC header plus one `SG_` line spelled out in full,
+/// for the fixtures that need the signal's placement and scaling to
+/// differ between two databases.
+fn tiny_dbc_named(id: u32, name: &str, sig_line: &str) -> String {
+    format!(
+        "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
+         BO_ {id} {name}: 8 ECU\n SG_ {sig_line}\n"
+    )
+}
+
+/// A frame of the collision fixture's message: `A` raw 3, `Y` raw 100.
+fn collide_frame() -> RawTraceFrame {
+    RawTraceFrame {
+        payload: CanFramePayload::Classic(vec![3, 0, 100, 0, 0, 0, 0, 0]),
+        ..dummy_frame(0, 256)
+    }
+}
+
+/// The collision fixture as live host state: the two databases in the
+/// given load order, both assigned to [`TEST_BUS`], one frame in the
+/// store, and `pick` (if any) recorded as the per-signal choice for
+/// `A`.
+fn collide_state(order: [&str; 2], pick: Option<&str>) -> AppState {
+    let (a, b) = (collide_a(), collide_b());
+    let state = test_state();
+    *state.databases.lock().unwrap() = order
+        .iter()
+        .map(|p| {
+            let text = if *p == "a.dbc" { &a } else { &b };
+            loaded_scoped(p, text, &[TEST_BUS])
+        })
+        .collect();
+    if let Some(p) = pick {
+        let mut picks = crate::signal_fingerprint::SignalDbcPicks::new();
+        picks.insert(
+            crate::signal_snapshot::signal_identity(Some(TEST_BUS), 256, false, "A", false),
+            p.to_owned(),
+        );
+        *state.signal_dbc_picks.lock().unwrap() = std::sync::Arc::new(picks);
+    }
+    state.trace_store.append(collide_frame());
+    state
+}
+
+/// One signal's value in the chronological trace's decoded row — the
+/// whole serve path, not just the decode helper.
+fn row_value_of(state: &AppState, signal: &str) -> Option<f64> {
+    collect_trace_records(state, 0, 1)[0]
+        .decoded
+        .as_ref()?
+        .signals
+        .iter()
+        .find(|s| s.name == signal)
+        .map(|s| s.value)
+}
+
+/// One signal's plotted samples — the per-signal cache, which is the
+/// resolution rule's reference implementation.
+fn plot_values_of(state: &AppState, signal: &str) -> Vec<f64> {
+    let dbs = state.databases();
+    let model = state.decode_model(&dbs);
+    state
+        .signal_caches
+        .slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            signal,
+            f64::MIN,
+            f64::MAX,
+            0,
+            &state.trace_store,
+            &model,
+        )
+        .iter()
+        .map(|p| p.value)
+        .collect()
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn a_collision_resolves_to_one_database_in_the_row_the_plot_the_tables_and_the_calc_fields() {
+    // Both databases define `256/A`; load order settles it. Every view
+    // that answers a question about that value has to name the *same*
+    // definition, because there is only one (ADR 0054) — so all four
+    // channels move together when the order is reversed, and none of
+    // them borrows from the database that lost.
+    let labels = |state: &AppState| -> Vec<String> {
+        list_value_tables_inner(state, 256, false, "A", false, Some(TEST_BUS))
+            .into_iter()
+            .map(|e| e.label)
+            .collect()
+    };
+    let calc_designated = |state: &AppState| -> bool {
+        let dbs = state.databases();
+        resolve_effective_calc(&dbs, &calc_request(TEST_BUS, 256), None)
+            .unwrap()
+            .is_some()
+    };
+
+    // a.dbc first: unit scale, no labels, no designations.
+    let state = collide_state(["a.dbc", "b.dbc"], None);
+    assert_eq!(row_value_of(&state, "A"), Some(3.0), "the row");
+    assert_eq!(plot_values_of(&state, "A"), vec![3.0], "the plot");
+    assert!(labels(&state).is_empty(), "the value table");
+    assert!(!calc_designated(&state), "the calculated fields");
+
+    // Reversed: x10, labelled, designated. The same four answers, all
+    // from the database that now supplies the definition.
+    let state = collide_state(["b.dbc", "a.dbc"], None);
+    assert_eq!(row_value_of(&state, "A"), Some(30.0), "the row");
+    assert_eq!(plot_values_of(&state, "A"), vec![30.0], "the plot");
+    assert_eq!(labels(&state), vec!["Zero", "Three"], "the value table");
+    assert!(calc_designated(&state), "the calculated fields");
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn a_trace_rows_picked_signal_comes_from_the_database_the_pick_names() {
+    // The trace row decoded per *message* while the plot resolves per
+    // *signal*, so the two could disagree about one value: a pick moved
+    // the samples and left the row reading the other database's
+    // definition. One value, one definition (ADR 0054) — the pick has
+    // to move both.
+    let state = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
+    assert_eq!(row_value_of(&state, "A"), Some(30.0));
+    assert_eq!(plot_values_of(&state, "A"), vec![30.0]);
+    // The label travels with the definition too: `A`'s decoded value
+    // now carries b.dbc's `VAL_` entry, which a.dbc never declared.
+    assert_eq!(
+        collect_trace_records(&state, 0, 1)[0]
+            .decoded
+            .as_ref()
+            .unwrap()
+            .signals
+            .iter()
+            .find(|s| s.name == "A")
+            .unwrap()
+            .label
+            .as_deref(),
+        Some("Three"),
+    );
+
+    // Reversed load order, pick reversed with it: the same
+    // discrimination the other way round, so the reading above is a
+    // choice being honoured rather than an order being followed.
+    let state = collide_state(["b.dbc", "a.dbc"], Some("a.dbc"));
+    assert_eq!(row_value_of(&state, "A"), Some(3.0));
+    assert_eq!(plot_values_of(&state, "A"), vec![3.0]);
+
+    // A pick naming the database load order already chose changes
+    // nothing.
+    let state = collide_state(["a.dbc", "b.dbc"], Some("a.dbc"));
+    assert_eq!(row_value_of(&state, "A"), Some(3.0));
+    assert_eq!(plot_values_of(&state, "A"), vec![3.0]);
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn a_signal_only_a_later_database_defines_reaches_the_row_once_the_message_is_picked() {
+    // `Y` is b.dbc's alone, so it has exactly one definition whatever
+    // the load order. The per-message fast path never reported it —
+    // a.dbc decodes the message and does not define `Y` — and that is
+    // the approximation the fast path is allowed: it costs nothing and
+    // the caches serve `Y` in their own right. Resolving the message
+    // per signal, which a pick makes it do, reports it.
+    let unpicked = collide_state(["a.dbc", "b.dbc"], None);
+    assert_eq!(row_value_of(&unpicked, "Y"), None, "the fast path");
+    assert_eq!(plot_values_of(&unpicked, "Y"), vec![100.0], "…but plotted");
+
+    let picked = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
+    assert_eq!(row_value_of(&picked, "Y"), Some(100.0));
+    assert_eq!(plot_values_of(&picked, "Y"), vec![100.0]);
+}
+
+#[test]
+fn a_pick_does_not_yet_reach_the_value_tables_or_the_calculated_fields() {
+    // Both still resolve by load order alone, so a project that has
+    // pinned `A` to b.dbc gets b.dbc's *values* and a.dbc's *labels*.
+    // Pinned rather than fixed: those two sites resolve per message,
+    // and moving them onto the same resolution the decode uses is the
+    // consolidation this change deliberately stops short of.
+    let state = collide_state(["a.dbc", "b.dbc"], Some("b.dbc"));
+    assert!(
+        list_value_tables_inner(&state, 256, false, "A", false, Some(TEST_BUS)).is_empty(),
+        "the picked definition declares Zero/Three; load order still answers",
+    );
+    let dbs = state.databases();
+    assert!(
+        resolve_effective_calc(&dbs, &calc_request(TEST_BUS, 256), None)
+            .unwrap()
+            .is_none(),
+        "b.dbc designates a counter and a CRC; load order still answers",
+    );
+}
+
+#[test]
+#[allow(clippy::float_cmp)]
+fn a_snapshot_rows_picked_signal_comes_from_the_database_the_pick_names() {
+    // The per-signal latest-value view decodes per message too, so the
+    // pick has to reach it for the same reason: its cell and the
+    // plotted series are the same value.
+    let latest = |state: &AppState| -> Option<f64> {
+        let sel = SignalSelection {
+            keys: vec![],
+            patterns: vec![format!("^{TEST_BUS}/ECU/Msg/A$")],
+        };
+        fetch_signal_page_inner(state, &sel, None, 0, 1, None, None, vec![], None, 0, 100)
+            .expect("valid pattern")
+            .rows
+            .iter()
+            .filter_map(ipc::SignalPageRow::signal)
+            .find(|r| r.signal_name == "A")?
+            .value
+    };
+    assert_eq!(latest(&collide_state(["a.dbc", "b.dbc"], None)), Some(3.0));
+    assert_eq!(
+        latest(&collide_state(["a.dbc", "b.dbc"], Some("b.dbc"))),
+        Some(30.0),
+    );
+    assert_eq!(
+        latest(&collide_state(["b.dbc", "a.dbc"], Some("a.dbc"))),
+        Some(3.0),
+    );
+}
+
+#[test]
+fn a_signal_the_picked_database_withholds_has_no_value_in_the_row() {
+    // The pick names the definition, and a definition that produces no
+    // value for this payload leaves the row with none — rather than
+    // falling through to the database behind it, which would put a
+    // value under a definition that never produced it.
+    let plain = tiny_dbc_named(256, "Msg", "A : 0|16@1+ (1,0) [0|0] \"\" ECU");
+    // Same message and same signal name, but only in multiplexor arm 1;
+    // the frame below selects arm 0, so this database withholds `A`.
+    let muxed = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\n\
+         BO_ 256 Msg: 8 ECU\n\
+         \x20SG_ Sel M : 32|8@1+ (1,0) [0|255] \"\" ECU\n\
+         \x20SG_ A m1 : 0|16@1+ (10,0) [0|0] \"\" ECU\n";
+    let state = test_state();
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("a.dbc", &plain, &[TEST_BUS]),
+        loaded_scoped("b.dbc", muxed, &[TEST_BUS]),
+    ];
+    let mut picks = crate::signal_fingerprint::SignalDbcPicks::new();
+    picks.insert(
+        crate::signal_snapshot::signal_identity(Some(TEST_BUS), 256, false, "A", false),
+        "b.dbc".to_owned(),
+    );
+    *state.signal_dbc_picks.lock().unwrap() = std::sync::Arc::new(picks);
+    // Selector byte (bit 32) is 0, so b.dbc's arm-1 `A` is not in this
+    // frame.
+    state.trace_store.append(RawTraceFrame {
+        payload: CanFramePayload::Classic(vec![3, 0, 0, 0, 0, 0, 0, 0]),
+        ..dummy_frame(0, 256)
+    });
+    assert_eq!(row_value_of(&state, "A"), None);
 }
