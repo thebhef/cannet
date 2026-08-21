@@ -612,6 +612,7 @@ pub fn run() -> ! {
             rbs::rbs_dismiss_disk_change,
             rbs::rbs_view,
             rbs::rbs_crc_algorithms,
+            rbs::rbs_signal_rows,
             fetch_field_validity,
             app_version,
             licenses::third_party_licenses,
