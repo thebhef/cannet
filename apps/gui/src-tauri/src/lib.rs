@@ -653,6 +653,7 @@ pub fn run() -> ! {
             app.manage(AppState {
                 databases: Mutex::new(Vec::new()),
                 descriptor_snapshot: Mutex::new(None),
+                split_messages: Mutex::new(None),
                 remote_sessions: Mutex::new(HashMap::new()),
                 trace_store,
                 signal_caches: SignalCacheStore::new(signal_dir),
