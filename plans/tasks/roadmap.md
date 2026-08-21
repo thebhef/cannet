@@ -174,83 +174,91 @@ the order below is the order of work, top first.
    frames already reach the trace unlabelled. Error frames become a
    coalesced `busError` event kind, hidden by default. **After task
    102.** Opened 2026-08-20 from 0.9.0 usage feedback.
-22. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
+22. [Task 106 — The Any-Bus Series, and the Sample Order It
+    Breaks](0106-any-bus-series-and-sample-order.md) — the migration
+    decision task 88 phase 2 deferred (a DBC-backed series naming no
+    bus decodes samples its fingerprint cannot see), together with the
+    `partition_by_t` binary search that rests on an order only such a
+    series can violate. One task because settling the first may
+    dissolve the second entirely. Opened by the overseer 2026-08-21 out
+    of task 91's audit.
+23. [Task 79 — Restore-Then-Import + Scratch Isolation](0079-restore-then-import.md)
    — the user-reachable empty-view defect Task 78 phase 1 attributed
    (restore a prior capture, then import: the view stays empty while
    the store refills), plus making `--app-data-dir` isolate the
    capture scratch as ADR 0031 claims. Opened by owner ruling
    2026-08-15; kept as scoped, both halves, by owner ruling
    2026-08-19.
-23. [Task 80 — Plot Resample Churn Over a Stopped
+24. [Task 80 — Plot Resample Churn Over a Stopped
    Capture](0080-stopped-capture-resample.md) — investigation-first:
    ~30 Hz resample + follow-slide held over a stopped, fully imported
    capture (trace still reads RUNNING after import). Opened by owner
    ruling 2026-08-15.
-24. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
+25. [Task 82 — Engine-Native Resource Monitoring](0082-engine-native-resource-monitoring.md)
    — the health sampler's process-family metrics move to the web
    engine's own bookkeeping (WebView2 `GetProcessInfos`) as the
    de-jure source; per-platform matrix (the macOS ppid walk silently
    excludes WKWebView's launchd-parented helpers), the
    `unsafe`/`webview2-com` adoption rulings, costs re-measured.
    Opened by owner ruling 2026-08-15.
-25. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
+26. [Task 83 — Follow-Ups from the 70–78 Cycle](0083-cycle-follow-ups.md)
    — the small findings the retiring 70–78 task files recorded in
    passing, collected as one groomable pass: the project-command test
    harness gap, the rebuild-chip rough edges, the unattributed
    launch-hang lead, frameless-import time ranges, and the
    untrusted-row token editor. Opened by owner ruling 2026-08-16.
-26. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
+27. [Task 84 — Make the MDF's Embedded DBC Durable](0084-mdf-embedded-dbc.md)
    — an imported MDF's embedded DBC decodes for the session but
    survives no reopen; make it durable (extraction or a durable
    project reference), then revisit name-matching file-backed
    signals on top. Needs grilling before implementation. Opened by
    owner ruling 2026-08-16.
-27. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
+28. [Task 77 — Catch-Up Decode Off the Serve Path](0077-background-catchup-decode.md)
    — shape 3 of Task 72 phase 3's attributed enum-lag fix (owner
    ruling 2026-08-15): decode cursors advance independently of view
    fetches, serves read what the cursors reached. Amends ADR 0049;
    gated on Task 72 phase 5's batched scan landing first.
-28. [Task 69 — Extension Architecture](0069-extension-architecture.md)
+29. [Task 69 — Extension Architecture](0069-extension-architecture.md)
    — implement ADR 0051: out-of-process, GUI-host-supervised
    extensions on a new `ExtensionHost` service in `cannet.proto`
    (filtered frame subscription, manifest-gated transmit, sandboxed
    contributed webviews, `.cannet-extension` packaging) plus an
    in-repo Python reference extension. Design groomed 2026-08-13;
    adopted onto the roadmap same day.
-29. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
+30. [Task 61 — Ingest Perf Round 2](0061-ingest-perf-round-2.md)
    — the two data-named cuts from the 2026-08-08 ingest profiling: the
    disk-spill segment write (43 % of the release per-frame budget)
    and `bus_id: Option<String>` interning (~15 %). Opened by owner
    ruling 2026-08-09.
-30. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
+31. [Task 31 — macOS Integration Issues](0031-macos-integration-issues.md)
    — crash on exit (wry/WebKit layer-tree teardown race) and missing
    Spotlight bundle metadata. Independently-shippable macOS fixes.
-31. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
+32. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — the remaining argument-taking commands (go-to-row / -time,
    set-visible-range) and the shared input-prompt UI, on top of the
    command / palette framework. Save-with-picker (`capture.save`), the
    close commands, and a list-select go-to-event palette shipped with
    Task 37; what's left is the typed-argument prompt infrastructure.
-32. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
+33. [Task 25 — CAN HW + Virtual-Bus Bug Fixes](0025-can-hw-vbus-bugfixes.md)
    — the hardware/virtual-bus verify-and-fix pass (post-clear negative
    timestamps; the TX-timing/rate leg closed 2026-07-25) plus the
    plot-color bug and the `decimatePoints` dead-code removal.
-33. [Task 22 — CANopen](0022-canopen.md)
+34. [Task 22 — CANopen](0022-canopen.md)
    — EDS ingestion and SDO / PDO decoding.
-34. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
+35. [Task 23 — Plot Measurements and Triggers](0023-plot-measurements-and-triggers.md)
    — triggers, math channels, per-series offset / gain, export.
    (Drag-a-plot-area-between-panels shipped separately, 2026-08-08.)
-35. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
+36. [Task 28 — RBS External Value-Source Binding](0028-rbs-external-value-source.md)
     — cannet connects out to a value-source server that streams sparse
     `(signal, value)` updates by name; RBS applies them as overrides and
     keeps its own cadence/CRC/counters. Lets an external, out-of-repo sim
     (e.g. an EV drive cycle) drive the RBS.
-36. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
+37. [Task 39 — Automotive Ethernet Signals](0039-ethernet-signals.md)
     — staged: pcapng import (CAN linktypes, no model change), step/hold
     plot semantics for on-change series, then the multi-protocol trace
     model and ARXML/FIBEX-described SOME/IP + signal-PDU decode.
     Research detail in [`0039-ethernet-signals/`](0039-ethernet-signals/).
-37. [Task 40 — bridge_client / cannet-client Session-Machinery
+38. [Task 40 — bridge_client / cannet-client Session-Machinery
     Consolidation](0040-bridge-client-consolidation.md) — gated on
     cannet-client growing a subscribe-timeout / dynamic-allocation
     capability; split out from task 30's item #9 once everything else
