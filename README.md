@@ -1047,7 +1047,29 @@ decoding changes while you are editing a DBC mid-analysis; a file that
 disappears is still reported either way, and Reload DBC still works.
 Singleton
 like the project panel, and read-only (DBCs are added / removed from
-the project panel, not from here). New panels arrive as a tab
+the project panel, not from here).
+
+**View signals** opens the signal-mapping panel: one row per signal the
+open views reference, live — what decodes it today, which views use it,
+and whether that still matches what the view was configured against
+(Not Decoded / Scale / Ambiguous / Stale / Decoded, most severe first).
+The launcher carries the count needing attention (Not Decoded, Scale,
+Ambiguous) and is quiet when there is nothing to look at. Assigning or
+unassigning a database moves rows without a reopen. It is a repair
+surface as well as a report, and the **source** column is where both
+repairs are made, with no apply step. Choosing the *same* signal under a
+different database settles the ambiguous case: the choice is recorded in
+the project against the signal, and is the one the decoder resolves it
+through (ADR 0054). Choosing a *different* signal of the same message is
+the **remap** — what a renamed signal needs — and it rewrites every
+persisted reference to the old name at once: every plot's series, every
+signals view's selection and sections, every colour map's target, the
+transmit frames' calculated fields, and the signal's colour override.
+One signal is one row, so a repair is never made per view, and nothing
+durable is left behind mapping the old name onto the new one — revert
+the database and the panel reports the difference the other way round.
+
+New panels arrive as a tab
 in the active group — drag a
 panel by its tab and drop it against an edge of the area to split it
 side-by-side, or onto another panel to tab them together. Each trace

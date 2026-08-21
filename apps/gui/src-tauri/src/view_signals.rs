@@ -45,11 +45,15 @@
 //!    defines the signal, so which one decodes it is settled silently by
 //!    project load order. Invisible everywhere else: the signal catalog
 //!    deduplicates the collision away, and the decoder just takes the
-//!    first database that answers. This is the one status the panel can
-//!    *resolve*: recording a database for the signal
+//!    first database that answers. This is the one status the panel
+//!    resolves **here**: recording a database for the signal
 //!    ([`set_signal_dbc_pick`]) settles the choice, and the row leaves
 //!    Ambiguous because there is no longer more than one candidate in
-//!    its chain.
+//!    its chain. The other repair the panel offers — re-pointing the
+//!    views at a signal that replaced a renamed one — is a rewrite of
+//!    the references themselves, which live in the project's opaque
+//!    `elements` blob, so it is made where those are owned and arrives
+//!    back here as an ordinary change to what the views push.
 //! 4. **Stale** — it decodes, on the scale the view expects, but the
 //!    decoder differs from the view's configuration in some other
 //!    recorded way — today, the message it belongs to has been renamed.

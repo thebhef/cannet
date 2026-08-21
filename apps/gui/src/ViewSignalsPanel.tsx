@@ -3,7 +3,8 @@ import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import type { ViewSignalRow, ViewSignalStatus } from "./types";
+import type { ViewSignalCandidate, ViewSignalRow, ViewSignalStatus } from "./types";
+import { useRemapSignal } from "./signalRemap";
 import { useProjectContext } from "./projectContext";
 import { useDbcGeneration } from "./dbcChanged";
 import { basename } from "./windowTitle";
@@ -134,17 +135,24 @@ const PAGE_ROWS = 20;
  * Singleton, like the Database / Events panels: the model is
  * project-wide, so a second instance would carry no differentiation.
  *
- * The source (candidate) picker resolves the **ambiguous** case: it
- * offers every database assigned to the bus that defines this signal,
- * and choosing one records it in the project
- * (`set_signal_dbc_pick`) — which is the database the decoder then
- * resolves the signal through, not merely what this panel displays.
- * There is no apply step: the host announces the change as a DBC
- * change, which is one of the two events this panel already refetches
- * on, so the row comes back carrying its new answer. Candidates naming
- * a *different signal* are the remap case — a rewrite of every view's
- * stored reference rather than a database choice — and stay disabled
- * until that lands.
+ * The source (candidate) picker makes both of this panel's picks, and
+ * which one a choice is depends only on whether it names the row's own
+ * signal:
+ *
+ * - **the ambiguity pick** — the same signal under a different
+ *   database. Recorded in the project (`set_signal_dbc_pick`) as the
+ *   database the *decoder* resolves this signal through, not merely
+ *   what this panel displays.
+ * - **the remap pick** — a different signal of the same message, which
+ *   is what a renamed signal looks like from here. It rewrites every
+ *   persisted reference to the old name through the one shared
+ *   operation (`signalRemap.ts`), so it lands on every view at once
+ *   rather than per view.
+ *
+ * Neither has an apply step. The element writes land synchronously and
+ * the host writes announce themselves (a DBC change, a transmit-pool
+ * change, and the views' own re-push), which is what brings this
+ * panel's rows back carrying the new answer.
  */
 export function ViewSignalsPanel(props: IDockviewPanelProps) {
   const { api } = props;
@@ -227,6 +235,28 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
       /* best effort — the panel keeps showing the host's last answer */
     });
   }, []);
+
+  // A remap pick: the candidate names a *different* signal, so what
+  // has to change is every view's stored reference rather than which
+  // database decodes it. One operation over every store
+  // (`signalRemap.ts`) — the rows come back through the views' own
+  // re-push, as they do for any other config edit.
+  const remapSignal = useRemapSignal();
+  const onRemap = useCallback(
+    (row: ViewSignalRow, candidate: ViewSignalCandidate) => {
+      remapSignal({
+        busId: row.busId,
+        messageId: row.messageId,
+        extended: row.extended,
+        from: row.signalName,
+        to: candidate.signalName,
+        messageName: candidate.messageName,
+        unit: candidate.unit,
+        dbcPath: candidate.dbcPath,
+      });
+    },
+    [remapSignal],
+  );
 
   // --- toolbar filters (owner ruling: nothing selected is no filter) ---
   const toggleStatus = useCallback(
@@ -429,6 +459,7 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
               washesOn={washesOn}
               rowDomId={grid.rowDomId}
               onPick={onPick}
+              onRemap={onRemap}
               selected={grid.selection.has(r.id)}
               onSelect={(id, e) =>
                 grid.onRowClick(id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey })
@@ -451,13 +482,11 @@ function candidateValue(dbcPath: string, signalName: string): string {
   return `${dbcPath}\0${signalName}`;
 }
 
-/// The database an `<option>` value names, when it names *this*
-/// signal's — `null` for a remap candidate (a different signal name),
-/// which this control does not act on.
-function pickedDatabase(value: string, signalName: string): string | null {
+/// The `(database, signal)` pair an `<option>` value names.
+function parseCandidateValue(value: string): { dbcPath: string; signalName: string } | null {
   const sep = value.lastIndexOf("\0");
   if (sep < 0) return null;
-  return value.slice(sep + 1) === signalName ? value.slice(0, sep) : null;
+  return { dbcPath: value.slice(0, sep), signalName: value.slice(sep + 1) };
 }
 
 interface ViewSignalRowLineProps {
@@ -467,6 +496,7 @@ interface ViewSignalRowLineProps {
   washesOn: boolean;
   rowDomId: (id: string) => string;
   onPick: (signal: string, dbcPath: string) => void;
+  onRemap: (row: ViewSignalRow, candidate: ViewSignalCandidate) => void;
   selected: boolean;
   onSelect: (id: string, e: React.MouseEvent) => void;
 }
@@ -478,6 +508,7 @@ function ViewSignalRowLine({
   washesOn,
   rowDomId,
   onPick,
+  onRemap,
   selected,
   onSelect,
 }: ViewSignalRowLineProps) {
@@ -527,9 +558,21 @@ function ViewSignalRowLine({
                 // The row's own click handler is selection, not a
                 // gesture the picker should also fire.
                 onClick={(e) => e.stopPropagation()}
+                // Which pick a choice is depends only on whether it
+                // names this row's own signal: the same signal under
+                // another database is the ambiguity pick, a different
+                // signal of the same message is the remap.
                 onChange={(e) => {
-                  const dbcPath = pickedDatabase(e.target.value, row.signalName);
-                  if (dbcPath !== null) onPick(row.id, dbcPath);
+                  const chosen = parseCandidateValue(e.target.value);
+                  if (chosen === null) return;
+                  if (chosen.signalName === row.signalName) {
+                    onPick(row.id, chosen.dbcPath);
+                    return;
+                  }
+                  const candidate = row.candidates.find(
+                    (c) => c.dbcPath === chosen.dbcPath && c.signalName === chosen.signalName,
+                  );
+                  if (candidate) onRemap(row, candidate);
                 }}
               >
                 {row.candidates.length === 0 ? (
@@ -541,15 +584,10 @@ function ViewSignalRowLine({
                     <option
                       key={candidateValue(c.dbcPath, c.signalName)}
                       value={candidateValue(c.dbcPath, c.signalName)}
-                      // A candidate naming another signal is the remap
-                      // case: it rewrites what every view stored, which
-                      // is a different operation from choosing a
-                      // database, and is not built yet.
-                      disabled={c.signalName !== row.signalName}
                       title={
                         c.signalName === row.signalName
                           ? undefined
-                          : "pointing views at a different signal is not wired yet"
+                          : `point every view that references ${row.signalName} at ${c.signalName} instead`
                       }
                     >
                       {basename(c.dbcPath)}: {c.signalName}
