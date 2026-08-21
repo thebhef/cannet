@@ -22,6 +22,7 @@ function row(over: Partial<ViewSignalRow> = {}): ViewSignalRow {
     signalName: "VehicleSpeed",
     unit: "km/h",
     servingDbc: "powertrain.dbc",
+    pickedDbc: null,
     usedBy: ["Plot 1"],
     candidates: [],
     diffs: [],
