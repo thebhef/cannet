@@ -382,6 +382,13 @@ fn build_rows<'a>(
 
 /// Every database assigned to `bus_id` that carries the message, in
 /// project load order, with its description of it.
+///
+/// Deliberately **all** of them rather than
+/// [`DecodeModel::message_source`](crate::signal_fingerprint::DecodeModel::message_source)'s
+/// one: this panel is where the ambiguity is reported and resolved, so
+/// it has to show the candidates the user is choosing between. Which
+/// of them wins is [`DefinitionIndex::resolved`]'s answer, applied per
+/// row.
 fn describe_on_bus<'a>(
     dbs: &[(&'a str, &'a Database, &'a [String])],
     bus_id: Option<&str>,
