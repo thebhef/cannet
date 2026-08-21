@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect / Disconnect chip — prototype</title>
+<style>
+/* Dark tokens: verbatim from apps/gui/src/index.css :root.
+   Light: verbatim from its [data-theme="light"] block, except the few
+   marked (*) — proposed values that do not exist in the app today.
+   Both blocks carried across from the task 89 prototypes. */
+:root {
+  --divider:#2c3444; --divider-subtle:#1f2630;
+  --surface-app:#0e1116; --surface-canvas:#0b1220; --surface-field:#0f172a;
+  --surface-row:#11161e; --surface-hover:#1c2530;
+  --surface-section-header:#131a24; --surface-toolbar-control:#1c2230;
+  --surface-toolbar-control-hover:#2a3447;
+  --text-body:#d8dee9; --text-data:#c5d2e0; --text-label:#e6ecf5; --text-muted:#94a3b8;
+  --text-faint:#64748b; --text-dim:#475569; --text-message:#93c5fd; --text-source:#a5b4fc;
+  --border-subtle:#243040; --border-wash:rgb(255 255 255 / 0.14);
+  --border-wash-strong:rgb(255 255 255 / 0.28);
+  --accent-marker:#4ecbff;
+  --warn-border:#eab308; --warn-text:#fbbf24;
+  --danger-text:#f87171;
+  --ok-text:#4ade80; --ok-dot:#22c55e;
+  --modified-marker:#4f8ef7; --modified-text:#4f8ef7;
+  --surface-pop:#111827; --shadow-menu:rgba(0,0,0,0.45);
+  --scope-text:#5eead4;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --divider:#d3d8e0; --divider-subtle:#e4e7ec;
+  --surface-app:#f4f5f7; --surface-canvas:#ffffff; --surface-field:#ffffff;
+  --surface-row:#ffffff; --surface-hover:#eceff3;
+  --surface-section-header:#eaedf2; --surface-toolbar-control:#e8ebf0;
+  --surface-toolbar-control-hover:#dbe0e9;
+  --text-body:#1f2937; --text-data:#3b4757; --text-label:#0f172a; --text-muted:#5b6879;
+  --text-faint:#78849a; --text-dim:#98a3b3; --text-message:#1d4ed8; --text-source:#4338ca;
+  --border-subtle:#d8dce3; --border-wash:rgb(15 23 42 / 0.14);
+  --border-wash-strong:rgb(15 23 42 / 0.28);
+  --accent-marker:#0263a8;              /* (*) stock #0369a1 */
+  --warn-border:#b8860b;                /* (*) stock #d0a017 */
+  --warn-text:#7a4a06;
+  --danger-text:#a01212;                /* (*) stock #b91c1c */
+  --ok-text:#116434; --ok-dot:#16a34a;
+  --modified-marker:#2563eb; --modified-text:#1d4ed8;
+  --surface-pop:#ffffff; --shadow-menu:rgba(15,23,42,0.18);
+  --scope-text:#166f5c;
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--surface-app); color:var(--text-body);
+  font:13px/1.45 "Segoe UI", system-ui, sans-serif; }
+.wrap { padding:18px; max-width:1000px; margin:0 auto; }
+h1 { font-size:16px; margin:0 0 .2rem; color:var(--text-label); }
+h2 { font-size:13px; margin:1.7rem 0 .5rem; color:var(--text-label);
+  border-bottom:1px solid var(--divider); padding-bottom:.3rem; }
+p.note { color:var(--text-muted); margin:.2rem 0 1rem; max-width:72ch; }
+.bar { display:flex; gap:.5rem; align-items:center; margin-bottom:1rem; }
+button.plain { font:inherit; color:var(--text-body);
+  background:var(--surface-toolbar-control); border:1px solid var(--border-subtle);
+  border-radius:3px; padding:.2rem .5rem; cursor:pointer; }
+button.plain:hover { background:var(--surface-toolbar-control-hover); }
+.row { display:flex; gap:.9rem; align-items:center; flex-wrap:wrap; padding:.42rem 0; }
+.caption { color:var(--text-faint); font-size:12px; min-width:9.5rem; }
+.toolbar { display:flex; align-items:center; gap:.55rem; padding:.4rem .55rem;
+  background:var(--surface-section-header); border:1px solid var(--divider); border-radius:4px; }
+.toolbar .spacer { flex:1 1 auto; }
+
+/* === Status chip ===
+   Shape taken from `.color-chip` in index.css: 2px radius, a
+   --border-wash hairline, so it reads as a sibling of the colour chips
+   rather than a new species. Uniform width across every state — the
+   chip must not resize as a connection progresses, or a toolbar
+   reflows under the pointer. */
+.chip { display:inline-flex; align-items:center; gap:.4rem; font:inherit;
+  color:var(--text-body); cursor:pointer; background:var(--surface-toolbar-control);
+  border:1px solid var(--border-wash); border-radius:2px;
+  padding:.18rem .5rem; width:11.5rem; text-align:left;
+  transition:background .12s, border-color .12s; }
+.chip:hover { background:var(--surface-toolbar-control-hover); }
+.chip:focus-visible { outline:2px solid var(--accent-marker); outline-offset:1px; }
+.chip .dot { width:.55rem; height:.55rem; border-radius:2px; flex:none;
+  background:var(--text-dim); border:1px solid var(--border-wash-strong); }
+.chip .label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  flex:1 1 auto; }
+.chip .count { color:var(--text-faint); font-variant-numeric:tabular-nums;
+  flex:none; }
+/* The outline carries the state, as in the first draft — only the
+   shape changed. An idle chip keeps the colour chips' neutral
+   --border-wash hairline; every other state tints the same 1px edge,
+   so nothing moves and no weight changes. */
+.chip[data-state="connected"] { border-color:var(--ok-dot); }
+.chip[data-state="connected"] .dot { background:var(--ok-dot); }
+.chip[data-state="connected"] .label { color:var(--ok-text); }
+.chip[data-state="connecting"] { border-color:var(--accent-marker); }
+.chip[data-state="connecting"] .dot { background:var(--accent-marker);
+  animation:pulse 1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
+.chip[data-state="degraded"] { border-color:var(--warn-border); }
+.chip[data-state="degraded"] .dot { background:var(--warn-border); }
+.chip[data-state="degraded"] .label { color:var(--warn-text); }
+.chip[data-state="failed"] { border-color:var(--danger-text); }
+.chip[data-state="failed"] .dot { background:var(--danger-text); }
+.chip[data-state="failed"] .label { color:var(--danger-text); }
+
+/* A real ColorChip, rendered from index.css's own rules, purely so the
+   two can be compared side by side. */
+.color-chip { border-radius:2px; border:1px solid var(--border-wash); padding:0; }
+.color-chip-dot { display:inline-block; width:.55rem; height:.55rem;
+  vertical-align:middle; border-color:var(--border-wash-strong); }
+.color-chip-bar { display:inline-block; width:1.5rem; height:1.15rem;
+  vertical-align:middle; }
+
+.legacy { font:inherit; color:var(--text-body); background:var(--surface-toolbar-control);
+  border:1px solid var(--border-subtle); border-radius:3px; padding:.15rem .4rem; cursor:pointer; }
+table { border-collapse:collapse; width:100%; margin-top:.5rem; }
+th,td { text-align:left; padding:.3rem .5rem; border-bottom:1px solid var(--divider-subtle); vertical-align:top; }
+th { color:var(--text-label); font-weight:600; }
+td.state { white-space:nowrap; }
+code { color:var(--text-source); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Connect / Disconnect as a status chip — prototype</h1>
+<p class="note">
+  Today the control is a plain button in the project panel whose label swaps
+  between <em>Connect all</em> and <em>Disconnect all</em>, driven by one boolean.
+  The host already tracks more: <code>BusConnState</code> is
+  <code>Connecting</code> / <code>Connected</code> / <code>Error { reason }</code>
+  <em>per logical bus</em>. The chip shows the aggregate the model already knows.
+</p>
+
+<div class="bar">
+  <button class="plain" id="themeBtn">Toggle theme</button>
+  <span class="caption">Both themes use the app&rsquo;s own tokens.</span>
+</div>
+
+<h2>The five states — one width, one shape</h2>
+<p class="note">
+  Every state occupies the same footprint, so the chip never resizes as a
+  connection progresses and a toolbar never reflows under the pointer. The
+  count is tabular-numeric and right-aligned for the same reason: the digits
+  change, the layout does not.
+</p>
+
+<div class="row"><span class="caption">Disconnected</span>
+  <button class="chip" data-state="idle"><span class="dot"></span><span class="label">Not connected</span><span class="count">0 / 3</span></button></div>
+<div class="row"><span class="caption">Attempting</span>
+  <button class="chip" data-state="connecting"><span class="dot"></span><span class="label">Connecting&hellip;</span><span class="count">1 / 3</span></button></div>
+<div class="row"><span class="caption">All good</span>
+  <button class="chip" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">3 / 3</span></button></div>
+<div class="row"><span class="caption">Some failed</span>
+  <button class="chip" data-state="degraded"><span class="dot"></span><span class="label">Connected</span><span class="count">2 / 3</span></button></div>
+<div class="row"><span class="caption">All failed</span>
+  <button class="chip" data-state="failed"><span class="dot"></span><span class="label">Failed</span><span class="count">0 / 3</span></button></div>
+
+<h2>Sibling check against the real colour chip</h2>
+<p class="note">
+  The swatches below are rendered from <code>index.css</code>&rsquo;s own
+  <code>.color-chip</code> rules — 2px radius, a 1px <code>--border-wash</code>
+  hairline. The status chip takes the same radius and the same edge weight, and
+  its indicator is a rounded square rather than a circle, so the family reads
+  as one. What it adds is <em>tinting</em> that edge to carry state; an idle
+  chip is the plain hairline, identical to a colour chip&rsquo;s.
+</p>
+<div class="row">
+  <span class="caption">Colour chips (real)</span>
+  <span class="color-chip color-chip-bar" style="background:#4ecbff"></span>
+  <span class="color-chip color-chip-bar" style="background:#f0a83c"></span>
+  <span class="color-chip color-chip-dot" style="background:#22c55e"></span>
+  <span class="caption" style="min-width:0">&nbsp;&nbsp;status chip →</span>
+  <button class="chip" data-state="connected"><span class="dot"></span><span class="label">Connected</span><span class="count">3 / 3</span></button>
+</div>
+
+<h2>In a toolbar, beside the other instance of the pattern</h2>
+<div class="toolbar">
+  <span style="font-weight:600;color:var(--text-label)">Project</span>
+  <span class="spacer"></span>
+  <button class="chip" data-state="degraded"><span class="dot"></span><span class="label">Connected</span><span class="count">2 / 3</span></button>
+  <button class="chip" data-state="idle" style="width:8.5rem"><span class="dot"></span><span class="label">Bus health</span></button>
+</div>
+<p class="note">
+  The bus-health chip sits alongside because it is the other instance of this
+  pattern. Uniform width is <em>within</em> a chip&rsquo;s own state set, not
+  across different chips — forcing every chip in the app to one width would
+  waste the toolbar on short labels.
+</p>
+
+<h2>Today, for comparison</h2>
+<div class="row"><span class="caption">Current control</span>
+  <button class="legacy">Connect all</button>
+  <button class="legacy">Disconnect all</button></div>
+
+<h2>The state vocabulary this proposes</h2>
+<table>
+<tr><th>State</th><th>When</th><th>Pressing does</th></tr>
+<tr><td class="state">Not connected</td><td>Nothing subscribed</td><td>Connect</td></tr>
+<tr><td class="state">Connecting</td><td>Any subscribe in flight — <code>BusConnState::Connecting</code></td><td>Nothing, or cancel — undecided</td></tr>
+<tr><td class="state">Connected</td><td>Every bound bus <code>Connected</code></td><td>Disconnect</td></tr>
+<tr><td class="state">Degraded</td><td>At least one <code>Connected</code>, at least one <code>Error</code></td><td>Disconnect</td></tr>
+<tr><td class="state">Failed</td><td>Every attempt <code>Error</code></td><td>Retry</td></tr>
+</table>
+<p class="note">
+  <strong>Degraded is the state today&rsquo;s button cannot express</strong>, and it
+  is not exotic: one adapter unplugged among three leaves the app connected and
+  quietly missing a third of the traffic. Whether <em>Failed</em> should be
+  distinct from <em>Not connected</em> is a genuine open question — both mean
+  &ldquo;no frames are flowing&rdquo;, but only one means something went wrong.
+</p>
+
+</div>
+<script>
+document.getElementById("themeBtn").addEventListener("click", function () {
+  var r = document.documentElement;
+  r.dataset.theme = r.dataset.theme === "dark" ? "light" : "dark";
+});
+</script>
+</body>
+</html>
