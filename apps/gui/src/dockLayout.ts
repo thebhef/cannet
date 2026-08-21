@@ -30,6 +30,11 @@ export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
 /// differentiation worth having. Search query + expand state still
 /// live in panel `params` so a layout save / restore preserves them.
 export const DBC_PANEL_COMPONENT = "dbc";
+/// View-signals panel (task 89): every signal the open views
+/// reference, live, and what currently decodes it. Singleton, same
+/// pattern as the Database panel — the model is project-wide, so a
+/// second instance would carry no differentiation.
+export const VIEW_SIGNALS_PANEL_COMPONENT = "view-signals";
 /// Rest-of-bus-simulation panel (ADR 0028). Element-backed —
 /// multiple named RBS elements per project are allowed, each
 /// referencing its own `.cannet_rbs` file.
@@ -58,6 +63,10 @@ export const SERVERS_PANEL_COMPONENT = "servers";
 /// Singleton id — toolbar's "Database panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
+
+/// The view-signals panel is a singleton too — one project-wide
+/// instance, opened from the toolbar and the command palette.
+export const VIEW_SIGNALS_PANEL_ID = "view-signals";
 
 /// The project graph is a singleton panel — one per project — so it
 /// gets a fixed id rather than one keyed on an element.
@@ -101,6 +110,7 @@ export const SINGLETON_PANEL_TITLES: Readonly<Record<string, string>> = {
   [PROJECT_GRAPH_PANEL_ID]: "Graph",
   [SYSTEM_MESSAGES_PANEL_ID]: "System messages",
   [DBC_PANEL_ID]: "Database",
+  [VIEW_SIGNALS_PANEL_ID]: "View signals",
   [SETTINGS_PANEL_ID]: "Settings",
   [ABOUT_PANEL_ID]: "About",
   [EVENTS_PANEL_ID]: "Events",
@@ -183,6 +193,8 @@ export function panelKindForFocus(
       return "project-graph";
     case DBC_PANEL_ID:
       return "dbc";
+    case VIEW_SIGNALS_PANEL_ID:
+      return "view-signals";
     case SETTINGS_PANEL_ID:
       return "settings";
     case ABOUT_PANEL_ID:

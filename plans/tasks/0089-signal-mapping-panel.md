@@ -421,3 +421,105 @@ view's references drops the rows only it held.
 
 **Not touched:** `TraceStore::frame_index_at_ns` (task 91) — nothing in
 this phase reads it.
+
+### Phase 2 — the panel (2026-08-20)
+
+Branch `task-89-phase-2-panel`, from `task-89-phase-1-panel-model`
+(`0479f5f8`). Two commits (`660647b2` push wiring, `1b84d561` the
+panel) plus this log. Frontend tests 2279 → 2331 (+52, 176 files, was
+171), zero failures; `pnpm build` (tsc + vite) clean. Workspace Rust
+tests unchanged at 1478 (no host file touched this phase); `cargo test
+--workspace` reconfirmed it green regardless. No Rust files changed,
+so `cargo clippy`/`cargo fmt` had nothing new to check.
+
+**Half one: wiring the push.** Phase 1 built `set_view_signals` /
+`remove_view_signals` and left feeding them to phase 2, since the host
+does not interpret the project's opaque `elements` blob. One shared
+hook, `usePushViewSignals` (`viewSignalsPush.ts`), pushes on mount and
+on every change to a view's own `ViewSignalRef[]`, de-duping a same-
+value re-push before it costs a round trip, and un-pushes on unmount.
+Four call sites, each with its own pure `*ViewSignalRefs` builder over
+whatever that view already persists:
+
+| View | What it pushes | Recorded fields |
+| --- | --- | --- |
+| Plot (`PlotPanel`) | every area's manual `signals` | `messageName`, `unit` |
+| Signals / "Trace" view (`SignalsPanel`) | manual `selection.keys` | `messageName`, `unit` |
+| Color map (`ColorMapPanel`) | the element's one target signal | identity only |
+| Transmit (`TransmitPanel`) | a frame's counter/CRC calculated-field signal (ADR 0027) | identity only |
+
+**Deliberately not wired, and why — a scope call, not an oversight.**
+Every other "signal reference" in the app turned out to be a live
+pattern, re-evaluated against the current catalog on every render, with
+no recorded configuration for a database to have drifted from:
+
+- A plot area's `patterns` and the signals view's selection patterns
+  (regex over the catalog, materialized fresh each render — same
+  reasoning `plotSolo.ts` already documents for why solo masks
+  `signals`, never adds to it).
+- The signal-generator's rules (`GeneratorPanel`/
+  `signalGeneratorContext.tsx`): a `generator` element is a list of
+  regexes matched against catalog signal *names* for a colour-wheel
+  slot, with no persisted per-signal identity at all — there is
+  nothing here that can go stale in the sense this panel repairs.
+- A transmit frame's own byte-level signal edits: resolved against
+  whichever DBC is assigned at edit time and flattened to bytes
+  immediately, leaving no persisted pick behind (unlike the calc-field
+  signal names above, which *are* persisted identities).
+
+Each of these is recorded in `viewSignalsPush.ts`'s module doc so the
+reasoning doesn't have to be re-derived by the next reader.
+
+**Bug caught before it shipped.** The panel's first draft used two
+separate `useEffect`s to fetch — one on `[refresh]`, one on
+`[dbcGeneration, refresh]` — both firing on mount, so every mount paid
+two `list_view_signals` round trips. `ViewSignalsPanel.dom.test.tsx`'s
+`view-signals-changed` test caught it on its first run (2 calls where 1
+was asserted); folded into one effect on `[dbcGeneration, refresh]`
+before either commit landed, so it never reached history as its own
+bug.
+
+**Half two: the panel.** `ViewSignalsPanel.tsx`, a singleton (same
+rationale as the Database panel — the model is project-wide, so a
+second instance would carry no differentiation), over the shared
+gridview (ADR 0044): a flat leaf row space (`arrayRowSpace`, no
+expansion), the column set from the brief (status chip, bus, signal,
+message, database, an inert source/candidate picker, applies-to,
+detail), toggleable per-status row washes (`color-mix()` against the
+existing theme tokens, so it needs no per-theme duplicate) with the
+status column falling back to the text label when washes are off, and
+the toolbar filters — status chips and a bus fly-out — on the owner's
+selection model (nothing selected is no filter; one selected is just
+those rows; several is their union; `viewSignalsFilter.ts`, unit
+tested independent of the DOM). Sorted by bus by default
+(`DEFAULT_VIEW_SIGNAL_SORT`); every header click re-fetches from the
+host with the new `sortKey`/`sortDir` rather than reordering
+client-side — the `source`/`detail` columns have no host sort, so
+their header click is a no-op, the same shape the signals view's
+`section` column already uses. Refetches on `view-signals-changed`
+and on the DBC-change generation (ADR 0053 §2/§3, which already covers
+assignment changes since task 88); not paged, since `list_view_signals`
+itself is one unbounded fetch bounded by how many signals the open
+views reference, not by capture length — there is nothing here for
+`CLAUDE.md`'s paging rule to apply to.
+
+**Binding respected.** Status, serving database, used-by, candidates
+and the attention count are read straight off `ViewSignalRow` — the
+panel's own code computes none of them, only shapes already-fetched
+rows for the gridview (busName fallbacks, the diff pairs' "mapped as /
+decoded by" phrasing, a status-keyed note where the host reports no
+diff to state). The wash toggle, the two filters, the column layout and
+the sort state are workspace-local (persisted in the dockview panel's
+own params, like the Database panel's `filter`/`expanded`), and none of
+it grows with the project.
+
+**Deliberately inert this phase:** the candidate `<select>` renders
+every row's choices (or the single answer a Decoded row already has)
+but is `disabled`, with a tooltip naming phases 4/5 as where picking
+gets wired. No badge on the launcher yet (phase 3) — the toolbar
+button, the command palette entry (`panel.show.viewSignals`) and the
+go-to-view palette entry are quiet buttons today, the way the Database
+panel's was before task 88.
+
+**Not touched:** `TraceStore::frame_index_at_ns` (task 91); no host
+file at all this phase, so nothing here reads it either.

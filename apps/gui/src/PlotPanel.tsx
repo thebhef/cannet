@@ -68,6 +68,8 @@ import { formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
 import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
+import { elementLabel } from "./elementLabel";
+import { plotViewSignalRefs, usePushViewSignals } from "./viewSignalsPush";
 import { useUndoGesture } from "./undoGesture";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { busLookup } from "./traceColumns";
@@ -506,6 +508,12 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const winEnd = trace.offset + trace.frameCount;
 
   const [areas, setAreas] = useState<PlotAreaConfig[]>(() => areasFromParams(savedConfig?.areas));
+  // Push this panel's referenced signals to the host's view-signal
+  // panel model (task 89) — every area's manual picks, recomputed
+  // whenever `areas` changes. The hook itself de-dupes a no-op re-push
+  // and un-pushes on unmount (`viewSignalsPush.ts`).
+  const viewSignalRefs = useMemo(() => plotViewSignalRefs(areas), [areas]);
+  usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
   const [followLive, setFollowLive] = useState(() => boolFromRaw(savedConfig?.followLive, true));
   const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(savedConfig?.cursorMode));
   const [measEnabled, setMeasEnabled] = useState(() => boolFromRaw(savedConfig?.measEnabled, false));

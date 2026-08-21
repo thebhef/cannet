@@ -1224,3 +1224,75 @@ export interface SignalsSample {
   /** Host wall-clock spent decoding + decimating off the lock (ms). */
   decode_ms: number;
 }
+
+/// One signal reference a view holds, as pushed to `set_view_signals`
+/// (task 89's view-signal panel: `src-tauri/src/view_signals.rs`). The
+/// first four fields are the signal's identity (ADR 0038); the rest is
+/// the view's own *record* of what it picked — absent where a view
+/// records only identity — which is what a drift is measured against.
+/// Mirrors the host's `view_signals::ViewSignalRef`.
+export interface ViewSignalRef {
+  busId: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  /** A file-backed series (`docs/CONTEXT.md`) — never becomes a row,
+   * since no database ever bore on it. */
+  fileBacked?: boolean;
+  messageName?: string;
+  unit?: string;
+  factor?: number;
+  offset?: number;
+}
+
+/// Severity-ordered (most severe first) — mirrors the host's
+/// `view_signals::ViewSignalStatus`. See that module's doc comment for
+/// what each state means.
+export type ViewSignalStatus = "not-decoded" | "scale" | "ambiguous" | "stale" | "decoded";
+
+/// One field where the serving database disagrees with what a view
+/// recorded — the panel's "mapped as X, decoded by Y" detail. Mirrors
+/// `view_signals::ViewSignalDiff`.
+export interface ViewSignalDiff {
+  field: string;
+  mapped: string;
+  decoded: string;
+}
+
+/// A database's definition of one signal in the referenced message —
+/// what the panel's source picker offers where there is a choice.
+/// Mirrors `view_signals::ViewSignalCandidate`.
+export interface ViewSignalCandidate {
+  dbcPath: string;
+  signalName: string;
+  messageName: string;
+  unit: string;
+}
+
+/// One row of the view-signals panel: a signal the open views
+/// reference, and everything the panel renders about it. Mirrors
+/// `view_signals::ViewSignalRow`.
+export interface ViewSignalRow {
+  id: string;
+  status: ViewSignalStatus;
+  busId: string | null;
+  busName: string | null;
+  messageId: number;
+  extended: boolean;
+  messageName: string;
+  signalName: string;
+  unit: string;
+  servingDbc: string | null;
+  usedBy: string[];
+  candidates: ViewSignalCandidate[];
+  diffs: ViewSignalDiff[];
+}
+
+/// `list_view_signals`'s answer: the rows, already host-sorted, plus
+/// the single number the launcher badge (phase 3) reads. Mirrors
+/// `view_signals::ViewSignalPage`.
+export interface ViewSignalPage {
+  rows: ViewSignalRow[];
+  attentionCount: number;
+  total: number;
+}

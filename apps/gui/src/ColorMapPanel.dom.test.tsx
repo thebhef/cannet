@@ -55,6 +55,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
 
+import { invoke } from "@tauri-apps/api/core";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import {
@@ -252,5 +253,32 @@ describe("ColorMapPanel rehydration", () => {
     expect((document.querySelectorAll('input[type="color"]')[0] as HTMLInputElement).value).toBe(
       "#aabbcc",
     );
+  });
+});
+
+describe("view-signals push (task 89)", () => {
+  it("pushes nothing before a target is picked, and its target once one is", () => {
+    renderPanel({ signalName: "PackCurrent", messageId: 0x2a0, busId: "b1" });
+    expect(invoke).toHaveBeenCalledWith(
+      "set_view_signals",
+      expect.objectContaining({
+        viewId: "cm1",
+        signals: [{ busId: "b1", messageId: 0x2a0, extended: false, signalName: "PackCurrent" }],
+      }),
+    );
+  });
+
+  it("pushes no signals for an element with no target yet", () => {
+    renderPanel();
+    expect(invoke).toHaveBeenCalledWith(
+      "set_view_signals",
+      expect.objectContaining({ viewId: "cm1", signals: [] }),
+    );
+  });
+
+  it("un-pushes on unmount", () => {
+    renderPanel({ signalName: "PackCurrent" });
+    cleanup();
+    expect(invoke).toHaveBeenCalledWith("remove_view_signals", { viewId: "cm1" });
   });
 });
