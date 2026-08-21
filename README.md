@@ -2202,7 +2202,11 @@ answer, not just the trace: the transmit panel's signal table (its
 message descriptor, its decoded values, its encoder and its enum
 labels) and the rest-of-bus panel's enum labels all resolve through the
 databases assigned to the row's bus — the same set that would decode
-the frame once it is on the wire.
+the frame once it is on the wire. Within that set the labels are those
+of whichever database supplies the signal's definition, and only that
+one: a definition that declares no `VAL_` table gives the signal no
+labels, rather than borrowing a table from a file that is not decoding
+it.
 
 **Unchecking a bus is reversible.** Unassigning a DBC parks the decoded
 samples it produced rather than deleting them, and checking a bus again

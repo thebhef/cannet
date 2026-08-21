@@ -586,6 +586,20 @@ fn value_table_for_signal_returns_sorted_rows() {
 }
 
 #[test]
+fn defines_signal_answers_for_the_signal_not_for_its_value_table() {
+    let db = Database::parse(VAL_DBC).unwrap();
+    assert!(db.defines_signal(256, false, "Mode"));
+    // `Rpm` carries no `VAL_` table and is defined all the same —
+    // the distinction the whole method exists for.
+    assert!(db.value_table_for_signal(256, false, "Rpm").is_none());
+    assert!(db.defines_signal(256, false, "Rpm"));
+    // Unknown signal, unknown message, wrong id flavour: not defined.
+    assert!(!db.defines_signal(256, false, "Nope"));
+    assert!(!db.defines_signal(999, false, "Mode"));
+    assert!(!db.defines_signal(256, true, "Mode"));
+}
+
+#[test]
 fn signal_outside_payload_is_skipped() {
     let db = Database::parse(SAMPLE_DBC).unwrap();
     // EngineData expects 8 bytes; if we pass only 1, every signal that
