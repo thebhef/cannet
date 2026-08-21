@@ -187,6 +187,46 @@ export function measureTileLabel(ctx: CanvasRenderingContext2D, label: string): 
   return width;
 }
 
+/** The character an over-long label is cut with. One glyph, so it
+ * costs almost nothing of the width it buys back. */
+const ELLIPSIS = "…";
+
+/**
+ * The text to draw for `label` in a tile with `available` canvas pixels
+ * to spare, and the width that text measures — or `null` when not even
+ * one character plus the ellipsis will fit, which is the only case
+ * where drawing nothing is honest.
+ *
+ * A `VAL_` label has no length limit in the format, so a tile narrower
+ * than its label is routine rather than exceptional; dropping the label
+ * there leaves the tile mute, and the tiles are the overlay the enum
+ * axis relies on to name a value (ADR 0026). The cut is at the **end**:
+ * enum labels are prose, read left to right, so their distinguishing
+ * word is at the front — the opposite of a DBC symbol, whose tail is
+ * what tells two apart.
+ *
+ * Shortening runs one character at a time from a proportional first
+ * guess rather than by binary search: the guess is exact for a
+ * monospaced font and within a character or two for the proportional
+ * ones, so this is a couple of `measureTileLabel` calls, all of them
+ * memoised.
+ */
+export function fitTileLabel(
+  ctx: CanvasRenderingContext2D,
+  label: string,
+  available: number,
+): { text: string; width: number } | null {
+  const full = measureTileLabel(ctx, label);
+  if (full <= available) return { text: label, width: full };
+  // Proportional first guess, then walk to the longest that fits.
+  let n = Math.min(label.length - 1, Math.max(0, Math.floor((available / full) * label.length)));
+  const widthOf = (k: number) => measureTileLabel(ctx, label.slice(0, k) + ELLIPSIS);
+  while (n > 0 && widthOf(n) > available) n--;
+  while (n < label.length - 1 && widthOf(n + 1) <= available) n++;
+  if (n === 0) return null;
+  return { text: label.slice(0, n) + ELLIPSIS, width: widthOf(n) };
+}
+
 /** The centered vertical extent a value tile draws within its lane
  * `band`. The tile is `tileFraction` of the lane height, floored at
  * `minPx` (given the lane's on-screen pixel height `lanePx`) and capped

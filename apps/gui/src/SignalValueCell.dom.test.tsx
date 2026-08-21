@@ -13,6 +13,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { SignalValueCell } from "./SignalValueCell";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import type { SignalRecord, TraceFrameRecord } from "./types";
+import { LONG_ENUM_LABEL } from "./longNameTestKit";
 
 afterEach(cleanup);
 
@@ -159,5 +160,22 @@ describe("DecodedSignalCell", () => {
     const line = container.querySelector(".signal-value");
     expect(line?.querySelector(".signal-value-unit")).toBeNull();
     expect(line).toHaveTextContent(/^3\s*"Drive"$/);
+  });
+});
+
+describe("a long VAL_ label", () => {
+  it("stays reachable as a tooltip when the column ellipsizes it", () => {
+    // `VAL_` labels carry no length limit, so the column will cut this
+    // one; the tooltip is what keeps the whole of it available. It is
+    // not split like a name is — prose reads front-first.
+    const { container } = renderDecoded({
+      name: "DerateSource",
+      value: 1,
+      unit: "",
+      label: LONG_ENUM_LABEL,
+    });
+    const label = container.querySelector(".signal-value-label")!;
+    expect(label.getAttribute("title")).toBe(LONG_ENUM_LABEL);
+    expect(label.querySelector(".name-text")).toBeNull();
   });
 });
