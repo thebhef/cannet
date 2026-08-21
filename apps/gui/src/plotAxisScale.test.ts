@@ -4,6 +4,7 @@ import {
   axisScaleIsEmpty,
   axisScalesFromRaw,
   denormalizeOnAxis,
+  enumTickSplits,
   logDecadeSplits,
   normalizeOnAxis,
   pruneAxisScales,
@@ -245,5 +246,39 @@ describe("logDecadeSplits", () => {
 
   it("falls back to even splits off a log axis", () => {
     expect(logDecadeSplits({ lo: 0, hi: 1, log: false })).toEqual([0, 0.25, 0.5, 0.75, 1]);
+  });
+});
+
+describe("enumTickSplits", () => {
+  const raws = (n: number) => Array.from({ length: n }, (_, i) => i);
+
+  it("keeps every raw value when uPlot's increment is finer than they are spaced", () => {
+    // A three-code table on a 400 px axis: uPlot's own increment over
+    // the pinned -0.5..2.5 scale is a quarter, so nothing is crowded.
+    expect(enumTickSplits(raws(3), -0.5, 2.5, 0.25)).toEqual([0, 1, 2]);
+  });
+
+  it("thins a several-hundred-value table to uPlot's own tick density", () => {
+    // The defect: one tick per table row, however many rows there are.
+    // uPlot's chosen increment over -0.5..299.5 at 400 px is 25, and the
+    // ticks it would draw at that increment are what fits.
+    const splits = enumTickSplits(raws(300), -0.5, 299.5, 25);
+    expect(splits.length).toBeLessThanOrEqual(Math.floor(300 / 25) + 1);
+    expect(splits.length).toBeGreaterThan(1);
+    expect(splits[0]).toBe(0);
+    expect(splits.every((v) => raws(300).includes(v))).toBe(true);
+  });
+
+  it("drops crowded raws rather than striding blindly through a sparse table", () => {
+    // 0, 1, 2 and a far-off sentinel. Every fourth entry would keep all
+    // four and stack three labels on top of each other at the bottom of
+    // the axis; spacing by value keeps the two that are legibly apart.
+    expect(enumTickSplits([0, 1, 2, 255], -0.5, 255.5, 20)).toEqual([0, 255]);
+  });
+
+  it("sorts, and answers only what the current scale covers", () => {
+    // A `VAL_` table arrives in whatever order the DBC wrote it, and a
+    // splits callback owes uPlot ticks inside the scale it was handed.
+    expect(enumTickSplits([5, 0, 9, 2], 1, 8, 1)).toEqual([2, 5]);
   });
 });
