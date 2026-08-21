@@ -674,6 +674,12 @@ export interface Project {
   /// Per-signal color overrides for the signal views: descriptor key
   /// (`plotData.ts::signalKey`) → `#rrggbb`. Absent/empty = none.
   signal_colors?: Record<string, string>;
+  /// Per-signal choices of which database decodes a signal (signal
+  /// identity → DBC path). Host-managed like `transmit_frames`: the
+  /// host installs it on open and snapshots it back on save, so the
+  /// frontend never sends it and a project that never resolved an
+  /// ambiguity carries no such field at all.
+  signal_dbc_picks?: Record<string, string>;
 }
 
 export const PROJECT_SCHEMA_VERSION = 7;
@@ -1283,6 +1289,10 @@ export interface ViewSignalRow {
   signalName: string;
   unit: string;
   servingDbc: string | null;
+  /// The database the user chose for this signal, while that choice is
+  /// in force; `null` is the load-order default. The picker shows it as
+  /// its current value.
+  pickedDbc: string | null;
   usedBy: string[];
   candidates: ViewSignalCandidate[];
   diffs: ViewSignalDiff[];

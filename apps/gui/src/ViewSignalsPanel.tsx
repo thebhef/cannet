@@ -134,12 +134,17 @@ const PAGE_ROWS = 20;
  * Singleton, like the Database / Events panels: the model is
  * project-wide, so a second instance would carry no differentiation.
  *
- * **Phase 2 scope.** The column set, status chips, row washes and their
- * toggle, and the toolbar filters (status chips + bus fly-out) on the
- * nothing-selected-is-no-filter model. The source (candidate) picker
- * cell renders but is inert — picking a candidate does not persist
- * until phases 4 (the ambiguity pick) and 5 (the remap pick) wire it.
- * The launcher badge is phase 3.
+ * The source (candidate) picker resolves the **ambiguous** case: it
+ * offers every database assigned to the bus that defines this signal,
+ * and choosing one records it in the project
+ * (`set_signal_dbc_pick`) — which is the database the decoder then
+ * resolves the signal through, not merely what this panel displays.
+ * There is no apply step: the host announces the change as a DBC
+ * change, which is one of the two events this panel already refetches
+ * on, so the row comes back carrying its new answer. Candidates naming
+ * a *different signal* are the remap case — a rewrite of every view's
+ * stored reference rather than a database choice — and stay disabled
+ * until that lands.
  */
 export function ViewSignalsPanel(props: IDockviewPanelProps) {
   const { api } = props;
@@ -213,6 +218,15 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
       void unlisten.then((fn) => fn());
     };
   }, [refresh]);
+
+  // A source pick. No apply step and no local state: the host records
+  // the choice and announces it as a DBC change, which the fetch above
+  // already listens for.
+  const onPick = useCallback((signal: string, dbcPath: string) => {
+    void invoke("set_signal_dbc_pick", { signal, dbcPath }).catch(() => {
+      /* best effort — the panel keeps showing the host's last answer */
+    });
+  }, []);
 
   // --- toolbar filters (owner ruling: nothing selected is no filter) ---
   const toggleStatus = useCallback(
@@ -414,6 +428,7 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
               gridTemplate={gridTemplate}
               washesOn={washesOn}
               rowDomId={grid.rowDomId}
+              onPick={onPick}
               selected={grid.selection.has(r.id)}
               onSelect={(id, e) =>
                 grid.onRowClick(id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey })
@@ -429,12 +444,29 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
   );
 }
 
+/// One candidate's `<option>` value: its database path and signal
+/// name, separated by a NUL so neither half can be confused with the
+/// other whatever a path contains.
+function candidateValue(dbcPath: string, signalName: string): string {
+  return `${dbcPath}\0${signalName}`;
+}
+
+/// The database an `<option>` value names, when it names *this*
+/// signal's — `null` for a remap candidate (a different signal name),
+/// which this control does not act on.
+function pickedDatabase(value: string, signalName: string): string | null {
+  const sep = value.lastIndexOf("\0");
+  if (sep < 0) return null;
+  return value.slice(sep + 1) === signalName ? value.slice(0, sep) : null;
+}
+
 interface ViewSignalRowLineProps {
   row: ViewSignalRow;
   columns: readonly ViewSignalColumnState[];
   gridTemplate: string;
   washesOn: boolean;
   rowDomId: (id: string) => string;
+  onPick: (signal: string, dbcPath: string) => void;
   selected: boolean;
   onSelect: (id: string, e: React.MouseEvent) => void;
 }
@@ -445,6 +477,7 @@ function ViewSignalRowLine({
   gridTemplate,
   washesOn,
   rowDomId,
+  onPick,
   selected,
   onSelect,
 }: ViewSignalRowLineProps) {
@@ -489,10 +522,15 @@ function ViewSignalRowLine({
             return (
               <select
                 className={className}
-                disabled
-                title="picking a source is not wired yet (task 89, phases 4-5)"
-                value={row.servingDbc ? `${row.servingDbc} ${row.signalName}` : ""}
-                onChange={() => {}}
+                disabled={row.candidates.length === 0}
+                value={row.servingDbc ? candidateValue(row.servingDbc, row.signalName) : ""}
+                // The row's own click handler is selection, not a
+                // gesture the picker should also fire.
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  const dbcPath = pickedDatabase(e.target.value, row.signalName);
+                  if (dbcPath !== null) onPick(row.id, dbcPath);
+                }}
               >
                 {row.candidates.length === 0 ? (
                   <option value="">
@@ -500,7 +538,20 @@ function ViewSignalRowLine({
                   </option>
                 ) : (
                   row.candidates.map((c) => (
-                    <option key={`${c.dbcPath} ${c.signalName}`} value={`${c.dbcPath} ${c.signalName}`}>
+                    <option
+                      key={candidateValue(c.dbcPath, c.signalName)}
+                      value={candidateValue(c.dbcPath, c.signalName)}
+                      // A candidate naming another signal is the remap
+                      // case: it rewrites what every view stored, which
+                      // is a different operation from choosing a
+                      // database, and is not built yet.
+                      disabled={c.signalName !== row.signalName}
+                      title={
+                        c.signalName === row.signalName
+                          ? undefined
+                          : "pointing views at a different signal is not wired yet"
+                      }
+                    >
                       {basename(c.dbcPath)}: {c.signalName}
                     </option>
                   ))

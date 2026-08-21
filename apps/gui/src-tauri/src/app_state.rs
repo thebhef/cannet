@@ -183,6 +183,17 @@ pub(crate) struct AppState {
     /// view-signal panel and its launcher badge read; the frontend owns
     /// the view configs it is derived from.
     pub(crate) view_signals: Mutex<ViewSignalRegistry>,
+    /// Per-signal choices of which assigned database decodes a signal
+    /// ([`crate::signal_fingerprint::SignalDbcPicks`]) — the resolution
+    /// of the ambiguous case the view-signal panel surfaces. Host state
+    /// because the decoder consumes it: loaded from the project on open,
+    /// snapshotted back on save, empty in a project that never had an
+    /// ambiguity to resolve.
+    ///
+    /// Behind an `Arc` because every decode model built for a serve
+    /// carries it, and cloning a map per serve is a cost the ordinary
+    /// project should not pay.
+    pub(crate) signal_dbc_picks: Mutex<Arc<crate::signal_fingerprint::SignalDbcPicks>>,
 }
 
 /// Guarded-field accessors. Each wraps the one lock its field needs with
@@ -251,6 +262,51 @@ impl AppState {
         self.view_signals
             .lock()
             .expect("view_signals mutex poisoned")
+    }
+
+    /// The per-signal database picks. Taken *after* [`Self::databases`]
+    /// wherever both are needed ([`Self::decode_model`] reads it under a
+    /// held DBC-set guard), and released immediately — every reader
+    /// wants the `Arc`, not the guard.
+    pub(crate) fn signal_dbc_picks(
+        &self,
+    ) -> MutexGuard<'_, Arc<crate::signal_fingerprint::SignalDbcPicks>> {
+        self.signal_dbc_picks
+            .lock()
+            .expect("signal_dbc_picks mutex poisoned")
+    }
+
+    /// A snapshot of the picks, for a decode model or for a save.
+    pub(crate) fn picks_snapshot(&self) -> Arc<crate::signal_fingerprint::SignalDbcPicks> {
+        Arc::clone(&self.signal_dbc_picks())
+    }
+
+    /// The model the per-signal decode resolves against right now: the
+    /// loaded set the caller is holding, plus the current picks.
+    pub(crate) fn decode_model<'a>(
+        &self,
+        dbcs: &'a [LoadedDbc],
+    ) -> crate::signal_fingerprint::DecodeModel<'a> {
+        decode_model(dbcs, self.picks_snapshot())
+    }
+
+    /// Forget every per-signal database pick naming `path`, and say
+    /// whether any did. The database was removed from the project, so
+    /// the choice those entries recorded has no subject any more.
+    ///
+    /// **Silently**, and by design: what is left is the load-order
+    /// default, which is exactly what a project that never made the
+    /// pick decodes. There is nothing for the user to repair and so
+    /// nothing to tell them about.
+    pub(crate) fn forget_dbc_picks(&self, path: &str) -> bool {
+        let mut guard = self.signal_dbc_picks();
+        if !guard.values().any(|p| p == path) {
+            return false;
+        }
+        let mut next = (**guard).clone();
+        next.retain(|_, p| p != path);
+        *guard = Arc::new(next);
+        true
     }
 
     pub(crate) fn import_cancel(&self) -> MutexGuard<'_, Option<Arc<AtomicBool>>> {
@@ -338,7 +394,9 @@ pub(crate) fn invalidate_derived_caches(state: &AppState) {
     // path that needs both takes them (`persist_pyramids`, `restore`,
     // `sample_signals`).
     let dbcs = state.databases();
-    state.signal_caches.invalidate_dbcs(&dbc_scopes(&dbcs));
+    state
+        .signal_caches
+        .invalidate_dbcs(&state.decode_model(&dbcs));
     drop(dbcs);
     *state.filter_index() = None;
     // The descriptor universe is derived from the DBC set the same way,
@@ -366,18 +424,31 @@ pub(crate) fn pyramid_validity(state: &AppState) -> Option<crate::signal_cache::
     })
 }
 
-/// The loaded set as the per-signal fingerprints see it: each database
-/// with the buses it is scoped to, **in load order** (the order is the
-/// "first DBC that decodes wins" priority, so it is part of what a signal
-/// decodes to). Borrowed from the guard the caller holds, so the set
-/// cannot move under the fingerprints taken from it.
-pub(crate) fn dbc_scopes(dbcs: &[LoadedDbc]) -> Vec<crate::signal_fingerprint::DbcScope<'_>> {
-    dbcs.iter()
-        .map(|d| crate::signal_fingerprint::DbcScope {
-            db: d.db.as_ref(),
-            buses: &d.buses,
-        })
-        .collect()
+/// The model a signal decodes against: each database with the buses it
+/// is scoped to, **in load order** (the order is the "first DBC that
+/// decodes wins" priority, so it is part of what a signal decodes to),
+/// plus the per-signal database picks that override that order where
+/// the user has made a choice
+/// ([`crate::signal_fingerprint::DecodeModel`]). Borrowed from the guard
+/// the caller holds, so the set cannot move under the fingerprints taken
+/// from it.
+///
+/// `picks` is a cheap `Arc` clone off [`AppState::signal_dbc_picks`], so
+/// this stays callable per serve.
+pub(crate) fn decode_model(
+    dbcs: &[LoadedDbc],
+    picks: Arc<crate::signal_fingerprint::SignalDbcPicks>,
+) -> crate::signal_fingerprint::DecodeModel<'_> {
+    crate::signal_fingerprint::DecodeModel::new(
+        dbcs.iter()
+            .map(|d| crate::signal_fingerprint::DbcScope {
+                path: &d.path,
+                db: d.db.as_ref(),
+                buses: &d.buses,
+            })
+            .collect(),
+        picks,
+    )
 }
 
 /// (Re)install the trace store's multiplexor-selector extractor from

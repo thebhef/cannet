@@ -25,6 +25,7 @@ function row(over: Partial<ViewSignalRow> = {}): ViewSignalRow {
     signalName: "VehicleSpeed",
     unit: "km/h",
     servingDbc: "powertrain.dbc",
+    pickedDbc: null,
     usedBy: ["Plot 1"],
     candidates: [],
     diffs: [],
@@ -256,5 +257,102 @@ describe("ViewSignalsPanel", () => {
     await waitFor(() =>
       expect(screen.getByText("No open view references a signal yet.")).toBeInTheDocument(),
     );
+  });
+});
+
+/// The ambiguous row the source picker exists for: two databases on one
+/// bus define the same signal, and load order settles it silently.
+const AMBIGUOUS = row({
+  id: "power|s:256:PackVolts",
+  signalName: "PackVolts",
+  status: "ambiguous",
+  servingDbc: "/dbc/client.dbc",
+  pickedDbc: null,
+  candidates: [
+    { dbcPath: "/dbc/client.dbc", signalName: "PackVolts", messageName: "PackStatus", unit: "V" },
+    { dbcPath: "/dbc/client.dbc", signalName: "Other", messageName: "PackStatus", unit: "A" },
+    { dbcPath: "/dbc/private.dbc", signalName: "PackVolts", messageName: "PackStatus", unit: "V" },
+  ],
+});
+
+function sourcePicker() {
+  return screen.getByRole("combobox");
+}
+
+describe("ViewSignalsPanel source picker", () => {
+  it("records the chosen database against the row's signal identity", async () => {
+    ROWS = [AMBIGUOUS];
+    ATTENTION_COUNT = 1;
+    renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+    // It opens on the database that decodes the signal today.
+    expect((sourcePicker() as HTMLSelectElement).value).toBe(
+      `/dbc/client.dbc\0PackVolts`,
+    );
+
+    fireEvent.change(sourcePicker(), {
+      target: { value: `/dbc/private.dbc\0PackVolts` },
+    });
+    expect(calls.filter((c) => c.cmd === "set_signal_dbc_pick")).toEqual([
+      {
+        cmd: "set_signal_dbc_pick",
+        args: { signal: "power|s:256:PackVolts", dbcPath: "/dbc/private.dbc" },
+      },
+    ]);
+  });
+
+  it("brings the row back through the host rather than holding the pick locally", async () => {
+    // No apply step and no optimistic local state: the host records the
+    // choice and announces it as a DBC change, which is what refetches.
+    ROWS = [AMBIGUOUS];
+    ATTENTION_COUNT = 1;
+    renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+    const before = calls.filter((c) => c.cmd === "list_view_signals").length;
+
+    fireEvent.change(sourcePicker(), {
+      target: { value: `/dbc/private.dbc\0PackVolts` },
+    });
+    // The picker still shows what the host last said, unchanged.
+    expect((sourcePicker() as HTMLSelectElement).value).toBe(
+      `/dbc/client.dbc\0PackVolts`,
+    );
+    expect(calls.filter((c) => c.cmd === "list_view_signals")).toHaveLength(before);
+
+    ROWS = [
+      row({
+        ...AMBIGUOUS,
+        status: "decoded",
+        servingDbc: "/dbc/private.dbc",
+        pickedDbc: "/dbc/private.dbc",
+      }),
+    ];
+    emitHostEvent("dbc-changed");
+    await waitFor(() =>
+      expect((sourcePicker() as HTMLSelectElement).value).toBe(
+        `/dbc/private.dbc\0PackVolts`,
+      ),
+    );
+  });
+
+  it("offers a remap candidate but does not act on it yet", async () => {
+    ROWS = [AMBIGUOUS];
+    ATTENTION_COUNT = 1;
+    renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+    const options = screen.getAllByRole("option") as HTMLOptionElement[];
+    const byValue = (v: string) => options.find((o) => o.value === v);
+    expect(byValue(`/dbc/private.dbc\0PackVolts`)).toBeEnabled();
+    // Another signal of the same message is the remap case, not a
+    // database choice.
+    expect(byValue(`/dbc/client.dbc\0Other`)).toBeDisabled();
+  });
+
+  it("has nothing to offer on a row with no candidates", async () => {
+    ROWS = [row({ id: "x", status: "not-decoded", servingDbc: null, candidates: [] })];
+    ATTENTION_COUNT = 1;
+    renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeDisabled());
+    expect(calls.some((c) => c.cmd === "set_signal_dbc_pick")).toBe(false);
   });
 });

@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use cannet_core::{CanFramePayload, Direction};
 use cannet_gui_lib::signal_cache::SignalCacheStore;
-use cannet_gui_lib::signal_fingerprint::DbcScope;
+use cannet_gui_lib::signal_fingerprint::{DbcScope, DecodeModel};
 use cannet_gui_lib::signal_sampler;
 use cannet_gui_lib::trace_store::{RawTraceFrame, TraceStore};
 
@@ -87,14 +87,19 @@ pub fn run(ex: &LoadedExample, cfg: &SignalBenchConfig) -> SignalBenchReport {
     // applies to a frame on that bus. A bench that declared every
     // database unscoped would measure a candidate set the project never
     // produces.
-    let scopes: Vec<DbcScope<'_>> = ex
-        .dbcs
-        .iter()
-        .map(|d| DbcScope {
-            db: &d.db,
-            buses: &d.buses,
-        })
-        .collect();
+    // No per-signal database picks: the bench measures the load-order
+    // default, which is what every project without a resolved ambiguity
+    // decodes through.
+    let scopes = DecodeModel::plain(
+        ex.dbcs
+            .iter()
+            .map(|d| DbcScope {
+                path: d.path.to_str().unwrap_or_default(),
+                db: &d.db,
+                buses: &d.buses,
+            })
+            .collect(),
+    );
     let chosen = pick_signal(&templates, &scopes).expect("a decodable scheduled signal");
 
     let scratch = match cfg.store {
