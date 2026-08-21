@@ -5542,6 +5542,64 @@ fn the_mux_selector_comes_from_the_database_that_defines_the_multiplexor() {
 }
 
 #[test]
+fn the_mux_selector_comes_from_the_database_the_pick_names() {
+    // The cure for a selector read against the wrong file: pin `Mux`
+    // in the signal-mapping panel and the mux index follows, the same
+    // way every other decoded value does (ADR 0054). Without the pick
+    // the same set answers 7, so this is a choice being honoured.
+    let mux_state = |order: [&str; 2], pick: Option<&str>| -> AppState {
+        let state = test_state();
+        *state.databases.lock().unwrap() = order
+            .iter()
+            .map(|p| {
+                if *p == "a.dbc" {
+                    loaded_scoped("a.dbc", &mux_at(8), &[TEST_BUS])
+                } else {
+                    loaded_scoped("b.dbc", MUX_SNAPSHOT_DBC, &[TEST_BUS])
+                }
+            })
+            .collect();
+        if let Some(p) = pick {
+            let mut picks = crate::signal_fingerprint::SignalDbcPicks::new();
+            picks.insert(
+                crate::signal_snapshot::signal_identity(Some(TEST_BUS), 512, false, "Mux", false),
+                p.to_owned(),
+            );
+            *state.signal_dbc_picks.lock().unwrap() = std::sync::Arc::new(picks);
+        }
+        invalidate_derived_caches(&state);
+        // Byte 0 reads 1 (b.dbc's selector), byte 1 reads 7 (a.dbc's).
+        state.trace_store.append(modes_frame(0, 1, 7, 9));
+        state
+    };
+    assert_eq!(
+        selectors_seen(&mux_state(["a.dbc", "b.dbc"], None)),
+        vec![7]
+    );
+    assert_eq!(
+        selectors_seen(&mux_state(["a.dbc", "b.dbc"], Some("b.dbc"))),
+        vec![1],
+        "the pick moves it off load order",
+    );
+    // Reversed, with the pick reversed to match: the same
+    // discrimination the other way round.
+    assert_eq!(
+        selectors_seen(&mux_state(["b.dbc", "a.dbc"], None)),
+        vec![1]
+    );
+    assert_eq!(
+        selectors_seen(&mux_state(["b.dbc", "a.dbc"], Some("a.dbc"))),
+        vec![7],
+    );
+    // A pick naming the database load order already chose changes
+    // nothing.
+    assert_eq!(
+        selectors_seen(&mux_state(["a.dbc", "b.dbc"], Some("a.dbc"))),
+        vec![7],
+    );
+}
+
+#[test]
 fn a_multiplexor_only_one_database_defines_is_still_that_databases_to_supply() {
     // `a.dbc` is ahead on the bus and defines 512 with no multiplexor
     // at all, so it defines no `Mux`, `ModeA` or `ModeB` — those

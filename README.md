@@ -1064,8 +1064,9 @@ through (ADR 0054) — every decoded value of that signal, so the plotted
 series, the trace row's column and the latest-value table all read the
 database you chose, even where the rest of that message's signals come
 from another one. Everything derived from that message follows the same
-choice: its enum labels, and the `CannetCounter` / `CannetCrc`
-designation the transmit panel and the ingest verifier read off it. A
+choice: its enum labels, the multiplexor arm the latest-value view
+groups by, and the `CannetCounter` / `CannetCrc` designation the
+transmit panel and the ingest verifier read off it. A
 project that has made no choice is unaffected — absent means "resolve
 by load order". Choosing a *different* signal of the same message is
 the **remap** — what a renamed signal needs — and it rewrites every
