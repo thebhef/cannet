@@ -10,7 +10,10 @@ cannet-core = { path = "../cannet-core" }
 # ASAM MDF 4.x block parsing, value decoding, CC conversions and DZ
 # inflate. `compression` is what makes `DzBlock::decompress` available;
 # without it a DZ-compressed logger file cannot be read at all.
-# See `plans/technology-inventory.md` for the read/write split.
+# Read only: mdf4-rs's own high-level writer emits a proprietary
+# bus-logging layout that asammdf/Vector/CANape don't recognise, so
+# cannet writes MDF files itself, building conformant composition on
+# top of mdf4-rs's block serializers instead.
 mdf4-rs = { version = "0.6", features = ["compression"] }
 
 [dev-dependencies]
