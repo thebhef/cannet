@@ -93,6 +93,42 @@ pub(super) fn row_id(element: &str, bus_key: &str, msg_key: &str) -> String {
 // Buffer reconstruction
 // ---------------------------------------------------------------------
 
+/// Why one override couldn't be applied — the same three cases
+/// `reconstruct_payload` has always distinguished, named so a caller
+/// can classify without re-parsing the message text (task 89 phase 6:
+/// the signals panel's Not Encoded / Unknown Value split is drawn on
+/// this distinction — a signal the DBC doesn't define is not encoded
+/// at all, one whose *value* isn't recognised still transmits, just
+/// carrying the default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OverrideProblem {
+    /// The override names a signal the message descriptor has none of.
+    UnknownSignal,
+    /// A `0x…` override whose digits don't parse.
+    InvalidHex,
+    /// A text override matching no `VAL_` label.
+    UnknownEnumLabel,
+}
+
+/// One override the encoder could not apply, carrying enough to both
+/// classify it (`problem`) and reproduce today's system-log wording
+/// (`message`) without a second formatting rule to drift from the
+/// first.
+#[derive(Debug, Clone)]
+pub(super) struct OverrideWarning {
+    pub signal: String,
+    pub problem: OverrideProblem,
+    message: String,
+}
+
+impl OverrideWarning {
+    /// The human-readable warning text (unchanged from what
+    /// `reconstruct_payload` has always produced).
+    pub(super) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 /// Reconstruct one message's payload buffer: fill bit → DBC defaults
 /// (`GenSigStartValue`) → overrides (ADR 0028). Returns the buffer
 /// plus a warning per override that couldn't be applied (unknown
@@ -103,7 +139,7 @@ pub(super) fn reconstruct_payload(
     desc: &cannet_dbc::MessageDescriptor,
     msg: &RbsMessage,
     fill_bit: u8,
-) -> (Vec<u8>, Vec<String>) {
+) -> (Vec<u8>, Vec<OverrideWarning>) {
     let fill = if fill_bit == 0 { 0x00 } else { 0xFF };
     let mut buf = vec![fill; desc.expected_len];
     let mut warnings = Vec::new();
@@ -125,7 +161,11 @@ pub(super) fn reconstruct_payload(
     // Overrides.
     for (name, value) in &msg.signals {
         let Some(sig) = desc.signals.iter().find(|s| &s.name == name) else {
-            warnings.push(format!("unknown signal {name}"));
+            warnings.push(OverrideWarning {
+                signal: name.clone(),
+                problem: OverrideProblem::UnknownSignal,
+                message: format!("unknown signal {name}"),
+            });
             continue;
         };
         let physical = match value {
@@ -144,7 +184,11 @@ pub(super) fn reconstruct_payload(
                         };
                         Some(raw_f.mul_add(sig.factor, sig.offset))
                     } else {
-                        warnings.push(format!("{name}: invalid hex value {text}"));
+                        warnings.push(OverrideWarning {
+                            signal: name.clone(),
+                            problem: OverrideProblem::InvalidHex,
+                            message: format!("{name}: invalid hex value {text}"),
+                        });
                         None
                     }
                 } else {
@@ -156,7 +200,11 @@ pub(super) fn reconstruct_payload(
                     if let Some(raw) = raw {
                         Some((raw as f64).mul_add(sig.factor, sig.offset))
                     } else {
-                        warnings.push(format!("{name}: no enum label \"{t}\""));
+                        warnings.push(OverrideWarning {
+                            signal: name.clone(),
+                            problem: OverrideProblem::UnknownEnumLabel,
+                            message: format!("{name}: no enum label \"{t}\""),
+                        });
                         None
                     }
                 }
@@ -261,10 +309,10 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
                 }
             }
             let msg = entry.map_or(&no_overrides, |(_, m)| m);
-            let (data, mut w) = reconstruct_payload(db, id, desc, msg, element.file.fill_bit);
+            let (data, w) = reconstruct_payload(db, id, desc, msg, element.file.fill_bit);
             warnings.extend(
-                w.drain(..)
-                    .map(|w| format!("{bus_key}/{ecu_name}/{msg_key}: {w}")),
+                w.iter()
+                    .map(|w| format!("{bus_key}/{ecu_name}/{msg_key}: {}", w.message())),
             );
             let calc = if msg.counter.is_some() || msg.crc.is_some() {
                 Some(CalcFieldsSpec {
@@ -361,6 +409,39 @@ pub(super) fn sync_schedules(state: &AppState) {
             state.transmit_scheduler.stop(row.id);
         }
     }
+}
+
+/// Clear the Run flag of every element that owned one of `stopped_rows`,
+/// and return those element ids in element order.
+///
+/// An RBS row is a periodic like any other and stops through the same
+/// path a project row does — but an element's rows are *derived*: the
+/// rebuild that follows a DBC change puts them back and
+/// [`sync_schedules`] re-derives their running state from the element's
+/// Run flag, so a row-level stop alone would last until the next
+/// reconcile. Stopping the element is what stopping its rows means, and
+/// the flag cleared here is the one the panel's own Run toggle writes.
+pub(crate) fn stop_elements_owning(state: &AppState, stopped_rows: &[String]) -> Vec<String> {
+    let mut owners: Vec<String> = {
+        let registry = state.transmit_frames();
+        registry
+            .rbs_rows()
+            .into_iter()
+            .filter(|row| stopped_rows.contains(&row.id))
+            .map(|row| row.element)
+            .collect()
+    };
+    owners.sort();
+    owners.dedup();
+    let mut rbs = state.rbs();
+    owners.retain(|id| match rbs.elements.get_mut(id) {
+        Some(element) if element.run => {
+            element.run = false;
+            true
+        }
+        _ => false,
+    });
+    owners
 }
 
 /// The light mutation tail for edits that only change *scheduling*
@@ -607,7 +688,9 @@ BO_ 1280 AuxFrame: 8 AUX
         assert_eq!(u16::from_le_bytes([buf[1], buf[2]]), 4032, "403.2 V / 0.1");
         assert_eq!(buf[6] & 0x0F, 0xA, "hex override is raw bits");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(warnings[0].contains("Nope"));
+        assert_eq!(warnings[0].signal, "Nope");
+        assert_eq!(warnings[0].problem, OverrideProblem::UnknownSignal);
+        assert!(warnings[0].message().contains("Nope"));
 
         // Unknown enum label warns and leaves the default in place.
         let mut msg = RbsMessage::new();
@@ -616,6 +699,18 @@ BO_ 1280 AuxFrame: 8 AUX
         let (buf, warnings) = reconstruct_payload(&database, id, &desc, &msg, 0);
         assert_eq!(buf[0], 2, "default survives a bad override");
         assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].problem, OverrideProblem::UnknownEnumLabel);
+
+        // Malformed hex is its own, distinct problem — the taxonomy
+        // (task 89 phase 6) reads it the same as a bad enum label
+        // (Unknown Value: the signal is real, the text isn't), but the
+        // two are still classified separately rather than collapsed.
+        let mut msg = RbsMessage::new();
+        msg.signals
+            .insert("AliveCtr".into(), RbsValue::Text("0xZZ".into()));
+        let (_, warnings) = reconstruct_payload(&database, id, &desc, &msg, 0);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].problem, OverrideProblem::InvalidHex);
     }
 
     /// A bus may have more than one DBC scoped to it (the `ev-demo`
@@ -1054,6 +1149,106 @@ BO_ 1280 AuxFrame: 8 AUX
                 .len(),
             2
         );
+    }
+
+    /// An element with `run` set and one message enabled, its rows built
+    /// and scheduled — the state a reload has to interrupt.
+    fn running_element(state: &AppState) {
+        let file = RbsFile::parse(
+            r#"{ "schema_version": 1, "buses": {
+                 "Powertrain": { "ecus": { "BMS": { "messages": { "0x123": {} } } } }
+             } }"#,
+        )
+        .unwrap();
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
+            rbs.elements.insert(
+                "el1".into(),
+                RbsElementState {
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
+                    file,
+                    dirty: false,
+                    run: true,
+                },
+            );
+        }
+        rebuild_element_rows(state, "el1");
+        sync_schedules(state);
+    }
+
+    #[test]
+    fn reloading_a_database_stops_the_rbs_element_it_was_driving() {
+        // The ruling: a database an element transmits from changing
+        // underneath it is the uncommanded send ADR 0053 §1 exists to
+        // prevent, so the element stops. Stopping its *rows* is not
+        // enough — they are derived, and the rebuild the announcement
+        // runs puts them straight back.
+        let state = crate::tests::test_state();
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+        running_element(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
+
+        // The file is edited outside the app and re-read under the same
+        // identity — what every reload path does to the loaded set.
+        let backed_before = crate::transmit_commands::dbc_backed_running_periodics(&state);
+        let installed = crate::dbc_commands::install_dbc(&state, "a.dbc", RBS_DBC).unwrap();
+        assert!(installed.reloaded, "same identity -> a swap");
+        let stopped =
+            crate::transmit_commands::stop_periodics_driven_by(&state, &backed_before, "a.dbc");
+        let elements = stop_elements_owning(&state, &stopped);
+
+        assert!(stopped.contains(&status_id), "{stopped:?}");
+        assert_eq!(elements, vec!["el1".to_string()]);
+        assert!(!state.rbs.lock().unwrap().elements["el1"].run);
+        // The rebuild the announcement runs keeps the row — the message
+        // is still defined — and leaves it stopped, which is the state
+        // only a stopped *element* produces.
+        rebuild_element_rows(&state, "el1");
+        sync_schedules(&state);
+        assert!(
+            state
+                .transmit_frames
+                .lock()
+                .unwrap()
+                .rbs_row_ids("el1")
+                .contains(&status_id),
+            "the reloaded database still defines the message",
+        );
+        assert!(!state.transmit_frames.lock().unwrap().is_running(&status_id));
+    }
+
+    #[test]
+    fn reloading_a_database_an_element_does_not_transmit_from_leaves_it_running() {
+        // The element is only stopped by a reload of a database it is
+        // actually driven from — measured by the same per-bus priority
+        // scan, so a second database loaded on another bus is none of
+        // its business.
+        let state = crate::tests::test_state();
+        {
+            let mut dbs = state.databases.lock().unwrap();
+            dbs.push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+            dbs.push(crate::tests::loaded_scoped("other.dbc", RBS_DBC, &["p2"]));
+        }
+        running_element(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+
+        let backed_before = crate::transmit_commands::dbc_backed_running_periodics(&state);
+        crate::dbc_commands::install_dbc(&state, "other.dbc", RBS_DBC).unwrap();
+        let stopped =
+            crate::transmit_commands::stop_periodics_driven_by(&state, &backed_before, "other.dbc");
+        let elements = stop_elements_owning(&state, &stopped);
+
+        assert!(stopped.is_empty(), "{stopped:?}");
+        assert!(elements.is_empty(), "{elements:?}");
+        assert!(state.rbs.lock().unwrap().elements["el1"].run);
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
     }
 
     #[test]

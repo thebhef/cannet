@@ -30,10 +30,27 @@ export const SYSTEM_MESSAGES_PANEL_COMPONENT = "system-messages";
 /// differentiation worth having. Search query + expand state still
 /// live in panel `params` so a layout save / restore preserves them.
 export const DBC_PANEL_COMPONENT = "dbc";
+/// View-signals panel (task 89): every signal the open views
+/// reference, live, and what currently decodes it. Singleton, same
+/// pattern as the Database panel — the model is project-wide, so a
+/// second instance would carry no differentiation.
+export const VIEW_SIGNALS_PANEL_COMPONENT = "view-signals";
 /// Rest-of-bus-simulation panel (ADR 0028). Element-backed —
 /// multiple named RBS elements per project are allowed, each
 /// referencing its own `.cannet_rbs` file.
 export const RBS_PANEL_COMPONENT = "rbs";
+/// The RBS signals grid (task 89 phase 6): every field one
+/// `.cannet_rbs` config transmits, scoped to a single RBS element —
+/// the opposite scoping rule from `VIEW_SIGNALS_PANEL_COMPONENT`
+/// (which combines every view). Not the element's *own* panel the way
+/// `RBS_PANEL_COMPONENT` is: it's a second panel referencing the same
+/// element id, opened from a button inside the RBS panel rather than
+/// through `elementPanelComponent`, and more than one may exist per
+/// element (opened, closed, reopened) — see `rbsSignalsPanelId`.
+export const RBS_SIGNALS_PANEL_COMPONENT = "rbs-signals";
+/// The dockview panel id prefix for an RBS signals panel — see
+/// `rbsSignalsPanelId`.
+const RBS_SIGNALS_PANEL_ID_PREFIX = "rbs-signals-";
 /// Signal value→color map config panel (ADR 0029). Element-backed,
 /// like RBS — each colormap element opens into its own editor panel.
 export const COLORMAP_PANEL_COMPONENT = "colormap";
@@ -58,6 +75,10 @@ export const SERVERS_PANEL_COMPONENT = "servers";
 /// Singleton id — toolbar's "Database panel" button uses this to
 /// show-or-focus a single instance.
 export const DBC_PANEL_ID = "dbc";
+
+/// The view-signals panel is a singleton too — one project-wide
+/// instance, opened from the toolbar and the command palette.
+export const VIEW_SIGNALS_PANEL_ID = "view-signals";
 
 /// The project graph is a singleton panel — one per project — so it
 /// gets a fixed id rather than one keyed on an element.
@@ -101,6 +122,7 @@ export const SINGLETON_PANEL_TITLES: Readonly<Record<string, string>> = {
   [PROJECT_GRAPH_PANEL_ID]: "Graph",
   [SYSTEM_MESSAGES_PANEL_ID]: "System messages",
   [DBC_PANEL_ID]: "Database",
+  [VIEW_SIGNALS_PANEL_ID]: "View signals",
   [SETTINGS_PANEL_ID]: "Settings",
   [ABOUT_PANEL_ID]: "About",
   [EVENTS_PANEL_ID]: "Events",
@@ -152,6 +174,39 @@ export function showServersPanel(api: DockviewApi): void {
   });
 }
 
+/// The RBS signals panel's dockview id for one element — one instance
+/// per element, same "no second copy" reasoning a singleton uses, just
+/// keyed by element instead of fixed.
+function rbsSignalsPanelId(elementId: string): string {
+  return `${RBS_SIGNALS_PANEL_ID_PREFIX}${elementId}`;
+}
+
+/// The tab title for an element-backed panel — the model-owned name
+/// (ADR 0019) verbatim, except an RBS signals panel names *what it is*
+/// too ("the config is named in the panel title", task 89 phase 6):
+/// the app's internal word "element" never appears, so this reads
+/// "‹config name› — Signals" rather than repeating the RBS panel's own
+/// bare title.
+export function elementPanelTitle(panelId: string, elementLabel: string): string {
+  return panelId.startsWith(RBS_SIGNALS_PANEL_ID_PREFIX) ? `${elementLabel} — Signals` : elementLabel;
+}
+
+/// Show-or-focus one element's RBS signals panel.
+export function showRbsSignalsPanel(api: DockviewApi, elementId: string, elementLabel: string): void {
+  const id = rbsSignalsPanelId(elementId);
+  const existing = api.panels.find((p) => p.id === id);
+  if (existing) {
+    existing.api.setActive();
+    return;
+  }
+  api.addPanel({
+    id,
+    component: RBS_SIGNALS_PANEL_COMPONENT,
+    title: elementPanelTitle(id, elementLabel),
+    params: { elementId },
+  });
+}
+
 /// What `CommandContext.focusedPanelKind` should report for the
 /// active dockview panel: element-backed panels report their element
 /// kind (resolved by the caller from `params.elementId`), the
@@ -162,6 +217,14 @@ export function panelKindForFocus(
   panelId: string,
   elementKind: ProjectElementKind | null,
 ): FocusedPanelKind | null {
+  // Checked before the `elementKind` branch below: an RBS signals
+  // panel's params carry the *same* elementId as the RBS element's own
+  // panel (it's a second panel over one element, not a second element),
+  // so `elementKind` alone can't tell the two apart — only the panel id
+  // can. Reporting "rbs" here would make `panel.find` / `panel.rename`
+  // available while this panel is focused and route them at the *other*
+  // panel's registration (`panelCommands.ts` keys by elementId).
+  if (panelId.startsWith(RBS_SIGNALS_PANEL_ID_PREFIX)) return "rbs-signals";
   if (
     elementKind === "trace" ||
     elementKind === "plot" ||
@@ -183,6 +246,8 @@ export function panelKindForFocus(
       return "project-graph";
     case DBC_PANEL_ID:
       return "dbc";
+    case VIEW_SIGNALS_PANEL_ID:
+      return "view-signals";
     case SETTINGS_PANEL_ID:
       return "settings";
     case ABOUT_PANEL_ID:
@@ -196,6 +261,21 @@ export function panelKindForFocus(
     default:
       return null;
   }
+}
+
+/// Every dockview panel whose params name `elementId` — usually one,
+/// but an RBS element can have two (its own panel and its signals
+/// grid, task 89 phase 6): a caller closing an element's panels must
+/// iterate every match, not stop at the first (the bug this function
+/// was extracted to fix — `removeElement` in `App.tsx` used to
+/// `.find` and leaked the second panel).
+export function panelsForElementId<P extends { params?: unknown }>(
+  panels: readonly P[],
+  elementId: string,
+): P[] {
+  return panels.filter(
+    (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === elementId,
+  );
 }
 
 /// The dockview component a project element opens into as its own

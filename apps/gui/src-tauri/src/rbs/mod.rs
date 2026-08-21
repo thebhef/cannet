@@ -33,8 +33,8 @@ pub use file_model::{format_message_key, parse_message_key, RbsFile, RbsMessage,
 
 mod runtime;
 
-pub(crate) use runtime::refresh_all_elements;
 pub use runtime::RbsRuntime;
+pub(crate) use runtime::{refresh_all_elements, stop_elements_owning};
 
 mod view;
 
@@ -47,6 +47,11 @@ pub use view::{
     __cmd__rbs_crc_algorithms, __cmd__rbs_view, __tauri_command_name_rbs_crc_algorithms,
     __tauri_command_name_rbs_view,
 };
+
+mod signals;
+
+pub use signals::rbs_signal_rows;
+pub use signals::{__cmd__rbs_signal_rows, __tauri_command_name_rbs_signal_rows};
 
 pub(crate) mod watch;
 

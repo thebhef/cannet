@@ -371,6 +371,66 @@ describe("SignalsPanel", () => {
       expect(sel?.keys.map((k) => k.signalName)).toEqual(["EngineSpeed"]);
     });
   });
+
+  describe("view-signals push (task 89)", () => {
+    it("pushes its manual selection on mount, and un-pushes on unmount", async () => {
+      renderPanel({ params: { elementId: "el-view-signals" } });
+      await waitFor(() => {
+        expect(
+          invokeCalls.some(
+            (c) =>
+              c.cmd === "set_view_signals" &&
+              c.args?.viewId === "el-view-signals" &&
+              Array.isArray(c.args?.signals) &&
+              (c.args?.signals as unknown[]).length === 0,
+          ),
+        ).toBe(true);
+      });
+
+      const payload = JSON.stringify({
+        signals: [
+          {
+            busId: "p",
+            messageId: 256,
+            extended: false,
+            signalName: "EngineSpeed",
+            messageName: "EngineData",
+            unit: "rpm",
+          },
+        ],
+      });
+      const panel = document.querySelector(".signals-panel")!;
+      fireEvent.drop(panel, {
+        dataTransfer: {
+          types: [SIGNAL_DND_MIME],
+          getData: (mime: string) => (mime === SIGNAL_DND_MIME ? payload : ""),
+        },
+      });
+      await waitFor(() => {
+        const last = [...invokeCalls]
+          .reverse()
+          .find((c) => c.cmd === "set_view_signals" && c.args?.viewId === "el-view-signals");
+        expect(last?.args?.signals).toEqual([
+          {
+            busId: "p",
+            messageId: 256,
+            extended: false,
+            signalName: "EngineSpeed",
+            fileBacked: undefined,
+            messageName: "EngineData",
+            unit: "rpm",
+          },
+        ]);
+      });
+
+      cleanup();
+      expect(
+        invokeCalls.some(
+          (c) => c.cmd === "remove_view_signals" && c.args?.viewId === "el-view-signals",
+        ),
+      ).toBe(true);
+    });
+  });
 });
 
 describe("SignalsPanel tail reachability", () => {

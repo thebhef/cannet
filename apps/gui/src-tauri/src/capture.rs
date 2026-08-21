@@ -65,9 +65,12 @@ pub struct ChannelBusMapping {
 /// session uses (ADR 0046). The time range is the same rule applied to
 /// itself: it is a [`cannet_core::WindowedSource`] wrapped around the
 /// BLF source, not a second pump — frames outside the range never reach
-/// `run_pump`, let alone `TraceStore::append`. Markers still ride the
-/// prefix of the walk the pump actually makes (up to where `end_ns`, if
-/// set, stops it) — see [`cannet_core::WindowedSource`]'s docs.
+/// `run_pump`, let alone `TraceStore::append`. The wrapper reads the
+/// source to EOF regardless of the window, because a capture's frames
+/// are not promised to arrive in timestamp order (ADR 0024) and a
+/// frame that belongs in the range can sit after one that doesn't; see
+/// [`cannet_core::WindowedSource`]'s docs. Markers ride the whole walk
+/// the same way — every marker the file carries, not just a prefix.
 ///
 /// `async` so Tauri runs it off the main thread, like its siblings:
 /// opening a several-hundred-megabyte BLF parses a header and allocates
@@ -1214,7 +1217,21 @@ fn adopt_embedded_databases(app: &AppHandle, mdf_path: &str, source: &MdfCanFram
         }
     };
     let state: State<'_, AppState> = app.state();
+    // Snapshotted before the installs: a re-import replaces the same
+    // capture's databases in place, and afterwards there is no way left
+    // to ask what the content they replace was driving.
+    let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state.inner());
     let loaded = install_embedded_databases(state.inner(), mdf_path, &attachments);
+    for db in &loaded {
+        if db.reloaded {
+            crate::dbc_commands::report_reload_stops(
+                app,
+                state.inner(),
+                &db.identity,
+                &backed_before,
+            );
+        }
+    }
     for db in &loaded {
         for w in &db.warnings {
             sys_warn!(app, "dbc", "{identity}: {w}", identity = db.identity);
@@ -1251,6 +1268,9 @@ pub(crate) struct EmbeddedDbc {
     pub warnings: Vec<String>,
     /// Why it did not load, if it did not.
     pub error: Option<String>,
+    /// Whether this replaced a database already loaded under the same
+    /// identity — a re-import of the same capture is a reload in place.
+    pub reloaded: bool,
 }
 
 /// Whether an `##AT` attachment is a database this project can read: the
@@ -1292,12 +1312,14 @@ pub(crate) fn install_embedded_databases(
                     message_count: installed.message_count,
                     warnings: installed.warnings,
                     error: None,
+                    reloaded: installed.reloaded,
                 },
                 Err(message) => EmbeddedDbc {
                     identity,
                     message_count: 0,
                     warnings: Vec::new(),
                     error: Some(message),
+                    reloaded: false,
                 },
             }
         })
@@ -1652,7 +1674,7 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         let dbcs = state.databases();
         state
             .signal_caches
-            .restore(&v, &crate::app_state::dbc_scopes(&dbcs), count)
+            .restore(&v, &state.decode_model(&dbcs), count)
     });
     let pyramids_ms = pyramids_at.elapsed().as_secs_f64() * 1000.0;
     // A rejection used to be invisible from here: the capture came back

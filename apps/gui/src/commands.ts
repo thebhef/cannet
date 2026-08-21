@@ -21,12 +21,14 @@ export const FOCUSED_PANEL_KINDS = [
   "signals",
   "transmit",
   "rbs",
+  "rbs-signals",
   "colormap",
   "generator",
   "project",
   "project-graph",
   "system-messages",
   "dbc",
+  "view-signals",
   "settings",
   "about",
   "events",
@@ -166,6 +168,12 @@ export const COMMANDS: readonly CommandSpec[] = [
     // It was the "DBC panel" before it grew every other
     // signal-defining format (ADR 0052) — keep the old name findable.
     keywords: "DBC panel",
+  },
+  {
+    id: "panel.show.viewSignals",
+    label: "Show view signals panel",
+    category: "Panels",
+    keywords: "signal mapping",
   },
   { id: "panel.show.settings", label: "Show settings", category: "Panels" },
   { id: "panel.show.about", label: "Show about", category: "Panels" },

@@ -1011,7 +1011,9 @@ and appears once, under an "(Unassigned)" group saying so — this row
 is the only discoverability the app offers for an unassigned database,
 by design. Two databases assigned to the same bus that define the same
 message/signal id is a rare mistake the panel warns about, naming
-which one wins the decode). Type any fragment of a signal
+which one wins the decode — by project load order, unless the signal
+has been given a database of its own in the view-signals panel, in
+which case that is the one named and the one that decodes). Type any fragment of a signal
 name, ECU, comment, value-table label, message id (hex or decimal),
 or attribute, and the tree filters to the matches: ancestors of a
 match auto-expand and everything else is hidden, so a filtered
@@ -1045,7 +1047,46 @@ decoding changes while you are editing a DBC mid-analysis; a file that
 disappears is still reported either way, and Reload DBC still works.
 Singleton
 like the project panel, and read-only (DBCs are added / removed from
-the project panel, not from here). New panels arrive as a tab
+the project panel, not from here).
+
+**View signals** opens the signal-mapping panel: one row per signal the
+open views reference, live — what decodes it today, which views use it,
+and whether that still matches what the view was configured against
+(Not Decoded / Scale / Ambiguous / Stale / Decoded, most severe first).
+The launcher carries the count needing attention (Not Decoded, Scale,
+Ambiguous) and is quiet when there is nothing to look at. Assigning or
+unassigning a database moves rows without a reopen. It is a repair
+surface as well as a report, and the **source** column is where both
+repairs are made, with no apply step. Choosing the *same* signal under a
+different database settles the ambiguous case: the choice is recorded in
+the project against the signal, and is the one the decoder resolves it
+through (ADR 0054). Choosing a *different* signal of the same message is
+the **remap** — what a renamed signal needs — and it rewrites every
+persisted reference to the old name at once: every plot's series, every
+signals view's selection and sections, every colour map's target, the
+transmit frames' calculated fields, and the signal's colour override.
+One signal is one row, so a repair is never made per view, and nothing
+durable is left behind mapping the old name onto the new one — revert
+the database and the panel reports the difference the other way round.
+
+Each RBS panel's toolbar carries its own **Signals** button, opening
+that config's signals grid — the same gridview as View signals, scoped
+to one `.cannet_rbs` instead of combined across every view (two RBS
+sims are meant to hold different values and timings, so their rows
+never merge). One row per field the config transmits, with the
+encoder's own taxonomy naming where its bits came from: Not Encoded
+(nothing defines it — an override naming a signal or message no
+assigned database has), Out of Range (an applied override outside the
+signal's declared range — flagged and clamped here, on entry, since
+truncation on transmit is otherwise silent), Unknown Value (an
+override the encoder couldn't resolve — a bad hex string, an
+unrecognised enum label — so the default went out instead), Override,
+Default (the DBC's start value, or the file's fill bit — neither is
+something you set), and Muted (the message won't play). The value cell
+is the same editor the RBS panel's own tree uses, so an edit here and
+an edit there can never disagree.
+
+New panels arrive as a tab
 in the active group — drag a
 panel by its tab and drop it against an edge of the area to split it
 side-by-side, or onto another panel to tab them together. Each trace
@@ -1844,8 +1885,16 @@ In the panel:
 - Signal cells show the live decode of the message's payload buffer;
   editing partial-encodes into it (enum labels and `0x…` raw hex are
   accepted), an overridden cell is marked and a light **×** clears
-  it back to DBC-tracking. The fzf filter narrows by message /
+  it back to DBC-tracking. A plain numeric entry is **clamped to the
+  signal's declared range on entry** — truncation to the signal's bit
+  width is correct on transmit, so this is where an out-of-range value
+  is caught before it's ever sent. The fzf filter narrows by message /
   signal name; **Ctrl/⌘+F** focuses it from anywhere in the panel.
+- **Signals** (toolbar) opens this config's signals grid — every field
+  it transmits and where each value came from, with the encoder's own
+  taxonomy (Not Encoded / Out of Range / Unknown Value / Override /
+  Default / Muted). See the View signals section above for the shared
+  gridview it reuses.
 - **Run** (persisted in the project, default off) starts the enabled
   messages on the host scheduler; actual transmission gates on
   per-bus connectivity (a bus that connects starts its messages, a
@@ -2179,6 +2228,18 @@ database from the project removes it from its buses and reaches the same
 rule the same way. A stopped transmit row keeps its configuration and is
 restarted with its own Run control; a rest-of-bus row is rebuilt by its
 element, so it resumes when the element's Run is still on.
+
+**Reloading a database stops what it was driving, too.** A DBC is
+re-read whenever the file changes on disk (with `dbc_auto_reload` on) or
+when you reload it from the Database panel, and the new definitions
+replace the old ones in place. What a periodic transmit row is
+transmitting can therefore change — or disappear — without anyone
+asking, so every row the reloaded database was driving stops first, and
+a rest-of-bus element driven by it has its Run turned off. The reload
+still applies, and one line in the System Messages panel says how many
+rows stopped. Rows another database on the bus defines, and hand-typed
+CAN ids no database describes, keep firing: the reload is only ever the
+business of what it was actually driving.
 
 **Default: receive from every bus**. Each consumer (trace, plot, filter) carries a
 `sources: string[]` list of upstream producer ids — bus ids or filter

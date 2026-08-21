@@ -951,14 +951,16 @@ mod tests {
 
     /// The import time range (ADR 0046) is `WindowedSource` wrapped
     /// around the real `CanFrameSource` — no BLF-specific fork. Pumping
-    /// a windowed `BlfCanFrameSource` must keep only frames inside the
-    /// inclusive bound, and the marker sink — which fires from inside
-    /// the wrapped source's own `next_frame`, ahead of the window check —
-    /// must still see every marker the walk actually reaches: the ones
-    /// before `start_ns` (skipped as frames, but the walk passes them),
-    /// and none after the walk stops past `end_ns`.
+    /// a windowed `BlfCanFrameSource` must keep every frame inside the
+    /// inclusive bound, including one that arrives *after* a frame past
+    /// `end_ns` — a capture's frames are not promised to arrive in
+    /// timestamp order (ADR 0024), so the wrapper reads its source to
+    /// EOF rather than stopping at the first out-of-range frame. The
+    /// marker sink — which fires from inside the wrapped source's own
+    /// `next_frame`, ahead of the window check — sees every marker the
+    /// whole walk passes, not just a prefix.
     #[test]
-    fn windowed_source_filters_a_blf_import_range_and_still_sees_prefix_markers() {
+    fn windowed_source_filters_a_blf_import_range_reads_to_eof_and_sees_every_marker() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("windowed.blf");
         let mut writer = BlfCaptureWriter::create(&path).unwrap();
@@ -979,10 +981,11 @@ mod tests {
         writer.append(&frame_at(TS_BASE_NS + 1_000)).unwrap(); // == start: kept
         writer.append(&frame_at(TS_BASE_NS + 2_000)).unwrap(); // inside: kept
         writer.append(&frame_at(TS_BASE_NS + 3_000)).unwrap(); // == end: kept
-        writer.append(&frame_at(TS_BASE_NS + 4_000)).unwrap(); // past end: stops the walk here
+        writer.append(&frame_at(TS_BASE_NS + 4_000)).unwrap(); // past end: skipped, walk continues
         writer
             .append_marker(TS_BASE_NS + 4_000, "after", "note-after", 0)
             .unwrap();
+        writer.append(&frame_at(TS_BASE_NS + 1_500)).unwrap(); // a dip back in range: must not be lost
         writer.finish().unwrap();
 
         let mut source = BlfCanFrameSource::open(&path).unwrap();
@@ -999,16 +1002,23 @@ mod tests {
         let kept: Vec<u64> = sink.0.iter().map(|f| f.timestamp_ns).collect();
         assert_eq!(
             kept,
-            vec![TS_BASE_NS + 1_000, TS_BASE_NS + 2_000, TS_BASE_NS + 3_000]
+            vec![
+                TS_BASE_NS + 1_000,
+                TS_BASE_NS + 2_000,
+                TS_BASE_NS + 3_000,
+                TS_BASE_NS + 1_500,
+            ],
+            "the dip after the past-end frame must still be kept",
         );
 
         let markers = seen_markers.lock().unwrap();
         assert_eq!(
             markers.len(),
-            1,
-            "only the pre-start marker was walked past"
+            2,
+            "both markers were walked past — the walk runs to EOF"
         );
         assert_eq!(markers[0].marker.marker_name, b"before");
+        assert_eq!(markers[1].marker.marker_name, b"after");
     }
 
     // ---- BlfCaptureWriter tests ----

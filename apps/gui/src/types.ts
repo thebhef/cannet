@@ -674,6 +674,12 @@ export interface Project {
   /// Per-signal color overrides for the signal views: descriptor key
   /// (`plotData.ts::signalKey`) → `#rrggbb`. Absent/empty = none.
   signal_colors?: Record<string, string>;
+  /// Per-signal choices of which database decodes a signal (signal
+  /// identity → DBC path). Host-managed like `transmit_frames`: the
+  /// host installs it on open and snapshots it back on save, so the
+  /// frontend never sends it and a project that never resolved an
+  /// ambiguity carries no such field at all.
+  signal_dbc_picks?: Record<string, string>;
 }
 
 export const PROJECT_SCHEMA_VERSION = 7;
@@ -1132,6 +1138,58 @@ export interface RbsSignalView {
   hasValueTable: boolean;
 }
 
+/// The RBS signals panel's taxonomy (task 89 phase 6), drawn from what
+/// the encoder actually reports (`reconstruct_payload`) rather than
+/// invented. Severity order is declaration order, same convention as
+/// {@link ViewSignalStatus}. `"out-of-range"` is deliberately absent —
+/// it is decided in the frontend (`rbsValueClamp.ts`), never sent by
+/// the host, and slotted into this same severity band by
+/// `rbsSignalsFilter.ts`.
+export type RbsSignalStatus = "not-encoded" | "unknown-value" | "override" | "default" | "muted";
+
+/// One field of one `.cannet_rbs` config — `rbs_signal_rows`. Mirrors
+/// `rbs::signals::RbsSignalRow`; not combined across elements, unlike
+/// {@link ViewSignalRow} (the opposite scoping rule task 89 draws
+/// between the two grids).
+export interface RbsSignalRow {
+  /// Stable within one element: `<bus key>|<message key>|<signal>`.
+  id: string;
+  /// The file's bus key (a project logical-bus name).
+  busKey: string;
+  /// The resolved project bus id; `null` when no project bus has this
+  /// name. Feeds the value-table fetch the same way `RbsBusView.busId`
+  /// does for the RBS panel's own tree.
+  busId: string | null;
+  /// The ECU key an edit's `target` must name (`rbs/commands.rs`'s
+  /// `RbsTarget`) — the DBC's own transmitter grouping, not
+  /// necessarily where the file's entry (if any) happens to sit.
+  ecuName: string;
+  messageKey: string;
+  messageName: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  unit: string;
+  status: RbsSignalStatus;
+  /// `null` for a Not Encoded row (nothing decodes it) or an inactive
+  /// multiplexed arm.
+  value: number | null;
+  label: string | null;
+  overridden: boolean;
+  overrideText: string | null;
+  calcRole: "counter" | "crc" | null;
+  factor: number;
+  offset: number;
+  min: number;
+  max: number;
+  size: number;
+  signed: boolean;
+  hasValueTable: boolean;
+  /// A short "what happened" note for the detail column; empty for a
+  /// clean Override row.
+  detail: string;
+}
+
 /// One dirty RBS element (unsaved override edits) — `rbs_dirty`.
 export interface RbsDirtyRecord {
   elementId: string;
@@ -1223,4 +1281,80 @@ export interface SignalsSample {
   slice_ms: number;
   /** Host wall-clock spent decoding + decimating off the lock (ms). */
   decode_ms: number;
+}
+
+/// One signal reference a view holds, as pushed to `set_view_signals`
+/// (task 89's view-signal panel: `src-tauri/src/view_signals.rs`). The
+/// first four fields are the signal's identity (ADR 0038); the rest is
+/// the view's own *record* of what it picked — absent where a view
+/// records only identity — which is what a drift is measured against.
+/// Mirrors the host's `view_signals::ViewSignalRef`.
+export interface ViewSignalRef {
+  busId: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  /** A file-backed series (`docs/CONTEXT.md`) — never becomes a row,
+   * since no database ever bore on it. */
+  fileBacked?: boolean;
+  messageName?: string;
+  unit?: string;
+  factor?: number;
+  offset?: number;
+}
+
+/// Severity-ordered (most severe first) — mirrors the host's
+/// `view_signals::ViewSignalStatus`. See that module's doc comment for
+/// what each state means.
+export type ViewSignalStatus = "not-decoded" | "scale" | "ambiguous" | "stale" | "decoded";
+
+/// One field where the serving database disagrees with what a view
+/// recorded — the panel's "mapped as X, decoded by Y" detail. Mirrors
+/// `view_signals::ViewSignalDiff`.
+export interface ViewSignalDiff {
+  field: string;
+  mapped: string;
+  decoded: string;
+}
+
+/// A database's definition of one signal in the referenced message —
+/// what the panel's source picker offers where there is a choice.
+/// Mirrors `view_signals::ViewSignalCandidate`.
+export interface ViewSignalCandidate {
+  dbcPath: string;
+  signalName: string;
+  messageName: string;
+  unit: string;
+}
+
+/// One row of the view-signals panel: a signal the open views
+/// reference, and everything the panel renders about it. Mirrors
+/// `view_signals::ViewSignalRow`.
+export interface ViewSignalRow {
+  id: string;
+  status: ViewSignalStatus;
+  busId: string | null;
+  busName: string | null;
+  messageId: number;
+  extended: boolean;
+  messageName: string;
+  signalName: string;
+  unit: string;
+  servingDbc: string | null;
+  /// The database the user chose for this signal, while that choice is
+  /// in force; `null` is the load-order default. The picker shows it as
+  /// its current value.
+  pickedDbc: string | null;
+  usedBy: string[];
+  candidates: ViewSignalCandidate[];
+  diffs: ViewSignalDiff[];
+}
+
+/// `list_view_signals`'s answer: the rows, already host-sorted, plus
+/// the single number the launcher badge (phase 3) reads. Mirrors
+/// `view_signals::ViewSignalPage`.
+export interface ViewSignalPage {
+  rows: ViewSignalRow[];
+  attentionCount: number;
+  total: number;
 }

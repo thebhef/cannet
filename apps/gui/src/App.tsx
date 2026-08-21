@@ -48,11 +48,13 @@ import { PlotPanel } from "./PlotPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
+import { RbsSignalsPanel } from "./RbsSignalsPanel";
 import { ChangedOnDiskNotice } from "./ChangedOnDiskNotice";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { GeneratorPanel } from "./GeneratorPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DatabasePanel } from "./DatabasePanel";
+import { ViewSignalsPanel } from "./ViewSignalsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { AboutPanel } from "./AboutPanel";
 import { EventsPanel } from "./EventsPanel";
@@ -100,6 +102,7 @@ import { TraceDataProvider, type TraceData } from "./traceData";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { SignalCatalogProvider } from "./signalCatalogContext";
 import { suppressDbcChanges, useDbcGeneration } from "./dbcChanged";
+import { useViewSignalsAttentionCount } from "./viewSignalsAttention";
 import { SignalGeneratorProvider } from "./signalGeneratorContext";
 import { CloseConfirmModal, type CloseChoice } from "./CloseConfirmModal";
 import { ServersPanel } from "./ServersPanel";
@@ -140,6 +143,7 @@ import {
   COLORMAP_PANEL_COMPONENT,
   GENERATOR_PANEL_COMPONENT,
   RBS_PANEL_COMPONENT,
+  RBS_SIGNALS_PANEL_COMPONENT,
   SETTINGS_PANEL_COMPONENT,
   ABOUT_PANEL_COMPONENT,
   EVENTS_PANEL_COMPONENT,
@@ -149,8 +153,11 @@ import {
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
+  VIEW_SIGNALS_PANEL_COMPONENT,
   elementPanelComponent,
+  elementPanelTitle,
   normalizeSingletonTitles,
+  panelsForElementId,
   stripMaximizedNode,
   validateLayout,
 } from "./dockLayout";
@@ -250,11 +257,13 @@ const DOCK_COMPONENTS = {
   [SIGNALS_PANEL_COMPONENT]: SignalsPanel,
   [TRANSMIT_PANEL_COMPONENT]: TransmitPanel,
   [RBS_PANEL_COMPONENT]: RbsPanel,
+  [RBS_SIGNALS_PANEL_COMPONENT]: RbsSignalsPanel,
   [COLORMAP_PANEL_COMPONENT]: ColorMapPanel,
   [GENERATOR_PANEL_COMPONENT]: GeneratorPanel,
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DatabasePanel,
+  [VIEW_SIGNALS_PANEL_COMPONENT]: ViewSignalsPanel,
   [SETTINGS_PANEL_COMPONENT]: SettingsPanel,
   [ABOUT_PANEL_COMPONENT]: AboutPanel,
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
@@ -845,10 +854,13 @@ export function App() {
         if (removed) pendingElementEditRef.current = true;
         setRegistry((prev) => prev.filter((e) => e.element.id !== id));
         const api = dockApiRef.current;
-        const panel = api?.panels.find(
-          (p) => (p.params as { elementId?: unknown } | undefined)?.elementId === id,
-        );
-        if (api && panel) api.removePanel(panel);
+        // An RBS element can carry a second panel over the same
+        // elementId (its signals grid, task 89 phase 6) —
+        // `panelsForElementId`, not a single `.find`, so removing the
+        // element closes every panel referencing it rather than
+        // leaking the second one.
+        const panels = panelsForElementId(api?.panels ?? [], id);
+        if (api) for (const panel of panels) api.removePanel(panel);
       } finally {
         endGesture();
       }
@@ -989,6 +1001,11 @@ export function App() {
     seenDbcGenerationRef.current = dbcGeneration;
     invalidateCache();
   }, [dbcGeneration, invalidateCache]);
+
+  // The view-signals launcher badge's live count (task 89 phase 3): read
+  // here, independently of whether the view-signals panel is mounted,
+  // so the toolbar button stays live with the panel closed.
+  const viewSignalsAttentionCount = useViewSignalsAttentionCount();
 
   // The unfiltered `RowPage` read: raw chronological rows for an
   // absolute index range. A trace window translates its local offset
@@ -2470,10 +2487,39 @@ export function App() {
 
   // Re-read every loaded DBC from disk (a file that's gone or no longer
   // parses drops out, with an error). No-op when none are loaded.
-  // Preserve per-DBC bus scoping across the reload.
-  const handleReloadDbc = useCallback(() => {
-    if (dbcPaths.length > 0) void loadDbcSet(dbcPaths, dbcBuses);
-  }, [dbcPaths, dbcBuses, loadDbcSet]);
+  //
+  // Each path goes through `add_dbc`, which swaps it in place and so
+  // keeps its bus assignment and priority position — deliberately *not*
+  // through `loadDbcSet`, whose `clear_dbcs` would make every re-read
+  // look to the host like a first load and hide that it is reloading
+  // definitions something may be transmitting from (ADR 0053 §1).
+  const handleReloadDbc = useCallback(async () => {
+    if (dbcPaths.length === 0) return;
+    // One set change spread over a call per database, as `loadDbcSet`
+    // does it: a single re-anchor at the end rather than one per call.
+    const release = suppressDbcChanges();
+    try {
+      let list: string[] = [...dbcPaths];
+      const errors: string[] = [];
+      for (const path of dbcPaths) {
+        try {
+          list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+        } catch (err) {
+          errors.push(`${path}: ${String(err)}`);
+          try {
+            list = (await invoke<DbcInfo[]>("remove_dbc", { path })).map((d) => d.dbc_path);
+          } catch {
+            /* the host kept it; the error above is what the user sees */
+          }
+        }
+      }
+      setDbcPaths(list);
+      invalidateCache();
+      if (errors.length > 0) setState({ kind: "error", message: `DBC: ${errors.join("; ")}` });
+    } finally {
+      release();
+    }
+  }, [dbcPaths, invalidateCache]);
 
   // Update a single DBC's bus scoping and push it to the host.
   const handleSetDbcBuses = useCallback(
@@ -2712,6 +2758,19 @@ export function App() {
     }
     rbsHostStateRef.current = current;
   }, [registry, queueRbsOp]);
+  // The host turns an element's Run off when a database it was
+  // transmitting from reloads underneath it (ADR 0053 §1's swap
+  // exception). Run is the *project's* flag mirrored onto the host, so
+  // the project follows the host here — otherwise the panel's Run
+  // control would read on while nothing is being sent.
+  useEffect(() => {
+    const un = listen<string[]>("rbs-run-stopped", (event) => {
+      for (const id of event.payload) updateElement(id, { kind: "rbs", run: false });
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, [updateElement]);
   // The global RBS kill-switch is runtime-only host state; mirror it
   // through its dedicated event so the palette toggle and the panel
   // button stay in sync.
@@ -2743,10 +2802,10 @@ export function App() {
       if (typeof elementId !== "string") continue;
       const entry = registry.find((e) => e.element.id === elementId);
       if (!entry) continue;
-      const label = elementLabel(entry.element);
-      if (panel.title !== label) {
+      const title = elementPanelTitle(panel.id, elementLabel(entry.element));
+      if (panel.title !== title) {
         diagCount("dockview.setTitle"); // DIAG
-        panel.api.setTitle(label);
+        panel.api.setTitle(title);
       }
     }
   }, [registry]);
@@ -3260,12 +3319,14 @@ export function App() {
   // recent-tracking and context gate as the palette and keyboard. The few
   // buttons that carry view-extras (the Connect/Disconnect toggle, the
   // disabled-while-empty Clear/Save, the Recent-captures dropdown, the
-  // unread badge) stay bespoke, keyed by a sentinel and interleaved in order.
+  // unread badge, the view-signals attention badge) stay bespoke, keyed
+  // by a sentinel and interleaved in order.
   type ToolbarItem =
     | "sep"
     | "connection"
     | "recentCaptures"
     | "systemMessages"
+    | "viewSignals"
     | { id: string; label: string; disabled?: boolean; busy?: boolean };
   // The capture whose census is walking right now, in whichever format
   // — one trace-open at a time, so at most one of the two is set.
@@ -3308,6 +3369,7 @@ export function App() {
     { id: "panel.add.colormap", label: "Add color map" },
     { id: "panel.add.generator", label: "Add generator" },
     { id: "panel.show.dbc", label: "Database panel" },
+    "viewSignals",
     { id: "panel.show.projectGraph", label: "Graph panel" },
     { id: "panel.show.events", label: "Events panel" },
     { id: "panel.show.project", label: "Project panel" },
@@ -3384,6 +3446,31 @@ export function App() {
           {unread > 0 && (
             <span className="system-messages-badge" aria-hidden="true">
               {unread > 99 ? "99+" : unread}
+            </span>
+          )}
+        </button>
+      );
+    }
+    if (item === "viewSignals") {
+      // The launcher badge (task 89 phase 3): the same needing-attention
+      // count `list_view_signals` gives the panel, live whether or not
+      // the panel is open (`useViewSignalsAttentionCount`), quiet at
+      // zero.
+      return (
+        <button
+          key="view-signals"
+          onClick={() => runCommand("panel.show.viewSignals")}
+          className="view-signals-button"
+          aria-label={
+            viewSignalsAttentionCount > 0
+              ? `View signals (${viewSignalsAttentionCount} need attention)`
+              : "View signals"
+          }
+        >
+          View signals
+          {viewSignalsAttentionCount > 0 && (
+            <span className="view-signals-badge" aria-hidden="true">
+              {viewSignalsAttentionCount > 99 ? "99+" : viewSignalsAttentionCount}
             </span>
           )}
         </button>

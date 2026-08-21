@@ -94,53 +94,206 @@ pub struct DbcCollision {
     pub loser_path: String,
 }
 
-/// Every duplicate-id collision across the loaded set, for the
-/// Database panel's warning. For each bus any database is assigned
-/// to, walk its assigned databases in **project load order** —
-/// [`filter::dbc_applies`] restricted to that bus, the same filter and
-/// the same order `scoped_descriptors`' dedup and
-/// `AppState::first_dbc_on_bus` apply — and record every signal
-/// identity a later database repeats: the first database to define it
-/// is the winner by construction (same rule, same order), and every
-/// later one is a loser naming that winner.
+/// Which assigned databases define each signal identity, per bus — the
+/// one answer to "what decodes `(bus, message id, extended, signal
+/// name)` today, and is there more than one candidate".
 ///
-/// This only detects and names a winner; it does not choose one. Which
-/// database's decode should apply to a colliding signal is a
-/// resolution the Database panel does not offer — this is the warning
-/// alone.
-pub fn dbc_collisions<'a>(
-    dbs: impl IntoIterator<Item = (&'a str, &'a Database, &'a [String])>,
-) -> Vec<DbcCollision> {
-    let dbs: Vec<(&str, &Database, &[String])> = dbs.into_iter().collect();
-    let mut bus_ids: Vec<String> = dbs
-        .iter()
-        .flat_map(|(_, _, buses)| buses.iter().cloned())
-        .collect();
-    bus_ids.sort_unstable();
-    bus_ids.dedup();
+/// Built by [`definition_index`] and shared by every consumer that has
+/// to reason about a signal's *source* rather than its value:
+/// [`dbc_collisions`] reports the entries with more than one definer as
+/// the Database panel's duplicate-id warning, and the view-signal
+/// panel's model ([`crate::view_signals`]) reads the same entries per
+/// referenced signal to name the serving database and to spot an
+/// ambiguous one.
+/// Two detectors would be two chances to disagree about which database
+/// wins.
+///
+/// Entries are in **project load order**, restricted per bus by
+/// [`filter::dbc_applies`] — the same filter and the same order
+/// `scoped_descriptors`' dedup and `AppState::first_dbc_on_bus` apply,
+/// so the first entry is the database that resolves the signal today.
+/// A database appears at most once per identity however many times it
+/// declares the name (a message may declare one name in several
+/// multiplexor arms), because "which database serves this" is not a
+/// question a database can disagree with itself about.
+///
+/// Borrows from the loaded set, so it is built and read under one hold
+/// of the `databases` lock and costs no string clones.
+pub struct DefinitionIndex<'a> {
+    by_signal: HashMap<String, DefinitionEntry<'a>>,
+}
 
-    let mut out = Vec::new();
-    for bus_id in &bus_ids {
-        let mut seen: HashMap<(u32, bool, String), &str> = HashMap::new();
-        for (path, db, buses) in &dbs {
-            if !crate::filter::dbc_applies(buses, Some(bus_id.as_str())) {
-                continue;
-            }
-            for sig in db.signals() {
-                let key = (sig.message_id, sig.extended, sig.signal_name.clone());
-                if let Some(&winner_path) = seen.get(&key) {
-                    out.push(DbcCollision {
-                        bus_id: bus_id.clone(),
-                        message_id: sig.message_id,
-                        extended: sig.extended,
-                        signal_name: sig.signal_name,
-                        winner_path: winner_path.to_owned(),
-                        loser_path: (*path).to_owned(),
+/// One indexed signal identity: what it is, and which assigned
+/// databases define it in project load order.
+struct DefinitionEntry<'a> {
+    bus_id: &'a str,
+    message_id: u32,
+    extended: bool,
+    signal_name: &'a str,
+    definers: Vec<&'a str>,
+}
+
+impl<'a> DefinitionIndex<'a> {
+    /// The databases that define the signal `identity` names
+    /// ([`signal_identity`]), in project load order — empty when
+    /// nothing does, which under [`filter::dbc_applies`] is also every
+    /// identity naming no bus.
+    #[must_use]
+    pub fn defining(&self, identity: &str) -> &[&'a str] {
+        self.by_signal
+            .get(identity)
+            .map_or(&[][..], |e| e.definers.as_slice())
+    }
+
+    /// The candidate chain for `identity` **once the user's pick is
+    /// applied**: the database a pick names, alone, where it names one
+    /// of the definers — and otherwise the definers in load order,
+    /// which is the default.
+    ///
+    /// The same rule
+    /// [`DecodeModel::picked_index`](crate::signal_fingerprint::DecodeModel::picked_index)
+    /// applies to the decode and to the encoding fingerprint, expressed
+    /// here over an already-built definer list. Both read "assigned to
+    /// the bus and defining the signal, in load order", so the panel
+    /// cannot name a serving database the decoder does not use. A pick
+    /// naming something that is not a definer — removed, unassigned,
+    /// or edited until it no longer defines the signal — is ignored,
+    /// exactly as the decode ignores it.
+    #[must_use]
+    pub fn resolved<'s>(
+        &'s self,
+        identity: &str,
+        picks: &crate::signal_fingerprint::SignalDbcPicks,
+    ) -> &'s [&'a str] {
+        let all = self.defining(identity);
+        self.pick_in_force(identity, picks)
+            .map_or(all, |i| &all[i..=i])
+    }
+
+    /// The database a pick names for `identity` **where that pick is in
+    /// force** — `None` both when nothing was chosen and when what was
+    /// chosen is no longer a definer. The panel shows this as its
+    /// picker's current value, so a pick that resolves to nothing must
+    /// not appear there either.
+    #[must_use]
+    pub fn picked(
+        &self,
+        identity: &str,
+        picks: &crate::signal_fingerprint::SignalDbcPicks,
+    ) -> Option<&'a str> {
+        self.pick_in_force(identity, picks)
+            .map(|i| self.defining(identity)[i])
+    }
+
+    /// Where in the definer list the pick lands, if it lands at all.
+    fn pick_in_force(
+        &self,
+        identity: &str,
+        picks: &crate::signal_fingerprint::SignalDbcPicks,
+    ) -> Option<usize> {
+        let pick = picks.get(identity)?;
+        self.defining(identity).iter().position(|d| d == pick)
+    }
+
+    /// Every indexed identity that more than one database defines, as
+    /// `(bus, message id, extended, signal name, definers)`. Sorted, so
+    /// a consumer's output order does not depend on hash iteration.
+    fn ambiguous(&self) -> Vec<(&'a str, u32, bool, &'a str, &[&'a str])> {
+        let mut out: Vec<_> = self
+            .by_signal
+            .values()
+            .filter(|e| e.definers.len() > 1)
+            .map(|e| {
+                (
+                    e.bus_id,
+                    e.message_id,
+                    e.extended,
+                    e.signal_name,
+                    e.definers.as_slice(),
+                )
+            })
+            .collect();
+        out.sort_unstable_by_key(|&(bus, id, ext, name, _)| (bus, id, ext, name));
+        out
+    }
+}
+
+/// Index every loaded database's signals by [`signal_identity`] across
+/// the buses it is **assigned to** — see [`DefinitionIndex`] for what
+/// the result means and who reads it. A database assigned to no bus
+/// contributes nothing, because it decodes nothing
+/// ([`filter::dbc_applies`]).
+#[must_use]
+pub fn definition_index<'a>(
+    dbs: impl IntoIterator<Item = (&'a str, &'a Database, &'a [String])>,
+) -> DefinitionIndex<'a> {
+    let mut by_signal: HashMap<String, DefinitionEntry<'a>> = HashMap::new();
+    for (path, db, buses) in dbs {
+        for (message_id, extended, signal_name) in db.signal_names() {
+            for bus_id in buses {
+                let entry = by_signal
+                    .entry(signal_identity(
+                        Some(bus_id),
+                        message_id,
+                        extended,
+                        signal_name,
+                        false,
+                    ))
+                    .or_insert_with(|| DefinitionEntry {
+                        bus_id,
+                        message_id,
+                        extended,
+                        signal_name,
+                        definers: Vec::new(),
                     });
-                } else {
-                    seen.insert(key, path);
+                // A database is one candidate however many arms of a
+                // multiplexed message repeat the name.
+                if entry.definers.last() != Some(&path) {
+                    entry.definers.push(path);
                 }
             }
+        }
+    }
+    DefinitionIndex { by_signal }
+}
+
+/// Every duplicate-id collision across the loaded set, for the
+/// Database panel's warning: every signal identity that more than one
+/// database assigned to the same bus defines, and which of them wins
+/// the decode.
+///
+/// The winner is whichever [`DefinitionIndex::resolved`] says resolves
+/// the signal — the database the user chose for it where they chose
+/// one, and project load order otherwise — and every other definer is
+/// a loser naming that winner. Reading the winner through the same
+/// resolution the decode and the encoding fingerprint use is what keeps
+/// this warning from naming a database the decoder does not use once an
+/// ambiguity has been settled.
+///
+/// This detects and names; it does not choose. The choice is the
+/// view-signal panel's ([`crate::view_signals`]); a collision the user
+/// has resolved is still a collision, and the Database panel still
+/// reports it.
+pub fn dbc_collisions<'a>(
+    dbs: impl IntoIterator<Item = (&'a str, &'a Database, &'a [String])>,
+    picks: &crate::signal_fingerprint::SignalDbcPicks,
+) -> Vec<DbcCollision> {
+    let index = definition_index(dbs);
+    let mut out = Vec::new();
+    for (bus_id, message_id, extended, signal_name, definers) in index.ambiguous() {
+        let identity = signal_identity(Some(bus_id), message_id, extended, signal_name, false);
+        let winner = index
+            .picked(&identity, picks)
+            .unwrap_or_else(|| definers[0]);
+        for loser in definers.iter().filter(|d| **d != winner) {
+            out.push(DbcCollision {
+                bus_id: bus_id.to_owned(),
+                message_id,
+                extended,
+                signal_name: signal_name.to_owned(),
+                winner_path: winner.to_owned(),
+                loser_path: (*loser).to_owned(),
+            });
         }
     }
     out
@@ -760,6 +913,13 @@ mod tests {
         Database::parse(TWO_ECU_DBC).unwrap()
     }
 
+    /// One message declaring the same signal name in two multiplexor
+    /// arms — one database, two `SG_` lines, one signal identity.
+    const MUX_ARMS_DBC: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Bms\n\n\
+        BO_ 256 PackStatus: 8 Bms\n SG_ Mux M : 0|8@1+ (1,0) [0|0] \"\" Bms\n \
+        SG_ Reading m0 : 8|16@1+ (0.1,0) [0|0] \"V\" Bms\n \
+        SG_ Reading m1 : 8|16@1+ (0.5,0) [0|0] \"V\" Bms\n";
+
     fn all_on(buses: &[&str]) -> Vec<(Option<String>, SignalDescriptor)> {
         let db = db();
         let scoped: Vec<String> = buses.iter().map(|s| (*s).to_string()).collect();
@@ -828,10 +988,13 @@ mod tests {
         // `a` — first in project (iteration) order — wins all three.
         let a = db();
         let b = db();
-        let collisions = dbc_collisions([
-            ("a.dbc", &a, &["power".to_string()][..]),
-            ("b.dbc", &b, &["power".to_string()][..]),
-        ]);
+        let collisions = dbc_collisions(
+            [
+                ("a.dbc", &a, &["power".to_string()][..]),
+                ("b.dbc", &b, &["power".to_string()][..]),
+            ],
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        );
         let mut names: Vec<&str> = collisions.iter().map(|c| c.signal_name.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, vec!["PackTemp", "PackVolts", "TorqueReq"]);
@@ -841,15 +1004,52 @@ mod tests {
     }
 
     #[test]
+    fn dbc_collisions_names_the_winner_the_user_picked() {
+        // The collision is still a collision — two databases really do
+        // define the signal — but once the user has settled which one
+        // decodes it, the warning has to name that one. Otherwise the
+        // Database panel and the decoder disagree about the winner,
+        // which is exactly what one shared `DefinitionIndex` exists to
+        // prevent.
+        let a = db();
+        let b = db();
+        let mut picks = crate::signal_fingerprint::SignalDbcPicks::new();
+        picks.insert(
+            signal_identity(Some("power"), 256, false, "PackVolts", false),
+            "b.dbc".to_owned(),
+        );
+        let dbs = [
+            ("a.dbc", &a, &["power".to_string()][..]),
+            ("b.dbc", &b, &["power".to_string()][..]),
+        ];
+        let collisions = dbc_collisions(dbs, &picks);
+        let picked: Vec<&DbcCollision> = collisions
+            .iter()
+            .filter(|c| c.signal_name == "PackVolts")
+            .collect();
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].winner_path, "b.dbc");
+        assert_eq!(picked[0].loser_path, "a.dbc");
+        // Every other signal still resolves by load order.
+        assert!(collisions
+            .iter()
+            .filter(|c| c.signal_name != "PackVolts")
+            .all(|c| c.winner_path == "a.dbc"));
+    }
+
+    #[test]
     fn dbc_collisions_ignores_a_matching_id_on_a_different_bus() {
         // Same definitions, but assigned to different buses: no bus
         // sees both, so nothing collides.
         let a = db();
         let b = db();
-        let collisions = dbc_collisions([
-            ("a.dbc", &a, &["power".to_string()][..]),
-            ("b.dbc", &b, &["chassis".to_string()][..]),
-        ]);
+        let collisions = dbc_collisions(
+            [
+                ("a.dbc", &a, &["power".to_string()][..]),
+                ("b.dbc", &b, &["chassis".to_string()][..]),
+            ],
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        );
         assert!(collisions.is_empty());
     }
 
@@ -860,11 +1060,70 @@ mod tests {
         // with nothing.
         let a = db();
         let b = db();
-        let collisions = dbc_collisions([
-            ("a.dbc", &a, &[] as &[String]),
-            ("b.dbc", &b, &["power".to_string()][..]),
-        ]);
+        let collisions = dbc_collisions(
+            [
+                ("a.dbc", &a, &[] as &[String]),
+                ("b.dbc", &b, &["power".to_string()][..]),
+            ],
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        );
         assert!(collisions.is_empty());
+    }
+
+    #[test]
+    fn dbc_collisions_does_not_collide_a_database_with_itself() {
+        // A message may declare one signal name in several multiplexor
+        // arms; `Database::signal_names` yields one entry per `SG_`
+        // line, so a naive scan records the second arm as a *collision*
+        // between the database and itself and the Database panel warns
+        // that `a.dbc` loses to `a.dbc`. One database is one candidate.
+        let a = Database::parse(MUX_ARMS_DBC).unwrap();
+        let power = vec!["power".to_string()];
+        let collisions = dbc_collisions(
+            [("a.dbc", &a, power.as_slice())],
+            &crate::signal_fingerprint::SignalDbcPicks::new(),
+        );
+        assert!(collisions.is_empty(), "{collisions:?}");
+    }
+
+    #[test]
+    fn definition_index_lists_the_definers_in_project_order() {
+        let a = db();
+        let b = db();
+        let power = vec!["power".to_string()];
+        let index = definition_index([
+            ("a.dbc", &a, power.as_slice()),
+            ("b.dbc", &b, power.as_slice()),
+        ]);
+        let ident = |bus, name| signal_identity(bus, 256, false, name, false);
+        assert_eq!(
+            index.defining(&ident(Some("power"), "PackVolts")),
+            ["a.dbc", "b.dbc"],
+        );
+        // Not on this bus, not this name, and no bus at all: nothing
+        // defines any of them.
+        assert!(index
+            .defining(&ident(Some("chassis"), "PackVolts"))
+            .is_empty());
+        assert!(index.defining(&ident(Some("power"), "Nope")).is_empty());
+        assert!(index.defining(&ident(None, "PackVolts")).is_empty());
+    }
+
+    #[test]
+    fn definition_index_skips_a_database_assigned_to_no_bus() {
+        // An unassigned database decodes nothing (`filter::dbc_applies`),
+        // so it defines nothing the index can serve.
+        let a = db();
+        let index = definition_index([("a.dbc", &a, &[] as &[String])]);
+        assert!(index
+            .defining(&signal_identity(
+                Some("power"),
+                256,
+                false,
+                "PackVolts",
+                false
+            ))
+            .is_empty());
     }
 
     #[test]
