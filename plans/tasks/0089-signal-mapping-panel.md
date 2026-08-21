@@ -653,3 +653,192 @@ the median across the four reports (`jsheap_mb_drift_per_min` 8.7 vs a
 `tree_mb_drift_per_min` 74.6 vs 139.2), all `ok`. Host modes
 (tracebuffer/grpc/hardware-peak) gated on their own baselines and were
 all `ok` too, unaffected by a frontend-only change.
+
+### Phase 4 — the ambiguity pick (2026-08-20)
+
+Branch `task-89-phase-4-ambiguity-pick`, from
+`task-89-phase-3-launcher-badge` (`9b101662`). Five commits (`8e30c96e`
+the decode model, `92f68c1d` persistence + the command, `80114808` the
+panel's model, `41833003` the frontend picker, `08d905ef` the collision
+winner) plus this log. Workspace Rust tests 1478 → 1494 (+16), zero
+failures; frontend 2336 → 2340 (+4, still 177 files), zero failures;
+`cargo clippy --workspace --all-targets` clean, `cargo fmt --all`
+applied, `pnpm build` (tsc + vite) clean.
+
+**The shape, and how an untouched project stays byte-identical.** The
+pick lives in the project file as `signal_dbc_picks`: signal identity
+(ADR 0038 — the same `bus|s:id:name` string the row id, `signal_colors`
+and `plotData.ts::signalKey` all use) → the chosen database's loaded
+path. It is host-managed like `transmit_frames`, because the decoder
+consumes it: `open_project` installs it into
+`AppState::signal_dbc_picks`, `save_project` snapshots that registry
+back, and the frontend's save payload never carries it. The field is
+`skip_serializing_if = is_empty`, so a project with no resolved
+ambiguity serialises with no such key at all —
+`a_project_with_no_database_pick_carries_no_such_field` asserts the
+*absence*, because a round-trip assertion would pass either way. No
+schema bump: an additive field the loader defaults when absent is
+exactly what ADR 0011 says is not a shape change.
+
+Recording is narrower than "whatever the caller sent", and that is what
+makes the not-persisted-when-not-set ruling hold in practice rather than
+only at the serializer. `set_signal_dbc_pick` keeps an entry only for a
+**real, non-default** choice, which collapses three cases into one
+clear: `None`, the database load order already picks, and a path that
+does not define this signal on this bus. Choosing the load-order winner
+is therefore how the user reverts, and the map only ever holds choices
+that differ from the default.
+
+**How a removed DBC drops its entry.** `remove_dbc_inner` calls
+`AppState::forget_dbc_picks(path)` before it re-judges the pyramids, so
+the model the invalidation sees is already the one without the pick.
+Silently — no log line, no notice — and
+`removing_the_picked_database_drops_the_pick_silently` pins both halves
+(the entry gone, the system log unchanged in length).
+`close_project` drops them all, as it already drops the view-signal
+references.
+
+`clear_dbcs` deliberately does **not** prune, and that is load-bearing
+rather than an omission: it is the first half of an *open project*
+(`loadDbcSet` clears, then re-adds each database), and it runs *after*
+`open_project` has installed the file's picks. Pruning there would wipe
+every pick a project carried, every time it was opened.
+`clearing_the_whole_set_keeps_the_picks_the_project_just_installed`
+guards it, and also that a pick comes back into force the moment its
+database does.
+
+**How the decoder consumes it.** `DecodeModel` bundles the scoped DBC
+set with the picks and travels where `Vec<DbcScope>` used to. It derefs
+to the scope slice, so the many consumers that only need the set read
+exactly as before, while the ones that resolve a signal's *source*
+cannot pass the set and forget the picks. `DbcScope` grew the loaded
+path — the identity a pick names, and mixed into no fingerprint, since a
+fingerprint is over the parsed model and not the file it came from.
+
+The rule is stated once, in `DecodeModel::picked_index`: where a pick
+names a database that is loaded, assigned to the signal's bus, and
+actually defines the signal, that is its position among the databases
+eligible for a frame on that bus — and that database alone is the
+chain. Three consumers apply it, over three materialisations of the same
+"assigned to the bus and defining the signal, in load order" sequence:
+
+| Consumer | What the pick does |
+| --- | --- |
+| `signal_sampler::sample_shared` (through `scan_chunk`) | pins the name to that database's decode, resolved once per bus turnover alongside the `eligible` list it indexes into |
+| `signal_fingerprint::dbc_encoding` | shortens the candidate chain to the same one database |
+| `signal_snapshot::DefinitionIndex::resolved` | the serving database the panel names, and whether the row is still Ambiguous |
+
+**A pinned name takes its value from that database or from none.** The
+default rule lets a database withhold a frame (a multiplexor arm that
+does not match) and the next one answer; under a pick that fall-through
+would put back exactly the silent substitution the pick was made to
+stop, so it is not offered. The safe direction *is* offered: a **stale**
+pick — the database removed, unassigned, or edited until it no longer
+defines the signal — is ignored rather than honoured-and-empty, so a
+pick can never silence a signal that something still decodes. The
+asymmetry is deliberate and tested from both ends.
+
+**What a pick does to the caches, and the test that proves it.** This is
+the half that would otherwise have been a silent wrong answer. A pyramid
+holds *decoded* samples and revives against its encoding fingerprint
+(ADR 0047), so if only the decode honoured the pick, the pyramid built
+under the load-order default would keep serving the **other** database's
+samples under the picked database's name. Because `dbc_encoding` applies
+the same shortening, a pick moves the fingerprint;
+`set_signal_dbc_pick` then runs `invalidate_derived_caches`, which
+re-encodes every live pyramid, retires the one the pick invalidated and
+parks it. Reverting restores the fingerprint the park carries, so the
+old pyramid revives instead of decoding into a third answer.
+
+Falsified before it was believed (observation → hypothesis → experiment
+→ data → conclusion):
+
+- *Observation.* `a_pick_retires_the_pyramid_the_other_database_decoded`
+  passed on its first run, which proves nothing about *which* half of
+  the change made it pass.
+- *Hypothesis.* The decode half alone is not sufficient — without the
+  fingerprint half the pyramid survives the pick and keeps serving the
+  old scaling.
+- *Experiment.* Deleted the three-line pick check from `dbc_encoding`,
+  leaving `sample_shared`'s intact, and re-ran that one test.
+- *Data.* `assertion left == right failed: a stale pyramid served the
+  retired database's samples / left: [3.0, 4.0] / right: [30.0, 40.0]` —
+  the *pre-pick* database's samples, served after the pick.
+- *Conclusion.* Confirmed, and it is the fingerprint that carries it.
+  The same falsification was run against `sample_shared`'s half (both
+  decode pick tests fail without it) and against the frontend picker's
+  `disabled` attribute (three panel tests fail), so no test added here
+  passes for a reason other than the change it names.
+
+**`SignalKey` did not grow a DBC field** — confirmed; nothing in this
+phase touches it. The pick is keyed on the *signal identity*, not
+carried in the cache key, so one signal still has exactly one decode and
+one pyramid. That is precisely why the cache work above is necessary:
+with the key unchanged, the existing pyramid *is* the one that has to be
+retired.
+
+**The picker, live.** Phase 2 rendered the source `<select>` inert; it
+now records the choice through `set_signal_dbc_pick`, keyed on the row's
+own id. No apply step and no local state — the host records, re-judges
+and announces a DBC change (ADR 0053 §2, which is what a change to what
+the loaded set decodes means), and that is one of the two events the
+panel and its badge already refetch on. A pick the host declines simply
+comes back unchanged, by the same path as any other refetch. Options
+naming a *different signal* are the remap case and stay disabled with a
+title saying so; a row with nothing to offer keeps a disabled control.
+`ViewSignalRow` gained `pickedDbc`, reported only while the pick is in
+force, and a `Decoded` row now keeps its candidates when one is —
+otherwise the control that made the pick could not undo it.
+
+**A resolved row leaves Ambiguous** because its chain no longer holds
+more than one candidate: the status falls out of the shared resolution
+rather than being special-cased. Choosing a database that scales the
+signal differently from what the view recorded moves the row to
+**Scale**, which is the panel saying what the choice cost rather than
+hiding it.
+
+**Bug found and fixed in passing: the Database panel named the wrong
+winner.** Task 88's `dbc_collisions` split the definer list and called
+the first entry the winner. After a pick that is false, and the Database
+panel would name one database while the decoder used another — the exact
+disagreement phase 1 built one shared `DefinitionIndex` to prevent. It
+now reads the winner through `resolved`. A settled collision is still a
+collision (two databases really do define the signal), so the warning
+stays; only which side is winner and which is loser changes.
+`dbc_collisions_names_the_winner_the_user_picked` is the guard, and
+README's sentence about that warning was corrected in the same commit.
+
+**Second small fix in passing:** the source `<option>`'s value packs the
+database path and the signal name around a separator that phase 2 wrote
+as a **literal NUL byte in the .tsx source**, which made the whole file
+read as binary to `grep` and `diff`. Same value, written as the `\0`
+escape, and both halves now go through one pair of functions instead of
+being spelled out at three call sites.
+
+**What a pick does not reach, and why — for an owner ruling.** The pick
+is per *signal*, and so is exactly one decode path: `signal_cache` /
+`sample_shared`, the decoder grooming measured and named
+(`first_dbc_wins_per_signal_not_per_message`). The app's other decode
+paths resolve one database **per message** and then read every signal
+out of that single decode: the trace view's rows (`decode_against`), the
+signals view's latest-value snapshot (`decode_snapshot_frame`), and the
+descriptor catalog's dedup (`scoped_descriptors`, which
+`AppState::first_dbc_on_bus` matches). Honouring a per-signal pick there
+means splitting one message's decode across two databases and
+re-deriving individual signals out of the loser — a different change
+from the one groomed, and one with a per-frame cost on the trace path.
+
+The consequence is bounded, and surfaced rather than silent: for a
+signal whose two definitions differ in scaling, a pick moves the
+**plot's** samples but not the signals view's latest value or the
+catalog's unit — and the panel says so, because that row then reads
+**Scale**, naming what the view recorded against what the picked
+database says. For the shape the owner expects this to be used for (a
+client-facing DBC beside a private one carrying extra enum values) the
+definitions agree on scaling and the divergence does not arise; what a
+pick does *not* yet deliver in that case is the private database's extra
+value labels, which come from the catalog rather than from the decode.
+Named here for a ruling, not decided.
+
+**Not touched:** `TraceStore::frame_index_at_ns` (task 91) — nothing in
+this phase reads it.
