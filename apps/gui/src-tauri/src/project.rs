@@ -233,6 +233,23 @@ pub struct Project {
     /// round-trips the map. Additive; no schema-version bump.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub signal_colors: std::collections::HashMap<String, String>,
+    /// Per-signal choices of which assigned database decodes a signal:
+    /// signal identity (ADR 0038) → the loaded path of the chosen
+    /// database. The resolution of the ambiguous case the view-signal
+    /// panel surfaces — two databases on one bus defining the same
+    /// signal, which the decode path would otherwise settle silently by
+    /// load order.
+    ///
+    /// Host-managed like [`Self::transmit_frames`], because the decoder
+    /// consumes it: `open_project` loads it into
+    /// `AppState::signal_dbc_picks` and `save_project` snapshots that
+    /// registry back, so the frontend's save payload does not carry it.
+    /// A signal appears only when the user has chosen for it, and the
+    /// whole field is omitted when nothing has — a project that never
+    /// met an ambiguity serialises exactly as it did before this
+    /// existed. Additive; no schema-version bump.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks,
 }
 
 /// A fresh random project identity. The serde default for
@@ -315,6 +332,10 @@ pub fn open_project(
             // never fires traffic onto a bus the user hasn't
             // intentionally reconnected.
             state.transmit_frames().load(p.transmit_frames.clone());
+            // Same shape for the per-signal database picks: the host
+            // owns them because the decoder consumes them, so the open
+            // path installs the project's map wholesale.
+            *state.signal_dbc_picks() = std::sync::Arc::new(p.signal_dbc_picks.clone());
             // Take up the disk watch on this file, recording the text
             // just read as the content the app has for it (ADR 0053 §1;
             // `crate::project_watch`). Registered here rather than in
@@ -364,6 +385,9 @@ pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_s
     // No project file, so no project identity to stamp a capture with,
     // and nothing on disk left to watch.
     *state.active_project_id() = None;
+    // The picks belong to the project that is closing, exactly as its
+    // view-signal references do; a new project starts with none.
+    *state.signal_dbc_picks() = std::sync::Arc::default();
     crate::project_watch::clear_open_project(&app);
     crate::sys_info!(&app, "project", "closed the open project");
 }
@@ -395,6 +419,12 @@ pub fn save_project(
     // project it submits. Snapshot the registry into the project before
     // writing so save captures the current pool + order.
     project.transmit_frames = state.transmit_frames().snapshot();
+    // Likewise the per-signal database picks: host-owned because the
+    // decoder consumes them, and absent from the file entirely when no
+    // ambiguity has been resolved.
+    project
+        .signal_dbc_picks
+        .clone_from(state.signal_dbc_picks().as_ref());
     // Through the watch record: the file cannet just wrote *is* the open
     // project file, and the watch has to know that this write was
     // cannet's own rather than announce a change on every Save
@@ -513,7 +543,41 @@ mod tests {
             local_virtual_buses: Vec::new(),
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
+            signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
         }
+    }
+
+    #[test]
+    fn a_project_with_no_database_pick_carries_no_such_field() {
+        // Owner ruling: the per-signal database pick is *not persisted
+        // when not set*. A project that never met an ambiguity has to
+        // serialise exactly as it did before the field existed —
+        // otherwise every file in existence gains a line that says
+        // nothing.
+        let text = serde_json::to_string_pretty(&sample()).unwrap();
+        assert!(
+            !text.contains("signal_dbc_picks"),
+            "an empty pick map must not reach the file: {text}"
+        );
+        // …and a file written without it still parses, to an empty map.
+        assert!(parse_project(&text).unwrap().signal_dbc_picks.is_empty());
+    }
+
+    #[test]
+    fn database_picks_round_trip_when_there_are_any() {
+        let mut p = sample();
+        p.signal_dbc_picks
+            .insert("p|s:256:PackVolts".into(), "/some/where/private.dbc".into());
+        let text = serde_json::to_string_pretty(&p).unwrap();
+        let parsed = parse_project(&text).unwrap();
+        assert_eq!(parsed, p);
+        assert_eq!(
+            parsed
+                .signal_dbc_picks
+                .get("p|s:256:PackVolts")
+                .map(String::as_str),
+            Some("/some/where/private.dbc")
+        );
     }
 
     #[test]
@@ -725,6 +789,7 @@ mod tests {
             }],
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
+            signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();
         let parsed = parse_project(&text).unwrap();
@@ -760,6 +825,7 @@ mod tests {
             local_virtual_buses: Vec::new(),
             transmit_frames: Vec::new(),
             signal_colors: std::collections::HashMap::new(),
+            signal_dbc_picks: crate::signal_fingerprint::SignalDbcPicks::new(),
         };
         let text = serde_json::to_string_pretty(&p).unwrap();
         let parsed = parse_project(&text).unwrap();

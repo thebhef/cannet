@@ -264,9 +264,10 @@ impl AppState {
             .expect("view_signals mutex poisoned")
     }
 
-    /// The per-signal database picks. Taken *before* [`Self::databases`]
-    /// wherever both are needed, and released before any long decode —
-    /// every reader wants the `Arc`, not the guard.
+    /// The per-signal database picks. Taken *after* [`Self::databases`]
+    /// wherever both are needed ([`Self::decode_model`] reads it under a
+    /// held DBC-set guard), and released immediately — every reader
+    /// wants the `Arc`, not the guard.
     pub(crate) fn signal_dbc_picks(
         &self,
     ) -> MutexGuard<'_, Arc<crate::signal_fingerprint::SignalDbcPicks>> {
@@ -287,6 +288,25 @@ impl AppState {
         dbcs: &'a [LoadedDbc],
     ) -> crate::signal_fingerprint::DecodeModel<'a> {
         decode_model(dbcs, self.picks_snapshot())
+    }
+
+    /// Forget every per-signal database pick naming `path`, and say
+    /// whether any did. The database was removed from the project, so
+    /// the choice those entries recorded has no subject any more.
+    ///
+    /// **Silently**, and by design: what is left is the load-order
+    /// default, which is exactly what a project that never made the
+    /// pick decodes. There is nothing for the user to repair and so
+    /// nothing to tell them about.
+    pub(crate) fn forget_dbc_picks(&self, path: &str) -> bool {
+        let mut guard = self.signal_dbc_picks();
+        if !guard.values().any(|p| p == path) {
+            return false;
+        }
+        let mut next = (**guard).clone();
+        next.retain(|_, p| p != path);
+        *guard = Arc::new(next);
+        true
     }
 
     pub(crate) fn import_cancel(&self) -> MutexGuard<'_, Option<Arc<AtomicBool>>> {

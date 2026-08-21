@@ -546,6 +546,7 @@ pub fn run() -> ! {
             view_signals::set_view_signals,
             view_signals::remove_view_signals,
             view_signals::clear_view_signals,
+            view_signals::set_signal_dbc_pick,
             list_file_backed_content,
             sample_signals,
             signal_min_max,
