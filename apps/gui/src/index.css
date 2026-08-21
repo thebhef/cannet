@@ -2467,14 +2467,11 @@ button.color-chip {
   align-self: stretch;
 }
 
-/* Expanded-row decoded signals: one indented sub-row per signal. Each
-   `.signal` line's height is set inline from `SIGNAL_LINE_HEIGHT`
-   (traceViewport.ts) so it can't drift from the row-placement math. */
-.signals {
-  grid-column: 1 / -1;
-  padding-left: 1.5rem;
-}
-
+/* A message's disclosed decoded signals: one indented row per signal,
+   and a row of the gridview's space like any other (ADR 0044) — so it
+   shows the selection itself. Each row's height and top are set inline
+   from `SIGNAL_LINE_HEIGHT` (traceViewport.ts) so the stack can't drift
+   from the row-placement math; the indent is this stylesheet's fact. */
 .signal {
   display: flex;
   justify-content: space-between;
@@ -2482,6 +2479,17 @@ button.color-chip {
   gap: 0.5rem;
   max-width: 32rem;
   border-bottom: 1px dashed var(--border-subtle);
+}
+
+.trace-content-row {
+  padding-left: calc(var(--trace-row-padding-x) + 1.5rem);
+  padding-right: var(--trace-row-padding-x);
+  background: var(--surface-row);
+  cursor: default;
+}
+
+.trace-content-row.selected {
+  background: var(--surface-row-selected);
 }
 
 .signal-name {

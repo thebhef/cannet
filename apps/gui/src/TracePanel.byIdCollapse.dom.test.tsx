@@ -203,8 +203,8 @@ describe("by-id fold persistence", () => {
     await waitForRows(container);
     expect(rowFor(container, "GearBox")).toHaveAttribute("aria-expanded", "false");
     expect(rowFor(container, "PackState")).toHaveAttribute("aria-expanded", "true");
-    // The signal lines are rendered, not merely marked.
-    expect(container.querySelectorAll(".trace-row.expanded .signals").length).toBe(1);
+    // The rows it discloses are rendered, not merely marked.
+    expect(container.querySelectorAll(".trace-content-row").length).toBe(2);
   });
 
   it("survives an unmount / remount through the params it wrote", async () => {

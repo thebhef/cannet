@@ -8,10 +8,10 @@
 /// Pixel height of one trace row.
 export const ROW_HEIGHT = 22;
 
-/// Pixel height of one decoded-signal sub-row inside an expanded row.
-/// The signal lines set this as an inline style (see `DecodedSignalCell`
-/// in `TraceView.tsx` / `ByIdTable.tsx`) so the CSS can't drift from
-/// the placement arithmetic.
+/// Pixel height of one decoded-signal row disclosed by an expanded row.
+/// Those rows set it as an inline style (see `DecodedSignalCell`, which
+/// `TraceView.tsx` and `ByIdTable.tsx` stack under their open rows) so
+/// the CSS can't drift from the placement arithmetic.
 export const SIGNAL_LINE_HEIGHT = 18;
 
 /// Pixel height of a row whose decoded signals are expanded: the

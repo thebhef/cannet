@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 //
-// Rendering test for the expanded-row decoded signals: one indented
-// sub-row per signal (name, value+unit, enum label), stacked at
-// `SIGNAL_LINE_HEIGHT` inside a row sized by `expandedRowHeight`, each
-// line a drag source carrying the plot drag-drop payload. The placement
-// arithmetic is unit-tested in traceViewport.test.ts; this guards that
-// the row renderer actually draws the sub-rows and wires the drag.
+// Rendering test for the rows an expanded row discloses: one indented
+// row per decoded signal (name, value+unit, enum label), stacked at
+// `SIGNAL_LINE_HEIGHT` under the message line so the block is
+// `expandedRowHeight` tall, each one a drag source carrying the plot
+// drag-drop payload. The placement arithmetic is unit-tested in
+// traceViewport.test.ts; this guards that the renderer actually draws
+// the disclosed rows and wires the drag.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -127,10 +128,10 @@ describe("TraceView id column", () => {
   });
 });
 
-describe("TraceView expanded-row signal sub-rows", () => {
+describe("TraceView disclosed signal rows", () => {
   it("renders one signal line per decoded signal with name, value+unit, and label", () => {
     const { container } = renderExpandedRow();
-    const lines = container.querySelectorAll(".signals .signal");
+    const lines = container.querySelectorAll(".trace-content-row");
     expect(lines).toHaveLength(2);
     expect(lines[0].querySelector(".signal-name")).toHaveTextContent("Speed");
     // Value and unit are separate elements, so the unit doesn't read as
@@ -160,24 +161,33 @@ describe("TraceView expanded-row signal sub-rows", () => {
         ],
       },
     });
-    const lines = container.querySelectorAll(".signals .signal");
+    const lines = container.querySelectorAll(".trace-content-row");
     // Base 10 — and digit-exact, never scientific, however large.
     expect(lines[0].querySelector(".signal-value-number")).toHaveTextContent("3735928559");
     expect(lines[1].querySelector(".signal-value-number")).toHaveTextContent("0xDEADBEEF");
   });
 
-  it("sizes the row for one line per signal and each line at SIGNAL_LINE_HEIGHT", () => {
+  it("keeps the message line one row tall and stacks the disclosed rows under it", () => {
     const { container, row } = renderExpandedRow();
-    expect(row.style.height).toBe(`${expandedRowHeight(2)}px`);
+    // The message line is a row like any other; the block it and its
+    // disclosed rows make together is `expandedRowHeight` tall.
+    expect(row.style.height).toBe(`${ROW_HEIGHT}px`);
     expect(expandedRowHeight(2)).toBe(ROW_HEIGHT + 2 * SIGNAL_LINE_HEIGHT);
-    for (const line of container.querySelectorAll(".signals .signal")) {
-      expect((line as HTMLElement).style.height).toBe(`${SIGNAL_LINE_HEIGHT}px`);
+    const lines = [...container.querySelectorAll<HTMLElement>(".trace-content-row")];
+    for (const line of lines) {
+      expect(line.style.height).toBe(`${SIGNAL_LINE_HEIGHT}px`);
     }
+    expect(lines.map((l) => l.style.top)).toEqual([
+      `${ROW_HEIGHT}px`,
+      `${ROW_HEIGHT + SIGNAL_LINE_HEIGHT}px`,
+    ]);
+    const last = lines[lines.length - 1]!;
+    expect(Number.parseFloat(last.style.top) + SIGNAL_LINE_HEIGHT).toBe(expandedRowHeight(2));
   });
 
   it("each signal line is a drag source carrying the plot drop payload", () => {
     const { container } = renderExpandedRow();
-    const line = container.querySelectorAll(".signals .signal")[0] as HTMLElement;
+    const line = container.querySelectorAll(".trace-content-row")[0] as HTMLElement;
     expect(line).toHaveAttribute("draggable", "true");
     const dt = fakeDataTransfer();
     fireEvent.dragStart(line, { dataTransfer: dt });
