@@ -19,11 +19,10 @@ import uPlot from "uplot";
 import { isEnumValueTable, type SignalDescriptorRecord, type SignalExtent, type ValueTableEntryRecord } from "./types";
 import { type ColorResolver, type ColorTarget, colorMapLaneFill } from "./colorMap";
 import {
+  axisAutoRange,
   enumSegments,
-  groupScaleRanges,
   mergeSeries,
   sampleColumns,
-  scaleGroupKey,
   splitExtrapolatedRows,
   type ExtrapolatedSegment,
   type ExtrapolatedSpan,
@@ -1826,16 +1825,20 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       const seriesRel: RawSeries[] = signals.map(
         (s) => snapshot.byKey.get(signalRefKey(s)) ?? { t: [], v: [] },
       );
-      // Auto-normalisation: each series is re-mapped to [0, 1] from
-      // its *unit group's* min/max (ADR 0026 — same-unit series share
-      // one y scale; each unit group fills the canvas independently),
-      // so signals with very different natural ranges (SOC 0–1 vs
-      // current ±300) coexist on one axis. The side-panel value column
-      // still shows the raw value (`seriesRef` keeps the un-normalised
-      // series for that); the y-axis tick labels map back through the
-      // primary signal's group range to real engineering values.
+      // Auto-normalisation: every series on this axis is re-mapped to
+      // [0, 1] from the *axis's* min/max — the union of what each
+      // visible series holds (ADR 0026 — an axis draws one scale). One
+      // scale per axis is what makes the tick labels true of every
+      // series drawn against them: a series scaled privately would be
+      // drawn at an amplitude the axis does not state. Signals with
+      // very different natural ranges are separated by the y-axis
+      // *mode* (per-unit, individual), not by a private scale under a
+      // shared axis. The side-panel value column still shows the raw
+      // value (`seriesRef` keeps the un-normalised series for that);
+      // the y-axis tick labels map back through the axis range to real
+      // engineering values.
       //
-      // The per-signal `(lo, hi)` driving the normalise (group union
+      // The per-signal `(lo, hi)` driving the normalise (the axis union
       // happens below) is resolved by mode — no JS-held latch anymore:
       //
       //  * **Manual Fit Y** — the user-pinned `manualRangesRef`
@@ -1862,12 +1865,12 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       //  * **A degenerate extent still counts.** A signal that never
       //    moves has `hi === lo`. Dropping it left it with no range at
       //    all, so it fell back to the canvas midline and stopped
-      //    sharing its unit group's scale — a constant 3000 A limit
-      //    drew mid-canvas next to a 500 A signal filling the canvas.
-      //    It contributes its one value to the group union instead,
-      //    and a group whose *whole* union is one value is widened to
-      //    a minimum range by `groupScaleRanges` so its axis still
-      //    reads as that value (ADR 0026).
+      //    sharing its axis's scale — a constant 3000 A limit drew
+      //    mid-canvas next to a 500 A signal filling the canvas. It
+      //    contributes its one value to the axis union instead, and an
+      //    axis whose *whole* union is one value is widened to a
+      //    minimum range by `axisAutoRange` so it still reads as that
+      //    value (ADR 0026).
       const ranges = new Map<string, { lo: number; hi: number }>();
       signals.forEach((s, i) => {
         if (s.hidden) return;
@@ -1892,56 +1895,39 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         }
         if (Number.isFinite(lo) && Number.isFinite(hi)) ranges.set(key, { lo, hi });
       });
-      // Unit-based y-scale (ADR 0026): the per-signal latches above
-      // feed `groupScaleRanges`, which hands every signal the *union*
-      // range of its unit group — so same-unit series share one y
-      // scale and each unit group auto-scales independently to fill
-      // the axis. Unitless signals each keep their own range (two
-      // signals that merely both lack a unit aren't known
-      // commensurable).
-      const members = signals.map((s) => ({ key: signalRefKey(s), unit: s.unit }));
-      const scaleRanges = groupScaleRanges(members, ranges);
+      // One scale for the axis (ADR 0026): the per-signal latches above
+      // feed `axisAutoRange`, which unions them into the single range
+      // every series here is normalised by — so the range the axis
+      // labels is the range each series was drawn against.
+      const keys = signals.map((s) => signalRefKey(s));
+      const auto = axisAutoRange(keys, ranges);
       // Manual y control (ADR 0026) sits on top of that: a user-set
       // bound replaces the derived one — and so beats the follow-live
       // extent and the visible fit alike — while an unset bound keeps
-      // auto-scaling, item-4 constant widening included. It is applied
-      // per *group*, because the axis's setting governs every scale
-      // drawn on it, and the groups are what those scales are.
+      // auto-scaling, constant widening included.
       //
       // A log axis derives its own minimum from the data: the smallest
-      // positive value each group actually holds. That is not
-      // recoverable from the group's `(lo, hi)` — a group spanning zero
-      // has a non-positive `lo` and positive samples both — so it is
-      // folded over the sampled values, once per group, and only when
-      // a log axis asked for it.
+      // positive value the axis actually holds. That is not recoverable
+      // from the axis's `(lo, hi)` — a range spanning zero has a
+      // non-positive `lo` and positive samples both — so it is folded
+      // over the sampled values, and only when a log axis asked for it.
       const setting = yScaleRef.current;
-      const minPositive = new Map<string, number>();
+      let minPositive: number | null = null;
       if (setting?.log) {
         signals.forEach((s, i) => {
           if (s.hidden) return;
-          const gk = scaleGroupKey(members[i]);
-          let m = minPositive.get(gk) ?? Infinity;
-          for (const v of seriesRel[i].v) if (v > 0 && v < m) m = v;
-          if (Number.isFinite(m)) minPositive.set(gk, m);
+          for (const v of seriesRel[i].v) {
+            if (v > 0 && (minPositive == null || v < minPositive)) minPositive = v;
+          }
         });
       }
-      const axisRanges = new Map<string, ResolvedAxisRange>();
-      const noPositive: string[] = [];
-      if (setting) {
-        signals.forEach((s, i) => {
-          if (s.hidden) return;
-          const key = members[i].key;
-          const resolved = resolveAxisRange(
-            scaleRanges.get(key) ?? null,
-            setting,
-            minPositive.get(scaleGroupKey(members[i])) ?? null,
-          );
-          if (resolved) axisRanges.set(key, resolved);
-          else if (setting.log && seriesRel[i].v.length > 0) noPositive.push(s.signalName);
-        });
-      } else {
-        for (const [key, r] of scaleRanges) axisRanges.set(key, { ...r, log: false });
-      }
+      const axisRange = resolveAxisRange(auto, setting, minPositive);
+      // A log axis with nothing positive on it can draw no series at
+      // all; name them so the view says why it is empty.
+      const noPositive: string[] =
+        axisRange == null && setting?.log
+          ? signals.filter((s, i) => !s.hidden && seriesRel[i].v.length > 0).map((s) => s.signalName)
+          : [];
       setLogEmptySignals(noPositive.join(", "));
       // Enum-mode: skip auto-normalisation and pass raw enum codes
       // through. The y scale is pinned to the table's raw-value range
@@ -2038,10 +2024,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // the GC they fed.
           rawRows.map((row, i) => {
             if (seriesRel[i].v.length === 0) return row; // all null anyway
-            const key = members[i].key;
-            const r = axisRanges.get(key);
+            const r = axisRange;
             if (r && r.hi > r.lo) {
-              effective.set(key, r);
+              effective.set(keys[i], r);
               if (r.log) {
                 // Non-positive samples are **dropped** (`null`, so uPlot
                 // leaves a gap), not clamped onto the floor — a clamped
@@ -2069,10 +2054,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
               for (let j = 0; j < row.length; j++) row[j] = null;
               return row;
             }
-            // No range available yet — the signal hasn't decoded, so
-            // it has no entry at all (a constant one does, widened to
-            // a minimum range). Render at the canvas midline so the
-            // line is *visible* — without this fallback the raw values
+            // No range available yet — nothing on the axis has decoded,
+            // so it has no range at all (an axis of constants does,
+            // widened to a minimum range). Render at the canvas midline
+            // so the line is *visible* — without this fallback the raw values
             // get drawn against the y = [0, 1] pin and clipped to
             // nothing.
             for (let j = 0; j < row.length; j++) {
@@ -3150,8 +3135,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
         if (v > hi) hi = v;
       }
       // A constant series (`hi === lo`) is kept: it still has to
-      // contribute its value to its unit group's union, the same way
-      // the auto path does.
+      // contribute its value to the axis's union, the same way the
+      // auto path does.
       if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
       next.set(key, { lo, hi });
     }

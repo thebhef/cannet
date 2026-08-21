@@ -463,8 +463,9 @@ scale derives, not a single "y axis". See
    shows one or more series, each a decimated window of a signal."
 — "How are several signals with different units drawn together?"
 — "That's the plot area's y-axis mode. In unified mode they share one
-   axis — each unit group auto-scales to fill it, and the ticks show
-   the primary signal's real units. In per-unit mode each unit gets
+   axis and one scale — the union of everything drawn on it, with the
+   ticks in the primary signal's real units, so an amplitude read off
+   the axis is true of every series. In per-unit mode each unit gets
    its own axis; an enum gets its own axis too, drawn as a
    logic-analyzer lane."
 — "Where do the decoded signal values live?"

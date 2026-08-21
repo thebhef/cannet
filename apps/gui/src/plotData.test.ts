@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  axisAutoRange,
   decodeSignalsSample,
   enumSegments,
-  groupScaleRanges,
   mergeSeries,
   recordSignalKey,
   sampleColumns,
@@ -454,118 +454,90 @@ describe("sampleColumns", () => {
   });
 });
 
-describe("groupScaleRanges", () => {
+describe("axisAutoRange", () => {
   const ranges = (entries: Array<[string, { lo: number; hi: number }]>) => new Map(entries);
 
-  it("same-unit signals share the union of their ranges", () => {
-    const out = groupScaleRanges(
-      [
-        { key: "v1", unit: "V" },
-        { key: "v2", unit: "V" },
-      ],
-      ranges([
-        ["v1", { lo: 0, hi: 5 }],
-        ["v2", { lo: 3, hi: 12 }],
-      ]),
-    );
-    expect(out.get("v1")).toEqual({ lo: 0, hi: 12 });
-    expect(out.get("v2")).toEqual({ lo: 0, hi: 12 });
-  });
-
-  it("different units scale independently", () => {
-    const out = groupScaleRanges(
-      [
-        { key: "v", unit: "V" },
-        { key: "i", unit: "A" },
-      ],
+  it("unions every series on the axis, whatever their units", () => {
+    // An axis draws one scale (ADR 0026). Two series on it are drawn
+    // against the same range, so the range the axis labels is the range
+    // every series was normalised by — differing units do not buy a
+    // series a private scale it is then drawn at without saying so.
+    const out = axisAutoRange(
+      ["v", "i"],
       ranges([
         ["v", { lo: 0, hi: 400 }],
         ["i", { lo: -5, hi: 5 }],
       ]),
     );
-    expect(out.get("v")).toEqual({ lo: 0, hi: 400 });
-    expect(out.get("i")).toEqual({ lo: -5, hi: 5 });
+    expect(out).toEqual({ lo: -5, hi: 400 });
   });
 
-  it("unitless signals do not share a scale with each other", () => {
-    const out = groupScaleRanges(
-      [
-        { key: "a", unit: "" },
-        { key: "b", unit: "" },
-      ],
+  it("unitless series share the axis scale like any other", () => {
+    const out = axisAutoRange(
+      ["a", "b"],
       ranges([
         ["a", { lo: 0, hi: 1 }],
         ["b", { lo: 0, hi: 1000 }],
       ]),
     );
-    expect(out.get("a")).toEqual({ lo: 0, hi: 1 });
-    expect(out.get("b")).toEqual({ lo: 0, hi: 1000 });
+    expect(out).toEqual({ lo: 0, hi: 1000 });
   });
 
-  it("a signal with no observed range gets no entry and doesn't poison its group", () => {
-    const out = groupScaleRanges(
-      [
-        { key: "v1", unit: "V" },
-        { key: "v2", unit: "V" },
-      ],
-      ranges([["v1", { lo: 1, hi: 2 }]]),
-    );
-    expect(out.get("v1")).toEqual({ lo: 1, hi: 2 });
-    expect(out.has("v2")).toBe(false);
+  it("a series with no observed range contributes nothing", () => {
+    const out = axisAutoRange(["v1", "v2"], ranges([["v1", { lo: 1, hi: 2 }]]));
+    expect(out).toEqual({ lo: 1, hi: 2 });
   });
 
-  it("a group with no span gets a ±10 % minimum range around its value", () => {
-    // A signal that never moves has a degenerate extent, and a group
+  it("an axis nothing has decoded on has no range at all", () => {
+    expect(axisAutoRange(["v1"], ranges([]))).toBeNull();
+  });
+
+  it("an axis with no span gets a ±10 % minimum range around its value", () => {
+    // A signal that never moves has a degenerate extent, and an axis
     // made only of such signals has no span at all. Without a minimum
     // range it cannot be normalised, so it drew on the bare 0–1 canvas
     // with the trace on the midline — an axis that says nothing about
     // the value it holds.
-    const out = groupScaleRanges([{ key: "i", unit: "A" }], ranges([["i", { lo: 3000, hi: 3000 }]]));
-    expect(out.get("i")).toEqual({ lo: 2700, hi: 3300 });
+    expect(axisAutoRange(["i"], ranges([["i", { lo: 3000, hi: 3000 }]]))).toEqual({
+      lo: 2700,
+      hi: 3300,
+    });
   });
 
   it("the minimum range follows the sign of a negative constant", () => {
-    const out = groupScaleRanges([{ key: "i", unit: "A" }], ranges([["i", { lo: -50, hi: -50 }]]));
-    expect(out.get("i")).toEqual({ lo: -55, hi: -45 });
+    expect(axisAutoRange(["i"], ranges([["i", { lo: -50, hi: -50 }]]))).toEqual({
+      lo: -55,
+      hi: -45,
+    });
   });
 
   it("a constant at exactly zero falls back to an absolute ±1", () => {
     // A proportional band collapses at zero, so the fraction cannot be
     // the rule there.
-    const out = groupScaleRanges([{ key: "i", unit: "A" }], ranges([["i", { lo: 0, hi: 0 }]]));
-    expect(out.get("i")).toEqual({ lo: -1, hi: 1 });
+    expect(axisAutoRange(["i"], ranges([["i", { lo: 0, hi: 0 }]]))).toEqual({
+      lo: -1,
+      hi: 1,
+    });
   });
 
-  it("a constant that shares its group with a moving signal keeps the plain union", () => {
-    // The minimum range applies to the *group*, not to each member: a
+  it("a constant that shares the axis with a moving signal keeps the plain union", () => {
+    // The minimum range applies to the *axis*, not to each series: a
     // union that already has a span is a measurement and is left alone.
-    const out = groupScaleRanges(
-      [
-        { key: "nominal", unit: "A" },
-        { key: "effective", unit: "A" },
-      ],
+    const out = axisAutoRange(
+      ["nominal", "effective"],
       ranges([
         ["nominal", { lo: 3000, hi: 3000 }],
         ["effective", { lo: 400, hi: 500 }],
       ]),
     );
-    expect(out.get("nominal")).toEqual({ lo: 400, hi: 3000 });
-    expect(out.get("effective")).toEqual({ lo: 400, hi: 3000 });
+    expect(out).toEqual({ lo: 400, hi: 3000 });
   });
 
-  it("returns copies — mutating an output range does not affect group mates", () => {
-    const out = groupScaleRanges(
-      [
-        { key: "v1", unit: "V" },
-        { key: "v2", unit: "V" },
-      ],
-      ranges([
-        ["v1", { lo: 0, hi: 1 }],
-        ["v2", { lo: 0, hi: 2 }],
-      ]),
-    );
-    out.get("v1")!.hi = 99;
-    expect(out.get("v2")).toEqual({ lo: 0, hi: 2 });
+  it("returns a copy — mutating the result does not affect the input ranges", () => {
+    const input = ranges([["v1", { lo: 0, hi: 1 }]]);
+    const out = axisAutoRange(["v1"], input)!;
+    out.hi = 99;
+    expect(input.get("v1")).toEqual({ lo: 0, hi: 1 });
   });
 });
 
