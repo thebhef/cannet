@@ -621,6 +621,102 @@ pub(crate) fn clear_view_signals(app: AppHandle, state: State<'_, AppState>) {
     }
 }
 
+/// Record — or clear — which assigned database decodes one signal.
+///
+/// `signal` is the row's identity ([`signal_identity`], ADR 0038) and
+/// `dbc_path` the loaded path of the chosen database. This is the
+/// resolution of the ambiguous case: two databases assigned to one bus
+/// define the same signal, and without a choice the decode path settles
+/// it silently by project load order.
+///
+/// **The entry is recorded only for a real, non-default choice**, which
+/// makes three cases into one clear:
+///
+/// - `None` — the caller is reverting to the default.
+/// - the database that already wins on load order — choosing it changes
+///   nothing, and recording it would put a redundant entry in the
+///   project file for behaviour that is already the default. Selecting
+///   it is therefore how the user reverts.
+/// - a path that does not define this signal on this bus — a remap
+///   candidate, an unassigned database, or one already removed. There
+///   is no pick to make, so none is kept.
+///
+/// A change re-judges the pyramids and announces itself as a DBC change
+/// ([ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+/// §2): a pick changes what the loaded set decodes, which is exactly
+/// what that event means, and every consumer of decoded data — this
+/// panel, its badge, the plots — already re-asks on it. A call that
+/// changes nothing announces nothing.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn set_signal_dbc_pick(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    signal: String,
+    dbc_path: Option<String>,
+) {
+    if !set_signal_dbc_pick_inner(&state, signal, dbc_path) {
+        return;
+    }
+    crate::app_state::invalidate_derived_caches(&state);
+    crate::dbc_commands::announce_dbc_change(&app, "*");
+}
+
+/// [`set_signal_dbc_pick`]'s body: apply the choice, and say whether it
+/// moved anything. Split out so the rule is testable against a real
+/// `AppState` without a Tauri app.
+pub(crate) fn set_signal_dbc_pick_inner(
+    state: &AppState,
+    signal: String,
+    dbc_path: Option<String>,
+) -> bool {
+    // Lock order: the DBC set before the picks, as `decode_model` takes
+    // them.
+    let dbs = state.databases();
+    let borrowed: Vec<(&str, &Database, &[String])> = dbs
+        .iter()
+        .map(|d| (d.path.as_str(), d.db.as_ref(), d.buses.as_slice()))
+        .collect();
+    // The same index the rows are built from, so "is this a definer,
+    // and is it the one load order already picks" is answered by the
+    // rule the panel displays rather than by a second scan.
+    let definers = definition_index(borrowed.iter().copied());
+    let keep = dbc_path.filter(|path| {
+        definers
+            .defining(&signal)
+            .iter()
+            .skip(1)
+            .any(|d| *d == path)
+    });
+    let mut picks = state.signal_dbc_picks();
+    let changed = match &keep {
+        Some(path) => picks.get(&signal) != Some(path),
+        None => picks.contains_key(&signal),
+    };
+    if changed {
+        let mut next = (**picks).clone();
+        match keep {
+            Some(path) => picks_insert(&mut next, signal, path),
+            None => {
+                next.remove(&signal);
+            }
+        }
+        *picks = std::sync::Arc::new(next);
+    }
+    drop(picks);
+    drop(dbs);
+    changed
+}
+
+/// `HashMap::insert` without the discarded-return lint noise.
+fn picks_insert(
+    picks: &mut crate::signal_fingerprint::SignalDbcPicks,
+    signal: String,
+    path: String,
+) {
+    picks.insert(signal, path);
+}
+
 /// The panel's rows and the attention count, sorted host-side.
 ///
 /// Computed fresh from the loaded DBC set and the recorded references
@@ -1211,5 +1307,131 @@ BU_: Ecu
             after.iter().filter(|r| r.status.needs_attention()).count(),
             0
         );
+    }
+
+    /// A DBC text defining `PackVolts` in `PackStatus` at `factor`.
+    fn dbc_text(factor: &str, unit: &str) -> String {
+        format!(
+            "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: Ecu\n\n\
+             BO_ 256 PackStatus: 8 Ecu\n \
+             SG_ PackVolts : 0|16@1+ ({factor},0) [0|0] \"{unit}\" Ecu\n"
+        )
+    }
+
+    /// A state with two databases both assigned to `power` and both
+    /// defining `PackVolts` — the ambiguous case, exactly as the panel
+    /// reports it.
+    fn ambiguous_state() -> AppState {
+        let state = crate::tests::test_state();
+        crate::dbc_commands::install_dbc(&state, "a.dbc", &dbc_text("0.1", "V")).unwrap();
+        crate::dbc_commands::install_dbc(&state, "b.dbc", &dbc_text("0.5", "V")).unwrap();
+        crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["power".to_string()]);
+        crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["power".to_string()]);
+        state
+    }
+
+    /// The one signal identity every pick test names.
+    const PICKED: &str = "power|s:256:PackVolts";
+
+    fn pick_of(state: &AppState) -> Option<String> {
+        state.signal_dbc_picks().get(PICKED).cloned()
+    }
+
+    #[test]
+    fn a_pick_is_recorded_only_when_it_is_a_real_non_default_choice() {
+        let state = ambiguous_state();
+
+        // The load-order loser: a genuine choice, so it is recorded.
+        assert!(set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("b.dbc".into())
+        ));
+        assert_eq!(pick_of(&state).as_deref(), Some("b.dbc"));
+        // Re-applying the same choice moves nothing, so nothing is
+        // announced.
+        assert!(!set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("b.dbc".into())
+        ));
+
+        // Choosing the database load order already picks is how the
+        // user reverts: the entry goes, rather than a redundant one
+        // being written into the project file.
+        assert!(set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("a.dbc".into())
+        ));
+        assert_eq!(pick_of(&state), None);
+
+        // `None` reverts too, and on an already-absent entry changes
+        // nothing.
+        assert!(set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("b.dbc".into())
+        ));
+        assert!(set_signal_dbc_pick_inner(&state, PICKED.into(), None));
+        assert_eq!(pick_of(&state), None);
+        assert!(!set_signal_dbc_pick_inner(&state, PICKED.into(), None));
+    }
+
+    #[test]
+    fn a_path_that_does_not_define_the_signal_is_no_pick() {
+        // A remap candidate (phase 5's job), a database assigned
+        // elsewhere, and one that was never loaded all name nothing
+        // that could decode this signal, so no entry is kept.
+        let state = ambiguous_state();
+        assert!(!set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("never-loaded.dbc".into())
+        ));
+        assert_eq!(pick_of(&state), None);
+
+        crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["chassis".to_string()]);
+        assert!(!set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("b.dbc".into())
+        ));
+        assert_eq!(pick_of(&state), None);
+    }
+
+    #[test]
+    fn removing_the_picked_database_drops_the_pick_silently() {
+        // Owner ruling: the entry is dropped from the project when the
+        // selected DBC is removed, falling back to the load-order
+        // default. Silently — there is nothing to repair, because the
+        // default is what a project that never chose already decodes.
+        let state = ambiguous_state();
+        assert!(set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("b.dbc".into())
+        ));
+
+        let before = state.system_log.snapshot().len();
+        crate::dbc_commands::remove_dbc_inner(&state, "b.dbc");
+        assert_eq!(pick_of(&state), None, "the pick went with its database");
+        assert_eq!(
+            state.system_log.snapshot().len(),
+            before,
+            "and said nothing about it"
+        );
+
+        // Removing an unrelated database leaves a pick alone.
+        crate::dbc_commands::install_dbc(&state, "b.dbc", &dbc_text("0.5", "V")).unwrap();
+        crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["power".to_string()]);
+        crate::dbc_commands::install_dbc(&state, "c.dbc", &dbc_text("0.2", "V")).unwrap();
+        assert!(set_signal_dbc_pick_inner(
+            &state,
+            PICKED.into(),
+            Some("b.dbc".into())
+        ));
+        crate::dbc_commands::remove_dbc_inner(&state, "c.dbc");
+        assert_eq!(pick_of(&state).as_deref(), Some("b.dbc"));
     }
 }
