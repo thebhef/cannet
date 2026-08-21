@@ -1464,9 +1464,9 @@ struct PersistedSignal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file: Option<FileSignalInfo>,
     /// Fingerprint of the encoding these samples were decoded under
-    /// ([`crate::signal_fingerprint`]) — for a DBC-backed row its
-    /// candidate chain through the loaded set, for a file-backed one the
-    /// source it was imported from. This is what
+    /// ([`crate::signal_fingerprint`]) — for a DBC-backed row the
+    /// definition that decoded it, for a file-backed one the source it
+    /// was imported from. This is what
     /// [`SignalCacheStore::restore`] judges the row by, alone.
     ///
     /// `#[serde(default)]` so a manifest written before fingerprints
@@ -2092,7 +2092,7 @@ impl SignalCacheStore {
     /// Three outcomes per DBC-backed cache, and they are the per-signal
     /// judgement applied in-session:
     ///
-    /// - **Its candidate chain has not moved** — the new set decodes it
+    /// - **Its definition has not moved** — the new set decodes it
     ///   exactly as the old one did, so it keeps decoding. (A whole-set
     ///   drop used to discard it here, which is the same waste, one
     ///   session earlier, that the touched-DBC case was.)
@@ -5994,8 +5994,8 @@ mod tests {
     #[test]
     fn a_persisted_signal_records_the_encoding_it_was_decoded_under() {
         // The manifest row says what the samples were decoded *from*, per
-        // signal — a DBC-backed row its candidate chain through the
-        // loaded set, a file-backed one the source it was imported from.
+        // signal — a DBC-backed row the definition that decoded it, a
+        // file-backed one the source it was imported from.
         let store = TraceStore::new();
         for i in 0..50u64 {
             store.append(val_frame(i * S, (i % 50) as u16));
@@ -6026,7 +6026,7 @@ mod tests {
         assert_eq!(
             row("X").encoding.as_deref(),
             Some(signal_fingerprint::dbc_encoding(&scopes, None, 256, false, "X").as_str()),
-            "the DBC-backed row carries its candidate chain's fingerprint"
+            "the DBC-backed row carries its definition's fingerprint"
         );
         assert_eq!(
             row("Speed").encoding.as_deref(),
@@ -6667,6 +6667,88 @@ mod tests {
                 "{signal} served from disk, not re-decoded",
             );
         }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn unassigning_a_database_from_another_bus_leaves_this_series_decoding() {
+        // A series takes one bus's frames and decodes them against one
+        // definition; what else the database holding that definition is
+        // assigned to is no part of it (ADR 0054). Unchecking some
+        // *other* bus must therefore cost nothing at all — not a park,
+        // not a revival, not a rebuild.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let db = dbc_ab(1);
+        let both = bus_set(&[TEST_BUS, "other"]);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        for signal in ["A", "B"] {
+            let built = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &assigned_to(&[&db], &both),
+            );
+            assert_eq!(built.len(), 200, "{signal} built");
+        }
+
+        cache.invalidate_dbcs(&on_test_bus(&[&db]));
+        let usage = cache.usage();
+        assert_eq!(usage.live, 2, "both series still decode");
+        assert_eq!(usage.retained, 0, "nothing was parked");
+        assert_eq!(usage.revivals, 0, "…so nothing had to be handed back");
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn a_database_that_does_not_win_leaves_the_series_decoding() {
+        // Decode is first-eligible-wins per signal, so a further
+        // database defining the same signal behind the incumbent
+        // supplies no sample and is no part of what these samples were
+        // decoded under (ADR 0054). Loading it must leave the pyramids
+        // alone — and putting it in front, which *is* a change of
+        // definition, must park the signal it disagrees about.
+        let root = TempDir::new().unwrap();
+        let store = TraceStore::new();
+        for i in 0..200usize {
+            store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
+        }
+        let first = dbc_ab(1);
+        let second = dbc_ab(2);
+        let cache = SignalCacheStore::new_unbounded(root.path());
+        for signal in ["A", "B"] {
+            let built = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &on_test_bus(&[&first]),
+            );
+            assert_eq!(built.len(), 200, "{signal} built");
+        }
+
+        cache.invalidate_dbcs(&on_test_bus(&[&first, &second]));
+        let usage = cache.usage();
+        assert_eq!(usage.live, 2, "the incumbent still decodes both");
+        assert_eq!(usage.retained, 0, "the database behind it parked nothing");
+
+        // In front, it decodes `B` at another scale and `A` exactly as
+        // the incumbent does: one park, and only one.
+        cache.invalidate_dbcs(&on_test_bus(&[&second, &first]));
+        assert_eq!(cache.usage().live, 1, "A decodes the same either way");
+        assert_eq!(cache.retained_signals(), vec!["B".to_string()]);
     }
 
     #[test]
@@ -7623,7 +7705,7 @@ mod tests {
         );
         cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
 
-        // A set in which nothing defines `X`: its candidate chain empties,
+        // A set in which nothing defines `X`: it has no definition left,
         // so it stops being live and is parked for the definition's return.
         cache.invalidate_dbcs(&no_dbcs());
 

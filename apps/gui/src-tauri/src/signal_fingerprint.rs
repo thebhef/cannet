@@ -11,27 +11,26 @@
 //! every signal's pyramid for a decode that did not change by a bit.
 //!
 //! A fingerprint here is per signal and over the *parsed* model:
-//! [`dbc_encoding`] hashes the signal's candidate chain — every loaded
-//! database that defines that signal in that message *and* may decode
-//! the series' bus, in load order, each as the [`SignalDecodeSpec`]s it
-//! offers. Nothing about the files the databases were parsed from
-//! enters it.
+//! [`dbc_encoding`] hashes the [`SignalDecodeSpec`]s of the one
+//! definition that decodes the series. Nothing about the files the
+//! databases were parsed from enters it.
 //!
-//! **The chain, not a nominated winner.** The decode path resolves per
-//! frame, not per set: `signal_sampler::sample_shared` takes the first
-//! database that yields the name *for that payload*, and a database can
-//! withhold it (a multiplexor arm that doesn't match, a payload too
-//! short) and let the next one answer. So every database that defines the
-//! signal is an input, in order — and a database that defines nothing
-//! about it contributes nothing, which is what makes re-prioritising
-//! unrelated databases invalidate nothing.
+//! **One definition, and nothing else.** A decoded value comes from
+//! exactly one signal definition, and everything derived from it depends
+//! on that definition alone (ADR 0054). So the fingerprint covers the
+//! winner's decode specs and stops: not the other buses that database is
+//! assigned to, and not the databases behind it in load order, neither of
+//! which can change a sample. Two states that decode identically must
+//! fingerprint identically, which is why a different file supplying the
+//! same specification revives a parked pyramid rather than rebuilding it.
 //!
-//! **Unless the user has picked one.** A [`SignalDbcPicks`] entry names
-//! the database that decodes one signal, overriding the load-order
-//! default; the chain is then that database alone, for the fingerprint
-//! exactly as for the decode. So a pick is a change of encoding: the
-//! samples the old database produced cannot be revived against it, and
-//! reverting the pick restores the fingerprint they were parked under.
+//! **Which one wins** is the resolution rule of ADR 0054, read in load
+//! order over the databases assigned to the series' bus — unless a
+//! [`SignalDbcPicks`] entry names one, overriding the default for that
+//! signal. Either way the fingerprint follows the decode, so a pick is a
+//! change of encoding: the samples the other database produced cannot be
+//! revived against it, and reverting the pick restores the fingerprint
+//! they were parked under.
 //!
 //! **File-backed series** (`FileSignalInfo`) fingerprint against their
 //! source instead ([`file_source`]): their samples were read out of a
@@ -81,10 +80,10 @@ const TAG_DBC: u8 = b'D';
 /// [`TAG_DBC`] in the first byte mixed, so the two kinds cannot collide
 /// however their bodies line up.
 const TAG_FILE: u8 = b'F';
-/// Section tag opening one candidate database's contribution.
-const TAG_CANDIDATE: u8 = b'C';
-/// Section tag closing the candidate chain, so a chain is never a prefix
-/// of a longer one.
+/// Section tag opening the winning definition's decode specification.
+const TAG_WINNER: u8 = b'W';
+/// Section tag closing the body, so a series no loaded database defines
+/// is never a prefix of one that is defined.
 const TAG_END: u8 = b'.';
 
 /// One loaded DBC as a fingerprint sees it: its identity (the loaded
@@ -311,37 +310,45 @@ fn mix_spec(h: &mut Fnv, spec: &SignalDecodeSpec) {
     }
 }
 
-/// The encoding fingerprint of one DBC-backed series: its key, then its
-/// candidate chain through `dbcs` **in load order**.
+/// The encoding fingerprint of one DBC-backed series: its key, then the
+/// decode specification of the definition that decodes it.
 ///
 /// The key is mixed in too, so a fingerprint recorded for one series can
 /// never validate another's samples.
 ///
-/// A database that defines nothing for `(message_id, extended,
-/// signal_name)` is skipped entirely rather than mixed as an empty
-/// contribution — that is what makes loading, unloading or re-ordering
-/// an unrelated DBC leave this signal's fingerprint where it is. An
-/// unrepresentable id, or a set in which no database defines the signal
-/// at all, yields the empty chain's fingerprint: well-defined, and
-/// distinct from every chain that decodes something.
+/// **Which definition that is** is the resolution rule of ADR 0054, read
+/// off `dbcs` in load order: the first database assigned to the series'
+/// bus that defines `(message_id, extended, signal_name)`, or the one a
+/// per-signal pick names ([`DecodeModel::picked_index`]). Everything
+/// else the set contains is left out, because none of it can move a
+/// sample:
 ///
-/// **Bus assignment decides who is even a candidate.** A series on a bus
-/// takes only that bus's frames, and the decode path judges every
-/// database against the bus a frame arrived on
-/// ([`filter::dbc_applies`]), so a database assigned elsewhere — or
-/// assigned to nothing — is skipped entirely: editing it cannot move a
-/// sample and must not invalidate the pyramid. A series that names no
-/// bus is admitted by no assignment either, and so has the empty chain.
-/// The assignment of a database that *is* a candidate joins its
-/// contribution, because a re-assignment can change which frames it
-/// answers for.
+/// - **A database assigned elsewhere, or to nothing, is not eligible.**
+///   A series on a bus takes only that bus's frames, and the decode path
+///   judges every database against the bus a frame arrived on
+///   ([`filter::dbc_applies`]). A series that names no bus is admitted
+///   by no assignment either, and so has no definition at all.
+/// - **What the winner is *also* assigned to is not part of its decode.**
+///   It decodes a frame on this bus the same way whatever other buses it
+///   serves, so narrowing an assignment elsewhere leaves this
+///   fingerprint where it is.
+/// - **The databases behind the winner are irrelevant.** Resolution is
+///   first-wins per signal, so a later definition supplies no sample:
+///   loading one, editing one or re-prioritising one below the winner
+///   moves nothing.
 ///
-/// **A pick shortens the chain to one.** Where the model records a
-/// per-signal database choice ([`DecodeModel::picked_index`]), that
-/// database is the whole chain, exactly as it is for the decode — so a
-/// pick moves the fingerprint, a persisted pyramid decoded under the
-/// other database cannot revive against it (ADR 0047), and reverting to
-/// the default restores the fingerprint the parked pyramid carries.
+/// A set in which no eligible database defines the signal — and an
+/// unrepresentable id — yields the no-definition fingerprint:
+/// well-defined, and distinct from every fingerprint that decodes
+/// something.
+///
+/// So a *change of definition* is what moves it: editing the winner's
+/// `SG_` entry, putting another database in front of it, unassigning it,
+/// or naming a different one with a pick. A persisted pyramid decoded
+/// under the definition that left cannot revive against the one that
+/// replaced it (ADR 0047), and restoring the definition restores the
+/// fingerprint the parked pyramid carries — from whichever file now
+/// supplies it, since an identical specification is the same encoding.
 pub fn dbc_encoding(
     dbcs: &DecodeModel<'_>,
     bus_id: Option<&str>,
@@ -386,15 +393,16 @@ pub fn dbc_encoding(
             if specs.is_empty() {
                 continue;
             }
-            h.mix_u8(TAG_CANDIDATE);
-            h.mix_len(dbc.buses.len());
-            for bus in dbc.buses {
-                h.mix_str(bus);
-            }
+            // The first eligible database that defines the signal is
+            // the one that decodes it, and its decode specs are the
+            // whole of what a sample depends on (ADR 0054). Not what
+            // else it is assigned to, and not the databases behind it.
+            h.mix_u8(TAG_WINNER);
             h.mix_len(specs.len());
             for spec in &specs {
                 mix_spec(&mut h, spec);
             }
+            break;
         }
     }
     h.mix_u8(TAG_END);
@@ -613,26 +621,15 @@ mod tests {
         let a = parse(&message(&[PLAIN]));
         let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let bus = fp_bus();
-        let two_buses = vec![FP_BUS.to_string(), "bus2".to_string()];
         let fp =
             |dbcs: Vec<DbcScope<'_>>| dbc_encoding(&plain(dbcs), Some(FP_BUS), 256, false, "S");
 
         let base = fp(vec![scope("a.dbc", &a, &bus)]);
         assert_ne!(base, fp(vec![]), "no DBC at all decodes nothing");
         assert_ne!(
-            base,
-            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]),
-            "a second definition can win frames the first does not"
-        );
-        assert_ne!(
             fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]),
             fp(vec![scope("b.dbc", &b, &bus), scope("a.dbc", &a, &bus)]),
             "load order is decode priority between two definitions"
-        );
-        assert_ne!(
-            base,
-            fp(vec![scope("a.dbc", &a, &two_buses)]),
-            "the bus assignment of a contributing DBC"
         );
 
         // Two `SG_` lines of one name, in different multiplexor arms:
@@ -688,14 +685,19 @@ mod tests {
             "…to exactly the chain of the database it names"
         );
 
-        // A pick naming the load-order winner is still a pick: the
-        // chain is that database alone, without the fall-through the
-        // default chain carries. (The command that records one clears
-        // the entry in that case, so this shape is never persisted —
-        // but the rule here has to be the same either way.)
+        // A pick naming the database the load order already chose
+        // names the same definition, so it costs nothing: the
+        // fingerprint is the default's. (The command that records one
+        // clears the entry in that case, so this shape is never
+        // persisted — but the rule here has to be the same either way.)
         assert_eq!(
             fp(&pinned(both(), "a.dbc")),
             fp(&plain(vec![scope("a.dbc", &a, &bus)]))
+        );
+        assert_eq!(
+            fp(&pinned(both(), "a.dbc")),
+            default,
+            "…so pinning the incumbent parks nothing",
         );
     }
 
@@ -765,12 +767,72 @@ mod tests {
     }
 
     #[test]
+    fn a_databases_other_assignments_are_no_part_of_the_fingerprint() {
+        // A value decodes from one definition, and what else the
+        // database holding it is assigned to is not part of that
+        // definition (ADR 0054). A series on `pt` decodes the same
+        // whether its database also serves `ch` or not, so narrowing
+        // the assignment elsewhere must not park a pyramid whose
+        // samples provably cannot move.
+        let a = parse(&message(&[PLAIN]));
+        let one = vec!["pt".to_string()];
+        let two = vec!["pt".to_string(), "ch".to_string()];
+        let renamed = vec!["pt".to_string(), "body".to_string()];
+        let fp = |buses: &[String]| {
+            dbc_encoding(
+                &plain(vec![scope("a.dbc", &a, buses)]),
+                Some("pt"),
+                256,
+                false,
+                "S",
+            )
+        };
+        assert_eq!(fp(&one), fp(&two), "another bus it is assigned to");
+        assert_eq!(fp(&two), fp(&renamed), "…or what that other bus is called");
+    }
+
+    #[test]
+    fn only_the_winning_definition_is_in_the_fingerprint() {
+        // Decode takes the first eligible database that defines the
+        // signal, so a later one supplies no sample and cannot be part
+        // of what the samples were decoded under (ADR 0054). Loading
+        // one, or editing it, must leave the pyramid alone; making it
+        // the winner must not.
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let b_edited = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let bus = fp_bus();
+        let fp =
+            |dbcs: Vec<DbcScope<'_>>| dbc_encoding(&plain(dbcs), Some(FP_BUS), 256, false, "S");
+
+        let alone = fp(vec![scope("a.dbc", &a, &bus)]);
+        assert_eq!(
+            alone,
+            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]),
+            "a second definition the load order never reaches",
+        );
+        assert_eq!(
+            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]),
+            fp(vec![
+                scope("a.dbc", &a, &bus),
+                scope("b_edited.dbc", &b_edited, &bus)
+            ]),
+            "…so re-encoding it invalidates nothing here",
+        );
+        assert_ne!(
+            alone,
+            fp(vec![scope("b.dbc", &b, &bus), scope("a.dbc", &a, &bus)]),
+            "putting it first makes it the definition that decodes",
+        );
+    }
+
+    #[test]
     fn only_the_databases_that_can_decode_the_series_bus_are_in_the_chain() {
         // Every frame a `pt`-scoped series takes arrives on `pt`, and a
         // `ch`-scoped database never supplies a value for one of them
-        // (`filter::dbc_applies`). It is not a candidate, so it is not
-        // in the chain — and editing it must not force a rebuild that
-        // provably cannot change a sample.
+        // (`filter::dbc_applies`). It is not eligible, so it can never
+        // be the definition — and editing it must not force a rebuild
+        // that provably cannot change a sample.
         let a = parse(&message(&[PLAIN]));
         let ch = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let ch_edited = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
@@ -872,10 +934,11 @@ mod tests {
             ]),
             "edited"
         );
-        // Assigning it is what makes it an input.
+        // Assigning it is what makes it an input — in front of the
+        // incumbent, where it is the definition that decodes.
         assert_ne!(
             alone,
-            fp(vec![scope("a.dbc", &a, &bus), scope("b.dbc", &b, &bus)]),
+            fp(vec![scope("b.dbc", &b, &bus), scope("a.dbc", &a, &bus)]),
             "assigned"
         );
     }
@@ -1101,6 +1164,57 @@ mod tests {
         // label could occupy. The label is served separately, from
         // whatever DBC set is loaded at the time.
         assert!(unlabelled.iter().all(|p| p.value.fract() == 0.0));
+    }
+
+    #[test]
+    fn a_value_the_winner_withholds_is_outside_the_fingerprint() {
+        // The corner the one-definition rule gives up, pinned so it is
+        // a known trade rather than a discovery. Decode resolves per
+        // *frame*: `sample_shared` falls through to the next assigned
+        // database where the winning definition withholds a value (here
+        // a multiplexor arm that does not match), so that database can
+        // still put samples in a pyramid — and the fingerprint, which is
+        // the winner's specification alone (ADR 0054), cannot see it
+        // change. ADR 0047's 2026-08-21 amendment names the exposure.
+        let a = parse(&message(&[
+            "Sel M : 0|8@1+ (1,0) [0|0] \"\" ECU2",
+            "S m0 : 8|16@1+ (1,0) [0|0] \"\" ECU2",
+        ]));
+        let b = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let b_edited = parse(&message(&["S : 32|8@1+ (2,0) [0|0] \"\" ECU2"]));
+        let bus = fp_bus();
+        // Selector 1, so `a`'s arm-0 definition of `S` does not answer.
+        let frame = RawTraceFrame {
+            timestamp_ns: 0,
+            channel: 0,
+            id: 256,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Classic(vec![1, 0, 0, 7, 9, 0, 0, 0]),
+            bus_id: Some(FP_BUS.to_string()),
+        };
+        let sampled = |second: &Database| {
+            let mut out = Vec::new();
+            signal_sampler::sample_shared(&frame, &[&a, second], 256, false, &["S"], &[], &mut out);
+            out
+        };
+        assert_eq!(sampled(&b), vec![Some(7.0)], "the second database answers");
+        assert_eq!(
+            sampled(&b_edited),
+            vec![Some(18.0)],
+            "…so editing it moves the value",
+        );
+
+        let fp = |second: &Database| {
+            dbc_encoding(
+                &plain(vec![scope("a.dbc", &a, &bus), scope("b.dbc", second, &bus)]),
+                Some(FP_BUS),
+                256,
+                false,
+                "S",
+            )
+        };
+        assert_eq!(fp(&b), fp(&b_edited), "and the fingerprint does not move");
     }
 
     #[test]
