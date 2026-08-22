@@ -121,22 +121,115 @@ fix phase, or surface it to the user — never let it ride silently.
 
 ## 5. Performance gate
 
-Run the repo's performance test (ADR-0031 render-tier harness)
-**regularly** — at minimum after any phase touching a render or
-data-path hot spot, and always before declaring a task complete.
+**Collect as you go; judge at the end.** The ADR-0031 render-tier
+harness is cheap enough to run through a cycle (a release build plus
+four 60 s captures is under twenty minutes), and the value is in the
+*series*, not in any one reading. So take the data regularly — after
+a phase touching a render or data-path hot spot, and at natural
+cycle boundaries — and keep every report under
+`docs/performance-measurements/frontend/`, named by date and by the
+commit it measured.
+
+**Do not stop development for a gate result unless it is a major,
+anticipated regression.** The owner's thresholds (2026-08-22):
+
+- **A timing regression of more than ~10 ms sustained across all
+  runs** of a build — not one run, all of them.
+- **Memory creeping toward 400+ MB** for a load of this size
+  (ev-zonal, ~1608 f/s). Judge the process split, not just the tree
+  total.
+
+Anything short of that is recorded and development continues. A
+single alarming run is data, not a stop signal.
+
+**At the end of a chain, produce the report and decide whether to go
+back.** Chart every metric across every build measured, with each
+one's limit, its baseline and the per-build spread, plus a note on
+what did and did not move it. That report — not a per-phase pass/fail
+— is what tells the owner whether anything needs revisiting.
+
+Rules that still hold absolutely:
 
 - **All of the metrics are important.** They were developed from
   observed performance problems; there are no "minor" columns. A fix
   that buys one metric by regressing another is a regression.
-- Single runs are untrustworthy: run-to-run variance is real (GC
-  timing, machine state). Use multiple runs per build and compare
-  worst-to-worst as well as means; when a result is surprising, run
-  a same-day control build rather than trusting a stale baseline.
-- Never promote a baseline to make a failure pass. A failed gate
-  stops the roadmap: the task is not complete, and the next task
-  does not start, until the gate passes or the user rules otherwise.
+- **Never promote a baseline and never widen a limit** to make a
+  reading pass. Limits ratchet down only; raising one is an owner
+  ruling recorded in ADR 0031.
+- **Single runs are untrustworthy.** Several metrics are worst-of-N
+  or single-sample tails and move on an unchanged build — an
+  eight-run control on one binary spanned nearly the whole distance
+  to `lag_ms_max`'s limit. Use multiple runs per build and read the
+  band.
+- **When a reading is surprising, build a same-day control** rather
+  than trusting the stored baseline. The older commit measured on
+  today's machine is the honest comparison; the baseline may have
+  been taken on a different machine state, or against a project that
+  has since changed.
 
-## 6. Completion
+Two failure modes this repo has actually hit — check for both before
+believing a clean run:
+
+- **The baseline can outlive the project it describes.** Growing the
+  example projects (ev-zonal is the harness's project) invalidates a
+  line-for-line baseline comparison. When that happens, gate a
+  pre-growth control alongside the current tree and report the pair.
+- **The harness's load can be silently disarmed.** It once drew its
+  bus traffic from a persisted project field; removing that field
+  left the harness connecting and measuring an idle bus — and
+  *passing*. Sanity-check `ids_measured` and the rx/tx rates on every
+  report before reading anything else into it.
+
+## 6. The owner review queue — keep development moving
+
+Phases turn up things nobody asked for: a behaviour change that
+reverses an earlier decision, a defect adjacent to the work, a ruling
+that cannot be implemented as written, a consequence the owner has not
+seen. **None of that is a reason to stop.** Development stops for
+exactly two things: a blocker that makes the *current* work
+impossible, and a major anticipated perf regression (§5).
+
+Everything else goes in **`plans/owner-review-queue.md`** — one file,
+maintained by the overseer, that the owner can walk when they have
+time. Without it, findings either interrupt the owner one at a time or
+get lost in a phase's blockers section and a long conversation.
+
+The queue is an **index, not a second record**: each item's detail
+stays in its task file's `## Blockers / side effects` or status log,
+and the queue points at it. Structure it as:
+
+1. **Behaviour changes needing a yes or no** — shipped, and each
+   reverses or extends something previously decided. Say what would
+   have to change to undo it.
+2. **Rulings the owner has made**, written down so they survive the
+   conversation — including any correction to the premise a ruling
+   rested on.
+3. **Open findings nobody has dispositioned** — a table is enough.
+4. **Finished tasks awaiting acceptance.**
+5. **Housekeeping owed at close-out.**
+
+Two rules keep it useful. Items are **struck out with the ruling and
+its date** rather than deleted, so the record shows what was decided.
+And **a queue growing faster than it drains is the signal to stop
+taking new work and hold a review** — say so when it happens.
+
+**Surface an item once**, in the report for the phase that found it,
+then let the queue carry it. Do not re-raise it every turn.
+
+### When a task really is blocked
+
+If an owner decision genuinely blocks a task, **the task stops — the
+roadmap does not.** Move to the next task that is not waiting on the
+same decision, and record what the blocked one is waiting for.
+
+Check the dependency honestly before skipping ahead: tasks in the
+queue often share a ruling, and starting one that turns on the same
+unanswered question just produces a second blocked task and a diff
+that has to be redone. When a whole run of upcoming tasks depends on
+one decision, that is the case for stopping and asking rather than
+working around it.
+
+## 7. Completion
 
 A task is done when its documented exit criteria are all met (or the
 user has explicitly waived one) — walk them one by one and record
