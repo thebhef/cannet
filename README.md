@@ -1238,7 +1238,12 @@ toolbar's **Open project…** / **Save project**) drives it: **Save** /
 restores the bus / binding configuration — hit **Connect** to switch),
 **New** starts a fresh unsaved project (default layout, no DBCs, disconnected,
 buffer cleared). The panel also lists the configured server(s) with
-**Connect all** / **Disconnect all** and the loaded DBCs with **Add…**
+**Connect all** / **Disconnect all** — and, beside them, **Manage
+servers…**, which opens the Servers panel. That button is always there,
+including on a project with no buses yet, which is exactly when a
+server still has to be added; the same launcher inside a bus row's
+interface combo only exists once a bus does. The panel also lists the
+loaded DBCs with **Add…**
 / **Remove** / **Reload all from disk**. The
 last opened/saved project is reopened on launch, unless you turn
 **`reopen_last_project`** off — then a launch starts with nothing open,
