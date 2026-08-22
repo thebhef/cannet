@@ -135,11 +135,28 @@ capture data; it renders windows over the capture model.
 _Avoid_: "TraceStore" as a name for the whole model — that code symbol
 is only the raw-frame part.
 
+**DBC bus scoping**:
+The set of buses a loaded DBC applies to. Empty means every bus. A
+scoped DBC decodes only frames from its own buses and never an
+unassigned frame — the same message id on two buses is then two
+different signal instances (two copies of one ECU), not one.
+_Avoid_: "DBC filter" — scoping selects which frames a database may
+speak for, it does not narrow a view.
+
 **Derived projection**:
 A host-side structure computed from the raw frames and kept current as
 they arrive — the decoded-signal cache and the latest-by-id index.
 Bounded and rebuildable from the raw store; never a second source of
 truth.
+
+**Encoding fingerprint**:
+A short hash of everything decode reads for one signal — start bit,
+width, byte order, signedness, factor, offset, float kind, mux arm and
+gate — across the databases that may decode it, plus their bus
+scoping. It answers "which definition were these samples decoded
+under", and is what decides whether a cached series is still valid
+when the DBC set changes. Value tables and attributes are deliberately
+outside it: neither changes a decoded number.
 
 **File-backed signal**:
 A signal imported from a capture file as an already-decoded value
@@ -170,6 +187,15 @@ ordered and the first one that both matches and yields a usable
 capture wins; a signal no rule claims keeps its identity-hash color.
 _Avoid_: "signal filter" — a generator selects nothing, it only
 derives.
+
+**Parked cache**:
+A decoded-signal cache whose definition changed under it. Its files
+are renamed aside rather than deleted and held in a bounded pool, so
+if that definition comes back the samples are reused instead of
+re-decoded. Reclaimed oldest-first when the pool exceeds its byte
+bound, and discarded whole when the capture changes.
+_Avoid_: "orphaned" / "dangling" — both imply there is no way back,
+and a park exists precisely because there is.
 
 ### Transmit
 

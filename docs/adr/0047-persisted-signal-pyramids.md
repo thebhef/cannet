@@ -3,7 +3,10 @@
 Status: accepted (2026-08-08); amended (2026-08-15) — validity is judged
 per signal (global capture gates + a per-signal encoding fingerprint)
 rather than by one whole-set key; amended (2026-08-15) — a pyramid whose
-definition has gone is retained in a bounded pool rather than deleted
+definition has gone is retained in a bounded pool rather than deleted;
+amended (2026-08-19) — a DBC-backed row's candidate chain is the
+databases that may decode the series' bus, not every database that
+defines the signal
 
 ## Context
 
@@ -67,16 +70,19 @@ that pyramid, a mismatch rebuilds that signal and only that signal.
 
 - For a **DBC-backed** row the fingerprint is over that signal's
   *candidate chain*: every loaded database that defines it in that
-  message, in load order, each contributing the fields a decode actually
-  reads — start bit, length, byte order, sign, factor, offset, float
-  kind, mux arm, the message's mux gate — plus its bus scoping. Nothing
-  about the files the databases were parsed from enters it. The chain,
-  rather than a nominated winner, because resolution is per *frame*: the
-  decode path takes the first database that yields the name for the
-  payload in hand, so a database that loses one frame can win the next.
-  A database that defines nothing about the signal contributes nothing,
-  which is what makes loading, unloading or re-prioritising an unrelated
-  database invalidate nothing.
+  message **and may decode the series' bus**, in load order, each
+  contributing the fields a decode actually reads — start bit, length,
+  byte order, sign, factor, offset, float kind, mux arm, the message's
+  mux gate — plus its bus scoping. Nothing about the files the databases
+  were parsed from enters it. The chain, rather than a nominated winner,
+  because resolution is per *frame*: the decode path takes the first
+  database that yields the name for the payload in hand, so a database
+  that loses one frame can win the next. A database that defines nothing
+  about the signal contributes nothing, which is what makes loading,
+  unloading or re-prioritising an unrelated database invalidate nothing.
+  A series whose bus is unknown (`bus_id = None`) keeps the whole chain:
+  its frames arrive from every bus and each is decoded by whichever
+  database applies to *that* bus, so all of them bear on its samples.
 - For a **file-backed** row it is over the source the samples were
   imported from — path, signal channel group, channel name. No DBC bears
   on such a series, so no DBC-set change may touch it; and none can,
@@ -246,6 +252,30 @@ Two lifecycle rules complete it:
   load would mean no persisted pyramid could ever be reused. Once a set
   has been adopted it is live like any other, and the next DBC change
   wipes it.
+
+## Amendment (2026-08-19) — the candidate chain is bus-scoped
+
+The decode path now judges every database against the bus a frame
+arrived on (`filter::dbc_applies`), the same scoping every other
+decode consumer already used. A database scoped to another bus can no
+longer supply a value for a series scoped to this one, so it is not a
+candidate, so it does not belong in the fingerprint. Before this, a
+`ch`-scoped database was mixed into a `pt`-scoped signal's chain, and
+editing it forced a rebuild that provably could not change a sample.
+
+The exception is `bus_id = None`. That means "the bus is unknown", not
+"on no bus": such a series takes frames from every bus, each decoded by
+whichever database applies to it, so its chain stays every defining
+database.
+
+The cost is a **one-time rebuild of the affected signals** the first
+time a project runs with this amendment: the chain shrank, so the
+fingerprint moved, so those pyramids are parked and rebuilt from the
+raw frames. Only projects that **scope** a DBC pay it, and only for
+signals whose chain actually contained a database scoped elsewhere. A
+project that scopes nothing sees no fingerprint move at all — an
+unscoped database applies to every bus and was never going to be
+skipped — and reuses every pyramid across the change.
 
 ## Why
 

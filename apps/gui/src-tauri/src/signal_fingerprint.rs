@@ -12,9 +12,10 @@
 //!
 //! A fingerprint here is per signal and over the *parsed* model:
 //! [`dbc_encoding`] hashes the signal's candidate chain — every loaded
-//! database that defines that signal in that message, in load order,
-//! each as the [`SignalDecodeSpec`]s it offers. Nothing about the files
-//! the databases were parsed from enters it.
+//! database that defines that signal in that message *and* may decode
+//! the series' bus, in load order, each as the [`SignalDecodeSpec`]s it
+//! offers. Nothing about the files the databases were parsed from
+//! enters it.
 //!
 //! **The chain, not a nominated winner.** The decode path resolves per
 //! frame, not per set: `signal_sampler::sample_shared` takes the first
@@ -59,6 +60,7 @@
 use cannet_core::CanId;
 use cannet_dbc::{Database, FloatKind, MuxGate, SignalDecodeSpec, SignalMux};
 
+use crate::filter;
 use crate::signal_cache::FileSignalInfo;
 
 /// Section tag for a DBC-backed signal's fingerprint.
@@ -191,13 +193,17 @@ fn mix_spec(h: &mut Fnv, spec: &SignalDecodeSpec) {
 /// at all, yields the empty chain's fingerprint: well-defined, and
 /// distinct from every chain that decodes something.
 ///
-/// A contributing database's **bus scoping** joins its contribution.
-/// Today the pyramid decode path does not consult scoping when it picks
-/// a database (only frames are filtered, by the series' own bus), so
-/// including it is conservative: a re-scope rebuilds pyramids whose
-/// samples would not have changed. It is the safe direction, and it
-/// keeps the fingerprint honest if that path is ever made to honour
-/// scoping.
+/// **Bus scoping decides who is even a candidate.** A series scoped to
+/// a bus takes only that bus's frames, and the decode path judges every
+/// database against the bus a frame arrived on
+/// ([`filter::dbc_applies`]), so a database scoped elsewhere is skipped
+/// entirely — editing it cannot move a sample and must not invalidate
+/// the pyramid. `bus_id = None` is the any-bus series and is the
+/// exception: its frames arrive from every bus and each is decoded by
+/// whichever database applies to *that* bus, so its chain is every
+/// defining database, scoped or not. The scoping of a database that
+/// *is* a candidate joins its contribution, because a re-scope can
+/// change which frames it answers for.
 pub fn dbc_encoding(
     dbcs: &[DbcScope<'_>],
     bus_id: Option<&str>,
@@ -219,6 +225,19 @@ pub fn dbc_encoding(
     };
     if let Ok(id) = id {
         for dbc in dbcs {
+            // Only the databases that can decode *this* series. A
+            // bus-scoped series takes frames from one bus, so a
+            // database `filter::dbc_applies` rejects for that bus can
+            // never supply one of its samples — editing it must not
+            // force a rebuild that provably cannot move a value.
+            // `bus_id: None` is the any-bus series and keeps the whole
+            // chain: its frames arrive from every bus and each is
+            // decoded by whichever database applies to that one.
+            if let Some(bus) = bus_id {
+                if !filter::dbc_applies(dbc.buses, Some(bus)) {
+                    continue;
+                }
+            }
             let specs = dbc.db.signal_decode_specs(id, signal_name);
             if specs.is_empty() {
                 continue;
@@ -453,6 +472,89 @@ mod tests {
             fp_body(&one_arm),
             fp_body(&two_arms),
             "a second arm declaring the same name"
+        );
+    }
+
+    #[test]
+    fn only_the_databases_that_can_decode_the_series_bus_are_in_the_chain() {
+        // Every frame a `pt`-scoped series takes arrives on `pt`, and a
+        // `ch`-scoped database never supplies a value for one of them
+        // (`filter::dbc_applies`). It is not a candidate, so it is not
+        // in the chain — and editing it must not force a rebuild that
+        // provably cannot change a sample.
+        let a = parse(&message(&[PLAIN]));
+        let ch = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let ch_edited = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let (pt_bus, ch_bus) = (vec!["pt".to_string()], vec!["ch".to_string()]);
+        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, Some("pt"), 256, false, "S");
+
+        let alone = fp(&[scope(&a, &pt_bus)]);
+        assert_eq!(
+            alone,
+            fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]),
+            "a chassis-scoped database is no part of a powertrain series"
+        );
+        assert_eq!(
+            fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]),
+            fp(&[scope(&a, &pt_bus), scope(&ch_edited, &ch_bus)]),
+            "…so re-encoding it invalidates nothing here"
+        );
+        assert_ne!(
+            alone,
+            fp(&[scope(&a, &pt_bus), scope(&ch, &[])]),
+            "an unscoped database decodes every bus and stays a candidate"
+        );
+    }
+
+    #[test]
+    fn a_null_bus_series_keeps_the_whole_chain() {
+        // `bus_id: None` is "the bus is unknown", not "on no bus": the
+        // series takes frames from every bus and each one is decoded by
+        // whichever database applies to *it*, so every definition is an
+        // input however it is scoped.
+        let a = parse(&message(&[PLAIN]));
+        let ch = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let ch_edited = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let (pt_bus, ch_bus) = (vec!["pt".to_string()], vec!["ch".to_string()]);
+        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, None, 256, false, "S");
+
+        assert_ne!(
+            fp(&[scope(&a, &pt_bus)]),
+            fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]),
+            "a chassis-scoped definition decodes this series' chassis frames"
+        );
+        assert_ne!(
+            fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]),
+            fp(&[scope(&a, &pt_bus), scope(&ch_edited, &ch_bus)]),
+            "…so re-encoding it does invalidate the pyramid"
+        );
+    }
+
+    #[test]
+    fn an_unscoped_project_keeps_every_fingerprint_it_had() {
+        // The tightening above costs a one-time rebuild of the signals
+        // whose chain shrank — and a project that scopes no DBC has
+        // none, because an unscoped database applies to every bus and
+        // is never skipped. The literals are what `dbc_encoding`
+        // produced for these inputs *before* the tightening, so this
+        // fails if the change ever reaches an unscoped set.
+        let a = parse(&message(&[PLAIN]));
+        let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let set = [scope(&a, &[]), scope(&b, &[])];
+        assert_eq!(
+            dbc_encoding(&set, None, 256, false, "S"),
+            "cc804e2183610fba",
+            "an any-bus series over two unscoped databases"
+        );
+        assert_eq!(
+            dbc_encoding(&set, Some("pt"), 256, false, "S"),
+            "fbf0ef6e0caa9bad",
+            "a bus-scoped series over two unscoped databases"
+        );
+        assert_eq!(
+            dbc_encoding(&[scope(&a, &[])], Some("pt"), 256, false, "S"),
+            "97983dac27df7f54",
+            "a bus-scoped series over one unscoped database"
         );
     }
 

@@ -786,7 +786,7 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
         }
         state.trace_store.append(f);
     }
-    let slice = |dbs: &[&Database]| {
+    let slice = |dbs: &[crate::signal_fingerprint::DbcScope<'_>]| {
         state.signal_caches.slice(
             None,
             256,
@@ -829,7 +829,11 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     );
     // The rebuilt cache now decodes the whole series.
     assert_eq!(
-        slice(&[&db]).len(),
+        slice(&[crate::signal_fingerprint::DbcScope {
+            db: &db,
+            buses: &[]
+        }])
+        .len(),
         10,
         "DBC now back-fills the full series"
     );
@@ -1445,7 +1449,7 @@ fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
     // The signal cache for `(bus=p, id=0x123, "Sig")` must include
     // the tx-confirm's decoded value (42).
     let dbs_guard = state.databases.lock().unwrap();
-    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
+    let db_refs = crate::app_state::dbc_scopes(&dbs_guard);
     let samples = state.signal_caches.slice(
         Some("p"),
         0x123,
@@ -1584,7 +1588,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
     );
 
     let dbs_guard = state.databases.lock().unwrap();
-    let db_refs: Vec<&Database> = dbs_guard.iter().map(|l| l.db.as_ref()).collect();
+    let db_refs = crate::app_state::dbc_scopes(&dbs_guard);
 
     // Plot scoped to "p" sees the tx-confirm.
     let samples_p = state.signal_caches.slice(

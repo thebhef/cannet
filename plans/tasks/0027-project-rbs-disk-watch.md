@@ -41,3 +41,54 @@ An ADR should be captured about reloading files.
   Driven by a failing test that renames a `VAL_` entry and asserts the
   new label surfaces.
 - Tests cover the reload-and-swap pipeline for both file types.
+
+## Grooming notes (2026-08-19)
+
+Grilled with the owner ahead of implementation; this task came into
+scope alongside tasks 81 and 86 (it runs last of the three).
+Resolutions:
+
+1. **This task owns the DBC-change propagation contract.** Task 86's
+   item 3 (enum overlays only render after a view remount) is the same
+   hole as the `VAL_`-rename gap recorded here: nothing tells the
+   views that labels changed. Owner ruling — 27 owns it, so the RBS
+   half is fixed with the plot half rather than after it.
+
+2. **The project watch notifies; it applies only when safe.** A
+   project file is not a DBC: the app writes it (explicit Save, plus
+   autosave-on-exit), and the session can hold unsaved changes, so a
+   blind auto-reload can discard the user's work and autosave-on-exit
+   can discard the external edit. Apply silently only when nothing is
+   at risk; otherwise surface "project changed on disk" with an
+   explicit Reload action. **Mid-capture is never safe** (owner):
+   reloading re-roots the session (ADR 0042) and drops the
+   connection. The reload itself runs the existing `open_project`
+   path — no new element-level reconciliation engine.
+
+3. **An RBS file is safe to apply when it is clean and stopped.**
+   Unsaved edits to that element, or the element actively
+   transmitting, both mean do not swap underneath it — a running RBS
+   is putting frames on a real bus. Otherwise notify, with
+   apply-anyway as the explicit action in the notification.
+
+4. **One ADR, covering reload end to end.** Two halves: when a disk
+   change is applied (externally-owned inputs such as DBCs swap in
+   place; app-owned documents apply only when safe and otherwise
+   notify), and what a reload must tell (the invalidation and
+   notification obligations, so every view rendering derived state —
+   enum labels included — sees the change). One ADR rather than two:
+   the gap recorded in this task exists because those halves were
+   never written down together.
+
+## Phases
+
+1. **The reload ADR and the propagation contract.** Write the ADR,
+   then implement the propagation half: a DBC-set change (add, remove,
+   re-scope, watcher reload) invalidates and notifies every consumer
+   of derived state, with the failing `VAL_`-rename test from the exit
+   criteria driving it. Covers task 86 item 3's consumers.
+2. **Project-file watch.** Register `.cannet_prj` with the existing
+   watch set; the safety rule from note 2; notification UI and the
+   explicit Reload action.
+3. **RBS-file watch.** Same for `.cannet_rbs`, with the clean-and-
+   stopped rule from note 3.
