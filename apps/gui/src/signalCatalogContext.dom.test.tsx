@@ -122,14 +122,17 @@ afterEach(() => {
 });
 
 describe("SignalCatalogProvider / useSignalCatalog", () => {
-  it("fetches on mount, scoped to the project's bus ids", async () => {
+  it("fetches on mount, taking the host's assignment-expanded universe", async () => {
     SIGNALS = [
       { bus_id: "b1", message_id: 1, extended: false, message_name: "M", transmitter: null, signal_name: "S1", unit: "" },
     ];
     renderProvider(baseProjectCtx({ buses: [{ id: "b1", name: "Bus 1" }] }));
     await waitFor(() => expect(screen.getByText("S1")).toBeInTheDocument());
     const call = calls.find((c) => c.cmd === "list_signals");
-    expect((call?.args as { projectBuses: string[] }).projectBuses).toEqual(["b1"]);
+    expect(call).toBeDefined();
+    // The universe is the loaded set and its bus assignments; the
+    // project's bus list is not an argument.
+    expect(call?.args).toBeUndefined();
   });
 
   it("refetches when the project's bus list changes", async () => {

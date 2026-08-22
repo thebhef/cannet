@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use cannet_core::{CanFramePayload, Direction};
-use cannet_dbc::Database;
 use cannet_gui_lib::signal_cache::SignalCacheStore;
 use cannet_gui_lib::signal_fingerprint::DbcScope;
 use cannet_gui_lib::signal_sampler;
@@ -83,15 +82,20 @@ pub fn run(ex: &LoadedExample, cfg: &SignalBenchConfig) -> SignalBenchReport {
     const ITERS: usize = 50;
 
     let templates = workload::build_schedule(ex);
-    let dbs: Vec<&Database> = ex.dbcs.iter().map(|d| &d.db).collect();
-    let chosen = pick_signal(&templates, &dbs).expect("a decodable scheduled signal");
-    // The serve path takes DBC bus scoping now, and this bench declares
-    // every database **unscoped** — the empty bus list means "applies to
-    // every bus". That is what the bench means: it characterizes the
-    // decimation of one signal's series, so every database should stay a
-    // candidate for every frame, which is also the eligible set the
-    // numbers in the existing baselines were measured against.
-    let scopes: Vec<DbcScope<'_>> = dbs.iter().map(|db| DbcScope { db, buses: &[] }).collect();
+    // The serve path takes DBC bus scoping, and the bench takes the
+    // example project's own assignments — the same database set the GUI
+    // applies to a frame on that bus. A bench that declared every
+    // database unscoped would measure a candidate set the project never
+    // produces.
+    let scopes: Vec<DbcScope<'_>> = ex
+        .dbcs
+        .iter()
+        .map(|d| DbcScope {
+            db: &d.db,
+            buses: &d.buses,
+        })
+        .collect();
+    let chosen = pick_signal(&templates, &scopes).expect("a decodable scheduled signal");
 
     let scratch = match cfg.store {
         StoreKind::Mem => None,
@@ -194,14 +198,20 @@ struct ChosenSignal {
 }
 
 /// Pick the most-frequent scheduled message (smallest period) that has a
-/// signal some DBC can decode — the deepest series, where decimation
-/// matters most.
-fn pick_signal(templates: &[ScheduledMessage], dbs: &[&Database]) -> Option<ChosenSignal> {
+/// signal a DBC **assigned to that message's bus** can decode — the
+/// deepest series, where decimation matters most. Scoping is applied
+/// here too so the bench never chooses a signal the serve path cannot
+/// resolve.
+fn pick_signal(templates: &[ScheduledMessage], scopes: &[DbcScope<'_>]) -> Option<ChosenSignal> {
     let mut by_freq: Vec<&ScheduledMessage> = templates.iter().collect();
     by_freq.sort_by_key(|m| m.period_ms);
     for m in by_freq {
         let canid = m.canid();
-        for db in dbs {
+        for db in scopes
+            .iter()
+            .filter(|s| s.buses.contains(&m.bus_id))
+            .map(|s| s.db)
+        {
             if let Some(desc) = db.describe_message(canid) {
                 if let Some(sig) = desc.signals.first() {
                     return Some(ChosenSignal {

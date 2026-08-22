@@ -193,17 +193,16 @@ fn mix_spec(h: &mut Fnv, spec: &SignalDecodeSpec) {
 /// at all, yields the empty chain's fingerprint: well-defined, and
 /// distinct from every chain that decodes something.
 ///
-/// **Bus scoping decides who is even a candidate.** A series scoped to
-/// a bus takes only that bus's frames, and the decode path judges every
+/// **Bus assignment decides who is even a candidate.** A series on a bus
+/// takes only that bus's frames, and the decode path judges every
 /// database against the bus a frame arrived on
-/// ([`filter::dbc_applies`]), so a database scoped elsewhere is skipped
-/// entirely — editing it cannot move a sample and must not invalidate
-/// the pyramid. `bus_id = None` is the any-bus series and is the
-/// exception: its frames arrive from every bus and each is decoded by
-/// whichever database applies to *that* bus, so its chain is every
-/// defining database, scoped or not. The scoping of a database that
-/// *is* a candidate joins its contribution, because a re-scope can
-/// change which frames it answers for.
+/// ([`filter::dbc_applies`]), so a database assigned elsewhere — or
+/// assigned to nothing — is skipped entirely: editing it cannot move a
+/// sample and must not invalidate the pyramid. A series that names no
+/// bus is admitted by no assignment either, and so has the empty chain.
+/// The assignment of a database that *is* a candidate joins its
+/// contribution, because a re-assignment can change which frames it
+/// answers for.
 pub fn dbc_encoding(
     dbcs: &[DbcScope<'_>],
     bus_id: Option<&str>,
@@ -225,18 +224,13 @@ pub fn dbc_encoding(
     };
     if let Ok(id) = id {
         for dbc in dbcs {
-            // Only the databases that can decode *this* series. A
-            // bus-scoped series takes frames from one bus, so a
-            // database `filter::dbc_applies` rejects for that bus can
-            // never supply one of its samples — editing it must not
-            // force a rebuild that provably cannot move a value.
-            // `bus_id: None` is the any-bus series and keeps the whole
-            // chain: its frames arrive from every bus and each is
-            // decoded by whichever database applies to that one.
-            if let Some(bus) = bus_id {
-                if !filter::dbc_applies(dbc.buses, Some(bus)) {
-                    continue;
-                }
+            // Only the databases that can decode *this* series: its
+            // frames arrive on one bus, so a database
+            // `filter::dbc_applies` rejects for that bus can never
+            // supply one of its samples — editing it must not force a
+            // rebuild that provably cannot move a value.
+            if !filter::dbc_applies(dbc.buses, bus_id) {
+                continue;
             }
             let specs = dbc.db.signal_decode_specs(id, signal_name);
             if specs.is_empty() {
@@ -315,15 +309,26 @@ mod tests {
         DbcScope { db, buses }
     }
 
-    /// Fingerprint of signal `S` in message 256 of the single unscoped
-    /// DBC `text`.
+    /// The bus the fixtures' databases are assigned to, and the bus
+    /// their series is on. Assignment governs decode, so a fingerprint
+    /// taken over an unassigned database has no chain to move — every
+    /// "this input moves the fingerprint" test needs an assigned one.
+    const FP_BUS: &str = "bus1";
+
+    fn fp_bus() -> Vec<String> {
+        vec![FP_BUS.to_string()]
+    }
+
+    /// Fingerprint of signal `S` in message 256 of the single DBC
+    /// `text`, assigned to [`FP_BUS`].
     fn fp_body(text: &str) -> String {
         fp_named(text, "S")
     }
 
     fn fp_named(text: &str, signal: &str) -> String {
         let db = parse(text);
-        dbc_encoding(&[scope(&db, &[])], None, 256, false, signal)
+        let bus = fp_bus();
+        dbc_encoding(&[scope(&db, &bus)], Some(FP_BUS), 256, false, signal)
     }
 
     /// Fingerprint of `S` in a one-message DBC declaring only `sig`.
@@ -393,8 +398,10 @@ mod tests {
     #[test]
     fn message_identity_moves_the_fingerprint() {
         let db = parse(&message(&[PLAIN]));
-        let at =
-            |id: u32, extended: bool| dbc_encoding(&[scope(&db, &[])], None, id, extended, "S");
+        let bus = fp_bus();
+        let at = |id: u32, extended: bool| {
+            dbc_encoding(&[scope(&db, &bus)], Some(FP_BUS), id, extended, "S")
+        };
         assert_ne!(at(256, false), at(257, false), "another message id");
         assert_ne!(
             at(256, false),
@@ -435,25 +442,26 @@ mod tests {
     fn the_dbc_set_resolution_moves_the_fingerprint() {
         let a = parse(&message(&[PLAIN]));
         let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
-        let bus1 = vec!["bus1".to_string()];
-        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, None, 256, false, "S");
+        let bus = fp_bus();
+        let two_buses = vec![FP_BUS.to_string(), "bus2".to_string()];
+        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, Some(FP_BUS), 256, false, "S");
 
-        let base = fp(&[scope(&a, &[])]);
+        let base = fp(&[scope(&a, &bus)]);
         assert_ne!(base, fp(&[]), "no DBC at all decodes nothing");
         assert_ne!(
             base,
-            fp(&[scope(&a, &[]), scope(&b, &[])]),
+            fp(&[scope(&a, &bus), scope(&b, &bus)]),
             "a second definition can win frames the first does not"
         );
         assert_ne!(
-            fp(&[scope(&a, &[]), scope(&b, &[])]),
-            fp(&[scope(&b, &[]), scope(&a, &[])]),
+            fp(&[scope(&a, &bus), scope(&b, &bus)]),
+            fp(&[scope(&b, &bus), scope(&a, &bus)]),
             "load order is decode priority between two definitions"
         );
         assert_ne!(
             base,
-            fp(&[scope(&a, &bus1)]),
-            "the bus scoping of a contributing DBC"
+            fp(&[scope(&a, &two_buses)]),
+            "the bus assignment of a contributing DBC"
         );
 
         // Two `SG_` lines of one name, in different multiplexor arms:
@@ -499,63 +507,59 @@ mod tests {
             fp(&[scope(&a, &pt_bus), scope(&ch_edited, &ch_bus)]),
             "…so re-encoding it invalidates nothing here"
         );
-        assert_ne!(
+        assert_eq!(
             alone,
             fp(&[scope(&a, &pt_bus), scope(&ch, &[])]),
-            "an unscoped database decodes every bus and stays a candidate"
+            "a database assigned to no bus is a candidate for nothing"
         );
     }
 
     #[test]
-    fn a_null_bus_series_keeps_the_whole_chain() {
-        // `bus_id: None` is "the bus is unknown", not "on no bus": the
-        // series takes frames from every bus and each one is decoded by
-        // whichever database applies to *it*, so every definition is an
-        // input however it is scoped.
+    fn a_series_that_names_no_bus_has_the_empty_chain() {
+        // No assignment admits a query that names no bus, so a
+        // DBC-backed series without one has no candidate at all: its
+        // fingerprint is the empty chain's, whatever is loaded and
+        // however it is assigned.
         let a = parse(&message(&[PLAIN]));
         let ch = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
-        let ch_edited = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
         let (pt_bus, ch_bus) = (vec!["pt".to_string()], vec!["ch".to_string()]);
         let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, None, 256, false, "S");
 
+        let empty = fp(&[]);
+        assert_eq!(fp(&[scope(&a, &pt_bus)]), empty);
+        assert_eq!(fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]), empty);
+        assert_eq!(fp(&[scope(&a, &[])]), empty);
+        // …and still distinct from a chain that decodes something.
         assert_ne!(
-            fp(&[scope(&a, &pt_bus)]),
-            fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]),
-            "a chassis-scoped definition decodes this series' chassis frames"
-        );
-        assert_ne!(
-            fp(&[scope(&a, &pt_bus), scope(&ch, &ch_bus)]),
-            fp(&[scope(&a, &pt_bus), scope(&ch_edited, &ch_bus)]),
-            "…so re-encoding it does invalidate the pyramid"
+            empty,
+            dbc_encoding(&[scope(&a, &pt_bus)], Some("pt"), 256, false, "S"),
         );
     }
 
     #[test]
-    fn an_unscoped_project_keeps_every_fingerprint_it_had() {
-        // The tightening above costs a one-time rebuild of the signals
-        // whose chain shrank — and a project that scopes no DBC has
-        // none, because an unscoped database applies to every bus and
-        // is never skipped. The literals are what `dbc_encoding`
-        // produced for these inputs *before* the tightening, so this
-        // fails if the change ever reaches an unscoped set.
+    fn an_unassigned_database_is_no_part_of_any_chain() {
+        // The successor to the old "an unscoped project keeps every
+        // fingerprint" guard, which pinned literals for a set where
+        // every database applied to every bus. There is no such set
+        // now: loading a file changes no chain until it is assigned, so
+        // adding, re-ordering or editing an unassigned database moves
+        // nothing.
         let a = parse(&message(&[PLAIN]));
         let b = parse(&message(&["S : 16|8@1+ (1,0) [0|0] \"\" ECU2"]));
-        let set = [scope(&a, &[]), scope(&b, &[])];
+        let b_edited = parse(&message(&["S : 24|8@1+ (1,0) [0|0] \"\" ECU2"]));
+        let bus = fp_bus();
+        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, Some(FP_BUS), 256, false, "S");
+
+        let alone = fp(&[scope(&a, &bus)]);
+        assert_eq!(alone, fp(&[scope(&a, &bus), scope(&b, &[])]), "added");
+        assert_eq!(alone, fp(&[scope(&b, &[]), scope(&a, &bus)]), "re-ordered");
         assert_eq!(
-            dbc_encoding(&set, None, 256, false, "S"),
-            "cc804e2183610fba",
-            "an any-bus series over two unscoped databases"
+            fp(&[scope(&a, &bus), scope(&b, &[])]),
+            fp(&[scope(&a, &bus), scope(&b_edited, &[])]),
+            "edited"
         );
-        assert_eq!(
-            dbc_encoding(&set, Some("pt"), 256, false, "S"),
-            "fbf0ef6e0caa9bad",
-            "a bus-scoped series over two unscoped databases"
-        );
-        assert_eq!(
-            dbc_encoding(&[scope(&a, &[])], Some("pt"), 256, false, "S"),
-            "97983dac27df7f54",
-            "a bus-scoped series over one unscoped database"
-        );
+        // Assigning it is what makes it an input.
+        assert_ne!(alone, fp(&[scope(&a, &bus), scope(&b, &bus)]), "assigned");
     }
 
     #[test]
@@ -567,22 +571,23 @@ mod tests {
         let elsewhere = parse(&dbc_text(
             "BO_ 300 Other: 8 ECU\n SG_ T : 0|8@1+ (1,0) [0|0] \"\" ECU2\n",
         ));
-        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, None, 256, false, "S");
+        let bus = fp_bus();
+        let fp = |dbcs: &[DbcScope<'_>]| dbc_encoding(dbcs, Some(FP_BUS), 256, false, "S");
 
-        let base = fp(&[scope(&a, &[])]);
+        let base = fp(&[scope(&a, &bus)]);
         assert_eq!(
             base,
-            fp(&[scope(&a, &[]), scope(&elsewhere, &[])]),
+            fp(&[scope(&a, &bus), scope(&elsewhere, &bus)]),
             "a DBC that defines nothing about this signal contributes nothing"
         );
         assert_eq!(
-            fp(&[scope(&a, &[]), scope(&elsewhere, &[])]),
-            fp(&[scope(&elsewhere, &[]), scope(&a, &[])]),
+            fp(&[scope(&a, &bus), scope(&elsewhere, &bus)]),
+            fp(&[scope(&elsewhere, &bus), scope(&a, &bus)]),
             "…so re-prioritising it changes no decode"
         );
         assert_eq!(
-            fp(&[scope(&a, &[]), scope(&twin, &[])]),
-            fp(&[scope(&twin, &[]), scope(&a, &[])]),
+            fp(&[scope(&a, &bus), scope(&twin, &bus)]),
+            fp(&[scope(&twin, &bus), scope(&a, &bus)]),
             "two identical definitions decode identically in either order"
         );
     }
@@ -602,11 +607,11 @@ mod tests {
         let loaded = [LoadedDbc {
             path: path.to_string_lossy().into_owned(),
             db: Arc::new(parse(&text)),
-            buses: Vec::new(),
+            buses: fp_bus(),
         }];
         let before_signal = dbc_encoding(
             &[scope(&loaded[0].db, &loaded[0].buses)],
-            None,
+            Some(FP_BUS),
             256,
             false,
             "S",
@@ -629,7 +634,7 @@ mod tests {
             before_signal,
             dbc_encoding(
                 &[scope(&loaded[0].db, &loaded[0].buses)],
-                None,
+                Some(FP_BUS),
                 256,
                 false,
                 "S"
@@ -649,8 +654,10 @@ mod tests {
             "S : 0|8@1+ (1,0) [0|0] \"\" ECU2",
             "T : 8|16@1+ (0.5,0) [0|0] \"\" ECU2",
         ]));
-        let fp =
-            |db: &Database, signal: &str| dbc_encoding(&[scope(db, &[])], None, 256, false, signal);
+        let bus = fp_bus();
+        let fp = |db: &Database, signal: &str| {
+            dbc_encoding(&[scope(db, &bus)], Some(FP_BUS), 256, false, signal)
+        };
         assert_eq!(fp(&before, "S"), fp(&after, "S"), "S is untouched");
         assert_ne!(fp(&before, "T"), fp(&after, "T"), "T was re-encoded");
     }

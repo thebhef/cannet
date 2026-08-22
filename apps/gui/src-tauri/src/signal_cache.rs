@@ -3154,7 +3154,7 @@ mod tests {
         store.append(dummy(4 * S, 999, vec![0, 0, 0, 0, 0, 0, 0, 0]));
         store.append(dummy(5 * S, 256, vec![4, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3212,7 +3212,7 @@ mod tests {
         store.append(dummy(S, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]));
         store.append(dummy(2 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3239,7 +3239,7 @@ mod tests {
         let store = TraceStore::new();
         store.append(dummy(0, 256, vec![1, 0, 0, 0, 0, 0, 0, 0]));
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         // Unknown id and unknown signal both have no decoded samples.
@@ -3254,7 +3254,7 @@ mod tests {
         let store = TraceStore::new();
         store.append(dummy(0, 256, vec![0; 8]));
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let nope = cache.slice(None, 256, false, "Nope", 0.0, 1.0, 0, &store, dbs);
@@ -3279,7 +3279,8 @@ mod tests {
         store.append(b);
         store.append(c2);
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let pc = bus_set(&["p", "c"]);
+        let dbs = &assigned_to(&[&db], &pc);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let on_p = cache.slice(Some("p"), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
@@ -3315,10 +3316,28 @@ mod tests {
 
     const DBC_HEADER: &str = "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_:\n";
 
-    /// The loaded set with nothing scoped — every database applies to
-    /// every bus, which is what a test that isn't about scoping wants.
-    fn all_buses<'a>(dbs: &[&'a Database]) -> Vec<DbcScope<'a>> {
-        dbs.iter().map(|db| DbcScope { db, buses: &[] }).collect()
+    /// [`TEST_BUS`] as an assignment set, borrowable for any lifetime —
+    /// a `DbcScope` names the buses a database is assigned to, and every
+    /// test frame arrives on this one.
+    static TEST_BUS_SCOPE: std::sync::LazyLock<Vec<String>> =
+        std::sync::LazyLock::new(|| vec![TEST_BUS.to_string()]);
+
+    /// The loaded set assigned to the bus the test frames arrive on —
+    /// what a test that isn't about scoping wants, now that a database
+    /// assigned to no bus decodes nothing.
+    fn on_test_bus<'a>(dbs: &[&'a Database]) -> Vec<DbcScope<'a>> {
+        assigned_to(dbs, &TEST_BUS_SCOPE)
+    }
+
+    /// The loaded set assigned to `buses` — for the tests that name the
+    /// buses their frames arrive on rather than using [`TEST_BUS`].
+    fn assigned_to<'a>(dbs: &[&'a Database], buses: &'a [String]) -> Vec<DbcScope<'a>> {
+        dbs.iter().map(|db| DbcScope { db, buses }).collect()
+    }
+
+    /// `buses` as an assignment set.
+    fn bus_set(buses: &[&str]) -> Vec<String> {
+        buses.iter().map(|b| (*b).to_string()).collect()
     }
 
     /// Defines message 256 with **only** `A`, at unit scale.
@@ -3364,7 +3383,7 @@ mod tests {
         let (first, second) = (dbc_a_only(), dbc_a_and_b());
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let dbs = &all_buses(&[&first, &second]);
+        let dbs = &on_test_bus(&[&first, &second]);
         let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
         let b = cache.slice(None, 256, false, "B", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(
@@ -3380,7 +3399,7 @@ mod tests {
         // ×10 scaling from what is now the first database.
         let tmp2 = TempDir::new().unwrap();
         let cache2 = SignalCacheStore::new(tmp2.path());
-        let dbs = &all_buses(&[&second, &first]);
+        let dbs = &on_test_bus(&[&second, &first]);
         let a = cache2.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(
             a.iter().map(|p| p.value).collect::<Vec<_>>(),
@@ -3555,7 +3574,7 @@ mod tests {
         store.append(mux_frame(2 * S, 0, 12));
         store.append(mux_frame(3 * S, 1, 13));
         let db = dbc_muxed();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let m0 = cache.slice(None, 512, false, "M0", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -3591,7 +3610,7 @@ mod tests {
              SG_ X : 0|16@1+ (100,0) [0|0] \"\" Vector__XXX\n"
         ))
         .unwrap();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let store = TraceStore::new();
         store.append(val_frame(0, 1));
         store.append(RawTraceFrame {
@@ -3626,7 +3645,7 @@ mod tests {
             store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
         }
         let (first, second) = (dbc_a_only(), dbc_a_and_b());
-        let dbs = &all_buses(&[&first, &second]);
+        let dbs = &on_test_bus(&[&first, &second]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -3661,7 +3680,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 1000) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3701,7 +3720,7 @@ mod tests {
             store.append(val_frame(i * S, v));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -3784,7 +3803,7 @@ mod tests {
             }
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3836,7 +3855,7 @@ mod tests {
             }
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3883,7 +3902,7 @@ mod tests {
             }
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -3927,7 +3946,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 2) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4015,7 +4034,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 500) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -4109,7 +4128,7 @@ mod tests {
         // 100 samples at 10 ms: the series ends at 0.99 s.
         append_cadence(&store, 0, S / 100, 100);
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4138,7 +4157,7 @@ mod tests {
         let store = TraceStore::new();
         store.append(val_frame(S, 3));
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4162,7 +4181,7 @@ mod tests {
         append_cadence(&store, 0, S / 100, 100);
         append_cadence(&store, 6 * S, S / 100, 100);
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4189,7 +4208,7 @@ mod tests {
         // it at all, over 20 s.
         append_cadence(&store, 0, S / 1000, 20_000);
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4246,7 +4265,7 @@ mod tests {
             &std::fs::read_to_string(dir.join("extrapolation.dbc")).expect("fixture DBC"),
         )
         .expect("fixture DBC must parse");
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
 
         let store = TraceStore::new();
         let mut src = cannet_blf::BlfCanFrameSource::open(dir.join("extrapolation.blf"))
@@ -4342,7 +4361,7 @@ mod tests {
         // the chunks tile the unscanned range exactly. Driven through the
         // fetch seam so a multi-million-frame span costs the test nothing.
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         let store_len = 5 * CATCH_UP_CHUNK_FRAMES + 7;
@@ -4407,7 +4426,7 @@ mod tests {
             }
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
 
@@ -4473,7 +4492,7 @@ mod tests {
     fn a_serve_out_of_budget_answers_with_its_prefix_and_says_it_is_partial() {
         let store = rising_capture(3 * CATCH_UP_CHUNK_FRAMES);
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
@@ -4535,7 +4554,7 @@ mod tests {
         // both *finished* answers. A caller that re-asked until the
         // window was non-empty would spin forever on either.
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
@@ -4585,7 +4604,7 @@ mod tests {
             store.append(frame);
         }
         let db = dbc_two_areas();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X"), query_on(512, "Y")];
@@ -4660,7 +4679,7 @@ mod tests {
             .chain((0..MANY_GROUP_SPARSE).map(|k| 512 + k as u32))
             .collect();
         let db = dbc_with_messages(&ids);
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let queries: Vec<CacheQuery<'_>> = ids.iter().map(|id| query_on(*id, "X")).collect();
         let fetch = |id: u32, _extended: bool, from: usize, to: usize| {
             (from..to)
@@ -4732,7 +4751,7 @@ mod tests {
         // rotation, it gets the whole serve rather than one chunk of it.
         let ids: [u32; 4] = [256, 512, 513, 514];
         let db = dbc_with_messages(&[256, 512, 513, 514, 515]);
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let asked = std::cell::RefCell::new(Vec::new());
         let fetch = |id: u32, _extended: bool, from: usize, to: usize| {
             asked.borrow_mut().push(id);
@@ -4808,7 +4827,7 @@ mod tests {
         // read and says it is behind — it never runs to a moving target.
         let store = rising_capture(2 * CATCH_UP_CHUNK_FRAMES);
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
@@ -4853,7 +4872,7 @@ mod tests {
         // while a live capture grows.
         let store = rising_capture(3 * CATCH_UP_CHUNK_FRAMES);
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         let queries = [query_on(256, "X")];
@@ -4892,7 +4911,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
@@ -4934,7 +4953,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let a = TempDir::new().unwrap();
         let b = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(a.path());
@@ -5200,7 +5219,10 @@ mod tests {
         // optimisation *of* this.
         let store = mixed_capture();
         let owned = mixed_dbs();
-        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
+        // `mixed_capture` spreads its frames over three buses, so the
+        // databases are assigned to all three.
+        let all = bus_set(&[TEST_BUS, "p", "c"]);
+        let dbs = assigned_to(&owned.iter().collect::<Vec<_>>(), &all);
         let queries = mixed_queries();
 
         // Per signal: each `slice` is its own one-member group, which
@@ -5265,7 +5287,7 @@ mod tests {
         // y-extent (ADR 0025) has to come out of it unchanged too.
         let store = mixed_capture();
         let owned = mixed_dbs();
-        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
+        let dbs = on_test_bus(&owned.iter().collect::<Vec<_>>());
         let queries = mixed_queries();
 
         let a = TempDir::new().unwrap();
@@ -5297,7 +5319,8 @@ mod tests {
         // the fetch seam, so the count is observable — three series,
         // one walk.
         let owned = [dbc_a_only(), dbc_a_and_b()];
-        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
+        let pc = bus_set(&["p", "c"]);
+        let dbs = assigned_to(&owned.iter().collect::<Vec<_>>(), &pc);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         let queries = [
@@ -5365,7 +5388,7 @@ mod tests {
             store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
         }
         let owned = [dbc_a_only(), dbc_a_and_b()];
-        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
+        let dbs = on_test_bus(&owned.iter().collect::<Vec<_>>());
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = CacheQuery {
@@ -5431,7 +5454,7 @@ mod tests {
         // internally — and a repeated query answers twice, identically.
         let store = mixed_capture();
         let owned = mixed_dbs();
-        let dbs = all_buses(&owned.iter().collect::<Vec<_>>());
+        let dbs = on_test_bus(&owned.iter().collect::<Vec<_>>());
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let mut queries = mixed_queries();
@@ -5562,7 +5585,7 @@ mod tests {
             ));
         }
         let db = dbc_two_areas();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         let store_len = 3 * CATCH_UP_CHUNK_FRAMES;
@@ -5602,7 +5625,7 @@ mod tests {
             ));
         }
         let db = dbc_two_areas();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         // Something already built, so the manifest write has work to do.
@@ -5635,10 +5658,13 @@ mod tests {
         }
     }
 
-    /// The loaded set as the per-signal fingerprints see it: `db` alone,
-    /// scoped to every bus.
+    /// The loaded set as the per-signal fingerprints see it: `db`
+    /// alone, assigned to [`TEST_BUS`].
     fn scopes(db: &Database) -> Vec<DbcScope<'_>> {
-        vec![DbcScope { db, buses: &[] }]
+        vec![DbcScope {
+            db,
+            buses: &TEST_BUS_SCOPE,
+        }]
     }
 
     /// A restore's three counts, for the tests that assert on the split
@@ -5681,10 +5707,20 @@ mod tests {
         for i in 0..n {
             store.append(ab_frame(i as u64 * S, (i % 50) as u16, (i % 40) as u16));
         }
-        let dbs = &all_buses(&[db]);
+        let dbs = &on_test_bus(&[db]);
         let cache = SignalCacheStore::new_unbounded(root);
         for signal in ["A", "B"] {
-            let built = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
+            let built = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                dbs,
+            );
             assert_eq!(built.len(), n, "{signal} built");
         }
         assert!(cache.persist(v, &scopes(db), Harden::All));
@@ -5709,9 +5745,19 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let cache = SignalCacheStore::new(root);
-        let built = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let built = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(built.len(), 200);
         cache.persist(v, &scopes(&db), Harden::All);
         store.len()
@@ -5727,7 +5773,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -5803,10 +5849,19 @@ mod tests {
         assert!(!reopened.rebuilding(len), "and nothing is announced");
         // Every sample came off disk: these frames decode to nothing.
         let cold = undecodable_store(len);
-        let dbs = &all_buses(&[&reloaded]);
+        let dbs = &on_test_bus(&[&reloaded]);
         for signal in ["A", "B"] {
-            let served =
-                reopened.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &cold, dbs);
+            let served = reopened.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &cold,
+                dbs,
+            );
             assert_eq!(served.len(), 200, "{signal} served from disk");
         }
     }
@@ -5835,13 +5890,33 @@ mod tests {
         );
 
         let cold = undecodable_store(len);
-        let dbs = &all_buses(&[&after]);
-        let a = reopened.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &cold, dbs);
+        let dbs = &on_test_bus(&[&after]);
+        let a = reopened.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &cold,
+            dbs,
+        );
         assert_eq!(a.len(), 200, "A came back off disk");
         assert_eq!(a[7].value, 7.0);
         assert_eq!(
             reopened
-                .slice(None, 256, false, "B", f64::MIN, f64::MAX, 0, &cold, dbs)
+                .slice(
+                    Some(TEST_BUS),
+                    256,
+                    false,
+                    "B",
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &cold,
+                    dbs
+                )
                 .len(),
             0,
             "B's pyramid was discarded",
@@ -5854,8 +5929,18 @@ mod tests {
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        let kept = key_prefix(&SignalKey::dbc(None, 256, false, "A".into()));
-        let dropped = key_prefix(&SignalKey::dbc(None, 256, false, "B".into()));
+        let kept = key_prefix(&SignalKey::dbc(
+            Some(TEST_BUS.to_string()),
+            256,
+            false,
+            "A".into(),
+        ));
+        let dropped = key_prefix(&SignalKey::dbc(
+            Some(TEST_BUS.to_string()),
+            256,
+            false,
+            "B".into(),
+        ));
         assert!(
             live.iter().any(|n| n.starts_with(&kept)),
             "A's levels: {live:?}"
@@ -5912,11 +5997,21 @@ mod tests {
         // Proof the samples are the parked ones: these frames decode to
         // nothing, so anything served came off disk.
         let cold = undecodable_store(len);
-        let dbs = &all_buses(&[&back]);
+        let dbs = &on_test_bus(&[&back]);
         for signal in ["A", "B"] {
             assert_eq!(
                 session3
-                    .slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &cold, dbs)
+                    .slice(
+                        Some(TEST_BUS),
+                        256,
+                        false,
+                        signal,
+                        f64::MIN,
+                        f64::MAX,
+                        0,
+                        &cold,
+                        dbs
+                    )
                     .len(),
                 200,
                 "{signal} served from disk",
@@ -5937,9 +6032,19 @@ mod tests {
         }
         let first = dbc_ab_scaled(1, 1);
         let cache = SignalCacheStore::new_unbounded(root.path());
-        let dbs = &all_buses(&[&first]);
+        let dbs = &on_test_bus(&[&first]);
         for signal in ["A", "B"] {
-            let _ = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
+            let _ = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                dbs,
+            );
         }
         let v = validity("capture-a", 0);
         assert!(cache.persist(&v, &scopes(&first), Harden::All));
@@ -6019,9 +6124,19 @@ mod tests {
         }
         let before = dbc_ab(1);
         let cache = SignalCacheStore::new_unbounded(root.path());
-        let dbs = &all_buses(&[&before]);
+        let dbs = &on_test_bus(&[&before]);
         for signal in ["A", "B"] {
-            let _ = cache.slice(None, 256, false, signal, f64::MIN, f64::MAX, 0, &store, dbs);
+            let _ = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                signal,
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                dbs,
+            );
         }
         assert!(cache.persist(&validity("capture-a", 0), &scopes(&before), Harden::All));
 
@@ -6036,11 +6151,11 @@ mod tests {
         assert_eq!(cache.usage().retained, 0);
         assert_eq!(cache.usage().revivals, 1);
         let cold = undecodable_store(200);
-        let cold_dbs = &all_buses(&[&before]);
+        let cold_dbs = &on_test_bus(&[&before]);
         assert_eq!(
             cache
                 .slice(
-                    None,
+                    Some(TEST_BUS),
                     256,
                     false,
                     "B",
@@ -6074,7 +6189,8 @@ mod tests {
         }
         let before = dbc_ab_scaled(1, 1);
         let cache = SignalCacheStore::new_unbounded(root.path());
-        let dbs = &all_buses(&[&before]);
+        let two = bus_set(&["pt", "ch"]);
+        let dbs = &assigned_to(&[&before], &two);
         for bus in ["pt", "ch"] {
             let built = cache.slice(
                 Some(bus),
@@ -6089,12 +6205,16 @@ mod tests {
             );
             assert_eq!(built.len(), 200, "{bus} built");
         }
-        assert!(cache.persist(&validity("capture-a", 0), &scopes(&before), Harden::All));
+        assert!(cache.persist(
+            &validity("capture-a", 0),
+            &assigned_to(&[&before], &two),
+            Harden::All
+        ));
 
         // One edit, under both series at once — the database is
-        // unscoped, so it is a candidate for either bus.
+        // assigned to both buses, so it is a candidate for either.
         let after = dbc_ab_scaled(2, 1);
-        cache.invalidate_dbcs(&scopes(&after));
+        cache.invalidate_dbcs(&assigned_to(&[&after], &two));
         assert_eq!(cache.usage().retained, 2, "one park per bus");
         assert_eq!(
             cache.retained_signals(),
@@ -6144,8 +6264,18 @@ mod tests {
         // Serve `A` under `db` and stamp what it was decoded with — an
         // unstamped cache is dropped rather than parked.
         let built = |db: &Database| {
-            let dbs = all_buses(&[db]);
-            let served = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, &dbs);
+            let dbs = on_test_bus(&[db]);
+            let served = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                "A",
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                &dbs,
+            );
             assert_eq!(served.len(), 200);
             assert!(cache.persist(&v, &scopes(db), Harden::All));
         };
@@ -6159,7 +6289,7 @@ mod tests {
         let usage = cache.usage();
         assert_eq!(usage.retained, 1, "one park after A -> B -> A, not two");
         assert_eq!(usage.revivals, 1, "A came back rather than rebuilding");
-        let fp_b = signal_fingerprint::dbc_encoding(&scopes(&b), None, 256, false, "A");
+        let fp_b = signal_fingerprint::dbc_encoding(&scopes(&b), Some(TEST_BUS), 256, false, "A");
         {
             let caches = cache.caches.lock().unwrap();
             assert_eq!(
@@ -6226,8 +6356,18 @@ mod tests {
         assert!(cold.unread_bytes > 0);
 
         let store = undecodable_store(len);
-        let dbs = &all_buses(&[&db]);
-        let _ = session.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        let dbs = &on_test_bus(&[&db]);
+        let _ = session.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         let warm = session.usage();
         assert_eq!(
             (warm.live, warm.unread),
@@ -6262,7 +6402,7 @@ mod tests {
         let reopened = SignalCacheStore::new_unbounded(root.path());
         assert_eq!(reopened.restore(&v, &scopes(&after), len).rebuilt, 1);
 
-        let dbs = &all_buses(&[&after]);
+        let dbs = &on_test_bus(&[&after]);
         let fetches = std::cell::Cell::new(0usize);
         let keys = catch_up_through(
             &reopened,
@@ -6307,12 +6447,12 @@ mod tests {
         // frames contributes none.
         let targets = [
             GroupTarget {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 signal_name: "A",
                 next_index: 10,
             },
             GroupTarget {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 signal_name: "B",
                 next_index: 0,
             },
@@ -6359,7 +6499,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         {
             let cache = SignalCacheStore::new(root.path());
             let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
@@ -6400,7 +6540,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
         let v = validity("capture-a", 0);
@@ -6436,7 +6576,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
         let v = validity("capture-a", 0);
@@ -6483,14 +6623,24 @@ mod tests {
         );
         let store = undecodable_store(len);
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
-        let served = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let dbs = &on_test_bus(&[&db]);
+        let served = reopened.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(served.len(), 200, "served from the persisted pyramid");
         assert_eq!(served[7].value, 7.0);
         // The all-time extent came back too — it is decoded state, not a
         // window, so re-deriving it would mean re-decoding.
         assert_eq!(
-            reopened.min_max(None, 256, false, "X", &store, dbs),
+            reopened.min_max(Some(TEST_BUS), 256, false, "X", &store, dbs),
             Some((0.0, 49.0))
         );
     }
@@ -6523,7 +6673,7 @@ mod tests {
             for i in 0..200u64 {
                 store.append(val_frame(i * S, (i % 50) as u16));
             }
-            let dbs = &all_buses(&[&db]);
+            let dbs = &on_test_bus(&[&db]);
             let rebuilt = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
             assert_eq!(rebuilt.len(), 200);
         }
@@ -6600,7 +6750,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let rebuilt = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert_eq!(rebuilt.len(), 200, "the rebuild ran");
         assert!(
@@ -6682,7 +6832,7 @@ mod tests {
             store.append(val_frame(i * S, 7));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         assert!(
             !reopened.persist(&validity("capture-b", 0), &[], Harden::All),
@@ -6738,8 +6888,18 @@ mod tests {
             store.append(val_frame(i * S, 100));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
-        let all = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let dbs = &on_test_bus(&[&db]);
+        let all = reopened.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(all.len(), 260, "200 persisted + 60 newly decoded");
         assert_eq!(all.last().map(|p| p.value), Some(100.0));
     }
@@ -6755,7 +6915,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let cache = SignalCacheStore::new(root.path());
         let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
         cache.evict_below(1000.0);
@@ -6825,7 +6985,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
 
         let decoded_dir = TempDir::new().unwrap();
         let decoded = SignalCacheStore::new_unbounded(decoded_dir.path());
@@ -6913,7 +7073,7 @@ mod tests {
             store.append(val_frame(i * S, 1));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_chunk_at_a_time(tmp.path());
         cache.fill_file_backed(&file_info(1, "EngineSpeed"), &ramp(20));
@@ -6953,7 +7113,7 @@ mod tests {
         // a signal it does not.
         let store = TraceStore::new();
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let served = cache.slice_many(
@@ -7015,7 +7175,7 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         assert_eq!(
@@ -7087,12 +7247,22 @@ mod tests {
             store.append(val_frame(i * S, (i % 50) as u16));
         }
         let db = load_dbc();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         {
             let cache = SignalCacheStore::new(root.path());
             assert_eq!(
                 cache
-                    .slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs)
+                    .slice(
+                        Some(TEST_BUS),
+                        256,
+                        false,
+                        "X",
+                        f64::MIN,
+                        f64::MAX,
+                        0,
+                        &store,
+                        dbs
+                    )
                     .len(),
                 200
             );
@@ -7235,7 +7405,7 @@ mod tests {
             }))
             .collect();
         let db = Database::parse(&dbc).unwrap();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         let queries: Vec<CacheQuery<'_>> = (0..signals)
             .map(|n| CacheQuery {
                 bus_id: None,
@@ -7371,7 +7541,7 @@ mod tests {
             }))
             .collect();
         let db = Database::parse(&dbc).unwrap();
-        let dbs = &all_buses(&[&db]);
+        let dbs = &on_test_bus(&[&db]);
         // The set the persisted rows are fingerprinted against, and the
         // restore judges them by — the real one, so the restore arm pays
         // what a launch pays.

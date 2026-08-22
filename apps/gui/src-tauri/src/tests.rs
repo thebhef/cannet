@@ -300,7 +300,7 @@ fn mux_snapshot_state() -> AppState {
         .databases
         .lock()
         .unwrap()
-        .push(loaded("modes.dbc", MUX_SNAPSHOT_DBC));
+        .push(loaded_scoped("modes.dbc", MUX_SNAPSHOT_DBC, &[TEST_BUS]));
     // What add_dbc does after a DBC-set change — installs the
     // trace store's mux-selector extractor.
     invalidate_derived_caches(&state);
@@ -314,26 +314,13 @@ fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
         // every frame is on a bus now, so the pattern names it.
         patterns: vec![format!("^{TEST_BUS}/Zonal/Modes/")],
     };
-    fetch_signal_page_inner(
-        state,
-        &sel,
-        None,
-        0,
-        end,
-        None,
-        None,
-        vec![],
-        &[TEST_BUS.to_string()],
-        None,
-        0,
-        100,
-    )
-    .expect("valid pattern")
-    .rows
-    .iter()
-    .filter_map(ipc::SignalPageRow::signal)
-    .cloned()
-    .collect()
+    fetch_signal_page_inner(state, &sel, None, 0, end, None, None, vec![], None, 0, 100)
+        .expect("valid pattern")
+        .rows
+        .iter()
+        .filter_map(ipc::SignalPageRow::signal)
+        .cloned()
+        .collect()
 }
 
 #[test]
@@ -343,22 +330,15 @@ fn descriptor_snapshot_is_reused_across_calls_and_dropped_on_dbc_change() {
     // it a few times a second, and the rebuild is O(signals × buses)
     // with a sort on top.
     let state = mux_snapshot_state();
-    let buses = ["powertrain".to_string()];
-    let first = state.scoped_descriptor_snapshot(&buses);
+    let first = state.scoped_descriptor_snapshot();
     assert!(!first.is_empty());
     // Same inputs → literally the same allocation, no rebuild.
-    assert!(Arc::ptr_eq(
-        &first,
-        &state.scoped_descriptor_snapshot(&buses)
-    ));
-    // A different project-bus list is a different universe.
-    let other = state.scoped_descriptor_snapshot(&["chassis".to_string()]);
-    assert!(!Arc::ptr_eq(&first, &other));
+    assert!(Arc::ptr_eq(&first, &state.scoped_descriptor_snapshot()));
     // A DBC-set change drops it, so a removed DBC's signals can't
     // linger in the snapshot.
     state.databases.lock().unwrap().clear();
     invalidate_derived_caches(&state);
-    let after = state.scoped_descriptor_snapshot(&buses);
+    let after = state.scoped_descriptor_snapshot();
     assert!(!Arc::ptr_eq(&first, &after));
     assert!(after.is_empty());
 }
@@ -381,7 +361,6 @@ fn fetch_signal_page_scopes_to_source_buses() {
         None,
         None,
         vec![],
-        &[TEST_BUS.to_string()],
         Some(&["powertrain".to_string()]),
         0,
         100,
@@ -397,7 +376,6 @@ fn fetch_signal_page_scopes_to_source_buses() {
         None,
         None,
         vec![],
-        &[TEST_BUS.to_string()],
         None,
         0,
         100,
@@ -514,7 +492,6 @@ fn fetch_signal_page_pages_and_sorts_host_side() {
         Some("value"),
         Some("asc"),
         vec![],
-        &[TEST_BUS.to_string()],
         None,
         1,
         2,
@@ -566,7 +543,6 @@ fn fetch_signal_page_pages_across_section_headers_with_a_fold_aware_count() {
             Some("signal"),
             Some("asc"),
             vec![],
-            &[TEST_BUS.to_string()],
             None,
             offset,
             limit,
@@ -611,7 +587,7 @@ fn decode_against_carries_the_transmitter() {
     let dbs = vec![LoadedDbc {
         path: "t.dbc".into(),
         db: Arc::new(db),
-        buses: Vec::new(),
+        buses: vec![TEST_BUS.to_string()],
     }];
     let decoded = decode_against(&dbs, &frame_with_data(0x100)).unwrap();
     assert_eq!(decoded.transmitter.as_deref(), Some("ECU"));
@@ -769,6 +745,12 @@ pub(crate) fn loaded(path: &str, dbc_text: &str) -> LoadedDbc {
     }
 }
 
+/// [`TEST_BUS`] as an assignment set, for the tests that hand a
+/// `DbcScope` its buses directly.
+pub(crate) fn test_bus_scope() -> Vec<String> {
+    vec![TEST_BUS.to_string()]
+}
+
 pub(crate) fn loaded_scoped(path: &str, dbc_text: &str, buses: &[&str]) -> LoadedDbc {
     LoadedDbc {
         path: path.into(),
@@ -797,7 +779,7 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     }
     let slice = |dbs: &[crate::signal_fingerprint::DbcScope<'_>]| {
         state.signal_caches.slice(
-            None,
+            Some(TEST_BUS),
             256,
             false,
             "S",
@@ -840,7 +822,7 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     assert_eq!(
         slice(&[crate::signal_fingerprint::DbcScope {
             db: &db,
-            buses: &[]
+            buses: &test_bus_scope(),
         }])
         .len(),
         10,
@@ -885,7 +867,7 @@ fn wire_signals_flag_only_raw_bit_fields() {
          BA_DEF_ SG_ \"CannetDisplay\" STRING ;\n\
          BA_DEF_DEF_ \"CannetDisplay\" \"\";\n\
          BA_ \"CannetDisplay\" SG_ 256 Serial \"radix=hex\";\n";
-    *state.databases.lock().unwrap() = vec![loaded("mixed.dbc", dbc)];
+    *state.databases.lock().unwrap() = vec![loaded_scoped("mixed.dbc", dbc, &[TEST_BUS])];
     state.trace_store.append(frame_with_data(256));
 
     let records = collect_trace_records(&state, 0, 1);
@@ -924,7 +906,10 @@ fn decodes_against_the_loaded_dbcs_first_match_wins() {
         "{}\nBO_ 768 SharedMsg: 8 ECU\n SG_ FromB : 0|8@1+ (1,0) [0|0] \"\" ECU\n",
         tiny_dbc(512, "OnlyInB", "Sb"),
     );
-    *state.databases.lock().unwrap() = vec![loaded("a.dbc", &dbc_a), loaded("b.dbc", &dbc_b)];
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("a.dbc", &dbc_a, &[TEST_BUS]),
+        loaded_scoped("b.dbc", &dbc_b, &[TEST_BUS]),
+    ];
 
     for id in [256u32, 512, 768, 999] {
         state.trace_store.append(frame_with_data(id));
@@ -1004,10 +989,12 @@ fn list_value_tables_inner_resolves_per_bus() {
     assert_eq!(labels(Some("p")), vec!["Park", "Drive"]);
     assert_eq!(labels(Some("c")), vec!["Open", "Closed"]);
 
-    // `bus_id: None` means "the bus is unknown", not "on no bus" — it
-    // keeps the pre-scoping first-match-across-all-databases behaviour
-    // rather than `dbc_applies`'s literal (scoped-out) answer.
-    assert_eq!(labels(None), vec!["Park", "Drive"]);
+    // A lookup that names no bus resolves through no database: every
+    // frame has a bus, so "the bus is unknown" is not a state a
+    // DBC-backed series can be in, and the old answer (the first
+    // database that defines the signal, whatever it is assigned to)
+    // could only ever be a guess.
+    assert!(labels(None).is_empty());
 }
 
 #[test]
@@ -1046,8 +1033,12 @@ fn filtered_scan_with_candidate_gating_matches_unconditional_decode() {
     // that decodes only candidate ids returns exactly what a scan
     // decoding every frame returns.
     let dbs = vec![
-        loaded("a.dbc", &tiny_dbc(256, "String1JustDetectedFault", "Sa")),
-        loaded("b.dbc", &tiny_dbc(512, "BrakeStatus", "Sb")),
+        loaded_scoped(
+            "a.dbc",
+            &tiny_dbc(256, "String1JustDetectedFault", "Sa"),
+            &[TEST_BUS],
+        ),
+        loaded_scoped("b.dbc", &tiny_dbc(512, "BrakeStatus", "Sb"), &[TEST_BUS]),
     ];
     let filter: FilterPredicate =
         serde_json::from_str(r#"{"name_regex": "String1JustDetected.*?"}"#).unwrap();
@@ -1207,25 +1198,34 @@ fn smooth_fps_filters_bursts_but_snaps_to_zero() {
 }
 
 #[test]
-fn unscoped_dbc_decodes_every_bus() {
+fn a_database_assigned_to_no_bus_decodes_nothing_until_it_is_assigned() {
+    // Bus assignment is the decode boundary: loading a file makes it
+    // available, assigning it to a bus makes it decode. An unassigned
+    // database answers for no frame on any bus — it is not the "applies
+    // everywhere" default it used to be.
     let state = test_state();
     let dbc = tiny_dbc(256, "Anywhere", "Sig");
     *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
     let mut on_p = frame_with_data(256);
     on_p.bus_id = Some("p".into());
-    let on_test_bus = frame_with_data(256);
     state.trace_store.append(on_p);
-    state.trace_store.append(on_test_bus);
+    state.trace_store.append(frame_with_data(256));
     let r = collect_trace_records(&state, 0, 2);
-    // Both decode against the unscoped DBC.
+    assert!(
+        r.iter().all(|row| row.decoded.is_none()),
+        "an unassigned database decoded a frame",
+    );
+
+    // Assigned to one of the two buses, it decodes that bus's frame —
+    // and only that one.
+    state.databases()[0].buses = vec!["p".to_string()];
+    invalidate_derived_caches(&state);
+    let r = collect_trace_records(&state, 0, 2);
     assert_eq!(
         r[0].decoded.as_ref().map(|d| d.name.clone()).as_deref(),
         Some("Anywhere"),
     );
-    assert_eq!(
-        r[1].decoded.as_ref().map(|d| d.name.clone()).as_deref(),
-        Some("Anywhere"),
-    );
+    assert!(r[1].decoded.is_none(), "the other bus stays undecoded");
 }
 
 #[test]
@@ -1253,19 +1253,25 @@ fn describe_message_inner_finds_standard_and_extended_ids() {
     // it back off, so lookups use the plain 0x001A_BCDE id.
     let extended_dbc = tiny_dbc(0x001A_BCDE | 0x8000_0000, "Ext", "Sig");
     *state.databases.lock().unwrap() = vec![
-        loaded("std.dbc", &standard_dbc),
-        loaded("ext.dbc", &extended_dbc),
+        loaded_scoped("std.dbc", &standard_dbc, &[TEST_BUS]),
+        loaded_scoped("ext.dbc", &extended_dbc, &[TEST_BUS]),
     ];
+    let on = Some(TEST_BUS);
 
-    let std_desc = describe_message_inner(&state, 0x100, false).unwrap();
+    let std_desc = describe_message_inner(&state, on, 0x100, false).unwrap();
     assert_eq!(std_desc.name, "Std");
 
-    let ext_desc = describe_message_inner(&state, 0x001A_BCDE, true).unwrap();
+    let ext_desc = describe_message_inner(&state, on, 0x001A_BCDE, true).unwrap();
     assert_eq!(ext_desc.name, "Ext");
 
     // The extended id's raw value doesn't collide with a standard
     // lookup at the same message table.
-    assert!(describe_message_inner(&state, 0x001A_BCDE, false).is_none());
+    assert!(describe_message_inner(&state, on, 0x001A_BCDE, false).is_none());
+
+    // A transmit row on another bus — or on none at all — describes
+    // nothing: only a database assigned to the row's bus may answer.
+    assert!(describe_message_inner(&state, Some("elsewhere"), 0x100, false).is_none());
+    assert!(describe_message_inner(&state, None, 0x100, false).is_none());
 }
 
 #[test]
@@ -1277,16 +1283,21 @@ fn decode_frame_inner_decodes_standard_and_extended_ids() {
     // it back off, so lookups use the plain 0x001A_BCDE id.
     let extended_dbc = tiny_dbc(0x001A_BCDE | 0x8000_0000, "Ext", "Sig");
     *state.databases.lock().unwrap() = vec![
-        loaded("std.dbc", &standard_dbc),
-        loaded("ext.dbc", &extended_dbc),
+        loaded_scoped("std.dbc", &standard_dbc, &[TEST_BUS]),
+        loaded_scoped("ext.dbc", &extended_dbc, &[TEST_BUS]),
     ];
     let data = vec![42u8, 0, 0, 0, 0, 0, 0, 0];
+    let on = Some(TEST_BUS);
 
-    let std_decoded = decode_frame_inner(&state, 0x100, false, &data).unwrap();
+    let std_decoded = decode_frame_inner(&state, on, 0x100, false, &data).unwrap();
     assert_eq!(std_decoded.name, "Std");
 
-    let ext_decoded = decode_frame_inner(&state, 0x001A_BCDE, true, &data).unwrap();
+    let ext_decoded = decode_frame_inner(&state, on, 0x001A_BCDE, true, &data).unwrap();
     assert_eq!(ext_decoded.name, "Ext");
+
+    // The panel-side decode is scoped exactly like the wire-side one.
+    assert!(decode_frame_inner(&state, Some("elsewhere"), 0x100, false, &data).is_none());
+    assert!(decode_frame_inner(&state, None, 0x100, false, &data).is_none());
 }
 
 #[test]
@@ -1296,10 +1307,11 @@ fn encode_frame_inner_writes_signal_bits_through_first_matching_dbc() {
     // of base alone.
     let state = test_state();
     let dbc = tiny_dbc(256, "M", "Sig");
-    *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
+    *state.databases.lock().unwrap() = vec![loaded_scoped("any.dbc", &dbc, &[TEST_BUS])];
     let base = vec![0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11];
     let resp = encode_frame_inner(
         &state,
+        Some(TEST_BUS),
         256,
         false,
         &[ipc::EncodeFrameSignal {
@@ -1316,15 +1328,32 @@ fn encode_frame_inner_writes_signal_bits_through_first_matching_dbc() {
         &resp.bytes[1..],
         &[0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11]
     );
+
+    // A row on a bus the database is not assigned to has no DBC to
+    // encode through, the same way it would have none to decode with.
+    let err = encode_frame_inner(
+        &state,
+        Some("elsewhere"),
+        256,
+        false,
+        &[ipc::EncodeFrameSignal {
+            name: "Sig".into(),
+            physical: 42.0,
+        }],
+        vec![0u8; 8],
+    )
+    .unwrap_err();
+    assert!(err.contains("no DBC matches"), "{err}");
 }
 
 #[test]
 fn encode_frame_inner_reports_unknown_signal_in_skipped() {
     let state = test_state();
     let dbc = tiny_dbc(256, "M", "Sig");
-    *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
+    *state.databases.lock().unwrap() = vec![loaded_scoped("any.dbc", &dbc, &[TEST_BUS])];
     let resp = encode_frame_inner(
         &state,
+        Some(TEST_BUS),
         256,
         false,
         &[ipc::EncodeFrameSignal {
@@ -1343,7 +1372,8 @@ fn encode_frame_inner_reports_unknown_signal_in_skipped() {
 fn encode_frame_inner_errors_when_no_dbc_matches() {
     let state = test_state();
     // No DBCs loaded.
-    let err = encode_frame_inner(&state, 0x123, false, &[], vec![0u8; 8]).unwrap_err();
+    let err =
+        encode_frame_inner(&state, Some(TEST_BUS), 0x123, false, &[], vec![0u8; 8]).unwrap_err();
     assert!(err.contains("no DBC matches"));
 }
 
@@ -1468,7 +1498,7 @@ fn tx_confirm_is_visible_via_sample_signals_signal_cache() {
         .databases
         .lock()
         .unwrap()
-        .push(loaded("test.dbc", &dbc_text));
+        .push(loaded_scoped("test.dbc", &dbc_text, &["p"]));
 
     // Transmit a frame on bus "p" with payload [42, ...]. No
     // session is required for the tx-confirm row to land.
@@ -1529,7 +1559,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
         .databases
         .lock()
         .unwrap()
-        .push(loaded("test.dbc", &dbc_text));
+        .push(loaded_scoped("test.dbc", &dbc_text, &["p", "q"]));
 
     // Set up the vbus and two participants the way
     // `connect_local_vbus` does — one per project bus.
@@ -2673,7 +2703,7 @@ fn an_embedded_database_loads_from_the_capture_without_touching_the_disk() {
     assert_eq!(list[0].db.message_count(), 1);
     assert!(
         list[0].buses.is_empty(),
-        "an embedded database is unscoped, like any freshly added one"
+        "an embedded database is assigned to nothing, like any freshly added one"
     );
 }
 
@@ -3033,7 +3063,7 @@ fn file_backed_state() -> AppState {
         .databases
         .lock()
         .unwrap()
-        .push(loaded("modes.dbc", MUX_SNAPSHOT_DBC));
+        .push(loaded_scoped("modes.dbc", MUX_SNAPSHOT_DBC, &[TEST_BUS]));
     invalidate_derived_caches(&state);
     for (name, unit, base) in [("EngineSpeed", "rpm", 800.0), ("CoolantTemp", "degC", 70.0)] {
         let info = signal_cache::FileSignalInfo {
@@ -3073,7 +3103,6 @@ fn file_backed_rows(state: &AppState, patterns: &[&str]) -> Vec<SignalSnapshotRe
         None,
         None,
         vec![],
-        &[TEST_BUS.to_string()],
         None,
         0,
         100,
@@ -3306,7 +3335,6 @@ fn a_bus_wired_view_has_no_file_backed_rows() {
         None,
         None,
         vec![],
-        &[TEST_BUS.to_string()],
         Some(&["powertrain".to_string()]),
         0,
         100,
@@ -4082,7 +4110,7 @@ fn calc_request(bus: &str, id: u32) -> ipc::TransmitRequest {
 
 #[test]
 fn effective_calc_uses_dbc_defaults_when_no_override() {
-    let dbs = vec![loaded("a.dbc", CALC_ATTR_DBC)];
+    let dbs = vec![loaded_scoped("a.dbc", CALC_ATTR_DBC, &["p"])];
     let resolved = resolve_effective_calc(&dbs, &calc_request("p", 291), None)
         .unwrap()
         .expect("DBC-declared fields resolve");
@@ -4093,7 +4121,7 @@ fn effective_calc_uses_dbc_defaults_when_no_override() {
     assert_eq!(payload[5] & 0x0F, 1);
     assert_ne!(payload[7], 0);
     // A message without any designation resolves to None.
-    let dbs2 = vec![loaded("b.dbc", &tiny_dbc(291, "Plain", "S"))];
+    let dbs2 = vec![loaded_scoped("b.dbc", &tiny_dbc(291, "Plain", "S"), &["p"])];
     assert!(resolve_effective_calc(&dbs2, &calc_request("p", 291), None)
         .unwrap()
         .is_none());
@@ -4101,7 +4129,7 @@ fn effective_calc_uses_dbc_defaults_when_no_override() {
 
 #[test]
 fn override_replaces_the_dbc_default_per_field() {
-    let dbs = vec![loaded("a.dbc", CALC_ATTR_DBC)];
+    let dbs = vec![loaded_scoped("a.dbc", CALC_ATTR_DBC, &["p"])];
     // Counter override moves the counter to Ctr2; the DBC's CRC
     // default stays in effect (per-field layering, ADR 0027).
     let spec = ipc::CalcFieldsSpec {
@@ -4618,6 +4646,20 @@ fn ab_stamp(state: &AppState) {
     );
 }
 
+/// Assign a loaded database to [`TEST_BUS`] — what the Database panel's
+/// bus checkbox does, and what makes it decode at all.
+fn ab_assign(state: &AppState, path: &str) {
+    {
+        let mut list = state.databases();
+        let slot = list
+            .iter_mut()
+            .find(|d| d.path == path)
+            .expect("the database is loaded");
+        slot.buses = test_bus_scope();
+    }
+    invalidate_derived_caches(state);
+}
+
 /// `remove_dbc`'s body without its `AppHandle`: drop the entry and
 /// re-judge the derived state.
 fn ab_remove(state: &AppState, path: &str) {
@@ -4639,8 +4681,15 @@ fn a_reload_in_place_keeps_the_unchanged_signals_pyramid_and_rebuilds_the_change
     let scratch = tempfile::TempDir::new().unwrap();
     let state = ab_state(scratch.path(), None, 200);
     crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
-    assert_eq!(ab_serve(&state, &state.trace_store, None, "A"), 200);
-    assert_eq!(ab_serve(&state, &state.trace_store, None, "B"), 200);
+    ab_assign(&state, "a.dbc");
+    assert_eq!(
+        ab_serve(&state, &state.trace_store, Some(TEST_BUS), "A"),
+        200
+    );
+    assert_eq!(
+        ab_serve(&state, &state.trace_store, Some(TEST_BUS), "B"),
+        200
+    );
     ab_stamp(&state);
 
     // Re-export the same file with `B` rescaled and reload it in place.
@@ -4661,8 +4710,16 @@ fn a_reload_in_place_keeps_the_unchanged_signals_pyramid_and_rebuilds_the_change
     // pyramid's, since no frame here can produce one) and `B` answers
     // with nothing (its pyramid went with its definition).
     let cold = ab_cold_store(200);
-    assert_eq!(ab_serve(&state, &cold, None, "A"), 200, "A's samples stand");
-    assert_eq!(ab_serve(&state, &cold, None, "B"), 0, "B's are gone");
+    assert_eq!(
+        ab_serve(&state, &cold, Some(TEST_BUS), "A"),
+        200,
+        "A's samples stand"
+    );
+    assert_eq!(
+        ab_serve(&state, &cold, Some(TEST_BUS), "B"),
+        0,
+        "B's are gone"
+    );
 }
 
 #[test]
@@ -4678,13 +4735,29 @@ fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyrami
     let scratch = tempfile::TempDir::new().unwrap();
     let state = ab_state(scratch.path(), None, 200);
     crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
-    assert_eq!(ab_serve(&state, &state.trace_store, None, "A"), 200);
-    assert_eq!(ab_serve(&state, &state.trace_store, None, "B"), 200);
+    ab_assign(&state, "a.dbc");
+    assert_eq!(
+        ab_serve(&state, &state.trace_store, Some(TEST_BUS), "A"),
+        200
+    );
+    assert_eq!(
+        ab_serve(&state, &state.trace_store, Some(TEST_BUS), "B"),
+        200
+    );
     ab_stamp(&state);
 
     // Step 1: the replacement is installed alongside. `A` is defined
-    // exactly as before; `B` is rescaled.
+    // exactly as before; `B` is rescaled. Loading it changes nothing
+    // yet — an unassigned database is no part of any chain.
     crate::dbc_commands::install_dbc(&state, "b.dbc", &ab_dbc_text(1, 2)).unwrap();
+    let loaded_only = state.signal_caches.usage();
+    assert_eq!(
+        (loaded_only.live, loaded_only.retained),
+        (2, 0),
+        "loading a file decodes nothing, so no chain moved",
+    );
+    // Assigning it to the bus is what puts it in the chain.
+    ab_assign(&state, "b.dbc");
     let mid = state.signal_caches.usage();
     assert_eq!(
         (mid.live, mid.retained),
@@ -4692,7 +4765,8 @@ fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyrami
         "both chains grew a second candidate, so both pyramids park",
     );
 
-    // Step 2: the old file is removed.
+    // Step 2: the old file is removed, leaving one database on the bus
+    // again.
     ab_remove(&state, "a.dbc");
     let usage = state.signal_caches.usage();
     assert_eq!(usage.live, 1, "A's chain is what it was, so A comes back");
@@ -4700,8 +4774,16 @@ fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyrami
     assert_eq!(usage.retained, 1, "B stays parked against its return");
 
     let cold = ab_cold_store(200);
-    assert_eq!(ab_serve(&state, &cold, None, "A"), 200, "A's samples stand");
-    assert_eq!(ab_serve(&state, &cold, None, "B"), 0, "B's are gone");
+    assert_eq!(
+        ab_serve(&state, &cold, Some(TEST_BUS), "A"),
+        200,
+        "A's samples stand"
+    );
+    assert_eq!(
+        ab_serve(&state, &cold, Some(TEST_BUS), "B"),
+        0,
+        "B's are gone"
+    );
 
     // The view-config half. Plot series, signal-view patterns and RBS
     // entries name a signal by identity — bus, message id, name — never
@@ -4710,15 +4792,15 @@ fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyrami
     // universe every such view resolves through is rebuilt by the same
     // invalidation, against the database now loaded.
     let named: Vec<(Option<String>, u32, String)> = state
-        .scoped_descriptor_snapshot(&["p".to_string()])
+        .scoped_descriptor_snapshot()
         .iter()
         .map(|(bus, d)| (bus.clone(), d.message_id, d.signal_name.clone()))
         .collect();
     assert_eq!(
         named,
         vec![
-            (Some("p".to_string()), 256, "A".to_string()),
-            (Some("p".to_string()), 256, "B".to_string()),
+            (Some(TEST_BUS.to_string()), 256, "A".to_string()),
+            (Some(TEST_BUS.to_string()), 256, "B".to_string()),
         ],
         "both signals still resolve, on the same identity, after the replace",
     );
@@ -4727,14 +4809,13 @@ fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyrami
 #[test]
 fn a_replacement_dbc_does_not_inherit_the_bus_scoping_of_the_file_it_replaced() {
     // The half of a replace that does *not* survive. `install_dbc`
-    // gives a newly-added entry an empty bus list — the
-    // "applies to every bus" default — because it has no way to know
-    // this file is standing in for another. So on a project that scopes
-    // its databases, even a byte-identical replacement decodes
-    // differently (it now answers for every bus), the encoding
-    // fingerprint moves with it, and every pyramid the replaced file
-    // backed rebuilds. The pool keeps the samples against the user
-    // re-scoping, which is what puts the chain back.
+    // gives a newly-added entry an empty bus list — assigned to
+    // nothing — because it has no way to know this file is standing in
+    // for another. So even a byte-identical replacement decodes
+    // differently (it answers for no bus at all until it is assigned),
+    // the encoding fingerprint moves with it, and every pyramid the
+    // replaced file backed rebuilds. The pool keeps the samples against
+    // the user assigning it, which is what puts the chain back.
     let scratch = tempfile::TempDir::new().unwrap();
     let state = ab_state(scratch.path(), Some("pt"), 200);
     crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
@@ -4750,7 +4831,7 @@ fn a_replacement_dbc_does_not_inherit_the_bus_scoping_of_the_file_it_replaced() 
     ab_remove(&state, "a.dbc");
     assert!(
         state.databases()[0].buses.is_empty(),
-        "the replacement is unscoped, whatever the file it replaced was",
+        "the replacement is unassigned, whatever the file it replaced was",
     );
     let usage = state.signal_caches.usage();
     assert_eq!(
@@ -4796,7 +4877,7 @@ fn mode_dbc_text(zero_label: &str) -> String {
 }
 
 fn mode_labels(state: &AppState) -> Vec<String> {
-    crate::dbc_commands::list_value_tables_inner(state, 256, false, "Mode", false, None)
+    crate::dbc_commands::list_value_tables_inner(state, 256, false, "Mode", false, Some(TEST_BUS))
         .into_iter()
         .map(|e| e.label)
         .collect()
@@ -4806,6 +4887,7 @@ fn mode_labels(state: &AppState) -> Vec<String> {
 fn a_val_rename_reloaded_in_place_is_what_the_value_table_lookup_answers() {
     let state = test_state();
     crate::dbc_commands::install_dbc(&state, "mode.dbc", &mode_dbc_text("Off")).unwrap();
+    ab_assign(&state, "mode.dbc");
     assert_eq!(mode_labels(&state), vec!["Off", "On"]);
 
     // The file is edited outside the app and re-read under the same

@@ -145,9 +145,7 @@ describe("SignalGeneratorProvider", () => {
   it("asks the host nothing when the project declares no usable rule", async () => {
     renderProbe([generator("g1", { pattern: "Cell(\\d+)", enabled: false })]);
 
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("list_signals", expect.anything()),
-    );
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("list_signals"));
     expect(invoke.mock.calls.some((c) => c[0] === "evaluate_signal_generators")).toBe(false);
     expect(screen.getByTestId("probe").textContent).toBe("");
   });

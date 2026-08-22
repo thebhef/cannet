@@ -26,45 +26,35 @@ pub type ScopedDescriptors = Vec<(Option<String>, SignalDescriptor)>;
 
 /// A cached [`scoped_descriptors`] result, held by `AppState`.
 ///
-/// The universe is a pure function of the loaded DBC set plus the
-/// project's bus list, and rebuilding it means cloning and sorting one
+/// The universe is a pure function of the loaded DBC set and their bus
+/// assignments, and rebuilding it means cloning and sorting one
 /// descriptor per signal per bus — tens of thousands of entries on a
 /// large project, which is far too much to pay per `fetch_signal_page`
 /// call when the panels behind it poll at 2–4 Hz. So it is built once
-/// and shared by `Arc` until one of its two inputs changes: the bus
-/// list is compared here, and a DBC-set change drops the whole snapshot
+/// and shared by `Arc` until its input changes: a DBC-set change — a
+/// load, an unload, or a re-assignment — drops the whole snapshot
 /// through `invalidate_derived_caches` (ADR 0033 — rebuild dependent
 /// state when its inputs change).
 pub struct DescriptorSnapshot {
-    /// The project-bus list `descriptors` was expanded against.
-    pub project_buses: Vec<String>,
     pub descriptors: Arc<ScopedDescriptors>,
 }
 
-/// Expand every loaded DBC's signals across its bus scope: explicit
-/// `buses` scoping wins, an unscoped DBC applies to every project bus,
-/// and with no project buses at all everything collapses to
-/// `bus_id: None` (the early-bring-up degenerate state). Sorted and
-/// deduped on the descriptor key `(bus, message id, extended, signal
-/// name)` — the shared enumeration behind `list_signals` and
-/// `fetch_signal_page`, so the picker catalog and the snapshot rows
-/// can't disagree about what exists.
+/// Expand every loaded DBC's signals across the buses it is **assigned
+/// to**: a database assigned to no bus contributes nothing, because it
+/// decodes nothing (`filter::dbc_applies`), so no frame in the trace
+/// could ever answer for one of its rows. Sorted and deduped on the
+/// descriptor key `(bus, message id, extended, signal name)` — the
+/// shared enumeration behind `list_signals` and `fetch_signal_page`, so
+/// the picker catalog and the snapshot rows can't disagree about what
+/// exists.
 pub fn scoped_descriptors<'a>(
     dbs: impl IntoIterator<Item = (&'a Database, &'a [String])>,
-    project_buses: &[String],
 ) -> ScopedDescriptors {
     let mut out: ScopedDescriptors = Vec::new();
     for (db, buses) in dbs {
-        let scope: Vec<Option<String>> = if !buses.is_empty() {
-            buses.iter().map(|b| Some(b.clone())).collect()
-        } else if !project_buses.is_empty() {
-            project_buses.iter().map(|b| Some(b.clone())).collect()
-        } else {
-            vec![None]
-        };
         for d in db.signals() {
-            for bus_id in &scope {
-                out.push((bus_id.clone(), d.clone()));
+            for bus_id in buses {
+                out.push((Some(bus_id.clone()), d.clone()));
             }
         }
     }
@@ -703,7 +693,7 @@ mod tests {
     fn all_on(buses: &[&str]) -> Vec<(Option<String>, SignalDescriptor)> {
         let db = db();
         let scoped: Vec<String> = buses.iter().map(|s| (*s).to_string()).collect();
-        scoped_descriptors([(&db, scoped.as_slice())], &[])
+        scoped_descriptors([(&db, scoped.as_slice())])
     }
 
     fn key(bus: Option<&str>, id: u32, name: &str) -> SignalQuery {
@@ -750,15 +740,15 @@ mod tests {
     }
 
     #[test]
-    fn scoped_descriptors_expand_per_bus_and_dedup() {
-        // Two buses in scope → each signal appears once per bus.
+    fn scoped_descriptors_expand_per_assigned_bus_and_dedup() {
+        // Two buses assigned → each signal appears once per bus.
         let all = all_on(&["chassis", "power"]);
         assert_eq!(all.len(), 6); // 3 signals × 2 buses
-                                  // Unscoped DBC + no project buses → the None-bus degenerate.
+                                  // Assigned to no bus → no rows at all: it
+                                  // decodes nothing, so nothing it defines is
+                                  // a row a frame could answer for.
         let db = db();
-        let all = scoped_descriptors([(&db, &[] as &[String])], &[]);
-        assert_eq!(all.len(), 3);
-        assert!(all.iter().all(|(b, _)| b.is_none()));
+        assert!(scoped_descriptors([(&db, &[] as &[String])]).is_empty());
     }
 
     #[test]

@@ -173,10 +173,10 @@ pub(super) fn reconstruct_payload(
 // Registration and schedule reconciliation
 // ---------------------------------------------------------------------
 
-/// Whether DBC `d` is scoped to bus `bus_id`. An empty scope is the
-/// "applies to all buses" default.
+/// Whether DBC `d` is scoped to bus `bus_id` — the same scoping rule
+/// the decode path applies ([`crate::filter::dbc_applies`]).
 fn dbc_scoped_to(d: &crate::app_state::LoadedDbc, bus_id: &str) -> bool {
-    d.buses.is_empty() || d.buses.iter().any(|b| b == bus_id)
+    crate::filter::dbc_applies(&d.buses, Some(bus_id))
 }
 
 /// Visit every message the rest-of-bus simulation should show for
@@ -694,7 +694,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
         let file = RbsFile::parse(
             r#"{ "schema_version": 1, "buses": {
                  "Powertrain": { "ecus": { "BMS": { "messages": {
@@ -890,7 +890,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
         {
             let mut rbs = state.rbs.lock().unwrap();
             rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
@@ -965,7 +965,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
         resolved("under the original database");
 
         // The replacement, installed alongside…
@@ -973,7 +973,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("b.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("b.dbc", RBS_DBC, &["p1"]));
         resolved("with both loaded");
 
         // …and the original removed.
@@ -1019,7 +1019,7 @@ BO_ 1280 AuxFrame: 8 AUX
             .databases
             .lock()
             .unwrap()
-            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
         let file = RbsFile::parse(
             r#"{ "schema_version": 1, "buses": {
                  "Powertrain": { "ecus": { "NotBms": { "messages": { "0x123": {} } } } }

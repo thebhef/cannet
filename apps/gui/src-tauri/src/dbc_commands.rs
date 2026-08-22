@@ -162,8 +162,9 @@ pub(crate) fn add_dbc(
     Ok(dbc_list(state.inner()))
 }
 
-/// Replace the bus-scoping set for a loaded DBC. An empty `buses` is
-/// the "applies to all buses" default. Unknown path is a no-op (returns
+/// Replace the bus assignment of a loaded DBC. An empty `buses`
+/// assigns it to nothing, and a database assigned to nothing decodes
+/// nothing ([`filter::dbc_applies`]). Unknown path is a no-op (returns
 /// the unchanged list); the frontend's project state can drift if a DBC
 /// is removed between the user clicking a checkbox and this command
 /// firing.
@@ -236,10 +237,10 @@ pub(crate) fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     }
 }
 /// Decode a raw frame against the loaded DBCs, in order — the first
-/// one that recognises the arbitration id wins. Skips any DBC whose
-/// `buses` set is non-empty and doesn't contain the frame's `bus_id`
-/// (per-bus scoping); an empty set is "all buses". `None` if
-/// no DBC decodes.
+/// one that recognises the arbitration id wins. Skips any DBC not
+/// assigned to the frame's bus ([`filter::dbc_applies`]), which
+/// includes every DBC assigned to no bus at all. `None` if no DBC
+/// decodes.
 pub(crate) fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option<DecodedRecord> {
     dbs.iter()
         .filter(|d| filter::dbc_applies(&d.buses, frame.bus_id.as_deref()))
@@ -247,24 +248,20 @@ pub(crate) fn decode_against(dbs: &[LoadedDbc], frame: &RawTraceFrame) -> Option
 }
 /// Every `(bus, message, signal)` triple the loaded DBCs define, for
 /// a plot panel's signal picker. One record per matching project bus
-/// per DBC signal — so a scoped DBC produces one record per bus in
-/// its scope, an unscoped DBC produces one record per project bus,
-/// and a project with no buses falls back to one `bus_id: None`
-/// record per signal (the legacy "any bus" path). Sorted by
-/// `(bus_id, message_id, signal_name)` and deduplicated on that key.
+/// per DBC signal — so a database produces one record per bus it is
+/// **assigned to**, and one assigned to no bus produces none at all:
+/// it decodes nothing, so it can name no row a frame could answer for.
+/// Sorted by `(bus_id, message_id, signal_name)` and deduplicated on
+/// that key.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn list_signals(
-    state: State<'_, AppState>,
-    project_buses: Vec<String>,
-) -> Vec<SignalDescriptorRecord> {
+pub(crate) fn list_signals(state: State<'_, AppState>) -> Vec<SignalDescriptorRecord> {
     let dbs = state.databases();
-    // Shared enumeration with `fetch_signal_page` (per-bus scope
+    // Shared enumeration with `fetch_signal_page` (per-bus assignment
     // expansion + descriptor-key dedup), so the picker catalog and the
     // signal-view rows can't disagree about what exists.
     let mut out: Vec<SignalDescriptorRecord> = signal_snapshot::scoped_descriptors(
         dbs.iter().map(|l| (l.db.as_ref(), l.buses.as_slice())),
-        &project_buses,
     )
     .into_iter()
     .map(|(bus_id, d)| SignalDescriptorRecord {
@@ -468,16 +465,15 @@ pub(crate) fn list_value_tables(
 
 /// [`list_value_tables`]'s testable body.
 ///
-/// `bus_id` scopes the DBC-backed branch the same way decode does:
-/// `Some(bus)` resolves only through databases `filter::dbc_applies`
-/// admits for that bus, first-match-wins within that set. `None` means
-/// "the bus is unknown", not "on no bus" — it keeps the pre-scoping
-/// behaviour of trying every loaded database, first-match-wins, rather
-/// than taking `dbc_applies`'s literal (scoped-out) answer, which would
-/// strip labels from a null-bus signal in a project where every database
-/// is scoped. This mirrors the any-bus rule the encoding fingerprint
-/// applies (`signal_fingerprint::dbc_encoding`). The file-backed branch
-/// is unaffected — no DBC bears on a file-backed series.
+/// `bus_id` scopes the DBC-backed branch exactly the way decode does:
+/// the labels come from the databases `filter::dbc_applies` admits for
+/// that bus, first-match-wins within that set, so a lane's labels can
+/// only ever come from a database that could have decoded it. A lookup
+/// naming no bus therefore resolves through nothing — every frame has a
+/// bus, so a DBC-backed series is never in the "bus unknown" state the
+/// old fall-back-to-every-database answer was guessing for. The
+/// file-backed branch is unaffected — no DBC bears on a file-backed
+/// series.
 pub(crate) fn list_value_tables_inner(
     state: &AppState,
     message_id: u32,
@@ -494,7 +490,7 @@ pub(crate) fn list_value_tables_inner(
     state
         .databases()
         .iter()
-        .filter(|d| bus_id.is_none() || filter::dbc_applies(&d.buses, bus_id))
+        .filter(|d| filter::dbc_applies(&d.buses, bus_id))
         .find_map(|d| {
             d.db.value_table_for_signal(message_id, extended, signal_name)
                 .map(|rows| {
@@ -510,9 +506,11 @@ pub(crate) fn list_value_tables_inner(
 }
 
 /// Run a batch of signal edits through
-/// [`cannet_dbc::Database::encode_frame`] against the first DBC that
-/// claims the `(message_id, extended)` pair. Returns the updated
-/// payload bytes plus any signals the encoder couldn't place.
+/// [`cannet_dbc::Database::encode_frame`] against the first database
+/// **assigned to `bus_id`** that claims the `(message_id, extended)`
+/// pair — the same set that would decode the frame once it is on that
+/// bus. Returns the updated payload bytes plus any signals the encoder
+/// couldn't place.
 ///
 /// The transmit panel calls this on every signal-table edit: it passes
 /// the current `dataHex` (decoded to bytes) and the signal that
@@ -530,35 +528,50 @@ pub(crate) fn list_value_tables_inner(
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn encode_frame(
     state: State<'_, AppState>,
+    bus_id: Option<String>,
     message_id: u32,
     extended: bool,
     signals: Vec<ipc::EncodeFrameSignal>,
     base: Vec<u8>,
 ) -> Result<ipc::EncodeFrameResponse, String> {
-    encode_frame_inner(state.inner(), message_id, extended, &signals, base)
+    encode_frame_inner(
+        state.inner(),
+        bus_id.as_deref(),
+        message_id,
+        extended,
+        &signals,
+        base,
+    )
 }
 
 /// Return the rich descriptor for one DBC message (signals, range,
 /// mux indicator, …) — what the transmit panel needs to render the
 /// signals table without reimplementing DBC walking on the frontend.
-/// Returns `None` if no DBC matches the id.
+///
+/// `bus_id` is the bus the row transmits on, and scopes the lookup the
+/// same way decode is scoped: only databases assigned to that bus may
+/// answer, so a row on no bus — or one whose bus has no database
+/// assigned — describes nothing. Returns `None` if no such DBC matches
+/// the id.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn describe_message(
     state: State<'_, AppState>,
+    bus_id: Option<String>,
     message_id: u32,
     extended: bool,
 ) -> Option<ipc::MessageDescriptorRecord> {
-    describe_message_inner(state.inner(), message_id, extended)
+    describe_message_inner(state.inner(), bus_id.as_deref(), message_id, extended)
 }
 
 pub(crate) fn describe_message_inner(
     state: &AppState,
+    bus_id: Option<&str>,
     message_id: u32,
     extended: bool,
 ) -> Option<ipc::MessageDescriptorRecord> {
     let id = cannet_core::CanId::new(message_id, extended).ok()?;
-    state.first_dbc(|db| {
+    state.first_dbc_on_bus(bus_id, |db| {
         db.describe_message(id).map(|desc| {
             let signals: Vec<ipc::SignalDescriptorRichRecord> = desc
                 .signals
@@ -599,30 +612,40 @@ pub(crate) fn describe_message_inner(
 }
 
 /// Decode the current payload bytes of a hypothetical (panel-side)
-/// frame through the first DBC that claims `(message_id, extended)`.
-/// Same decoded-signal shape the trace view uses, but the frame
-/// doesn't need to be in the trace store.
+/// frame through the first database **assigned to `bus_id`** that
+/// claims `(message_id, extended)`. Same decoded-signal shape the trace
+/// view uses, and the same scoping — a panel-side frame is decoded by
+/// exactly the databases that would decode it once it is on the wire —
+/// but the frame doesn't need to be in the trace store.
 ///
-/// Returns `None` if no DBC matches the id.
+/// Returns `None` if no such DBC matches the id.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn decode_frame(
     state: State<'_, AppState>,
+    bus_id: Option<String>,
     message_id: u32,
     extended: bool,
     data: Vec<u8>,
 ) -> Option<ipc::DecodedFrameRecord> {
-    decode_frame_inner(state.inner(), message_id, extended, &data)
+    decode_frame_inner(
+        state.inner(),
+        bus_id.as_deref(),
+        message_id,
+        extended,
+        &data,
+    )
 }
 
 pub(crate) fn decode_frame_inner(
     state: &AppState,
+    bus_id: Option<&str>,
     message_id: u32,
     extended: bool,
     data: &[u8],
 ) -> Option<ipc::DecodedFrameRecord> {
     let id = cannet_core::CanId::new(message_id, extended).ok()?;
-    state.first_dbc(|db| {
+    state.first_dbc_on_bus(bus_id, |db| {
         db.decode_raw(id, data)
             .map(|decoded| ipc::DecodedFrameRecord {
                 name: decoded.name.to_string(),
@@ -633,6 +656,7 @@ pub(crate) fn decode_frame_inner(
 
 pub(crate) fn encode_frame_inner(
     state: &AppState,
+    bus_id: Option<&str>,
     message_id: u32,
     extended: bool,
     signals: &[ipc::EncodeFrameSignal],
@@ -646,9 +670,9 @@ pub(crate) fn encode_frame_inner(
         .iter()
         .map(|s| (s.name.as_str(), s.physical))
         .collect();
-    // `first_dbc` writes the encoded payload into `bytes` in place and
-    // yields the skipped-signal list; `bytes` is consumed after the scan.
-    let skipped = state.first_dbc(|db| {
+    // The scan writes the encoded payload into `bytes` in place and
+    // yields the skipped-signal list; `bytes` is consumed after it.
+    let skipped = state.first_dbc_on_bus(bus_id, |db| {
         db.encode_frame(id, &signal_pairs, &mut bytes)
             .map(|report| {
                 report

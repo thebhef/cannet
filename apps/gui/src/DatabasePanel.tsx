@@ -1151,7 +1151,6 @@ export function DatabasePanel(props: IDockviewPanelProps) {
         sortKey: null,
         sortDir: null,
         busNames: buses.map((b) => [b.id, b.name]),
-        projectBuses: buses.map((b) => b.id),
         sourceBuses: null,
         offset: 0,
         limit: keys.length,

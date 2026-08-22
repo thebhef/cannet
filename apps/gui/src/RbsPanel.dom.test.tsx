@@ -357,6 +357,23 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     );
   });
 
+  it("an enum signal's labels are fetched on the bus the element resolved to", async () => {
+    // Bus assignment governs decode, so the labels behind an RBS enum
+    // cell come from the databases assigned to that bus — the same set
+    // that decodes the bus's frames. A bus-less lookup resolves through
+    // nothing.
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByLabelText("toggle 0x123"));
+    await screen.findByLabelText("TargetMode value");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const valueTableCalls = (
+      invoke as unknown as { mock: { calls: [string, Record<string, unknown>][] } }
+    ).mock.calls.filter((c) => c[0] === "list_value_tables");
+    const call = valueTableCalls[valueTableCalls.length - 1];
+    expect(call?.[1]?.busId).toBe("p1");
+  });
+
   it("a VAL_ renamed on disk reaches the picker without a manual reload", async () => {
     // Task 27's exit criterion, RBS half. The panel's *rows* already
     // rebuilt on a DBC change — the host runs `rbs::refresh_all_elements`

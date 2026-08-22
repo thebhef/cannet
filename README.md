@@ -2135,11 +2135,21 @@ The MDF a save writes is always **sorted and finalized**, uncompressed
 `hd_start_time_ns`, which reproduces absolute nanoseconds exactly for
 any capture spanning less than about 26 days.
 
-**Per-bus DBC scoping**. Each DBC entry in the project panel grows a
-row of checkboxes — one per defined logical bus — that control which
-buses the DBC decodes for. A DBC with no boxes checked is *unscoped*
-("all buses", the migration default for v2 projects). A DBC scoped to
-bus A doesn't decode bus-B frames.
+**Bus assignment governs decode**. Each DBC entry in the project panel
+grows a row of checkboxes — one per defined logical bus — that control
+which buses the DBC decodes for. A DBC with no boxes checked is
+assigned to nothing and **decodes nothing**: loading a file makes it
+available, checking a bus makes it decode. A DBC assigned to bus A
+doesn't decode bus-B frames. A project saved before this rule opens
+with its databases unassigned and decodes nothing until they are
+assigned — deliberately, since an old or different-version DBC
+legitimately stays in a project and auto-assigning one would silently
+activate it alongside the current one. Assignment governs every DBC
+answer, not just the trace: the transmit panel's signal table (its
+message descriptor, its decoded values, its encoder and its enum
+labels) and the rest-of-bus panel's enum labels all resolve through the
+databases assigned to the row's bus — the same set that would decode
+the frame once it is on the wire.
 
 **Default: receive from every bus**. Each consumer (trace, plot, filter) carries a
 `sources: string[]` list of upstream producer ids — bus ids or filter
@@ -2217,7 +2227,7 @@ bus per channel — no manual remap.
 
 **Project schema version**. `PROJECT_SCHEMA_VERSION` bumped 2 → 3. A
 v2 project opens by way of an in-memory migration that lifts
-`dbc_paths` into `dbcs` (each unscoped) and defaults `buses` and
+`dbc_paths` into `dbcs` (each assigned to no bus) and defaults `buses` and
 `interface_bindings` to empty; the on-disk version is rewritten the
 next time you save.
 
