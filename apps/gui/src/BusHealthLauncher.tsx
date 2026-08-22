@@ -13,6 +13,12 @@
 /// grows a count when one is not**, with the tooltip naming the bus, so
 /// a bus going off is still noticed without needing a word for the
 /// healthy case.
+///
+/// Draws the registry's `bus` topology icon, not an ECG zigzag: the
+/// zigzag collided with the signals view's own icon — one glyph, two
+/// meanings — so the icon audit redrew this one as a bus.
+
+import { Icon } from "./Icon";
 
 /// One bus that is not error-active. `busOff` is the fault; anything
 /// else is the warning.
@@ -49,16 +55,7 @@ export function BusHealthLauncher({ concerns, onOpen }: BusHealthLauncherProps) 
       disabled={onOpen === undefined}
       onClick={onOpen}
     >
-      <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
-        <polyline
-          points="1,9 4,9 6,4 8,13 10,9 15,9"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinejoin="round"
-          strokeLinecap="round"
-        />
-      </svg>
+      <Icon name="bus" />
       {concerns.length > 0 && (
         <span className="bus-health-launcher-count" aria-hidden="true">
           {concerns.length}
