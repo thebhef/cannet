@@ -5,9 +5,79 @@
 // unit tests) shares.
 
 /// The kind of a timeline event (ADR 0035). `note` is the user-placed
-/// marker the host stores; `truncation` is the derived disk-spill marker
-/// synthesised in the frontend (never sent by the host).
-export type EventKind = "note" | "truncation";
+/// marker the host stores; `busError` is a run of CAN bus errors the host
+/// coalesced into one event; `truncation` is the disk-spill marker
+/// synthesised here in the frontend (never sent by the host).
+export type EventKind = "note" | "busError" | "truncation";
+
+/// Where an event came from (ADR 0035). The category, not the individual
+/// kind, decides the lifecycle: only a user-authored event is editable,
+/// persisted and exported.
+export type EventCategory = "userAuthored" | "hostDerived" | "frontendDerived";
+
+/// What a kind declares about itself — one global truth, so no view has to
+/// know a particular kind's habits.
+export interface EventKindMeta {
+  /// Name shown in a filter control.
+  label: string;
+  category: EventCategory;
+  /// Does it render without being asked for? A kind that is noise until you
+  /// go looking for it declares `false`; a view starts with it filtered out
+  /// and the user turns it on there (the override is view-local).
+  visibleByDefault: boolean;
+  /// Whether the user can rename / recolor / remove it. Follows the
+  /// category — only the author of an event may edit it.
+  editable: boolean;
+  /// The BLF record type this kind round-trips as, or `null` when it is not
+  /// written out at all. The record type is a property of the kind, so
+  /// filtering by kind *is* filtering by record type.
+  blfRecord: "GLOBAL_MARKER" | "EVENT_COMMENT" | null;
+}
+
+/// Every kind, in the order a filter control lists them.
+export const EVENT_KINDS: readonly EventKind[] = ["note", "busError", "truncation"];
+
+/// The per-kind declarations (ADR 0035).
+export const EVENT_KIND_META: Record<EventKind, EventKindMeta> = {
+  note: {
+    label: "Notes",
+    category: "userAuthored",
+    visibleByDefault: true,
+    editable: true,
+    blfRecord: "GLOBAL_MARKER",
+  },
+  busError: {
+    label: "Bus Errors",
+    category: "hostDerived",
+    // A bus error is noise until you ask for it — true of every project,
+    // which is why it belongs next to the kind and not in project state.
+    visibleByDefault: false,
+    editable: false,
+    blfRecord: null,
+  },
+  truncation: {
+    label: "Truncation",
+    category: "frontendDerived",
+    visibleByDefault: true,
+    editable: false,
+    blfRecord: null,
+  },
+};
+
+/// The kinds a view shows before the user says otherwise — the seed for
+/// each view's own (view-local) override.
+export function defaultVisibleKinds(): Set<EventKind> {
+  return new Set(EVENT_KINDS.filter((k) => EVENT_KIND_META[k].visibleByDefault));
+}
+
+/// Drop the events whose kind this view is not showing. Applied *after*
+/// `timelineEvents` so a filter control can still count what it is hiding.
+export function visibleEvents(
+  events: readonly TimelineEvent[],
+  visible: ReadonlySet<EventKind>,
+): TimelineEvent[] {
+  return events.filter((e) => visible.has(e.kind));
+}
 
 /// One note as the host serialises it. `timestampNs` is the
 /// absolute trace timestamp (`RawTraceFrame::timestamp_ns`); the
@@ -27,9 +97,8 @@ export interface Note {
 }
 
 /// A rendered timeline event (ADR 0035): the common shape every view —
-/// the plot cursor, the trace event row, the events mode — draws from one
-/// model. A host note maps to one (`editable`); the derived truncation
-/// marker is another (`editable: false`).
+/// the plot cursor, the trace event row, the events view — draws from one
+/// model, whichever of the three categories produced it.
 export interface TimelineEvent {
   id: string;
   timestampNs: number;
@@ -45,16 +114,19 @@ export interface TimelineEvent {
 /// can key it and the rename/remove paths can reject it (it isn't a note).
 export const TRUNCATION_EVENT_ID = "__truncation";
 
-/// Map a host note to a [`TimelineEvent`]; defaults a pre-kind / add-path
-/// note to the `note` kind and no color.
+/// Map a host event to a [`TimelineEvent`]; defaults a pre-kind / add-path
+/// note to the `note` kind and no color. Editability comes from the kind's
+/// declaration, not from the caller — a host-derived event arrives on the
+/// same wire as a note and must not become editable by sharing it.
 export function noteToEvent(n: Note): TimelineEvent {
+  const kind = n.kind ?? "note";
   return {
     id: n.id,
     timestampNs: n.timestampNs,
     label: n.label,
-    kind: n.kind ?? "note",
+    kind,
     color: n.color ?? null,
-    editable: true,
+    editable: EVENT_KIND_META[kind]?.editable ?? false,
   };
 }
 

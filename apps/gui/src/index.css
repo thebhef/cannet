@@ -116,6 +116,7 @@
   --warn-text-bright: #fcd34d;
   --warn-text-em: #eab308;
   --warn-text-truncation: #e0a030;
+  --error-text-bus: #ff5a52;
 
   /* Project-graph node identities (fill + outline per kind) */
   --node-bus-bar: #60a5fa;
@@ -282,6 +283,7 @@
   --warn-text-bright: #7c4a06;
   --warn-text-em: #8a5c08;
   --warn-text-truncation: #9a6410;
+  --error-text-bus: #b91c1c;
 
   /* Project-graph node identities (fill + outline per kind) */
   --node-bus-bar: #1d4ed8;
@@ -449,6 +451,7 @@
   --warn-text-bright: #7e4900;
   --warn-text-em: #8d5b00;
   --warn-text-truncation: #9e6205;
+  --error-text-bus: #c81e3c;
 
   /* Project-graph node identities (fill + outline per kind) */
   --node-bus-bar: #0f48e9;
@@ -6615,4 +6618,56 @@ button.color-chip {
   background: var(--surface-overlay);
   color: var(--text-faint);
   font-size: 0.8rem;
+}
+
+/* Per-kind visibility checklist for timeline events (ADR 0035). One
+   compact row per kind, laid out horizontally so it fits a panel toolbar
+   as readily as the events view's own filter bar. A kind is listed with
+   its count even while it is switched off — hidden must not mean
+   unfindable. */
+.event-kind-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.event-kind-filter-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  user-select: none;
+  cursor: pointer;
+}
+
+.event-kind-filter-swatch {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 2px;
+  background: var(--accent-marker);
+}
+
+.event-kind-swatch-truncation {
+  background: var(--warn-text-truncation);
+}
+
+.event-kind-swatch-busError {
+  background: var(--error-text-bus);
+}
+
+.event-kind-filter-count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The events view's own filter bar, above the event rows. */
+.events-panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.6rem;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border-subtle);
 }
