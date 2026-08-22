@@ -76,6 +76,16 @@ describe("BusHealthLauncher", () => {
     expect(screen.getByText("1")).toBeInTheDocument();
   });
 
+  it("draws the registry's bus topology icon, not an inline zigzag", () => {
+    render(<BusHealthLauncher concerns={[]} onOpen={() => {}} />);
+    const svg = screen.getByRole("button").querySelector("svg");
+    // The bus icon is two taps off a spine (two circles, two paths); the
+    // retired ECG zigzag was a single six-point polyline.
+    expect(svg?.querySelector("polyline")).toBeNull();
+    expect(svg?.querySelectorAll("circle").length).toBe(2);
+    expect(svg?.getAttribute("viewBox")).toBe("0 0 14 14");
+  });
+
   it("draws its state on the icon's own colour, so nothing about it moves", () => {
     const rule = (selector: string) => {
       const start = css.indexOf(`\n${selector} {`);
