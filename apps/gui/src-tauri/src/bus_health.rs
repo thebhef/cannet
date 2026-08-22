@@ -32,6 +32,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::AppState;
+use crate::connection_state::AppliedBusConfig;
 use crate::notes::{EventKind, Note};
 
 /// How often the host republishes the coalesced summaries. A fault at
@@ -245,7 +246,6 @@ pub(crate) struct BusHealthRecord {
 /// A bus-off controller returns `Some(0.0)`: the denominator is known
 /// and nothing is on the wire, which is the true reading, and "no
 /// traffic" and "we cannot know" must not render alike.
-#[allow(dead_code)] // called by the health panel's emitter.
 pub(crate) fn load_percent(
     arbitration_bits_per_second: f64,
     data_bits_per_second: f64,
@@ -349,27 +349,91 @@ pub(crate) fn controllers_by_bus(
 /// which is what keeps "we cannot know" distinct from a zero.
 pub(crate) fn health_rows(
     controllers: &BTreeMap<String, ControllerHealth>,
+    applied: &BTreeMap<String, AppliedBusConfig>,
+    bits_by_bus: &[(String, f64, f64)],
     mapped_buses: &[String],
     errors: &ErrorRuns,
 ) -> BTreeMap<String, BusHealthRecord> {
     let mut buses: Vec<&str> = mapped_buses.iter().map(String::as_str).collect();
     buses.extend(errors.runs().iter().map(|r| r.bus_id.as_str()));
+    buses.extend(applied.keys().map(String::as_str));
     buses.sort_unstable();
     buses.dedup();
     buses
         .into_iter()
         .map(|bus_id| {
             let latest = errors.latest(bus_id);
+            // Absent bits are a genuine zero, not a missing reading: the
+            // bus is configured, so the denominator is known and nothing
+            // going over the wire *is* the answer. That is what makes a
+            // bus-off row read 0 % where an unconfigurable one reads
+            // nothing at all.
+            let (arb_bits, data_bits) = bits_by_bus
+                .iter()
+                .find(|(b, _, _)| b == bus_id)
+                .map_or((0.0, 0.0), |(_, a, d)| (*a, *d));
             (
                 bus_id.to_string(),
                 BusHealthRecord {
                     controller: controllers.get(bus_id).copied(),
-                    load_percent: None,
+                    load_percent: applied.get(bus_id).and_then(|cfg| {
+                        load_percent(arb_bits, data_bits, cfg.speed_bps, cfg.fd_data_speed_bps)
+                    }),
                     error_count: errors.total(bus_id),
                     error_rate: latest.map_or(0.0, ErrorRun::rate),
                     last_error_ts_ns: latest.map(|r| r.last_ts_ns),
                 },
             )
+        })
+        .collect()
+}
+
+/// The status bar's one bus-load figure: the **worst** load across every
+/// bus that reports one, or `None` while none does.
+///
+/// The worst rather than the mean, for the same reason the health
+/// launcher tints on the worst state: a bar has room for one number, and
+/// an average over four buses hides the one that is saturating, which is
+/// the only one worth a glance. Which bus it is remains the panel's
+/// answer to give.
+pub(crate) fn worst_load_percent(rows: &BTreeMap<String, BusHealthRecord>) -> Option<f64> {
+    rows.values()
+        .filter_map(|r| r.load_percent)
+        .fold(None, |worst: Option<f64>, load| {
+            Some(worst.map_or(load, |w| w.max(load)))
+        })
+}
+
+/// The whole per-bus map plus the one figure the status bar shows, taken
+/// together so a caller that needs both reads one instant.
+pub(crate) fn health_snapshot(
+    app: &AppHandle,
+    state: &AppState,
+) -> (BTreeMap<String, BusHealthRecord>, Option<f64>) {
+    let Some(health) = app.try_state::<BusHealth>() else {
+        return (BTreeMap::new(), None);
+    };
+    let rows = collect_health_rows(app, state, &health);
+    let worst = worst_load_percent(&rows);
+    (rows, worst)
+}
+
+/// What the host put on the wire for each bus it has connected — the
+/// denominator of a bus-load figure, and the only place it can come
+/// from: `ConfigureBus` is fire-and-forget, so the configuration the
+/// host *sent* is the deepest truth available about a controller's
+/// timing (see [`crate::connection_state`]).
+fn applied_configs(
+    states: &crate::connection_state::ConnectionStates,
+) -> BTreeMap<String, AppliedBusConfig> {
+    states
+        .snapshot()
+        .into_iter()
+        .filter_map(|(bus_id, state)| match state {
+            crate::connection_state::BusConnState::Connected { applied } => {
+                Some((bus_id, applied?))
+            }
+            _ => None,
         })
         .collect()
 }
@@ -395,16 +459,7 @@ pub(crate) fn spawn_bus_health_emitter(app: AppHandle) {
                 continue;
             };
             let state: State<'_, AppState> = app.state();
-            let rows = {
-                let sessions = state.remote_sessions();
-                let controllers = controllers_by_bus(&sessions);
-                let mapped: Vec<String> = sessions
-                    .values()
-                    .flat_map(|s| s.channel_to_bus.iter().map(|(_, b)| b.clone()))
-                    .collect();
-                drop(sessions);
-                health_rows(&controllers, &mapped, &health.errors())
-            };
+            let rows = collect_health_rows(&app, &state, &health);
             if rows != published_rows {
                 published_rows.clone_from(&rows);
                 let _ = app.emit(BUS_HEALTH_CHANGED_EVENT, rows);
@@ -430,8 +485,20 @@ pub(crate) const BUS_HEALTH_CHANGED_EVENT: &str = "bus-health-changed";
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn get_bus_health(
+    app: AppHandle,
     health: tauri::State<'_, BusHealth>,
     state: State<'_, AppState>,
+) -> BTreeMap<String, BusHealthRecord> {
+    collect_health_rows(&app, &state, &health)
+}
+
+/// Gather one instant's worth of every input the rows are built from —
+/// the sessions' controller reports and bus mapping, the connection
+/// states' applied bitrates, and the store's per-bus bit rates.
+fn collect_health_rows(
+    app: &AppHandle,
+    state: &AppState,
+    health: &BusHealth,
 ) -> BTreeMap<String, BusHealthRecord> {
     let sessions = state.remote_sessions();
     let controllers = controllers_by_bus(&sessions);
@@ -440,7 +507,12 @@ pub(crate) fn get_bus_health(
         .flat_map(|s| s.channel_to_bus.iter().map(|(_, b)| b.clone()))
         .collect();
     drop(sessions);
-    health_rows(&controllers, &mapped, &health.errors())
+    let applied = app
+        .try_state::<crate::connection_state::ConnectionStates>()
+        .map(|states| applied_configs(&states))
+        .unwrap_or_default();
+    let bits = state.trace_store.status_snapshot().bits_per_second_by_bus;
+    health_rows(&controllers, &applied, &bits, &mapped, &health.errors())
 }
 
 #[cfg(test)]
@@ -585,6 +657,34 @@ mod tests {
     }
 
     #[test]
+    fn the_bar_shows_the_worst_load_and_nothing_at_all_when_no_bus_reports_one() {
+        let row = |load: Option<f64>| BusHealthRecord {
+            controller: None,
+            load_percent: load,
+            error_count: 0,
+            error_rate: 0.0,
+            last_error_ts_ns: None,
+        };
+        assert_eq!(
+            worst_load_percent(&BTreeMap::from([
+                ("b1".to_string(), row(Some(12.0))),
+                ("b2".to_string(), row(Some(71.0))),
+                ("b3".to_string(), row(None)),
+            ])),
+            Some(71.0),
+            "the saturating bus is the one worth the bar's single slot",
+        );
+        // The control: a bus with no knowable load must not read as 0 %
+        // and drag the summary down, and a bar with nothing to report
+        // shows no metric rather than a zero.
+        assert_eq!(
+            worst_load_percent(&BTreeMap::from([("b3".to_string(), row(None))])),
+            None,
+        );
+        assert_eq!(worst_load_percent(&BTreeMap::new()), None);
+    }
+
+    #[test]
     fn a_cleared_session_forgets_its_errors() {
         let health = BusHealth::default();
         health.observe_error("b1", 0);
@@ -606,7 +706,13 @@ mod tests {
                 rec: 9,
             },
         )]);
-        let rows = health_rows(&controllers, &["b1".to_string()], &errors);
+        let rows = health_rows(
+            &controllers,
+            &BTreeMap::new(),
+            &[],
+            &["b1".to_string()],
+            &errors,
+        );
 
         assert_eq!(
             rows.keys().collect::<Vec<_>>(),
@@ -627,8 +733,17 @@ mod tests {
     #[test]
     fn a_row_carries_no_load_where_the_host_has_no_bitrate_for_the_bus() {
         let errors = ErrorRuns::default();
-        let rows = health_rows(&BTreeMap::new(), &["b1".to_string()], &errors);
-        assert_eq!(rows["b1"].load_percent, None);
+        let rows = health_rows(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[("b1".to_string(), 170_000.0, 0.0)],
+            &["b1".to_string()],
+            &errors,
+        );
+        assert_eq!(
+            rows["b1"].load_percent, None,
+            "bits on the wire with no bitrate to divide by is still not a load",
+        );
         let json = serde_json::to_value(&rows["b1"]).unwrap();
         assert!(
             json.get("loadPercent").is_none(),
@@ -636,5 +751,52 @@ mod tests {
         );
         assert!(json.get("controller").is_none());
         assert_eq!(json["errorCount"], 0);
+    }
+
+    #[test]
+    fn a_configured_bus_reports_a_load_and_a_silent_one_reports_zero() {
+        // The pair the panel exists to distinguish. Both buses are
+        // configured at 500k; one is carrying traffic and one has gone
+        // quiet (a bus-off controller is exactly this), and the quiet one
+        // reads 0 % rather than reading absent.
+        let applied = BTreeMap::from([
+            (
+                "busy".to_string(),
+                AppliedBusConfig {
+                    speed_bps: Some(500_000),
+                    fd_enabled: false,
+                    fd_data_speed_bps: None,
+                },
+            ),
+            (
+                "quiet".to_string(),
+                AppliedBusConfig {
+                    speed_bps: Some(500_000),
+                    fd_enabled: false,
+                    fd_data_speed_bps: None,
+                },
+            ),
+            (
+                "defaulted".to_string(),
+                AppliedBusConfig {
+                    speed_bps: None,
+                    fd_enabled: false,
+                    fd_data_speed_bps: None,
+                },
+            ),
+        ]);
+        let rows = health_rows(
+            &BTreeMap::new(),
+            &applied,
+            &[("busy".to_string(), 170_000.0, 0.0)],
+            &[],
+            &ErrorRuns::default(),
+        );
+        assert_eq!(rows["busy"].load_percent, Some(34.0));
+        assert_eq!(rows["quiet"].load_percent, Some(0.0));
+        assert_eq!(
+            rows["defaulted"].load_percent, None,
+            "no ConfigureBus was sent, so the host does not know the wire's rate",
+        );
     }
 }

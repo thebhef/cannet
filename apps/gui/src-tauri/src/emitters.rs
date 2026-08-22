@@ -194,6 +194,10 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
                 .collect();
             let first_index = snap.first_index as u64;
             let mem_bytes = crash::last_app_rss();
+            // The bar's numbers are the host's, every one of them
+            // (ADR 0055), so the bus-load figure is computed here beside
+            // the rest rather than folded together in the view.
+            let (_, bus_load_percent) = crate::bus_health::health_snapshot(&app, &state);
             let _ = app.emit(
                 "trace-grew",
                 TraceGrew {
@@ -204,6 +208,7 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
                     frames_per_second_rx: snap.frames_per_second_rx,
                     frames_per_second_tx: snap.frames_per_second_tx,
                     frames_per_second_by_bus,
+                    bus_load_percent,
                     frames_dropped_before_session: snap.frames_dropped_before_session,
                     session_start_seconds,
                     buffer_seconds: snap.buffer_seconds,

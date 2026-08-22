@@ -243,6 +243,11 @@ pub struct TraceGrew {
     /// Per-bus breakdown of the current frame rate — what localises a
     /// slowdown to a specific bus on a multi-bus stream.
     pub frames_per_second_by_bus: Vec<BusFps>,
+    /// Percentage of the wire in use on the busiest bus that reports one,
+    /// or `None` while none does — a loaded file has no wire, and a bus
+    /// the host sent no `ConfigureBus` for has no known bitrate to divide
+    /// by. Never estimated: absent and zero are different answers.
+    pub bus_load_percent: Option<f64>,
     /// Cumulative frames the session-start guard has dropped (stale
     /// pipeline frames). Climbs only on a clear/reconnect race.
     pub frames_dropped_before_session: u64,
