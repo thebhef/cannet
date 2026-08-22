@@ -197,3 +197,36 @@ frames it summarises are frames, and only the frames are written.
 ADR 0035 amended in the same commit with the three-category table and
 the two consequences that follow (a summary is not a substitute for what
 it summarises; the delivery path is shared, the storage is not).
+
+**Phase 2 — kinds become a real axis, and default visibility with them.**
+The TS mirror (`notes.ts`) gains `EVENT_KIND_META`: per kind, its
+category, whether it is `visibleByDefault`, whether it is `editable`, and
+which BLF record it round-trips as. Two things fall out of putting the
+declaration there rather than in each view:
+
+- **`noteToEvent` no longer hardcodes `editable: true`.** Editability
+  follows the kind, so a host-derived event arriving on the same wire as
+  a note cannot become editable by sharing it.
+- **The record type is a property of the kind**, which means filtering by
+  kind *is* filtering by record type — one control, not two that can
+  disagree.
+
+`useEventKindFilter` (`EventKindFilter.tsx`) is the view-local override:
+`useState` seeded from `defaultVisibleKinds()`, nothing persisted, per
+the grooming ruling. The same `EventKindFilter` checklist renders in all
+three surfaces — the trace toolbar, the plot's toolbar menu, and the
+events view — and lists every kind with its count **even while it is
+switched off**, because hidden must not mean unfindable.
+
+The plot's event projection moved into a pure `plotTimelineEvents`
+(`plotEvents.ts`), which also collapsed the panel's separate `notes` and
+`truncation` memos into one: the truncation marker is just another
+filterable kind now, not a special case beside the notes.
+
+*Experiment / control.* Three tests assert a `busError` is absent until
+enabled — `EventsPanel.dom.test.tsx` ("hides a kind that declares itself
+hidden…"), `TracePanel.dom.test.tsx` ("keeps a hidden-by-default kind out
+of the trace…"), `plotEvents.test.ts` ("leaves out the kinds this panel
+is not showing"). Control: flipping `busError.visibleByDefault` to `true`
+fails all three (`expected [ 'bus error x40', 'boom' ] to deeply equal
+[ 'boom' ]`), so they are reading the declaration and not a coincidence.

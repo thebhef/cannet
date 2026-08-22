@@ -55,6 +55,9 @@ export interface ThemeColors {
   eventMarker: string;
   /// The derived truncation marker (ADR 0035), a muted amber.
   eventTruncation: string;
+  /// A host-derived bus-error event (ADR 0035) — a red distinct from both
+  /// the note blue and the truncation amber, because it reports a fault.
+  eventBusError: string;
   /// Fill behind a canvas label chip (cursor labels, event labels, the
   /// Δ readouts) so the text reads over the series underneath.
   canvasChipFill: string;
@@ -142,6 +145,7 @@ const DARK: Theme = {
   crosshair: "#607d8b",
   eventMarker: "#4ecbff",
   eventTruncation: "#e0a030",
+  eventBusError: "#ff5a52",
   canvasChipFill: "#0a0d0f",
   laneFillDefault: "rgba(10, 13, 15, 0.65)",
   busUnknown: "#94a3b8",
@@ -199,6 +203,7 @@ const LIGHT: Theme = {
   crosshair: "#78909c",
   eventMarker: "#0369a1",
   eventTruncation: "#9a6410",
+  eventBusError: "#b91c1c",
   // Effectively the canvas color, same as dark's: a chip is a backing
   // that hides the series behind the label, not a visible plate.
   canvasChipFill: "#ffffff",
@@ -256,6 +261,7 @@ const LIGHTHK: Theme = {
   crosshair: "#cf6e8b",
   eventMarker: "#bd0f7d",
   eventTruncation: "#9e6205",
+  eventBusError: "#c81e3c",
   canvasChipFill: "#feeaf0",
   laneFillDefault: "rgba(252, 204, 218, 0.75)",
   busUnknown: "#be2d58",
@@ -367,6 +373,7 @@ export const TOKEN_MIRROR: Partial<Record<keyof ThemeColors, string>> = {
   cursorB: "--cursor-pink",
   eventMarker: "--accent-marker",
   eventTruncation: "--warn-text-truncation",
+  eventBusError: "--error-text-bus",
   busUnknown: "--text-muted",
   busUnset: "--text-dim",
   graphNeutralEdge: "--text-muted",

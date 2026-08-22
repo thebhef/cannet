@@ -236,3 +236,38 @@ describe("EventsPanel in a narrow panel", () => {
     ]);
   });
 });
+
+describe("EventsPanel kind filter", () => {
+  const busError: Note = {
+    id: "e1",
+    timestampNs: 4_000_000_000,
+    label: "bus error x40",
+    kind: "busError",
+  };
+  const note: Note = { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" };
+
+  const labels = () =>
+    Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+
+  it("hides a kind that declares itself hidden, and shows it when asked", () => {
+    // "By default not shown anywhere" — but findable: the checklist lists
+    // the kind with its count even while it is off (ADR 0035).
+    renderPanel([busError, note]);
+    expect(labels()).toEqual(["boom"]);
+
+    const box = screen.getByTitle("Bus Errors").querySelector("input") as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    expect(screen.getByTitle("Bus Errors").textContent).toContain("1");
+
+    fireEvent.click(box);
+    expect(labels()).toEqual(["bus error x40", "boom"]);
+  });
+
+  it("offers no edit controls on a host-derived event", () => {
+    renderPanel([busError]);
+    fireEvent.click(screen.getByTitle("Bus Errors").querySelector("input") as HTMLInputElement);
+    expect(labels()).toEqual(["bus error x40"]);
+    expect(screen.queryByLabelText("rename event")).toBeNull();
+    expect(screen.queryByLabelText("remove event")).toBeNull();
+  });
+});
