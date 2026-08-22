@@ -244,7 +244,9 @@ export function isActivatableTarget(target: EventTarget | null): boolean {
 /// arrow key would kill grid navigation silently.
 export const GRIDVIEW_ATTR = "data-gridview";
 
-/// The navigation keys a gridview consumes, unmodified.
+/// The keys a gridview consumes, unmodified: the navigation keys, and
+/// the two action keys — Space (the panel's primary action) and F2
+/// (begin the cursor row's inline rename).
 const GRIDVIEW_NAV_KEYS = new Set([
   "ArrowUp",
   "ArrowDown",
@@ -256,16 +258,17 @@ const GRIDVIEW_NAV_KEYS = new Set([
   "PageDown",
   " ",
   "Tab",
+  "F2",
 ]);
 
 /// The keys a gridview consumes with Shift held.
 const SHIFTED_GRIDVIEW_KEYS = new Set(["Tab", "ArrowUp", "ArrowDown"]);
 
 /// Is this stroke one a gridview consumes (ADR 0044)? The unmodified
-/// navigation keys — arrows, Home/End, PageUp/PageDown, Space, Tab —
-/// plus Ctrl/Cmd+A, Shift+Tab and Shift+Up/Down. Everything else, an
-/// Alt- or Ctrl-modified arrow included, is a global chord and passes
-/// through.
+/// navigation keys — arrows, Home/End, PageUp/PageDown, Tab — the two
+/// action keys Space and F2, plus Ctrl/Cmd+A, Shift+Tab and
+/// Shift+Up/Down. Everything else, an Alt- or Ctrl-modified arrow
+/// included, is a global chord and passes through.
 export function isGridviewKey(stroke: KeyStroke): boolean {
   // The shifted strokes the grid takes: Shift+Tab (Tab's mirror, into
   // the cursor row's last control rather than its first) and

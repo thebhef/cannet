@@ -1,10 +1,10 @@
-// Argument parsing for `plot.setVisibleRange` (Task 19 step 1). The
-// palette prompt collects free text in one of two forms (owner
-// ruling): two numbers — separated by a space, a comma, or `..` — name
-// an explicit min/max range in the units the x-axis shows; a single
-// number names a new window *width*, keeping the panel's current
-// centre. Pure, so the prompt's inline-error validator and the panel's
-// apply step can each be tested without a live PlotPanel.
+// Argument parsing for `plot.setVisibleRange`. The palette prompt
+// collects free text in one of two forms: two numbers — separated by a
+// space, a comma, or `..` — name an explicit min/max range in the units
+// the x-axis shows; a single number names a new window *width*, keeping
+// the panel's current centre. Pure, so the prompt's inline-error
+// validator and the panel's apply step can each be tested without a
+// live PlotPanel.
 
 /// The parsed value of `plot.setVisibleRange`'s prompt text, or an
 /// inline error to show the user.
