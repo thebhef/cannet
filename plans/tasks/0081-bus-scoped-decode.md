@@ -513,6 +513,49 @@ Tests: `cargo test -p cannet-perf-measurement` 48 passed / 0 failed (was
 `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo
 fmt --all` clean.
 
+### 2026-08-19 — `rx_gap_short_frac_worst` re-gated, superseding the advisory treatment (owner ruling)
+
+Supersedes the entry above: the owner corrected the advisory framing —
+*"it's not advisory as much as it is optimized and noisy. It should not
+get worse."* `rx_gap_short_frac_worst` is a real gate again, with its
+limit set by the ~28% regression it must catch rather than by
+`baseline x factor` off the last run. Landed on branch
+`task-86-phase-2-reglate-rx-gap-short-frac` (not this task's branch —
+recorded here because this is where the finding and the ungating are
+recorded):
+
+- `ftol::RX_GAP_SHORT_FRAC_FLOOR` (`crates/cannet-perf-measurement/src/frontend.rs`)
+  rises from 0.03 to 0.15, giving a limit of `baseline * FACTOR + floor`
+  = 0.008 * 2 + 0.15 = ~0.166 at the 0.008 baseline: above the worst of
+  the 15 healthy same-rig runs (0.097), below the ~28% cohort
+  regression. `rx_gap_short_frac_worst`'s row sets `advisory: false`
+  again.
+- The `advisory` mechanism itself (`Verdict::advisory`,
+  `main.rs`'s filtering) stays — it has no user now, but removing it
+  would only mean re-inventing it if a metric ever genuinely needs it.
+  Its doc comment no longer implies `rx_gap_short_frac_worst` is that
+  user.
+- `rx_gap_short_frac_worst_is_advisory_not_a_gate` becomes
+  `rx_gap_short_frac_worst_gates_the_cohort_regression`: proves a ~28%
+  reading fails the new limit and the observed 0.097 healthy-run worst
+  passes it.
+- ADR 0031's 2026-08-19 amendment rewritten in place (not a new
+  amendment) to state the corrected rule: what the gate is for
+  (regressions that stack into something felt, not sub-5 ms per-frame
+  deltas), how the limit is set (by the regression magnitude, not
+  `baseline x factor`), and the load-bearing anti-creep rule — a gate
+  limit ratchets down only, and raising one needs an owner ruling
+  recorded in the ADR.
+- No baseline touched; no other metric's limit changed.
+
+Tests: `cargo test -p cannet-perf-measurement` 48 passed / 0 failed
+(unchanged count — a test rename, not a net addition). `cargo test -p
+cannet-gui` 717 passed / 0 failed / 6 ignored (unchanged by this
+change; the branch's higher count than the entry above reflects other
+work already landed on this session's chain). Gate
+`cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo
+fmt --all` clean.
+
 ## Blockers / side effects
 
 Phase 1 hit no blockers. Side effects worth the next phase's
@@ -593,3 +636,11 @@ Phase 2 hit one open finding, unresolved at hand-off:
   shows the same shape (709-998 MB across 7 runs, well inside its
   limit), so the `_worst` / `_peak` families as a class are
   extreme-value statistics gated as if they were means.
+
+  **Resolved — floor raised, owner ruling** (2026-08-19, see the status
+  log entry above). `RX_GAP_SHORT_FRAC_FLOOR` moves to 0.15 (limit
+  ~0.166 at the 0.008 baseline), set by the ~28% regression the gate
+  must catch rather than by `baseline x factor` off the last run;
+  `rx_gap_short_frac_worst` gates again. The median-across-reports
+  option remains the documented path if a future `_worst`/`_peak`
+  metric needs it (ADR 0031).
