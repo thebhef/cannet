@@ -150,3 +150,54 @@ render. Named so far:
 - **Events as frames in the raw store.** They are not CAN frames, carry
   no arbitration id, and have different persistence/export rules; forcing
   them into the frame contract pollutes the raw store and its by-id index.
+
+## Amendment (2026-08-21) — three source categories, not two
+
+The original decision split events two ways: **user-authored** kinds that
+the host stores, persists and exports, and **derived** kinds synthesized in
+the frontend and never entering the store (the disk-spill truncation
+marker, the only one). A coalesced run of CAN bus errors fits neither. It
+is not user-authored, so it has no business in the durable store; but
+collapsing a storm at bus frame rate into one event with a count and a span
+is domain computation over the frame stream, which CLAUDE.md § "thin views
+over a paged model" places host-side — and a frontend that had to see every
+error frame in order to collapse them would be exactly the unbounded
+accumulation that rule forbids.
+
+So a kind belongs to one of **three source categories**, and the category —
+not the individual kind — fixes its lifecycle:
+
+| Category | Who produces it | Editable | Scratch | BLF export | Survives a capture clear |
+|---|---|---|---|---|---|
+| user-authored | the user | yes | yes | yes | no — cleared with the capture it annotates |
+| host-derived | the host, from the frame stream | no | no | no | no — recomputed by its producer |
+| frontend-derived | a view, from host data | no | no | no | n/a — never stored anywhere |
+
+Each named kind declares its category, and the four properties follow from
+it:
+
+| Kind | Category | Source |
+|---|---|---|
+| note | user-authored | the user's marker (exists) |
+| message-bound | user-authored | created from a message |
+| busError | host-derived | a coalesced run of CAN error frames |
+| trigger | host-derived | a plot trigger firing |
+| truncation | frontend-derived | the disk-spill low-water mark |
+
+Two consequences worth stating outright:
+
+- **A host-derived event is not a substitute for the data it summarises.**
+  Coalescing is a display decision. The error frames a `busError` event
+  stands for remain in the capture and are what a save writes; the summary
+  is not exported, precisely so the file never carries a lossy restatement
+  of records it already holds. Degrading data on the way to disk is the one
+  failure this codebase has already decided it will not accept.
+- **The delivery path is shared and the storage is not.** Views read one
+  merged, chronological event set regardless of category, so a new category
+  costs no view any new plumbing. Only the host-side store distinguishes
+  them, because only persistence and export differ.
+
+The `trigger` kind moves from the original table's "not persisted?
+persisted" reading to host-derived for the same reason `busError` is: the
+host owns the detection, and the frames that caused it are what the file
+records.

@@ -463,7 +463,10 @@ pub(crate) fn save_capture(
     format: SaveFormat,
     buses: Vec<String>,
 ) -> Result<SaveCaptureResult, String> {
-    let notes = state.notes.snapshot();
+    // User-authored events only: a host-derived event summarises frames the
+    // file already carries, so writing it would restate them lossily
+    // (ADR 0035).
+    let notes = state.notes.exportable();
     let outcome = match format {
         // Snapshot the trace store. `slice(0, len)` clones each
         // RawTraceFrame out under the trace-store lock — that's the
