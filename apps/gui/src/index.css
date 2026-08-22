@@ -1053,6 +1053,66 @@ ul.status-bar-menu .status-chip {
 }
 /* === end shared status chip === */
 
+/* === Shared command chip (ChipButton.tsx) ===
+   The same chip, doing something instead of reporting something. It
+   carries `.status-chip` as well as this class, so the hairline, the
+   2px radius, the dot, the badge and every state tint above are the
+   very same declarations — this adds only what a command needs: the
+   chrome's 22px density, a registry icon, a pressed state and a focus
+   ring. Everything here is colour, outline or animation; nothing
+   changes a length, so a chip does not move when it is pressed, goes
+   busy, or settles into a state. */
+.chip-button {
+  height: 22px;
+  padding: 0 0.45rem;
+}
+.chip-button svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+/* Unambiguous icons stand alone, in a square the same height as the
+   labelled chip so a mixed row keeps one baseline. */
+.chip-button--icon-only {
+  width: 22px;
+  padding: 0;
+  justify-content: center;
+}
+/* It is a button, and buttons are keyboard targets. The ring is drawn
+   outside the box, so focusing one shifts nothing beside it. */
+.chip-button:focus-visible {
+  outline: 2px solid var(--accent-marker);
+  outline-offset: 1px;
+}
+/* A toggle that is on: the accent on the same hairline every state
+   uses. Hover has to be restated, or hovering an on toggle would read
+   as turning it off. */
+.chip-button[aria-pressed="true"] {
+  border-color: var(--accent-marker);
+  color: var(--text-label);
+  background: var(--surface-hover);
+}
+.chip-button[aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+/* The press itself, for the moment the pointer is down. */
+.chip-button:active:not(:disabled) {
+  background: var(--surface-hover);
+}
+/* The chip's own work is running: the hairline pulses on the shared
+   keyframes, so a busy command and a connecting status chip breathe
+   together. */
+.chip-button[aria-busy="true"] {
+  border-color: var(--accent-marker);
+  animation: status-chip-pulse 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chip-button[aria-busy="true"] {
+    animation: none;
+  }
+}
+/* === end shared command chip === */
+
 /* A capture census walking: indeterminate, since the walk's length is
    the file's length. Same sliding chip the plot shows while its first
    sample builds (`.plot-area-building-bar`), sized for the status line
