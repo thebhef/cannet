@@ -39,6 +39,7 @@ import { theme, useThemeName } from "./theme";
 import { assignLanePositions, reconcileGraphNodes } from "./graphNodeLayout";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { NameText } from "./NameText";
+import { ChipButton } from "./ChipButton";
 
 /// Per-panel persisted state. Lives in the panel's dockview `params`
 /// so each project graph panel keeps its own viewport and layout
@@ -253,20 +254,18 @@ function ProjectGraphPanelInner(props: IDockviewPanelProps) {
   return (
     <div className="graph-panel">
       <div className="graph-panel-toolbar">
-        <button
-          type="button"
-          onClick={() => gesture.transact(() => registry.create("filter"))}
+        <ChipButton
+          icon="plus"
+          label="Filter"
+          ariaLabel="Add Filter"
           title="Create a new filter element; it'll fan in from every bus by default and dangle (no downstream) until a trace or plot is wired to it"
-        >
-          + filter
-        </button>
-        <button
-          type="button"
-          onClick={resetLayout}
+          onPress={() => gesture.transact(() => registry.create("filter"))}
+        />
+        <ChipButton
+          label="Reset Layout"
           title="Clear saved node positions and re-lay-out the graph from scratch"
-        >
-          Reset layout
-        </button>
+          onPress={resetLayout}
+        />
       </div>
       <div className="graph-panel-canvas" onContextMenu={handlePanelContextMenu}>
         {empty ? (

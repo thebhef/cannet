@@ -135,13 +135,13 @@ describe("ProjectGraphPanel", () => {
   it("renders a toolbar with a New filter button", () => {
     const create = vi.fn(() => "f1");
     renderPanel(create);
-    expect(screen.getByRole("button", { name: /\+ filter/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add Filter" })).toBeInTheDocument();
   });
 
   it("clicking '+ filter' calls registry.create('filter')", () => {
     const create = vi.fn(() => "f1");
     renderPanel(create);
-    fireEvent.click(screen.getByRole("button", { name: /\+ filter/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Filter" }));
     expect(create).toHaveBeenCalledWith("filter");
   });
 });
