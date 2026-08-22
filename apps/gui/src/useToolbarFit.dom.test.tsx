@@ -18,6 +18,9 @@ import { useToolbarFit, type ToolbarFitItem } from "./useToolbarFit";
 // `offsetWidth` from its own `data-toolbar-fit` key.
 const layout: Record<string, number> = {};
 let gap = 0;
+/// The bar's own horizontal padding, which `clientWidth` counts and the
+/// items do not get.
+let padding = 0;
 
 function sizeOf(el: HTMLElement): number {
   const key = el.dataset.toolbarFit;
@@ -53,6 +56,7 @@ let realGetComputedStyle: typeof window.getComputedStyle;
 beforeEach(() => {
   for (const key of Object.keys(layout)) delete layout[key];
   gap = 0;
+  padding = 0;
   resizeCallbacks = [];
   vi.stubGlobal("ResizeObserver", ControllableResizeObserver);
   for (const prop of ["offsetWidth", "clientWidth"] as const) {
@@ -63,12 +67,16 @@ beforeEach(() => {
       },
     });
   }
-  // Only the bar's own `column-gap` is consulted; everything else keeps
-  // jsdom's answer.
+  // Only the bar's own `column-gap` and padding are consulted;
+  // everything else keeps jsdom's answer.
   realGetComputedStyle = window.getComputedStyle;
   vi.stubGlobal("getComputedStyle", (el: Element, pseudo?: string | null) =>
     el instanceof HTMLElement && el.classList.contains("test-bar")
-      ? ({ columnGap: `${gap}px` } as CSSStyleDeclaration)
+      ? ({
+          columnGap: `${gap}px`,
+          paddingLeft: `${padding / 2}px`,
+          paddingRight: `${padding / 2}px`,
+        } as CSSStyleDeclaration)
       : realGetComputedStyle.call(window, el, pseudo),
   );
 });
@@ -177,6 +185,19 @@ describe("useToolbarFit", () => {
     for (const key of KEYS) layout[key] = 100;
     layout.bar = 330;
     render(<Bar reserve={100} />);
+    expect(shown()).toEqual(["a", "b"]);
+  });
+
+  it("does not count the bar's own padding as room for items", () => {
+    // `clientWidth` is the content box plus the padding, and the items
+    // sit inside the content box. Charge the bar 330 with 100 of
+    // padding and there is 230 to spend — two items. Counting the
+    // padding as room fits a third and the row spills past its own
+    // edge, which on a bar that must not clip is visible damage.
+    for (const key of KEYS) layout[key] = 100;
+    layout.bar = 330;
+    padding = 100;
+    render(<Bar />);
     expect(shown()).toEqual(["a", "b"]);
   });
 

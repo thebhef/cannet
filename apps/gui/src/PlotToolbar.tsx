@@ -24,7 +24,10 @@
 /// callback for every press, which is what lets a test drive the whole
 /// bar with spies.
 
-import type { ComponentProps, MouseEvent, MutableRefObject, ReactNode } from "react";
+import { useMemo, useState, type ComponentProps, type MouseEvent, type MutableRefObject, type ReactNode } from "react";
+
+import { useDismissableMenu } from "./useDismissableMenu";
+import { useToolbarFit, TOOLBAR_FIT_OVERFLOW_KEY } from "./useToolbarFit";
 
 import { ChipButton } from "./ChipButton";
 import { ChipSegment } from "./ChipSegment";
@@ -370,11 +373,48 @@ export function plotToolbarItems({
   return items;
 }
 
+/// What the `…` control is assumed to cost before there is one on
+/// screen to measure. It is charged as soon as the first item
+/// collapses, which is one render before it exists.
+const OVERFLOW_ESTIMATE_PX = 34;
+
 export function PlotToolbar(props: PlotToolbarProps) {
   const items = plotToolbarItems(props);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useDismissableMenu<HTMLDivElement>(menuOpen, () => setMenuOpen(false));
+
+  // One run: the bar gives way from the right, so what is rightmost
+  // goes first and the solo cluster — left of everything but the run
+  // controls and the fits — goes last, whole.
+  const keys = items.map((i) => `${i.key}:${i.cluster ?? ""}`).join("|");
+  const runs = useMemo(
+    () => [
+      {
+        id: "plot",
+        items: items.map((item) => ({ key: item.key, cluster: item.cluster })),
+        // Removed controls collapse into the `…` menu rather than
+        // dropping off: a plot command that simply vanished at a narrow
+        // width would be unreachable, not merely inconvenient.
+        overflow: true,
+      },
+    ],
+    // The run is the bar's shape — its keys and its clustering — not
+    // the nodes, which change on every keystroke in the solo box.
+    [keys],
+  );
+  const { barRef, fit } = useToolbarFit<HTMLDivElement>({
+    runs,
+    overflowFallback: OVERFLOW_ESTIMATE_PX,
+  });
+
+  const kept = fit.plot ?? items.length;
+  const shown = items.slice(0, kept);
+  const collapsed = items.slice(kept);
+
   return (
     <div
       className="plot-panel-toolbar"
+      ref={barRef}
       onContextMenu={(e) => {
         // Right-click the *toolbar* to open the panel menu. Deliberately
         // not bound to the whole panel: right-click + drag over a plot
@@ -384,9 +424,33 @@ export function PlotToolbar(props: PlotToolbarProps) {
         props.onOpenMenu({ x: e.clientX, y: e.clientY });
       }}
     >
-      {items.map((item, i) => (
+      {shown.map((item, i) => (
         <PlotBarSlot key={item.key} item={item} first={i === 0} />
       ))}
+      {collapsed.length > 0 && (
+        <div className="chip-menu plot-toolbar-overflow" data-toolbar-fit={TOOLBAR_FIT_OVERFLOW_KEY} ref={menuRef}>
+          <ChipButton
+            label="…"
+            ariaLabel="More Plot Controls"
+            title="controls that did not fit"
+            menuOpen={menuOpen}
+            onPress={() => setMenuOpen((v) => !v)}
+          />
+          {menuOpen && (
+            <ul role="menu" className="chip-menu-list">
+              {collapsed.map((item) => (
+                // No `data-toolbar-fit` in here: an item in the menu is
+                // laid out to the menu's width, and measuring it there
+                // would overwrite the width that says whether it fits
+                // back on the bar.
+                <li key={item.key} role="menuitem">
+                  {item.node}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -396,9 +460,9 @@ export function PlotToolbar(props: PlotToolbarProps) {
 /// its separator with it rather than leaving a rule in mid-air.
 function PlotBarSlot({ item, first }: { item: PlotBarItem; first: boolean }) {
   return (
-    <>
+    <span className="plot-toolbar-slot" data-toolbar-fit={item.key}>
       {item.sep && !first && <span className="plot-toolbar-sep" aria-hidden="true" />}
       {item.node}
-    </>
+    </span>
   );
 }

@@ -3134,13 +3134,40 @@ button.color-chip {
   padding: 0.25rem 0.6rem;
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border-subtle);
-  /* The readout on the right changes width as numbers fluctuate; if
-   * the toolbar were allowed to wrap, the wrap toggle would resize the
-   * plot area underneath every tick — visible as a vertical "wiggle"
-   * on the plot. Keep one row; if it doesn't fit horizontally, let the
-   * readout clip rather than push controls to a second row. */
+  /* One row, always. A bar that wrapped would resize the plot area
+   * underneath it every time it gained or lost a line — visible as a
+   * vertical "wiggle" on the plot. Running out of room is handled by
+   * spilling controls into the `…` menu (`useToolbarFit`), never by
+   * wrapping and never by clipping: the bar must *not* be
+   * `overflow: hidden`, or it swallows that menu, which is one of its
+   * own absolutely-positioned children. */
   flex-wrap: nowrap;
-  overflow-x: hidden;
+}
+/* One measurable box per control, so the fit planner has something to
+   read a width off — the group divider in front of it included, since
+   a divider that stayed behind when its group spilled would be a rule
+   in mid-air. */
+.plot-toolbar-slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+}
+/* The read-out and the spill control both sit at the right end. The
+   read-out claims the slack first when it is showing; the `…` takes it
+   otherwise. */
+.plot-toolbar-slot[data-toolbar-fit="perf"],
+.plot-toolbar-overflow {
+  margin-left: auto;
+}
+.plot-toolbar-overflow {
+  flex: none;
+}
+/* The spill menu hangs off the bar's right end, so it opens leftwards
+   rather than off the edge of the panel. */
+.plot-toolbar-overflow .chip-menu-list {
+  left: auto;
+  right: 0;
 }
 
 /* The run controls are still the shipped buttons; everything else on

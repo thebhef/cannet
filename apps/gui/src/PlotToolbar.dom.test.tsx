@@ -9,11 +9,12 @@
 // bar *fits*; the overflow arithmetic is `useToolbarFit`'s test, driven
 // at widths this file supplies in the "spills" block at the bottom.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 
+import css from "./index.css?raw";
 import { PlotToolbar, plotToolbarItems, type PlotToolbarProps } from "./PlotToolbar";
 
 afterEach(cleanup);
@@ -357,5 +358,165 @@ describe("PlotToolbar", () => {
         expect(item.cluster, item.key).toBeUndefined();
       }
     });
+  });
+});
+
+// --- what happens when the bar runs out of room ----------------------
+//
+// jsdom lays nothing out: every width below is supplied, and what is
+// under test is the arrangement the planner reaches with them. Nothing
+// here proves the bar reads a real rendered box — only the running app
+// does.
+describe("PlotToolbar when it runs out of room", () => {
+  /// Width per item key, plus `bar` for the bar itself.
+  const layout: Record<string, number> = {};
+  let resizes: (() => void)[] = [];
+
+  class ControllableResizeObserver {
+    constructor(private readonly cb: () => void) {
+      resizes.push(cb);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {
+      resizes = resizes.filter((c) => c !== this.cb);
+    }
+  }
+
+  beforeEach(() => {
+    for (const key of Object.keys(layout)) delete layout[key];
+    resizes = [];
+    vi.stubGlobal("ResizeObserver", ControllableResizeObserver);
+    for (const prop of ["offsetWidth", "clientWidth"] as const) {
+      Object.defineProperty(HTMLElement.prototype, prop, {
+        configurable: true,
+        get(this: HTMLElement) {
+          const key = this.dataset.toolbarFit;
+          if (key !== undefined) return layout[key] ?? 0;
+          return this.classList.contains("plot-panel-toolbar") ? (layout.bar ?? 0) : 0;
+        },
+      });
+    }
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    for (const prop of ["offsetWidth", "clientWidth"] as const) {
+      Object.defineProperty(HTMLElement.prototype, prop, { configurable: true, value: 0 });
+    }
+  });
+
+  /// Every control the same width, and the spill control half of one.
+  const ITEM_PX = 100;
+  const OVERFLOW_PX = 50;
+
+  /// The bar with a solo pattern typed, so the cluster has all three of
+  /// its parts, at a supplied width.
+  function renderAt(width: number) {
+    cleanup();
+    const s = spies();
+    const base = props(s);
+    const p = props(s, {
+      solo: {
+        ...base.solo,
+        pattern: "BMS",
+        pages: 3,
+        positionLabel: "1 / 3",
+        hasMatches: true,
+      },
+    });
+    const { onOpenMenu: _drop, ...rest } = p;
+    for (const item of plotToolbarItems(rest)) layout[item.key] = ITEM_PX;
+    layout.overflow = OVERFLOW_PX;
+    layout.bar = width;
+    render(<PlotToolbar {...p} />);
+    return s;
+  }
+
+  /// Resize the bar and let it re-measure, the way a window resize does.
+  function resizeTo(width: number) {
+    layout.bar = width;
+    act(() => {
+      for (const cb of resizes) cb();
+    });
+  }
+
+  /// The item keys still on the bar, in order.
+  function onBar(): string[] {
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(".plot-panel-toolbar > .plot-toolbar-slot"),
+    ).map((el) => el.dataset.toolbarFit!);
+  }
+
+  it("keeps everything when the bar is roomy, and shows no spill control", () => {
+    renderAt(5000);
+    expect(onBar()).toContain("clear-cursors");
+    expect(screen.queryByRole("button", { name: "More Plot Controls" })).toBeNull();
+  });
+
+  it("spills from the right into the … menu rather than wrapping", () => {
+    renderAt(5000);
+    resizeTo(750);
+    // Seven items of 100 plus the 50 the spill control costs is 750,
+    // exactly the bar; the eighth does not fit, so the tail is in the
+    // menu.
+    expect(onBar()).toEqual([
+      "run",
+      "fit-x",
+      "fit-y",
+      "solo:field",
+      "solo:paging",
+      "solo:clear",
+      "add-area",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "More Plot Controls" }));
+    const menu = document.querySelector(".plot-toolbar-overflow .chip-menu-list")!;
+    expect(menu.querySelector('[aria-label="Clear Cursors"]')).not.toBeNull();
+    expect(menu.querySelector('[aria-label="Show Points"]')).not.toBeNull();
+  });
+
+  it("still runs a spilled command from the menu", () => {
+    const s = renderAt(5000);
+    resizeTo(400);
+    fireEvent.click(screen.getByRole("button", { name: "More Plot Controls" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear Cursors" }));
+    expect(s.onClearCursors).toHaveBeenCalledTimes(1);
+  });
+
+  it("never leaves half the solo control on the bar", () => {
+    // The cluster contract, at *this* bar: the planner supporting
+    // clusters proves nothing about this bar passing it any. Swept
+    // rather than sampled, because the width at which it would split is
+    // not obvious from the outside.
+    renderAt(5000);
+    const seen = new Set<number>();
+    for (let w = 0; w <= 1400; w += 25) {
+      resizeTo(w);
+      const solo = onBar().filter((k) => k.startsWith("solo:"));
+      seen.add(solo.length);
+      expect(solo.length, `at ${w}px the bar showed ${solo.join(", ")}`).not.toBe(1);
+      expect(solo.length, `at ${w}px the bar showed ${solo.join(", ")}`).not.toBe(2);
+    }
+    // …and the sweep really did reach both answers, or the assertion
+    // above would hold over a bar that never dropped anything.
+    expect([...seen].sort()).toEqual([0, 3]);
+  });
+
+  it("gives up the solo cluster last of all, and whole", () => {
+    // 500px is room for four items and the spill control — but the
+    // fourth is the first third of the solo cluster, so the whole of it
+    // goes and three items stay.
+    renderAt(5000);
+    resizeTo(500);
+    expect(onBar()).toEqual(["run", "fit-x", "fit-y"]);
+  });
+
+  it("must not clip: a bar with `overflow: hidden` swallows its own menu", () => {
+    const start = css.indexOf("\n.plot-panel-toolbar {");
+    expect(start).toBeGreaterThan(-1);
+    // Comments stripped first: the rule's own comment says the words.
+    const rule = css.slice(start, css.indexOf("}", start)).replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(rule).not.toMatch(/overflow(-x)?:\s*hidden/);
   });
 });
