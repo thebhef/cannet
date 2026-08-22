@@ -77,9 +77,8 @@ carries the number. That is the tax already paid.
   replacing the indeterminate chip in each case. The indeterminate chip
   stays for anything whose length genuinely is unknown.
 - **A real Cancel affordance** for both phases, not a second meaning
-  overloaded onto the launcher. The status-bar prototype
-  (`plans/prototypes/toolbar-status-bar.html`) shows it as an explicit
-  button beside the progress bar.
+  overloaded onto the launcher — an explicit button beside the progress
+  bar, in the status bar task 103 built (`StatusBar.tsx`'s `notices`).
 - The MDF counterpart (`scan_mdf_channels`, the "same one-pass-over"
   sibling of `scan_blf_channels`) gets the same treatment, or is
   recorded with the reason it cannot.

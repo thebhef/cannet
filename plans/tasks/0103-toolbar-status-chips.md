@@ -95,8 +95,8 @@ to where that state is managed.**
 
 | file | covers | state |
 |---|---|---|
-| `plans/prototypes/connect-disconnect-chip.html` | the chip's shape and its five states | **accepted** 2026-08-20 |
-| `plans/prototypes/toolbar-status-bar.html` | the full toolbar plus a status bar replacing the prose status line | **accepted** 2026-08-21 |
+| ~~`plans/prototypes/connect-disconnect-chip.html`~~ | the chip's shape and its five states | accepted 2026-08-20, **implemented and deleted** 2026-08-21 |
+| ~~`plans/prototypes/toolbar-status-bar.html`~~ | the full toolbar plus a status bar replacing the prose status line | accepted 2026-08-21, **implemented and deleted** 2026-08-21 |
 | `plans/prototypes/bus-health.html` | the bus health panel ([task 101](0101-bus-health.md)) | panel accepted; adapter column still open |
 
 The toolbar prototype was written 2026-08-20 by owner instruction:
@@ -298,3 +298,102 @@ not asked for; it is noted in the prototype as a separate question.
   per-panel copy.
 - Every converted control is a state, not a command.
 - Task 101's bus health chip is built from it rather than beside it.
+
+## Status log
+
+### 2026-08-21 — (branch `task-103-toolbar-status-bar`)
+
+Implemented, on the two accepted prototypes, and both are deleted.
+Frontend suite 2525 → 2580 passing (190 → 196 files); no Rust touched.
+
+What landed, in order:
+
+1. **`StatusChip.tsx` + `.status-chip*`** — one shared chip, the colour
+   chip's shape (2px radius over a `--border-wash` hairline, rounded
+   square indicator), with the five-state vocabulary carried on the
+   outline alone. A test asserts no `[data-state]` rule changes a
+   border weight, a padding or a width, which is what "uniform width"
+   actually needs.
+2. **`summarizeConnection`** (in `connectionStates.ts`) — the host's
+   per-bus map folded over the buses that carry a binding, with the
+   per-bus tooltip built from `describeAppliedConfig`.
+3. **`statusBarFit.ts`** — the drop/collapse policy as pure arithmetic.
+4. **`statusMetrics` / `statusMetricsTooltip`** (in `statusLine.ts`) —
+   the numbers come out of `splitStatus` as an ordered list; the resting
+   line now says only what is *happening*, and the DBC count is gone.
+5. **`BusHealthLauncher.tsx`** — the icon launcher.
+6. **`StatusBar.tsx`** — the bar, its measurement, and the overflow menu.
+7. **`rbsAttention.ts`** — the RBS mapping chip's project-wide count.
+8. **App wiring** — the toolbar loses Connect, System messages and View
+   signals; the bar replaces the `.status` div; README + ADR 0055.
+
+**Rulings implemented as written**: connection control in the bar,
+uniform chip width sized to the longest state, outline carries state,
+metric order and right-to-left drop, tooltip on the metric labels
+replacing the one blob title, three pinned chips pushed into a menu
+from the right badged with the sum of what is inside it, notices keep
+their buttons, DBC count gone, clock offset stays out, no
+`overflow: hidden` on the bar, no footer.
+
+**How the narrow-bar behaviour was tested.** `statusBarFit.test.ts`
+drives the width down and back up over a fixed set of item widths and
+reads off what disappeared; `StatusBar.dom.test.tsx` stubs each
+element's measured width in jsdom and resizes the bar through a
+controllable `ResizeObserver`, asserting the surviving metrics by id
+and the pinned-vs-collapsed split, then widening again. Both were run
+against a deliberately broken control (a non-alternating removal order;
+a bar that ignores the fit) and 5 and 4 tests respectively failed, so
+the assertions discriminate.
+
+**The removal order is the one the prototype's own three widths
+imply**: rightmost metric, rightmost chip, next metric, alternating.
+That sequence reproduces the prototype's *tighter* bar (cache and RAM
+dropped, RBS collapsed) and its *narrow* bar (only `f/s` and bus load,
+all three chips collapsed) exactly; "all metrics first, then chips"
+reproduces neither.
+
+## Blockers / side effects
+
+- **Bus load has no source.** The metric's slot and its place in the
+  drop order are implemented and unit-tested; `statusMetrics` takes
+  `busLoadPercent` and the app passes `null`, because nothing reports
+  it. Task 101 fills it in with one argument.
+- **The bus-health launcher is built but not mounted.** `StatusBar`
+  takes a `busHealth` prop and renders the launcher when given one; the
+  app passes nothing, because there is neither a host-side bus-health
+  model to feed it nor a panel for it to open. A permanently neutral,
+  permanently unpressable icon in the bar would be decoration rather
+  than a readout, so task 101 mounts it — one prop.
+- **The RBS chip's destination is only unambiguous with one config.**
+  The accepted resolution ("combining is fine for reporting and
+  forbidden for editing") is implemented for the *reporting* half: the
+  badge counts problems across every `.cannet_rbs` the project has
+  open. The *view* it should open — every config's problems listed
+  together, naming which config each belongs to — does not exist. With
+  exactly one config the chip opens that config's signals grid, which
+  is unambiguous; with none or several it reports and its tooltip says
+  why it cannot navigate. Building that combined view is task 89's
+  shape to define, not this task's to invent.
+- **Pressing the chip while connecting disconnects.** The prototype's
+  state table left this "undecided". A connect that never lands has no
+  other way out, so the chip stays pressable and cancels. Recorded
+  rather than assumed settled.
+- **The RBS count is summed in the frontend, not the host.** The grid's
+  display status is deliberately a frontend decision (Out of Range is
+  decided by `rbsSignalsFilter`, by grooming resolution), so a
+  host-side count would be a *different* number from the one the panel
+  shows. Reusing the frontend rule over the host's rows keeps the badge
+  and the panel in agreement, which is the stronger constraint; the
+  refresh is event-gated, never polled.
+- **Not done, not asked for.** The seven `Add …` buttons are untouched,
+  as the prototype says.
+
+## Exit criteria — verdicts (2026-08-21)
+
+| criterion | verdict | earned by |
+|---|---|---|
+| A prototype exists, is reviewed with the owner, and is deleted by the phase that implements it | **met** | both accepted prototypes deleted in the landing commit; `bus-health.html` left for task 101 |
+| One shared chip component with a defined state vocabulary; no per-panel copy | **met** | `StatusChip.dom.test.tsx` — "carries its state on the element, for every state in the vocabulary", "carries every non-idle state on the outline alone" |
+| Every converted control is a state, not a command | **met** | only Connect, System messages and View signals moved; `StatusBar.dom.test.tsx` — "presses the connection chip through to its action", "does not offer a press when the project binds no interface" |
+| Task 101's bus health chip is built from it rather than beside it | **met in the part this task owns** | `BusHealthLauncher.dom.test.tsx` — the control exists, is the launcher shape the owner accepted, and `StatusBar` takes it as a prop; task 101 supplies the model and the panel |
+| (grooming recommendation) an ADR once the prototype settles | **met** | [ADR 0055](../../docs/adr/0055-status-chips-and-the-status-bar.md) |
