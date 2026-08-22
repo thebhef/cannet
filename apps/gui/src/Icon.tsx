@@ -3,10 +3,10 @@
 ///
 /// The set is hand-drawn on a 14px grid with a 1.4px rounded stroke — no
 /// external icon library (a rejected dependency). Every icon's shape data
-/// is copied verbatim from `plans/prototypes/gui-chip-redesign.html`'s
-/// inline `<symbol>` definitions, so the app and the prototype cannot
-/// drift on day one; when the app's set changes, the prototype's
-/// inventory changes with it in the same commit.
+/// is copied verbatim from the design prototype's inline `<symbol>`
+/// definitions, so the app and the prototype cannot drift on day one;
+/// when the app's set changes, the prototype's inventory changes with it
+/// in the same commit.
 ///
 /// `ICON_NAMES` is the reviewable set itself — adding, removing or
 /// renaming an entry here is a deliberate, visible change (pinned by
@@ -38,9 +38,8 @@ export type IconShape =
       readonly height: number;
     };
 
-/// The full inventory, in the order
-/// `plans/prototypes/gui-chip-redesign.html`'s "icon set — full
-/// inventory" section lists it. That section — not this file's
+/// The full inventory, in the order the design prototype's "icon set —
+/// full inventory" section lists it. That section — not this file's
 /// commentary — is the source of truth for what the set means; this
 /// array is the source of truth for what the set *is*.
 export const ICON_NAMES = [
