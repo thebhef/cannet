@@ -998,6 +998,131 @@ drew; the system-messages section gained a comment on the shared
 `Combobox` in place of a bespoke picker. Every other bar matched the
 mock closely enough to need no note.
 
+- **2026-08-22 — Phase 6, icons reach into the panels, landed.** Branch
+  `task-108-phase-6-panel-icons` from `bf16000b`.
+  - `TraceView.tsx`'s shared `EventRow` — the renderer both the events
+    view and the trace panel's interleaved event rows draw from — has
+    its goto/rename/remove buttons swap the retired `⇥` / `✎` / `×` text
+    glyphs for `<Icon name="goto"/>` / `<Icon name="edit"/>` /
+    `<Icon name="x"/>`. One renderer, so both surfaces changed together;
+    no fork.
+  - **The bounded sweep**, inside the panels phases 3–5 already touched,
+    wherever an ad-hoc glyph matched a registry meaning already in use
+    elsewhere in the app: `PlotArea.tsx` (remove-area, remove-signal and
+    discard-patterns `×` → `x`; the pattern-editor toggle's trailing `✎`
+    → `edit`, now a JSX fragment since the label carries a count before
+    it), `SignalsPanel.tsx` (remove-from-selection `×`, section rename
+    `✎`, section delete `×`), `RbsPanel.tsx` (the per-message
+    clear-period-override `×`). Every accessible name was already
+    carried by `title`/`aria-label` independent of the glyph text, so
+    none moved; one tooltip in `RbsPanel.tsx` that spelled the glyph out
+    in prose ("override — × to track GenMsgCycleTime") was reworded
+    ("override — clear it to track GenMsgCycleTime") since it would
+    otherwise describe a character no longer on screen.
+  - **`index.css`**: each swapped button's icon gets `display: block`
+    (the `.bus-health-launcher svg` precedent from phase 1) so the
+    inline SVG's default baseline gap does not nudge it off-centre in a
+    glyph-only button. The one exception is `.plot-area-filter` — its
+    icon sits beside "patterns (N)" text in the same button, so it stays
+    inline rather than block, or the icon would wrap onto its own line.
+  - **No registry growth.** Every glyph swapped already had a covering
+    entry (`goto`, `edit`, `x`) from phase 1's 36; nothing new was drawn.
+  - **What was left alone, and why**: `EventKindFilter.tsx` (the
+    per-kind checkbox list shared by the events, trace and plot panels)
+    is a checklist of real `<input type="checkbox">` rows with a colour
+    swatch, not a text glyph — there is nothing for the registry to
+    replace there, and rebuilding it as chips would be widening a
+    *control's shape*, not swapping a glyph for its drawn form, which
+    owner call 2's reading puts out of scope ("anything wider is a
+    separate task"). The disclosure triangles (`▸`/`▾`) on event rows
+    and gridview headers, the pattern-materialize button's `⇨`, and the
+    RBS warning `⚠` have no registry entry (disclosure, "convert",
+    warning are not among the 36) and were left as they are, per the
+    phase's "no registry growth" constraint.
+  - **Task 107's event-surface toolbar** (the "ruling" naming it):
+    confirmed by reading `plans/tasks/0107-events-point-at-signals.md`
+    that task 107 is groomed and approved but **not implemented** —
+    there is no shipped 107 control in the app today to convert. The
+    ruling is forward-looking (107's own prototype already drew its
+    control in chip shape), not a phase-6 deliverable; nothing to do
+    here.
+  - **Mutation-proved**: a new `EventsPanel.dom.test.tsx` test drives an
+    editable event and asserts the goto/rename/remove buttons render an
+    empty-text `<svg viewBox="0 0 14 14">` rather than the old glyph
+    text. Reverting the goto button to `⇥` (`sed` on `TraceView.tsx`,
+    not committed) failed exactly that test with `expected '⇥' to be
+    ''`; restoring it re-passed. `PlotPanel.dom.test.tsx`'s existing
+    "adds plot areas and exposes a remove affordance per area when >1"
+    gained the same style of assertion for the plot area's remove
+    button, as one representative instance of the bounded sweep rather
+    than one per swapped glyph (the other nine are mechanically
+    identical: same handler, same `aria-label`/`title`, only the child
+    node changed).
+  - Frontend tests: 2757/207 files before (phase 5's log said 2757 but
+    two independent runs against that exact commit both counted
+    2756/207 in this session — a pre-existing one-test discrepancy in
+    the log, not something this phase's diff caused) → 2757/207 after
+    (2756 + 1 new `EventsPanel` test), all green, two full runs.
+    `tsc --noEmit` and `vite build` clean. `git grep --untracked -Ein
+    "task [0-9]|plans/" -- apps/ crates/` empty. No Rust touched.
+  - **Perf reading** (ADR 0031, ev-zonal, `--rbs-run-on-start` — a fresh
+    `--app-data-dir` has no saved RBS-running state to resume, so the
+    first attempt measured a genuinely idle bus, `fps 0`, and was
+    discarded before comparing): `docs/performance-measurements/frontend/2026-08-22-bf16000b-phase6.json`,
+    `rx_fps` 1606.3, `tx_fps` 1612.4 (`ids_measured` 173, expected
+    ~1608), `renderer_mb_peak` 305.5 MB (baseline 316.5), `tree_mb_peak`
+    721.7 MB (baseline 741.7), `host_mb_peak` 61.5 MB (baseline 58.5).
+    `cannet-perf-measurement check --frontend-report … --expected-rx-fps
+    1608 --expected-tx-fps 1608`: **33/33 metrics `ok`**, no metric
+    within its skill-§4 thresholds worth leading with (no ≥10 ms
+    sustained regression, memory well under 400 MB). Not promoted to
+    `baseline.json` — that stays the overseer's call.
+  - **What is not verified**: the swapped icons' actual pixel rendering
+    (size, centring, hairline alignment) inside the event rows and the
+    other bounded-sweep buttons was not screenshot-checked — the
+    `cannet-perf-measurement screenshot` fixtures (`ev-demo`,
+    `extrapolation`) are deliberately data-free or event-free, so none
+    of the conditional controls this phase touched (an editable event
+    row, a second plot area, a signal section, an overridden RBS period)
+    render in either fixture. The perf run above is stronger evidence
+    than no launch at all — the production build ran ~70 s with
+    `TraceView`/`PlotArea`/`SignalsPanel` all mounted and rendering
+    against a live 1600+ f/s load with no exception — but it is not a
+    photograph of the icons themselves. Same caveat every prior phase
+    recorded for its own bar.
+
+## Exit criteria, walked (phase 6 close-out)
+
+Task 108 carries no single "Exit criteria" list; the checkable claims
+below are drawn from **The design language**, **Rulings (owner,
+2026-08-21)**, **Relationship to task 103**, and **Final rulings —
+grooming closed**, each cited to the phase(s) that satisfied it.
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| 1 | One shape for every control (`.color-chip`/`.status-chip` silhouette) | **Met** | `ChipButton` extends `StatusChip` (phase 2); every phase 3–5 bar renders through it. Two named exceptions (RBS/view-signals custom status swatches; the system-messages `Combobox` trigger) apply `.status-chip .chip-button` directly to a bespoke element rather than forking a class — the sanctioned pattern, not a second shape. |
+| 2 | Smaller: tighter padding, 12px type, icon+label or icon-only | **Met** | 22px chip / 12px type built phase 2, unchanged through every later phase. |
+| 3 | Common icons, our own, in-repo registry | **Met** | 36-icon `Icon.tsx` registry, phase 1; consumed by every phase since. |
+| 4 | Icons reach into the panels, not just toolbars | **Met, bounded as groomed** | Event rows (phase 6) plus every ad-hoc glyph the registry already covered inside a phase-3–5 panel (phase 6). Controls that are not glyphs (`EventKindFilter`'s checkbox list) are unchanged by design — owner call 2 scoped the sweep to glyphs, not control shapes. |
+| 5 | The prototype is durable, updated in the same commits as any divergence | **Met** | Updated by phases 2–5 wherever implementation diverged; phase 6 introduced no divergence (its icon meanings already matched the prototype's inventory), so no prototype edit was needed this phase. |
+| 6 | State on the hairline — nothing resizes or reflows | **Met** | `ChipButton.dom.test.tsx`'s geometry-invariance test (phase 2), proved by mutation. |
+| 7 | The status bar stays; toolbar carries no duplicate Connect/System Messages/Signal Mapping/RBS launcher | **Met** | `Toolbar.dom.test.tsx` pins the absence (phase 3); true since task 103, never regressed. |
+| 8 | Full icon inventory, reviewable as a set | **Met** | Prototype's inventory section; `Icon.dom.test.tsx` pins the 36-name set (phase 1). |
+| 9 | Plot toolbar rulings (cursor icon buttons, perf hidden behind the existing menu, never wraps, solo cluster unbreakable and left, measurements strip stays hidden, catalog reload retired) | **Met** | Phase 4, itemised ruling-by-ruling in its own status entry. |
+| 10 | Icon audit — one icon, one meaning; Title Case labels / sentence-case tooltips; RBS Run carries play; project-tree icon a hierarchy; graph icon draws the fanout; text glyphs absorbed as drawn icons | **Met** | `bus`/`db`-`db-add` split (phase 1); Title Case sweep (phases 3–5); `RbsPanel`'s Run chip `icon="play"`, `Toolbar`'s Project chip `icon="tree"`, Graph-panel chip `icon="graph"` (phases 3, 5); `⇥`/`✎`/`×` absorbed as `goto`/`edit`/`x` (phase 6, this entry). |
+| 11 | Every panel toolbar gets the treatment (top-level, plot, trace, and the nine remaining bars) | **Met** | Phases 3 (top-level), 4 (plot), 5 (trace + signals, transmit, RBS, RBS signals, database, graph, servers, system messages, view signals). |
+| 12 | Icon-only treatment as prototyped stands | **Met** | e.g. the toolbar's Database/Graph/Events/Project launchers (phase 3), the plot bar's cursor segment (phase 4). |
+| 13 | Add-menu collapse approved and shipped | **Met** | `Toolbar.tsx`'s Add ▾ menu, seven commands (phase 3). |
+| 14 | Density (22px chips, 12px type) is right | **Met** | Unchanged since phase 2; no later phase revisited it. |
+| 15 | Task 103 implements first | **Met** | Task 103 shipped before 108 began (see "Relationship to task 103"). |
+| 16 | Task 107's event-surface toolbar speaks this language | **N/A to 108** | Task 107 is groomed/approved but **not implemented** (`plans/tasks/0107-events-point-at-signals.md`'s own status line) — there is no shipped 107 control for 108 to convert. The ruling is forward-looking: 107's own prototype already drew its control in chip shape, so 107's eventual implementation needs no rework. |
+
+No criterion above is Not Met. The two intentionally-unfinished threads
+this task carries forward are recorded as blockers, not exit-criteria
+failures: `useConnectionStates`'s launch race (phase 2, wants an owner
+call) and the measurement strip's rework (phase 4, backlogged by owner
+ruling, `MeasurementMenu` kept as its orphan).
+
 ## Blockers / side effects
 
 - **`useConnectionStates` still hand-rolls fetch-then-listen, and still

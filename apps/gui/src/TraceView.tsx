@@ -18,6 +18,7 @@ import { formatTimestamp, type CanIdFormat } from "./format";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import { ColorChip } from "./ColorChip";
+import { Icon } from "./Icon";
 import {
   ROW_HEIGHT,
   SIGNAL_LINE_HEIGHT,
@@ -1140,7 +1141,7 @@ function EventRow({
           aria-label="go to this event"
           onClick={() => onGoto(event.timestampNs)}
         >
-          ⇥
+          <Icon name="goto" />
         </button>
       )}
       {editable ? (
@@ -1194,7 +1195,7 @@ function EventRow({
           aria-label="rename event"
           onClick={() => onEditing(event.id, true)}
         >
-          ✎
+          <Icon name="edit" />
         </button>
       )}
       {editable && (
@@ -1205,7 +1206,7 @@ function EventRow({
           aria-label="remove event"
           onClick={() => actions?.onRemove(event.id)}
         >
-          ×
+          <Icon name="x" />
         </button>
       )}
     </div>

@@ -70,6 +70,7 @@ import {
 import { nextResampleDelayMs } from "./plotPacing";
 import { Combobox, type ComboboxOption } from "./Combobox";
 import { ColorChip } from "./ColorChip";
+import { Icon } from "./Icon";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
 import { SIGNAL_DND_MIME, setSignalDragData } from "./dragSignals";
@@ -3670,7 +3671,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 setFilterEditOpen((v) => !v);
               }}
             >
-              {!area.patterns?.length ? "patterns…" : `patterns (${area.patterns.length}) ✎`}
+              {!area.patterns?.length ? (
+                "patterns…"
+              ) : (
+                <>
+                  patterns ({area.patterns.length}) <Icon name="edit" />
+                </>
+              )}
             </button>
           )}
           {removable && !areaCollapsed && (
@@ -3682,7 +3689,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 onRemoveArea();
               }}
             >
-              ×
+              <Icon name="x" />
             </button>
           )}
         </div>
@@ -3714,7 +3721,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 onSetPatterns(undefined);
               }}
             >
-              ×
+              <Icon name="x" />
             </button>
           </div>
         )}
@@ -3927,7 +3934,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                           onRemoveSignal(key);
                         }}
                       >
-                        ×
+                        <Icon name="x" />
                       </button>
                     ) : (
                       <span

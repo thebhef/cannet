@@ -182,6 +182,19 @@ describe("event row focus and editing", () => {
     expect(row()).toBeTruthy();
     expect(screen.queryByLabelText("rename event")).toBeNull();
   });
+
+  it("draws goto/rename/remove as the registry's icons, not the retired text glyphs", () => {
+    renderPanel([note]);
+    for (const label of ["go to this event", "rename event", "remove event"]) {
+      const btn = screen.getByLabelText(label);
+      // The old glyphs (⇥ ✎ ×) were the button's entire text content;
+      // the drawn icon is decorative (aria-hidden) and leaves none.
+      expect(btn.textContent).toBe("");
+      const svg = btn.querySelector("svg");
+      expect(svg).toBeTruthy();
+      expect(svg).toHaveAttribute("viewBox", "0 0 14 14");
+    }
+  });
 });
 
 describe("EventsPanel goto", () => {

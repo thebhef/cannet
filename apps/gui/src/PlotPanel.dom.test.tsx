@@ -782,7 +782,11 @@ describe("PlotPanel", () => {
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
     expect(screen.getByText("Area 2")).toBeInTheDocument();
-    expect(screen.getAllByTitle("remove this plot area").length).toBe(2);
+    const removeButtons = screen.getAllByTitle("remove this plot area");
+    expect(removeButtons.length).toBe(2);
+    // The retired × glyph is now the registry's drawn "x" icon.
+    expect(removeButtons[0].textContent).toBe("");
+    expect(removeButtons[0].querySelector("svg")).toBeTruthy();
     // Removing one returns to a single, non-removable area.
     fireEvent.click(screen.getAllByTitle("remove this plot area")[1]);
     expect(screen.queryByText("Area 2")).not.toBeInTheDocument();
