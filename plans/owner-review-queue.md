@@ -398,6 +398,24 @@ test or artefact.
   scrub actually happened, not just that the report is clean. The
   script's two other targets — uPlot's `.u-over` and `.trace-rows` —
   were confirmed untouched by the chrome sweep.
+
+  **Overseer inspection 2026-08-22 — the harness cannot currently tell
+  you this, and that is the real defect.** Every gesture function
+  returns a label naming what it did, and `startPerfInteraction`
+  **discards the return value**: `perfInteractTick(doc, tick, script)`
+  is called for its side effect and nothing counts the labels. A
+  gesture whose target is missing returns `null` and is skipped
+  silently — deliberate, so that a layout with no plot is still a
+  legitimate capture — but nothing anywhere records *how often* that
+  happened. A run where the script found none of its targets produces a
+  report structurally identical to a good one, only quieter.
+
+  So the close-out gate needs a fix before it needs a run: **the
+  interaction script should tally the gestures it performed and the
+  report should carry that tally**, so a disarmed harness is visible in
+  the data instead of having to be remembered. Small, but it is the
+  precondition for every number the gate produces. Scoped to the
+  post-107 cleanup, ahead of the gate run itself.
 - Replace the repo's pre-existing ignored mDNS round-trip test, which
   advertises a real `_cannet._tcp` instance on the LAN. It is the
   pattern agents copy, and real advertisements collide on the shared
