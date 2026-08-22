@@ -1,6 +1,6 @@
 # ADR 0018 — Command / keybinding framework: frontend registry, user-editable bindings, context predicates
 
-Status: accepted (2026-05-26), amended (2026-07-12, 2026-08-09)
+Status: accepted (2026-05-26), amended (2026-07-12, 2026-08-09, 2026-08-22)
 
 A generalised command and keybinding primitive that panels and later
 features register on. This ADR records the shape of that primitive
@@ -185,5 +185,27 @@ Inventing a predicate DSL would buy generality nobody needs.
   and parse correctly; the shortcuts panel's chord *capture* handles
   single-step chords in its first cut (sequence capture is a later
   enhancement).
-- Command arguments / forms remain an explicit non-goal here and are
-  tracked separately if and when needed.
+
+## Amendment (2026-08-22) — a single typed-argument prompt, not a form
+
+Command arguments were an explicit non-goal above; two commands
+(`goto.timeInTrace`, `plot.setVisibleRange`) now need one. Rather than
+build a form framework, the existing second stage the palette already
+had for `panel.rename` — `PalettePrompt`, one text field in the
+palette's own shell — grows an optional validator: a non-null return
+is shown as an inline error and keeps the prompt open, instead of the
+value being silently discarded (`panel.rename`'s prior behaviour on
+bad input).
+
+The collected text reaches a command's handler one of two ways,
+depending on where the command lives. A palette-global command
+(`goto.timeInTrace`) parses it itself and drives its own effect. A per-panel
+command (`plot.setVisibleRange`) needs it routed through the existing
+per-panel command registry, which grows an optional string argument
+alongside the command id it already carried — the panel's own handler
+parses it, since only the panel knows the state (e.g. its current
+x-window) some inputs are resolved against.
+
+This is still one field, not a form: a command needing more than one
+value, or a relative/context-dependent input, remains out of scope
+until a real one shows up.
