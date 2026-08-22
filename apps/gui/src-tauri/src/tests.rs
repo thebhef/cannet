@@ -5289,6 +5289,65 @@ fn assigning_a_database_stops_nothing() {
 }
 
 #[test]
+fn assigning_a_database_that_becomes_the_new_winner_stops_the_row() {
+    // The rule is "the mapping the user armed is no longer the mapping
+    // that would transmit", and the mapping is the *winning definition*
+    // (ADR 0054) — not merely whether one exists. `first.dbc` is loaded
+    // ahead of `second.dbc`, so assigning it to the bus makes it the
+    // winner for a message the row is already firing from `second.dbc`,
+    // and the next frame out would carry a different encoding.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "first.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::install_dbc(&state, "second.dbc", &ab_dbc_text(2, 2)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "second.dbc", vec!["pt".to_string()]);
+    running_row(&state, "row", "pt", 256);
+
+    let stopped =
+        crate::dbc_commands::set_dbc_buses_inner(&state, "first.dbc", vec!["pt".to_string()]);
+
+    assert_eq!(stopped, vec!["row".to_string()]);
+    assert!(!state.transmit_frames().is_running("row"));
+}
+
+#[test]
+fn assigning_a_database_that_loses_the_priority_contest_stops_nothing() {
+    // The control that makes the case above mean something: the *same*
+    // gesture on the *same* row, with only the load order swapped, so
+    // the newly assigned database defines the message and still does
+    // not win it. The winner did not move, so neither did the mapping,
+    // and a rule that stopped on any DBC touch would fail here.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "first.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::install_dbc(&state, "second.dbc", &ab_dbc_text(2, 2)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "first.dbc", vec!["pt".to_string()]);
+    running_row(&state, "row", "pt", 256);
+
+    let stopped =
+        crate::dbc_commands::set_dbc_buses_inner(&state, "second.dbc", vec!["pt".to_string()]);
+
+    assert!(stopped.is_empty(), "{stopped:?}");
+    assert!(state.transmit_frames().is_running("row"));
+}
+
+#[test]
+fn assigning_a_database_to_another_bus_stops_nothing() {
+    // The second control: the assignment lands somewhere the row does
+    // not live, so it cannot move the row's winner however early in
+    // load order it sits.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "first.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::install_dbc(&state, "second.dbc", &ab_dbc_text(2, 2)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "second.dbc", vec!["pt".to_string()]);
+    running_row(&state, "row", "pt", 256);
+
+    let stopped =
+        crate::dbc_commands::set_dbc_buses_inner(&state, "first.dbc", vec!["ch".to_string()]);
+
+    assert!(stopped.is_empty(), "{stopped:?}");
+    assert!(state.transmit_frames().is_running("row"));
+}
+
+#[test]
 fn a_row_that_was_not_firing_is_not_reported_as_stopped() {
     // One log line records what *stopped*; a row parked in Manual mode,
     // or one the user had already stopped, stopped nothing.

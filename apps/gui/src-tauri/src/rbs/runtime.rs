@@ -1363,6 +1363,62 @@ BO_ 1280 AuxFrame: 8 AUX
     }
 
     #[test]
+    fn a_database_assigned_over_the_top_stops_the_rbs_element_it_took_over() {
+        // The owner's fifth rule: a database loaded and applied to a bus
+        // where it wins a message an armed element transmits has changed
+        // the mapping the user armed, so the element stops. Measured by
+        // the winner moving (ADR 0054), not by the set changing —
+        // `early.dbc` is ahead of `a.dbc` in load order, so applying it
+        // takes the message over.
+        let state = crate::tests::test_state();
+        {
+            let mut dbs = state.databases.lock().unwrap();
+            dbs.push(crate::tests::loaded_scoped("early.dbc", RBS_DBC, &[]));
+            dbs.push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+        }
+        running_element(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
+
+        let stopped =
+            crate::dbc_commands::set_dbc_buses_inner(&state, "early.dbc", vec!["p1".to_string()]);
+        let elements = stop_elements_owning(&state, &stopped);
+
+        assert!(stopped.contains(&status_id), "{stopped:?}");
+        assert_eq!(elements, vec!["el1".to_string()]);
+        assert!(!state.rbs.lock().unwrap().elements["el1"].run);
+        // Derived rows: the rebuild puts the row back and it must stay
+        // stopped, which only a stopped *element* produces.
+        rebuild_element_rows(&state, "el1");
+        sync_schedules(&state);
+        assert!(!state.transmit_frames.lock().unwrap().is_running(&status_id));
+    }
+
+    #[test]
+    fn a_database_assigned_that_wins_nothing_leaves_the_rbs_element_running() {
+        // The control: the same gesture with the load order swapped, so
+        // the newly applied database defines the message and still does
+        // not win it. Nothing about what the element transmits moved.
+        let state = crate::tests::test_state();
+        {
+            let mut dbs = state.databases.lock().unwrap();
+            dbs.push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+            dbs.push(crate::tests::loaded_scoped("late.dbc", RBS_DBC, &[]));
+        }
+        running_element(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+
+        let stopped =
+            crate::dbc_commands::set_dbc_buses_inner(&state, "late.dbc", vec!["p1".to_string()]);
+        let elements = stop_elements_owning(&state, &stopped);
+
+        assert!(stopped.is_empty(), "{stopped:?}");
+        assert!(elements.is_empty(), "{elements:?}");
+        assert!(state.rbs.lock().unwrap().elements["el1"].run);
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
+    }
+
+    #[test]
     fn unassigning_a_database_stops_the_rbs_rows_it_was_driving() {
         // An RBS row is a periodic like any other: once no database
         // assigned to its bus defines the message, it is transmitting
