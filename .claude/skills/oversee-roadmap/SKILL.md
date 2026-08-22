@@ -5,241 +5,250 @@ description: Oversee implementation of a slice of the roadmap by delegating task
 
 <what-to-do>
 
-You are overseeing development of part of this repository's roadmap
-(`plans/tasks/roadmap.md`). You do not implement; you clarify, plan,
-delegate, review, and report. The user is the product owner — surface
-decisions to them, never make scope calls silently.
+You oversee part of this repository's roadmap
+(`plans/tasks/roadmap.md`). You do not implement: you clarify, plan,
+delegate, review, and report. The user is the product owner —
+surface decisions to them, never make scope calls silently.
+
+## Reporting to the owner
+
+They are reading between other work. Every report you write:
+
+- **Lead with the finding**, then the evidence. No preamble, no
+  recap of the request.
+- **Bullets, tables and figures over paragraphs.** A table of five
+  branches beats five sentences about them.
+- **Numbers, paths, hashes and commands carry the content.**
+  Adjectives do not.
+- **A mermaid diagram when the shape is the point** — a branch
+  chain, a state machine, a data path. Never as decoration.
+- **Use the project's words.** `docs/CONTEXT.md` is the glossary. A
+  term you coined is jargon to the owner and costs them a question;
+  if a concept genuinely has no name yet, say it plainly, or propose
+  the term explicitly as a glossary addition.
+
+The `implement-phase` skill holds phase agents to the same standard.
 
 ## 1. Grill first
 
-Before any implementation, run a grilling session on the target
-task(s) per the **grill-with-docs** skill: read the task.md and the
-relevant code, then interview the user one question at a time — with
-a recommended answer per question — until the missing implementation
-detail is resolved. Questions the codebase can answer, answer by
-exploring the codebase instead of asking. Record resolutions in the
-task.md as dated grooming notes; update `docs/CONTEXT.md` terms and
-offer ADRs per that skill's rules.
+Before any implementation, run **grill-with-docs** on the target
+task(s): read the task file and the relevant code, then interview
+the user one question at a time, each with your recommended answer,
+until the missing implementation detail is resolved. Whatever the
+codebase can answer, answer from the codebase instead of asking.
+Record resolutions in the task file as dated grooming notes; update
+`docs/CONTEXT.md` terms and offer ADRs per that skill's rules.
 
 ## 2. Phases
 
-Tasks are captured in `plans/tasks/NNNN-*.md` files. Each task must
-be broken into phases before implementation starts — check whether
-the task.md already has a phase/slicing structure; groom one with the
-user if not. Present the expected phase list to the user before
-launching anything.
+Every task in `plans/tasks/NNNN-*.md` is broken into phases before
+implementation starts. If the task file has no slicing structure,
+groom one with the user. **Present the phase list before launching
+anything.**
 
-A phase is one coherent, independently-reviewable increment
-(layer-then-consumers, defect-then-feature, investigation-then-fix
-are typical shapes). Sequence phases so each builds on the last;
-investigation phases (root-causing an observation) come before the
-features that depend on their verdict.
+A phase is one coherent, independently-reviewable increment —
+layer-then-consumers, defect-then-feature, investigation-then-fix
+are the usual shapes. Sequence them so each builds on the last, and
+put an investigation ahead of whatever depends on its verdict.
 
-**Budget wall clock at grooming.** Any experiment or verification
-whose elapsed time is measured in hours (long live captures,
-length-N gate sets at scale) must be named during grooming with a
-duration estimate, so the owner can schedule it or restructure the
-phase — never discovered mid-phase from a status log. Before
-accepting an hours-long design, look for the cheaper equivalent:
-answer the question at direct-API scale first (build the store or
-cache in-process and measure — minutes, not hours), and for
-wide-window / long-capture regimes use the concrete substitution
-this repo supports: **generate a BLF spanning hours of timestamps
-and import it** — the data's time span substitutes for wall clock,
-so import + Fit Data reproduces the regime in minutes. Where the
-live edge matters, seed with the generated file and attach the
-virtual-bus rig for a short live tail on top. Only measurements of
-real-time currency (how far an edge lags wall clock) genuinely
-require elapsed time; spend hours-long live runs on those alone,
-scheduled, as confirmation.
+**Budget wall clock at grooming.** Name any experiment measured in
+hours, with an estimate, while grooming — never let the owner
+discover it mid-phase from a status log. Then look for the cheaper
+equivalent:
 
-## 3. Delegation contract
+| Regime | Cheap substitute |
+|---|---|
+| store or cache behaviour at scale | measure in-process at direct-API scale — minutes, not hours |
+| wide windows, long captures | generate a BLF spanning hours of timestamps and import it; import + Fit Data reproduces the regime in minutes |
+| the live edge on top of a long capture | seed from the generated file, then attach the virtual-bus rig for a short live tail |
 
-Each phase is delegated to a **new subagent**. Choose the model per
-phase: Opus for design-heavy, cross-cutting, or investigative phases;
-Sonnet for well-specified mechanical ones. When unsure, Opus.
+Only **real-time currency** — how far an edge lags wall clock —
+genuinely needs elapsed time. Spend hours-long live runs on that
+alone, scheduled, as confirmation.
 
-Every phase prompt must carry this contract:
+## 3. Delegation
 
-- **Main working tree, never a worktree.** Phases therefore run
-  strictly sequentially — never two implementation agents at once.
-- **One new branch per phase**, created by the subagent from the
-  previous phase's branch (the chain stays linear; merging the final
-  branch takes everything). The subagent creates the branch and
-  commits as it goes, in small reviewable steps, each leaving the
-  repo green, matching the repo's commit style.
-- **Read first**: repo `CLAUDE.md` (the working agreement — TDD,
-  surgical changes, docs-in-same-commit), the task.md including all
-  prior phases' status-log entries and recorded deviations, the
-  governing ADRs, and the specific modules being touched.
-- **Status updates land in the task.md**: the subagent appends dated
-  entries to a `## Status log` section as it completes each slice —
-  what landed, commit hashes, test counts.
-- **No backlogging.** Subagents never write to `plans/backlog.md`.
-  Blockers beyond their scope, surprises, and unforeseen side
-  effects are documented in the task.md under a
-  **Blockers / side effects** heading, for review when the
-  implementation is complete. If a groomed decision proves
-  unimplementable as written, the subagent implements the closest
-  faithful reading in the spirit intended and records the conflict —
-  a best effort to complete the work, never a silent redesign and
-  never a silent stop.
-- **Verification before every commit**: the repo's test/build/lint
-  commands for every layer touched (frontend, host crates, python
-  sidecar — see repo CLAUDE.md for the exact commands and the
-  uv-only rule for python).
-- **Investigations follow the scientific method**: observation →
-  hypothesis → experiment → data → conclusion, written into the
-  status log; no root-cause claim or fix without the confirming
-  experiment's data.
-- **Report back**: branch, commits, test counts, and the full status
-  log additions including blockers.
+One **new subagent** per phase. Opus for design-heavy,
+cross-cutting or investigative phases; Sonnet for well-specified
+mechanical ones; Opus when unsure.
 
-Between phases: verify the branch landed (commits present, tree
-clean) before launching the next agent. Relay mid-run user
-observations to the running agent; never predict its results.
+**The subagent's expectations live in the `implement-phase` skill.**
+Tell the agent to invoke it, and do not restate it. Your prompt adds
+only what is specific to this phase:
+
+- the task file, and which phase
+- the branch name to create, its base branch, and where to work —
+  the shared main tree, or a worktree of its own
+- the groomed scope, and the exit criteria it aims at
+- the governing ADRs and the modules in play
+- what the previous phase's review turned up that this one must
+  respect
+- your framing: what is already decided, what to be careful about
+
+**Agents sharing the main working tree run strictly sequentially** —
+two at once will clobber each other. A worktree buys overlap at two
+costs: phases still stack linearly, so a later phase built on an
+unfinished earlier one needs a rebase; and each worktree needs its
+own build, which is not free here.
+
+When an agent reports back, before launching the next:
+
+1. **Verify the branch landed as contracted** — one commit on its
+   base, tree clean, and a commit message that reads as a PR
+   description rather than a changelog. Still a chain of commits?
+   Have the agent squash first. **Keep the pre-squash HEAD hash** —
+   orphaned but reflog-reachable, and the step-by-step history
+   behind the squashed diff.
+2. **Track it in Graphite** if `gt` is available:
+   `gt track <branch> -p <previous phase's branch>`, then confirm
+   the stack is still linear and needs no restack. If `gt` is
+   absent, skip it and say so.
+3. **Review the diff** (§ 4).
+
+Relay mid-run user observations to the running agent. Never predict
+its results.
 
 ## 4. Review between phases
 
-You review each phase's output — this is your job, not the
-subagents':
+Reviewing each phase's output is your job, not the subagents'. Read
+the **diff**, not just the report.
 
-- **Architectural divergence**: does the diff respect the repo's
-  architecture rules (for this repo: thin views over the paged
-  host-side model, domain computation host-side, view-local frontend
-  state, one shared implementation over per-panel copies)? Check the
-  diff, not just the report.
-- **Copy/pasted code** and other architectural sins: duplicated
-  logic that should live in a shared layer, bespoke re-implementations
-  of existing machinery, index-keyed state where ids are the rule,
-  unbounded frontend accumulation.
-- Deviations recorded in status logs: judge each — faithful reading,
-  or scope drift that needs the user?
+- **Architectural divergence** — in this repo: thin views over the
+  paged host-side model, domain computation host-side, view-local
+  frontend state, one shared implementation over per-panel copies.
+- **Copied code and its relatives** — duplicated logic that belongs
+  in a shared layer, bespoke re-implementations of existing
+  machinery, index-keyed state where ids are the rule, unbounded
+  frontend accumulation.
+- **Deviations in the status log** — faithful reading, or scope
+  drift that needs the owner?
 
-Found something? Either feed it to the next phase's prompt, spawn a
-fix phase, or surface it to the user — never let it ride silently.
+Found something? Feed it to the next phase's prompt, spawn a fix
+phase, or surface it. Never let it ride silently.
 
 ## 5. Performance gate
 
-**Collect as you go; judge at the end.** The ADR-0031 render-tier
-harness is cheap enough to run through a cycle (a release build plus
-four 60 s captures is under twenty minutes), and the value is in the
-*series*, not in any one reading. So take the data regularly — after
-a phase touching a render or data-path hot spot, and at natural
-cycle boundaries — and keep every report under
-`docs/performance-measurements/frontend/`, named by date and by the
-commit it measured.
+**Collect as you go; judge at the end.** A release build plus four
+60 s captures is under twenty minutes, and the signal is the
+*series*, not any one reading. Take data after a phase touching a
+render or data-path hot spot and at cycle boundaries; keep every
+report in `docs/performance-measurements/` as
+`YYYY-MM-DD-<commit>[-dirty].json`.
 
-**Do not stop development for a gate result unless it is a major,
-anticipated regression.** The owner's thresholds (2026-08-22):
+**The phase agent usually takes the reading.** `implement-phase`
+tells it to whenever its work touches the integrated application, a
+render path, or a data path, and to report without judging. Reading
+the series stays yours.
 
-- **A timing regression of more than ~10 ms sustained across all
-  runs** of a build — not one run, all of them.
-- **Memory creeping toward 400+ MB** for a load of this size
-  (ev-zonal, ~1608 f/s). Judge the process split, not just the tree
-  total.
+**Development stops only for a major, anticipated regression.** The
+owner's thresholds (2026-08-22):
 
-Anything short of that is recorded and development continues. A
+| Signal | Threshold |
+|---|---|
+| timing | more than ~10 ms sustained across **all** runs of a build — not one run |
+| memory | creeping toward **400+ MB** at this load (ev-zonal, ~1608 f/s); judge the process split, not the tree total |
+
+Anything short of that is recorded, and development continues. A
 single alarming run is data, not a stop signal.
 
 **At the end of a chain, produce the report and decide whether to go
-back.** Chart every metric across every build measured, with each
-one's limit, its baseline and the per-build spread, plus a note on
-what did and did not move it. That report — not a per-phase pass/fail
-— is what tells the owner whether anything needs revisiting.
+back.** Chart every metric across every build measured — its limit,
+its baseline, the per-build spread, and what did and did not move
+it. That report, not a per-phase pass/fail, is what tells the owner
+whether to revisit anything.
 
-Rules that still hold absolutely:
+Invariants:
 
-- **All of the metrics are important.** They were developed from
-  observed performance problems; there are no "minor" columns. A fix
-  that buys one metric by regressing another is a regression.
-- **Never promote a baseline and never widen a limit** to make a
-  reading pass. Limits ratchet down only; raising one is an owner
-  ruling recorded in ADR 0031.
-- **Single runs are untrustworthy.** Several metrics are worst-of-N
-  or single-sample tails and move on an unchanged build — an
-  eight-run control on one binary spanned nearly the whole distance
-  to `lag_ms_max`'s limit. Use multiple runs per build and read the
-  band.
-- **When a reading is surprising, build a same-day control** rather
-  than trusting the stored baseline. The older commit measured on
-  today's machine is the honest comparison; the baseline may have
-  been taken on a different machine state, or against a project that
-  has since changed.
+- **Every metric matters.** Each came from an observed problem;
+  there are no minor columns. Buying one by regressing another is a
+  regression.
+- **Never promote a baseline, never widen a limit.** Limits ratchet
+  down only; raising one is an owner ruling recorded in ADR 0031.
+- **Single runs are untrustworthy.** Worst-of-N and single-sample
+  tails move on an unchanged build — an eight-run control on one
+  binary spanned nearly the whole distance to `lag_ms_max`'s limit.
+  Read the band.
+- **Surprising reading? Build a same-day control.** The older commit
+  measured on today's machine is the honest comparison; a stored
+  baseline may come from a different machine state, or from a
+  project that has since changed.
 
-Two failure modes this repo has actually hit — check for both before
-believing a clean run:
+Two failure modes this repo has actually hit:
 
-- **The baseline can outlive the project it describes.** Growing the
-  example projects (ev-zonal is the harness's project) invalidates a
-  line-for-line baseline comparison. When that happens, gate a
-  pre-growth control alongside the current tree and report the pair.
-- **The harness's load can be silently disarmed.** It once drew its
-  bus traffic from a persisted project field; removing that field
-  left the harness connecting and measuring an idle bus — and
-  *passing*. Sanity-check `ids_measured` and the rx/tx rates on every
-  report before reading anything else into it.
+- **A baseline can outlive the project it describes.** Growing the
+  example projects (ev-zonal is the harness's) invalidates a
+  line-for-line comparison. Gate a pre-growth control alongside the
+  current tree and report the pair.
+- **The harness's load can be silently disarmed.** It once drew bus
+  traffic from a persisted project field; removing that field left
+  it measuring an idle bus — and *passing*. Check `ids_measured` and
+  the rx/tx rates before reading anything else into a report.
 
-## 6. The owner review queue — keep development moving
+## 6. The owner review queue
 
-Phases turn up things nobody asked for: a behaviour change that
-reverses an earlier decision, a defect adjacent to the work, a ruling
-that cannot be implemented as written, a consequence the owner has not
-seen. **None of that is a reason to stop.** Development stops for
-exactly two things: a blocker that makes the *current* work
-impossible, and a major anticipated perf regression (§5).
+Phases turn up things nobody asked for. **None of it is a reason to
+stop.** Development stops for exactly two things: a blocker that
+makes the *current* work impossible, and a major anticipated perf
+regression (§ 5).
 
-Everything else goes in **`plans/owner-review-queue.md`** — one file,
-maintained by the overseer, that the owner can walk when they have
-time. Without it, findings either interrupt the owner one at a time or
-get lost in a phase's blockers section and a long conversation.
+Everything else goes in **`plans/owner-review-queue.md`**, one file
+the owner can walk when they have time. Without it, findings either
+interrupt them one at a time or vanish into a blockers section and a
+long conversation.
 
-The queue is an **index, not a second record**: each item's detail
-stays in its task file's `## Blockers / side effects` or status log,
-and the queue points at it. Structure it as:
+**Phase agents write to it too.** You **curate**: fold in what your
+review turns up, merge duplicates, record rulings, strike items out.
+Read the file after each phase — an entry an agent filed is one you
+have not seen.
 
-1. **Behaviour changes needing a yes or no** — shipped, and each
-   reverses or extends something previously decided. Say what would
-   have to change to undo it.
-2. **Rulings the owner has made**, written down so they survive the
-   conversation — including any correction to the premise a ruling
-   rested on.
+It is an **index, not a second record**: the detail stays in the
+task file's `## Blockers / side effects` or status log, and the
+queue points at it. Its headings:
+
+1. **Behaviour changes needing a yes or no** — shipped, each
+   reversing or extending something previously decided. Say what
+   undoing it would take.
+2. **Rulings the owner has made**, so they survive the conversation
+   — including any correction to the premise a ruling rested on.
 3. **Open findings nobody has dispositioned** — a table is enough.
 4. **Finished tasks awaiting acceptance.**
 5. **Housekeeping owed at close-out.**
 
-Two rules keep it useful. Items are **struck out with the ruling and
-its date** rather than deleted, so the record shows what was decided.
-And **a queue growing faster than it drains is the signal to stop
-taking new work and hold a review** — say so when it happens.
+Two rules keep it useful:
 
-**Surface an item once**, in the report for the phase that found it,
-then let the queue carry it. Do not re-raise it every turn.
+- **Strike items out with the ruling and its date** rather than
+  deleting them, so the record shows what was decided.
+- **A queue growing faster than it drains means stop taking new work
+  and hold a review.** Say so when it happens.
+
+**Surface an item once**, in the report for the phase that found it.
+Then let the queue carry it.
 
 ### When a task really is blocked
 
-If an owner decision genuinely blocks a task, **the task stops — the
-roadmap does not.** Move to the next task that is not waiting on the
-same decision, and record what the blocked one is waiting for.
+An owner decision that genuinely blocks a task stops **the task, not
+the roadmap.** Move to the next task not waiting on the same
+decision, and record what the blocked one waits for.
 
-Check the dependency honestly before skipping ahead: tasks in the
-queue often share a ruling, and starting one that turns on the same
-unanswered question just produces a second blocked task and a diff
-that has to be redone. When a whole run of upcoming tasks depends on
-one decision, that is the case for stopping and asking rather than
-working around it.
+Check the dependency honestly first: queued tasks often share a
+ruling, and starting one that turns on the same unanswered question
+just produces a second blocked task and a diff to redo. When a whole
+run of upcoming tasks depends on one decision, stop and ask rather
+than working around it.
 
 ## 7. Completion
 
-A task is done when its documented exit criteria are all met (or the
-user has explicitly waived one) — walk them one by one and record
-the verdicts in the task.md. Then present the user a consolidated
-review: what shipped, the branch chain, and every blocker/side
-effect the phases recorded, grouped into decisions-needed vs FYI.
-Roadmap housekeeping (retiring the task, dispositioning blockers to
-the backlog or new tasks) happens with the user, after that review.
-Review artifacts for the user (screenshots and the like) are
-delivered directly (files or artifact page), not committed to the
-repository.
+A task is done when every documented exit criterion is met, or the
+owner has explicitly waived one. Walk them one by one and record the
+verdicts in the task file. Then present a consolidated review:
+
+- what shipped, and the branch chain
+- every blocker and side effect the phases recorded, split into
+  **decisions needed** and **FYI**
+
+Roadmap housekeeping — retiring the task, dispositioning blockers to
+the backlog or new tasks — happens with the owner after that review.
+Review artifacts such as screenshots are delivered directly, as
+files or an artifact page, never committed to the repository.
 
 </what-to-do>
