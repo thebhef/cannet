@@ -15,9 +15,9 @@ use cannet_dbc::{Database, DecodedSignal};
 
 use crate::app_state::{invalidate_derived_caches, AppState, LoadedDbc};
 use crate::ipc::{
-    self, DbcAttributeRecord, DbcContentRecord, DbcInfo, DbcMessageContentRecord,
-    DbcSignalContentRecord, DecodedRecord, FileBackedContentRecord, SignalDescriptorRecord,
-    SignalRecord, ValueTableEntryRecord,
+    self, DbcAttributeRecord, DbcCollisionRecord, DbcContentRecord, DbcInfo,
+    DbcMessageContentRecord, DbcSignalContentRecord, DecodedRecord, FileBackedContentRecord,
+    SignalDescriptorRecord, SignalRecord, ValueTableEntryRecord,
 };
 use crate::trace_store::RawTraceFrame;
 use crate::{filter, rbs, signal_snapshot};
@@ -413,6 +413,33 @@ pub(crate) fn list_dbc_content(state: State<'_, AppState>) -> Vec<DbcContentReco
                 .collect(),
         })
         .collect()
+}
+
+/// Duplicate-id collisions across the loaded set, for the Database
+/// panel's warning: every `(bus, message id, extended, signal name)`
+/// two or more assigned databases define, naming the database whose
+/// signal wins today. Detected host-side
+/// ([`signal_snapshot::dbc_collisions`]) so the panel renders what the
+/// host reports rather than re-scanning the loaded DBCs' contents in
+/// JS.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn list_dbc_collisions(state: State<'_, AppState>) -> Vec<DbcCollisionRecord> {
+    let dbs = state.databases();
+    signal_snapshot::dbc_collisions(
+        dbs.iter()
+            .map(|d| (d.path.as_str(), d.db.as_ref(), d.buses.as_slice())),
+    )
+    .into_iter()
+    .map(|c| DbcCollisionRecord {
+        bus_id: c.bus_id,
+        message_id: c.message_id,
+        extended: c.extended,
+        signal_name: c.signal_name,
+        winner_path: c.winner_path,
+        loser_path: c.loser_path,
+    })
+    .collect()
 }
 
 fn message_record(m: cannet_dbc::DbcMessageContent) -> DbcMessageContentRecord {

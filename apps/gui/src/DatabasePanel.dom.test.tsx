@@ -666,11 +666,11 @@ describe("DatabasePanel", () => {
     expect(refs[0].busId).toBe("bus-a");
   });
 
-  it("drag from an unscoped DBC's bus-group row carries that bus's id", async () => {
-    // The bug the user hit: an unscoped DBC's signal previously
-    // dropped as `busId: null` (legacy any-bus). With the per-bus
-    // tree the user is dragging from a specific bus group's view —
-    // the drag should carry THAT bus's id, not null.
+  it("drag from an unassigned DBC's row carries no bus id", async () => {
+    // A database assigned to no bus decodes nothing, so it renders once
+    // — under the `(Unassigned)` group — rather than under every real
+    // bus group. Dragging from there is the legacy "any bus" ref: there
+    // is no bus context to carry.
     const buses: Bus[] = [
       { id: "bus-a", name: "powertrain" },
       { id: "bus-b", name: "chassis" },
@@ -678,7 +678,7 @@ describe("DatabasePanel", () => {
     const ctx: ProjectContextValue = {
       ...projectCtx,
       buses,
-      // No scoping → unscoped DBC, appears under every bus group.
+      // No scoping → unassigned, appears once under `(Unassigned)`.
       dbcBuses: {},
     };
     const api = fakePanelApi();
@@ -691,15 +691,11 @@ describe("DatabasePanel", () => {
       </ProjectContext.Provider>,
     );
     const allEng = await screen.findAllByText("EngineData");
-    expect(allEng.length).toBe(2);
-    // Drag from the second one (under bus-b / "chassis"). Bus-b
-    // should be the resulting busId.
-    const chevron = allEng[1]
+    expect(allEng.length).toBe(1);
+    const chevron = allEng[0]
       .closest(".dbc-row")
       ?.querySelector(".dbc-row-chevron") as HTMLElement;
     fireEvent.click(chevron);
-    // Only bus-b's EngineData was expanded; its signal row is the
-    // only EngineSpeed in the DOM.
     const signalRow = (await screen.findByText("EngineSpeed")).closest(
       ".dbc-row",
     ) as HTMLElement;
@@ -707,7 +703,7 @@ describe("DatabasePanel", () => {
     fireEvent.dragStart(signalRow, { dataTransfer: dt });
     const refs = parseSignalDragData(dt.getData(SIGNAL_DND_MIME)).signals;
     expect(refs).toHaveLength(1);
-    expect(refs[0].busId).toBe("bus-b");
+    expect(refs[0].busId).toBeNull();
   });
 
   it("'details' toggle reveals bit layout, scale, range, value table for each signal", async () => {
@@ -794,8 +790,8 @@ describe("DatabasePanel", () => {
         { id: "bus-a", name: "powertrain" },
         { id: "bus-b", name: "chassis" },
       ],
-      // powertrain.dbc is unscoped here — it should appear under
-      // BOTH bus groups, marked "applies to all buses".
+      // powertrain.dbc is unassigned here — it decodes nothing, so it
+      // must NOT appear under either real bus group.
       dbcBuses: {},
     };
     const api = fakePanelApi();
@@ -810,15 +806,70 @@ describe("DatabasePanel", () => {
     // Both bus group rows are visible at the top.
     expect(await screen.findByText("powertrain")).toBeInTheDocument();
     expect(screen.getByText("chassis")).toBeInTheDocument();
-    // Unscoped DBC appears under both bus groups.
-    expect(screen.getAllByText("powertrain.dbc").length).toBe(2);
-    // The unscoped scope-label is rendered on each occurrence.
-    expect(screen.getAllByText(/applies to all buses/i).length).toBe(2);
+    // Unassigned DBC appears exactly once, under `(Unassigned)` — not
+    // duplicated across bus groups, and not claiming "applies to all
+    // buses" (false under this rule: it decodes nothing).
+    expect(screen.getAllByText("powertrain.dbc").length).toBe(1);
+    expect(screen.queryByText(/applies to all buses/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/not assigned to a bus — decodes nothing/i)).toBeInTheDocument();
+    expect(screen.getByText(/\(Unassigned/i)).toBeInTheDocument();
   });
 
   it("collapses to '(All DBCs)' when the project has no buses configured", async () => {
     renderPanel(); // projectCtx.buses === []
     expect(await screen.findByText(/All DBCs/i)).toBeInTheDocument();
+  });
+
+  it("warns on a duplicate id, naming which database wins", async () => {
+    // Two databases both assigned to bus-a, both defining EngineData /
+    // EngineSpeed — a weird case the panel warns about rather than
+    // silently picking one. The host names the winner
+    // (`list_dbc_collisions`); the panel does not re-derive it.
+    const secondDbc: DbcContentRecord = {
+      dbcPath: "/tmp/powertrain2.dbc",
+      messages: DBC_CONTENT[0].messages,
+    };
+    const ctx: ProjectContextValue = {
+      ...projectCtx,
+      dbcPaths: ["/tmp/powertrain.dbc", "/tmp/powertrain2.dbc"],
+      buses: [{ id: "bus-a", name: "powertrain" }],
+      dbcBuses: {
+        "/tmp/powertrain.dbc": ["bus-a"],
+        "/tmp/powertrain2.dbc": ["bus-a"],
+      },
+    };
+    const core = await import("@tauri-apps/api/core");
+    (core.invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string) => {
+      if (cmd === "list_dbc_content") return [DBC_CONTENT[0], secondDbc];
+      if (cmd === "list_file_backed_content") return [];
+      if (cmd === "list_dbc_collisions")
+        return [
+          {
+            busId: "bus-a",
+            messageId: 256,
+            extended: false,
+            signalName: "EngineSpeed",
+            winnerPath: "/tmp/powertrain.dbc",
+            loserPath: "/tmp/powertrain2.dbc",
+          },
+        ];
+      return undefined;
+    });
+    const api = fakePanelApi();
+    const props = { params: {}, api } as unknown as Parameters<typeof DatabasePanel>[0];
+    render(
+      <ProjectContext.Provider value={ctx}>
+        <ElementRegistryContext.Provider value={emptyRegistry}>
+          <DatabasePanel {...props} />
+        </ElementRegistryContext.Provider>
+      </ProjectContext.Provider>,
+    );
+    await screen.findByText("powertrain.dbc");
+    expect(screen.getByText("powertrain2.dbc")).toBeInTheDocument();
+    // The winner's row carries no warning; the loser's names it.
+    expect(
+      screen.getByText(/duplicate id.*powertrain\.dbc wins EngineSpeed/i),
+    ).toBeInTheDocument();
   });
 
   it("groups messages under their transmitter ECU", async () => {

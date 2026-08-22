@@ -976,6 +976,143 @@ move - measured 44.3 / 30.8 / 22.1 / 36.9 ms against a 156.4 limit and a
 `first_dbc_on_bus` scan per running periodic **per assignment change**,
 and nothing at all to the per-tick fire path.
 
+### 2026-08-20 — Phase 5: the Database panel says what is assigned, and warns on a collision (branch `task-88-phase-5-database-panel`)
+
+Branched from `task-88-phase-4-unassign-stops-transmit` (at `5710fc36`).
+Two commits, each green on `cargo test -p cannet-gui`, `cargo clippy
+--workspace --all-targets`, `cargo fmt --all`, `pnpm --dir apps/gui
+test` and `pnpm --dir apps/gui build`.
+
+Rust tests: **755 → 759** (6 ignored throughout). Frontend: **2264 →
+2265**. Commits are `--no-verify` with the hooks' work run by hand
+first, for the reason phase 2 recorded.
+
+| commit | subject |
+| --- | --- |
+| `6a4ad81c` | Host-side detection of a duplicate id across two databases on one bus |
+| `dc0dc641` | Database panel: an unassigned database says so, and a collision warns |
+
+**`6a4ad81c` — collision detection is a model fact, not a JS scan.**
+`signal_snapshot::dbc_collisions` walks, for each bus any database is
+assigned to, its assigned databases in project load order
+(`filter::dbc_applies` — the same filter and order
+`AppState::first_dbc_on_bus` and `scoped_descriptors`' dedup already
+apply) and records every `(message id, extended, signal name)` a later
+database repeats, naming the earlier one as winner. Exposed as
+`list_dbc_collisions`, returning `DbcCollisionRecord` (camelCase on
+the wire, alongside `DbcContentRecord`). Red first: the three
+`signal_snapshot::tests::dbc_collisions_*` cases (names the
+project-order winner; ignores a matching id on a different bus;
+ignores a database assigned to no bus), each observed failing to
+compile against no such function. An integration-level case in
+`tests.rs`
+(`set_dbc_buses_wires_up_a_bus_collision_the_real_load_and_assign_path_produces`)
+drives the same scenario through `install_dbc` / `set_dbc_buses_inner`
+— the calls the panel's own actions make — rather than building
+`LoadedDbc`s by hand, so a wiring mistake between the command and the
+domain function would show even if the domain function itself is
+right.
+
+Also fixed in this commit: `types.ts`'s `DbcInfo.buses` comment still
+said "unscoped (applies to all buses)" — the same lie phase 2 already
+inverted in the Rust doc comment, just not its TS mirror.
+
+**`dc0dc641` — the defect phase 2 deferred.** `DatabasePanel.tsx`'s
+`groupByBus` filed a database assigned to no bus (`scope.length ===
+0`) into *every* bus group, each row labelled "applies to all buses"
+— true under the old rule, false under the inverted one. It now routes
+such a database once into the existing `(Unassigned)` group (relabelled
+`(Unassigned — decodes nothing)`), the same as a database scoped only
+to a bus no longer in the project; each row's new `note` field says
+which of the two it is (`not assigned to a bus — decodes nothing` /
+`assigned only to a bus no longer in the project — decodes nothing`). A
+project with zero buses configured gets the analogous note under
+`(All DBCs)`. The dead `unscoped` / `unscopedNote` fields (set, never
+read) came out with the rewrite. This is the whole of the
+discoverability ruling: the row, and nothing more — no status line, no
+open-project prompt.
+
+A DBC row also renders a `collision` note when the host's
+`list_dbc_collisions` names it a loser on the bus it's assigned to:
+`formatCollisionNote` groups the database's lost ids by winner (`⚠
+duplicate id — a.dbc wins A, B`) with the full per-signal detail in the
+row's tooltip. Detection stays host-side (the prior commit); the panel
+matches each row against the flat list by `(bus, dbcPath)` for
+presentation only, never re-scanning loaded DBC content.
+
+Red first (DOM): rewrote the two tests whose premise the old rule made
+true and the inverted rule makes false —
+`"drag from an unscoped DBC's bus-group row carries that bus's id"` →
+`"drag from an unassigned DBC's row carries no bus id"` (an unassigned
+database renders once, under `(Unassigned)`, and drags the legacy
+any-bus `null`) and `"groups the tree by bus when project buses are
+configured"`, which had asserted the false label twice — both observed
+failing against the unfixed `groupByBus` before the rewrite. Added
+`"warns on a duplicate id, naming which database wins"`: two databases
+assigned to the same bus both defining `EngineData` / `EngineSpeed`,
+host-mocked to report the collision; asserts the loser's row carries
+the summary naming the winner.
+
+`refreshCollisions` fetches `list_dbc_collisions` off the same triggers
+as `refreshContent` (`dbcPaths`, `dbcGeneration`) and guards a
+non-array answer down to "no collisions" (`Array.isArray`) rather than
+letting `buildRows` fail on it — the production wire type is always an
+array, so this only matters for a test mock that doesn't specify the
+call, which is most of this file's `mockImplementation` overrides.
+
+README's Database-panel paragraph and `docs/CONTEXT.md`'s **DBC bus
+assignment** glossary entry move with the rule in the same commit.
+
+**What the row now says.** An unassigned database (never scoped, or
+scoped only to a removed bus) appears once, under `(Unassigned —
+decodes nothing)`, with a per-row note naming which of the two it is.
+A database assigned to a real bus appears under that bus group with no
+extra note — its position there is the assignment. A database that
+loses a duplicate-id collision on its bus carries a warning naming the
+database that wins; the winner carries no warning of its own (it needs
+none — its decode is already the one in effect).
+
+**Where the collision is detected.** Host-side, in
+`signal_snapshot::dbc_collisions` (`apps/gui/src-tauri/src/signal_snapshot.rs`),
+exposed through the `list_dbc_collisions` command (`dbc_commands.rs`).
+The frontend never scans loaded DBC content for duplicate ids — it
+renders the host's `DbcCollisionRecord` list, matched per `(bus,
+dbcPath)` for display only.
+
+#### The perf gate
+
+Same rig and method as phases 3–4: a `pnpm --dir apps/gui tauri build
+--no-bundle` release binary of `dc0dc641`, `examples/ev-zonal` over two
+PEAK channels, four 60 s captures with `--perf-interact scrub`, gated
+by `cargo run --release -p cannet-perf-measurement -- check` over all
+four reports with `--expected-rx-fps 1608 --expected-tx-fps 1608`
+against the committed `docs/performance-measurements/baseline.json`.
+**Passed, 87 metrics gated.** No baseline promoted and no gate limit
+touched. Reports are review artifacts and stay out of the repository.
+
+Host modes: tracebuffer 25000.117 fps / retention 1.000 / append 3.328
+ms / scan 0.482 ms; grpc 2818.061 fps / 0.947 / 1.027 ms / 0.393 ms;
+hardware-peak 999.783 fps / 1.001 / 0.400 ms / 0.069 ms — every one
+inside its limit.
+
+| run | rx fps | tx fps | short-frac worst | p95 ratio worst | `lag_ms` max | `lag_ms` mean | ids |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1603.0 | 1608.4 | 0.0050 (`zonal/0x10E`) | 1.332 | 14.5 | 0.02 | 173 |
+| 2 | 1601.5 | 1606.9 | 0.0067 (`zonal/0xC0`) | 1.190 | 1.1 | -0.01 | 173 |
+| 3 | 1605.3 | 1611.1 | 0.0073 (`zonal/0x100`) | 1.183 | 11.8 | -0.01 | 173 |
+| 4 | 1599.4 | 1612.5 | 0.0105 (`zonal/0x10F`) | 1.248 | 19.1 | 0.10 | 173 |
+
+Neither metric under owner review fired. `rx_gap_short_frac_worst` sat
+at 0.0050–0.0105 against a 0.166 limit (phase 4 saw 0.0027–0.0050);
+`lag_ms_max` spanned 1.1–19.1 ms against 41, inside the 2.8–37.6 ms
+within-build spread phase 2's eight-run control established, with
+`longtask_ms_per_s` (mean and p95) and `jank_fraction` exactly 0.000 in
+all four runs. Nothing was attributed to this phase and no limit was
+touched. This phase's own host-side path (`list_dbc_collisions` per
+`dbc_list` call) and panel-side path (one extra `invoke` per DBC-set
+change) touch neither the per-frame ingest path nor the per-tick
+render path the gated metrics measure.
+
 ## Blockers / side effects
 
 Recorded by phase 1, 2026-08-19.
@@ -1167,3 +1304,33 @@ Recorded by phase 4, 2026-08-20.
   DBC under every bus group labelled "applies to all buses" (phase 5's
   row); the fingerprint still mixes each candidate's whole assignment
   set. None of them moved here.
+
+Recorded by phase 5, 2026-08-20.
+
+- **A collision's winner carries no note of its own.** Only the losing
+  database's row names the winner (`⚠ duplicate id — a.dbc wins A, B`);
+  the database whose decode is actually in effect gets nothing, on the
+  reasoning that it needs no warning about behaviour that is already
+  correct. Judged the quieter reading rather than the symmetric one
+  (both rows marked) — the exit criteria ask only that the warning name
+  a winner, not that every party to a collision be marked. Recorded so
+  the asymmetry is a decision, not an oversight; task 89's picker,
+  whichever surface it lands on, may want the symmetric form.
+- **The Database panel's item from phases 2–3 is now closed.** The
+  unassigned-DBC mislabel they deferred here (`groupByBus` filing every
+  such database under every bus group as "applies to all buses") is
+  fixed in this phase's second commit. Their other open items —
+  the legacy `bus_id: None` DBC-backed series, and the fingerprint
+  mixing each candidate's whole assignment set — are untouched;
+  neither is this phase's scope.
+- **The collision fingerprint is the same identity `dbc_applies`
+  already filters on, not a new one.** `dbc_collisions` re-derives
+  "which databases are assigned to this bus" per bus by scanning the
+  whole loaded set again, rather than reusing `scoped_descriptors`'
+  already-built (and cached, via `AppState::scoped_descriptor_snapshot`)
+  expansion. Cheap in practice — `list_dbc_collisions` runs once per
+  DBC-set change, not per frame or per poll tick, and the perf gate
+  shows nothing moved — but worth naming as a small duplication of work
+  `scoped_descriptors` already does, left alone because touching the
+  cached snapshot's shape for a once-per-change caller is not this
+  phase's problem to solve.
