@@ -74,12 +74,15 @@ export function CalcFieldEditor({
   // Whether the user has edited a section since the modal opened.
   // A section that still mirrors its DBC default writes no override —
   // opening the editor and applying it must not silently copy the
-  // DBC's designation into the project.
-  const [counterEdited, setCounterEdited] = useState(false);
-  const [crcEdited, setCrcEdited] = useState(false);
+  // DBC's designation into the project. A `preset` counts as an edit:
+  // "configure as …" named a destination, which is an authoring act
+  // even where the DBC already designates that field elsewhere.
+  const presetCounter = preset?.role === "counter" ? preset.signal : null;
+  const presetCrc = preset?.role === "crc" ? preset.signal : null;
+  const [counterEdited, setCounterEdited] = useState(presetCounter != null);
+  const [crcEdited, setCrcEdited] = useState(presetCrc != null);
 
   // --- counter section state ---
-  const presetCounter = preset?.role === "counter" ? preset.signal : null;
   const [counterOn, setCounterOn] = useState(
     effective.counter != null || presetCounter != null,
   );
@@ -94,7 +97,6 @@ export function CalcFieldEditor({
   );
 
   // --- crc section state ---
-  const presetCrc = preset?.role === "crc" ? preset.signal : null;
   const [crcOn, setCrcOn] = useState(effective.crc != null || presetCrc != null);
   const [crcSignal, setCrcSignal] = useState(
     presetCrc ?? effective.crc?.signal ?? signalNames[0] ?? "",

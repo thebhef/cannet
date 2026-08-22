@@ -41,6 +41,7 @@ function open(
   dbcDefaults: CalcFieldsSpec | null,
   current: CalcFieldsSpec | null,
   onSave: (spec: CalcFieldsSpec | null) => void = () => {},
+  preset: { role: "counter" | "crc"; signal: string } | null = null,
 ) {
   render(
     <CalcFieldEditor
@@ -48,6 +49,7 @@ function open(
       signalNames={["Mode", "AliveCtr", "Ctr2", "Crc8"]}
       dbcDefaults={dbcDefaults}
       current={current}
+      preset={preset}
       onSave={onSave}
       onCancel={() => {}}
     />,
@@ -118,6 +120,22 @@ describe("CalcFieldEditor over its two layers", () => {
     fireEvent.click(counterBox());
     fireEvent.click(screen.getByText("Apply"));
     expect(saved).toEqual([null]);
+  });
+
+  it("\"configure as …\" overrides a DBC-declared field it moves", () => {
+    // Opening on a destination the user picked is an authoring act,
+    // even where the DBC already designates the field elsewhere — the
+    // pick must not be swallowed as "still tracking the default".
+    const saved: Array<CalcFieldsSpec | null> = [];
+    open(DBC_DEFAULTS, null, (s) => saved.push(s), { role: "counter", signal: "Ctr2" });
+    expect((screen.getByLabelText("counter signal") as HTMLInputElement).value).toBe("Ctr2");
+    expect(screen.getAllByTestId("calc-provenance").map((n) => n.textContent)).toEqual([
+      "Override",
+      "Default",
+    ]);
+    fireEvent.click(screen.getByText("Apply"));
+    expect(saved[0]?.counter).toMatchObject({ signal: "Ctr2" });
+    expect(saved[0]?.crc).toBeNull();
   });
 
   it("a message with neither layer opens empty and authors a plain override", () => {
