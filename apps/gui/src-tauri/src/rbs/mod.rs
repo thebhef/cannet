@@ -48,20 +48,23 @@ pub use view::{
     __tauri_command_name_rbs_view,
 };
 
+pub(crate) mod watch;
+
 mod commands;
 
 pub use commands::{
-    rbs_dirty, rbs_init, rbs_load, rbs_save, rbs_save_as, rbs_set_calc, rbs_set_enabled,
-    rbs_set_kill_switch, rbs_set_period, rbs_set_run, rbs_set_signal, rbs_sync_project_buses,
-    rbs_unload,
+    rbs_dirty, rbs_dismiss_disk_change, rbs_init, rbs_load, rbs_save, rbs_save_as, rbs_set_calc,
+    rbs_set_enabled, rbs_set_kill_switch, rbs_set_period, rbs_set_run, rbs_set_signal,
+    rbs_sync_project_buses, rbs_unload,
 };
 // Hidden tauri command helpers (see the view re-export note above).
 pub use commands::{
-    __cmd__rbs_dirty, __cmd__rbs_init, __cmd__rbs_load, __cmd__rbs_save, __cmd__rbs_save_as,
-    __cmd__rbs_set_calc, __cmd__rbs_set_enabled, __cmd__rbs_set_kill_switch, __cmd__rbs_set_period,
-    __cmd__rbs_set_run, __cmd__rbs_set_signal, __cmd__rbs_sync_project_buses, __cmd__rbs_unload,
-    __tauri_command_name_rbs_dirty, __tauri_command_name_rbs_init, __tauri_command_name_rbs_load,
-    __tauri_command_name_rbs_save, __tauri_command_name_rbs_save_as,
+    __cmd__rbs_dirty, __cmd__rbs_dismiss_disk_change, __cmd__rbs_init, __cmd__rbs_load,
+    __cmd__rbs_save, __cmd__rbs_save_as, __cmd__rbs_set_calc, __cmd__rbs_set_enabled,
+    __cmd__rbs_set_kill_switch, __cmd__rbs_set_period, __cmd__rbs_set_run, __cmd__rbs_set_signal,
+    __cmd__rbs_sync_project_buses, __cmd__rbs_unload, __tauri_command_name_rbs_dirty,
+    __tauri_command_name_rbs_dismiss_disk_change, __tauri_command_name_rbs_init,
+    __tauri_command_name_rbs_load, __tauri_command_name_rbs_save, __tauri_command_name_rbs_save_as,
     __tauri_command_name_rbs_set_calc, __tauri_command_name_rbs_set_enabled,
     __tauri_command_name_rbs_set_kill_switch, __tauri_command_name_rbs_set_period,
     __tauri_command_name_rbs_set_run, __tauri_command_name_rbs_set_signal,

@@ -187,6 +187,26 @@ async function announceDiskChange(): Promise<void> {
   });
 }
 
+/// Open the command palette, the way Close project is reached.
+async function runCommand(label: string): Promise<void> {
+  await act(async () => {
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "P",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+  });
+  const input = document.querySelector<HTMLInputElement>(".palette input.palette-input");
+  if (!input) throw new Error("no command palette");
+  await act(async () => {
+    fireEvent.change(input, { target: { value: label } });
+  });
+  await act(async () => {
+    fireEvent.keyDown(input, { key: "Enter" });
+    await new Promise((r) => setTimeout(r, 50));
+  });
+}
+
 /// Bring a session up through the toolbar's own Connect, so the state
 /// the policy reads is the state a real connect produces.
 async function connect(): Promise<void> {
@@ -255,6 +275,33 @@ describe("the project file changing on disk", () => {
       await new Promise((r) => setTimeout(r, 50));
     });
     expect(openProjectCalls).toEqual([PROJECT]);
+    expect(document.body.textContent).not.toContain("Project changed on disk");
+  });
+
+  // A notice refers to something. When that something is gone — saved
+  // over, or closed — the statement is no longer true and its Reload
+  // would act on a file the user has already dealt with. So the notice
+  // goes with it, rather than sitting there until someone dismisses it.
+  it("goes away when the project is saved over the file's new contents", async () => {
+    await bootWithProject();
+    await dirtyTheProject();
+    await announceDiskChange();
+    expect(document.body.textContent).toContain("Project changed on disk");
+    const saveBtn = button("Save project");
+    if (!saveBtn) throw new Error('no "Save project" action');
+    await act(async () => {
+      fireEvent.click(saveBtn);
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(document.body.textContent).not.toContain("Project changed on disk");
+  });
+
+  it("goes away when the project is closed", async () => {
+    await bootWithProject();
+    await dirtyTheProject();
+    await announceDiskChange();
+    expect(document.body.textContent).toContain("Project changed on disk");
+    await runCommand("Close project");
     expect(document.body.textContent).not.toContain("Project changed on disk");
   });
 

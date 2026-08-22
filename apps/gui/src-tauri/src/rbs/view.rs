@@ -20,12 +20,21 @@ use super::runtime::{for_each_scoped_message, reconstruct_payload, row_id};
 /// buffers.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+// Four independent facts about the element — unsaved edits, a change
+// waiting on disk, the Run flag, the global kill-switch. Collapsing any
+// of them would erase which input it came from.
+#[allow(clippy::struct_excessive_bools)]
 pub struct RbsView {
     pub element_id: String,
     /// `None` until the config is first saved.
     pub path: Option<String>,
     pub fill_bit: u8,
     pub dirty: bool,
+    /// An external change to the file that has not been applied,
+    /// because the element was dirty or running when it landed
+    /// (ADR 0053 §1). The panel renders the notice, and its
+    /// *Apply anyway* runs the load path.
+    pub changed_on_disk: bool,
     pub run: bool,
     pub kill_switch: bool,
     pub buses: Vec<RbsBusView>,
@@ -235,7 +244,8 @@ pub async fn rbs_view(
 
     Ok(Some(RbsView {
         element_id: element_id.clone(),
-        path: element.path.clone(),
+        path: element.watch.path_string(),
+        changed_on_disk: element.changed_on_disk,
         fill_bit: element.file.fill_bit,
         dirty: element.dirty,
         run: element.run,

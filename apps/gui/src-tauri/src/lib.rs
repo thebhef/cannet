@@ -104,6 +104,7 @@ mod transmit_commands;
 mod transmit_frames;
 mod transmit_scheduler;
 mod verification;
+mod watched_file;
 mod window_state;
 
 // File-model types the `cannet-perf-measurement` harness reuses, re-exported so the
@@ -600,6 +601,7 @@ pub fn run() -> ! {
             rbs::rbs_set_calc,
             rbs::rbs_save,
             rbs::rbs_dirty,
+            rbs::rbs_dismiss_disk_change,
             rbs::rbs_view,
             rbs::rbs_crc_algorithms,
             fetch_field_validity,
@@ -662,7 +664,7 @@ pub fn run() -> ! {
                 import_cancel: Mutex::new(None),
                 live_tail_rows: std::sync::atomic::AtomicU64::new(0),
                 active_project_id: Mutex::new(None),
-                watched_project: Mutex::new(project_watch::WatchedProject::default()),
+                watched_project: Mutex::new(watched_file::WatchedFile::default()),
             });
             // Make sure the main window has the id our capabilities expect.
             // Tauri assigns "main" by default for the first window in the

@@ -97,6 +97,7 @@ function treeView(): RbsView {
     path: "/tmp/sim.cannet_rbs",
     fillBit: 0,
     dirty: false,
+    changedOnDisk: false,
     run: false,
     killSwitch: false,
     buses: [
