@@ -53,10 +53,12 @@ export interface TraceFrameRecord {
   kind: CanFrameKind;
   data: number[];
   decoded: DecodedRecord | null;
-  /// Logical bus id this frame was routed onto, if any.
-  /// `undefined` / `null` means "unassigned" — the per-bus DBC scoping
-  /// and the filter `{bus}` predicate both reject those.
-  bus_id?: string | null;
+  /// Logical bus id this frame was routed onto. Always present: a frame
+  /// enters through a bus, and one whose channel maps to none is dropped
+  /// at import rather than stored. (A *signal*'s `bus_id` stays nullable
+  /// — null there names a file-backed series, which has no bus and no
+  /// message.)
+  bus_id: string;
   /// Ingest-time verification finding (`"crc"` / `"counter"` /
   /// `"truncated"`), if any — flagged rows render red (ADR 0027).
   violation?: string | null;
@@ -80,10 +82,10 @@ export interface TraceGrew {
   /// transmit stall is visible even when the aggregate looks healthy.
   frames_per_second_rx: number;
   frames_per_second_tx: number;
-  /// Per-bus frame-rate breakdown (`bus_id: null` is the unassigned
-  /// bucket). Used by the diagnostic logging to localise a slowdown to a
-  /// specific bus on a multi-bus stream.
-  frames_per_second_by_bus: { bus_id: string | null; frames_per_second: number }[];
+  /// Per-bus frame-rate breakdown. Used by the diagnostic logging to
+  /// localise a slowdown to a specific bus on a multi-bus stream. There
+  /// is no unassigned bucket — every stored frame is on a bus.
+  frames_per_second_by_bus: { bus_id: string; frames_per_second: number }[];
   /// Cumulative frames dropped by the session-start guard.
   frames_dropped_before_session: number;
   /// Session-start timestamp (Unix epoch seconds, fractional). The
@@ -1122,7 +1124,9 @@ export interface RbsDirtyRecord {
 
 /// Per-(bus, id) calculated-field validity — `fetch_field_validity`.
 export interface FieldValidityRecord {
-  busId: string | null;
+  /// The bus the frames were seen on — a frame's bus, so always
+  /// present, unlike a database's scope.
+  busId: string;
   id: number;
   extended: boolean;
   valid: boolean;

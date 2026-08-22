@@ -47,6 +47,11 @@ pub struct RbsBusView {
     pub key: String,
     /// The resolved project bus id, or `None` when no project bus has
     /// this name (rows render inert).
+    ///
+    /// Optional on purpose, and not the same thing as a *frame's* bus
+    /// (which is required — see `crate::ipc::TraceFrameRecord`): this
+    /// is the result of looking a name up in the project, and "the
+    /// project has no bus called that" is an answer the panel renders.
     pub bus_id: Option<String>,
     /// Whether an active session currently routes this bus.
     pub connected: bool,

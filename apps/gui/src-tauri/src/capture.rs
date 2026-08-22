@@ -40,18 +40,18 @@ use crate::session::{panic_message, run_pump};
 /// 0052) come and go with the capture instead of being polled for.
 pub(crate) const FILE_SIGNALS_CHANGED: &str = "file-signals-changed";
 
-/// Per-channel BLF bus mapping. One entry per channel the
-/// caller wants to route: `Some(bus_id)` to route it onto that logical
-/// bus, `None` to drop frames on that channel. Channels not listed
-/// stream through unassigned (`bus_id = None` on the raw frame). Camel
-/// case at the wire because Tauri only renames top-level command args.
+/// Per-channel BLF bus mapping. One entry per channel the caller wants
+/// to route, naming the logical bus its frames land on. A channel with
+/// no entry is **dropped**: the import dialog's "(skip)" is spelled by
+/// leaving the channel out, and there is no third answer where a frame
+/// arrives without a bus. Camel case at the wire because Tauri only
+/// renames top-level command args.
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelBusMapping {
     pub channel: u8,
-    /// `None` here means "skip this channel"; the frontend sends a
-    /// JSON `null` for skipped entries.
-    pub bus_id: Option<String>,
+    /// The logical bus this channel's frames are routed onto.
+    pub bus_id: String,
 }
 /// Start importing `blf_path`, routing each channel per
 /// `channel_bus_mapping`, optionally narrowed to `[start_ns, end_ns]`
@@ -139,7 +139,7 @@ pub(crate) async fn open_log(
         blf_path: blf_path.clone(),
     };
 
-    let channel_to_bus: Vec<(u8, Option<String>)> = channel_bus_mapping
+    let channel_to_bus: Vec<(u8, String)> = channel_bus_mapping
         .unwrap_or_default()
         .into_iter()
         .map(|m| (m.channel, m.bus_id))
@@ -1020,7 +1020,7 @@ pub(crate) async fn import_mdf(
     };
     let notes = notes_from_events(&app, &source);
 
-    let channel_to_bus: Vec<(u8, Option<String>)> = channel_bus_mapping
+    let channel_to_bus: Vec<(u8, String)> = channel_bus_mapping
         .unwrap_or_default()
         .into_iter()
         .map(|m| (m.channel, m.bus_id))

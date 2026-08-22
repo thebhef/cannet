@@ -3113,6 +3113,11 @@ mod tests {
         assert_eq!(pyramid_scratch_usage(&d.join("absent")), (0, 0, 0));
     }
 
+    /// The bus test frames arrive on unless a test says otherwise. The
+    /// store holds no bus-less frame, so every test frame names one;
+    /// the tests that care which bus use `ab_frame_on`.
+    const TEST_BUS: &str = "bus0";
+
     fn dummy(ts_ns: u64, id: u32, payload: Vec<u8>) -> RawTraceFrame {
         RawTraceFrame {
             timestamp_ns: ts_ns,
@@ -3121,7 +3126,7 @@ mod tests {
             extended: false,
             direction: Direction::Rx,
             payload: CanFramePayload::Classic(payload),
-            bus_id: None,
+            bus_id: Some(TEST_BUS.to_string()),
         }
     }
 
@@ -3494,13 +3499,18 @@ mod tests {
     }
 
     #[test]
-    fn a_scoped_database_ignores_frames_with_no_bus() {
-        // `dbc_applies`'s other half: a scoped database does not decode
-        // an unassigned frame. Nothing else in the set defines the
-        // message, so the series stays empty rather than falling back to
-        // a database whose scope the frame is outside of.
+    fn a_scoped_database_ignores_frames_from_outside_its_scope() {
+        // `dbc_applies`'s other half: a database scoped to one bus does
+        // not decode a frame that arrived on another. Nothing else in
+        // the set defines the message, so the series stays empty rather
+        // than falling back to a database whose scope the frame is
+        // outside of.
+        //
+        // This used to be stated with a bus-less frame; the store no
+        // longer holds one, so the case it guards is now a frame on a
+        // *different* bus.
         let store = TraceStore::new();
-        store.append(ab_frame(0, 3, 100)); // no bus_id
+        store.append(ab_frame_on("chassis", 0, 3, 100));
         let db = dbc_a_only();
         let pt = vec!["powertrain".to_string()];
         let dbs = &[DbcScope {
@@ -3510,7 +3520,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
-        assert!(a.is_empty(), "a scoped DBC decoded an unassigned frame");
+        assert!(a.is_empty(), "a scoped DBC decoded another bus's frame");
     }
 
     /// One multiplexed message: a selector plus two signals that decode
@@ -4244,6 +4254,9 @@ mod tests {
         let mut origin_ns = None;
         while let Some(frame) = src.next_frame().expect("fixture BLF reads") {
             let mut raw = RawTraceFrame::from(frame);
+            // The fixture BLF states channels, not buses; the store holds
+            // no bus-less frame, so the replay routes them all onto one.
+            raw.bus_id = Some(TEST_BUS.to_string());
             let origin = *origin_ns.get_or_insert(raw.timestamp_ns);
             raw.timestamp_ns -= origin;
             store.append(raw);

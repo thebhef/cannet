@@ -200,8 +200,8 @@ pub(super) fn agg_fps(inner: &mut Inner, now: Instant) -> f64 {
     rate_from_samples(&inner.agg_rate.samples)
 }
 
-pub(super) fn by_bus_fps(inner: &mut Inner, now: Instant) -> Vec<(Option<String>, f64)> {
-    let mut out: Vec<(Option<String>, f64)> = inner
+pub(super) fn by_bus_fps(inner: &mut Inner, now: Instant) -> Vec<(String, f64)> {
+    let mut out: Vec<(String, f64)> = inner
         .per_bus
         .iter_mut()
         .map(|(bus, br)| {
@@ -236,7 +236,7 @@ impl TraceStore {
     /// then by name). Lets a capture show *which* bus is slowing on a
     /// multi-bus stream rather than only the aggregate.
     #[must_use]
-    pub fn frames_per_second_by_bus(&self) -> Vec<(Option<String>, f64)> {
+    pub fn frames_per_second_by_bus(&self) -> Vec<(String, f64)> {
         let now = Instant::now();
         let mut inner = self.lock_inner();
         by_bus_fps(&mut inner, now)
@@ -375,21 +375,19 @@ mod tests {
 
     #[test]
     fn frames_per_second_by_bus_buckets_each_bus_separately() {
-        // Each logical bus (and the unassigned `None` bucket) is tracked
-        // independently; the result is sorted (None first, then by name).
+        // Each logical bus is tracked independently; the result is
+        // sorted by name. There is no unassigned bucket — the store
+        // holds no frame that lacks a bus.
         let store = TraceStore::new();
         store.append(dummy_on_bus(0, 1, "A"));
         store.append(dummy_on_bus(0, 2, "B"));
-        store.append(dummy(0, 3)); // unassigned
-        let buses: Vec<Option<String>> = store
+        store.append(dummy_on_bus(0, 3, "C"));
+        let buses: Vec<String> = store
             .frames_per_second_by_bus()
             .into_iter()
             .map(|(b, _)| b)
             .collect();
-        assert_eq!(
-            buses,
-            vec![None, Some("A".to_string()), Some("B".to_string())]
-        );
+        assert_eq!(buses, vec!["A".to_string(), "B".into(), "C".into()]);
     }
 
     #[test]
@@ -407,7 +405,7 @@ mod tests {
         let rate = store
             .frames_per_second_by_bus()
             .into_iter()
-            .find(|(b, _)| b.as_deref() == Some("A"))
+            .find(|(b, _)| b == "A")
             .expect("bus A present")
             .1;
         assert!((rate - 10.0).abs() < 1.0, "expected ~10/s, got {rate}");

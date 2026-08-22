@@ -43,7 +43,7 @@ import { diagCount } from "./diag"; // DIAG
 /// expansion tracks the row, not its position, so it survives a re-sort
 /// or a new id appearing above it.
 export function byIdRowKey(f: TraceFrameRecord): string {
-  return `${f.bus_id ?? "_"}:${f.id}:${f.extended ? "x" : "s"}`;
+  return `${f.bus_id}:${f.id}:${f.extended ? "x" : "s"}`;
 }
 
 

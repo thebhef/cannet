@@ -146,7 +146,7 @@ function grew(count: number): TraceGrew {
     frames_per_second: 1000,
     frames_per_second_rx: 1000,
     frames_per_second_tx: 0,
-    frames_per_second_by_bus: [{ bus_id: null, frames_per_second: 1000 }],
+    frames_per_second_by_bus: [{ bus_id: "b1", frames_per_second: 1000 }],
     frames_dropped_before_session: 0,
     session_start_seconds: 1000,
     buffer_seconds: 1,

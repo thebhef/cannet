@@ -137,9 +137,10 @@ is only the raw-frame part.
 
 **DBC bus scoping**:
 The set of buses a loaded DBC applies to. Empty means every bus. A
-scoped DBC decodes only frames from its own buses and never an
-unassigned frame — the same message id on two buses is then two
-different signal instances (two copies of one ECU), not one.
+scoped DBC decodes only frames from its own buses — the same message
+id on two buses is then two different signal instances (two copies of
+one ECU), not one. Every frame has a bus: one whose channel maps to
+none is dropped at import rather than stored.
 _Avoid_: "DBC filter" — scoping selects which frames a database may
 speak for, it does not narrow a view.
 

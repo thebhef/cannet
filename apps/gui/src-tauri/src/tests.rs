@@ -8,6 +8,10 @@
 use super::*;
 use cannet_core::{CanFramePayload, Direction};
 
+/// The bus test frames arrive on unless a test says otherwise: the
+/// store holds no bus-less frame, so every test frame names one.
+const TEST_BUS: &str = "bus0";
+
 fn dummy_frame(ts_ns: u64, id: u32) -> RawTraceFrame {
     RawTraceFrame {
         timestamp_ns: ts_ns,
@@ -16,7 +20,7 @@ fn dummy_frame(ts_ns: u64, id: u32) -> RawTraceFrame {
         extended: false,
         direction: Direction::Rx,
         payload: CanFramePayload::Classic(vec![]),
-        bus_id: None,
+        bus_id: Some(TEST_BUS.to_string()),
     }
 }
 
@@ -132,7 +136,7 @@ fn windowed_filter_page_empty_or_inverted_window_is_zero() {
 
 // --- by-id host-side sort (former client `sortRows`) ---
 
-fn snap(id: u32, channel: u8, rate: f64, bus: Option<&str>) -> ByIdSnapshot {
+fn snap(id: u32, channel: u8, rate: f64, bus: &str) -> ByIdSnapshot {
     ByIdSnapshot {
         frame: TraceFrameRecord {
             index: 0,
@@ -144,7 +148,7 @@ fn snap(id: u32, channel: u8, rate: f64, bus: Option<&str>) -> ByIdSnapshot {
             kind: ipc::CanFrameKind::Classic,
             data: vec![],
             decoded: None,
-            bus_id: bus.map(Into::into),
+            bus_id: bus.into(),
             violation: None,
         },
         rate,
@@ -167,9 +171,9 @@ fn sorted_ids(
 fn sort_by_id_orders_by_a_column_stable_and_no_op_for_none() {
     let names = HashMap::new();
     let rows = [
-        snap(0x200, 1, 0.0, None),
-        snap(0x100, 0, 0.0, None),
-        snap(0x100, 2, 0.0, None),
+        snap(0x200, 1, 0.0, "b"),
+        snap(0x100, 0, 0.0, "b"),
+        snap(0x100, 2, 0.0, "b"),
     ];
     // None key leaves the input order (the host default).
     assert_eq!(
@@ -195,9 +199,9 @@ fn sort_by_id_orders_by_a_column_stable_and_no_op_for_none() {
 fn sort_by_id_orders_by_rate() {
     let names = HashMap::new();
     let rows = [
-        snap(0x100, 0, 5.0, None),
-        snap(0x200, 0, 50.0, None),
-        snap(0x300, 0, 0.5, None),
+        snap(0x100, 0, 5.0, "b"),
+        snap(0x200, 0, 50.0, "b"),
+        snap(0x300, 0, 0.5, "b"),
     ];
     assert_eq!(
         sorted_ids(&rows, Some("rate"), Some("asc"), &names),
@@ -210,10 +214,9 @@ fn sort_by_id_orders_by_rate() {
 }
 
 #[test]
-fn sort_by_id_orders_by_bus_name_unassigned_last() {
-    // Sorts by the resolved bus *name*, with the unassigned bucket
-    // after any real bus ascending (and before them descending). A bus
-    // the project no longer knows falls back to its raw id.
+fn sort_by_id_orders_by_bus_name_unknown_buses_by_raw_id() {
+    // Sorts by the resolved bus *name*. A bus the project no longer
+    // knows falls back to its raw id, which sorts among the names.
     // The bus ids deliberately sort the *opposite* way to their names,
     // so an implementation that ignored `names` and ordered by raw id
     // would fail rather than coincide.
@@ -224,10 +227,10 @@ fn sort_by_id_orders_by_bus_name_unassigned_last() {
     .into_iter()
     .collect();
     let rows = [
-        snap(0x100, 0, 0.0, Some("b1")), // Powertrain
-        snap(0x200, 0, 0.0, None),       // unassigned -> "~"
-        snap(0x300, 0, 0.0, Some("b2")), // Chassis
-        snap(0x400, 0, 0.0, Some("z")),  // unknown bus -> "z"
+        snap(0x100, 0, 0.0, "b1"), // Powertrain
+        snap(0x200, 0, 0.0, "zz"), // unknown bus -> "zz"
+        snap(0x300, 0, 0.0, "b2"), // Chassis
+        snap(0x400, 0, 0.0, "z"),  // unknown bus -> "z"
     ];
     assert_eq!(
         sorted_ids(&rows, Some("bus"), Some("asc"), &names),
@@ -253,10 +256,10 @@ fn sort_by_id_orders_by_ecu_no_transmitter_last() {
         s
     };
     let rows = [
-        with_ecu(snap(0x100, 0, 0.0, None), Some("Zonal")),
-        snap(0x200, 0, 0.0, None), // undecoded
-        with_ecu(snap(0x300, 0, 0.0, None), Some("Bms")),
-        with_ecu(snap(0x400, 0, 0.0, None), None), // Vector__XXX
+        with_ecu(snap(0x100, 0, 0.0, "b"), Some("Zonal")),
+        snap(0x200, 0, 0.0, "b"), // undecoded
+        with_ecu(snap(0x300, 0, 0.0, "b"), Some("Bms")),
+        with_ecu(snap(0x400, 0, 0.0, "b"), None), // Vector__XXX
     ];
     assert_eq!(
         sorted_ids(&rows, Some("ecu"), Some("asc"), &names),
@@ -307,7 +310,9 @@ fn mux_snapshot_state() -> AppState {
 fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
     let sel = SignalSelection {
         keys: vec![],
-        patterns: vec!["^/Zonal/Modes/".to_string()],
+        // The canonical path starts with the bus segment (ADR 0038), and
+        // every frame is on a bus now, so the pattern names it.
+        patterns: vec![format!("^{TEST_BUS}/Zonal/Modes/")],
     };
     fetch_signal_page_inner(
         state,
@@ -318,7 +323,7 @@ fn fetch_all_signals(state: &AppState, end: u64) -> Vec<SignalSnapshotRecord> {
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         None,
         0,
         100,
@@ -361,8 +366,7 @@ fn descriptor_snapshot_is_reused_across_calls_and_dropped_on_dbc_change() {
 #[test]
 fn fetch_signal_page_scopes_to_source_buses() {
     // A signal view is a sink with `sources` wiring: restricted to
-    // specific buses, descriptors outside them (including the
-    // unassigned-bus degenerate) don't exist for it.
+    // specific buses, descriptors outside them don't exist for it.
     let state = mux_snapshot_state();
     let sel = SignalSelection {
         keys: vec![],
@@ -377,13 +381,13 @@ fn fetch_signal_page_scopes_to_source_buses() {
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         Some(&["powertrain".to_string()]),
         0,
         100,
     )
     .unwrap();
-    assert_eq!(page.count, 0); // fixture descriptors are unassigned-bus
+    assert_eq!(page.count, 0); // fixture descriptors are on TEST_BUS
     let unrestricted = fetch_signal_page_inner(
         &state,
         &sel,
@@ -393,7 +397,7 @@ fn fetch_signal_page_scopes_to_source_buses() {
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         None,
         0,
         100,
@@ -495,7 +499,9 @@ fn fetch_signal_page_pages_and_sorts_host_side() {
         .append(modes_frame(1_000_000_000, 0, 40, 5));
     let sel = SignalSelection {
         keys: vec![],
-        patterns: vec!["^/Zonal/Modes/".to_string()],
+        // The canonical path starts with the bus segment (ADR 0038), and
+        // every frame is on a bus now, so the pattern names it.
+        patterns: vec![format!("^{TEST_BUS}/Zonal/Modes/")],
     };
     // Sort by value ascending: Mux(0), Always(5), ModeA(40), then
     // blank ModeB last; page [1, 3) of that order.
@@ -508,7 +514,7 @@ fn fetch_signal_page_pages_and_sorts_host_side() {
         Some("value"),
         Some("asc"),
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         None,
         1,
         2,
@@ -535,13 +541,15 @@ fn fetch_signal_page_pages_across_section_headers_with_a_fold_aware_count() {
         .append(modes_frame(1_000_000_000, 0, 40, 5));
     let sel = SignalSelection {
         keys: vec![],
-        patterns: vec!["^/Zonal/Modes/".to_string()],
+        // The canonical path starts with the bus segment (ADR 0038), and
+        // every frame is on a bus now, so the pattern names it.
+        patterns: vec![format!("^{TEST_BUS}/Zonal/Modes/")],
     };
     let sections = ipc::SignalSections {
         names: vec!["Modes".to_string()],
         assignments: [
-            ("*|s:512:ModeA".to_string(), "Modes".to_string()),
-            ("*|s:512:ModeB".to_string(), "Modes".to_string()),
+            (format!("{TEST_BUS}|s:512:ModeA"), "Modes".to_string()),
+            (format!("{TEST_BUS}|s:512:ModeB"), "Modes".to_string()),
         ]
         .into_iter()
         .collect(),
@@ -558,7 +566,7 @@ fn fetch_signal_page_pages_across_section_headers_with_a_fold_aware_count() {
             Some("signal"),
             Some("asc"),
             vec![],
-            &[],
+            &[TEST_BUS.to_string()],
             None,
             offset,
             limit,
@@ -669,7 +677,7 @@ fn seam_session(
         handle: None,
         tx: SessionTx::Vbus(sinks),
         channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
-        channel_to_bus: vec![(0, Some("p".into()))],
+        channel_to_bus: vec![(0, "p".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
     }
@@ -953,16 +961,16 @@ fn per_bus_dbc_scoping_filters_decode() {
     on_p.bus_id = Some("p".into());
     let mut on_c = frame_with_data(256);
     on_c.bus_id = Some("c".into());
-    let unassigned = frame_with_data(256); // bus_id: None
+    let elsewhere = frame_with_data(256); // on TEST_BUS, which neither DBC scopes to
     state.trace_store.append(on_p);
     state.trace_store.append(on_c);
-    state.trace_store.append(unassigned);
+    state.trace_store.append(elsewhere);
 
     let r = collect_trace_records(&state, 0, 3);
     let name = |i: usize| r[i].decoded.as_ref().map(|d| d.name.clone());
     assert_eq!(name(0).as_deref(), Some("FromBusP"));
     assert_eq!(name(1).as_deref(), Some("FromBusC"));
-    // An unassigned frame doesn't match any scoped DBC.
+    // A frame from outside every scope matches no DBC.
     assert_eq!(name(2), None);
 }
 
@@ -1073,13 +1081,13 @@ fn apply_filter_drops_records_that_dont_pass() {
     // Two records, same id, different buses. A `{bus: "p"}` filter
     // keeps the first only.
     let mut r1 = TraceFrameRecord::from_raw(0, &frame_with_data(256), None);
-    r1.bus_id = Some("p".into());
+    r1.bus_id = "p".into();
     let mut r2 = TraceFrameRecord::from_raw(1, &frame_with_data(256), None);
-    r2.bus_id = Some("c".into());
+    r2.bus_id = "c".into();
     let predicate: FilterPredicate = serde_json::from_str(r#"{"bus": "p"}"#).unwrap();
     let filtered = apply_filter_records(vec![r1.clone(), r2], Some(&predicate));
     assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0].bus_id.as_deref(), Some("p"));
+    assert_eq!(filtered[0].bus_id, "p");
 }
 
 #[test]
@@ -1092,16 +1100,15 @@ fn apply_filter_none_returns_input_unchanged() {
 
 #[test]
 fn route_channel_translates_via_mapping() {
-    let m = vec![
-        (0u8, Some("p".to_string())),
-        (1, None), // explicit skip
-        (2, Some("c".into())),
-    ];
-    assert_eq!(route_channel(0, &m), Ok(Some("p".into())));
-    assert_eq!(route_channel(2, &m), Ok(Some("c".into())));
-    assert_eq!(route_channel(1, &m), Err(()));
-    // Channel without an entry: unassigned.
-    assert_eq!(route_channel(7, &m), Ok(None));
+    let m = vec![(0u8, "p".to_string()), (2, "c".into())];
+    assert_eq!(route_channel(0, &m), Some("p".into()));
+    assert_eq!(route_channel(2, &m), Some("c".into()));
+    // A channel with no entry maps to no bus, so its frames are
+    // dropped. The import dialog's "(skip)" and a channel the caller
+    // never mentioned are one and the same outcome: there is no third
+    // answer where a frame arrives without a bus.
+    assert_eq!(route_channel(1, &m), None);
+    assert_eq!(route_channel(7, &m), None);
 }
 
 #[test]
@@ -1206,9 +1213,9 @@ fn unscoped_dbc_decodes_every_bus() {
     *state.databases.lock().unwrap() = vec![loaded("any.dbc", &dbc)];
     let mut on_p = frame_with_data(256);
     on_p.bus_id = Some("p".into());
-    let unassigned = frame_with_data(256);
+    let on_test_bus = frame_with_data(256);
     state.trace_store.append(on_p);
-    state.trace_store.append(unassigned);
+    state.trace_store.append(on_test_bus);
     let r = collect_trace_records(&state, 0, 2);
     // Both decode against the unscoped DBC.
     assert_eq!(
@@ -1393,7 +1400,7 @@ fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
             std::sync::Arc::new(std::sync::Mutex::new(sink_p)),
         )]),
         channel_to_interface: vec![(0, project::LOCAL_VBUS_INTERFACE.into())],
-        channel_to_bus: vec![(0, Some("p".into()))],
+        channel_to_bus: vec![(0, "p".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
     };
@@ -1546,7 +1553,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
             source: source_q,
             channel: 1,
         };
-        let channel_to_bus = vec![(1u8, Some("q".to_string()))];
+        let channel_to_bus = vec![(1u8, "q".to_string())];
         while !stop_for_pump.load(Ordering::Relaxed) {
             let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
                 .ok()
@@ -1555,8 +1562,8 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
                 break;
             };
             let mut raw = RawTraceFrame::from(frame);
-            if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
-                raw.bus_id = bid;
+            if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
+                raw.bus_id = Some(bid);
                 store_for_pump.append(raw);
             }
         }
@@ -1574,7 +1581,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
             (0, project::LOCAL_VBUS_INTERFACE.into()),
             (1, project::LOCAL_VBUS_INTERFACE.into()),
         ],
-        channel_to_bus: vec![(0, Some("p".into())), (1, Some("q".into()))],
+        channel_to_bus: vec![(0, "p".into()), (1, "q".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
     };
@@ -1860,13 +1867,16 @@ fn windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store()
     // start at the second frame, inclusive end at the fourth.
     let mut windowed =
         WindowedSource::new(source, Some(ts_base + 1_000_000), Some(ts_base + 3_000_000));
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     while let Some(frame) = windowed.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         store.append(raw);
     }
 
@@ -1880,6 +1890,64 @@ fn windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_store()
             ts_base + 3_000_000,
         ],
         "only the in-range frames (boundaries inclusive) reached the trace store",
+    );
+}
+
+/// An import routes the channels its mapping names and **drops the
+/// rest**. A CAN frame without a bus is not a thing the store holds, so
+/// the import dialog's "(skip)" and a channel the caller never
+/// mentioned reach the same end: those frames never get appended.
+///
+/// Drives the same per-frame body `run_pump` runs (`RawTraceFrame::from`
+/// → `route_channel` → `TraceStore::append`) against a real
+/// `TraceStore`, without needing a Tauri `AppHandle`.
+#[test]
+fn an_import_drops_the_frames_of_a_channel_no_bus_is_mapped_to() {
+    use cannet_blf::BlfCanFrameSource;
+    use cannet_core::CanFrameSource as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let blf_path = dir.path().join("two-channels.blf");
+    let ts_base = 1_700_000_000_000_000_000u64;
+    {
+        let mut writer = cannet_blf::BlfCaptureWriter::create(&blf_path).unwrap();
+        for (i, channel) in [0u8, 1, 0, 1].into_iter().enumerate() {
+            let frame = cannet_core::CanFrame::classic(
+                ts_base + i as u64 * 1_000_000,
+                channel,
+                cannet_core::CanId::standard(0x100 + u32::from(channel)).unwrap(),
+                Direction::Rx,
+                vec![1],
+            )
+            .unwrap();
+            writer.append(&frame).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    let store = TraceStore::new();
+    // Channel 1 is deliberately absent — the "(skip)" choice.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "powertrain".into())];
+    let mut source = BlfCanFrameSource::open(&blf_path).unwrap();
+    while let Some(frame) = source.next_frame().unwrap() {
+        let mut raw = trace_store::RawTraceFrame::from(frame);
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            continue;
+        };
+        raw.bus_id = Some(bid);
+        store.append(raw);
+    }
+
+    let kept = store.slice(0, store.len());
+    assert_eq!(kept.len(), 2, "only the mapped channel's frames landed");
+    assert!(
+        kept.iter().all(|f| f.channel == 0),
+        "a frame from the unmapped channel reached the store",
+    );
+    assert!(
+        kept.iter()
+            .all(|f| f.bus_id.as_deref() == Some("powertrain")),
+        "every stored frame carries the bus its channel was mapped to",
     );
 }
 
@@ -1915,16 +1983,19 @@ fn an_out_of_order_blf_anchors_the_session_at_its_earliest_frame_and_keeps_every
     let state = test_state();
     let mut source =
         BlfCanFrameSource::open(time_origin_fixture("wall-clock-out-of-order.blf")).unwrap();
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut anchor: Option<u64> = None;
     let mut read = 0u64;
     while let Some(frame) = source.next_frame().unwrap() {
         read += 1;
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         crate::session::anchor_replay_session(&state, &mut anchor, raw.timestamp_ns);
         state.trace_store.append(raw);
     }
@@ -1964,14 +2035,17 @@ fn a_blf_with_no_stated_start_time_anchors_the_session_at_zero() {
     );
 
     let mut source = BlfCanFrameSource::open(time_origin_fixture("relative-zero.blf")).unwrap();
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut anchor: Option<u64> = None;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         crate::session::anchor_replay_session(&state, &mut anchor, raw.timestamp_ns);
         state.trace_store.append(raw);
     }
@@ -2013,14 +2087,17 @@ fn a_blf_marker_before_the_first_frame_lowers_the_session_origin_to_itself() {
         }
     });
 
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut anchor: Option<u64> = None;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         crate::session::anchor_replay_session(&state, &mut anchor, raw.timestamp_ns);
         state.trace_store.append(raw);
     }
@@ -2102,14 +2179,17 @@ fn an_mdf_whose_signals_start_before_its_frames_anchors_on_the_signals() {
         .map(|e| crate::capture::note_from_event(e, &mut synthetic_idx))
         .collect();
 
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut anchor: Option<u64> = None;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         crate::session::anchor_replay_session(&state, &mut anchor, raw.timestamp_ns);
         state.trace_store.append(raw);
     }
@@ -2279,7 +2359,10 @@ fn a_cancelled_import_stops_the_pump_loop_early_leaving_the_frames_already_inges
     *state.import_cancel() = Some(Arc::clone(&flag));
 
     let mut source = BlfCanFrameSource::open(&blf_path).unwrap();
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     let mut ingested = 0usize;
     loop {
         if flag.load(Ordering::Relaxed) {
@@ -2289,8 +2372,8 @@ fn a_cancelled_import_stops_the_pump_loop_early_leaving_the_frames_already_inges
             break;
         };
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
-            raw.bus_id = bid;
+        if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
+            raw.bus_id = Some(bid);
             store.append(raw);
             ingested += 1;
         }
@@ -2348,14 +2431,14 @@ fn mdf_import_lands_frames_with_absolute_timestamps_and_mapped_buses() {
     std::fs::create_dir_all(&store_dir).unwrap();
     let store = open_trace_store(&store_dir);
 
-    let channel_to_bus: Vec<(u8, Option<String>)> = vec![(0, Some("p".into()))];
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "p".into())];
     let mut n = 0u64;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         store.append(raw);
         n += 1;
     }
@@ -2399,13 +2482,16 @@ fn mdf_windowed_import_range_keeps_only_the_selected_frames_out_of_the_trace_sto
     let store_dir = scratch.path().join("current");
     std::fs::create_dir_all(&store_dir).unwrap();
     let store = open_trace_store(&store_dir);
-    let channel_to_bus: Vec<(u8, Option<String>)> = Vec::new();
+    // Every channel the fixture writes has to be mapped: an unmapped
+    // channel's frames are dropped, so an empty mapping would import
+    // nothing at all.
+    let channel_to_bus: Vec<(u8, String)> = vec![(0, "b".into())];
     while let Some(frame) = windowed.next_frame().unwrap() {
         let mut raw = trace_store::RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         store.append(raw);
     }
 
@@ -2987,7 +3073,7 @@ fn file_backed_rows(state: &AppState, patterns: &[&str]) -> Vec<SignalSnapshotRe
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         None,
         0,
         100,
@@ -3220,7 +3306,7 @@ fn a_bus_wired_view_has_no_file_backed_rows() {
         None,
         None,
         vec![],
-        &[],
+        &[TEST_BUS.to_string()],
         Some(&["powertrain".to_string()]),
         0,
         100,
@@ -3901,7 +3987,7 @@ fn bench_tx_vbus_real_path() {
             source: source_q,
             channel: 1,
         };
-        let channel_to_bus = vec![(1u8, Some("q".to_string()))];
+        let channel_to_bus = vec![(1u8, "q".to_string())];
         while !stop_for_pump.load(Ordering::Relaxed) {
             let Some(frame) = cannet_core::CanFrameSource::next_frame(&mut adapter)
                 .ok()
@@ -3910,8 +3996,8 @@ fn bench_tx_vbus_real_path() {
                 break;
             };
             let mut raw = RawTraceFrame::from(frame);
-            if let Ok(bid) = route_channel(raw.channel, &channel_to_bus) {
-                raw.bus_id = bid;
+            if let Some(bid) = route_channel(raw.channel, &channel_to_bus) {
+                raw.bus_id = Some(bid);
                 store_for_pump.append(raw);
             }
         }
@@ -3927,7 +4013,7 @@ fn bench_tx_vbus_real_path() {
             (0, project::LOCAL_VBUS_INTERFACE.into()),
             (1, project::LOCAL_VBUS_INTERFACE.into()),
         ],
-        channel_to_bus: vec![(0, Some("p".into())), (1, Some("q".into()))],
+        channel_to_bus: vec![(0, "p".into()), (1, "q".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
     };
@@ -4172,8 +4258,6 @@ fn an_unrequested_exit_keeps_the_event_loops_code() {
 //   convert  — decode + `RawTraceFrame::from` + routing + verifier probe
 //   full/mem — convert + `TraceStore::append` against the in-RAM raw
 //              store; the gap to `full` is the disk-spill write
-//   mem/nobus— full/mem with unassigned frames; the gap to `full/mem`
-//              is what a logical bus id costs per frame
 //   full     — convert + `TraceStore::append` against the disk store
 //   full+obs — full, with the flusher and the 10 Hz status/tail readout
 //              the running app puts on the same store lock
@@ -4308,19 +4392,17 @@ fn bench_blf_import() {
     assert_eq!(n, frames);
 
     // -- convert: + `RawTraceFrame::from`, routing, and the verifier probe.
-    let channel_to_bus: Vec<(u8, Option<String>)> = (0..CHANNELS)
-        .map(|c| (c, Some(format!("bus{c}"))))
-        .collect();
+    let channel_to_bus: Vec<(u8, String)> = (0..CHANNELS).map(|c| (c, format!("bus{c}"))).collect();
     let verifier = verification::VerificationState::default();
     let mut source = BlfCanFrameSource::open(&blf).unwrap();
     let t = std::time::Instant::now();
     let mut kept = 0usize;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         let _checked = verifier.wants(&raw).then(|| raw.clone());
         kept += 1;
         std::hint::black_box(&raw);
@@ -4338,10 +4420,10 @@ fn bench_blf_import() {
     let mut first = true;
     while let Some(frame) = source.next_frame().unwrap() {
         let mut raw = RawTraceFrame::from(frame);
-        let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+        let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
             continue;
         };
-        raw.bus_id = bid;
+        raw.bus_id = Some(bid);
         if first {
             store.start_session(raw.timestamp_ns);
             first = false;
@@ -4352,30 +4434,6 @@ fn bench_blf_import() {
         }
     }
     report("full/mem", t.elapsed().as_secs_f64());
-    assert_eq!(store.len(), frames);
-    drop(store);
-
-    // -- mem/nobus: the same loop again with the frames left
-    //    unassigned. The delta against full/mem is what carrying a
-    //    logical bus costs per frame — the routing clone, the
-    //    latest-by-key clone, the retention clone, and the three string
-    //    hashes those keys drive.
-    let store = TraceStore::new();
-    let mut source = BlfCanFrameSource::open(&blf).unwrap();
-    let t = std::time::Instant::now();
-    let mut first = true;
-    while let Some(frame) = source.next_frame().unwrap() {
-        let raw = RawTraceFrame::from(frame);
-        if first {
-            store.start_session(raw.timestamp_ns);
-            first = false;
-        }
-        let checked = verifier.wants(&raw).then(|| raw.clone());
-        if store.append(raw).is_some() {
-            std::hint::black_box(&checked);
-        }
-    }
-    report("mem/nobus", t.elapsed().as_secs_f64());
     assert_eq!(store.len(), frames);
     drop(store);
 
@@ -4424,10 +4482,10 @@ fn bench_blf_import() {
         let mut first = true;
         while let Some(frame) = source.next_frame().unwrap() {
             let mut raw = RawTraceFrame::from(frame);
-            let Ok(bid) = route_channel(raw.channel, &channel_to_bus) else {
+            let Some(bid) = route_channel(raw.channel, &channel_to_bus) else {
                 continue;
             };
-            raw.bus_id = bid;
+            raw.bus_id = Some(bid);
             if first {
                 store.start_session(raw.timestamp_ns);
                 first = false;
@@ -4493,14 +4551,15 @@ fn ab_frame_256(ts_ns: u64, a: u16, b: u16) -> RawTraceFrame {
 /// An `AppState` whose pyramid scratch is this test's own directory
 /// (`test_state`'s is reused across runs, so a manifest an earlier run
 /// left behind would be *staged* and block `persist`), holding `n`
-/// decodable frames of message 256 on `bus`.
+/// decodable frames of message 256 on `bus`, or on [`TEST_BUS`] when
+/// the test does not care which — the store holds no bus-less frame.
 #[allow(clippy::cast_possible_truncation)]
 fn ab_state(scratch: &std::path::Path, bus: Option<&str>, n: u64) -> AppState {
     let state = test_state();
     state.signal_caches.reroot(scratch);
     for i in 0..n {
         let mut f = ab_frame_256(i * 1_000_000_000, (i % 50) as u16, (i % 40) as u16);
-        f.bus_id = bus.map(ToOwned::to_owned);
+        f.bus_id = Some(bus.unwrap_or(TEST_BUS).to_owned());
         state.trace_store.append(f);
     }
     state

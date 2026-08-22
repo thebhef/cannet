@@ -119,7 +119,12 @@ impl TraceStore {
         } else {
             let mut last: HashMap<FrameKey, usize> = HashMap::new();
             for (offset, f) in inner.raw.slice(start, end).iter().enumerate() {
-                let key: FrameKey = (f.bus_id.clone(), f.channel, f.id, f.extended);
+                // Every stored frame carries a bus (`TraceStore::append`
+                // drops one that does not), so this is not a filter.
+                let Some(bus) = f.bus_id.clone() else {
+                    continue;
+                };
+                let key: FrameKey = (bus, f.channel, f.id, f.extended);
                 if !keep(&key) {
                     continue;
                 }
@@ -189,6 +194,10 @@ impl TraceStore {
         end: usize,
     ) -> HashMap<u64, (usize, RawTraceFrame)> {
         let mut out = HashMap::new();
+        // A query naming no bus is the legacy any-bus series, and no
+        // stored frame is on "no bus" — so it selects nothing, exactly
+        // as it did when a bus-less frame was merely rare.
+        let Some(bus_id) = bus_id else { return out };
         let mut missing: Vec<u64> = Vec::new();
         let (len, extractor) = {
             let inner = self.lock_inner();
@@ -202,7 +211,7 @@ impl TraceStore {
             };
             let covered = inner.mux_index_from <= start;
             for &sel in selectors {
-                let mkey: MuxKey = (bus_id.map(str::to_string), id, extended, sel);
+                let mkey: MuxKey = (bus_id.to_string(), id, extended, sel);
                 match inner.latest_mux.get(&mkey) {
                     // A map entry is the group's latest at the tip. If it
                     // sits inside the window it is also the latest within
@@ -233,7 +242,7 @@ impl TraceStore {
             if end == len && !found.is_empty() {
                 let mut inner = self.lock_inner();
                 for (sel, (idx, frame)) in &found {
-                    let mkey: MuxKey = (bus_id.map(str::to_string), id, extended, *sel);
+                    let mkey: MuxKey = (bus_id.to_string(), id, extended, *sel);
                     // Never regress an entry a concurrent append advanced.
                     match inner.latest_mux.get(&mkey) {
                         Some((have, _)) if *have >= *idx => {}
@@ -257,7 +266,7 @@ impl TraceStore {
     #[allow(clippy::too_many_arguments)] // internal helper mirroring the public query's key
     fn scan_latest_mux(
         &self,
-        bus_id: Option<&str>,
+        bus_id: &str,
         id: u32,
         extended: bool,
         selectors: &[u64],
@@ -276,7 +285,7 @@ impl TraceStore {
             let hits = self.scan_chunk(chunk_start, chunk_end, move |f| {
                 f.id == id
                     && f.extended == extended
-                    && f.bus_id.as_deref() == bus_id
+                    && f.bus_id.as_deref() == Some(bus_id)
                     && ext(f).is_some_and(|s| want.contains(&s))
             });
             // Materialise from the back in small batches — the newest
@@ -314,8 +323,11 @@ impl TraceStore {
         selector: u64,
     ) -> Option<(f64, u64)> {
         let now = Instant::now();
+        // As in `latest_mux_in_window`: a query on no bus matches no
+        // stored frame, so it has no statistics.
+        let bus_id = bus_id?;
         let inner = self.lock_inner();
-        let mkey: MuxKey = (bus_id.map(str::to_string), id, extended, selector);
+        let mkey: MuxKey = (bus_id.to_string(), id, extended, selector);
         inner.mux_rates.get(&mkey).map(|r| (r.rate(now), r.count))
     }
 
@@ -327,9 +339,9 @@ impl TraceStore {
     /// actually occurred. Channels are collapsed: a `(bus, id, extended)`
     /// is reported once regardless of how many wire channels carried it.
     #[must_use]
-    pub fn seen_bus_ids(&self) -> Vec<(Option<String>, u32, bool)> {
+    pub fn seen_bus_ids(&self) -> Vec<(String, u32, bool)> {
         let inner = self.lock_inner();
-        let mut out: Vec<(Option<String>, u32, bool)> = inner
+        let mut out: Vec<(String, u32, bool)> = inner
             .per_key
             .keys()
             .map(|(bus, _ch, id, ext)| (bus.clone(), *id, *ext))
@@ -343,7 +355,7 @@ impl TraceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace_store::test_support::{dummy, dummy_on_bus};
+    use crate::trace_store::test_support::{dummy, dummy_on_bus, TEST_BUS};
     use cannet_core::CanFramePayload;
 
     #[test]
@@ -490,7 +502,8 @@ mod tests {
         store.append(muxed(2_000, 0x10, 1)); // idx 1
         store.append(muxed(3_000, 0x10, 0)); // idx 2
         store.append(dummy(4_000, 0x20)); // other id, no payload → no selector
-        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1, 2], 0, usize::MAX);
+        let got =
+            store.latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0, 1, 2], 0, usize::MAX);
         assert_eq!(
             got.get(&0).map(|(i, f)| (*i, f.timestamp_ns)),
             Some((2, 3_000))
@@ -503,14 +516,18 @@ mod tests {
         assert!(!got.contains_key(&2));
         // Per-group update statistics.
         assert_eq!(
-            store.mux_stats(None, 0x10, false, 0).map(|(_, c)| c),
+            store
+                .mux_stats(Some(TEST_BUS), 0x10, false, 0)
+                .map(|(_, c)| c),
             Some(2)
         );
         assert_eq!(
-            store.mux_stats(None, 0x10, false, 1).map(|(_, c)| c),
+            store
+                .mux_stats(Some(TEST_BUS), 0x10, false, 1)
+                .map(|(_, c)| c),
             Some(1)
         );
-        assert_eq!(store.mux_stats(None, 0x10, false, 2), None);
+        assert_eq!(store.mux_stats(Some(TEST_BUS), 0x10, false, 2), None);
     }
 
     #[test]
@@ -521,11 +538,11 @@ mod tests {
         store.append(muxed(1_000, 0x10, 0)); // idx 0
         store.append(muxed(2_000, 0x10, 1)); // idx 1
         store.append(muxed(3_000, 0x10, 0)); // idx 2
-        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, 2);
+        let got = store.latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0, 1], 0, 2);
         assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0)); // not idx 2
         assert_eq!(got.get(&1).map(|(i, _)| *i), Some(1));
         // Window [0, 1): selector 1 hasn't appeared yet.
-        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, 1);
+        let got = store.latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0, 1], 0, 1);
         assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
         assert!(!got.contains_key(&1));
     }
@@ -540,12 +557,12 @@ mod tests {
         store.append(muxed(1_000, 0x10, 0)); // idx 0
         store.append(muxed(2_000, 0x10, 1)); // idx 1
         store.set_mux_extractor(Some(byte0_extractor()));
-        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, usize::MAX);
+        let got = store.latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0, 1], 0, usize::MAX);
         assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
         assert_eq!(got.get(&1).map(|(i, _)| *i), Some(1));
         // A post-install append updates the group incrementally.
         store.append(muxed(3_000, 0x10, 1)); // idx 2
-        let got = store.latest_mux_in_window(None, 0x10, false, &[0, 1], 0, usize::MAX);
+        let got = store.latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0, 1], 0, usize::MAX);
         assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
         assert_eq!(got.get(&1).map(|(i, _)| *i), Some(2));
     }
@@ -557,11 +574,16 @@ mod tests {
         let mut on_a = muxed(1_000, 0x10, 0);
         on_a.bus_id = Some("a".into());
         store.append(on_a); // idx 0
-        store.append(muxed(2_000, 0x10, 0)); // idx 1, unassigned
+        store.append(muxed(2_000, 0x10, 0)); // idx 1, on TEST_BUS
         let a = store.latest_mux_in_window(Some("a"), 0x10, false, &[0], 0, usize::MAX);
         assert_eq!(a.get(&0).map(|(i, _)| *i), Some(0));
-        let unassigned = store.latest_mux_in_window(None, 0x10, false, &[0], 0, usize::MAX);
-        assert_eq!(unassigned.get(&0).map(|(i, _)| *i), Some(1));
+        let other = store.latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0], 0, usize::MAX);
+        assert_eq!(other.get(&0).map(|(i, _)| *i), Some(1));
+        // A query naming no bus is the legacy any-bus series: no stored
+        // frame is on "no bus", so it selects nothing.
+        assert!(store
+            .latest_mux_in_window(None, 0x10, false, &[0], 0, usize::MAX)
+            .is_empty());
     }
 
     #[test]
@@ -571,15 +593,17 @@ mod tests {
         store.append(muxed(1_000, 0x10, 0));
         store.start_session(0);
         assert!(store
-            .latest_mux_in_window(None, 0x10, false, &[0], 0, usize::MAX)
+            .latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0], 0, usize::MAX)
             .is_empty());
-        assert_eq!(store.mux_stats(None, 0x10, false, 0), None);
+        assert_eq!(store.mux_stats(Some(TEST_BUS), 0x10, false, 0), None);
         // The extractor survives the clear — the DBC set didn't change.
         store.append(muxed(2_000, 0x10, 0));
-        let got = store.latest_mux_in_window(None, 0x10, false, &[0], 0, usize::MAX);
+        let got = store.latest_mux_in_window(Some(TEST_BUS), 0x10, false, &[0], 0, usize::MAX);
         assert_eq!(got.get(&0).map(|(i, _)| *i), Some(0));
         assert_eq!(
-            store.mux_stats(None, 0x10, false, 0).map(|(_, c)| c),
+            store
+                .mux_stats(Some(TEST_BUS), 0x10, false, 0)
+                .map(|(_, c)| c),
             Some(1)
         );
     }
@@ -633,16 +657,16 @@ mod tests {
     }
 
     #[test]
-    fn latest_since_keeps_unassigned_distinct_from_a_named_bus() {
-        // Edge case: an unassigned (`bus_id = None`) frame with the
-        // same wire channel + id as a bus-tagged frame must not be
-        // overwritten by it.
+    fn latest_since_keeps_each_bus_distinct() {
+        // Edge case: two frames sharing a wire channel and id but
+        // arriving on different buses are different rows — neither
+        // overwrites the other.
         let store = TraceStore::new();
-        store.append(dummy(0, 0x200));
+        store.append(dummy_on_bus(0, 0x200, "b"));
         store.append(dummy_on_bus(1_000, 0x200, "a"));
         let rows = store.latest_since(0);
         let buses: Vec<Option<&str>> = rows.iter().map(|r| r.frame.bus_id.as_deref()).collect();
-        assert_eq!(buses, vec![None, Some("a")]);
+        assert_eq!(buses, vec![Some("a"), Some("b")]);
     }
 
     #[test]
@@ -652,15 +676,13 @@ mod tests {
         store.append(dummy_on_bus(1, 0x100, "pt")); // same key — collapses
         store.append(dummy_on_bus(2, 0x200, "pt"));
         store.append(dummy_on_bus(3, 0x100, "body")); // same id, other bus
-        store.append(dummy(4, 0x300)); // unassigned bus
         let seen = store.seen_bus_ids();
         assert_eq!(
             seen,
             vec![
-                (None, 0x300, false),
-                (Some("body".into()), 0x100, false),
-                (Some("pt".into()), 0x100, false),
-                (Some("pt".into()), 0x200, false),
+                ("body".to_string(), 0x100, false),
+                ("pt".to_string(), 0x100, false),
+                ("pt".to_string(), 0x200, false),
             ],
         );
     }
