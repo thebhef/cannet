@@ -94,6 +94,10 @@ export interface Note {
   kind?: EventKind;
   /** `#RRGGBB`, or `null`/absent for the view's default color. */
   color?: string | null;
+  /** Free-text body the event view discloses under the label. */
+  description?: string | null;
+  /** User-defined tag, the event view's second filter axis. */
+  tag?: string | null;
 }
 
 /// A rendered timeline event (ADR 0035): the common shape every view —
@@ -106,7 +110,11 @@ export interface TimelineEvent {
   kind: EventKind;
   /** `#RRGGBB` or `null` (render the kind's default color). */
   color: string | null;
-  /** Derived events (truncation) are not user-editable; notes are. */
+  /** The disclosed body, or `null` when the event has none. */
+  description: string | null;
+  /** The user-defined tag, or `null`. */
+  tag: string | null;
+  /** Whether the user may edit it — a property of the kind, not the caller. */
   editable: boolean;
 }
 
@@ -126,6 +134,8 @@ export function noteToEvent(n: Note): TimelineEvent {
     label: n.label,
     kind,
     color: n.color ?? null,
+    description: n.description ?? null,
+    tag: n.tag ?? null,
     editable: EVENT_KIND_META[kind]?.editable ?? false,
   };
 }
@@ -139,6 +149,8 @@ export function truncationEvent(timestampNs: number): TimelineEvent {
     label: "history truncated here",
     kind: "truncation",
     color: null,
+    description: null,
+    tag: null,
     editable: false,
   };
 }
@@ -154,6 +166,21 @@ export function timelineEvents(
   const events = notes.map(noteToEvent);
   if (truncationTsNs != null) events.push(truncationEvent(truncationTsNs));
   return events.sort((a, b) => a.timestampNs - b.timestampNs);
+}
+
+/// Does this event match a free-text tag query? An empty query matches
+/// everything; otherwise the event's tag must contain it, case-insensitively.
+/// Untagged events drop out of a non-empty query — that is the point of
+/// asking for a tag.
+export function matchesTagQuery(e: TimelineEvent, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  return (e.tag ?? "").toLowerCase().includes(q);
+}
+
+/// Every tag in use, sorted — what a filter control offers as suggestions.
+export function tagsInUse(events: readonly TimelineEvent[]): string[] {
+  return [...new Set(events.map((e) => e.tag).filter((t): t is string => !!t))].sort();
 }
 
 /// Keep a snapshot in chronological order. Pure helper so the

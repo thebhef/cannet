@@ -45,6 +45,8 @@ const notesCtx = (notes: Note[]): NotesContextValue => ({
   addNote: vi.fn(),
   renameNote: vi.fn(),
   recolorNote: vi.fn(),
+  describeNote: vi.fn(),
+  retagNote: vi.fn(),
   removeNote: vi.fn(),
 });
 
@@ -269,5 +271,98 @@ describe("EventsPanel kind filter", () => {
     expect(labels()).toEqual(["bus error x40"]);
     expect(screen.queryByLabelText("rename event")).toBeNull();
     expect(screen.queryByLabelText("remove event")).toBeNull();
+  });
+});
+
+describe("EventsPanel event body", () => {
+  const tagged: Note = {
+    id: "n1",
+    timestampNs: 5_000_000_000,
+    label: "contactor",
+    kind: "note",
+    tag: "fault",
+    description: "opened under load",
+  };
+
+  it("keeps the body collapsed until the row is disclosed", () => {
+    renderPanel([tagged]);
+    expect(screen.queryByText("opened under load")).toBeNull();
+    fireEvent.click(screen.getByLabelText("show event details"));
+    expect(screen.getByText("opened under load")).toBeInTheDocument();
+    expect(screen.getByText("fault")).toBeInTheDocument();
+    // ...and folds back up.
+    fireEvent.click(screen.getByLabelText("hide event details"));
+    expect(screen.queryByText("opened under load")).toBeNull();
+  });
+
+  it("edits the description in place and commits it to the host", () => {
+    const ctx = notesCtx([tagged]);
+    render(
+      <TraceDataProvider value={traceData}>
+        <NotesContext.Provider value={ctx}>
+          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
+        </NotesContext.Provider>
+      </TraceDataProvider>,
+    );
+    fireEvent.click(screen.getByLabelText("show event details"));
+    fireEvent.click(screen.getByText("opened under load"));
+    const input = screen.getByLabelText("event description") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "welded shut" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(ctx.describeNote).toHaveBeenCalledWith("n1", "welded shut");
+
+    // Clearing the field clears the description rather than storing "".
+    fireEvent.click(screen.getByText("opened under load"));
+    const again = screen.getByLabelText("event description") as HTMLInputElement;
+    fireEvent.change(again, { target: { value: "  " } });
+    fireEvent.keyDown(again, { key: "Enter" });
+    expect(ctx.describeNote).toHaveBeenLastCalledWith("n1", null);
+  });
+
+  it("shows a host-derived event's body but takes no edits on it", () => {
+    renderPanel([
+      {
+        id: "e1",
+        timestampNs: 4_000_000_000,
+        label: "bus error x40",
+        kind: "busError",
+        description: "bit errors on powertrain over 1.2 s",
+      },
+    ]);
+    fireEvent.click(screen.getByTitle("Bus Errors").querySelector("input") as HTMLInputElement);
+    fireEvent.click(screen.getByLabelText("show event details"));
+    expect(screen.getByText("bit errors on powertrain over 1.2 s")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("bit errors on powertrain over 1.2 s"));
+    expect(screen.queryByLabelText("event description")).toBeNull();
+  });
+});
+
+describe("EventsPanel tag filter", () => {
+  it("narrows to the events carrying a matching tag", () => {
+    // jsdom lays nothing out; give the row virtualizer a viewport so all
+    // three rows are drawn.
+    const ch = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    renderPanel([
+      { id: "a", timestampNs: 1_000_000_000, label: "one", kind: "note", tag: "fault" },
+      { id: "b", timestampNs: 2_000_000_000, label: "two", kind: "note", tag: "contactor" },
+      { id: "c", timestampNs: 3_000_000_000, label: "three", kind: "note" },
+    ]);
+    const labels = () =>
+      Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+    expect(labels()).toEqual(["one", "two", "three"]);
+
+    fireEvent.change(screen.getByLabelText("filter by tag"), { target: { value: "cont" } });
+    expect(labels()).toEqual(["two"]);
+
+    // The suggestions are the tags actually in use.
+    expect(
+      Array.from(document.querySelectorAll("#events-panel-tags option")).map(
+        (o) => (o as HTMLOptionElement).value,
+      ),
+    ).toEqual(["contactor", "fault"]);
+
+    fireEvent.change(screen.getByLabelText("filter by tag"), { target: { value: "" } });
+    expect(labels()).toEqual(["one", "two", "three"]);
+    ch.mockRestore();
   });
 });

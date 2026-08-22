@@ -126,7 +126,8 @@ use local_buses::{
     drop_local_virtual_bus, list_local_bus_bridges, replay_local_virtual_buses,
 };
 use notes::{
-    add_note, clear_notes, fetch_notes, recolor_note, remove_note, rename_note, NotesStore,
+    add_note, clear_notes, describe_note, fetch_notes, recolor_note, remove_note, rename_note,
+    retag_note, NotesStore,
 };
 use signal_cache::SignalCacheStore;
 use system_log::SystemLog;
@@ -573,6 +574,8 @@ pub fn run() -> ! {
             add_note,
             rename_note,
             recolor_note,
+            describe_note,
+            retag_note,
             remove_note,
             clear_notes,
             frame_indices_at_ns,

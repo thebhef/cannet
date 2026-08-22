@@ -82,6 +82,18 @@ pub struct Note {
     /// `foreground_color`. `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub color: Option<String>,
+    /// Optional free-text body — the "why" behind the label, which the
+    /// event view discloses on demand rather than in the row. Editable on a
+    /// user-authored event; a host-derived one fills it in with the detail
+    /// behind its summary. `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Optional user-defined tag — the axis the event view filters on
+    /// beside the kind, so a user can pick out their own class of marker
+    /// ("fault", "contactor") within a kind. `#[serde(default)]` for
+    /// back-compat.
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 /// Where a timeline event came from (ADR 0035). The category, not the
@@ -364,6 +376,34 @@ impl NotesStore {
         })
     }
 
+    /// Set or clear a note's description (ADR 0035) — the disclosed body.
+    /// `None` return if `id` is unknown.
+    pub fn describe(&self, id: &str, description: Option<String>) -> Option<Applied> {
+        {
+            let mut guard = self.inner.lock().expect("notes mutex poisoned");
+            let slot = guard.iter_mut().find(|n| n.id == id)?;
+            slot.description = description.filter(|d| !d.is_empty());
+        }
+        self.persist();
+        Some(Applied {
+            notes: self.events(),
+        })
+    }
+
+    /// Set or clear a note's user-defined tag (ADR 0035). `None` return if
+    /// `id` is unknown.
+    pub fn retag(&self, id: &str, tag: Option<String>) -> Option<Applied> {
+        {
+            let mut guard = self.inner.lock().expect("notes mutex poisoned");
+            let slot = guard.iter_mut().find(|n| n.id == id)?;
+            slot.tag = tag.filter(|t| !t.is_empty());
+        }
+        self.persist();
+        Some(Applied {
+            notes: self.events(),
+        })
+    }
+
     /// Remove a note. `None` if `id` is unknown.
     pub fn remove(&self, id: &str) -> Option<Applied> {
         {
@@ -488,6 +528,27 @@ pub(crate) fn recolor_note(app: AppHandle, id: String, color: Option<String>) {
     }
 }
 
+/// Set or clear an existing note's description (ADR 0035): the body the
+/// event view discloses under the label.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn describe_note(app: AppHandle, id: String, description: Option<String>) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.describe(&id, description) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
+/// Set or clear an existing note's user-defined tag (ADR 0035).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn retag_note(app: AppHandle, id: String, tag: Option<String>) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(applied) = state.notes.retag(&id, tag) {
+        let _ = app.emit("notes-changed", applied.notes);
+    }
+}
+
 /// Remove a note from the session buffer.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -520,6 +581,8 @@ mod tests {
             label: label.into(),
             kind: EventKind::Note,
             color: None,
+            description: None,
+            tag: None,
         }
     }
 
@@ -586,6 +649,42 @@ mod tests {
         let restored = reopened.restore().expect("scratch notes restore");
         assert_eq!(restored[0].color.as_deref(), Some("#00aaff"));
         assert_eq!(restored[0].kind, EventKind::Note);
+    }
+
+    #[test]
+    fn a_description_and_a_tag_survive_a_reopen_and_clear_when_emptied() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = NotesStore::with_scratch(dir.path().to_path_buf());
+        s.add(note("a", 1_000, "one")).unwrap();
+        s.describe("a", Some("contactor opened under load".into()))
+            .unwrap();
+        s.retag("a", Some("fault".into())).unwrap();
+
+        let reopened = NotesStore::with_scratch(dir.path().to_path_buf());
+        let back = reopened.restore().expect("notes.json present");
+        assert_eq!(
+            back[0].description.as_deref(),
+            Some("contactor opened under load")
+        );
+        assert_eq!(back[0].tag.as_deref(), Some("fault"));
+        assert_eq!(back[0].label, "one", "label untouched");
+
+        // An emptied field clears rather than storing "".
+        s.describe("a", Some(String::new())).unwrap();
+        s.retag("a", None).unwrap();
+        assert_eq!(s.snapshot()[0].description, None);
+        assert_eq!(s.snapshot()[0].tag, None);
+        // Unknown ids are no-ops.
+        assert!(s.describe("missing", Some("x".into())).is_none());
+        assert!(s.retag("missing", Some("x".into())).is_none());
+    }
+
+    #[test]
+    fn a_pre_description_note_still_deserializes() {
+        let legacy: Note = serde_json::from_str(r#"{"id":"x","timestampNs":5,"label":"old"}"#)
+            .expect("a note written before descriptions existed");
+        assert_eq!(legacy.description, None);
+        assert_eq!(legacy.tag, None);
     }
 
     #[test]
@@ -748,6 +847,8 @@ mod category_tests {
             label: "bus error".into(),
             kind: EventKind::BusError,
             color: None,
+            description: None,
+            tag: None,
         }
     }
 
@@ -758,6 +859,8 @@ mod category_tests {
             label: "note".into(),
             kind: EventKind::Note,
             color: None,
+            description: None,
+            tag: None,
         }
     }
 

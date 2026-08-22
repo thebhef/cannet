@@ -663,6 +663,46 @@ fn rgb_to_color(rgb: u32) -> Option<String> {
     (rgb != 0).then(|| format!("#{rgb:06X}"))
 }
 
+/// Marks a BLF text field as cannet's structured event payload rather than
+/// opaque text. A field without it is read the way it always was — a bare
+/// id on our own markers, prose on a third party's.
+const EVENT_TEXT_PREFIX: &str = "cannet:event:";
+
+/// Pack the parts of an event a BLF `GLOBAL_MARKER` has no field of its own
+/// for into the marker's `description`: the bare id when there is nothing
+/// else to carry (byte-identical to what a plain note has always written,
+/// and opaque to other tools either way), otherwise
+/// `cannet:event:<tag>\n<id>\n<description>`.
+fn encode_marker_description(note: &Note) -> String {
+    if note.tag.is_none() && note.description.is_none() {
+        return note.id.clone();
+    }
+    format!(
+        "{EVENT_TEXT_PREFIX}{}\n{}\n{}",
+        note.tag.as_deref().unwrap_or_default(),
+        note.id,
+        note.description.as_deref().unwrap_or_default(),
+    )
+}
+
+/// Unpack what [`encode_marker_description`] wrote: `(id, tag, description)`.
+/// Text without the prefix is the bare id, which is what every marker cannet
+/// wrote before the structured form existed.
+fn decode_marker_description(raw: &str) -> (String, Option<String>, Option<String>) {
+    let Some(rest) = raw.strip_prefix(EVENT_TEXT_PREFIX) else {
+        return (raw.to_owned(), None, None);
+    };
+    let mut parts = rest.splitn(3, '\n');
+    let tag = parts.next().unwrap_or_default();
+    let id = parts.next().unwrap_or_default();
+    let description = parts.next().unwrap_or_default();
+    (
+        id.to_owned(),
+        (!tag.is_empty()).then(|| tag.to_owned()),
+        (!description.is_empty()).then(|| description.to_owned()),
+    )
+}
+
 /// Project one BLF `GLOBAL_MARKER` onto a [`Note`]. Marker layout
 /// matches what [`BlfCaptureWriter::append_marker`] emits:
 /// `group_name = "cannet"`, `marker_name = label`, `description = id`.
@@ -676,12 +716,12 @@ pub(crate) fn note_from_marker(
     synthetic_idx: &mut u64,
 ) -> Note {
     let m = &scanned.marker;
-    let id = if m.description.is_empty() {
+    let (id, tag, description) = if m.description.is_empty() {
         let id = format!("blf-marker-{synthetic_idx}");
         *synthetic_idx += 1;
-        id
+        (id, None, None)
     } else {
-        String::from_utf8_lossy(&m.description).into_owned()
+        decode_marker_description(&String::from_utf8_lossy(&m.description))
     };
     Note {
         id,
@@ -689,6 +729,8 @@ pub(crate) fn note_from_marker(
         label: String::from_utf8_lossy(&m.marker_name).into_owned(),
         kind: notes::EventKind::Note,
         color: rgb_to_color(m.foreground_color),
+        description,
+        tag,
     }
 }
 
@@ -713,6 +755,10 @@ pub(crate) fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut 
         label: event.name.clone(),
         kind: notes::EventKind::Note,
         color: event.property(EVENT_COLOR_PROPERTY).map(ToOwned::to_owned),
+        description: event
+            .property(EVENT_DESCRIPTION_PROPERTY)
+            .map(ToOwned::to_owned),
+        tag: event.property(EVENT_TAG_PROPERTY).map(ToOwned::to_owned),
     }
 }
 
@@ -729,9 +775,10 @@ pub(crate) fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut 
 /// `bus_id` is `None` or isn't in `buses` keeps its original wire
 /// channel as a fallback, so a partial mapping never loses data.
 ///
-/// Markers carry the note's `label` as `marker_name` and the note's
-/// `id` as `description`, so a save → open round-trip preserves the
-/// frontend-stable id.
+/// Markers carry the note's `label` as `marker_name` and
+/// [`encode_marker_description`]'s packing as `description`, so a save →
+/// open round-trip preserves the frontend-stable id along with the tag and
+/// the description body.
 pub(crate) fn write_blf_capture(
     blf_path: &str,
     frames: &[trace_store::RawTraceFrame],
@@ -790,7 +837,7 @@ pub(crate) fn write_blf_capture(
                 .append_marker(
                     note.timestamp_ns,
                     &note.label,
-                    &note.id,
+                    &encode_marker_description(note),
                     color_to_rgb(note.color.as_deref()),
                 )
                 .map_err(|e| format!("failed to write marker: {e}"))?;
@@ -956,6 +1003,15 @@ fn event_from_note(note: &Note) -> cannet_mdf::MdfEvent {
     if let Some(color) = note.color.as_deref() {
         properties.push((EVENT_COLOR_PROPERTY.to_owned(), color.to_owned()));
     }
+    if let Some(description) = note.description.as_deref() {
+        properties.push((
+            EVENT_DESCRIPTION_PROPERTY.to_owned(),
+            description.to_owned(),
+        ));
+    }
+    if let Some(tag) = note.tag.as_deref() {
+        properties.push((EVENT_TAG_PROPERTY.to_owned(), tag.to_owned()));
+    }
     cannet_mdf::MdfEvent {
         timestamp_ns: note.timestamp_ns,
         name: note.label.clone(),
@@ -966,6 +1022,8 @@ fn event_from_note(note: &Note) -> cannet_mdf::MdfEvent {
 /// `common_properties` keys a cannet-written MDF event carries.
 pub(crate) const EVENT_ID_PROPERTY: &str = "cannet.id";
 pub(crate) const EVENT_COLOR_PROPERTY: &str = "cannet.color";
+pub(crate) const EVENT_DESCRIPTION_PROPERTY: &str = "cannet.description";
+pub(crate) const EVENT_TAG_PROPERTY: &str = "cannet.tag";
 
 /// The project's loaded DBCs as embedded attachments, read back off disk
 /// at save time. A DBC that has since moved or been deleted is skipped
