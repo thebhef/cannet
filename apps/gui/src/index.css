@@ -3143,8 +3143,10 @@ button.color-chip {
   overflow-x: hidden;
 }
 
-.plot-panel-toolbar .combobox-trigger,
-.plot-panel-toolbar button {
+/* The run controls are still the shipped buttons; everything else on
+   this bar is a chip, and a bar-wide `button` rule would out-specify
+   `.status-chip` (0,1,1 beats 0,1,0) and restyle the lot. */
+.plot-panel-toolbar .trace-controls button {
   background: var(--surface-control);
   color: var(--text-primary);
   border: 1px solid var(--border-default);
@@ -3154,13 +3156,6 @@ button.color-chip {
   font-size: 0.82rem;
 }
 
-.plot-panel-toolbar label.checkbox {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  user-select: none;
-  font-size: 0.85rem;
-}
 
 /* The stack of plot areas fills the rest of the panel; if there are
    more areas than fit at their minimum height it scrolls. */
@@ -4371,38 +4366,61 @@ button.color-chip {
   font: inherit;
   font-size: 0.8rem;
 }
-/* Solo control: the panel-wide "show only these series" regex box, its
-   step controls and its position read-out. */
-.plot-solo {
-  display: flex;
+/* === Chip-shaped text field ===
+   A single-line input wearing the chip silhouette, so a bar of chips
+   with a box in it still reads as one row of one kind of thing. The
+   hairline is the field's; the input inside it has none of its own. */
+.chip-field {
+  display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  font-size: 0.8rem;
-  color: var(--text-muted);
+  gap: 0.3rem;
+  height: 22px;
+  padding: 0 0.4rem;
+  background: var(--surface-field);
+  border: 1px solid var(--border-wash);
+  border-radius: 2px;
+}
+.chip-field svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: var(--text-faint);
+}
+.chip-field input {
+  font: inherit;
+  font-size: 0.75rem;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-body);
+  min-width: 0;
+}
+/* === end chip-shaped text field === */
+
+/* Solo control: the panel-wide "show only these series" regex box, its
+   paging segment and its clear. The three are one control wearing
+   three hats, which is why the fit planner carries them as one
+   cluster. */
+.plot-solo {
+  flex: none;
 }
 .plot-solo-input {
   width: 7rem;
-  background: var(--surface-control);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  padding: 0.1rem 0.3rem;
-  font: inherit;
-  font-size: 0.8rem;
 }
 .plot-solo-input[aria-invalid="true"] {
-  border-color: var(--danger-text);
+  color: var(--danger-text);
 }
 .plot-solo-error {
   color: var(--danger-text);
   font-size: 0.72rem;
 }
+/* The read-out is data, not a state, and it changes length as pages
+   and match counts do. Fixed to its longest ordinary form so the chips
+   beside it do not shuffle as solo is stepped. */
 .plot-solo-pos {
-  color: var(--text-faint);
-  font-size: 0.72rem;
+  width: 5rem;
+  justify-content: center;
   font-variant-numeric: tabular-nums;
-  min-width: 2.5rem;
-  text-align: center;
 }
 /* The pattern parses but selects nothing — distinct from an ordinary
  * position label (`soloLabel`'s "no matches" form), so it doesn't read
@@ -4411,43 +4429,27 @@ button.color-chip {
   color: var(--danger-text-muted);
   font-style: italic;
 }
-/* Clickable whenever there's a match list behind it — left-click opens
- * the same `SoloMatchMenu` right-click does. */
-.plot-solo-pos-clickable {
-  cursor: pointer;
+/* The points chip cycles through three words of different lengths.
+   Sized to the longest, the same way the connection chip is sized to
+   its longest state: a control that resizes as it is pressed drags
+   the whole bar with it. */
+.plot-points-chip {
+  width: 5.6rem;
+  justify-content: flex-start;
 }
-.plot-solo-pos-clickable:hover {
-  color: var(--text-secondary);
-}
-.plot-solo-step,
-.plot-solo-clear {
-  background: none;
-  border: 1px solid var(--border-strong);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.7rem;
-  padding: 0 0.3rem;
-  border-radius: 3px;
-}
-.plot-solo-step:hover:not(:disabled),
-.plot-solo-clear:hover {
-  background: var(--surface-control-hover);
-}
-/* Nothing to step through — a flat (captureless) pattern, or one that
-   matched nothing. */
-.plot-solo-step:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
+/* The performance read-out: a chip in silhouette, but a read-out — it
+   is a span, not a button, and it is off unless the bar's right-click
+   menu asks for it. Pinned right, and allowed to ellipsise rather than
+   push a control off the bar. */
 .plot-perf {
   margin-left: auto;
-  font-size: 0.72rem;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
-  /* Absorb width changes so adjacent controls don't shift. */
   flex: 0 1 auto;
   min-width: 0;
-  white-space: nowrap;
+  overflow: hidden;
+}
+.plot-perf .status-chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
 }

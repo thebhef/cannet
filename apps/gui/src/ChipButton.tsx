@@ -17,6 +17,8 @@
 /// holds that by comparing the chip's resolved geometry across every
 /// state.
 
+import type { MouseEvent } from "react";
+
 import { Icon, type IconName } from "./Icon";
 import { statusChipBadgeText, type StatusChipState } from "./StatusChip";
 
@@ -57,7 +59,10 @@ export interface ChipButtonProps {
   /// one to read out.
   ariaLabel?: string;
   disabled?: boolean;
-  onPress: () => void;
+  /// What pressing it does. It is handed the click, because a chip
+  /// that opens a menu at the pointer needs to know where the
+  /// pointer was; handlers that don't care simply ignore it.
+  onPress: (event: MouseEvent<HTMLButtonElement>) => void;
   /// The caller's own class — a width modifier, or a query hook for its
   /// own tests.
   className?: string;

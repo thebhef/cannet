@@ -16,12 +16,16 @@ import {
 } from "./perfInteract";
 
 /** A stand-in for the panels the script gestures at: uPlot's overlay
- * element, the trace rows pane, and the panel's follow-live checkbox. */
-function mountTargets(): { wheels: WheelEvent[]; rows: HTMLElement; box: HTMLInputElement } {
+ * element, the trace rows pane, and the plot toolbar's follow-live chip
+ * — the real markup, because the script finds it by that markup. */
+function mountTargets(): { wheels: WheelEvent[]; rows: HTMLElement; follow: HTMLButtonElement } {
   document.body.innerHTML = `
     <div class="u-over"></div>
     <div class="trace-rows"></div>
-    <label class="checkbox"><input type="checkbox" /> follow live</label>
+    <div class="plot-panel-toolbar">
+      <button type="button" class="status-chip chip-button"
+              aria-label="Follow Live" aria-pressed="true">Follow</button>
+    </div>
   `;
   const over = document.querySelector<HTMLElement>(".u-over")!;
   // jsdom has no layout, so the element's rect is all zeros and the
@@ -35,9 +39,11 @@ function mountTargets(): { wheels: WheelEvent[]; rows: HTMLElement; box: HTMLInp
   // jsdom has no layout, so `scrollTop` is a plain settable property —
   // enough to assert the gesture moved it.
   rows.scrollTop = 5000;
-  const box = document.querySelector<HTMLInputElement>("input[type=checkbox]")!;
-  box.checked = true;
-  return { wheels, rows, box };
+  const follow = document.querySelector<HTMLButtonElement>('[aria-label="Follow Live"]')!;
+  follow.addEventListener("click", () =>
+    follow.setAttribute("aria-pressed", String(follow.getAttribute("aria-pressed") !== "true")),
+  );
+  return { wheels, rows, follow };
 }
 
 /** Run ticks `[from, to)` and collect the labels of what happened. */
@@ -101,11 +107,12 @@ describe("perfInteractTick", () => {
   it("puts follow-live back after the pans that dropped it", () => {
     // Panning x is how a user leaves follow-live, so a script that pans
     // and never resumes measures a parked plot for the rest of the run.
-    const { box } = mountTargets();
+    const { follow } = mountTargets();
     drive(0, WARMUP_TICKS);
-    box.checked = false; // what the pan gestures do to the real panel
+    // What the pan gestures do to the real panel.
+    follow.setAttribute("aria-pressed", "false");
     expect(drive(WARMUP_TICKS + 8, WARMUP_TICKS + 9)).toEqual(["plot.follow-live"]);
-    expect(box.checked).toBe(true);
+    expect(follow.getAttribute("aria-pressed")).toBe("true");
     // Already following: nothing to do, and no spurious click.
     expect(drive(WARMUP_TICKS + 8, WARMUP_TICKS + 9)).toEqual([]);
   });

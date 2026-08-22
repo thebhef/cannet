@@ -596,6 +596,17 @@ function renderPanel(opts?: {
   };
 }
 
+/// The toolbar's follow-live control. It is a chip toggle now, so its
+/// position is `aria-pressed` rather than a checkbox's `checked`.
+function followChip(): HTMLButtonElement {
+  return screen.getByRole("button", { name: "Follow Live" });
+}
+
+/// The points chip's current state, read off its own words.
+function pointsMode(): string {
+  return screen.getByRole("button", { name: "Show Points" }).textContent ?? "";
+}
+
 /// The areas as the panel last persisted them — what a reload would
 /// parse back. `persist` dual-writes into the dockview params, so the
 /// newest `updateParameters` call carrying an `areas` array is it.
@@ -753,10 +764,12 @@ describe("PlotPanel", () => {
     renderPanel();
     expect(screen.getByText("Area 1")).toBeInTheDocument();
     expect(screen.queryByText("Area 2")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "add plot area" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "fit data" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /measurements/i })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: /follow live/i })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Add Plot Area" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Fit Data" })).toBeInTheDocument();
+    for (const name of ["X Cursors", "Y Cursors", "Notes"]) {
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
+    }
+    expect(followChip()).toHaveAttribute("aria-pressed", "true");
     expect(document.querySelector(".plot-meas-strip")).toBeNull();
   });
 
@@ -767,7 +780,7 @@ describe("PlotPanel", () => {
 
   it("adds plot areas and exposes a remove affordance per area when >1", () => {
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
     expect(screen.getByText("Area 2")).toBeInTheDocument();
     expect(screen.getAllByTitle("remove this plot area").length).toBe(2);
     // Removing one returns to a single, non-removable area.
@@ -781,7 +794,7 @@ describe("PlotPanel", () => {
     // so the reorder is observable through the *signals* each stacked
     // area holds, not through its label.
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
     dropSignal("Area 1", "TopSignal", "rpm");
     dropSignal("Area 2", "BottomSignal", "rpm");
     const stackedSignal = () =>
@@ -949,7 +962,7 @@ describe("PlotPanel", () => {
     renderPanel();
     addFocusedSignal("EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
     // Pull the panel's elementId off the live signal row that just
     // emitted it. Easier: read it back from the dragstart by firing
     // dragstart on the existing row.
@@ -987,7 +1000,7 @@ describe("PlotPanel", () => {
     renderPanel();
     addFocusedSignal("EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
     // Drop the signal onto Area 2. The drag payload is the full SignalRef.
     const MIME = "application/x-cannet-plot-signal";
     const payload = JSON.stringify({
@@ -1016,10 +1029,14 @@ describe("PlotPanel", () => {
     expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
   });
 
-  it("toggling measurements shows the readout strip with the default cells", () => {
+  it("shows the measurement strip with the default cells when a saved config asked for it", () => {
+    // The strip needs rework and stays hidden until it gets it: the bar
+    // carries no toggle for it, so the only way in is a config that
+    // already had it on.
     renderPanel();
     expect(document.querySelector(".plot-meas-strip")).toBeNull();
-    fireEvent.click(screen.getByRole("checkbox", { name: /measurements/i }));
+    cleanup();
+    renderPanel({ params: { measEnabled: true } });
     expect(document.querySelector(".plot-meas-strip")).not.toBeNull();
     expect(screen.getByText("Δt")).toBeInTheDocument();
   });
@@ -1298,49 +1315,49 @@ describe("PlotPanel", () => {
     // per-trace cells must enumerate the *derived* axes (where
     // reportSeries stores each axis's series), and each signal lives
     // in exactly one derived axis, so per-unit mode shows one cell
-    // set per signal — not zero (lookup miss) and not duplicates.
-    renderPanel();
+    // set per signal — not zero (lookup miss) and not duplicates. The
+    // strip has no toggle any more, so it comes on from the config.
+    renderPanel({ params: { measEnabled: true } });
     addFocusedSignal("EngineSpeed");
     await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
     addFocusedSignal("EngineTemp");
     await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
     await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
-    fireEvent.click(screen.getByRole("checkbox", { name: /measurements/i }));
     // Default measurement keys include the per-trace value@A cell.
     expect(screen.getAllByText(/EngineData\.EngineSpeed @A/).length).toBe(1);
     expect(screen.getAllByText(/EngineData\.EngineTemp @A/).length).toBe(1);
   });
 
-  it("show-points tri-state defaults to auto and persists to panel params", async () => {
+  it("show-points tri-state defaults to auto and persists to panel params", () => {
     const { api } = renderPanel();
-    const sel = screen.getByLabelText("show points");
-    expect(comboboxValue(sel)).toBe("auto");
-    await pickCombobox(sel, "on");
-    expect(comboboxValue(sel)).toBe("on");
+    expect(pointsMode()).toBe("Points: Auto");
+    // The chip cycles: auto → off → on → auto.
+    fireEvent.click(screen.getByRole("button", { name: "Show Points" }));
+    expect(pointsMode()).toBe("Points: Off");
+    fireEvent.click(screen.getByRole("button", { name: "Show Points" }));
+    expect(pointsMode()).toBe("Points: On");
     // Last updateParameters call carries the new mode.
     const calls = api.updateParameters.mock.calls;
     const lastCall = calls[calls.length - 1]?.[0] ?? {};
     expect(lastCall.showPoints).toBe("on");
-    await pickCombobox(sel, "off");
-    expect(comboboxValue(screen.getByLabelText("show points"))).toBe("off");
   });
 
-  it("the points and cursor-mode dropdowns take a real press with measurements on", async () => {
-    // The toolbar's dropdowns used to vanish with no effect when a row
+  it("the points and cursor-mode controls take a real press with measurements on", () => {
+    // The toolbar's controls used to vanish with no effect when a row
     // was pressed: the panel root claims focus on any mousedown that
-    // isn't already headed for a focusable, and the dropdown's rows
-    // reach it through the portal's React-tree bubbling. Driven with
-    // measurements enabled — the state the report was made in — though
-    // the panel's focus claim never consulted it.
-    renderPanel();
-    fireEvent.click(screen.getByRole("checkbox", { name: /measurements/i }));
-    const points = screen.getByLabelText("show points");
-    await pickCombobox(points, "on");
-    expect(comboboxValue(screen.getByLabelText("show points"))).toBe("on");
-    const cursors = screen.getByLabelText("cursors");
-    expect(comboboxValue(cursors)).toBe("off");
-    await pickCombobox(cursors, "x");
-    expect(comboboxValue(screen.getByLabelText("cursors"))).toBe("x");
+    // isn't already headed for a focusable. Driven with measurements
+    // enabled — the state the report was made in — though the panel's
+    // focus claim never consulted it.
+    renderPanel({ params: { measEnabled: true } });
+    fireEvent.click(screen.getByRole("button", { name: "Show Points" }));
+    expect(pointsMode()).toBe("Points: Off");
+    const xCursors = screen.getByRole("button", { name: "X Cursors" });
+    expect(xCursors).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(xCursors);
+    expect(screen.getByRole("button", { name: "X Cursors" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("restores its signals from the element's config when reopened with bare params", () => {
@@ -1526,7 +1543,7 @@ describe("PlotPanel", () => {
       renderPanel();
       addFocusedSignal("EngineSpeed");
       await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
       const area1 = screen.getByText("Area 1").closest(".plot-area")!;
       const area2 = screen.getByText("Area 2").closest(".plot-area")!;
       const instFor = (areaEl: Element) => {
@@ -1603,7 +1620,7 @@ describe("PlotPanel", () => {
       renderPanel();
       addFocusedSignal("EngineSpeed");
       await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
       const area1 = screen.getByText("Area 1").closest(".plot-area")!;
       const area2 = screen.getByText("Area 2").closest(".plot-area")!;
       const instFor = (areaEl: Element) => {
@@ -1668,7 +1685,8 @@ describe("PlotPanel", () => {
       expect(await hoverMarkersOn(uNum, uLane, 190)).toEqual([2]);
       expect(await hoverMarkersOn(uNum, uLane, -10)).toEqual([]);
       // The mode still means what it meant: `off` is off, hover or not.
-      await pickCombobox(screen.getByLabelText("show points"), "off");
+      // `auto` → `off` is one press of the cycling chip.
+      fireEvent.click(screen.getByRole("button", { name: "Show Points" }));
       await waitFor(() => expect(instFor(lanes)).toBeTruthy());
       expect(await hoverMarkersOn(instFor(numeric)!, instFor(lanes)!, 190)).toEqual([]);
     } finally {
@@ -2376,18 +2394,17 @@ describe("PlotPanel command registration (f / l hotkeys)", () => {
 
   it("plot.followLive.enable re-enables follow live (enable-only)", () => {
     const commands = renderWithCommands();
-    const checkbox = screen.getByRole("checkbox", { name: /follow live/i });
-    fireEvent.click(checkbox);
-    expect(checkbox).not.toBeChecked();
+    fireEvent.click(followChip());
+    expect(followChip()).toHaveAttribute("aria-pressed", "false");
     act(() => {
       commands.invoke("el-test", "plot.followLive.enable");
     });
-    expect(checkbox).toBeChecked();
+    expect(followChip()).toHaveAttribute("aria-pressed", "true");
     // Enable-only: invoking again must not toggle it back off.
     act(() => {
       commands.invoke("el-test", "plot.followLive.enable");
     });
-    expect(checkbox).toBeChecked();
+    expect(followChip()).toHaveAttribute("aria-pressed", "true");
   });
 
   it("panel.find focuses and selects the solo pattern box", () => {
@@ -2483,15 +2500,14 @@ describe("plot.setVisibleRange", () => {
       renderPanel({ params: { elementId: STOPPED.id }, registry: makeRegistry(STOPPED), commands });
       addFocusedSignal("EngineSpeed");
       await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
-      const checkbox = screen.getByRole("checkbox", { name: /follow live/i });
-      expect(checkbox).toBeChecked();
+      expect(followChip()).toHaveAttribute("aria-pressed", "true");
 
       act(() => {
         commands.invoke(STOPPED.id, "plot.setVisibleRange", "10 20");
       });
       await act(async () => {});
 
-      expect(checkbox).not.toBeChecked();
+      expect(followChip()).toHaveAttribute("aria-pressed", "false");
     });
   });
 });
@@ -3586,7 +3602,7 @@ describe("PlotPanel Fit Data over a parked window", () => {
   async function pressFitData(inst: FakeUPlotInst): Promise<{ min: number; max: number }> {
     inst.xCalls.length = 0;
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "fit data" }));
+      fireEvent.click(screen.getByRole("button", { name: "Fit Data" }));
     });
     await act(async () => {});
     const last = inst.xCalls[inst.xCalls.length - 1];
@@ -3671,7 +3687,7 @@ describe("PlotPanel Fit Data over a parked window", () => {
     await withSizedCanvas(async () => {
       const { growTrace } = renderPanel();
       addFocusedSignal("EngineSpeed");
-      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
       await act(async () => {
         dropSignal("Area 2", "EngineTemp", "degC");
       });
@@ -5513,7 +5529,7 @@ describe("PlotPanel signal-row selection", () => {
     clickRow("EngineTemp", { ctrlKey: true });
     expect(selectedNames()).toEqual(["EngineSpeed", "EngineTemp"]);
 
-    fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
     await act(async () => dropSignal("Area 2", "LimitNominal", "A"));
     // Ctrl-click, so nothing but the selection can move: it still lands
     // wholly in area 2.
@@ -6029,8 +6045,8 @@ describe("PlotPanel follow-live slide cadence", () => {
       const runFrames = captureFrames();
       renderPanel();
       addFocusedSignal("EngineSpeed");
-      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
-      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
       // A cross-area drop is an *add*, so the same signal can sit in all
       // three areas — enough to give each one a live uPlot.
       await act(async () => dropSignal("Area 2", "EngineSpeed", "rpm"));
@@ -6058,7 +6074,7 @@ describe("PlotPanel follow-live slide cadence", () => {
       try {
         // One resample in every area: toggling follow-live forces one
         // (the panel has to snap on/off the live edge immediately).
-        const follow = screen.getByRole("checkbox", { name: /follow live/i });
+        const follow = followChip();
         await act(async () => fireEvent.click(follow)); // off
         await runFrames();
         for (const a of areas) a.xCalls.length = 0;
@@ -6169,8 +6185,8 @@ describe("PlotPanel follow-live window width", () => {
       await act(async () => {
         inst.fire("setScale", "x");
       });
-      const follow = screen.getByRole("checkbox", { name: /follow live/i });
-      if (!(follow as HTMLInputElement).checked) fireEvent.click(follow);
+      const follow = followChip();
+      if (follow.getAttribute("aria-pressed") !== "true") fireEvent.click(follow);
 
       grow(80);
       inst.xCalls.length = 0;
@@ -6275,7 +6291,7 @@ describe("PlotPanel diagnostic readouts", () => {
     await withSizedCanvas(async () => {
       renderPanel();
       addFocusedSignal("EngineSpeed");
-      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
       await act(async () => dropSignal("Area 2", "EngineSpeed", "rpm"));
       // Past the 250 ms post-mount uPlot rebuild, so its renders aren't
       // counted as steady-state cost.
@@ -6423,7 +6439,7 @@ describe("PlotPanel diagnostic readouts", () => {
       });
       renderPanel({ params: { elementId: "el-memo" }, registry });
       addFocusedSignal("EngineSpeed");
-      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
       await act(async () => dropSignal("Area 2", "EngineSpeed", "rpm"));
       await act(async () => {
         await new Promise((r) => setTimeout(r, 400));
@@ -7030,21 +7046,22 @@ describe("PlotPanel rehydration", () => {
   it("repaints from an externally rewritten config", () => {
     const { control } = renderLive({ areas: oneArea, followLive: true, measEnabled: false });
     expect(document.querySelectorAll(".plot-area").length).toBe(1);
-    expect(screen.getByRole("checkbox", { name: /follow live/i })).toBeChecked();
+    expect(followChip()).toHaveAttribute("aria-pressed", "true");
+    expect(document.querySelector(".plot-meas-strip")).toBeNull();
     act(() => {
       control.update("p1", {
         config: { areas: twoAreas, followLive: false, measEnabled: true },
       } as never);
     });
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
-    expect(screen.getByRole("checkbox", { name: /follow live/i })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: /measurements/i })).toBeChecked();
+    expect(followChip()).toHaveAttribute("aria-pressed", "false");
+    expect(document.querySelector(".plot-meas-strip")).not.toBeNull();
   });
 
   it("keeps the panel's own edit — a persist is not a resync trigger", () => {
     const { control } = renderLive({ areas: oneArea });
     act(() => {
-      fireEvent.click(screen.getByRole("button", { name: "add plot area" }));
+      fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
     });
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
     const cfg = (control.entries()[0].element as { config?: { areas?: unknown[] } }).config;

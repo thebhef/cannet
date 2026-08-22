@@ -24,7 +24,7 @@ import { buildColorResolver } from "./colorMap";
 import { buildSignalColorResolver } from "./signalColorResolver";
 import { useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { useTrace } from "./trace";
-import { TraceControls } from "./TraceControls";
+import { PlotToolbar } from "./PlotToolbar";
 import { useNotes } from "./notesContext";
 import { timelineEvents } from "./notes";
 import { plotTimelineEvents } from "./plotEvents";
@@ -66,7 +66,6 @@ import {
   type LiveEdgeTuning,
 } from "./followWindow";
 import { showPointsFromRaw, type ShowPointsMode } from "./plotPoints";
-import { Combobox, type ComboboxOption } from "./Combobox";
 import { formatElapsed, fracDigitsForSpan } from "./format";
 import { usePanelCommands } from "./panelCommands";
 import { SourcesMenuSection } from "./SourcesPicker";
@@ -171,17 +170,6 @@ const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 /** Stable empty list for areas with no patterns — a fresh `[]` per render
  * would defeat `PlotArea`'s memo. */
 const EMPTY_RESOLUTIONS: readonly PatternResolution[] = [];
-const SHOW_POINTS_OPTIONS: ComboboxOption[] = [
-  { value: "auto", label: "auto" },
-  { value: "off", label: "off" },
-  { value: "on", label: "on" },
-];
-const CURSOR_MODE_OPTIONS: ComboboxOption[] = [
-  { value: "off", label: "off" },
-  { value: "x", label: "X (A / B)" },
-  { value: "y", label: "Y (H1 / H2)" },
-  { value: "note", label: "+ note" },
-];
 /** How far the follow-live clock may fall behind the data edge before it
  * gives up nudging and resyncs hard (a stalled loop, a backgrounded
  * tab). Generous, because the nudge below closes ordinary errors on its
@@ -301,7 +289,7 @@ import {
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { usePlotBadge } from "./usePlotBadge";
 import { PlotArea } from "./PlotArea";
-import { MeasurementMenu, PlotMeasurementStrip, type PlottedSignal } from "./PlotMeasurements";
+import { PlotMeasurementStrip, type PlottedSignal } from "./PlotMeasurements";
 
 
 /**
@@ -2368,6 +2356,17 @@ export function PlotPanel(props: IDockviewPanelProps) {
   /// both show it and key the no-matches styling off the same value
   /// `soloLabel` already commits to (its doc comment nails the literal
   /// string down as one of its three unambiguous forms).
+  /// The performance read-out as one line. Hidden unless the bar's
+  /// right-click menu asks for it — it is a diagnostic, and a row of
+  /// numbers that changes width every tick sits badly beside controls
+  /// that must not move.
+  const perfText =
+    `${live && badge.value.rateHz > 0 ? `${Math.round(badge.value.rateHz)} Hz` : "—"} · ` +
+    `${badge.value.perfMs > 0 ? `${badge.value.perfMs.toFixed(0)} ms` : "—"}` +
+    `${badge.value.hostMs > 0 ? ` (${badge.value.hostMs.toFixed(0)} host)` : ""}` +
+    `${badge.value.jankPct != null ? ` · jank ${badge.value.jankPct.toFixed(1)}%` : ""}` +
+    ` · dpr ${dpr.toFixed(2)} · win ${fmtCount(winFrames)} · cache ${fmtCount(badge.value.cachePts)}`;
+
   const soloPosLabel = soloLabel(
     soloGroupList,
     soloPage,
@@ -2384,160 +2383,41 @@ export function PlotPanel(props: IDockviewPanelProps) {
       onKeyDown={onPanelKeyDown}
       onMouseDown={onPanelMouseDown}
     >
-      <div
-        className="plot-panel-toolbar"
-        onContextMenu={(e) => {
-          // Right-click the *toolbar* to open the panel menu (the
-          // `plot-toolbar-menu` shell hosts the diagnostics toggle and
-          // the sources picker). Deliberately not bound to the whole
-          // panel: right-click + drag over a plot area is uPlot's
-          // zoom gesture, and a plain right-click places cursor B —
-          // a panel-wide handler stole both.
-          e.preventDefault();
-          setToolbarMenuAt({ x: e.clientX, y: e.clientY });
+      <PlotToolbar
+        traceControls={{
+          status: trace.status,
+          onStart: trace.start,
+          onStop: trace.stop,
+          onPause: trace.pause,
+          onResume: trace.resume,
+          onClear: handlePlotClear,
+          onAllData: handleAllData,
         }}
-      >
-        <TraceControls
-          status={trace.status}
-          onStart={trace.start}
-          onStop={trace.stop}
-          onPause={trace.pause}
-          onResume={trace.resume}
-          onClear={handlePlotClear}
-          onAllData={handleAllData}
-        />
-        <span className="plot-toolbar-sep" />
-        <button onClick={addArea}>add plot area</button>
-        <button onClick={fitData}>fit data</button>
-        <button onClick={fitYAll} title="fit each area's y-axis to its currently visible data — useful after zooming in">
-          fit y
-        </button>
-        <label className="checkbox">
-          <input type="checkbox" checked={followLive} onChange={(e) => setFollowLive(e.target.checked)} />
-          follow live
-        </label>
-        <label
-          className="plot-cursor-ctl"
-          title="draw sample points on every series: auto = let uPlot decide based on sample density; off = never draw points; on = always draw points"
-        >
-          points
-          <Combobox
-            options={SHOW_POINTS_OPTIONS}
-            value={showPoints}
-            onChange={(v) => setShowPoints(v as ShowPointsMode)}
-            ariaLabel="show points"
-          />
-        </label>
-        <span className="plot-toolbar-sep" />
-        <label
-          className="plot-solo"
-          title="solo: show only the series whose bus/ecu/message/signal path matches this regex — the same dialect an area's pattern filter speaks (case-sensitive, partial, so a bare name matches too). Everything else is masked out of the view — no series' own hide state is changed, and clearing the box (or Escape) brings the full view back. Right-click for the match list, and tick any subset of it to show exactly those."
-          onContextMenu={(e) => {
-            // The control's own menu, not the toolbar's — stop the
-            // event either way, so a right-click aimed at solo never
-            // opens the unrelated panel menu behind it.
-            e.preventDefault();
-            e.stopPropagation();
-            if (soloMenuItems.length === 0) return;
-            setSoloMenuAt({ x: e.clientX, y: e.clientY });
-          }}
-        >
-          solo
-          <input
-            ref={soloInputRef}
-            className="plot-solo-input"
-            aria-label="solo pattern"
-            aria-invalid={soloInvalid || undefined}
-            placeholder="regex"
-            value={solo.pattern}
-            onChange={(e) => setSoloPattern(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                e.stopPropagation();
-                clearSolo();
-              }
-            }}
-          />
-          {soloInvalid && <span className="plot-solo-error">bad regex</span>}
-          {solo.pattern !== "" && !soloInvalid && (
-            <>
-              <button
-                className="plot-solo-step"
-                aria-label="previous solo match"
-                title="previous page (PgUp) — the cycle runs all → page 1 → … → page N → all"
-                // Nothing to step through: a pattern that captures
-                // nothing filters flat, and one that matches nothing has
-                // no pages either. Disabled rather than silently inert.
-                disabled={soloPages === 0}
-                onClick={() => stepSoloBy(-1)}
-              >
-                ‹
-              </button>
-              <span
-                className={`plot-solo-pos${soloPosLabel === "no matches" ? " plot-solo-pos-empty" : ""}${soloMenuItems.length > 0 ? " plot-solo-pos-clickable" : ""}`}
-                aria-label="solo position"
-                title="what solo has on show — the whole matched set, a page of groups, or the subset you ticked — and how many of the matches that is; click for the match list"
-                onClick={(e) => {
-                  // Same menu the control's own right-click opens
-                  // (below); left-click is the more discoverable
-                  // gesture for "open the list", so it opens it too.
-                  if (soloMenuItems.length === 0) return;
-                  setSoloMenuAt({ x: e.clientX, y: e.clientY });
-                }}
-              >
-                {soloPosLabel}
-              </span>
-              <button
-                className="plot-solo-step"
-                aria-label="next solo match"
-                title="next page (PgDn) — the cycle runs all → page 1 → … → page N → all"
-                disabled={soloPages === 0}
-                onClick={() => stepSoloBy(1)}
-              >
-                ›
-              </button>
-            </>
-          )}
-          {solo.pattern !== "" && (
-            <button
-              className="plot-solo-clear"
-              aria-label="clear solo"
-              title="clear solo — every series goes back to its own visibility"
-              onClick={clearSolo}
-            >
-              ×
-            </button>
-          )}
-        </label>
-        <span className="plot-toolbar-sep" />
-        <label className="plot-cursor-ctl">
-          cursors
-          <Combobox
-            options={CURSOR_MODE_OPTIONS}
-            value={cursorMode}
-            onChange={(v) => setCursorMode(v as CursorMode)}
-          />
-        </label>
-        <button onClick={clearCursors} title="remove all placed cursors">
-          clear cursors
-        </button>
-        <label className="checkbox">
-          <input type="checkbox" checked={measEnabled} onChange={(e) => setMeasEnabled(e.target.checked)} />
-          measurements
-        </label>
-        {measEnabled && <MeasurementMenu measKeys={measKeys} onChange={setMeasKeys} />}
-        <span className="plot-toolbar-sep" />
-        <span
-          className="plot-perf"
-          title="update rate · worst recent resample (host slice + decode in parens) · device pixel ratio · frames in trace window · cached plot points (biggest area)"
-        >
-          {live && badge.value.rateHz > 0 ? `${Math.round(badge.value.rateHz)} Hz` : "—"} ·{" "}
-          {badge.value.perfMs > 0 ? `${badge.value.perfMs.toFixed(0)} ms` : "—"}
-          {badge.value.hostMs > 0 ? ` (${badge.value.hostMs.toFixed(0)} host)` : ""}
-          {badge.value.jankPct != null ? ` · jank ${badge.value.jankPct.toFixed(1)}%` : ""} · dpr{" "}
-          {dpr.toFixed(2)} · win {fmtCount(winFrames)} · cache {fmtCount(badge.value.cachePts)}
-        </span>
-      </div>
+        onAddArea={addArea}
+        onFitX={fitData}
+        onFitY={fitYAll}
+        followLive={followLive}
+        onFollowLive={setFollowLive}
+        showPoints={showPoints}
+        onShowPoints={setShowPoints}
+        solo={{
+          pattern: solo.pattern,
+          invalid: soloInvalid,
+          pages: soloPages,
+          positionLabel: soloPosLabel,
+          hasMatches: soloMenuItems.length > 0,
+          inputRef: soloInputRef,
+          onPattern: setSoloPattern,
+          onStep: stepSoloBy,
+          onClear: clearSolo,
+          onOpenMatches: setSoloMenuAt,
+        }}
+        cursorMode={cursorMode}
+        onCursorMode={setCursorMode}
+        onClearCursors={clearCursors}
+        perfText={perfText}
+        onOpenMenu={setToolbarMenuAt}
+      />
       {soloMenuAt && soloMenuItems.length > 0 && (
         <SoloMatchMenu
           position={soloMenuAt}

@@ -205,6 +205,17 @@ function findButton(label: string): HTMLButtonElement {
   return btn;
 }
 
+/// A chip outside the toolbar, by its accessible name. A chip's words
+/// are short or absent, so its name is what it is found by — the same
+/// rule `toolbarChip` follows for the application bar.
+function findChip(name: string): HTMLButtonElement {
+  const chip = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.getAttribute("aria-label") === name);
+  if (!chip) throw new Error(`chip "${name}" not found`);
+  return chip;
+}
+
 /// The trace panel's selected view mode, as its toolbar shows it.
 function traceMode(): string {
   return Array.from(document.querySelectorAll(".trace-panel .mode-toggle button.active"))
@@ -416,7 +427,7 @@ describe("element undo", () => {
     // A view change, so the element carries state the restore has to
     // bring back with it.
     await act(async () => {
-      fireEvent.click(findButton("add plot area"));
+      fireEvent.click(findChip("Add Plot Area"));
     });
     await waitFor(() => {
       if (document.querySelectorAll(".plot-panel .plot-area").length !== 2)
@@ -479,7 +490,7 @@ describe("element undo", () => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
     });
     await act(async () => {
-      fireEvent.click(findButton("add plot area"));
+      fireEvent.click(findChip("Add Plot Area"));
     });
     // Send the next panel to the trace's group instead: bring the
     // project panel forward, focus the trace from its inventory, then
@@ -592,7 +603,7 @@ describe("element undo", () => {
         if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
       });
       await act(async () => {
-        fireEvent.click(findButton("add plot area"));
+        fireEvent.click(findChip("Add Plot Area"));
       });
       await waitFor(() => {
         if (!document.querySelector(".plot-area-splitter")) throw new Error("no splitter yet");
