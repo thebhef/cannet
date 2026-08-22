@@ -42,6 +42,8 @@ import { arrayRowSpace } from "./gridviewRows";
 import { usePanelCommands } from "./panelCommands";
 import { DBC_PANEL_ID } from "./dockLayout";
 import { NameText } from "./NameText";
+import { ChipButton } from "./ChipButton";
+import { Icon } from "./Icon";
 
 /**
  * The **Database** panel: the one catalog surface over every
@@ -1375,30 +1377,28 @@ export function DatabasePanel(props: IDockviewPanelProps) {
   return (
     <div className="dbc-panel">
       <div className="dbc-panel-toolbar">
-        <GridviewFilterBox
-          filter={filter}
-          className="dbc-panel-search"
-          placeholder="search messages, signals, comments, attributes…"
-          ariaLabel="search database content"
-          matchCountClassName="dbc-panel-match-count"
-          inputRef={searchInputRef}
+        <span className="chip-field dbc-panel-search" title="search messages, signals, comments, attributes…">
+          <Icon name="search" />
+          <GridviewFilterBox
+            filter={filter}
+            placeholder="search messages, signals, comments, attributes…"
+            ariaLabel="search database content"
+            matchCountClassName="dbc-panel-match-count"
+            inputRef={searchInputRef}
+          />
+        </span>
+        <ChipButton
+          label="Details"
+          title="show bit layout, scale, range, attributes, value table for every signal"
+          pressed={showDetails}
+          onPress={() => setShowDetails((v) => !v)}
         />
-        <label className="dbc-panel-details-toggle" title="show bit layout, scale, range, attributes, value table for every signal">
-          <input
-            type="checkbox"
-            checked={showDetails}
-            onChange={(e) => setShowDetails(e.target.checked)}
-          />
-          details
-        </label>
-        <label className="dbc-panel-details-toggle" title="show each signal's live decoded value (latest frame; mux-aware)">
-          <input
-            type="checkbox"
-            checked={showValues}
-            onChange={(e) => setShowValues(e.target.checked)}
-          />
-          values
-        </label>
+        <ChipButton
+          label="Values"
+          title="show each signal's live decoded value (latest frame; mux-aware)"
+          pressed={showValues}
+          onPress={() => setShowValues((v) => !v)}
+        />
       </div>
       {/* The tree is the gridview container: it holds focus and names
           the active row, and its marker keeps the global dispatcher off
