@@ -212,6 +212,12 @@ pub struct BlfReader {
     /// Size of the incomplete record the walk stopped on, once one has
     /// been met. See [`Self::truncated_tail_bytes`].
     truncated_tail_bytes: Option<u64>,
+    /// The file's length in bytes, read once at open. See
+    /// [`Self::file_bytes`].
+    file_bytes: u64,
+    /// How much of the file has been pulled off disk so far. See
+    /// [`Self::disk_bytes_read`].
+    disk_bytes_read: u64,
 }
 
 impl BlfReader {
@@ -219,6 +225,7 @@ impl BlfReader {
     /// and position the cursor on the first top-level object.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, BlfReadError> {
         let mut file = File::open(path)?;
+        let file_bytes = file.metadata()?.len();
         let mut header = vec![0u8; FILE_STATISTICS_MIN_BYTES];
         file.read_exact(&mut header)?;
         let file_statistics = FileStatistics::parse(&header)?;
@@ -236,7 +243,31 @@ impl BlfReader {
             tail_pos: 0,
             disk_eof: false,
             truncated_tail_bytes: None,
+            file_bytes,
+            disk_bytes_read: u64::from(file_statistics.statistics_size),
         })
+    }
+
+    /// The file's length in bytes, as it was at open.
+    ///
+    /// The denominator a walk over this reader can report progress
+    /// against: a header-only census discovers the frame count as it
+    /// goes, so frames are not a total it knows in advance, while the
+    /// file's length is known before the first record is read.
+    pub fn file_bytes(&self) -> u64 {
+        self.file_bytes
+    }
+
+    /// How many of [`Self::file_bytes`] have been pulled off disk so
+    /// far — the header plus every top-level record consumed.
+    ///
+    /// Advances a whole top-level record at a time, because that is the
+    /// unit the reader pulls in; it does not creep forward per decoded
+    /// object. It reaches [`Self::file_bytes`] once the walk ends,
+    /// whether the file ended cleanly or on a trailing fragment — the
+    /// fragment's bytes were read too, they just did not decode.
+    pub fn disk_bytes_read(&self) -> u64 {
+        self.disk_bytes_read
     }
 
     /// Size of the incomplete record the walk stopped on, or `None`
@@ -413,6 +444,7 @@ impl BlfReader {
         loop {
             let mut base_buf = [0u8; OBJECT_HEADER_BASE_BYTES];
             let got = read_up_to(&mut self.file, &mut base_buf)?;
+            self.disk_bytes_read += got as u64;
             if got < OBJECT_HEADER_BASE_BYTES {
                 // `got == 0` is a clean end of file; anything else is a
                 // record the writer never finished, which ends the walk
@@ -426,6 +458,7 @@ impl BlfReader {
             let padding = (base.object_size % 4) as usize;
             let mut body = vec![0u8; body_len + padding];
             let got = read_up_to(&mut self.file, &mut body)?;
+            self.disk_bytes_read += got as u64;
             if got < body_len {
                 // The record's own bytes are incomplete. A short read
                 // that only clipped the inter-object padding is not:

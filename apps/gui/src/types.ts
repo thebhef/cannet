@@ -117,6 +117,29 @@ export type LogFinished =
   | { status: "ok"; total: number }
   | { status: "error"; message: string };
 
+/// How far the trace load in flight has got (`load-progress`, mirrors
+/// `ipc.rs::LoadProgress`). Opening a capture is two walks over the same
+/// file and each is determinate on a different quantity: the census
+/// discovers the frame count, so it reports against the file's length,
+/// while the import already knows the count exactly and reports against
+/// frames. A phase with no denominator — a live session's pump — emits
+/// nothing at all rather than an indeterminate report.
+export type LoadProgress =
+  | { phase: "census"; bytes_read: number; total_bytes: number }
+  | { phase: "import"; frames: number; total_frames: number };
+
+/// How far the cold pyramid rebuild a restore forced has got
+/// (`signal_pyramids_rebuilding`, mirrors `ipc.rs::RebuildProgressRecord`).
+/// Polled rather than pushed: the answer is where the caches' decode
+/// cursors have reached, and no single moment in the host corresponds to
+/// it. `total` is zero while a rebuild is owed but nothing has been
+/// plotted yet, so there is no cursor to measure.
+export interface RebuildProgress {
+  rebuilding: boolean;
+  decoded: number;
+  total: number;
+}
+
 export interface OpenLogResult {
   blf_path: string;
 }

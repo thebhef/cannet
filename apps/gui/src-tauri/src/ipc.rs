@@ -582,6 +582,55 @@ pub enum LogFinished {
     Error { message: String },
 }
 
+/// How far the cold pyramid rebuild a restore forced (ADR 0047) has
+/// got — a queried fact rather than an event, because the answer is
+/// derived from where the caches' decode cursors have reached and there
+/// is no single moment for the host to fire.
+///
+/// `decoded` / `total` are frames across the pyramids being rebuilt.
+/// `total` is zero while a rebuild is owed but no plot has served yet,
+/// so no cache exists to have a cursor: a real state, and the caller
+/// shows an indeterminate wait for it rather than inventing a fraction.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RebuildProgressRecord {
+    pub rebuilding: bool,
+    pub decoded: u64,
+    pub total: u64,
+}
+
+impl From<crate::signal_cache::RebuildProgress> for RebuildProgressRecord {
+    fn from(p: crate::signal_cache::RebuildProgress) -> Self {
+        Self {
+            rebuilding: p.rebuilding,
+            decoded: p.decoded,
+            total: p.total,
+        }
+    }
+}
+
+/// How far the trace load in flight has got.
+///
+/// Opening a capture is two walks over the same file and each is
+/// determinate on a different quantity, so this is one event with two
+/// shapes rather than one pair of numbers that means different things
+/// at different times:
+///
+/// - the **census** discovers the frame count, so frames are not a
+///   total it knows before it starts; the file's length is, and that is
+///   what it counts against;
+/// - the **import** already knows the frame count exactly — the census
+///   it just finished returned it — so it counts frames.
+///
+/// A phase with no denominator emits nothing: a live session's pump has
+/// no end to be a fraction of, and an indeterminate report would be a
+/// worse answer than none.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum LoadProgress {
+    Census { bytes_read: u64, total_bytes: u64 },
+    Import { frames: u64, total_frames: u64 },
+}
+
 /// One `(bus, message, signal)` triple the loaded DBCs define,
 /// returned by `list_signals` to populate a plot panel's signal
 /// picker. The same signal name on two different buses is two

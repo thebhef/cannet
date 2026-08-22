@@ -350,6 +350,18 @@ loads a database for live decoding — load more than one and frames
 decode against each in order, first match wins (every loaded DBC
 applies to the one interface for now).
 
+**Opening a capture is two passes over the file**, and the status line
+reports both against a real denominator: the census — the header-only
+walk that finds the file's channels, frame count and time span before
+the channel-mapping dialog can be shown — as a percentage of the file's
+length, and the import that follows it as frames against the count the
+census returned. A **Cancel** button beside the bar stops whichever
+pass is running. A cancelled census produced nothing and simply goes
+away; a cancelled import's frames are discarded rather than presented
+as a finished capture. The same bar reports the signal-cache rebuild a
+restored capture can owe, which shows its own **Discard** offramp
+instead of Cancel.
+
 **Every launch opens on a splash** carrying the safety disclaimer —
 cannet transmits, and the system on the other end of the cable should
 be in a state where disrupted CAN traffic is safe. It is a notice, not
@@ -1213,8 +1225,9 @@ immediate. When they can't — a DBC in the set changed, or the capture
 came back truncated, so what was cached no longer describes it — they
 are thrown away and rebuilt by decoding the capture's frames again,
 which on a long session is minutes. The status line says so
-(**Rebuilding signal caches…**) for as long as it takes, and offers
-**Discard** beside it: that drops the restored capture — frames, caches
+(**Rebuilding signal caches…**), with a progress bar — every pyramid
+re-decodes the same frames, so how far the rebuild has got is a real
+figure and not a guess — and offers **Discard** beside it: that drops the restored capture — frames, caches
 and events — leaving an empty session, and keeps the project, its DBCs,
 your layout and your server configuration. It is wiped when you replace it —
 **Start** a new capture or **Clear** — or, opt-in, on a clean exit

@@ -1984,6 +1984,19 @@ fn keep_bases(caches: &Caches) -> Vec<String> {
         .collect()
 }
 
+/// How far the cold pyramid rebuild a restore forced (ADR 0047) has
+/// got, and whether it is still running.
+///
+/// `decoded` / `total` are frames across the pyramids being rebuilt —
+/// see [`SignalCacheStore::rebuild_progress`] for why frames and not
+/// pyramids. `total` is zero while there is nothing yet to measure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RebuildProgress {
+    pub rebuilding: bool,
+    pub decoded: u64,
+    pub total: u64,
+}
+
 impl SignalCacheStore {
     /// Root the per-signal pyramids at `root`, staging any set a prior
     /// session persisted there for [`Self::restore`] to judge.
@@ -2485,23 +2498,48 @@ impl SignalCacheStore {
     /// loss this announces. A restore that reused its set, or had none
     /// to reuse, never sets the latch in the first place.
     pub fn rebuilding(&self, store_len: usize) -> bool {
+        self.rebuild_progress(store_len).rebuilding
+    }
+
+    /// [`Self::rebuilding`], with how far the rebuild has got.
+    ///
+    /// The measure is **frames decoded across the pyramids being
+    /// rebuilt**, not pyramids finished. Every one of them re-decodes
+    /// the same raw store from its own cursor to `store_len`, so the
+    /// work is the same size for each and the aggregate moves smoothly;
+    /// counting finished pyramids instead would sit still and then jump,
+    /// and would be at the mercy of which one happens to be served next.
+    ///
+    /// `total` is zero when there is nothing to measure — a rebuild is
+    /// owed but no plot has served yet, so no cache exists to have a
+    /// cursor. That is a real state, not an error, and the caller shows
+    /// an indeterminate wait for it rather than inventing a fraction.
+    pub fn rebuild_progress(&self, store_len: usize) -> RebuildProgress {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         if !caches.rebuild_pending {
-            return false;
+            return RebuildProgress::default();
         }
         let mut any = false;
         let mut behind = false;
+        let mut series = 0u64;
+        let mut decoded = 0u64;
         for (key, cache) in &caches.by_key {
             if key.file_backed || cache.restored {
                 continue;
             }
             any = true;
             behind |= cache.next_index < store_len;
+            series += 1;
+            decoded += cache.next_index.min(store_len) as u64;
         }
         if any && !behind {
             caches.rebuild_pending = false;
         }
-        caches.rebuild_pending
+        RebuildProgress {
+            rebuilding: caches.rebuild_pending,
+            decoded,
+            total: series * store_len as u64,
+        }
     }
 
     /// Front-trim every cached pyramid to the truncation time `ts_seconds`
@@ -7261,6 +7299,55 @@ mod tests {
             !reopened.rebuilding(store.len()),
             "the announcement ends when the caches have caught up"
         );
+    }
+
+    #[test]
+    fn a_cold_rebuild_reports_frames_decoded_across_the_pyramids_it_is_rebuilding() {
+        // The rebuild is a determinate wait, and what makes it one is
+        // that every pyramid re-decodes the same store: the denominator
+        // is pyramids x frames and the numerator is where their cursors
+        // have got to. Before any of them exists there is nothing to
+        // measure and it says so with a zero total, rather than
+        // reporting a fraction it cannot support.
+        let root = TempDir::new().unwrap();
+        let len = build_and_persist(root.path(), &validity("capture-a", 0));
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(
+            reopened
+                .restore(&validity("capture-b", 0), &scopes(&load_dbc()), len)
+                .reopened,
+            0
+        );
+
+        let before = reopened.rebuild_progress(len);
+        assert!(before.rebuilding);
+        assert_eq!(
+            (before.decoded, before.total),
+            (0, 0),
+            "a discarded set announces itself before any cache exists to measure",
+        );
+
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs = &on_test_bus(&[&db]);
+        assert_eq!(
+            reopened
+                .slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs)
+                .len(),
+            200,
+        );
+
+        let after = reopened.rebuild_progress(store.len());
+        assert!(!after.rebuilding, "one pyramid, and it caught up");
+        assert_eq!(
+            after.total,
+            store.len() as u64,
+            "one pyramid over the store"
+        );
+        assert_eq!(after.decoded, after.total, "and it decoded all of it");
     }
 
     #[test]

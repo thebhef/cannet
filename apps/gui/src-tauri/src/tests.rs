@@ -2374,12 +2374,12 @@ fn lowering_the_session_start_keeps_the_frames_and_never_raises_the_anchor() {
 #[test]
 fn a_session_with_nothing_restored_is_not_rebuilding_pyramids() {
     let state = test_state();
-    assert!(!pyramids_rebuilding_now(&state));
+    assert!(!pyramids_rebuilding_now(&state).rebuilding);
     // …and it stays quiet once frames arrive by the ordinary route: a
     // live capture builds its pyramids for the first time, which is not
     // the loss this announces.
     state.trace_store.append(dummy_frame(0, 0x100));
-    assert!(!pyramids_rebuilding_now(&state));
+    assert!(!pyramids_rebuilding_now(&state).rebuilding);
 }
 
 /// `cancel_import` with nothing importing is a no-op, not a panic — the
@@ -2404,6 +2404,230 @@ fn cancel_import_now_flips_the_registered_flag() {
     cancel_import_now(&state);
 
     assert!(flag.load(Ordering::Relaxed));
+}
+
+/// A census walks the whole capture file before the mapping dialog
+/// exists, so it is the phase most of a big import's wait is spent in.
+/// It must observe the same `cancel_import` flag the pump does, and
+/// report nothing when it stops: a half-walked census has no channel
+/// set, no frame count and no span, so there is nothing to hand back
+/// and nothing to undo.
+#[test]
+fn a_cancelled_census_reports_nothing_and_clears_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cancel-census.blf");
+    write_census_fixture(&path, CENSUS_FIXTURE_FRAMES);
+
+    let state = test_state();
+    let raiser = &state;
+    let mut checkpoints = 0u32;
+    let outcome = census_blf(&state, path.to_str().unwrap(), &mut |_| {
+        checkpoints += 1;
+        cancel_import_now(raiser);
+    })
+    .unwrap();
+
+    assert!(outcome.is_none(), "a cancelled census must report nothing");
+    assert!(checkpoints > 0, "the walk never reached a checkpoint");
+    assert!(
+        state.import_cancel().is_none(),
+        "the census must clear its own flag however it ended",
+    );
+}
+
+/// The control for the test above: the same census, nothing cancelling
+/// it, walks the whole file. Without this the assertion there could be
+/// satisfied by a census that always reports nothing.
+#[test]
+fn an_uncancelled_census_reports_the_whole_file_and_clears_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("full-census.blf");
+    write_census_fixture(&path, CENSUS_FIXTURE_FRAMES);
+
+    let state = test_state();
+    let mut progress = Vec::new();
+    let outcome = census_blf(&state, path.to_str().unwrap(), &mut |p| progress.push(p))
+        .unwrap()
+        .expect("an uncancelled census completes");
+
+    assert_eq!(outcome.frame_count, CENSUS_FIXTURE_FRAMES);
+    assert!(state.import_cancel().is_none());
+    assert!(
+        progress
+            .last()
+            .is_some_and(|p| p.bytes_read == p.total_bytes),
+        "the last progress report must be the whole file: {progress:?}",
+    );
+}
+
+/// The MDF census is the same phase over a different format, and is
+/// stopped by the same flag. Its walk is over the record stream, so the
+/// fixture has to be big enough to cross a checkpoint twice for the same
+/// reason the BLF one does.
+#[test]
+fn a_cancelled_mdf_census_reports_nothing_and_clears_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cancel-census.mf4");
+    write_mdf_census_fixture(&path, CENSUS_FIXTURE_FRAMES);
+
+    let state = test_state();
+    let raiser = &state;
+    let mut checkpoints = 0u32;
+    let outcome = census_mdf(&state, path.to_str().unwrap(), &mut |_| {
+        checkpoints += 1;
+        cancel_import_now(raiser);
+    })
+    .unwrap();
+
+    assert!(outcome.is_none(), "a cancelled census must report nothing");
+    assert!(checkpoints > 0, "the walk never reached a checkpoint");
+    assert!(state.import_cancel().is_none());
+}
+
+/// The control for the test above.
+#[test]
+fn an_uncancelled_mdf_census_reports_the_whole_file_and_clears_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("full-census.mf4");
+    write_mdf_census_fixture(&path, CENSUS_FIXTURE_FRAMES);
+
+    let state = test_state();
+    let outcome = census_mdf(&state, path.to_str().unwrap(), &mut |_| {})
+        .unwrap()
+        .expect("an uncancelled census completes");
+
+    assert_eq!(outcome.frame_count, CENSUS_FIXTURE_FRAMES);
+    assert!(state.import_cancel().is_none());
+}
+
+/// The checkpoints behind a load's progress fire thousands of times a
+/// second; the status line must not. The pacer is what stands between
+/// them, and it lets exactly one report through per cadence period.
+#[test]
+fn load_progress_is_paced_rather_than_emitted_per_checkpoint() {
+    let mut pacer = ProgressPacer::new();
+    let start = std::time::Instant::now();
+
+    assert!(
+        !pacer.due(start),
+        "a report at the instant the pacer started is not due yet",
+    );
+    let later = start + std::time::Duration::from_secs(10);
+    assert!(pacer.due(later), "a report a cadence later is due");
+    assert!(
+        !pacer.due(later),
+        "the slot is consumed: a second report at the same instant is not due",
+    );
+}
+
+/// The import pump's progress must be paced too, and the pump's loop is
+/// hotter than a census's: it looks at the clock only once per stride,
+/// so the stride is what stands between a per-frame `Instant::now()` and
+/// the loop. Pinned, because a stride of one would be the expensive
+/// mistake this exists to avoid.
+#[test]
+fn the_import_pump_looks_at_the_clock_once_per_stride_not_once_per_frame() {
+    let mut progress = ImportProgress::new(1_000_000);
+    let mut checkpoints = 0u32;
+    for _ in 0..100_000 {
+        if progress.checkpoint() {
+            checkpoints += 1;
+        }
+    }
+    assert!(
+        (1..=16).contains(&checkpoints),
+        "100 000 frames produced {checkpoints} clock reads",
+    );
+}
+
+fn write_mdf_census_fixture(path: &std::path::Path, frames: u64) {
+    let ts_base = 1_700_000_000_000_000_000u64;
+    let mut writer = cannet_mdf::MdfCaptureWriter::create(
+        path,
+        cannet_mdf::MdfCaptureLayout {
+            start_time_ns: ts_base,
+            max_payload_len: 8,
+        },
+    )
+    .unwrap();
+    for i in 0..frames {
+        writer
+            .append_frame(
+                &cannet_core::CanFrame::classic(
+                    ts_base + i * 1_000,
+                    0,
+                    cannet_core::CanId::standard(0x100).unwrap(),
+                    Direction::Rx,
+                    vec![1],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+/// Enough objects that the census crosses its checkpoint more than
+/// once — a cancel raised at the first is only observable at the second.
+const CENSUS_FIXTURE_FRAMES: u64 = 40_000;
+
+fn write_census_fixture(path: &std::path::Path, frames: u64) {
+    let ts_base = 1_700_000_000_000_000_000u64;
+    let mut writer = cannet_blf::BlfCaptureWriter::create(path).unwrap();
+    for i in 0..frames {
+        writer
+            .append(
+                &cannet_core::CanFrame::classic(
+                    ts_base + i * 1_000,
+                    0,
+                    cannet_core::CanId::standard(0x100).unwrap(),
+                    Direction::Rx,
+                    vec![1],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+/// Everything an import gathers alongside its frames — a BLF's markers,
+/// an MDF's file-backed signal series — is applied *after* the pump, and
+/// by then the frontend has already seen `log-finished` and is clearing
+/// the partial capture. So the pump thread has to still know it was
+/// cancelled at that point, and the thing it asks is not the slot in
+/// `AppState`: the pump clears that the moment its loop ends. It is the
+/// clone it kept, which outlives the slot.
+#[test]
+fn an_import_is_still_known_to_have_been_cancelled_after_its_slot_is_cleared() {
+    let state = test_state();
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.import_cancel() = Some(Arc::clone(&cancel));
+    let kept = Arc::clone(&cancel);
+
+    cancel_import_now(&state);
+    // What the pump thread does the moment its loop ends.
+    *state.import_cancel() = None;
+
+    assert!(
+        import_was_cancelled(&kept),
+        "the thread must not have to ask the slot it just emptied",
+    );
+}
+
+/// The control: an import nobody cancelled reads as finished at the same
+/// point, so the guard above does not stop every import from applying
+/// what its walk collected.
+#[test]
+fn an_import_nobody_cancelled_is_not_treated_as_abandoned() {
+    let state = test_state();
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.import_cancel() = Some(Arc::clone(&cancel));
+    let kept = Arc::clone(&cancel);
+
+    *state.import_cancel() = None;
+
+    assert!(!import_was_cancelled(&kept));
 }
 
 /// The cancellation path end to end at the pump-loop level: a click on
