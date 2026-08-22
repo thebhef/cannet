@@ -253,3 +253,53 @@ Two decisions are baked into the mock and should be read as proposals:
   a bus that reports them.
 - Bus load is shown where it can be known and absent where it cannot;
   never estimated from an unknown bitrate.
+
+## Status log
+
+### 2026-08-22 — (branch `task-101-bus-health`)
+
+**Phase 0 — investigation, before any surface was designed.** Four of
+this file's "what is missing" claims were checked against the code, and
+two of them are stale.
+
+| claim in this file | verdict | evidence |
+|---|---|---|
+| "Nobody produces `InterfaceState`. No driver path emits it." | **false for the sidecar** | `servers/cannet-python-can/.../server/shared_interface.py` runs a state-poll thread that calls `ch.state()` and emits an `InterfaceState` envelope on every change, and pushes a snapshot to each subscriber on `attach`. `driver_python_can.py::state()` maps python-can's `BusState` onto active / passive / bus-off and reads `tec`/`rec` where the driver exposes them. So the producer exists; the consumer is what is missing. |
+| "Nobody consumes it. `cannet-client` explicitly discards it." | **true** | the ignore arm at `crates/cannet-client/src/lib.rs`, whose own comment says "the GUI host bridges them into its own surfaces" — which nothing does, because the client offers no surface to bridge from. |
+| "Nothing computes bus load live." | **true** | the only bus-load number is Vector's, parsed out of a BLF `CAN_STATISTIC`. |
+| "`TraceView.tsx` never reads `kind`." | **imprecise, but the observation holds** | it does read it, through `formatKind` in the `type` column — and that column is `defaultHidden: true` (`traceColumns.ts`). So in the default column set an error frame really is indistinguishable from a zero-byte data frame: same blank data cell, same blank message cell, `len` 0. |
+
+Two further findings that shaped the design:
+
+- **The model carries no error *class*.** `CanFramePayload::Error` is a
+  unit variant. BLF's `CAN_ERROR_EXT` has an `ecc` byte, and
+  `can_error_ext_to_frame` drops it; the wire's `FRAME_KIND_ERROR` has
+  no room for one; python-can does not surface a class uniformly across
+  drivers. So "coalesce by class" cannot be implemented as written —
+  see Blockers.
+- **A frame's on-wire bit count already exists in the codebase**, as
+  `shared_bus.rs::frame_duration`'s private arithmetic (47/67 header
+  bits, 8 per data byte, an FD data-phase tail of 25 + 8/byte, 13 bits
+  for an error frame). Bus load needs the same number, so it was
+  promoted rather than written a second time.
+
+**Phase 1 — an error frame stops reading as an empty data frame.**
+
+- *Observation.* A BLF carrying `CAN_ERROR_EXT` records imports today
+  and renders each one as a row with a blank data cell, a blank message
+  cell and `len` 0 — identical to a zero-byte data frame.
+- *Hypothesis.* The distinction is missing from the **default** column
+  set, not from the data: `kind` reaches the frontend and `formatKind`
+  already renders "ERR", but only in a column that is hidden by default.
+- *Experiment.* `TraceView.gridview.dom.test.tsx` renders one error-kind
+  row with the default columns and asserts the row carries
+  `trace-row-error-frame`, that its message cell reads "Bus error", and
+  that it has an explanatory `title`. **Control**: a second test renders
+  a *classic* frame that also carries no payload and asserts the row has
+  none of those. Without the control, "the row says Bus error" would
+  also pass on a change that labelled every empty frame.
+- *Data.* Before the change the error test failed on the class
+  (`Received: trace-row`) while the control passed. After it, both pass.
+- *Conclusion.* The message cell is where the row says what it is; the
+  class only tints it, so the distinction survives a reader who cannot
+  see the colour.
