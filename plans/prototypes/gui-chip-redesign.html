@@ -123,9 +123,16 @@ ul.q li { margin:.3rem 0; }
 .chip[data-state="degraded"] .dot { background:var(--warn-border); }
 .chip[data-state="failed"] { border-color:var(--danger-text); color:var(--danger-text); }
 .chip[data-state="failed"] .dot { background:var(--danger-text); }
-/* busy (import running): the accent hairline pulses */
+/* busy (import running): the accent hairline pulses. In the app the
+   import chip is *also* disabled while it runs — a second import is
+   refused — so the chip keeps full contrast and takes the progress
+   cursor there rather than dimming: `[aria-busy="true"]:disabled`
+   overrides the `:disabled` opacity. Its label does not change; the
+   tooltip is what names the load and points at the status bar's
+   Cancel. */
 .chip[aria-busy="true"] { border-color:var(--accent-marker);
   animation:pulse 1.2s ease-in-out infinite; }
+.chip[aria-busy="true"]:disabled { opacity:1; cursor:progress; }
 
 /* segmented chip: one hairline around N segments (run controls, mode) */
 .seg { display:inline-flex; height:22px; border:1px solid var(--border-wash);
@@ -142,7 +149,11 @@ ul.q li { margin:.3rem 0; }
 .chipfield input { font:inherit; font-size:12px; background:none; border:none;
   outline:none; color:var(--text-body); width:9rem; }
 
-/* drop menu, same shape as the status-bar prototype's */
+/* drop menu, same shape as the status-bar prototype's.
+   In the app these are `.chip-menu` (the wrapper) and `.chip-menu-list`
+   (the list) in index.css, shared by every menu a chip opens; the
+   trigger chip carries aria-haspopup="menu" and aria-expanded rather
+   than a caret of its own markup. */
 .menu-wrap { position:relative; display:inline-flex; }
 .drop { position:absolute; top:100%; left:0; margin:4px 0 0 0; padding:4px;
   list-style:none; display:flex; flex-direction:column; gap:2px;
@@ -330,7 +341,13 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <span class="caption">Both themes use the app&rsquo;s own tokens.</span>
 </div>
 
-<h2>The top-level toolbar — today</h2>
+<h2>The top-level toolbar — before this pass</h2>
+<p class="note">
+  Kept as the before-shot: this is what the bar looked like before the
+  chip language, Connect / View signals / System messages included —
+  they had already moved to the status bar by the time the sweep landed,
+  and the chip bar below carries none of them.
+</p>
 <div class="appbar">
   <button class="legacy">Open project…</button>
   <button class="legacy">Save project</button>

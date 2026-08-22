@@ -48,9 +48,14 @@ a **badge** (a needs-attention count, absent at zero). Width uniformity
 is *within* one chip's state set and is sized to that chip's longest
 state — never global, which would spend the bar on short labels.
 
-**Do not convert a command into a chip.** A control that is only ever
-pressed is a button; styling it as a chip only makes the distinction
-unreadable.
+**A command wears the same silhouette, and is told apart by the dot.**
+The chip shape is the app's one control shape — commands, toggles,
+status chips and colour swatches read as one species — so a command is
+the same hairline, radius and density, implemented as the very same
+component with a press affordance rather than a second almost-identical
+control. What separates the two is the indicator: **a chip carries a dot
+only when it has a state to report**, and a plain command grows none.
+The distinction stays readable without spending a second shape on it.
 
 ### 2. Something that cannot say *which* one is a launcher, not a chip
 

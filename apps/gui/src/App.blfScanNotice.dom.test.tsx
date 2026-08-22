@@ -113,6 +113,7 @@ vi.mock("uplot", () => {
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { App } from "./App";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -120,10 +121,14 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+/// A button outside the toolbar. The toolbar's own controls are chips
+/// with short labels — "Open" up there is the Open-project chip, not a
+/// dialog's confirm — so they are excluded here and reached through
+/// `toolbarChip` instead.
 function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("button"),
-  ).find((b) => b.textContent === label);
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;
 }
@@ -154,7 +159,7 @@ describe("BLF census feedback", () => {
     });
 
     await act(async () => {
-      fireEvent.click(findButton("Import trace…"));
+      fireEvent.click(toolbarChip("Import"));
     });
 
     // The census is still walking: the notice is up and the dialog is
@@ -164,7 +169,9 @@ describe("BLF census feedback", () => {
         throw new Error(`no scan notice, status was: ${statusText()}`);
     });
     expect(
-      Array.from(document.querySelectorAll("button")).some((b) => b.textContent === "Open"),
+      Array.from(document.querySelectorAll("button")).some(
+        (b) => b.textContent === "Open" && b.closest(".toolbar") === null,
+      ),
     ).toBe(false);
 
     // Let it finish: the dialog takes over and the notice goes away.

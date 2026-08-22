@@ -135,6 +135,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { App } from "./App";
 import type { TraceFrameRecord, TraceGrew } from "./types";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -185,10 +186,14 @@ function connectionChip(): HTMLButtonElement {
   return chip;
 }
 
+/// A button outside the toolbar. The toolbar's own controls are chips
+/// with short labels — "Open" up there is the Open-project chip, not a
+/// dialog's confirm — so they are excluded here and reached through
+/// `toolbarChip` instead.
 function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("button"),
-  ).find((b) => b.textContent === label);
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;
 }
@@ -230,11 +235,11 @@ describe("session-reset error policies", () => {
     await mountAndSeed();
     await driveSession(5000);
     // A live session enables the toolbar Clear button.
-    expect(findButton("Clear")).not.toBeDisabled();
+    expect(toolbarChip("Clear")).not.toBeDisabled();
 
     rig.failClear = true;
     await act(async () => {
-      fireEvent.click(findButton("Clear"));
+      fireEvent.click(toolbarChip("Clear"));
     });
 
     // The failure surfaces...
@@ -244,7 +249,7 @@ describe("session-reset error policies", () => {
     // ...but the session reset still ran: count is back to 0, so Clear
     // (and Save capture) disable again. Continue, not abort.
     await waitFor(() => {
-      if (!findButton("Clear").disabled) throw new Error("Clear did not disable — session not reset");
+      if (!toolbarChip("Clear").disabled) throw new Error("Clear did not disable — session not reset");
     });
   }, 30_000);
 
@@ -287,13 +292,13 @@ describe("session-reset error policies", () => {
       .slice(callsBefore)
       .filter((c) => c.cmd === "connect_remote_server");
     expect(connectCalls).toHaveLength(0);
-    expect(findButton("Clear")).not.toBeDisabled();
+    expect(toolbarChip("Clear")).not.toBeDisabled();
   }, 30_000);
 
   it("BLF-map confirm aborts on a failed host clear (no import runs)", async () => {
     await mountAndSeed();
     await act(async () => {
-      fireEvent.click(findButton("Import trace…"));
+      fireEvent.click(toolbarChip("Import"));
     });
     // The channel-map modal's confirm button.
     await waitFor(() => findButton("Open"));
@@ -315,7 +320,7 @@ describe("session-reset error policies", () => {
   it("New project fire-and-forgets a failed host clear (no error surfaced)", async () => {
     await mountAndSeed();
     await driveSession(5000);
-    expect(findButton("Clear")).not.toBeDisabled();
+    expect(toolbarChip("Clear")).not.toBeDisabled();
 
     rig.failClear = true;
     await act(async () => {
@@ -324,7 +329,7 @@ describe("session-reset error policies", () => {
 
     // Fire-and-forget: the session still resets (Clear disables)...
     await waitFor(() => {
-      if (!findButton("Clear").disabled) throw new Error("New did not reset the session");
+      if (!toolbarChip("Clear").disabled) throw new Error("New did not reset the session");
     });
     // ...and the swallowed clear failure never reaches the status bar.
     expect(statusText()).not.toContain("boom");
