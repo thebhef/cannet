@@ -190,14 +190,18 @@ export function CycleControls({
     : !busConnected
       ? "bus not connected"
       : "send once";
-  const startDisabled = !frame.busId || !busConnected || frame.cycleMs <= 0;
+  // Starting a periodic is a state change, not an act: with no bus
+  // connected the schedule simply produces no frames until a route
+  // exists (ADR 0039), so the control stays live and only says so.
+  // Sending is the act, and it needs somewhere to go.
+  const startDisabled = !frame.busId || frame.cycleMs <= 0;
   const startTitle = !frame.busId
     ? "pick a bus first"
-    : !busConnected
-      ? "bus not connected"
-      : frame.cycleMs <= 0
-        ? "set a period first"
-        : "start cyclic";
+    : frame.cycleMs <= 0
+      ? "set a period first"
+      : busConnected
+        ? "start cyclic"
+        : "start cyclic — the bus is not connected, so nothing goes out until it is";
   return (
     <div className="tx-cycle">
       <div

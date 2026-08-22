@@ -124,12 +124,14 @@ another client of the one transmitter construct.
   first explicit save (which sets the path). Until then the element's
   path is null; the dirty-tracking and exit prompt cover the unsaved
   in-memory state.
-- The element carries a **Run flag, persisted in the project,
-  default off**. The `.cannet_rbs` file stays portable config; the
-  project records "this RBS is live here." A project saved with RBS
-  running resumes transmitting on open once its bus connects — by
-  design; a **global RBS kill-switch** (runtime-only, never
-  persisted) is the guard rail.
+- The element carries a **Run flag: session state, default off**,
+  held by the host and written nowhere else. The `.cannet_rbs` file
+  stays portable config and the project records only *which* file an
+  element references, never whether it is live — so **opening a
+  project never transmits**, and there is no second global stop to
+  tell apart from this one. Opening or closing a project clears Run;
+  connecting or disconnecting a bus does not (re-plugging an adapter
+  is not a change of intent).
 - While running, actual transmission gates on **per-bus
   connectivity**: a bus that connects starts its enabled messages, a
   bus that drops stops them. Enable toggles take effect live.

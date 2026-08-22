@@ -232,8 +232,8 @@ pub(crate) fn start_periodic_transmit(
 /// [`stop_periodic_transmit`]'s body without its `AppHandle`: clear the
 /// entry's running flag and unschedule it. Every stop goes through here
 /// — the user's, and the one a DBC assignment change makes
-/// ([`stop_periodics_left_unbacked`]) — so a periodic can only ever be
-/// in the state the panel's own Stop leaves it in.
+/// ([`stop_periodics_whose_backing_changed`]) — so a periodic can only
+/// ever be in the state the panel's own Stop leaves it in.
 pub(crate) fn stop_periodic_transmit_inner(state: &AppState, id: &str) {
     state.transmit_frames().stop_periodic(id);
     state.transmit_scheduler.stop(id.to_string());
@@ -276,8 +276,8 @@ fn backing_dbc(state: &AppState, p: &transmit_frames::RunningPeriodic) -> Option
 /// The periodics the current DBC set is driving: firing right now, and
 /// defined by a database assigned to their bus, each paired with that
 /// database. Taken **before** a change to the set;
-/// [`stop_periodics_left_unbacked`] and [`stop_periodics_driven_by`]
-/// re-ask the same question after it.
+/// [`stop_periodics_whose_backing_changed`] and
+/// [`stop_periodics_driven_by`] re-ask the same question after it.
 ///
 /// A row the set never backed — a hand-typed id no database on the bus
 /// describes — is absent from both answers, so a change to the set is
@@ -292,8 +292,16 @@ pub(crate) fn dbc_backed_running_periodics(state: &AppState) -> Vec<BackedPeriod
         .collect()
 }
 
-/// Stop every periodic in `backed_before` that no database assigned to
-/// its bus defines any more, and return the ids stopped in pool order.
+/// Stop every periodic in `backed_before` that the assignment of
+/// `path` took out from under, and return the ids stopped in pool
+/// order. Two ways that happens, and they are the same fact from
+/// either side:
+///
+/// - **nothing applies it any more** — `path` left the bus (or the
+///   project) and no other assigned database defines the message;
+/// - **`path` is its new winner** — `path` joined the bus and outranks
+///   the database the row was firing from, so the next frame out would
+///   carry an encoding the user never armed.
 ///
 /// This is the transmit half of the rule on
 /// [`crate::dbc_commands::set_dbc_buses_inner`]: continuing to put
@@ -302,15 +310,36 @@ pub(crate) fn dbc_backed_running_periodics(state: &AppState) -> Vec<BackedPeriod
 /// §1's uncommanded send, reached deliberately instead of by a file
 /// changing underneath. Stopping is all it does — the row keeps its
 /// configuration, exactly as the user's own Stop leaves it.
-pub(crate) fn stop_periodics_left_unbacked(
+///
+/// "The mapping changed" is measured as the resolution rule of
+/// [ADR 0054](../../../docs/adr/0054-a-decoded-value-has-one-definition.md)
+/// defines it — which database wins the message on this bus — and not
+/// as "the set changed": a database assigned to a bus where it loses
+/// the contest, or to a bus the row does not live on, moves no winner
+/// and stops nothing. What it deliberately does **not** cover is the
+/// winner falling back to a database the bus was *already* applying
+/// when the incumbent leaves: nothing new came into the picture, and
+/// the fallback is the resolution rule doing what it always does.
+///
+/// A row the set never backed — a hand-typed id no database on the bus
+/// describes — is in neither answer, so a change to the set is never
+/// its business.
+pub(crate) fn stop_periodics_whose_backing_changed(
     state: &AppState,
     backed_before: &[BackedPeriodic],
+    path: &str,
 ) -> Vec<String> {
     let running = state.transmit_frames().running_periodics();
     let mut stopped = Vec::new();
     for p in running {
-        let was_backed = backed_before.iter().any(|b| b.id == p.id);
-        if was_backed && backing_dbc(state, &p).is_none() {
+        let Some(before) = backed_before.iter().find(|b| b.id == p.id) else {
+            continue;
+        };
+        let taken_over = match backing_dbc(state, &p) {
+            None => true,
+            Some(after) => after == path && after != before.dbc_path,
+        };
+        if taken_over {
             stop_periodic_transmit_inner(state, &p.id);
             stopped.push(p.id);
         }
@@ -321,7 +350,8 @@ pub(crate) fn stop_periodics_left_unbacked(
 /// Stop every periodic the database at `path` was driving — or is
 /// driving now — and return the ids stopped in pool order.
 ///
-/// The reload counterpart to [`stop_periodics_left_unbacked`]. A
+/// The reload counterpart to [`stop_periodics_whose_backing_changed`].
+/// A
 /// database reloaded in place can change or drop the very definitions a
 /// row is transmitting from, so continuing to put those frames on a
 /// real bus is [ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)

@@ -12,8 +12,8 @@ chords start reaching state that is no longer purely about what is on
 screen.
 
 The application is a bus tool. Some of the state a user edits in the
-same windows, with the same gestures, *transmits*: an RBS element's Run
-flag and its `.cannet_rbs` file, a transmit element's messages, modes
+same windows, with the same gestures, *transmits*: the `.cannet_rbs`
+file an RBS element references, a transmit element's messages, modes
 and periods. A chord that silently re-enables a schedule, or restores a
 message the user had just removed, is a chord that puts frames on a
 physical bus because someone pressed a key twice.
@@ -32,7 +32,7 @@ again where a step is restored:
 
 | In (undoable) | Out (never) |
 |---|---|
-| Plot areas / signals / solo / visibility / collapse / y-axis mode / primary / sort / patterns; colors, colormap + generator rules; trace & signals columns, sections; element renames; panel open / close / move; filter add / remove, predicate edits, sources rewiring | `rbs.run` / `rbs.path`; all transmit config; connection; capture control; DBC set; project open / save; settings; notes / markers |
+| Plot areas / signals / solo / visibility / collapse / y-axis mode / primary / sort / patterns; colors, colormap + generator rules; trace & signals columns, sections; element renames; panel open / close / move; filter add / remove, predicate edits, sources rewiring | `rbs.path`; all transmit config; connection; capture control; DBC set; project open / save; settings; notes / markers |
 
 Two further boundaries follow from the same rule:
 
@@ -47,8 +47,8 @@ Two further boundaries follow from the same rule:
 
 - **Redo makes undo cheap to reverse, and only within the allowlist.**
   An accidental undo of a display change costs one `Mod+Y`. An
-  accidental undo of a Run flag costs whatever the bus did in between —
-  there is no redo for frames already sent. The asymmetry, not the
+  accidental undo of a transmit row's payload costs whatever the bus
+  did in between — there is no redo for frames already sent. The asymmetry, not the
   category, is what draws the line.
 - **The wiring family scopes fetches, not traffic.** Filters,
   predicates and sources decide what a view asks the host for and what

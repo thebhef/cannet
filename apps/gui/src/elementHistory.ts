@@ -7,9 +7,9 @@
 //
 // The mask is where ADR 0050's boundary is enforced: a snapshot carries
 // the allowlisted (display / organizational) fields only, so a restore
-// has nothing to say about `rbs.run`, transmit config, or anything else
-// that reaches the bus — not even if the snapshot were taken while such
-// a field was changing.
+// has nothing to say about an RBS element's file reference, transmit
+// config, or anything else that reaches the bus — not even if the
+// snapshot were taken while such a field was changing.
 
 import { valuesEqual } from "./projectElements";
 import type { ProjectElement, ProjectElementKind } from "./types";
