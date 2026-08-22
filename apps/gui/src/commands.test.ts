@@ -46,6 +46,21 @@ describe("the shipped command set", () => {
     expect(byId.get("plot.followLive.enable")).toBe("l");
   });
 
+  it("binds goto.timeInTrace on Mod+T and goto.event on Mod+E", () => {
+    const byId = new Map(DEFAULT_BINDINGS.map((b) => [b.commandId, b.chord]));
+    expect(byId.get("goto.timeInTrace")).toBe("Mod+T");
+    expect(byId.get("goto.event")).toBe("Mod+E");
+  });
+
+  it("goto.timeInTrace requires a project open; plot.setVisibleRange requires a focused plot", () => {
+    const available = (c: CommandContext) =>
+      commandsAvailableIn(COMMANDS, c).map((s) => s.id);
+    expect(available(ctx({ hasProjectOpen: true }))).toContain("goto.timeInTrace");
+    expect(available(ctx({ hasProjectOpen: false }))).not.toContain("goto.timeInTrace");
+    expect(available(ctx({ focusedPanelKind: "plot" }))).toContain("plot.setVisibleRange");
+    expect(available(ctx({ focusedPanelKind: "trace" }))).not.toContain("plot.setVisibleRange");
+  });
+
   it("names the Database panel by its panel-level name, findable by the old one", () => {
     // ADR 0052: the panel is format-plural and named "Database"
     // everywhere a user sees it; the old name stays a palette keyword so
