@@ -943,6 +943,8 @@ plotBars.forEach(bar => bar.addEventListener("contextmenu", e => {
   const li = document.createElement("li");
   const btn = document.createElement("button");
   btn.className = "chip";
+  // In the app the entry reads "show performance readout", to sit
+  // beside the "show diagnostics" the menu already carried.
   btn.textContent = (on ? "✓ " : "\u2003") + "performance readout";
   btn.addEventListener("click", () => {
     bar.querySelector(".chip.perf").hidden = on;
