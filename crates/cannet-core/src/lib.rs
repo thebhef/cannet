@@ -53,7 +53,7 @@ mod io;
 mod shared_bus;
 
 pub use frame::{
-    CanFdFlags, CanFrame, CanFrameError, CanFramePayload, CanId, Direction, IdError,
+    CanFdFlags, CanFrame, CanFrameError, CanFramePayload, CanId, Direction, IdError, OnWireBits,
     CLASSIC_DATA_MAX, EXTENDED_ID_MAX, FD_DATA_MAX, STANDARD_ID_MAX,
 };
 pub use io::{pump, CanFrameSink, CanFrameSource, PumpError, WindowedSource};
