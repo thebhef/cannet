@@ -1058,6 +1058,40 @@ ul.status-bar-menu .status-chip {
 }
 /* === end shared command chip === */
 
+/* === Segmented chip group (ChipSegment.tsx) ===
+   Several chips that are one decision, under one hairline. The group
+   draws the outline; the chips inside drop theirs and keep a divider,
+   so the eye reads "one control, three positions" rather than three
+   controls that happen to be adjacent.
+
+   The inner chips lose their border rather than having it made
+   transparent, so a pressed segment says so with its fill and its text
+   — the accent hairline is the *group's* to spend, and re-colouring
+   one segment's edge inside a shared outline reads as a rendering
+   fault. Losing the border costs 2px of height, which the 20px here
+   gives back: the group is the same 22px as a chip standing alone, and
+   a bar of mixed chips and segments keeps one baseline. */
+.chip-seg {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  border: 1px solid var(--border-wash);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.chip-seg .chip-button {
+  border: none;
+  border-radius: 0;
+  height: 20px;
+}
+.chip-seg .chip-button--icon-only {
+  width: 20px;
+}
+.chip-seg .chip-button + .chip-button {
+  border-left: 1px solid var(--border-wash);
+}
+/* === end segmented chip group === */
+
 /* === Chip menus (a ChipButton that opens a list of ChipButtons) ===
    The toolbar's Add and Recent menus, and any menu a later bar hangs
    off a chip. The list is absolutely positioned, so a bar that hosts
