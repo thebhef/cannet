@@ -180,7 +180,56 @@ believing a clean run:
   *passing*. Sanity-check `ids_measured` and the rx/tx rates on every
   report before reading anything else into it.
 
-## 6. Completion
+## 6. The owner review queue — keep development moving
+
+Phases turn up things nobody asked for: a behaviour change that
+reverses an earlier decision, a defect adjacent to the work, a ruling
+that cannot be implemented as written, a consequence the owner has not
+seen. **None of that is a reason to stop.** Development stops for
+exactly two things: a blocker that makes the *current* work
+impossible, and a major anticipated perf regression (§5).
+
+Everything else goes in **`plans/owner-review-queue.md`** — one file,
+maintained by the overseer, that the owner can walk when they have
+time. Without it, findings either interrupt the owner one at a time or
+get lost in a phase's blockers section and a long conversation.
+
+The queue is an **index, not a second record**: each item's detail
+stays in its task file's `## Blockers / side effects` or status log,
+and the queue points at it. Structure it as:
+
+1. **Behaviour changes needing a yes or no** — shipped, and each
+   reverses or extends something previously decided. Say what would
+   have to change to undo it.
+2. **Rulings the owner has made**, written down so they survive the
+   conversation — including any correction to the premise a ruling
+   rested on.
+3. **Open findings nobody has dispositioned** — a table is enough.
+4. **Finished tasks awaiting acceptance.**
+5. **Housekeeping owed at close-out.**
+
+Two rules keep it useful. Items are **struck out with the ruling and
+its date** rather than deleted, so the record shows what was decided.
+And **a queue growing faster than it drains is the signal to stop
+taking new work and hold a review** — say so when it happens.
+
+**Surface an item once**, in the report for the phase that found it,
+then let the queue carry it. Do not re-raise it every turn.
+
+### When a task really is blocked
+
+If an owner decision genuinely blocks a task, **the task stops — the
+roadmap does not.** Move to the next task that is not waiting on the
+same decision, and record what the blocked one is waiting for.
+
+Check the dependency honestly before skipping ahead: tasks in the
+queue often share a ruling, and starting one that turns on the same
+unanswered question just produces a second blocked task and a diff
+that has to be redone. When a whole run of upcoming tasks depends on
+one decision, that is the case for stopping and asking rather than
+working around it.
+
+## 7. Completion
 
 A task is done when its documented exit criteria are all met (or the
 user has explicitly waived one) — walk them one by one and record
