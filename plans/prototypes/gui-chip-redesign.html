@@ -134,7 +134,12 @@ ul.q li { margin:.3rem 0; }
   animation:pulse 1.2s ease-in-out infinite; }
 .chip[aria-busy="true"]:disabled { opacity:1; cursor:progress; }
 
-/* segmented chip: one hairline around N segments (run controls, mode) */
+/* segmented chip: one hairline around N segments (run controls, mode)
+   In the app this is `.chip-seg` (ChipSegment.tsx) — a `role="group"`
+   with a name, wrapping ordinary ChipButtons; it is a wrapper, never a
+   second chip. The inner chips lose their border (rather than having
+   it made transparent), so a pressed segment says so with its fill and
+   its text and the accent hairline stays the group's to spend. */
 .seg { display:inline-flex; height:22px; border:1px solid var(--border-wash);
   border-radius:2px; overflow:hidden; }
 .seg .chip { border:none; border-radius:0; height:20px; }
