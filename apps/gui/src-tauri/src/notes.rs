@@ -316,10 +316,9 @@ impl NotesStore {
     /// detector calls when its computation changes. Non-derived kinds are
     /// dropped: this list is not a back door into the durable store.
     ///
-    /// `dead_code`-allowed: this is the host-derived category's only entry
-    /// point, and the detectors that will call it are not built yet. The
-    /// category is unreachable without it.
-    #[allow(dead_code)]
+    /// The bus-error coalescer ([`crate::bus_health`]) is its caller: it
+    /// hands over the current summary set on each republication tick, and
+    /// every view updates through the existing `notes-changed` broadcast.
     pub fn replace_derived(&self, mut events: Vec<Note>) -> Applied {
         events.retain(|n| !n.kind.persisted());
         events.sort_by_key(|n| n.timestamp_ns);

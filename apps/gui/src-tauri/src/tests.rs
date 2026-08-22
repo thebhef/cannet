@@ -3313,6 +3313,80 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
     );
 }
 
+/// The producer half of the same contract: the *real* coalescer's output,
+/// not a hand-built summary, still leaves the file lossless — and the
+/// event set it produces does not grow with the storm.
+///
+/// The frames go through `TraceStore::append` exactly as any other frame
+/// does, so what must stay bounded is the thing coalescing controls: the
+/// derived event set the views hold whole in RAM (ADR 0035).
+#[test]
+fn a_real_storm_coalesces_to_one_event_while_every_frame_reaches_the_file() {
+    use cannet_core::CanFrameSource as _;
+
+    // 10 000 errors 100 µs apart — the retransmit cadence of a persistent
+    // fault at 500 kbit/s, sustained for a second.
+    const STORM: u64 = 10_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("real-storm.blf");
+    let ts = 1_700_000_000_000_000_000u64;
+
+    let mut runs = bus_health::ErrorRuns::default();
+    let frames: Vec<trace_store::RawTraceFrame> = (0..STORM)
+        .map(|i| {
+            let timestamp_ns = ts + i * 100_000;
+            runs.observe("b1", timestamp_ns);
+            trace_store::RawTraceFrame {
+                timestamp_ns,
+                channel: 0,
+                id: 0,
+                extended: false,
+                direction: Direction::Rx,
+                payload: CanFramePayload::Error,
+                bus_id: Some("b1".into()),
+            }
+        })
+        .collect();
+
+    let store = notes::NotesStore::new();
+    let applied = store.replace_derived(bus_health::runs_as_events(runs.runs()));
+    assert_eq!(
+        applied.notes.len(),
+        1,
+        "{STORM} errors, one summary — the event set does not track the storm",
+    );
+    assert!(
+        applied.notes[0].label.starts_with("10000 bus errors"),
+        "the count and the span are what the summary carries: {}",
+        applied.notes[0].label,
+    );
+    assert!(
+        store.exportable().is_empty(),
+        "nothing the coalescer produces is user data",
+    );
+
+    let outcome =
+        capture::write_blf_capture(dest.to_str().unwrap(), &frames, &store.exportable(), &[])
+            .unwrap();
+    assert_eq!(outcome.marker_count, 0);
+
+    let mut back = cannet_blf::BlfCanFrameSource::open(&dest).unwrap();
+    let read_back: Vec<u64> = std::iter::from_fn(|| back.next_frame().unwrap())
+        .filter(|f| matches!(f.payload, CanFramePayload::Error))
+        .map(|f| f.timestamp_ns)
+        .collect();
+    assert_eq!(
+        read_back.len() as u64,
+        STORM,
+        "every error frame is in the file"
+    );
+    assert_eq!(
+        read_back,
+        frames.iter().map(|f| f.timestamp_ns).collect::<Vec<_>>(),
+    );
+}
+
 /// The full round-trip contract for an MDF save: import → export →
 /// re-import preserves frame content bit for bit (id + extended,
 /// payload, FD flags, remote and error frames), frame-accurate absolute
