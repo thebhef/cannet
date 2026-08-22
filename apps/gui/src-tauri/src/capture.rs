@@ -109,11 +109,20 @@ pub(crate) async fn open_log(
     // is visible in the system log before the pump even starts.
     let stats = source.file_statistics();
     let uncompressed_mib = stats.uncompressed_file_size / (1024 * 1024);
+    // A writer killed mid-run never came back to fill its header in, so
+    // the zeros below are placeholders rather than the file's own
+    // numbers. The walk is what the counts elsewhere come from; this
+    // line just must not pass the placeholders off as facts.
+    let header_note = if stats.is_unfinalized() {
+        " — placeholder header, its writer never finalized the file"
+    } else {
+        ""
+    };
     sys_info!(
         &app,
         "blf-import",
         "opened BLF {blf_path}: {objects} objects, {uncompressed_mib} MiB uncompressed, \
-         app_id={app_id}",
+         app_id={app_id}{header_note}",
         objects = stats.object_count,
         app_id = stats.application_id,
     );
@@ -365,6 +374,48 @@ pub(crate) fn save_capture(
     }
 
     Ok(outcome)
+}
+
+/// What a scan recovered from a capture whose writer never finished
+/// it, or `None` when the file is intact and there is nothing to say.
+///
+/// A writer killed mid-run leaves the placeholder header it stamped at
+/// open, and — if it buffered its writes — a fragment of a record it
+/// never completed. The frames before that fragment are read normally,
+/// but two things about the capture are then not what they seem: the
+/// counts and span come from the walk rather than from a header that
+/// claims the file is empty, and the wall clock is gone, because
+/// per-event timestamps are offsets from a measurement start the writer
+/// never wrote. Both are worth exactly one line — enough that the
+/// numbers on screen are never unexplained, and not so much that the
+/// import stops to ask. The file itself is left alone (ADR 0010): there
+/// is no repair and no repaired copy.
+pub(crate) fn recovered_capture_warning(scan: &cannet_blf::BlfScan) -> Option<String> {
+    if !scan.unfinalized && scan.truncated_tail_bytes.is_none() {
+        return None;
+    }
+    let mut line = format!(
+        "recovered {frames} frame(s) on {channels} channel(s) from a capture whose writer \
+         never finalized it",
+        frames = scan.frame_count,
+        channels = scan.channels.len(),
+    );
+    if let Some(bytes) = scan.truncated_tail_bytes {
+        use std::fmt::Write as _;
+        let _ = write!(
+            line,
+            "; its last {bytes} byte(s) are an incomplete record, and whatever the writer \
+             still held in memory never reached the file"
+        );
+    }
+    if scan.start_unix_nanos == 0 {
+        line.push_str(
+            "; the file states no measurement start, so the capture's wall clock is lost \
+             and its timestamps run from zero",
+        );
+    }
+    line.push_str(". The file is read as it stands and not modified.");
+    Some(line)
 }
 
 /// What a BLF save is about to lose, or `None` when it loses nothing.
@@ -933,6 +984,13 @@ pub(crate) async fn scan_blf_channels(
             channels = scan.channels.len(),
             markers = scan.markers.len(),
         );
+        // A capture whose writer never finished is opened for what it
+        // holds rather than refused, and says so once — the counts and
+        // the timeline the dialog is about to show were derived from
+        // the walk, not from the file's own header.
+        if let Some(warning) = recovered_capture_warning(&scan) {
+            sys_warn!(&app, "blf-import", "{blf_path}: {warning}");
+        }
         let mut synthetic_idx = 0u64;
         let markers = scan
             .markers
