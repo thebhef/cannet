@@ -286,3 +286,96 @@ new test); workspace green. `cargo clippy --workspace --all-targets`
 clean but for the known `redundant_closure` in `cannet-dbc/src/tests.rs`;
 `cargo fmt --all -- --check` clean;
 `git grep -Ein "task [0-9]|plans/" -- apps/ crates/` empty.
+
+### 2026-08-22 — phase 2: the unresolvable series is visible and repairable
+
+**Verified rather than assumed.** A busless DBC-backed reference already
+fell into `ViewSignalStatus::NotDecoded` without a special case:
+`describe_on_bus` filters through `filter::dbc_applies`, which answers
+`false` for a `None` bus, so nothing defines the signal and `serving` is
+`None`. `needs_attention()` counts `NotDecoded`, and the launcher badge
+reads that count live with the panel closed
+(`viewSignalsAttention.ts`). No code was needed for the status; the
+existing test `a_reference_bound_to_no_bus_is_not_decoded` now also
+asserts the badge counts it.
+
+**What was missing was the repair, and that is what landed.** The
+picker on such a row was *disabled and empty* — `describe_on_bus` on a
+`None` bus returns nothing, so there were no candidates. Shipping
+phase 1 with that surface would have been the silent emptying in a
+different costume: a row that says "Not Decoded" and offers nothing to
+do about it.
+
+- `ViewSignalCandidate` gains `bus_id` and `bus_name`. Every candidate
+  of an ordinary row carries the row's own bus; a reference that names
+  **none** takes its candidates from every bus the loaded databases are
+  assigned to, and those are its re-point offers.
+- `build_rows` now describes each row on the buses it needs and fills
+  the `(bus, message)` memo in a first pass, so the second pass reads it
+  by reference — no message descriptor is copied per row.
+- `SignalRemap` splits `busId` into `fromBusId` / `toBusId`. This is the
+  one remap that moves a bus, and every store the operation reaches
+  moves with it: a plot area's series and its `primarySignalKey`, the
+  signals view's selection keys and section assignments, a colormap's
+  target, and the project's per-signal colour override. A bus re-point
+  writes **no** transmit frame — the frame sits on the bus it transmits
+  to, which is not the reference being repaired — and `remapSignal`'s
+  no-op guard now compares whole identities, so a re-point that only
+  moves the bus is a real change while a choice that moves neither is
+  still nothing.
+- The panel's `<option>` value carries the bus, so a candidate on
+  another bus is a distinguishable choice; the choice is an ambiguity
+  pick only when it names the row's own signal **on the row's own bus**.
+  Cross-bus options are labelled `Bus · database: signal`.
+- A row nothing serves now shows a `— not decoded —` placeholder rather
+  than letting the browser display the first offer as if it were in
+  force. This also affects the pre-existing renamed-signal rows, which
+  had the same wart.
+- Doc corrections in the same commit: `view_signals`'s module docs (the
+  taxonomy's §1 and the list of repairs the panel offers),
+  `ViewSignalRef::bus_id`, `ViewSignalsPanel`'s header, `signalRemap`'s
+  module doc, and `plotPanelConfig.ts`'s `SignalRef.busId`, which said a
+  busless series was "kept so plots that pre-date per-bus signal binding
+  still sample" — false as of phase 1.
+
+**Mutation evidence.**
+
+- Making `buses_for` return only the row's own bus for a busless
+  reference fails `a_reference_bound_to_no_bus_is_offered_the_buses_that_decode`.
+- Making it return every bus for *every* reference fails
+  `an_ordinary_row_offers_only_its_own_bus`.
+- Dropping the `candidate.busId === row.busId` half of the panel's
+  ambiguity-pick condition fails
+  `re-points every stored reference onto the bus that was chosen` — a
+  re-point would silently degrade into a database pick that leaves the
+  reference where it was.
+
+**Suites.** `cargo test -p cannet-gui` 893 passed / 6 ignored (891 after
+phase 1, plus this phase's two `view_signals` tests);
+`cargo test --workspace` green; clippy clean but for the known
+`cannet-dbc` warning; `cargo fmt --all -- --check` clean. Frontend
+before: 2615 passed / 199 files; after: 2624 passed / 199 files.
+`npx tsc --noEmit` and `npx vite build` clean.
+
+## Blockers / side effects
+
+- **The ruling is unconfirmed by the owner.** Recorded here rather than
+  worked around: both commits implement the overseer's recommendation
+  verbatim.
+- **Phase 3's premise, from evidence rather than assumption.** Phase 1
+  makes `partition_by_t`'s precondition true for the signal cache's own
+  sequences, and the reason generalises: `SampleSeq` sample order is set
+  by whatever fills it, and after phase 1 both fills are ordered (one
+  bus's frames; one signal channel group). So phase 3's sweep of *other*
+  `t_seconds` readers is about readers of these same now-ordered
+  sequences, not about a second source of dips. Not verified beyond the
+  signal cache — that is phase 3's job.
+- **A pre-existing wart the placeholder fixed as a side effect.** A row
+  with candidates but nothing serving it (a renamed signal, not just a
+  busless reference) rendered its `<select>` with `value=""` against a
+  list of real options, so the browser displayed the first offer as
+  selected. Phase 2 could not leave it, because a busless row is exactly
+  that shape; the fix applies to the renamed-signal rows too.
+- **`examples/ev-zonal/dbc/pack.dbc` and `apps/gui/src-tauri/Cargo.toml`**
+  carry line-ending-only working-tree modifications that pre-date this
+  branch. Left untouched, unstaged, as instructed.
