@@ -6,7 +6,8 @@ import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT } from "./gotoEvent";
 import { useTraceModel } from "./traceData";
 import { useNotes } from "./notesContext";
-import { timelineEvents } from "./notes";
+import { timelineEvents, visibleEvents } from "./notes";
+import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import type { TraceRow } from "./trace";
 import { busLookup, type ColumnState } from "./traceColumns";
 import { diagCount } from "./diag"; // DIAG
@@ -36,10 +37,18 @@ export function EventsPanel(_props: IDockviewPanelProps) {
   diagCount("render.EventsPanel"); // DIAG
   const model = useTraceModel();
   const { notes, renameNote, recolorNote, removeNote } = useNotes();
-  const events = useMemo(
+  const allEvents = useMemo(
     () => timelineEvents(notes, model.truncationTsNs),
     [notes, model.truncationTsNs],
   );
+  // The kind filter is what makes a hidden-by-default kind findable: this
+  // view lists every kind with its count, whether or not it is showing.
+  const kindFilter = useEventKindFilter();
+  const events = useMemo(
+    () => visibleEvents(allEvents, kindFilter.visible),
+    [allEvents, kindFilter.visible],
+  );
+  const counts = useMemo(() => countByKind(allEvents), [allEvents]);
 
   const getRow = useCallback(
     (i: number): TraceRow | null => {
@@ -66,6 +75,9 @@ export function EventsPanel(_props: IDockviewPanelProps) {
 
   return (
     <div className="trace-panel events-panel">
+      <div className="events-panel-toolbar">
+        <EventKindFilter state={kindFilter} counts={counts} />
+      </div>
       <TraceView
         count={events.length}
         version={events.length}

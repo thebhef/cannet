@@ -877,11 +877,12 @@ const Row = memo(function Row({
 });
 
 /// Default color per event kind when an event carries no explicit color
-/// (ADR 0035): notes share the plot's event blue; the derived truncation
-/// marker a muted amber.
+/// (ADR 0035): notes share the plot's event blue; the truncation marker a
+/// muted amber; a coalesced bus error a fault red.
 const EVENT_KIND_COLOR: Record<string, () => string> = {
   note: () => theme().eventMarker,
   truncation: () => theme().eventTruncation,
+  busError: () => theme().eventBusError,
 };
 
 /// One timeline-event row (ADR 0035), rendered by the same `Row` path as a
