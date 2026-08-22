@@ -9,8 +9,10 @@
 /// line reflows every panel beneath it, so running out of room is
 /// handled by removing things rather than by taking more space. What
 /// gives way, and in what order, is {@link planToolbarFit} — the
-/// planner every bar in the app shares; this component only measures
-/// and renders the answer.
+/// planner every bar in the app shares — and the measuring that feeds
+/// it is {@link useToolbarFit}, the plumbing every bar in the app
+/// shares. This component only says what its runs are and renders the
+/// answer.
 ///
 /// **The bar must not clip.** `overflow: hidden` looks like the
 /// belt-and-braces companion to `nowrap` and it breaks the overflow
@@ -19,12 +21,12 @@
 /// by clipping them. If a future layout genuinely needs the bar to
 /// clip, the menu has to be portaled out of it first.
 
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { BusHealthLauncher, type BusHealthLauncherProps } from "./BusHealthLauncher";
 import { StatusChip, statusChipBadgeText } from "./StatusChip";
-import { planToolbarFit, type ToolbarFit } from "./toolbarFit";
 import { useDismissableMenu } from "./useDismissableMenu";
+import { useToolbarFit, TOOLBAR_FIT_OVERFLOW_KEY } from "./useToolbarFit";
 import type { ConnectionSummary } from "./connectionStates";
 import type { StatusMetric } from "./statusLine";
 
@@ -84,65 +86,38 @@ export function StatusBar({
   metricsTooltip,
   chips,
 }: StatusBarProps) {
-  const barRef = useRef<HTMLDivElement | null>(null);
   const leadRef = useRef<HTMLDivElement | null>(null);
   const noticeRef = useRef<HTMLDivElement | null>(null);
-  // Last measured natural width of every droppable item, kept across
-  // the renders in which the item is not on screen — an item that has
-  // been dropped cannot be measured, and its last width is what says
-  // whether it would fit again.
-  const widthsRef = useRef(new Map<string, number>());
-  const [fit, setFit] = useState<ToolbarFit>({ metrics: metrics.length, chips: chips.length });
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useDismissableMenu<HTMLDivElement>(menuOpen, () => setMenuOpen(false));
 
-  const measure = useCallback(() => {
-    const bar = barRef.current;
-    if (bar === null) return;
-    const widths = widthsRef.current;
-    for (const el of bar.querySelectorAll<HTMLElement>("[data-sb-measure]")) {
-      widths.set(el.dataset.sbMeasure as string, el.offsetWidth);
-    }
-    const gap = parseFloat(getComputedStyle(bar).columnGap) || 0;
-    const width = (key: string, fallback: number) => {
-      const w = widths.get(key);
-      return (w === undefined || w === 0 ? fallback : w) + gap;
-    };
-    // The notice ellipsises rather than pushing the numbers out, but it
-    // is never squeezed below its own natural width for nothing.
-    const noticeNatural = noticeRef.current?.scrollWidth ?? 0;
-    const available =
-      bar.clientWidth -
-      (leadRef.current?.offsetWidth ?? 0) -
-      Math.min(noticeNatural, NOTICE_RESERVE_PX);
-    const next = planToolbarFit({
-      available,
-      runs: [
-        // The metrics drop; the pinned chips collapse into the menu.
-        { id: "metrics", widths: metrics.map((m) => width(`metric:${m.id}`, 0)) },
-        { id: "chips", widths: chips.map((c) => width(`chip:${c.id}`, 0)), overflow: true },
-      ],
-      overflowWidth: width("overflow", OVERFLOW_ESTIMATE_PX),
-    });
-    setFit((prev) => (prev.metrics === next.metrics && prev.chips === next.chips ? prev : next));
-  }, [chips, metrics]);
-
-  // Re-measure after every render — content changes width as much as
-  // the window does — and whenever the bar itself is resized. The
-  // observer is set up once and reaches the current measurement through
-  // a ref, so a re-rendering header does not churn observers.
-  const measureRef = useRef(measure);
-  measureRef.current = measure;
-  useLayoutEffect(() => {
-    measureRef.current();
+  // The metrics drop; the pinned chips collapse into the menu.
+  const runs = useMemo(
+    () => [
+      { id: "metrics", items: metrics.map((m) => ({ key: `metric:${m.id}` })) },
+      {
+        id: "chips",
+        items: chips.map((c) => ({ key: `chip:${c.id}` })),
+        overflow: true,
+      },
+    ],
+    [chips, metrics],
+  );
+  // The lead never gives way, and the notice ellipsises rather than
+  // pushing the numbers out — but it is never squeezed below its own
+  // natural width for nothing. Neither is a run: both are width the
+  // runs never had.
+  const reserve = useCallback(
+    () =>
+      (leadRef.current?.offsetWidth ?? 0) +
+      Math.min(noticeRef.current?.scrollWidth ?? 0, NOTICE_RESERVE_PX),
+    [],
+  );
+  const { barRef, fit } = useToolbarFit<HTMLDivElement>({
+    runs,
+    overflowFallback: OVERFLOW_ESTIMATE_PX,
+    reserve,
   });
-  useLayoutEffect(() => {
-    const bar = barRef.current;
-    if (bar === null || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => measureRef.current());
-    observer.observe(bar);
-    return () => observer.disconnect();
-  }, []);
 
   const shownMetrics = metrics.slice(0, fit.metrics);
   const shownChips = chips.slice(0, fit.chips);
@@ -186,7 +161,7 @@ export function StatusBar({
       {shownMetrics.map((m) => (
         <span
           key={m.id}
-          data-sb-measure={`metric:${m.id}`}
+          data-toolbar-fit={`metric:${m.id}`}
           className={m.live ? "status-metric live" : "status-metric"}
         >
           <b>{m.value}</b>
@@ -197,12 +172,16 @@ export function StatusBar({
       ))}
       <span className="status-bar-spacer" />
       {shownChips.map((chip) => (
-        <span key={chip.id} data-sb-measure={`chip:${chip.id}`} className="status-bar-pinned">
+        <span key={chip.id} data-toolbar-fit={`chip:${chip.id}`} className="status-bar-pinned">
           {renderChip(chip)}
         </span>
       ))}
       {collapsedChips.length > 0 && (
-        <div className="status-bar-overflow" data-sb-measure="overflow" ref={menuRef}>
+        <div
+          className="status-bar-overflow"
+          data-toolbar-fit={TOOLBAR_FIT_OVERFLOW_KEY}
+          ref={menuRef}
+        >
           {/* The pinned chips never drop; they collapse. Something
               demanding attention can only become one click away, never
               invisible, so the control carries the sum of the counts
