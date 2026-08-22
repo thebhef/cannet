@@ -796,6 +796,12 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <span class="caption" style="font-variant-numeric:tabular-nums">128&thinsp;/&thinsp;254</span>
 </div></div>
 <div class="vbar"><span class="who">view signals<code>ViewSignalsPanel.tsx</code></span><div class="appbar panelbar">
+  <!-- Same divergence as the RBS signals bar above: the app keeps its
+       tall status swatch (shared with each row's status cell) rather
+       than this mock's round `.dot`. Also on the real bar, not drawn
+       here: a "Row Highlights" toggle and a footer "N of M" shortcut
+       chip, restyled along with everything else even though this mock
+       only sketched the filters and the bus menu. -->
   <button class="chip toggle" title="Filter to Not Decoded"><span class="dot" style="background:var(--danger-text)"></span>Not Decoded (1)</button>
   <button class="chip toggle" title="Filter to Scale"><span class="dot" style="background:var(--warn-border)"></span>Scale (2)</button>
   <button class="chip toggle" title="Filter to Ambiguous"><span class="dot" style="background:var(--warn-border)"></span>Ambiguous (1)</button>
