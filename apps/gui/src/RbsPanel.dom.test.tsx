@@ -157,6 +157,8 @@ function sampleView(): RbsView {
                 inFile: true,
                 enabled: true,
                 running: false,
+                status: "stopped",
+                statusDetail: "the element's Run is off",
                 periodMs: 100,
                 periodOverridden: false,
                 isFd: false,
@@ -477,6 +479,41 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     // AliveCtr is the counter destination: no input, a (counter) tag.
     expect(screen.queryByLabelText("AliveCtr value")).not.toBeInTheDocument();
     expect(screen.getByText("(counter)")).toBeInTheDocument();
+  });
+
+  it("says why a row will not transmit, in the signals grid's vocabulary", async () => {
+    // The scheduled dot is gone: it marked the one condition the model
+    // was already sure of and said nothing about the ones a reader
+    // needs — chief among them that a message with no cycle time
+    // cannot run at all.
+    const view = sampleView();
+    const msg = view.buses[0].ecus[0].messages[0];
+    msg.status = "muted";
+    msg.statusDetail = "no cycle time — neither an override nor GenMsgCycleTime gives one";
+    msg.periodMs = null;
+    VIEW = view;
+    renderPanel("/tmp/sim.cannet_rbs");
+    const cell = await screen.findByText("Muted");
+    expect(cell).toHaveAttribute("title", msg.statusDetail);
+    expect(document.querySelector(".rbs-message-row .rbs-dot")).toBeNull();
+  });
+
+  it("reads Stopped for a row that could run but is not scheduled", async () => {
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    expect(await screen.findByText("Stopped")).toBeInTheDocument();
+    expect(screen.queryByText("Running")).not.toBeInTheDocument();
+  });
+
+  it("reads Running for a scheduled row — the state the dot used to carry", async () => {
+    const running = sampleView();
+    running.run = true;
+    running.buses[0].ecus[0].messages[0].running = true;
+    running.buses[0].ecus[0].messages[0].status = "running";
+    running.buses[0].ecus[0].messages[0].statusDetail = "scheduled";
+    VIEW = running;
+    renderPanel("/tmp/sim.cannet_rbs");
+    expect(await screen.findByText("Running")).toBeInTheDocument();
   });
 
   it("writes Run straight to the host, and reads it back off the view", async () => {

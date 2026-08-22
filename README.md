@@ -1934,6 +1934,14 @@ In the panel:
   config's flat `disabled_messages` list). Buses whose name doesn't
   match a project bus render inert (greyed) rather than failing the
   load.
+- Each message row carries a **status**: *Running* while it is
+  scheduled, *Stopped* when it could run but the element's Run is
+  off, and *Muted* when it will not play whatever it carries — an
+  enable is off above it, no database on the bus defines it, or it
+  has **no cycle time** (neither an override nor `GenMsgCycleTime`),
+  which is the one the model always knew and never said. The cell's
+  tooltip carries the specific reason, and *Muted* is the same word
+  the signals grid below uses for the same fact.
 - Signal cells show the live decode of the message's payload buffer;
   editing partial-encodes into it (enum labels and `0x…` raw hex are
   accepted), an overridden cell is marked and a light **×** clears
