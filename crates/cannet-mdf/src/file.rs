@@ -269,6 +269,25 @@ impl Mdf4File {
         u32::try_from(shape.data).unwrap_or(u32::MAX)
     }
 
+    /// Total bytes of record data the group's data block holds — what a
+    /// walk of `group` will traverse end to end.
+    ///
+    /// A data group shared by several channel groups (an unsorted file)
+    /// answers the same figure for each of them, because each of them
+    /// walks the whole block: this is the size of the walk, not the size
+    /// of the group's own records.
+    pub(crate) fn group_data_bytes(&self, group: usize) -> u64 {
+        let dg = &self.data_groups[self.groups[group].data_group_index];
+        dg.chunks.iter().map(|c| chunk_len(c) as u64).sum()
+    }
+
+    /// How much of [`Self::group_data_bytes`] `cursor` has passed.
+    pub(crate) fn cursor_data_bytes(&self, cursor: &RecordCursor) -> u64 {
+        let dg = &self.data_groups[self.groups[cursor.group].data_group_index];
+        let done: usize = dg.chunks.iter().take(cursor.chunk).map(chunk_len).sum();
+        (done + cursor.pos) as u64
+    }
+
     pub(crate) fn cursor(group: usize) -> RecordCursor {
         RecordCursor {
             group,
@@ -304,6 +323,14 @@ impl Mdf4File {
                 }
             }
         }
+    }
+}
+
+/// A chunk's length in bytes, whichever kind it is.
+fn chunk_len(chunk: &Chunk) -> usize {
+    match chunk {
+        Chunk::Range(r) => r.len(),
+        Chunk::Owned(v) => v.len(),
     }
 }
 
