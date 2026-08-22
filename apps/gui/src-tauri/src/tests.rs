@@ -3058,6 +3058,87 @@ fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
     assert!(warning.contains("Analog/CoolantTemp"), "{warning}");
 }
 
+/// Coalescing an error storm is a **display** decision with a **write-side**
+/// contract: the summary event never reaches the file, and every error frame
+/// the session received does (ADR 0035).
+///
+/// The control that discriminates is the user note alongside the summary —
+/// both are timeline events in the same store, and exactly one is written.
+/// Without it, "no bus-error marker in the file" would also be satisfied by
+/// a save that dropped markers altogether.
+///
+/// Drives `write_blf_capture` off the very expression `save_capture` builds
+/// its marker list from (`NotesStore::exportable`), the layer under the
+/// Tauri command the suite has no `AppHandle` harness for.
+#[test]
+fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises() {
+    use cannet_core::CanFrameSource as _;
+
+    // An error storm at bus frame rate, as a persistent physical fault
+    // produces: error, retransmit, error.
+    const STORM: u64 = 200;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("storm.blf");
+    let ts = 1_700_000_000_000_000_000u64;
+    let frames: Vec<trace_store::RawTraceFrame> = (0..STORM)
+        .map(|i| trace_store::RawTraceFrame {
+            timestamp_ns: ts + i * 40_000,
+            channel: 0,
+            id: 0,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Error,
+            bus_id: None,
+        })
+        .collect();
+
+    let store = notes::NotesStore::new();
+    store
+        .add(notes::Note {
+            id: "user".into(),
+            timestamp_ns: ts,
+            label: "storm starts".into(),
+            kind: notes::EventKind::Note,
+            color: None,
+        })
+        .unwrap();
+    store.replace_derived(vec![notes::Note {
+        id: "bus-error-0".into(),
+        timestamp_ns: ts,
+        label: format!("bus error x{STORM}"),
+        kind: notes::EventKind::BusError,
+        color: None,
+    }]);
+    // Both are on the timeline the views render...
+    assert_eq!(store.events().len(), 2);
+
+    // ...and exactly one is on the timeline the file records.
+    let outcome =
+        capture::write_blf_capture(dest.to_str().unwrap(), &frames, &store.exportable(), &[])
+            .unwrap();
+    assert_eq!(outcome.marker_count, 1);
+    assert_eq!(
+        notes_via_import_walk(dest.to_str().unwrap())
+            .iter()
+            .map(|n| n.label.clone())
+            .collect::<Vec<_>>(),
+        vec!["storm starts".to_string()],
+    );
+
+    // Every error frame survives: the summary is not a substitute for them.
+    let mut back = cannet_blf::BlfCanFrameSource::open(&dest).unwrap();
+    let read_back: Vec<u64> = std::iter::from_fn(|| back.next_frame().unwrap())
+        .filter(|f| matches!(f.payload, CanFramePayload::Error))
+        .map(|f| f.timestamp_ns)
+        .collect();
+    assert_eq!(read_back.len() as u64, STORM);
+    assert_eq!(
+        read_back,
+        frames.iter().map(|f| f.timestamp_ns).collect::<Vec<_>>()
+    );
+}
+
 /// The full round-trip contract for an MDF save: import → export →
 /// re-import preserves frame content bit for bit (id + extended,
 /// payload, FD flags, remote and error frames), frame-accurate absolute
