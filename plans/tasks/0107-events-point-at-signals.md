@@ -433,3 +433,63 @@ properties are the structural form, and the reader prefers them.
   version does not understand.
 - A malformed line is preserved, not dropped, and does not invalidate
   the block.
+
+### Owner ruling 2026-08-22 — two axes, and which one bends
+
+> *"Our datamodel should be supported by our payload schema… we should
+> stick the payload in both places in a reasonable text field. Interop
+> with other MDF supporting tools seems like it would be best supported
+> by populating the MDF metadata as well as we can support, given our
+> datamodel, which we're not adjusting to MDF other than as an add-on
+> for this compatibility."*
+
+Two axes, separated:
+
+1. **Fidelity — ours.** The `cannet-event/1` text block is the record of
+   record, and it goes in **both** carriers, in each one's natural text
+   field: BLF's marker `description`, and the MDF event comment's `<TX>`.
+   Same grammar, same serializer, same parser, both formats. Read this
+   first, always; it is the only thing that carries the model exactly.
+2. **Interop — theirs, best effort.** MDF's native fields are populated
+   from our model as far as they honestly go, as an **add-on**. They are
+   never the source of truth and never constrain the model.
+
+**This closes the open question above: the untyped-link ruling stands.**
+`range_ev_addr` and `parent_ev_addr` are written where our data happens
+to fit them and skipped where it does not — a link joining exactly two
+events with nothing else attached gets Begin/End so other tools draw the
+span; a fan-out link simply has no native form and is carried in the
+text block alone. Nothing about MDF's narrower vocabulary reaches back
+into `Note`.
+
+Consequences for the phase:
+
+- `common_properties` decomposition (`cannet.subject`, `cannet.link`) is
+  **dropped**. One text block in one field beats the same data in two
+  encodings, and the properties bought nothing that the native fields do
+  not already buy for interop.
+- **`cannet-mdf` cannot write `<TX>` today.** `comment_xml` emits
+  `<EVcomment><common_properties>…` only. Phase 2 adds the `<TX>`
+  element and its read side; the existing property reader stays, since
+  foreign properties must still round-trip.
+- Native interop write, per event: `scope_addrs` for subjects that
+  resolve to a `##CN` or `##CG` in the file, `cause = User`,
+  `event_type = Marker` (pending the numbering check above), and the
+  range pair where a link is unambiguously a span.
+
+### BLF's second colour — nothing uses it
+
+`GLOBAL_MARKER` carries `foreground_color` and `background_color`, both
+`0x00RRGGBB`. In Vector's tooling they are the label's text and fill.
+
+Ours: `capture.rs` maps **`foreground_color` → `Note.color`** on read,
+and the writer sets it from the event's colour. `background_color` is
+parsed, preserved through a round-trip, and **never reaches the model** —
+`format::marker::build` hardcodes it to `0x00FF_FFFF` and nothing reads
+it back. It is not a second colour we maintain; it is a field we keep
+byte-honest and ignore.
+
+Worth knowing for the extent bands (§ band styling: an event-coloured
+wash at low opacity): the wash is **derived** from the event's one
+colour at render time, not stored. Nothing here needs a second colour,
+and the model should not grow one just because BLF has a slot.
