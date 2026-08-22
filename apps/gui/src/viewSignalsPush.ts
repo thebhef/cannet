@@ -1,5 +1,5 @@
 /// Pushing each view's referenced signals to the host's view-signal
-/// panel model (`apps/gui/src-tauri/src/view_signals.rs`, task 89).
+/// panel model (`apps/gui/src-tauri/src/view_signals.rs`).
 ///
 /// The host deliberately does not interpret the project's opaque
 /// `elements` blob (`project.rs`: "the host doesn't read these; the

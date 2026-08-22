@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// Component tests for the view-signals panel (task 89): a thin view
+// Component tests for the view-signals panel: a thin view
 // over `list_view_signals` — status, serving database, used-by and
 // candidates all come from the mocked host; this exercises the panel's
 // fetch/refetch wiring, the toolbar filters (nothing-selected-is-no-

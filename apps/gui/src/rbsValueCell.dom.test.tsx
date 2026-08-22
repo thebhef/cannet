@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// The shared RBS value cell (task 89 phase 6): both the RBS panel's
-// tree and the RBS signals grid edit an override through this one
-// component, so clamp-on-entry only has to be proven here once.
+// The shared RBS value cell: both the RBS panel's tree and the RBS
+// signals grid edit an override through this one component, so
+// clamp-on-entry only has to be proven here once.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";

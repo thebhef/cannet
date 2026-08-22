@@ -3967,7 +3967,7 @@ describe("PlotPanel hidden signal rows", () => {
       shown.querySelector(".plot-signal-remove") ?? shown.querySelector(".plot-signal-pattern-badge"),
     ).not.toBeNull();
 
-    // The swatch is the only un-hide affordance phase 4 relies on — same
+    // The swatch is the only un-hide affordance (ADR 0026) — same
     // gesture, no new control.
     fireEvent.click(row("EngineSpeed").querySelector("button.plot-signal-swatch")!);
     const hidden = row("EngineSpeed");
@@ -3992,7 +3992,7 @@ describe("PlotPanel hidden signal rows", () => {
   });
 
   it("still shows compact rows when every signal on the axis is hidden", () => {
-    // ADR 0026 / phase 4: an all-hidden axis keeps its rows rather than
+    // ADR 0026: an all-hidden axis keeps its rows rather than
     // reducing to a heading — a swatch in one of them is the only way
     // back. They compact exactly like any other hidden row.
     const bothHidden = makeRegistry({
@@ -7040,8 +7040,8 @@ describe("PlotPanel DBC-set change", () => {
 
 describe("PlotPanel enum overlays after a DBC change", () => {
   it("relabels a lane that mounted before its DBCs were installed", async () => {
-    // The owner's report, exactly (task 86 item 3): a project reopened
-    // under a newer build had one enum lane render numeric until the
+    // The owner's report, exactly: a project reopened under a newer
+    // build had one enum lane render numeric until the
     // view was closed and reopened. The panel asks for its value tables
     // once per signal set; a panel that asked before the project's DBCs
     // were installed got "no table" and had nothing to make it ask
@@ -7089,8 +7089,8 @@ describe("PlotPanel when the database behind a signal is unassigned", () => {
   }
 
   it("keeps the series configured, and any assigned database that provides it brings it back", async () => {
-    // The guarantee that makes cache revival worth having (task 88's
-    // owner ruling, ADR 0047's assignment amendment). Unassigning a
+    // The guarantee that makes cache revival worth having (ADR 0047's
+    // assignment amendment). Unassigning a
     // database parks its decoded samples; the plot series that named one
     // of its signals must stay configured and render nothing, so that
     // assigning a database again brings the view back whole instead of
@@ -7125,7 +7125,7 @@ describe("PlotPanel when the database behind a signal is unassigned", () => {
     });
   });
 
-  describe("view-signals push (task 89)", () => {
+  describe("view-signals push", () => {
     it("pushes its referenced signals on mount, and un-pushes on unmount", () => {
       renderPanel({ params: { elementId: "el-view-signals" } });
       expect(invoke).toHaveBeenCalledWith(

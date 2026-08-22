@@ -390,13 +390,12 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
   });
 
   it("a VAL_ renamed on disk reaches the picker without a manual reload", async () => {
-    // Task 27's exit criterion, RBS half. The panel's *rows* already
-    // rebuilt on a DBC change — the host runs `rbs::refresh_all_elements`
-    // on every DBC path and the panel refetches on `rbs-changed` — but
-    // the enum labels come from the shared value-table fetch, which had
-    // no way to hear that the set changed. Only `dbc-changed` is
-    // delivered here, so what is asserted is what the carrier alone
-    // reaches (ADR 0053 §3-4).
+    // The panel's *rows* already rebuilt on a DBC change — the host
+    // runs `rbs::refresh_all_elements` on every DBC path and the panel
+    // refetches on `rbs-changed` — but the enum labels come from the
+    // shared value-table fetch, which had no way to hear that the set
+    // changed. Only `dbc-changed` is delivered here, so what is
+    // asserted is what the carrier alone reaches (ADR 0053 §3-4).
     VIEW = sampleView();
     renderPanel("/tmp/sim.cannet_rbs");
     fireEvent.click(await screen.findByLabelText("toggle 0x123"));

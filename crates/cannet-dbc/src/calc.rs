@@ -22,8 +22,9 @@
 //!    ([`ResolvedCalculatedFields::verify`]) on each received frame.
 //!
 //! The CRC computation is the `crc` crate's (with `crc-catalog`'s
-//! named-algorithm list — see `plans/technology-inventory.md`); this
-//! module owns the bit placement and range/overlap semantics.
+//! named-algorithm list — see
+//! [ADR 0027](../../../docs/adr/0027-calculated-fields-counter-crc.md));
+//! this module owns the bit placement and range/overlap semantics.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};

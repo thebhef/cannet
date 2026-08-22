@@ -579,8 +579,8 @@ header {
 }
 
 /* Recent-captures dropdown. Dismisses on outside click / Escape via
- * the shared `useDismissableMenu` hook (task 75 item 4); styling
- * matches the surrounding toolbar buttons. */
+ * the shared `useDismissableMenu` hook; styling matches the
+ * surrounding toolbar buttons. */
 .toolbar .recent-captures {
   position: relative;
 }
@@ -4603,8 +4603,8 @@ button.color-chip {
   text-align: center;
 }
 
-/* View-signals launcher badge (task 89 phase 3): same recipe as the
-   system-messages badge above — quiet at zero, a small pill otherwise. */
+/* View-signals launcher badge: same recipe as the system-messages
+   badge above — quiet at zero, a small pill otherwise. */
 .view-signals-button {
   position: relative;
 }
@@ -5704,7 +5704,7 @@ button.color-chip {
   font-size: 0.85rem;
 }
 
-/* ---- View signals panel (task 89) ---- */
+/* ---- View signals panel ---- */
 .view-signals-panel {
   display: flex;
   flex-direction: column;
@@ -5972,8 +5972,8 @@ button.color-chip {
   font-size: 0.8rem;
 }
 
-/* The RBS signals grid (task 89 phase 6): the same shapes as
-   .view-signals-* above, just under its own prefix — one config's
+/* The RBS signals grid: the same shapes as .view-signals-* above,
+   just under its own prefix — one config's
    fields, not every open view's signals, so the rules below mirror
    the view-signals block rather than being merged with it (the two
    panels' rows never share a filter or a wash toggle). */
