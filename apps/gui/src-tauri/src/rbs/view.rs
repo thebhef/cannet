@@ -66,6 +66,75 @@ pub struct RbsEcuView {
     pub messages: Vec<RbsMessageView>,
 }
 
+/// Whether a message row will transmit, and — when it will not — the
+/// kind of reason. **Muted** is the RBS signals grid's word for "the
+/// message won't play regardless of what it carries", and it means the
+/// same thing here: an enable is off, no cycle time exists to play it
+/// at, or no database on the bus defines it. The remaining two split
+/// what the scheduled-state dot used to say on its own.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum RbsMessageStatus {
+    Running,
+    Stopped,
+    Muted,
+}
+
+/// What [`message_status`] classifies: the enable chain above one
+/// message row, plus what the row itself knows. Each flag is a
+/// separate level of that chain, and the point of the type is to keep
+/// them distinguishable rather than collapse them.
+#[allow(clippy::struct_excessive_bools)]
+struct MessageStatusInputs {
+    /// A database assigned to the bus defines the message.
+    defined: bool,
+    bus_enabled: bool,
+    ecu_enabled: bool,
+    message_enabled: bool,
+    period_ms: Option<u32>,
+    running: bool,
+}
+
+/// Classify one message row. Severity order, so the row states the fact
+/// the reader can act on first: a muted row's missing period is not the
+/// reason it is silent.
+fn message_status(i: &MessageStatusInputs) -> (RbsMessageStatus, &'static str) {
+    let MessageStatusInputs {
+        defined,
+        bus_enabled,
+        ecu_enabled,
+        message_enabled,
+        period_ms,
+        running,
+    } = *i;
+    if !defined {
+        return (
+            RbsMessageStatus::Muted,
+            "no database on this bus defines the message",
+        );
+    }
+    if !bus_enabled {
+        return (RbsMessageStatus::Muted, "the bus is disabled");
+    }
+    if !ecu_enabled {
+        return (RbsMessageStatus::Muted, "the ECU is disabled");
+    }
+    if !message_enabled {
+        return (RbsMessageStatus::Muted, "the message is muted");
+    }
+    if period_ms.is_none() {
+        return (
+            RbsMessageStatus::Muted,
+            "no cycle time — neither an override nor GenMsgCycleTime gives one",
+        );
+    }
+    if running {
+        (RbsMessageStatus::Running, "scheduled")
+    } else {
+        (RbsMessageStatus::Stopped, "the element's Run is off")
+    }
+}
+
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 // The flags are independent facts (file membership, enables, schedule
@@ -86,6 +155,10 @@ pub struct RbsMessageView {
     pub enabled: bool,
     /// Scheduled right now (run flag && enables).
     pub running: bool,
+    /// Whether the row will transmit, and why not when it will not —
+    /// filled in once the bus / ECU enables above it are known.
+    pub status: RbsMessageStatus,
+    pub status_detail: &'static str,
     /// The effective period: the file override, else
     /// `GenMsgCycleTime`. `None` = no period anywhere — the message
     /// can't be enabled.
@@ -210,6 +283,8 @@ pub async fn rbs_view(
                         in_file: true,
                         enabled: element.file.is_message_enabled(bus_key, msg_key),
                         running: false,
+                        status: RbsMessageStatus::Muted,
+                        status_detail: "",
                         period_ms: msg.period_ms,
                         period_overridden: msg.period_ms.is_some(),
                         is_fd: false,
@@ -230,6 +305,20 @@ pub async fn rbs_view(
             .map(|(name, mut messages)| {
                 messages.sort_by_key(|a| (a.extended, a.message_id));
                 let enabled = bus.ecus.get(&name).is_none_or(|e| e.enabled);
+                // The enables above a row are only all known here, so
+                // this is where each row's status is settled.
+                for m in &mut messages {
+                    let (status, detail) = message_status(&MessageStatusInputs {
+                        defined: m.name.is_some(),
+                        bus_enabled: bus.enabled,
+                        ecu_enabled: enabled,
+                        message_enabled: m.enabled,
+                        period_ms: m.period_ms,
+                        running: m.running,
+                    });
+                    m.status = status;
+                    m.status_detail = detail;
+                }
                 RbsEcuView {
                     name,
                     enabled,
@@ -364,6 +453,8 @@ fn build_message_view(
         in_file,
         enabled,
         running,
+        status: RbsMessageStatus::Muted,
+        status_detail: "",
         period_ms: msg.period_ms.or(desc.gen_msg_cycle_time_ms),
         period_overridden: msg.period_ms.is_some(),
         is_fd: desc.is_fd,
@@ -383,4 +474,108 @@ fn build_message_view(
 #[tauri::command]
 pub fn rbs_crc_algorithms() -> Vec<&'static str> {
     cannet_dbc::named_crc_algorithms()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{message_status, MessageStatusInputs, RbsMessageStatus};
+
+    /// Every input set to "this row would transmit", so each case
+    /// changes exactly the one it is about.
+    fn live() -> MessageStatusInputs {
+        MessageStatusInputs {
+            defined: true,
+            bus_enabled: true,
+            ecu_enabled: true,
+            message_enabled: true,
+            period_ms: Some(100),
+            running: true,
+        }
+    }
+
+    #[test]
+    fn a_scheduled_row_reads_running_and_a_stopped_one_reads_stopped() {
+        assert_eq!(message_status(&live()).0, RbsMessageStatus::Running);
+        let mut stopped = live();
+        stopped.running = false;
+        let (s, detail) = message_status(&stopped);
+        assert_eq!(s, RbsMessageStatus::Stopped);
+        assert!(detail.contains("Run"), "{detail}");
+    }
+
+    #[test]
+    fn a_message_with_no_cycle_time_reads_muted_and_says_so() {
+        // The owner's point: the model has always known a message with
+        // no period cannot be scheduled, and the panel showed a dot for
+        // the opposite condition instead.
+        let mut no_period = live();
+        no_period.period_ms = None;
+        no_period.running = false;
+        let (s, detail) = message_status(&no_period);
+        assert_eq!(s, RbsMessageStatus::Muted);
+        assert!(detail.contains("cycle time"), "{detail}");
+    }
+
+    #[test]
+    fn each_disabled_level_reads_muted_and_names_itself() {
+        let stopped = MessageStatusInputs {
+            running: false,
+            ..live()
+        };
+        for (off, want) in [
+            (
+                MessageStatusInputs {
+                    bus_enabled: false,
+                    ..stopped
+                },
+                "bus",
+            ),
+            (
+                MessageStatusInputs {
+                    ecu_enabled: false,
+                    ..stopped
+                },
+                "ECU",
+            ),
+            (
+                MessageStatusInputs {
+                    message_enabled: false,
+                    ..stopped
+                },
+                "message",
+            ),
+        ] {
+            let (s, detail) = message_status(&off);
+            assert_eq!(s, RbsMessageStatus::Muted, "{want}");
+            assert!(detail.contains(want), "{want}: {detail}");
+        }
+    }
+
+    #[test]
+    fn a_row_no_database_defines_reads_muted_rather_than_stopped() {
+        // A file-listed message no DBC on the bus describes is inert:
+        // it will not play whatever it carries, which is the same
+        // answer as a muted one and not "stopped, press Run".
+        let mut undefined = live();
+        undefined.defined = false;
+        undefined.running = false;
+        let (s, detail) = message_status(&undefined);
+        assert_eq!(s, RbsMessageStatus::Muted);
+        assert!(detail.contains("no database"), "{detail}");
+    }
+
+    #[test]
+    fn muting_outranks_a_missing_period_which_outranks_stopped() {
+        // Severity order, so the row states the fact the user can act
+        // on first: a muted row's missing period is not the reason it
+        // is silent.
+        let (s, detail) = message_status(&MessageStatusInputs {
+            bus_enabled: false,
+            period_ms: None,
+            running: false,
+            ..live()
+        });
+        assert_eq!(s, RbsMessageStatus::Muted);
+        assert!(detail.contains("bus"), "{detail}");
+    }
 }

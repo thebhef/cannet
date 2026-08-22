@@ -58,6 +58,8 @@ function message(key: string, name: string, signal: string): RbsMessageView {
     inFile: true,
     enabled: true,
     running: false,
+    status: "stopped",
+    statusDetail: "the element's Run is off",
     periodMs: 100,
     periodOverridden: false,
     isFd: false,

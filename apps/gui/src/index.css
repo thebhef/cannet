@@ -4986,6 +4986,17 @@ button.color-chip {
   display: inline-block;
 }
 .rbs-dot-on { background: var(--ok-dot); }
+/* The message row's status cell: a fixed-width column so the keys to
+   its right stay aligned whichever word each row carries. */
+.rbs-status {
+  min-width: 58px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.rbs-status-running { color: var(--ok-dot); }
+.rbs-status-muted { color: var(--text-faint); }
 .rbs-warn { color: var(--warn-text); }
 .rbs-badge {
   margin-left: 4px;
