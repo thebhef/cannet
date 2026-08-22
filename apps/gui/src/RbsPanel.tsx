@@ -54,6 +54,8 @@ import { toggleInSet } from "./toggleSet";
 import { formatBytes } from "./format";
 import { RbsValueCell } from "./rbsValueCell";
 import { GridviewFilterBox, useGridviewFilter } from "./gridviewFilter";
+import { ChipButton } from "./ChipButton";
+import { Icon } from "./Icon";
 import { useGridview, type Gridview } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
 import {
@@ -336,27 +338,25 @@ export function RbsPanel(props: IDockviewPanelProps) {
   return (
     <div className="rbs-panel">
       <div className="rbs-toolbar">
-        <label className="rbs-run-toggle" title="Transmit enabled messages (session state, default off — never saved with the project)">
-          <input
-            type="checkbox"
-            checked={run}
-            onChange={(e) => setRun(e.target.checked)}
-            aria-label="run simulation"
-          />
-          Run
-        </label>
-        <button
-          type="button"
-          onClick={() => void handleSave()}
+        <ChipButton
+          icon="play"
+          label="Run"
+          title="Transmit enabled messages (session state, default off — never saved with the project)"
+          pressed={run}
+          onPress={() => setRun(!run)}
+        />
+        <ChipButton
+          icon="save"
+          label={`Save${view?.dirty ? " •" : ""}`}
+          ariaLabel="Save"
           disabled={!view?.dirty}
           title={
             path == null
               ? "Pick a .cannet_rbs path and write the config"
               : "Write override edits back to the .cannet_rbs file"
           }
-        >
-          Save{view?.dirty ? " •" : ""}
-        </button>
+          onPress={() => void handleSave()}
+        />
         {view?.changedOnDisk === true && (
           <ChangedOnDiskNotice
             statement="RBS file changed on disk"
@@ -374,29 +374,34 @@ export function RbsPanel(props: IDockviewPanelProps) {
             }}
           />
         )}
-        <GridviewFilterBox
-          filter={filter}
-          className="rbs-filter"
-          inputType="text"
-          placeholder="filter messages / signals"
-          ariaLabel="filter"
-          inputRef={filterInputRef}
-        />
+        <span className="chip-field rbs-filter" title="filter messages / signals">
+          <Icon name="search" />
+          <GridviewFilterBox
+            filter={filter}
+            inputType="text"
+            placeholder="filter messages / signals"
+            ariaLabel="filter"
+            inputRef={filterInputRef}
+          />
+        </span>
         <span className="rbs-path" title={path ?? "not saved to a file yet"}>
           {path == null ? "(unsaved)" : path.split(/[/\\]/).pop()}
         </span>
-        <button type="button" onClick={() => void handleOpenFile()}>
-          Open…
-        </button>
-        <button
-          type="button"
-          onClick={() =>
+        <ChipButton
+          icon="folder"
+          label="Open"
+          ariaLabel="Open RBS File"
+          title="Open a different .cannet_rbs…"
+          onPress={() => void handleOpenFile()}
+        />
+        <ChipButton
+          icon="signals"
+          label="Signals"
+          title="Every field this config transmits, with where each value came from"
+          onPress={() =>
             showRbsSignalsPanel(containerApi, elementId, element ? elementLabel(element) : "")
           }
-          title="Every field this config transmits, with where each value came from"
-        >
-          Signals
-        </button>
+        />
       </div>
 
       {/* The tree is the gridview container: it holds focus and names
