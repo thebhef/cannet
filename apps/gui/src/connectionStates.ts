@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { formatBitrate } from "./busHardwareConfig";
+import type { StatusChipState } from "./StatusChip";
 import type { BusConnState, BusConnStates } from "./types";
 
 /// Tauri event the host fires whenever any bus's connection state
@@ -106,6 +107,121 @@ export function describeBusConnState(
         detail: state.reason,
       };
   }
+}
+
+/// One bus the connection chip counts: a project bus with an
+/// interface binding. Unbound buses are not units — nothing was ever
+/// going to connect them.
+export interface ConnectionUnit {
+  id: string;
+  name: string;
+}
+
+/// What the connection chip shows, and what pressing it does.
+export interface ConnectionSummary {
+  state: StatusChipState;
+  /// The chip's word.
+  label: string;
+  /// `connected / bound`, or `null` when the project binds nothing.
+  count: string | null;
+  /// Per-bus detail for the tooltip — one line per bound bus, naming
+  /// what the host applied or why it failed.
+  detail: string;
+  /// The command pressing the chip runs, or `null` when there is
+  /// nothing to press.
+  action: "connect" | "disconnect" | null;
+  /// How that action reads to a screen reader.
+  actionLabel: string;
+}
+
+/// Aggregate the host's per-bus connection map into the one state the
+/// chip shows.
+///
+/// Nothing here is derived from what the frontend can see arriving:
+/// every bus's state is the host's (`connection_state.rs`), and the
+/// only judgement made is which of them the chip counts — the project
+/// buses that carry a binding.
+///
+/// `remoteActive` is the host's other connection fact: a session is up
+/// or coming up. It matters for the gap between a session starting and
+/// the first bus reporting, where there is no per-bus state to read
+/// and "not connected" would be wrong.
+export function summarizeConnection(
+  bound: readonly ConnectionUnit[],
+  states: BusConnStates,
+  remoteActive: boolean,
+): ConnectionSummary {
+  if (bound.length === 0) {
+    return {
+      state: "idle",
+      label: "Not connected",
+      count: null,
+      detail: "No interface bindings — add one in the project panel first.",
+      action: null,
+      actionLabel: "Connect",
+    };
+  }
+  const detail = bound
+    .map((b) => `${b.name}: ${describeBusConnState(states[b.id], true).detail}`)
+    .join("\n");
+  const entries = bound.map((b) => states[b.id]);
+  const connected = entries.filter((s) => s?.kind === "connected").length;
+  const connecting = entries.filter((s) => s?.kind === "connecting").length;
+  const errored = entries.filter((s) => s?.kind === "error").length;
+  const count = `${connected} / ${bound.length}`;
+  // An attempt still in flight outranks whatever has already landed:
+  // the aggregate is not settled until every bus has answered.
+  if (connecting > 0 || (remoteActive && connected + errored === 0)) {
+    // Pressing during a connect disconnects — a connect that never
+    // lands must still be escapable, and there is no other way out of
+    // it.
+    return {
+      state: "connecting",
+      label: "Connecting…",
+      count,
+      detail,
+      action: "disconnect",
+      actionLabel: "Disconnect",
+    };
+  }
+  if (connected === bound.length) {
+    return {
+      state: "connected",
+      label: "Connected",
+      count,
+      detail,
+      action: "disconnect",
+      actionLabel: "Disconnect",
+    };
+  }
+  if (connected > 0) {
+    return {
+      state: "degraded",
+      label: "Connected",
+      count,
+      detail,
+      action: "disconnect",
+      actionLabel: "Disconnect",
+    };
+  }
+  if (errored > 0) {
+    return {
+      state: "failed",
+      label: "Failed",
+      count,
+      detail,
+      action: "connect",
+      actionLabel: "Retry",
+    };
+  }
+  return {
+    state: "idle",
+    label: "Not connected",
+    count,
+    detail,
+    action: remoteActive ? "disconnect" : "connect",
+    actionLabel: remoteActive ? "Disconnect" : "Connect",
+  };
 }
 
 /// One-line rendering of what the host actually put on the wire for a
