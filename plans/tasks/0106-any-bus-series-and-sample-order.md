@@ -567,3 +567,23 @@ since has touched `apps/gui/src-tauri` or `crates/`.
   sweep inventory above) rather than left unexamined, but not touched:
   fixing or re-documenting trace-store-side code is outside this task's
   "signal cache and above" boundary.
+
+## Exit criteria — verdicts (overseer, 2026-08-22)
+
+| Criterion | Verdict | Earned by |
+| --- | --- | --- |
+| The any-bus series' decode behaviour is ruled on and implemented, not left asserted in two places that disagree; the two pinning tests turned around or kept deliberately, with the reason recorded | **met, on an unconfirmed ruling** | Phase 1 (`e20bb41b`). Stronger than asked: `SignalKey::dbc` takes `bus_id: String`, so the state is unrepresentable rather than merely unused, and the invariant is discharged once in `plan_batch` instead of re-checked per frame. `an_unscoped_series_decodes_each_frame_by_its_own_bus` became `a_series_naming_no_bus_decodes_nothing`, with the old rule and the reason for the change in the test. **The ruling is the overseer's recommendation; the owner has not confirmed it** — the two commits are the whole diff to revert. |
+| No binary search in the signal cache rests on an order nothing enforces | **met** | The precondition was made *true* rather than the search replaced, so the task-91 forward-scan comparison does not apply. Phase 3's 17-site inventory checked the rest; overseer re-ran an independent sweep for `partition_point` / `binary_search` / `lower_bound` across the host and `cannet-spill` and found every other site searching frame indices or slot positions, monotonic by append order. |
+| Any doc comment asserting non-decreasing sample order either describes something enforced, or is corrected | **met, after one correction** | Phase 3 (`4d0e4c8b`) named the enforcer at five sites instead of restating the assertion. It also left `RawSeries.t` claiming *strictly* increasing while its own new justification guaranteed only non-decreasing — caught in overseer review and corrected in `3b8fd808`, which established that ties are **real input** (hardware timestamps at microsecond resolution, and a CAN-FD burst outruns them). |
+| If an index is built, its cost is measured on a realistic cache, not asserted | **not applicable** | No index was built; nothing needed one. This is the outcome the grooming predicted — settling half 1 dissolved half 2. |
+
+**The task delivered one defect nobody was looking for.** Chasing the
+`RawSeries.t` contradiction turned up `plotCursors::statsOver` starting
+its walk at `indexAtOrBefore(lo) + 1`, which lands on the *last* of a
+tied pair and silently drops the earlier sample from a span's
+count / min / max / mean. Reproduced before fixing —
+`statsOver({t:[0,1,2,2,3], v:[5,1,9,4,7]}, 2, 2)` answered
+`{count:1, min:4, max:4, mean:4}` where the truth is
+`{count:2, min:4, max:9, mean:6.5}` — and fixed with a real
+`indexAtOrAfter` lower bound. The old code's own comment ("give or take
+an exact hit") was the tell.
