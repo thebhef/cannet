@@ -2,9 +2,11 @@
 
 Status: accepted (2026-06-01); amended (2026-06-30) — replaced the
 per-trace re-zero display model with a single application-level origin
-rendered as elapsed time. The history below describes the current
-decision; the superseded per-trace-offset rendering is recorded under
-"Rejected alternatives."
+rendered as elapsed time; amended (2026-08-19) — where an *imported*
+capture's origin comes from: the file states the timeline, and the
+session origin is the earliest timestamp the import brings in. The
+history below describes the current decision; the superseded
+per-trace-offset rendering is recorded under "Rejected alternatives."
 
 ## Decision
 
@@ -35,6 +37,42 @@ Because the origin is shared, the same instant reads identically in
 every panel: the trace table, the plot, and any event marker all show
 the same elapsed value for a given frame.
 
+## Where an imported capture's origin comes from
+
+Live capture has an obvious origin — the wall clock at Connect or
+Clear. An import does not: the timeline belongs to the file. Two rules
+settle it, and they are the same rules on every import path.
+
+4. **The file states the timeline; an unstated one is zero.** When the
+   file names a start time — BLF's `measurement_start_time`, MDF's
+   `hd_start_time_ns` — every timestamp the capture carries is that
+   start plus the file's own offset, so the capture keeps absolute
+   wall-clock time and the trace view can name the instant a frame
+   happened. When the file states none (BLF's all-zero "unset"
+   `SYSTEMTIME`; no start time to add at all) the capture is anchored at
+   zero and reads as relative: elapsed time from the file's own
+   beginning, naming no instant. It is one arithmetic either way — an
+   unstated start supplies zero — not a special case, and
+   `format.ts::hasWallClockAnchor` is how a renderer asks which kind of
+   timeline it is looking at.
+
+5. **The session origin is the earliest timestamp the import brings
+   in.** Over *everything* on the capture's timeline: frames,
+   file-backed signal samples, and events. Not the first timestamp read
+   — no format promises that the earliest one comes first. BLF makes no
+   ordering guarantee between objects at all; an MDF's earliest content
+   is routinely a message-independent signal sample rather than a frame;
+   and either format can carry an annotation ahead of its first frame.
+   The import range (ADR 0046) bounds it: content outside the selected
+   range is not part of the capture, so it neither renders nor moves the
+   origin.
+
+Rule 5 is what keeps rule 2's "rendered time is never negative"
+true for imports, and it is not optional politeness — the buffer-side
+guard in `TraceStore::append` *drops* a frame stamped before the
+origin, so an origin above the file's earliest frame loses data
+silently rather than rendering it negative.
+
 ## Why
 
 A user looking at the same event in three places — a row in the trace
@@ -60,12 +98,24 @@ Host-side (`cannet-gui::trace_store`):
   reader. `start_session` is called by `clear_trace_store` (Connect /
   Open / toolbar Clear all go through it) and by the replay pump on
   its first frame.
+- `TraceStore::lower_session_start` moves the origin *down* without
+  emptying the buffer — the correction rule 5 needs, since an import
+  learns its earliest timestamp as it goes and the frames already
+  appended have to survive. It never raises the anchor. The replay pump
+  (`session::anchor_replay_session`) folds every frame into it, and
+  `capture::settle_import_origin` folds in the file's events and
+  file-backed signals before the signal fill.
 - `TraceStore::append` drops any frame stamped strictly before
   `session_start_ns` — the buffer-side guard, so frames in-flight at
   the moment of Clear can't land in the new session with a pre-Clear
   timestamp.
-- The `trace-grew` event carries `session_start_seconds`; the
-  frontend treats it as the canonical, only origin.
+- The `trace-grew` event carries `session_start_seconds` as an
+  `Option<f64>`; the frontend treats it as the canonical, only origin.
+  `None` means no session has started, which is a different fact from
+  an origin of zero — the anchor a file with no stated start time
+  produces. `TraceStore::session_started` is what separates them; a
+  frontend that inferred "no origin" from a falsy zero made its
+  renderers fall back to inventing one.
 
 Frontend (`apps/gui/src`):
 
@@ -91,7 +141,14 @@ Frontend (`apps/gui/src`):
   using the session origin — a bug.
 - **Rendered time is never negative.** Frames stamped before
   `session_start` are dropped by the buffer guard; if a negative time
-  appears, the guard let a stale frame through.
+  appears, the guard let a stale frame through — or something that is
+  not a frame is being rendered against an origin that does not cover
+  it. An import's origin covers everything it brought in (rule 5)
+  precisely so the second case cannot arise.
+- **No renderer invents an origin.** A panel with no origin to render
+  against waits; it does not substitute its own window's first frame,
+  its first sample, or the wall clock. Every such substitute was a
+  second origin, and the panels disagreed.
 - **A new session start re-zeroes every panel in the same render.**
   There is one number to change and no per-view state to reconcile.
 - **A scrolling view's viewport position is a function of _time_, not
@@ -196,6 +253,13 @@ Frontend (`apps/gui/src`):
 
 ## See also
 
+- [ADR 0046](0046-one-ingest-pathway.md) — the single ingest seam the
+  replay anchor lives on, and the `WindowedSource` filter that applies
+  the selected import range — which bounds what rule 5's "earliest
+  timestamp the import brings in" ranges over.
+- `examples/time-origins/` — the fixture set that pins both import
+  rules: a BLF with no stated start time, a BLF whose objects are out of
+  timestamp order, and an MF4 whose earliest content is a signal.
 - [ADR 0005](0005-dockview-panel-layout.md) — the panel host these
   renderers run inside.
 - [ADR 0007](0007-uplot-plot-renderer.md) — the plot renderer; this

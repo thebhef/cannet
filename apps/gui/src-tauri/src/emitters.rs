@@ -181,7 +181,9 @@ pub(crate) fn spawn_trace_grew_emitter(app: AppHandle) {
                 None => Vec::new(),
             };
             #[allow(clippy::cast_precision_loss)]
-            let session_start_seconds = session_start_ns as f64 / 1_000_000_000.0;
+            let session_start_seconds = snap
+                .session_started
+                .then(|| session_start_ns as f64 / 1_000_000_000.0);
             let frames_per_second_by_bus = snap
                 .frames_per_second_by_bus
                 .into_iter()

@@ -175,29 +175,37 @@ pub(crate) async fn open_log(
                     source,
                     cancel,
                     channel_to_bus,
-                    true, // replay_origin: BLF anchors the session at the first frame's ts
-                );
+                    // replay_origin: the session anchors on the file's own
+                    // earliest timestamp (ADR 0024), which the pump tracks.
+                    true,
+                )
             }));
             // This pump is done — cleanly, cancelled, or panicked —
             // so nothing should be able to cancel it again.
             *app_for_thread.state::<AppState>().import_cancel() = None;
-            if let Err(payload) = result {
-                let msg = format!("load failed: {}", panic_message(payload.as_ref()));
-                sys_error!(&app_for_thread, "blf-import", "{msg}");
-                let _ = app_for_thread.emit("log-finished", LogFinished::Error { message: msg });
-                return;
-            }
+            let mut anchor = match result {
+                Ok(anchor) => anchor,
+                Err(payload) => {
+                    let msg = format!("load failed: {}", panic_message(payload.as_ref()));
+                    sys_error!(&app_for_thread, "blf-import", "{msg}");
+                    let _ =
+                        app_for_thread.emit("log-finished", LogFinished::Error { message: msg });
+                    return;
+                }
+            };
             // The markers the pump walked past. Applied once the pass is
             // over — the file's annotations are only fully known when
-            // its last object has been read.
+            // its last object has been read. A marker can precede the
+            // first frame, so it is folded into the session origin (ADR
+            // 0024) and dropped if the import range excludes it.
             let notes =
                 std::mem::take(&mut *collected.lock().unwrap_or_else(PoisonError::into_inner));
+            let app_state: State<'_, AppState> = app_for_thread.state();
+            let notes =
+                settle_import_origin(&app_state, &mut anchor, notes, None, start_ns, end_ns);
             if !notes.is_empty() {
                 let marker_count = notes.len();
-                let _ = app_for_thread
-                    .state::<AppState>()
-                    .notes
-                    .replace(notes.clone());
+                let _ = app_state.notes.replace(notes.clone());
                 let _ = app_for_thread.emit("notes-changed", notes);
                 sys_info!(
                     &app_for_thread,
@@ -975,31 +983,35 @@ pub(crate) async fn import_mdf(
             // silently dead thread the UI waits on forever.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let state: State<'_, AppState> = app_for_thread.state();
-                if import_messages {
+                let mut anchor = if import_messages {
                     run_pump(
                         &app_for_thread,
                         source,
                         cancel,
                         channel_to_bus,
-                        true, // replay_origin: MDF anchors the session at the first frame's ts
-                    );
+                        // replay_origin: the session anchors on the file's
+                        // own earliest timestamp (ADR 0024).
+                        true,
+                    )
                 } else {
-                    // No frames means no replay origin, so the signals
-                    // are the capture's timeline (ADR 0024). Same wipe
-                    // the pump's first append performs, at the same
-                    // point in the flow.
-                    if let Some(origin) = signal_origin_ns(&signal_groups, start_ns, end_ns) {
-                        state.trace_store.start_session(origin);
-                        restamp_scratch_for_capture(&state);
-                    }
                     // The frontend's load state ends on this event
                     // whichever contents were asked for.
                     let _ = app_for_thread.emit("log-finished", LogFinished::Ok { total: 0 });
-                }
-                // After the frames, not before: `run_pump` mints the
-                // capture identity on the first frame it appends, and
-                // that wipes the signal caches (`restamp_scratch_for_capture`).
-                // Filling ahead of it would have the wipe eat the fill.
+                    None
+                };
+                // The file's signals and events are on the capture's
+                // timeline too, and either can start before its first
+                // frame — an MDF's earliest content routinely does. Fold
+                // both into the origin before the fill: minting one wipes
+                // the signal caches, so a fill ahead of it would be eaten.
+                let notes = settle_import_origin(
+                    &state,
+                    &mut anchor,
+                    notes,
+                    signal_origin_ns(&signal_groups, start_ns, end_ns),
+                    start_ns,
+                    end_ns,
+                );
                 let (signals, samples) = fill_file_backed_signals(
                     &state.signal_caches,
                     &signal_groups,
@@ -1022,7 +1034,9 @@ pub(crate) async fn import_mdf(
                 }
                 // The file's events, applied after the pass — same point
                 // in the flow as `open_log`'s BLF markers, and after the
-                // capture identity that wipes the session store.
+                // capture identity that wipes the session store. Their
+                // range filtering and their contribution to the origin
+                // already happened above.
                 if !notes.is_empty() {
                     let count = notes.len();
                     let _ = state.notes.replace(notes.clone());
@@ -1228,15 +1242,62 @@ pub(crate) fn install_embedded_databases(
         .collect()
 }
 
+/// Fold everything the import brings in *besides* its frames into the
+/// session origin, and return the notes that belong to the imported
+/// range.
+///
+/// The origin is the earliest timestamp on the capture's timeline (ADR
+/// 0024), and frames are not the only thing on it: an MDF's earliest
+/// content is routinely a file-backed signal sample, and either format
+/// can carry an annotation ahead of its first frame. Anchoring on the
+/// frames alone left those rendering at a negative elapsed time —
+/// exactly what the ADR's invariant forbids.
+///
+/// `anchor` is the pump's own anchor (`None` when it appended no
+/// frames), threaded through so this either lowers an existing origin or
+/// mints one — and when it mints one, restamps the scratch for the
+/// capture the way the pump's first frame does.
+///
+/// Notes outside `[start_ns, end_ns]` are dropped rather than kept and
+/// anchored around: the selected range is what the import brings in (ADR
+/// 0046), so an annotation outside it is not part of this capture. Call
+/// this **before** filling the file-backed signals — minting an origin
+/// wipes the signal caches.
+pub(crate) fn settle_import_origin(
+    state: &AppState,
+    anchor: &mut Option<u64>,
+    notes: Vec<Note>,
+    signal_origin_ns: Option<u64>,
+    start_ns: Option<u64>,
+    end_ns: Option<u64>,
+) -> Vec<Note> {
+    let notes: Vec<Note> = notes
+        .into_iter()
+        .filter(|n| {
+            start_ns.is_none_or(|s| n.timestamp_ns >= s)
+                && end_ns.is_none_or(|e| n.timestamp_ns <= e)
+        })
+        .collect();
+    let earliest = signal_origin_ns
+        .into_iter()
+        .chain(notes.iter().map(|n| n.timestamp_ns).min())
+        .min();
+    if let Some(ts) = earliest {
+        // Same call the pump makes per frame; `true` means this minted
+        // the capture, so the scratch is restamped for it here instead.
+        if crate::session::anchor_replay_session(state, anchor, ts) {
+            restamp_scratch_for_capture(state);
+        }
+    }
+    notes
+}
+
 /// The earliest sample `groups` will land inside the import range — the
-/// session origin for an import that brings in signals but no frames.
+/// signals' half of [`settle_import_origin`]'s input.
 ///
 /// A capture's timeline starts at its own first sample, not at the wall
-/// clock the import happened to run at (ADR 0024). With frames, the pump
-/// takes that origin off the first one it appends; with signals alone
-/// there is nothing else to take it from. `None` when the range excludes
-/// every sample: there is no capture, so the caller leaves the session
-/// start where it was.
+/// clock the import happened to run at (ADR 0024). `None` when the range
+/// excludes every sample: the signals then contribute no origin.
 pub(crate) fn signal_origin_ns(
     groups: &[cannet_mdf::SignalChannelGroup],
     start_ns: Option<u64>,
@@ -1446,7 +1507,11 @@ pub struct RestoredCapture {
     /// capture shows it without waiting for a `trace-grew` tick (a stopped
     /// trace gets none). `None` when nothing was truncated or restored.
     first_index_ts_ns: Option<u64>,
-    session_start_seconds: f64,
+    /// The reloaded capture's session origin (Unix-epoch seconds, ADR
+    /// 0024), or `None` when nothing was restored. Never zero-for-absent:
+    /// a capture imported from a log with no stated start time is
+    /// anchored at exactly zero.
+    session_start_seconds: Option<f64>,
     /// Whether the restore had to **discard** the pyramids a prior
     /// session persisted (ADR 0047), so every plotted signal is decoded
     /// again from frame zero — minutes on a large capture. The frontend
@@ -1505,7 +1570,7 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
             count: 0,
             first_index: 0,
             first_index_ts_ns: None,
-            session_start_seconds: 0.0,
+            session_start_seconds: None,
             pyramids_rebuilding: false,
         };
     };
@@ -1591,7 +1656,10 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
         count: u64::try_from(count).unwrap_or(u64::MAX),
         first_index,
         first_index_ts_ns,
-        session_start_seconds: session_start_ns as f64 / 1_000_000_000.0,
+        session_start_seconds: state
+            .trace_store
+            .session_started()
+            .then_some(session_start_ns as f64 / 1_000_000_000.0),
         pyramids_rebuilding,
     }
 }

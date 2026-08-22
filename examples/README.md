@@ -18,6 +18,14 @@ Three example *projects* live alongside this trace fixture:
   one-sample hline, and enum lanes striped where their state is held
   rather than read.
 
+One more fixture set sits alongside them, without a project:
+
+- [`time-origins/`](time-origins/README.md) — a DBC and three ~2 s
+  captures (two BLF, one MF4) that pin where an imported capture's
+  timeline starts (ADR 0024): a file with no stated start time, a BLF
+  whose objects are out of timestamp order, and an MF4 whose earliest
+  content is a signal rather than a frame.
+
 ## Files
 
 | File | Purpose |

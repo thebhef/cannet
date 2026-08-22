@@ -9,10 +9,13 @@
 //!
 //! Because the walk covers the **whole** file, the census is exact —
 //! a channel that first appears in the last frame is reported like any
-//! other. The first and last frame timestamps and the file's
-//! `GLOBAL_MARKER` records fall out of the same walk for free (markers
-//! are rare enough that decoding just those costs nothing), so a caller
-//! that needs the capture's duration or its events does not walk again.
+//! other. The capture's time span and the file's `GLOBAL_MARKER` records
+//! fall out of the same walk for free (markers are rare enough that
+//! decoding just those costs nothing), so a caller that needs the
+//! capture's duration or its events does not walk again. The span is a
+//! **min / max** over the walk rather than the first and last object
+//! read: BLF makes no promise that objects are in timestamp order, and
+//! the earliest timestamp is the imported capture's origin (ADR 0024).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -31,11 +34,15 @@ pub struct BlfScan {
     pub channels: Vec<u8>,
     /// CAN-class events seen (frames, including error frames).
     pub frame_count: u64,
-    /// Absolute timestamp (ns since the UNIX epoch) of the first
-    /// CAN-class event, or `None` for a file with no frames.
+    /// Absolute timestamp (ns since the UNIX epoch) of the **earliest**
+    /// CAN-class event, or `None` for a file with no frames. A min over
+    /// the walk, not the first object read: BLF promises no ordering, and
+    /// this is the capture's origin (ADR 0024) as well as the import
+    /// dialog's range floor.
     pub first_timestamp_ns: Option<u64>,
-    /// Absolute timestamp of the last CAN-class event. Frames are stored
-    /// in arrival order, so `last - first` is the capture's duration.
+    /// Absolute timestamp of the **latest** CAN-class event — a max over
+    /// the walk, for the same reason. `last - first` is the capture's
+    /// duration.
     pub last_timestamp_ns: Option<u64>,
     /// Every `GLOBAL_MARKER` in the file, in file order, decoded.
     pub markers: Vec<ScannedMarker>,
@@ -115,8 +122,8 @@ pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
         frame_count += 1;
         if let Some(rel) = relative_timestamp_ns(raw.bytes) {
             let abs = start_unix_nanos.saturating_add(rel);
-            first_timestamp_ns.get_or_insert(abs);
-            last_timestamp_ns = Some(abs);
+            first_timestamp_ns = Some(first_timestamp_ns.map_or(abs, |f: u64| f.min(abs)));
+            last_timestamp_ns = Some(last_timestamp_ns.map_or(abs, |l: u64| l.max(abs)));
         }
     }
     Ok(BlfScan {
@@ -283,6 +290,39 @@ mod tests {
         assert_eq!(m.marker.marker_name, b"halfway");
         assert_eq!(m.marker.description, b"note-1");
         assert_eq!(m.marker.foreground_color, 0x00FF_8800);
+    }
+
+    /// Path to one of the committed `examples/time-origins/` captures.
+    fn time_origin_fixture(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/time-origins")
+            .join(name)
+    }
+
+    /// BLF promises nothing about the order of its objects, so the
+    /// census's span has to be a min / max over the walk rather than the
+    /// first and last thing it happens to read. `wall-clock-out-of-order.blf`
+    /// keeps its earliest frame (+120 ms) and its only marker (+100 ms)
+    /// at the *end* of the file, after 99 frames starting at +500 ms —
+    /// taken in file order the span comes back inverted (first 500 ms,
+    /// last 300 ms), and the import dialog's range fields inherit it.
+    #[test]
+    fn the_span_is_the_min_and_max_of_the_walk_not_its_first_and_last_object() {
+        const START: u64 = 1_709_294_400_000_000_000;
+        let scan = scan_blf(time_origin_fixture("wall-clock-out-of-order.blf")).unwrap();
+
+        assert_eq!(scan.start_unix_nanos, START, "the file states a wall clock");
+        assert_eq!(
+            scan.first_timestamp_ns,
+            Some(START + 120_000_000),
+            "the earliest frame is the second-to-last object in the file"
+        );
+        assert_eq!(
+            scan.last_timestamp_ns,
+            Some(START + 2_460_000_000),
+            "the latest frame is well before the end of the file"
+        );
+        assert!(scan.first_timestamp_ns <= scan.last_timestamp_ns);
     }
 
     #[test]

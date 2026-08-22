@@ -280,3 +280,205 @@ Grilled with the owner ahead of implementation. Resolutions:
    phase states the contract task 27 then adopts.
 4. **Item 4 — DBC replace.** Investigation and the pinning test per
    note 4.
+
+## Status log
+
+### 2026-08-19 — Phase 1 (item 2, import time origins)
+
+Branch `task-86-phase-1-import-time-origins`, off
+`task-81-phase-2-bus-scoped-value-tables`.
+
+#### Investigation
+
+**Observation 1 (fixtures).** `examples/cannet-demo.blf` and
+`examples/extrapolation/extrapolation.blf` both carry the all-zero
+"unset" `SYSTEMTIME` as `measurement_start_time`, and both start at
+absolute timestamp exactly 0 (measured by walking them with `scan_blf`
+and `BlfCanFrameSource`). `examples/cannet-demo.mf4` states
+`hd_start_time_ns = 1709294400000000000`, and every frame, sample and
+`##EV` in it is at or above that.
+
+**Hypothesis 1.** A BLF whose first frame lands at absolute 0 anchors
+the session at `session_start_ns == 0`, which the frontend reads as "no
+origin at all", and every renderer then substitutes an origin of its
+own.
+
+**Experiment 1.** Traced the reported value through the host and the
+frontend. `emitters.rs` sent `session_start_seconds = 0.0`; `App.tsx`
+mapped it with `session_start_seconds > 0 ? … : null`;
+`useDecimatedRange.ts:306` resolves `req.origin ?? res.from_seconds`.
+
+**Data 1.** With `origin: null` the plot's cache latches its base to
+`res.from_seconds` — the *window's* first frame — and every sample,
+span, note and axis tick is rendered against that. The trace table
+(base `null` → raw seconds) and the plot then disagree about the same
+instant, and any content to the left of the window's first frame
+renders negative.
+
+**Conclusion 1.** Confirmed, and it is the "generally" the owner sees:
+it needs no unusual file, only a capture-relative BLF — which is what
+`python-can`'s `BLFWriter` produces, and what both of this repo's own
+example BLFs are. This is candidate (c) in a sharper form: not "an
+import into a session whose origin came from elsewhere", but *an import
+whose origin was discarded* for being falsy. Fixed by making the wire
+carry `Option<f64>` and the host answer it from
+`TraceStore::session_started`.
+
+**Hypothesis 2** (candidate (a) in the item above). Out-of-order BLF
+objects land before the origin the first frame set and render negative.
+
+**Experiment 2.** Generated `wall-clock-out-of-order.blf` (earliest two
+frames written at the *end* of the file) and drove the pump body over
+it with the first-frame anchor.
+
+**Data 2.** 121 frames read, **119 appended**. They do not render
+negative: `TraceStore::append`'s pipeline-drain guard drops any frame
+stamped before `session_start_ns`.
+
+**Conclusion 2.** The mechanism is real but the symptom is *silent data
+loss*, not a negative time. Recorded as its own finding; the same fix
+(anchor at the minimum) covers both. The census made the same ordering
+assumption and reported the file's span inverted (first +500 ms, last
++300 ms) — that is what the import dialog's range fields were reading.
+
+**Hypothesis 3** (candidate (b)). Annotations carry stamps that precede
+the first frame and render negative.
+
+**Experiment 3.** Same fixture, marker at +100 ms against an earliest
+frame of +120 ms; and `wall-clock-signals.mf4`, whose signal group
+starts 500 ms and whose first `##EV` sits 400 ms below the first
+`CAN_DataFrame`.
+
+**Data 3.** Notes and file-backed samples are not subject to the buffer
+guard — nothing drops them — so they render at `ts − session_start` < 0.
+Confirmed on both formats.
+
+**Conclusion 3.** Confirmed. Grooming note 3's ruling ("the earliest
+timestamp in the imported range") is right, and has to range over events
+and file-backed signals, not only frames.
+
+Relationship to [`0025-can-hw-vbus-bugfixes.md`](0025-can-hw-vbus-bugfixes.md):
+that task's negatives are a *live-capture* symptom on repeated toolbar
+Clear, attributed there to a non-null frontend
+`traceStartOffsetSeconds` on restored panels. Different trigger,
+different layer; nothing here touches it, and its reproduction should be
+re-checked against this branch, since ADR 0024 now also forbids a
+renderer substituting an origin of its own.
+
+**Departure from the ruling, recorded.** Grooming note 3 says the census
+reports min/max and the pump anchors to that. Implemented as the pump
+tracking the minimum itself (`session::anchor_replay_session` plus
+`TraceStore::lower_session_start`) rather than consuming a census
+result: `open_log` / `import_mdf` are handed a range, not a census, and
+re-walking the file inside the import to obtain one would double the
+ingest cost on the path this phase's perf gate covers. The census
+min/max landed anyway, because the import dialog's range fields read it.
+Same outcome, no second walk.
+
+#### What landed
+
+| Commit | Subject | Tests |
+|---|---|---|
+| `65207a54` | Add the import-time-origin fixture set | — |
+| `fd555a1d` | The BLF census reports the min and max of its walk, not first and last | +1 (`cannet-blf`) |
+| `30ba6d98` | An import's session origin is the earliest timestamp it brings in | +5 (`cannet-gui`) |
+| `07f33d4b` | A session origin of zero is an origin, and the wire now says so | +2 (`cannet-gui`), +1 (frontend) |
+| `d86ccf33` | Write the import time-origin rule into ADR 0024, pinned per format | +1 (`cannet-blf`), +1 (`cannet-mdf`) |
+
+Suite totals after the phase: `cannet-blf` 109, `cannet-mdf` 19 (lib)
+plus 29 (integration), `cannet-gui` 717, frontend 2235 across 165 files.
+`cargo clippy --workspace --all-targets -- -D warnings` clean on every
+commit (the pre-commit gate ran it).
+
+**Fixtures** — `examples/time-origins/`, ~19 kB total, openable by hand
+and documented in its own README: `time-origins.dbc`,
+`relative-zero.blf` (unset header, frames from 0),
+`wall-clock-out-of-order.blf` (stated start, objects out of order,
+marker before the first frame), `wall-clock-signals.mf4` (stated start,
+signal group and event before the first frame). Generated by two
+committed Rust examples (`cargo run -p cannet-blf --example
+gen_time_origin_fixtures`, likewise for `cannet-mdf`) using cannet's own
+writers, so regenerating needs no Python. Committed as binaries *and* as
+generators: the owner asked to be able to open them, and the tests in
+three crates address them by path.
+
+#### ADR-0031 perf gate
+
+Two release runs on the real rig (`pnpm --dir apps/gui tauri build
+--no-bundle`, then `target/release/cannet-gui` with `--project <abs
+ev-zonal.cannet_prj> --app-data-dir <the operator's seeded perf app-data dir>
+--connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both connected —
+`ids_measured` 173, rx 1608.5 / 1603.1, tx 1612.2 / 1607.6, 59.0 s each
+— so neither is the empty-capture failure mode.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed on both runs, 30 metrics gated.**
+No baseline promoted or edited.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 0.000 | 0.000 | 0.000 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 3.300 | 4.400 | 4.400 | 41.000 |
+| jank_fraction | 0.000 | 0.000 | 0.000 | 0.000 | 0.050 |
+| jsheap_mb_peak | 70.300 | 71.700 | 70.300 | 71.700 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 6.522 | 5.503 | 6.522 | 24.094 |
+| renderer_mb_peak | 299.363 | 300.098 | 301.020 | 301.020 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 42.958 | 33.946 | 42.958 | 85.336 |
+| host_mb_peak | 59.227 | 58.602 | 58.344 | 58.602 | 182.453 |
+| tree_mb_peak | 714.051 | 711.926 | 713.004 | 713.004 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 73.787 | 64.839 | 73.787 | 139.240 |
+| flush_ms_mean | 25.000 | 4.145 | 4.263 | 4.263 | 25.000 |
+| flush_ms_max | 23.772 | 9.999 | 10.953 | 10.953 | 72.544 |
+| tx_late_ms_mean | 18.000 | 5.755 | 5.587 | 5.755 | 18.000 |
+| tx_late_ms_max | 65.695 | 25.730 | 16.820 | 25.730 | 156.391 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.142 | 1.146 | 1.146 | 2.898 |
+| rx_gap_short_frac_worst (advisory) | 0.008 | 0.004 | 0.004 | 0.004 | 0.046 |
+| rx_fps_retention | 0.998 | 0.998 | 0.997 | 0.997 | 0.800 |
+| tx_fps_retention | 1.001 | 1.000 | 1.000 | 1.000 | 0.800 |
+
+Means across the two runs sit between the per-run figures above in every
+row; nothing straddles a limit. The three host modes (`tracebuffer`,
+`grpc`, `hardware-peak`) re-ran as part of `check` and passed on both.
+`rx_gap_short_frac_worst` is advisory per ADR 0031's 2026-08-19
+amendment and came in at half the baseline, so there is nothing to
+chase.
+
+One abandoned run before run 1: `perf automation: connect preconditions
+not ready after 30000ms (bindings=2, sidecar=not ready)`, with the
+sidecar visibly listening in the same log 30 s earlier. No report was
+written and the launch was simply repeated. Flagged as the
+sidecar-readiness flake, not a result.
+
+Reports were not committed (nothing under
+`docs/performance-measurements/frontend/` is tracked); they are at
+`task86-phase1-run{1,2}.json` in the operator's seeded perf app-data dir
+(outside the repo).
+
+## Blockers / side effects
+
+- **`BlfCaptureWriter` clamps an out-of-order frame's timestamp** (found
+  while building the fixtures; **not fixed here**). The writer anchors
+  `measurement_start_time` on the first frame appended and encodes every
+  later object as a `saturating_sub` against it, so a frame stamped
+  earlier is written *at* the anchor. Measured: writing
+  `[+1000 ms, +500 ms, +1100 ms]` reads back
+  `[+1000 ms, +1000 ms, +1100 ms]` — 500 ms of silent error. This
+  matters because ADR 0024 already records that a real multi-bus
+  capture's arrival order dips ~1.1 s below its own max several times a
+  minute, and Save Capture writes the store in arrival order. It is a
+  *write*-path defect, so it is outside this phase's scope (import
+  origins); fixing it needs either a two-pass write or a seek-back over
+  the already-emitted objects. Needs its own task.
+- **Notes outside the selected import range are now dropped.** A
+  consequence of applying ADR 0046's range to the file's annotations as
+  well as its frames, which is what stops an out-of-range marker
+  dragging the origin below the range the user asked for. Not something
+  the grooming ruled on explicitly; re-importing the full range brings
+  them back, and BLF and MDF now behave the same way.
+- **No UI verification.** Every claim above comes from generated files
+  and code-level experiments; nothing was checked by driving the GUI,
+  per the standing rule against UI automation on the owner's machine.
+  The owner-visible confirmation is opening `examples/time-origins/` by
+  hand.
