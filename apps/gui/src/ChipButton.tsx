@@ -37,6 +37,13 @@ export interface ChipButtonProps {
   /// A toggle's position. Omitted entirely for a chip that is not a
   /// toggle, so nothing announces a pressed state that does not exist.
   pressed?: boolean;
+  /// Whether the menu this chip opens is showing. Providing it at all
+  /// is what makes the chip a menu trigger — it then announces
+  /// `haspopup` as well — so a chip that opens nothing says nothing,
+  /// the same rule {@link ChipButtonProps.pressed} follows. A trigger
+  /// is not a toggle: what it announces is "a menu, currently open",
+  /// not "on".
+  menuOpen?: boolean;
   /// A needs-attention count. Absent or zero renders nothing: a badge
   /// that says "0" is noise.
   badge?: number;
@@ -61,6 +68,7 @@ export function ChipButton({
   label,
   state,
   pressed,
+  menuOpen,
   badge,
   busy,
   title,
@@ -78,6 +86,8 @@ export function ChipButton({
       className={classes.join(" ")}
       data-state={state}
       aria-pressed={pressed}
+      aria-haspopup={menuOpen === undefined ? undefined : "menu"}
+      aria-expanded={menuOpen}
       aria-busy={busy || undefined}
       title={title}
       aria-label={ariaLabel ?? label ?? title}

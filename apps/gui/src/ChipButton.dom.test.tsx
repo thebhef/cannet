@@ -154,6 +154,22 @@ describe("ChipButton", () => {
     expect(renderChip()).not.toHaveAttribute("aria-pressed");
   });
 
+  it("announces the menu it opens, and nothing at all when it opens none", () => {
+    // A menu trigger is not a toggle: it says "there is a menu, and it
+    // is open", never "on". The two must not be confused, or a screen
+    // reader calls an open Add menu a pressed button.
+    const open = renderChip({ menuOpen: true });
+    expect(open).toHaveAttribute("aria-haspopup", "menu");
+    expect(open).toHaveAttribute("aria-expanded", "true");
+    expect(open).not.toHaveAttribute("aria-pressed");
+    const shut = renderChip({ menuOpen: false });
+    expect(shut).toHaveAttribute("aria-haspopup", "menu");
+    expect(shut).toHaveAttribute("aria-expanded", "false");
+    const plain = renderChip();
+    expect(plain).not.toHaveAttribute("aria-haspopup");
+    expect(plain).not.toHaveAttribute("aria-expanded");
+  });
+
   it("shows a badge the way the status chip does, capped and hidden at zero", () => {
     expect(renderChip({ badge: 3 }).querySelector(".status-chip-badge")).toHaveTextContent("3");
     expect(renderChip({ badge: 412 }).querySelector(".status-chip-badge")).toHaveTextContent(
