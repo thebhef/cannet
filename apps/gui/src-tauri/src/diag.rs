@@ -656,6 +656,13 @@ pub struct AutomationConfig {
     /// `--perf-label <text>`: label stamped on the report (the webview
     /// falls back to the project path / `"perf"` when absent).
     pub label: Option<String>,
+    /// `--rbs-run-on-start`: arm every RBS element the project loads,
+    /// the same thing the panel's Run toggle does. A measurement run
+    /// needs the simulation putting frames on the bus, and an RBS Run
+    /// flag is session state a project file cannot carry (ADR 0028), so
+    /// an unattended run has to ask for it in the launch as explicitly
+    /// as a person would in the panel.
+    pub rbs_run_on_start: bool,
     /// `--perf-interact <script>`: drive synthetic scroll / pan / zoom
     /// gestures at the heavy views while the capture runs, so the
     /// interaction cost of the render tier is in the measurement rather
@@ -686,6 +693,10 @@ impl AutomationConfig {
                 }
                 "--connect-on-start" => {
                     cfg.connect_on_start = true;
+                    seen = true;
+                }
+                "--rbs-run-on-start" => {
+                    cfg.rbs_run_on_start = true;
                     seen = true;
                 }
                 "--perf-capture-secs" => {
@@ -1129,6 +1140,24 @@ mod tests {
         assert_eq!(cfg.out.as_deref(), Some("out/report.json"));
         assert_eq!(cfg.label.as_deref(), Some("2 plots + 2 traces"));
         assert_eq!(cfg.interact.as_deref(), Some("scrub"));
+    }
+
+    #[test]
+    fn autostart_arms_the_rbs_only_when_asked() {
+        // A project can no longer carry "this simulation is live"
+        // (ADR 0028 — Run is session state), so an unattended
+        // measurement run has to ask for it, and a run that does not ask
+        // must stay silent on the bus.
+        let cfg = AutomationConfig::from_args(args(&["cannet", "--connect-on-start"]))
+            .expect("flag arms autostart");
+        assert!(!cfg.rbs_run_on_start);
+        let cfg = AutomationConfig::from_args(args(&[
+            "cannet",
+            "--connect-on-start",
+            "--rbs-run-on-start",
+        ]))
+        .expect("flag arms autostart");
+        assert!(cfg.rbs_run_on_start);
     }
 
     #[test]

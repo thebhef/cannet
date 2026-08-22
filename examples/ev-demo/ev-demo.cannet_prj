@@ -1022,8 +1022,7 @@
       "id": "vehicle",
       "kind": "rbs",
       "name": "Vehicle RBS",
-      "path": "ev-demo.cannet_rbs",
-      "run": true
+      "path": "ev-demo.cannet_rbs"
     },
     {
       "busId": null,

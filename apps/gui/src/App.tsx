@@ -213,6 +213,7 @@ import {
 type AutomationConfig = {
   project: string | null;
   connectOnStart: boolean;
+  rbsRunOnStart: boolean;
   captureSecs: number | null;
   out: string | null;
   label: string | null;
@@ -2702,8 +2703,14 @@ export function App() {
   // path appears / changes, unload when the element goes away. Owned
   // here (not by the panel) so an element's config is on the host even
   // when its panel isn't in the layout. Run is not reconciled — it is
-  // host session state with no project copy to push.
+  // host session state with no project copy to push — with one
+  // exception: an unattended measurement launch asks for the
+  // simulation outright (`--rbs-run-on-start`, ADR 0031), because a
+  // project file cannot carry that any more and a report of an idle
+  // bus measures nothing.
   const rbsHostStateRef = useRef<Map<string, { path: string | null }>>(new Map());
+  const rbsRunOnStartRef = useRef(false);
+  rbsRunOnStartRef.current = automation?.rbsRunOnStart === true;
   // Per-element op queue: the reconciler fires across renders (a
   // layout-restored panel ensures a pathless element moments before
   // the opened project replaces it with the saved path), and the
@@ -2711,6 +2718,16 @@ export function App() {
   // an early rbs_init could land after the project's rbs_load.
   // Chaining per element keeps host ops in dispatch order.
   const rbsOpsRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  /// Chained onto an element's load / init so the measurement launch's
+  /// arming lands after the config the host is about to schedule from.
+  /// A normal launch adds nothing.
+  const armRbs = useCallback(
+    (id: string) => () =>
+      rbsRunOnStartRef.current
+        ? invoke("rbs_set_run", { elementId: id, run: true })
+        : Promise.resolve(),
+    [],
+  );
   const queueRbsOp = useCallback((id: string, op: () => Promise<unknown>) => {
     const prev = rbsOpsRef.current.get(id) ?? Promise.resolve();
     const next = prev.then(op).catch(() => {});
@@ -2736,11 +2753,11 @@ export function App() {
         // memory (first save) is a no-op host-side: rbs_load re-reads
         // the file just written.
         const path = now.path;
-        queueRbsOp(id, () => invoke("rbs_load", { elementId: id, path }));
+        queueRbsOp(id, () => invoke("rbs_load", { elementId: id, path }).then(armRbs(id)));
       } else if (now.path == null && !prev) {
         // A fresh element needs no file: the host seeds an in-memory
         // config from the project's current buses (saving is explicit).
-        queueRbsOp(id, () => invoke("rbs_init", { elementId: id }));
+        queueRbsOp(id, () => invoke("rbs_init", { elementId: id }).then(armRbs(id)));
       }
     }
     rbsHostStateRef.current = current;

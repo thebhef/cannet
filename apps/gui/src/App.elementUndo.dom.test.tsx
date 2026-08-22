@@ -24,6 +24,10 @@ const listeners = new Map<string, Handler[]>();
 /// off `rbs_view` after the host's `rbs-changed`.
 const rbsHost = { run: false };
 
+/// What the host's `diag_autostart` serves — `null` for a normal
+/// launch. One case below arms `--rbs-run-on-start`.
+let AUTOSTART: unknown = null;
+
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
@@ -43,6 +47,8 @@ vi.mock("@tauri-apps/api/core", () => ({
         return "0.0.0-test";
       case "get_sidecar_status":
         return { phase: "offline", address: null };
+      case "diag_autostart":
+        return AUTOSTART;
       case "rbs_set_run":
         rbsHost.run = args?.run === true;
         for (const h of listeners.get("rbs-changed") ?? []) h({ payload: "*" });
@@ -280,6 +286,7 @@ beforeEach(async () => {
   localStorage.clear();
   listeners.clear();
   rbsHost.run = false;
+  AUTOSTART = null;
   await hydrateState();
 });
 
@@ -854,6 +861,43 @@ describe("element undo", () => {
     expect(document.querySelector<HTMLInputElement>("input.dbc-panel-search")!.value).toBe(
       "engine",
     );
+  }, 30_000);
+
+  it("arms every RBS element on --rbs-run-on-start, and none without it", async () => {
+    // A measurement run needs the simulation on the bus, and a project
+    // file can no longer carry "this one is live". The launch flag is
+    // the gesture instead, and it goes through the same host command
+    // the panel's Run toggle uses.
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Add RBS panel"));
+    });
+    await waitFor(() => {
+      if (!document.querySelector(".rbs-panel")) throw new Error("no RBS panel yet");
+    });
+    expect(rbsHostCalls()).not.toContain("rbs_set_run");
+
+    cleanup();
+    AUTOSTART = {
+      project: null,
+      connectOnStart: false,
+      rbsRunOnStart: true,
+      captureSecs: null,
+      out: null,
+      label: null,
+      interact: null,
+    };
+    await mountApp();
+    await act(async () => {
+      fireEvent.click(findButton("Add RBS panel"));
+    });
+    await waitFor(() => {
+      const armed = vi
+        .mocked(invoke)
+        .mock.calls.filter(([cmd]) => cmd === "rbs_set_run");
+      if (armed.length === 0) throw new Error("the element was never armed");
+      expect(armed[armed.length - 1]?.[1]).toMatchObject({ run: true });
+    });
   }, 30_000);
 
   it("never replays a behavior field, and never wakes the host reconciler", async () => {

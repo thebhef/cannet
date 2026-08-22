@@ -1063,8 +1063,7 @@
       "id": "vehicle",
       "kind": "rbs",
       "name": "EV Zonal RBS",
-      "path": "ev-zonal.cannet_rbs",
-      "run": true
+      "path": "ev-zonal.cannet_rbs"
     },
     {
       "busId": null,
