@@ -217,3 +217,75 @@ the phase updates the prototype so it stays the living reference for
 the icon set and the chrome — it is not deleted at the end (owner
 ruling 2026-08-21, restated 2026-08-21 evening). This is a standing
 instruction in every phase prompt, not a phase of its own.
+
+## Status log
+
+- **2026-08-22 — Phase 1, the icon registry, landed.** Branch
+  `task-108-phase-1-icon-registry` from `3c560f70`.
+  - `3837937f` adds `apps/gui/src/Icon.tsx` (`ICON_NAMES`,
+    `ICON_REGISTRY`, `<Icon name=".."/>`) and `Icon.dom.test.tsx`.
+  - `13e90c6c` points `BusHealthLauncher` at the registry's `bus` icon
+    in place of its inline ECG-zigzag `<polyline>`, with a test
+    pinning that the rendered SVG has the bus icon's shape (two
+    circles, no polyline, `viewBox="0 0 14 14"`).
+  - Frontend tests: 2682/200 files before → 2685/201 files after (all
+    green). `tsc --noEmit` and `vite build` clean.
+    `comment-references` grep (`task [0-9]|plans/` over `apps/`,
+    `crates/`) empty.
+  - **Mechanism**: took the overseer's reading — an `Icon` component
+    over a plain `name -> shape data` record, not a `<symbol>`/`<use>`
+    sprite. Shape data is typed (`path`/`circle`/`ellipse`/`rect`
+    variants with numeric/string fields) rather than a markup string,
+    so no icon can carry an attribute the registry doesn't model, and
+    copying stayed verbatim (same numbers, same path `d` strings) from
+    the prototype's `<symbol>` bodies.
+  - **Set-level test, proved by mutation**: `Icon.dom.test.tsx` pins
+    the exact 36-name set against a literal array copied from the
+    prototype's inventory, independent of whatever `ICON_NAMES` holds
+    at read time. Verified by temporarily (a) deleting `"x"` from
+    `ICON_NAMES`+registry and (b) adding an unnamed `"spare"` icon to
+    both — the pin test failed both times (the "renders every
+    registered icon" test did not, as expected, since it only walks
+    whatever the registry currently contains) — then restored both
+    mutations and re-ran green.
+  - **Registry inventory as built** (36 icons; name — for): folder —
+    open project; save — save project / save capture; import — import
+    trace; clock — recent captures; db — database panel; db-add — add
+    DBC; bus — bus health launcher (now wired); plug — connection
+    (spare, unused so far); clear — clear capture / trace clear; plus —
+    add menu / add area / add-frame-style buttons; rows — trace panel;
+    chart — plot panel; signals — signal view / RBS signals list; send
+    — transmit panel; loop — RBS panel; palette — color map; wave —
+    generator; eye — view signals; graph — graph panel (bus→views
+    fanout); flag — events panel / events toggle; tree — project panel;
+    bell — system messages; play — start/run; pause — pause; stop —
+    stop; fit-x — plot fit x axis; fit-y — plot fit y axes; search —
+    solo box / filter fields; cursors — clear cursors; cursor-x — x
+    cursor mode; cursor-y — y cursor mode; note — note-placement mode;
+    goto — event row go-to (today's ⇥); edit — inline rename (today's
+    ✎); link — events view link-events; x — remove / clear-solo
+    (today's ×).
+  - **Prototype**: not changed. Its "icon set — full inventory" section
+    already used `i-bus` (not a zigzag) for bus health and already
+    carried `i-db` separate from `i-db-add` — both audit fixes were
+    already reflected there, so the divergence to fix was in the app
+    code only.
+
+## Blockers / side effects
+
+- **"42 icons" vs. the prototype's actual inventory (36).** Both the
+  task's main description and the grooming section's "Implementation
+  detail settled by reading the code" say the registry is 42 icons.
+  Counting the prototype's own "icon set — full inventory" section
+  (the explicitly named source of truth, not the summary list) gives
+  36 named icons. The `<defs>` sprite itself defines 37 `<symbol>`s —
+  36 of the inventory plus `i-reload`, which the inventory section
+  does not list and whose command (catalog reload) the rulings retire
+  in phase 4. Per the instruction to "take the inventory from the
+  prototype, not from this list," phase 1 built the 36 named in the
+  inventory section and left `reload` out of the registry, since it
+  names no surviving command and isn't part of the reviewable set the
+  prototype documents. Flagging the "42" discrepancy rather than
+  silently reconciling it — if a wider or different set was intended,
+  say so and a later phase can add to the registry (additive, not a
+  rework of phase 1's shape).
