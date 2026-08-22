@@ -118,18 +118,28 @@ export function PaletteModal({
 /// asking for. Enter submits the current text; Escape / backdrop click
 /// cancels. The seeded text starts selected, so typing replaces it and
 /// editing it in place still works.
+///
+/// An optional `validate` gates the submit: it is run on Enter, and a
+/// non-null return is shown as an inline error *instead of* submitting
+/// — the prompt stays open rather than the value being silently
+/// discarded (the defect this closes). Any further edit clears the
+/// shown error, so the field doesn't keep flagging text the user has
+/// already changed.
 export function PalettePrompt({
   label,
   initialValue,
+  validate,
   onSubmit,
   onClose,
 }: {
   label: string;
   initialValue: string;
+  validate?: (value: string) => string | null;
   onSubmit: (value: string) => void;
   onClose: () => void;
 }) {
   const [value, setValue] = useState(initialValue);
+  const [error, setError] = useState<string | null>(null);
 
   return (
     <div className="modal-backdrop palette-backdrop" role="presentation" onClick={onClose}>
@@ -147,17 +157,26 @@ export function PalettePrompt({
           value={value}
           autoFocus
           onFocus={(e) => e.target.select()}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setError(null);
+          }}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.preventDefault();
               onClose();
             } else if (e.key === "Enter") {
               e.preventDefault();
+              const reason = validate?.(value) ?? null;
+              if (reason) {
+                setError(reason);
+                return;
+              }
               onSubmit(value);
             }
           }}
         />
+        {error && <div className="palette-prompt-error">{error}</div>}
       </div>
     </div>
   );

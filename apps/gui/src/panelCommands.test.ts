@@ -36,4 +36,22 @@ describe("createPanelCommandRegistry", () => {
     first();
     expect(reg.invoke("el-1", "plot.fitXAxis")).toBe(true);
   });
+
+  it("passes an optional argument through to the handler", () => {
+    // A prompt-collected value (e.g. plot.setVisibleRange's typed text)
+    // has to reach the focused panel's handler.
+    const reg = createPanelCommandRegistry();
+    const setRange = vi.fn();
+    reg.register("el-1", () => ({ "plot.setVisibleRange": setRange }));
+    expect(reg.invoke("el-1", "plot.setVisibleRange", "1 5")).toBe(true);
+    expect(setRange).toHaveBeenCalledWith("1 5");
+  });
+
+  it("calls a handler with no argument when none is given", () => {
+    const reg = createPanelCommandRegistry();
+    const fit = vi.fn();
+    reg.register("el-1", () => ({ "plot.fitXAxis": fit }));
+    reg.invoke("el-1", "plot.fitXAxis");
+    expect(fit).toHaveBeenCalledWith(undefined);
+  });
 });
