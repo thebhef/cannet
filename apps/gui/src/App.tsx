@@ -14,6 +14,7 @@ import type {
   ImportMdfResult,
   InterfaceBinding,
   InterfaceRecord,
+  LoadProgress,
   LocalVirtualBusDef,
   LogFinished,
   MdfScanResult,
@@ -50,6 +51,7 @@ import { TransmitPanel } from "./TransmitPanel";
 import { RbsPanel } from "./RbsPanel";
 import { RbsSignalsPanel } from "./RbsSignalsPanel";
 import { ChangedOnDiskNotice } from "./ChangedOnDiskNotice";
+import { LoadProgressChip } from "./LoadProgressChip";
 import { ColorMapPanel } from "./ColorMapPanel";
 import { GeneratorPanel } from "./GeneratorPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
@@ -1136,7 +1138,16 @@ export function App() {
     );
 
     unlistens.push(
+      listen<LoadProgress>("load-progress", (event) => {
+        setLoadProgress(event.payload);
+      }),
+    );
+
+    unlistens.push(
       listen<LogFinished>("log-finished", (event) => {
+        // Whatever the load did, it is over: the next one starts from no
+        // report rather than inheriting this one's last fraction.
+        setLoadProgress(null);
         if (event.payload.status === "ok") {
           // A cancelled pump ends through the identical clean-exit path
           // a natural EOF does (`cancel_import`'s cooperative flag just
@@ -1212,6 +1223,11 @@ export function App() {
   // only sign of life between picking a file and the dialog opening.
   const [scanningBlfPath, setScanningBlfPath] = useState<string | null>(null);
   const [scanningMdfPath, setScanningMdfPath] = useState<string | null>(null);
+  // The most recent `load-progress` report, or `null` while the phase in
+  // flight has not reported one yet (and between loads). View-local by
+  // construction: the numbers are the host's, this only remembers the
+  // last pair it was told.
+  const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
 
   // Pick → census → mapping dialog is one gesture, and only one of it
   // runs at a time: a second launch while the census walks would walk
@@ -1237,21 +1253,11 @@ export function App() {
   // dialog.
   const handleImportTrace = useCallback(
     async (presetPath?: string) => {
-      // The launcher doubles as Cancel once the pump is actually
-      // running (`state.kind === "loading"`) rather than merely
-      // censusing — the census phase stays plain-disabled, unchanged,
-      // since there's no cooperative checkpoint to cancel it at (a
-      // single opaque file walk, not a per-frame loop).
-      if (state.kind === "loading") {
-        importCancelledRef.current = true;
-        try {
-          await invoke("cancel_import");
-        } catch (err) {
-          importCancelledRef.current = false;
-          setState({ kind: "error", message: String(err) });
-        }
-        return;
-      }
+      // Cancelling is its own control now (`handleCancelLoad`), so a
+      // launch while a load is in flight is just a launch too early:
+      // ignore it rather than giving the button a second meaning the
+      // user has to guess at.
+      if (state.kind === "loading") return;
       if (traceOpenInFlight.current || pendingBlf !== null || pendingMdf !== null) return;
       traceOpenInFlight.current = true;
       try {
@@ -1267,11 +1273,15 @@ export function App() {
         // nothing.
         if (importFormatFor(selected) === "mdf") {
           setScanningMdfPath(selected);
+          setLoadProgress(null);
           try {
-            const scan = await invoke<MdfScanResult>("scan_mdf_channels", {
+            const scan = await invoke<MdfScanResult | null>("scan_mdf_channels", {
               mdfPath: selected,
             });
-            setPendingMdf({ mdfPath: selected, scan });
+            // `null` is a cancelled census: it walked part of the file
+            // and produced nothing, so there is no dialog to open and
+            // nothing to undo. Drop the gesture and go back to idle.
+            if (scan !== null) setPendingMdf({ mdfPath: selected, scan });
           } catch (err) {
             setState({ kind: "error", message: String(err) });
             // If we tried to open a recent file and it failed (path
@@ -1280,21 +1290,25 @@ export function App() {
             if (presetPath) dropRecentCapture(presetPath);
           } finally {
             setScanningMdfPath(null);
+            setLoadProgress(null);
           }
           return;
         }
 
         setScanningBlfPath(selected);
+        setLoadProgress(null);
         try {
-          const scan = await invoke<BlfScanResult>("scan_blf_channels", {
+          const scan = await invoke<BlfScanResult | null>("scan_blf_channels", {
             blfPath: selected,
           });
-          setPendingBlf({ blfPath: selected, scan });
+          // See the MDF branch: `null` is a cancelled census.
+          if (scan !== null) setPendingBlf({ blfPath: selected, scan });
         } catch (err) {
           setState({ kind: "error", message: String(err) });
           if (presetPath) dropRecentCapture(presetPath);
         } finally {
           setScanningBlfPath(null);
+          setLoadProgress(null);
         }
       } finally {
         traceOpenInFlight.current = false;
@@ -1302,6 +1316,27 @@ export function App() {
     },
     [state.kind, dropRecentCapture, pendingBlf, pendingMdf],
   );
+
+  // Stop the load in flight, whichever phase it is in. One host command
+  // covers both (`cancel_import`): the phases are sequential, and the
+  // host holds one cancel flag for whichever is running.
+  //
+  // The two ends differ in what they leave behind. A cancelled census
+  // has produced nothing — its command resolves with `null` and
+  // `handleImportTrace` drops the gesture. A cancelled pump has frames
+  // in the store and ends through the same clean-exit path a natural
+  // EOF takes, so this side has to remember that it asked; the
+  // `log-finished` listener reads the flag and clears the partial
+  // capture instead of presenting it as a finished one.
+  const handleCancelLoad = useCallback(async () => {
+    if (state.kind === "loading") importCancelledRef.current = true;
+    try {
+      await invoke("cancel_import");
+    } catch (err) {
+      importCancelledRef.current = false;
+      setState({ kind: "error", message: String(err) });
+    }
+  }, [state.kind]);
 
   // Confirm the BLF channel mapping and actually start the pump.
   // `choices[ch] === ""` means "skip this channel"; `range` is the
@@ -1342,6 +1377,10 @@ export function App() {
           channelBusMapping,
           startNs: range.startNs,
           endNs: range.endNs,
+          // The census counted these frames a moment ago; handing the
+          // count back is what makes the pump's progress determinate,
+          // and is cheaper than any way of finding it again.
+          totalFrames: scan.frame_count,
         });
         setState({ kind: "loading", result });
         // Record on a successful open. Failures don't
@@ -1391,6 +1430,8 @@ export function App() {
           endNs: range.endNs,
           importSignals: contents.signals,
           importMessages: contents.messages,
+          // See `handleBlfMapConfirm`: the census's own count.
+          totalFrames: scan.frame_count,
         });
         setState({ kind: "loading", result });
         rememberRecentCapture(mdfPath);
@@ -3314,17 +3355,15 @@ export function App() {
     { id: "project.open", label: "Open project…" },
     { id: "project.save", label: "Save project" },
     "sep",
-    // A census running is the one thing the user is waiting on, so the
+    // A load running is the one thing the user is waiting on, so the
     // button that started it says so rather than sitting there looking
-    // idle — which is what got clicked through repeatedly. Once the
-    // pump itself is running the button stays busy but is no longer
-    // disabled: clicking it cancels (`handleImportTrace`'s own busy
-    // check does the routing).
-    scanningTracePath !== null
+    // idle — which is what got clicked through repeatedly. It is only
+    // ever busy: stopping the load is the status line's own Cancel
+    // button, not a second meaning on the launcher, which nothing about
+    // a greyed-out "Loading trace…" would have told anyone.
+    scanningTracePath !== null || importingTracePath !== null
       ? { id: "trace.import", label: "Loading trace…", disabled: true, busy: true }
-      : importingTracePath !== null
-        ? { id: "trace.import", label: "Loading trace…", busy: true }
-        : { id: "trace.import", label: "Import trace…" },
+      : { id: "trace.import", label: "Import trace…" },
     "recentCaptures",
     { id: "dbc.add", label: "Add DBC…" },
     "sep",
@@ -3467,14 +3506,25 @@ export function App() {
           className="status"
           title="buffered frames · frame rate · elapsed capture · resident memory (app + WebView) · disk-spill cache on disk"
         >
-          {/* Indeterminate — the walk's length is the file's length,
-              and there is no progress to report until it ends. Same
-              affordance the plot uses while its first sample builds;
-              the status text alongside it names the file. Spans the
-              census and the pump: it must not drop out just because
-              data has started reaching the plot panel. */}
+          {/* The load in flight: how far it has got, and the way out of
+              it. Spans the census and the pump — it must not drop out
+              just because data has started reaching the plot panel —
+              and the status text alongside it names the file. The bar
+              is determinate once the host has reported a fraction, and
+              the indeterminate chip until then: a bar pinned at zero
+              would claim a measurement nobody has made yet. */}
           {(scanningTracePath !== null || importingTracePath !== null) && (
-            <span className="trace-scan-bar" aria-hidden="true" />
+            <span className="trace-load">
+              <LoadProgressChip progress={loadProgress} />
+              <button
+                type="button"
+                className="trace-load-cancel"
+                title="Stop loading this capture. A capture part-way through importing is discarded, not kept."
+                onClick={() => void handleCancelLoad()}
+              >
+                Cancel
+              </button>
+            </span>
           )}
           {/* The restore threw the persisted pyramids away and every
               plotted signal is being decoded again (ADR 0047) — minutes
