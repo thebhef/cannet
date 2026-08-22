@@ -7,17 +7,20 @@
 
 import { createContext, useContext, useEffect, useRef } from "react";
 
-/// A panel's command implementations, keyed by command id.
-export type PanelCommandHandlers = Record<string, () => void>;
+/// A panel's command implementations, keyed by command id. `arg` is the
+/// value a command's typed-argument prompt collected — `undefined` for
+/// a command with no prompt.
+export type PanelCommandHandlers = Record<string, (arg?: string) => void>;
 
 export interface PanelCommandRegistry {
   /// Register the handlers for an element-backed panel. `get` is
   /// called at invoke time so the registration survives handler
   /// identity churn across renders. Returns an unregister fn.
   register(elementId: string, get: () => PanelCommandHandlers): () => void;
-  /// Run `elementId`'s implementation of `commandId`. False when the
-  /// panel isn't mounted or doesn't implement the command.
-  invoke(elementId: string, commandId: string): boolean;
+  /// Run `elementId`'s implementation of `commandId`, passing `arg`
+  /// through unchanged. False when the panel isn't mounted or doesn't
+  /// implement the command.
+  invoke(elementId: string, commandId: string, arg?: string): boolean;
 }
 
 export function createPanelCommandRegistry(): PanelCommandRegistry {
@@ -31,10 +34,10 @@ export function createPanelCommandRegistry(): PanelCommandRegistry {
         if (map.get(elementId) === get) map.delete(elementId);
       };
     },
-    invoke(elementId, commandId) {
+    invoke(elementId, commandId, arg) {
       const handler = map.get(elementId)?.()[commandId];
       if (!handler) return false;
-      handler();
+      handler(arg);
       return true;
     },
   };
