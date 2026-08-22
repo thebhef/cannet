@@ -341,6 +341,8 @@ Recorded by the phases that found them, not yet decided.
 | 3.19 | **`useConnectionStates` still hand-rolls the host mirror, and its launch race stays open.** It is the pattern `useBusHealth` copied; `useBusHealth` was migrated in `02f9b877` but this one cannot move as-is — `useHostMirror` treats the event as a nudge to re-read, while `useConnectionStates` *consumes the payload*, pinned by name in `ProjectPanel.connectionState.dom.test.tsx` ("follows the host's change event without a refetch"). Overseer read: the two concerns are separable moments — consuming the payload per event and doing one refetch when the listener attaches are not the same thing — so a `fromPayload` option on the shared hook would close the race and keep that expectation intact, rather than accepting a per-event refetch and re-pinning the test. Small, but it touches a shipped connection path. **Recommended for the post-107 cleanup task.** | [task 108](tasks/0108-gui-chip-redesign.md) |
 | 3.20 | **The Import chip no longer relabels to "Loading trace…".** It keeps its label and reports busy on the pulsing hairline, the disabled state and the tooltip — the prototype's own treatment, and consistent with the nothing-resizes rule. A deliberate change to a shipped user-visible string. | [task 108](tasks/0108-gui-chip-redesign.md) |
 | 3.21 | **The top toolbar wraps rather than overflowing.** The prototype gives the header `flex-wrap: wrap` and reserves the `…` overflow for the plot bar, and the Add-menu collapse leaves only twelve chips — so the shared `useToolbarFit` hook shipped with `StatusBar` as its only consumer. If the header should overflow instead, the prototype does not currently say so. | [task 108](tasks/0108-gui-chip-redesign.md) |
+| 3.22 | **The measurement strip is suppressed by a switch, and one test went with it.** "Stays hidden" now means hidden for saved configs too — `MEASUREMENT_STRIP_DRAWS = false` gates the render while the stored `measEnabled` is deliberately left intact, so the rework inherits real preferences. Two consequences the rework must pick up: `MeasurementMenu` is a deliberate orphan (deleting the thing to be reworked is not a saving), and the panel-tier test that read the strip's rendered cells to guard a **derived-axis id mismatch** was removed rather than kept asserting nothing. Overseer check: the derivation itself is still covered at unit tier by `plotAxisDerivation.test.ts`, so the exposure while hidden is nil — but the strip-to-derivation seam is unguarded and the rework must write that test again, failing first. | [task 108](tasks/0108-gui-chip-redesign.md) |
+| 3.23 | **Plot perf-readout visibility is view-local while its menu sibling `showDiag` persists.** One line of `plotPanelConfig` either way; flagged because the two sit next to each other on one menu and behave differently. | [task 108](tasks/0108-gui-chip-redesign.md) |
 | 3.6 | Task 97's grooming asked that the owner see both axes before the **lanes** axis changed. No comparison was produced, because the lanes axis has no y-gutter labelling to compare — it already draws nothing there, and its labels are the tiles. If the owner meant the lane *tiles*, that is a different request, and it cuts against the stated reason for removing the axis labels. | [task 97](tasks/0097-enum-labels-on-axis.md) |
 
 ---
@@ -382,9 +384,20 @@ test or artefact.
   Completed tasks are removed; the detail stays in git history.
 - ~~Delete the untracked `scratch-perf/` and `scratch-perf-p6/`
   directories~~ — done by the owner 2026-08-22.
-- Run the render-tier gate once on the final tree (§2.2). Now a plain
-  run: §1.7 and §1.10 are resolved, so it is four 60 s captures against
-  the 2026-08-22 baseline with `--rbs-run-on-start`, read as a band.
+- Run the render-tier gate once on the final tree (§2.2). §1.7 and
+  §1.10 are resolved, so it is four 60 s captures against the
+  2026-08-22 baseline with `--rbs-run-on-start`, read as a band —
+  **but the interaction script must be re-verified as actually driving
+  the app before the numbers mean anything.** Task 108 phase 4 moved
+  follow-live onto a chip, and `perfInteract.ts` now finds it by
+  `button[aria-label="Follow Live"]` and reads `aria-pressed`. At a
+  window narrow enough for that chip to spill into the `…` overflow the
+  script cannot reach it at all — it does not open menus. This is the
+  second failure mode in the overseer's own gate rules (a harness
+  silently disarmed still passes), so the close-out run checks that the
+  scrub actually happened, not just that the report is clean. The
+  script's two other targets — uPlot's `.u-over` and `.trace-rows` —
+  were confirmed untouched by the chrome sweep.
 - Replace the repo's pre-existing ignored mDNS round-trip test, which
   advertises a real `_cannet._tcp` instance on the LAN. It is the
   pattern agents copy, and real advertisements collide on the shared
