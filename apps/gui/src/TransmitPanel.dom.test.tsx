@@ -240,11 +240,11 @@ describe("TransmitPanel (thin view over host registry)", () => {
     );
   });
 
-  it("'+ frame' creates a host message and adds it to the group", async () => {
+  it("'Frame' creates a host message and adds it to the group", async () => {
     POOL = [];
     const { updates } = renderPanel("el", []);
-    await screen.findByText('No frames yet. Click "+ frame" to add one.');
-    fireEvent.click(screen.getByText("+ frame"));
+    await screen.findByText('No frames yet. Click "Frame" to add one.');
+    fireEvent.click(screen.getByRole("button", { name: "Add Frame" }));
     await waitFor(() => expect(lastCall("set_transmit_frame")).toBeTruthy());
     // The new id is appended to the element's frameIds group.
     await waitFor(() =>
