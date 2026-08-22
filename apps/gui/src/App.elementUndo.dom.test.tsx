@@ -19,8 +19,13 @@ import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react
 type Handler = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Handler[]>();
 
+/// The RBS element's Run flag lives on the host, so the stub has to
+/// hold it: the panel writes it with `rbs_set_run` and reads it back
+/// off `rbs_view` after the host's `rbs-changed`.
+const rbsHost = { run: false };
+
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => {
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
     switch (cmd) {
       case "fetch_system_log":
       case "fetch_notes":
@@ -38,6 +43,20 @@ vi.mock("@tauri-apps/api/core", () => ({
         return "0.0.0-test";
       case "get_sidecar_status":
         return { phase: "offline", address: null };
+      case "rbs_set_run":
+        rbsHost.run = args?.run === true;
+        for (const h of listeners.get("rbs-changed") ?? []) h({ payload: "*" });
+        return null;
+      case "rbs_view":
+        return {
+          elementId: args?.elementId,
+          path: null,
+          fillBit: 0,
+          dirty: false,
+          changedOnDisk: false,
+          run: rbsHost.run,
+          buses: [],
+        };
       default:
         return null;
     }
@@ -260,6 +279,7 @@ beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   localStorage.clear();
   listeners.clear();
+  rbsHost.run = false;
   await hydrateState();
 });
 

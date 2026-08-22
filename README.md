@@ -1942,12 +1942,12 @@ In the panel:
   taxonomy (Not Encoded / Out of Range / Unknown Value / Override /
   Default / Muted). See the View signals section above for the shared
   gridview it reuses.
-- **Run** (persisted in the project, default off) starts the enabled
-  messages on the host scheduler; actual transmission gates on
-  per-bus connectivity (a bus that connects starts its messages, a
-  drop stops them). A project saved with RBS running resumes on
-  open; the global **kill-switch** (runtime-only) stops every RBS
-  transmission at once.
+- **Run** (session state, default off — never saved with the project)
+  starts the enabled messages on the host scheduler; actual
+  transmission gates on per-bus connectivity (a bus that connects
+  starts its messages, a drop stops them). Opening a project always
+  starts stopped, so a file can never put frames on a bus by itself;
+  connecting or disconnecting a bus leaves Run where you set it.
 - **Save** writes the override edits back to the file; **Save all**
   (command palette) saves the project plus every dirty
   `.cannet_rbs`, and the exit prompt covers both. Save dialogs

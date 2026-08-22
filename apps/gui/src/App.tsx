@@ -696,9 +696,10 @@ export function App() {
       case "filter":
         return { kind, id, name, sources: ["*"] };
       case "rbs":
-        // Path picked in the panel; Run is off by default (ADR 0028 —
-        // a fresh reference never transmits unasked).
-        return { kind, id, name, path: null, run: false };
+        // Path picked in the panel. Run is host session state, off
+        // until the panel's toggle turns it on (ADR 0028) — nothing
+        // the project carries can transmit unasked.
+        return { kind, id, name, path: null };
       case "colormap":
         // A signal value→color map (ADR 0029): the target signal and
         // rules are filled in via its config panel; it starts inert.
@@ -2698,20 +2699,17 @@ export function App() {
     }).catch(() => {});
   }, [buses]);
   // Reconcile host-loaded RBS elements with the registry: load when a
-  // path appears / changes, unload when the element goes away, and
-  // push the Run flag. Owned here (not by the panel) so an enabled
-  // RBS resumes on project open even when its panel isn't in the
-  // layout.
-  const rbsHostStateRef = useRef<Map<string, { path: string | null; run: boolean }>>(
-    new Map(),
-  );
+  // path appears / changes, unload when the element goes away. Owned
+  // here (not by the panel) so an element's config is on the host even
+  // when its panel isn't in the layout. Run is not reconciled — it is
+  // host session state with no project copy to push.
+  const rbsHostStateRef = useRef<Map<string, { path: string | null }>>(new Map());
   // Per-element op queue: the reconciler fires across renders (a
   // layout-restored panel ensures a pathless element moments before
   // the opened project replaces it with the saved path), and the
   // rbs_* commands run concurrently on the async pool — unserialized,
-  // an early rbs_init's set_run could land after the project's
-  // rbs_load chain. Chaining per element keeps host ops in dispatch
-  // order.
+  // an early rbs_init could land after the project's rbs_load.
+  // Chaining per element keeps host ops in dispatch order.
   const rbsOpsRef = useRef<Map<string, Promise<unknown>>>(new Map());
   const queueRbsOp = useCallback((id: string, op: () => Promise<unknown>) => {
     const prev = rbsOpsRef.current.get(id) ?? Promise.resolve();
@@ -2719,10 +2717,10 @@ export function App() {
     rbsOpsRef.current.set(id, next);
   }, []);
   useEffect(() => {
-    const current = new Map<string, { path: string | null; run: boolean }>();
+    const current = new Map<string, { path: string | null }>();
     for (const e of registry) {
       if (e.element.kind === "rbs") {
-        current.set(e.element.id, { path: e.element.path, run: e.element.run });
+        current.set(e.element.id, { path: e.element.path });
       }
     }
     for (const [id, prev] of rbsHostStateRef.current) {
@@ -2738,56 +2736,15 @@ export function App() {
         // memory (first save) is a no-op host-side: rbs_load re-reads
         // the file just written.
         const path = now.path;
-        queueRbsOp(id, () =>
-          invoke("rbs_load", { elementId: id, path }).then(() =>
-            invoke("rbs_set_run", { elementId: id, run: now.run }),
-          ),
-        );
+        queueRbsOp(id, () => invoke("rbs_load", { elementId: id, path }));
       } else if (now.path == null && !prev) {
         // A fresh element needs no file: the host seeds an in-memory
         // config from the project's current buses (saving is explicit).
-        queueRbsOp(id, () =>
-          invoke("rbs_init", { elementId: id }).then(() =>
-            invoke("rbs_set_run", { elementId: id, run: now.run }),
-          ),
-        );
-      } else if (prev && prev.run !== now.run) {
-        queueRbsOp(id, () => invoke("rbs_set_run", { elementId: id, run: now.run }));
+        queueRbsOp(id, () => invoke("rbs_init", { elementId: id }));
       }
     }
     rbsHostStateRef.current = current;
   }, [registry, queueRbsOp]);
-  // The host turns an element's Run off when a database it was
-  // transmitting from reloads underneath it (ADR 0053 §1's swap
-  // exception). Run is the *project's* flag mirrored onto the host, so
-  // the project follows the host here — otherwise the panel's Run
-  // control would read on while nothing is being sent.
-  useEffect(() => {
-    const un = listen<string[]>("rbs-run-stopped", (event) => {
-      for (const id of event.payload) updateElement(id, { kind: "rbs", run: false });
-    });
-    return () => {
-      void un.then((f) => f());
-    };
-  }, [updateElement]);
-  // The global RBS kill-switch is runtime-only host state; mirror it
-  // through its dedicated event so the palette toggle and the panel
-  // button stay in sync.
-  const rbsKillSwitchRef = useRef(false);
-  useEffect(() => {
-    const un = listen<boolean>("rbs-kill-switch", (event) => {
-      rbsKillSwitchRef.current = event.payload;
-    });
-    return () => {
-      void un.then((f) => f());
-    };
-  }, []);
-  const toggleRbsKillSwitch = useCallback(() => {
-    void invoke("rbs_set_kill_switch", { on: !rbsKillSwitchRef.current }).catch(
-      () => {},
-    );
-  }, []);
-
   // Keep every element-backed dockview tab title in lockstep with the
   // model-owned name (ADR 0019): covers rename from the project
   // panel, project open (layouts saved with stale titles), and the
@@ -2894,7 +2851,6 @@ export function App() {
     "panel.add.generator": () => addPanel("generator"),
     "project.saveAll": () => void handleSaveAllRef.current(),
     "project.clearColors": () => setConfirmingClearColors(true),
-    "rbs.killSwitch": toggleRbsKillSwitch,
     // Both outcomes — what was added, or why it couldn't be — are
     // logged by the host, so they arrive in the System Messages panel
     // with nothing for the view to hold.

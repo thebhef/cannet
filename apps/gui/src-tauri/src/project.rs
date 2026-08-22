@@ -327,6 +327,12 @@ pub fn open_project(
             // has applied the project and cleared the trace view — so the
             // restored history isn't clobbered by open-clears-the-trace.
             *state.active_project_id() = Some(p.project_id);
+            // A simulation the *previous* session armed is not this
+            // project's, and no project file can arm one — the RBS Run
+            // flag is session state (ADR 0028). Stopping here is what
+            // makes "opening a project never transmits" true even when
+            // the two projects share element ids.
+            crate::rbs::stop_all_elements(&state);
             // Load the host TX-message registry from
             // the project's pool. All periodics start stopped — reopen
             // never fires traffic onto a bus the user hasn't
@@ -382,6 +388,9 @@ pub fn close_project(app: tauri::AppHandle, state: tauri::State<'_, crate::app_s
     let dir = crate::project_dir::resolve(None, &cache_root);
     crate::remember_project_dir(&app, &dir, None);
     crate::reroot_session(&app, &dir, crate::trace_store::Carry::Nothing);
+    // Leaving the project leaves its simulation: Run is session state
+    // and a fresh project starts stopped.
+    crate::rbs::stop_all_elements(&state);
     // No project file, so no project identity to stamp a capture with,
     // and nothing on disk left to watch.
     *state.active_project_id() = None;

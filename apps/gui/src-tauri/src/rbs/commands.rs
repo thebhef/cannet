@@ -21,8 +21,8 @@ use super::watch::still_open;
 
 /// Load (or reload) a `.cannet_rbs` file for an RBS element. The run
 /// flag starts/stays as the element previously had it only when
-/// reloading the same element id; a fresh load starts stopped — the
-/// frontend pushes the project-persisted Run flag separately via
+/// reloading the same element id; a fresh load starts stopped. Nothing
+/// else can arm it — Run is session state the user turns on through
 /// [`rbs_set_run`].
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value, clippy::unused_async)]
@@ -171,7 +171,8 @@ pub async fn rbs_sync_project_buses(
     Ok(())
 }
 
-/// Set an element's Run flag (the project persists it; default off).
+/// Set an element's Run flag — **session state**, never persisted
+/// (default off). The panel's Run control is its only writer.
 /// false→true seeds every row's counter at 0 (ADR 0028: counters seed
 /// when the element starts running) before scheduling.
 #[tauri::command]
@@ -199,38 +200,6 @@ pub async fn rbs_set_run(
     }
     sync_schedules(&state);
     let _ = app.emit("rbs-changed", element_id);
-    Ok(())
-}
-
-/// The global RBS kill-switch (runtime-only, never persisted): on
-/// stops every RBS row everywhere; off resumes whatever the model
-/// says should run.
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value, clippy::unused_async)]
-pub async fn rbs_set_kill_switch(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    on: bool,
-) -> Result<(), String> {
-    {
-        let mut rbs = state.rbs();
-        rbs.kill_switch = on;
-    }
-    sys_info!(
-        &app,
-        "rbs",
-        "global RBS kill-switch {}",
-        if on {
-            "ON — all simulation transmit stopped"
-        } else {
-            "off"
-        }
-    );
-    sync_schedules(&state);
-    // Dedicated event so every surface that mirrors the runtime-only
-    // flag (panel button, palette toggle) tracks the same value.
-    let _ = app.emit("rbs-kill-switch", on);
-    let _ = app.emit("rbs-changed", "*");
     Ok(())
 }
 

@@ -112,16 +112,17 @@ export function normalizeElement(el: ProjectElement): ProjectElement {
     return { ...el, name, sinks: stringList(raw, []), frameIds: stringList(frameIdsRaw, []) };
   }
   if (el.kind === "rbs") {
-    // `path` references the `.cannet_rbs` file; `run` is the
-    // project-persisted Run flag (ADR 0028 — default off, so a
-    // malformed flag never auto-transmits).
+    // `path` references the `.cannet_rbs` file. Run is session state
+    // (ADR 0028), so a project carrying the field it used to persist
+    // has it dropped here — nothing in a file can arm a simulation.
     const pathRaw = (el as unknown as { path?: unknown }).path;
-    const runRaw = (el as unknown as { run?: unknown }).run;
+    const { run: _run, ...rest } = el as Extract<ProjectElement, { kind: "rbs" }> & {
+      run?: unknown;
+    };
     return {
-      ...el,
+      ...rest,
       name,
       path: typeof pathRaw === "string" ? pathRaw : null,
-      run: runRaw === true,
     };
   }
   if (el.kind === "colormap") {
