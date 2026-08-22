@@ -135,6 +135,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 import { App } from "./App";
 import { hydrateState } from "./hostState";
 import type { Bus, ColorRule, Project, ProjectElement } from "./types";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -142,10 +143,14 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+/// A button outside the toolbar. The toolbar's own controls are chips
+/// with short labels — "Open" up there is the Open-project chip, not a
+/// dialog's confirm — so they are excluded here and reached through
+/// `toolbarChip` instead.
 function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-    (b) => b.textContent === label,
-  );
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;
 }
@@ -190,7 +195,7 @@ async function runClearColorsCommand(): Promise<void> {
 async function saveAndReadProject(): Promise<Project> {
   const before = invokeMock.mock.calls.length;
   await act(async () => {
-    fireEvent.click(findButton("Save project"));
+    fireEvent.click(toolbarChip("Save"));
   });
   const isSave = (c: unknown[]) => c[0] === "save_project" || c[0] === "save_project_as";
   await waitFor(() => {

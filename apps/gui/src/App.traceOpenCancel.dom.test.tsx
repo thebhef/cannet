@@ -145,6 +145,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { App } from "./App";
 import { hydrateState } from "./hostState";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -152,20 +153,20 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+/// A button outside the toolbar. The toolbar's own controls are chips
+/// with short labels — "Open" up there is the Open-project chip, not a
+/// dialog's confirm — so they are excluded here and reached through
+/// `toolbarChip` instead.
 function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-    (b) => b.textContent === label,
-  );
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;
 }
 
 function importButton(): HTMLButtonElement {
-  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>(".toolbar > button")).find(
-    (b) => b.textContent === "Import trace…" || b.textContent === "Loading trace…",
-  );
-  if (!btn) throw new Error("the Import trace… toolbar button is gone");
-  return btn;
+  return toolbarChip("Import");
 }
 
 function statusText(): string {
@@ -264,7 +265,9 @@ describe("import busy feedback persists past first data", () => {
     // window that used to be silent (state.kind stays "loading" the
     // whole time; nothing before this pinned it).
     let busy = importButton();
-    expect(busy.textContent).toBe("Loading trace…");
+    // The words are in the tooltip now: the chip says it on the
+    // hairline, and its label does not change width under the pointer.
+    expect(busy.getAttribute("title")).toMatch(/^Loading a capture/);
     expect(busy).toHaveAttribute("aria-busy", "true");
     expect(document.querySelector(".trace-scan-bar")).not.toBeNull();
 
@@ -272,14 +275,16 @@ describe("import busy feedback persists past first data", () => {
     // moment the old behavior dropped the busy feedback. It must not.
     await fireTraceGrew(500);
     busy = importButton();
-    expect(busy.textContent).toBe("Loading trace…");
+    // The words are in the tooltip now: the chip says it on the
+    // hairline, and its label does not change width under the pointer.
+    expect(busy.getAttribute("title")).toMatch(/^Loading a capture/);
     expect(busy).toHaveAttribute("aria-busy", "true");
     expect(document.querySelector(".trace-scan-bar")).not.toBeNull();
 
     // Only the import's own completion ends it.
     await fireLogFinished({ status: "ok", total: 500 });
     const idle = importButton();
-    expect(idle.textContent).toBe("Import trace…");
+    expect(idle.getAttribute("title")).toMatch(/^Import trace…/);
     expect(idle).not.toHaveAttribute("aria-busy");
     expect(document.querySelector(".trace-scan-bar")).toBeNull();
   }, 30_000);
@@ -321,7 +326,7 @@ describe("cancelling the import phase", () => {
       if (!clearedAgain) throw new Error("cancelled import never cleared the partial trace store");
     });
     const idle = importButton();
-    expect(idle.textContent).toBe("Import trace…");
+    expect(idle.getAttribute("title")).toMatch(/^Import trace…/);
     expect(idle).not.toHaveAttribute("aria-busy");
     expect(statusText()).not.toContain("Done:");
     expect(statusText()).toMatch(/Open a BLF log/);
@@ -371,7 +376,9 @@ describe("cancelling the census phase", () => {
 
     // The phase that used to be a plain-disabled wait now has a way out.
     const busy = importButton();
-    expect(busy.textContent).toBe("Loading trace…");
+    // The words are in the tooltip now: the chip says it on the
+    // hairline, and its label does not change width under the pointer.
+    expect(busy.getAttribute("title")).toMatch(/^Loading a capture/);
     expect(busy).toBeDisabled();
     await act(async () => {
       fireEvent.click(cancelButton());
@@ -388,12 +395,14 @@ describe("cancelling the census phase", () => {
       await Promise.resolve();
     });
     await waitFor(() => {
-      if (importButton().textContent !== "Import trace…")
+      if (importButton().disabled)
         throw new Error("the launcher never came back to idle");
     });
     expect(document.querySelector(".blf-channel-map-modal")).toBeNull();
     expect(
-      Array.from(document.querySelectorAll("button")).some((b) => b.textContent === "Open"),
+      Array.from(document.querySelectorAll("button")).some(
+        (b) => b.textContent === "Open" && b.closest(".toolbar") === null,
+      ),
     ).toBe(false);
     expect(statusText()).not.toMatch(/error/i);
     expect(invokeCalls.some((c) => c.cmd === "open_log")).toBe(false);

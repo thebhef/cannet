@@ -149,6 +149,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 import { App } from "./App";
 import { hydrateSettings } from "./hostSettings";
 import { hydrateState } from "./hostState";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -170,13 +171,7 @@ function chip(): HTMLElement | null {
   return document.querySelector(".cache-rebuild");
 }
 
-function toolbarButton(label: string): HTMLButtonElement {
-  const btn = Array.from(document.querySelectorAll("button")).find(
-    (b) => b.textContent === label,
-  );
-  if (!btn) throw new Error(`no "${label}" button`);
-  return btn as HTMLButtonElement;
-}
+
 
 beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
@@ -287,8 +282,8 @@ describe("Cold pyramid rebuild — discard offramp", () => {
   it("drops the restored capture and leaves a clean empty session", async () => {
     await boot();
     // A capture is loaded: the capture-scoped toolbar actions are live.
-    expect(toolbarButton("Clear").disabled).toBe(false);
-    expect(toolbarButton("Save capture…").disabled).toBe(false);
+    expect(toolbarChip("Clear").disabled).toBe(false);
+    expect(toolbarChip("Capture").disabled).toBe(false);
 
     const discard = chip()?.querySelector("button");
     expect(discard).not.toBeNull();
@@ -303,8 +298,8 @@ describe("Cold pyramid rebuild — discard offramp", () => {
     expect(invokeCalls).toContain("clear_trace_store");
     // …and the session is empty, not half-deleted: no frames, so nothing
     // capture-scoped is offered.
-    expect(toolbarButton("Clear").disabled).toBe(true);
-    expect(toolbarButton("Save capture…").disabled).toBe(true);
+    expect(toolbarChip("Clear").disabled).toBe(true);
+    expect(toolbarChip("Capture").disabled).toBe(true);
     // The announcement is over with the capture it was about.
     expect(chip()).toBeNull();
   });

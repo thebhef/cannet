@@ -132,6 +132,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import { App } from "./App";
 import { hydrateState } from "./hostState";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -139,27 +140,28 @@ class FakeResizeObserver {
   disconnect() {}
 }
 
+/// A button outside the toolbar. The toolbar's own controls are chips
+/// with short labels — "Open" up there is the Open-project chip, not a
+/// dialog's confirm — so they are excluded here and reached through
+/// `toolbarChip` instead.
 function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-    (b) => b.textContent === label,
-  );
+  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+    .filter((b) => b.closest(".toolbar") === null)
+    .find((b) => b.textContent === label);
   if (!btn) throw new Error(`button "${label}" not found`);
   return btn;
 }
 
 function importButton(): HTMLButtonElement {
-  const btn = Array.from(document.querySelectorAll<HTMLButtonElement>(".toolbar > button")).find(
-    (b) => b.textContent === "Import trace…" || b.textContent === "Loading trace…",
-  );
-  if (!btn) throw new Error("the Import trace… toolbar button is gone");
-  return btn;
+  return toolbarChip("Import");
 }
 
 /// How many channel-mapping dialogs are up right now (its confirm
 /// button is the marker the other import tests use).
 function mappingDialogs(): number {
-  return Array.from(document.querySelectorAll("button")).filter((b) => b.textContent === "Open")
-    .length;
+  return Array.from(document.querySelectorAll("button")).filter(
+    (b) => b.textContent === "Open" && b.closest(".toolbar") === null,
+  ).length;
 }
 
 async function mountAndSeed() {
@@ -337,7 +339,9 @@ describe("census busy feedback", () => {
     const busy = importButton();
     expect(busy).toHaveAttribute("aria-busy", "true");
     expect(busy).toBeDisabled();
-    expect(busy.textContent).toBe("Loading trace…");
+    // The words are in the tooltip now: the chip says it on the
+    // hairline, and its label does not change width under the pointer.
+    expect(busy.getAttribute("title")).toMatch(/^Loading a capture/);
     // …alongside an indeterminate progress affordance in the header.
     expect(document.querySelector(".trace-scan-bar")).not.toBeNull();
 
@@ -346,7 +350,7 @@ describe("census busy feedback", () => {
     const idle = importButton();
     expect(idle).not.toHaveAttribute("aria-busy");
     expect(idle).not.toBeDisabled();
-    expect(idle.textContent).toBe("Import trace…");
+    expect(idle.getAttribute("title")).toMatch(/^Import trace…/);
     expect(document.querySelector(".trace-scan-bar")).toBeNull();
   }, 30_000);
 });
