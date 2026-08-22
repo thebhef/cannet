@@ -30,11 +30,13 @@ pub struct BlfFileWriter {
     buffer: Vec<u8>,
     /// Soft cap; once `buffer.len() >= flush_threshold` we flush.
     flush_threshold: usize,
-    /// Earliest event timestamp seen so far (ns since UNIX epoch),
-    /// or `None` if no events have been appended. Used to stamp
-    /// `measurement_start_time` in the final `FileStatistics`.
-    /// Per-event `object_timestamp` is the *relative* offset from
-    /// this; the writer subtracts it before encoding.
+    /// The file's `measurement_start_time` (ns since UNIX epoch), or
+    /// `None` while no anchor has been set. Per-event
+    /// `object_timestamp` is the *unsigned* relative offset from this;
+    /// the writer subtracts it before encoding, so an event earlier
+    /// than the anchor cannot be represented. Latched by the first
+    /// [`Self::set_start_if_unset`] call — a caller that knows its
+    /// capture's minimum declares it before the first append.
     start_unix_nanos: Option<u64>,
     /// Latest event timestamp seen so far — stamps `last_object_time`.
     last_unix_nanos: Option<u64>,
@@ -87,8 +89,8 @@ impl BlfFileWriter {
         })
     }
 
-    /// If `start_unix_nanos` is not yet set, set it to `candidate`
-    /// and return that; otherwise return the existing value. The
+    /// If the anchor is not yet set, set it to `candidate` and return
+    /// that; otherwise return the existing value. The
     /// caller is responsible for ms-flooring `candidate` so the
     /// SYSTEMTIME-encoded start round-trips losslessly (see
     /// [`BlfCaptureWriter::append`] for that detail).
@@ -107,7 +109,16 @@ impl BlfFileWriter {
         object_bytes: &[u8],
         event_timestamp_unix_nanos: u64,
     ) -> io::Result<()> {
-        self.last_unix_nanos = Some(event_timestamp_unix_nanos);
+        // The *latest* event, not the last one appended: arrival order
+        // is not timestamp order on a multi-bus capture (ADR 0024), so a
+        // capture can end on a dip, and a `last_object_time` taken from
+        // it would state a span that runs backwards.
+        self.last_unix_nanos = Some(
+            self.last_unix_nanos
+                .map_or(event_timestamp_unix_nanos, |seen| {
+                    seen.max(event_timestamp_unix_nanos)
+                }),
+        );
         self.buffer.extend_from_slice(object_bytes);
         // 4-byte object padding inside the inflated stream — same
         // formula the reader uses to skip past it.
@@ -125,9 +136,9 @@ impl BlfFileWriter {
         Ok(())
     }
 
-    /// Snapshot of the earliest event timestamp seen so far (ns
-    /// since UNIX epoch). Used by the higher-level adapter to
-    /// compute per-event relative timestamps.
+    /// Snapshot of the file's anchor (ns since UNIX epoch), or `None`
+    /// while it is unset. Used by the higher-level adapter to compute
+    /// per-event relative timestamps.
     pub fn start_unix_nanos(&self) -> Option<u64> {
         self.start_unix_nanos
     }

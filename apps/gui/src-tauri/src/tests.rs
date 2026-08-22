@@ -3610,6 +3610,128 @@ fn write_blf_capture_keeps_wire_channel_when_bus_is_unmapped() {
     assert_eq!(read, vec![3, 4, 0]);
 }
 
+/// Save → reload keeps **every** timestamp of an out-of-order capture.
+///
+/// `examples/time-origins/wall-clock-out-of-order.blf` carries its three
+/// earliest frames at the *end* of the file (ADR 0024: arrival order is
+/// not timestamp order), so a save that anchored the file on its first
+/// frame wrote those three 380 ms late. `write_blf_capture` declares the
+/// capture's minimum before the first append, so the reloaded file is
+/// timestamp-for-timestamp the capture it was written from.
+#[test]
+fn write_blf_capture_preserves_every_timestamp_of_an_out_of_order_capture() {
+    use cannet_blf::BlfCanFrameSource;
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("out-of-order.blf");
+
+    // Read the fixture as the session buffer would hold it: in file
+    // (arrival) order, dip and all.
+    let mut src =
+        BlfCanFrameSource::open(time_origin_fixture("wall-clock-out-of-order.blf")).unwrap();
+    let frames: Vec<trace_store::RawTraceFrame> = std::iter::from_fn(|| src.next_frame().unwrap())
+        .map(|f| trace_store::RawTraceFrame {
+            timestamp_ns: f.timestamp_ns,
+            channel: f.channel,
+            id: f.id.raw(),
+            extended: f.id.is_extended(),
+            direction: f.direction,
+            payload: f.payload.clone(),
+            bus_id: None,
+        })
+        .collect();
+    let written: Vec<u64> = frames.iter().map(|f| f.timestamp_ns).collect();
+    assert_eq!(written.len(), 121);
+    assert!(
+        written.last().unwrap() < written.first().unwrap(),
+        "the fixture's last frame precedes its first — the case that used to clamp",
+    );
+
+    // A note at the capture's *latest* event. Notes are merged into the
+    // object stream in timestamp order, so a note at the minimum would
+    // be appended first and would anchor the file correctly all by
+    // itself — hiding the very defect this test exists to catch.
+    let earliest = *written.iter().min().unwrap();
+    let latest = *written.iter().max().unwrap();
+    let notes_in = vec![notes::Note {
+        id: "n".into(),
+        timestamp_ns: latest,
+        label: "end".into(),
+        kind: notes::EventKind::Note,
+        color: None,
+    }];
+
+    let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();
+    assert_eq!(outcome.frame_count, 121);
+
+    let mut back = BlfCanFrameSource::open(&dest).unwrap();
+    let read_back: Vec<u64> = std::iter::from_fn(|| back.next_frame().unwrap())
+        .map(|f| f.timestamp_ns)
+        .collect();
+    assert_eq!(
+        read_back, written,
+        "every timestamp survives the save, in the order it was written",
+    );
+    assert_eq!(
+        notes_via_import_walk(dest.to_str().unwrap())[0].timestamp_ns,
+        latest,
+        "the note rides the same timeline",
+    );
+
+    // The header's own span covers the capture rather than inverting.
+    let stats = *back.file_statistics();
+    assert_eq!(stats.measurement_start_time.to_unix_nanos(), earliest);
+    assert_eq!(stats.last_object_time.to_unix_nanos(), latest);
+}
+
+/// The clamp that survives by design — a caller appending without a
+/// declared anchor — is described, never silent. `write_blf_capture`
+/// declares one, so in the GUI this warning does not fire; it guards
+/// the next caller.
+#[test]
+fn a_clamped_timestamp_is_named_with_the_frame_and_the_error() {
+    use cannet_blf::{ClampedEvent, FinishedCapture};
+    let clean = FinishedCapture {
+        frame_count: 3,
+        marker_count: 0,
+        byte_size: 400,
+        max_timestamp_drift_ns: 0,
+        clamped_count: 0,
+        worst_clamp: None,
+    };
+    assert!(capture::clamped_timestamp_warning(&clean).is_none());
+
+    let clamped = FinishedCapture {
+        clamped_count: 2,
+        worst_clamp: Some(ClampedEvent {
+            timestamp_ns: 1_700_000_000_500_000_000,
+            error_ns: 1_500_000_000,
+            frame: Some((1, 0x1AB)),
+        }),
+        ..clean
+    };
+    let warning = capture::clamped_timestamp_warning(&clamped).expect("a clamp is reported");
+    assert!(warning.contains('2'), "{warning}");
+    assert!(warning.contains("1500.000 ms"), "{warning}");
+    assert!(warning.contains("channel 1"), "{warning}");
+    assert!(warning.contains("0x1AB"), "{warning}");
+    assert!(warning.contains("1700000000500000000"), "{warning}");
+
+    // A marker carries neither channel nor id, so it is named as what
+    // it is rather than as a frame with blank fields.
+    let note_clamped = FinishedCapture {
+        clamped_count: 1,
+        worst_clamp: Some(ClampedEvent {
+            timestamp_ns: 1_700_000_000_000_000_000,
+            error_ns: 250_000,
+            frame: None,
+        }),
+        ..clean
+    };
+    let warning = capture::clamped_timestamp_warning(&note_clamped).expect("a clamp is reported");
+    assert!(warning.contains("a note"), "{warning}");
+    assert!(warning.contains("0.250 ms"), "{warning}");
+}
+
 /// Third-party-written `GLOBAL_MARKER`s (no `description` =
 /// no cannet id) get synthetic `blf-marker-N` ids on read, so
 /// rename / remove on them still works through the existing

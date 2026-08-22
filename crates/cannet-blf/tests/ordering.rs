@@ -90,3 +90,83 @@ fn the_out_of_order_fixture_decodes_end_to_end_with_its_descent() {
         "exactly one descent, delivered rather than smoothed over",
     );
 }
+
+/// The fidelity guarantee: a capture whose *earliest* event is not its
+/// first appended one keeps every timestamp, because the caller declares
+/// the anchor before the first append instead of letting the writer latch
+/// it. `[+1000 ms, +500 ms, +1100 ms]` is the sequence that used to come
+/// back as `[+1000, +1000, +1100]`.
+#[test]
+fn a_declared_start_keeps_an_event_earlier_than_the_first_appended() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("declared.blf");
+    let offsets = [1_000 * MS, 500 * MS, 1_100 * MS];
+    let earliest = BASE_NS + offsets.iter().copied().min().unwrap();
+
+    let mut writer = BlfCaptureWriter::create_with_start(&path, earliest).unwrap();
+    for offset in offsets {
+        writer.append(&frame(BASE_NS + offset)).unwrap();
+    }
+    let outcome = writer.finish().unwrap();
+    assert_eq!(outcome.clamped_count, 0, "nothing needed clamping");
+    assert_eq!(outcome.worst_clamp, None);
+
+    let mut source = BlfCanFrameSource::open(&path).unwrap();
+    let mut read_back = Vec::new();
+    while let Some(f) = source.next_frame().unwrap() {
+        read_back.push(f.timestamp_ns - BASE_NS);
+    }
+    assert_eq!(
+        read_back, offsets,
+        "the dip below the first-appended event must survive",
+    );
+}
+
+/// A caller that declares no anchor still gets the old clamp — the
+/// format cannot hold an event before the file's start — but it is
+/// reported rather than silent, with the frame it hit and how far the
+/// event moved.
+#[test]
+fn an_undeclared_start_clamps_and_reports_the_event_it_moved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("undeclared.blf");
+
+    let mut writer = BlfCaptureWriter::create(&path).unwrap();
+    writer.append(&frame(BASE_NS + 1_000 * MS)).unwrap();
+    writer.append(&frame(BASE_NS + 500 * MS)).unwrap();
+    writer.append(&frame(BASE_NS + 900 * MS)).unwrap();
+    let outcome = writer.finish().unwrap();
+
+    assert_eq!(outcome.clamped_count, 2, "both events precede the anchor");
+    let worst = outcome.worst_clamp.expect("a clamp was recorded");
+    assert_eq!(worst.timestamp_ns, BASE_NS + 500 * MS);
+    assert_eq!(worst.error_ns, 500 * MS, "the deepest dip is the one named");
+    assert_eq!(worst.frame, Some((0, 0x100)));
+}
+
+/// `FileStatistics.last_object_time` is the capture's newest event, not
+/// whichever event happened to be appended last. Appending
+/// `[+1100 ms, +500 ms]` used to stamp a header whose stated span ran
+/// backwards.
+#[test]
+fn the_headers_last_object_time_is_the_latest_event_not_the_last_appended() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("span.blf");
+
+    let mut writer = BlfCaptureWriter::create_with_start(&path, BASE_NS + 500 * MS).unwrap();
+    writer.append(&frame(BASE_NS + 1_100 * MS)).unwrap();
+    writer.append(&frame(BASE_NS + 500 * MS)).unwrap();
+    writer.finish().unwrap();
+
+    let source = BlfCanFrameSource::open(&path).unwrap();
+    let stats = source.file_statistics();
+    assert_eq!(
+        stats.measurement_start_time.to_unix_nanos(),
+        BASE_NS + 500 * MS,
+    );
+    assert_eq!(
+        stats.last_object_time.to_unix_nanos(),
+        BASE_NS + 1_100 * MS,
+        "the header must not claim an end before the file's newest event",
+    );
+}

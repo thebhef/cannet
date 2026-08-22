@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use cannet_blf::{BlfCanFrameSource, BlfCaptureWriter};
+use cannet_blf::{BlfCanFrameSource, BlfCaptureWriter, FinishedCapture};
 use cannet_core::{CanFrame as CoreCanFrame, CanId};
 use cannet_mdf::MdfCanFrameSource;
 
@@ -295,7 +295,9 @@ impl SaveFormat {
 ///
 /// Emits `capture`-tagged System Messages: `info` with the frame
 /// count + byte size + marker count on success, `warn` naming any
-/// file-backed signals the format cannot carry, `error` on failure.
+/// file-backed signals the format cannot carry, `warn` naming any event
+/// whose timestamp the format could not hold
+/// ([`clamped_timestamp_warning`]), `error` on failure.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn save_capture(
@@ -347,6 +349,11 @@ pub(crate) fn save_capture(
             d = outcome.max_timestamp_drift_ns,
         );
     }
+    // A save that could not put an event where the capture had it says
+    // which event and by how much — never silently.
+    if let Some(warning) = &outcome.clamped_timestamps {
+        sys_warn!(&app, "capture", "{warning}");
+    }
     // Only BLF drops them; MDF is the save that carries them.
     if format == SaveFormat::Blf {
         if let Some(warning) = dropped_file_backed_warning(&state.signal_caches.file_signals()) {
@@ -391,6 +398,35 @@ pub(crate) fn dropped_file_backed_warning(signals: &[FileSignalEntry]) -> Option
     ))
 }
 
+/// What a BLF save moved, or `None` when it moved nothing.
+///
+/// BLF's per-event timestamp is an unsigned offset from the file's
+/// start, so a writer whose anchor it did not declare up front writes
+/// anything earlier than its first event *at* that anchor.
+/// [`write_blf_capture`] declares the capture's minimum, so this is
+/// `None` for every save the GUI makes today — it exists so that a
+/// caller which cannot declare one (a future streaming writer) says what
+/// it moved instead of shipping a file that quietly differs from the
+/// capture it came from.
+///
+/// Names the deepest clamp: the frame it hit and how far the event
+/// moved, which is what decides whether the saved file is still usable.
+#[must_use]
+pub(crate) fn clamped_timestamp_warning(outcome: &FinishedCapture) -> Option<String> {
+    let worst = outcome.worst_clamp?;
+    let what = worst.frame.map_or_else(
+        || "a note".to_owned(),
+        |(channel, id)| format!("the frame on channel {channel}, id 0x{id:X},"),
+    );
+    Some(format!(
+        "{n} event(s) saved later than their own timestamp — BLF cannot hold an event          before the file's start. Worst: {what} stamped {ts} ns, written {ms}.{us:03} ms late",
+        n = outcome.clamped_count,
+        ts = worst.timestamp_ns,
+        ms = worst.error_ns / 1_000_000,
+        us = (worst.error_ns % 1_000_000) / 1_000,
+    ))
+}
+
 /// Result of [`save_capture`]; mirrors the `cannet-blf` writer's
 /// outcome plus the note count, so the frontend can surface
 /// "saved 12,345 frames + 3 notes".
@@ -402,6 +438,10 @@ pub struct SaveCaptureResult {
     pub byte_size: u64,
     pub marker_count: u64,
     pub max_timestamp_drift_ns: u64,
+    /// What the save had to move, when it moved anything — see
+    /// [`clamped_timestamp_warning`]. `None` for a faithful save, which
+    /// is every save either writer makes today.
+    pub clamped_timestamps: Option<String>,
 }
 
 /// An event color (ADR 0035) as the BLF marker's `0x00RRGGBB`
@@ -497,12 +537,30 @@ pub(crate) fn write_blf_capture(
     notes: &[Note],
     buses: &[String],
 ) -> Result<SaveCaptureResult, String> {
-    let mut writer = BlfCaptureWriter::create(blf_path)
+    // Pass one: the capture's origin. A BLF event's timestamp is an
+    // unsigned offset from the file's start, so nothing earlier than
+    // that start is representable — and arrival order is not timestamp
+    // order (ADR 0024), so the store's first frame is routinely not its
+    // earliest. Declaring the minimum before the first append is what
+    // keeps every timestamp; it is the same pass `write_mdf_capture`
+    // makes for MDF's identically-constrained `hd_start_time_ns`, over
+    // frames and notes alike since a note clamps exactly as a frame
+    // does. An empty capture has no origin of its own: anchor it at the
+    // epoch.
+    let start_time_ns = frames
+        .iter()
+        .map(|f| f.timestamp_ns)
+        .chain(notes.iter().map(|n| n.timestamp_ns))
+        .min()
+        .unwrap_or(0);
+    let mut writer = BlfCaptureWriter::create_with_start(blf_path, start_time_ns)
         .map_err(|e| format!("failed to open {blf_path} for writing: {e}"))?;
-    // Interleave frames and markers in chronological order. The
-    // BLF writer doesn't enforce ordering, but consumers (Vector
-    // CANalyzer, our own reader) expect timestamps to climb, so we
-    // merge-sort the two streams on the way in.
+    // Pass two: interleave frames and markers in timestamp order.
+    // Nothing in BLF requires objects to ascend and cannet's reader
+    // does not assume they do (`docs/blf-feature-support.md`
+    // § "Object timestamps and ordering"); the merge is here because a
+    // note comments on the frames around it, so it belongs next to them
+    // in the object stream.
     let mut frame_iter = frames.iter().peekable();
     let mut note_iter = notes.iter().peekable();
     loop {
@@ -547,6 +605,7 @@ pub(crate) fn write_blf_capture(
         byte_size: outcome.byte_size,
         marker_count: outcome.marker_count,
         max_timestamp_drift_ns: outcome.max_timestamp_drift_ns,
+        clamped_timestamps: clamped_timestamp_warning(&outcome),
     })
 }
 
@@ -668,6 +727,9 @@ pub(crate) fn write_mdf_capture(
         // so a frame's absolute nanoseconds come back exactly for any
         // capture spanning less than ~26 days.
         max_timestamp_drift_ns: 0,
+        // MDF declares its origin the same way (pass one above), so
+        // nothing is ever moved to reach it.
+        clamped_timestamps: None,
     })
 }
 
