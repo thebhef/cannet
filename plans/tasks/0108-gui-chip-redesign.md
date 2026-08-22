@@ -231,7 +231,11 @@ instruction in every phase prompt, not a phase of its own.
   - Frontend tests: 2682/200 files before → 2685/201 files after (all
     green). `tsc --noEmit` and `vite build` clean.
     `comment-references` grep (`task [0-9]|plans/` over `apps/`,
-    `crates/`) empty.
+    `crates/`) empty as of `3c904146` — it initially caught this
+    phase's own registry comments naming the prototype's `plans/`
+    path (describing it verbatim, "copied from
+    `plans/prototypes/gui-chip-redesign.html`"), which
+    `3c904146` reworded to "the design prototype" instead.
   - **Mechanism**: took the overseer's reading — an `Icon` component
     over a plain `name -> shape data` record, not a `<symbol>`/`<use>`
     sprite. Shape data is typed (`path`/`circle`/`ellipse`/`rect`
