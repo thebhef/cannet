@@ -12,11 +12,11 @@
 // rate and the fault-confinement state all arrive already decided; what
 // this adds is the join and the words.
 
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { describeAppliedConfig } from "./connectionStates";
+import { useHostMirror } from "./useHostMirror";
 import type { BusHealthConcern } from "./BusHealthLauncher";
 import type {
   Bus,
@@ -31,41 +31,30 @@ import type {
 /// `bus_health::BUS_HEALTH_CHANGED_EVENT` host-side.
 export const BUS_HEALTH_CHANGED_EVENT = "bus-health-changed";
 
-/// Subscribe to the host's per-bus health map. Same pull-then-follow
-/// shape as {@link useConnectionStates} (ADR 0016): one snapshot on
-/// mount, then the change event. Nothing accumulates — the payload is
-/// the whole map, bounded by the project's bus count.
+/// A host with nothing to say about any bus. A stable value, so a
+/// host that never answers does not hand the panel a fresh empty map
+/// on every render.
+const NO_BUS_HEALTH: BusHealthMap = {};
+
+/// Subscribe to the host's per-bus health map: the shared host-mirror
+/// pattern (ADR 0016) — one snapshot on mount, another once the
+/// listener is attached, and a re-read on every change event. The
+/// second fetch is the point: `listen` is async, and a bus that went
+/// error-passive in the gap before it attached would otherwise stay
+/// invisible until the next sample. Nothing accumulates — the map is
+/// bounded by the project's bus count.
 export function useBusHealth(): BusHealthMap {
-  const [health, setHealth] = useState<BusHealthMap>({});
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: UnlistenFn | undefined;
-
-    void (async () => {
-      try {
-        const initial = await invoke<BusHealthMap>("get_bus_health");
-        if (!cancelled && initial) setHealth(initial);
-      } catch {
-        // Host without the command (older build, dev shell): fall
-        // through to the listener and stay empty if none comes.
-      }
-      try {
-        unlisten = await listen<BusHealthMap>(BUS_HEALTH_CHANGED_EVENT, (e) => {
-          if (!cancelled) setHealth(e.payload ?? {});
-        });
-      } catch {
-        // Same fallback: stay on whatever snapshot we have.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
-
-  return health;
+  const fetchHealth = useCallback(
+    // A host without the command answers with nothing at all, which is
+    // "no bus has reported" rather than a map to read fields off.
+    async () => (await invoke<BusHealthMap>("get_bus_health")) ?? NO_BUS_HEALTH,
+    [],
+  );
+  return useHostMirror<BusHealthMap>({
+    fetch: fetchHealth,
+    fallback: NO_BUS_HEALTH,
+    event: BUS_HEALTH_CHANGED_EVENT,
+  }).value;
 }
 
 /// How a controller state reads. The host sends the ISO 11898-1 name;
