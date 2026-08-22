@@ -113,7 +113,7 @@ describe("RbsSignalsPanel", () => {
     await screen.findByText("EngineSpeed");
     // washesOn defaults true, so the status text isn't rendered — flip
     // it off via the toggle to read the fallback label.
-    fireEvent.click(screen.getByLabelText("row highlights"));
+    fireEvent.click(screen.getByRole("button", { name: "Row Highlights" }));
     expect(await screen.findByText("Out of Range")).toBeInTheDocument();
   });
 
