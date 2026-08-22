@@ -111,10 +111,10 @@ interface TraceViewProps {
 /// panel to the host notes commands. A single object so the memoised row
 /// takes one stable prop rather than three. `onGoto` is the odd one out: a
 /// cross-panel timeline jump keyed by the event's timestamp (not its id),
-/// since every panel resolves it against time (ADR 0024). Only the events
-/// view supplies it; where it's absent the goto button is hidden, and it
-/// works on any event (the truncation marker included), not just editable
-/// ones.
+/// since every panel resolves it against time (ADR 0024). Both views that
+/// draw event rows supply it; where it's absent the goto button is hidden
+/// and the gridview's Space has nothing to run, and it works on any event
+/// (the truncation marker included), not just editable ones.
 export interface EventActions {
   onRename: (id: string, label: string) => void;
   onRecolor: (id: string, color: string | null) => void;
@@ -218,10 +218,13 @@ export function TraceView({
   // including ones scrolled out of the loaded page, which can no longer
   // be asked. Ephemeral — the chronological rows are capture-scoped.
   const [expanded, setExpanded] = useState<ReadonlyMap<string, number>>(EMPTY_EXPANDED);
-  // The event row the user last clicked, by event id (ADR 0035) — view-local
-  // selection, keyed by identity rather than row position because the row
-  // slots are recycled as the view scrolls. `null` means none.
-  const [focusedEvent, setFocusedEvent] = useState<string | null>(null);
+  // The event row whose label is being renamed in place (ADR 0035), by
+  // event id — not by row position, because the row slots are recycled as
+  // the view scrolls. Owned here rather than by the row so the gridview's
+  // F2 can begin the edit the row's own button begins (ADR 0044); keying
+  // by identity is also what makes a recycled slot drop the edit, with no
+  // reset to write. `null` means none.
+  const [editingEvent, setEditingEvent] = useState<string | null>(null);
   // Absolute row at the top of the viewport, and the single source of
   // truth for what's shown: `firstVisibleRow` and the scrollbar
   // position both derive from it, so the rendered rows never depend on
@@ -376,7 +379,7 @@ export function TraceView({
   useEffect(() => {
     if (count === 0) {
       setExpanded(EMPTY_EXPANDED);
-      setFocusedEvent(null);
+      setEditingEvent(null);
       setAnchoredRow(autoScroll ? null : 0);
     }
   }, [count, autoScroll]);
@@ -415,7 +418,11 @@ export function TraceView({
       return next;
     });
   }, []);
-  const focusEvent = useCallback((id: string) => setFocusedEvent(id), []);
+  const setEventEditing = useCallback(
+    (id: string, on: boolean) =>
+      setEditingEvent((cur) => (on ? id : cur === id ? null : cur)),
+    [],
+  );
 
   // The open rows in the render window, each with the number of rows it
   // discloses: the runs the row space splices content into, and the
@@ -598,6 +605,46 @@ export function TraceView({
       windowIndexOf,
     ],
   );
+  /// The timeline event a row id names, or `null` — for a frame row, or
+  /// for an event outside the render window. Resolved by walking the
+  /// window, like every other id-keyed lookup here; runs on a key press,
+  /// never in the render path.
+  const eventOf = useCallback((rowId: string): TimelineEvent | null => {
+    if (!rowId.startsWith(EVENT_ROW_PREFIX)) return null;
+    const g = geometry.current;
+    for (let i = 0; i < g.rows; i++) {
+      const abs = g.firstVisibleRow + i;
+      if (abs >= g.count) break;
+      const r = g.getRow(abs);
+      if (r?.row === "event" && `${EVENT_ROW_PREFIX}${r.event.id}` === rowId) return r.event;
+    }
+    return null;
+  }, []);
+  // Space is the event row's goto button from the keyboard (ADR 0044's
+  // primary action): the same broadcast, so the trace scrolls and every
+  // plot re-centres. A frame row has no primary action, and a view that
+  // wires no goto has nothing to run.
+  const onPrimaryAction = useCallback(
+    (id: string) => {
+      const goto = eventActions?.onGoto;
+      const event = eventOf(id);
+      if (goto == null || event == null) return;
+      goto(event.timestampNs);
+    },
+    [eventActions, eventOf],
+  );
+  // F2 begins the same rename the row's ✎ button begins — and on the
+  // same rows. Editability is the gate, not the input device: a derived
+  // event shows no rename control to the mouse and must not grow one
+  // because the cursor is standing on it (ADR 0035).
+  const onRenameAction = useCallback(
+    (id: string) => {
+      const event = eventOf(id);
+      if (event == null || !event.editable || eventActions == null) return;
+      setEditingEvent(event.id);
+    },
+    [eventActions, eventOf],
+  );
   // Namespaces this instance's row DOM ids, so two chronological views
   // on screen can't name each other's rows.
   const instanceId = useId();
@@ -605,7 +652,30 @@ export function TraceView({
     adapter,
     pageRows: Math.max(1, rows - 2),
     idPrefix: `trace${instanceId}`,
+    onPrimaryAction,
+    onRenameAction,
   });
+  // Ending an inline rename unmounts the field, and focus with nowhere
+  // to go lands on the document body — where the grid's keys are dead
+  // and the next Tab restarts from the top of the page (ADR 0044). The
+  // layer's own recovery cannot see this one: the field is still the
+  // focused element while the key is being handled, and only goes away
+  // on the render after. So the view takes the keyboard back once the
+  // editor is gone, and only where the focus actually went nowhere — a
+  // click into another panel ends the edit too, and that focus is the
+  // user's.
+  const wasEditing = useRef(false);
+  useLayoutEffect(() => {
+    const editing = editingEvent != null;
+    if (
+      wasEditing.current &&
+      !editing &&
+      (document.activeElement == null || document.activeElement === document.body)
+    ) {
+      containerRef.current?.focus();
+    }
+    wasEditing.current = editing;
+  }, [editingEvent, containerRef]);
   // The rows are memoised and the hook hands back fresh callbacks every
   // render (its adapter moves with the window), so the row-facing
   // handlers read the live gridview through a ref instead — otherwise
@@ -745,10 +815,15 @@ export function TraceView({
                     busLookup={busLookup}
                     onToggle={toggleExpanded}
                     eventActions={eventActions}
-                    // A boolean rather than the focused id, so moving the
-                    // focus re-renders the two rows it touches and no others.
-                    eventFocused={r?.row === "event" && r.event.id === focusedEvent}
-                    onEventFocus={focusEvent}
+                    // Booleans rather than the cursor's / editor's id, so
+                    // moving either re-renders the two rows it touches and
+                    // no others.
+                    eventFocused={
+                      r?.row === "event" &&
+                      grid.cursor === `${EVENT_ROW_PREFIX}${r.event.id}`
+                    }
+                    eventEditing={r?.row === "event" && r.event.id === editingEvent}
+                    onEventEditing={setEventEditing}
                     rowDomId={grid.rowDomId}
                     // Deriving the id costs a string per row, so the
                     // common case — nothing selected — never asks.
@@ -814,9 +889,15 @@ interface RowProps {
   /// the number of signal lines it discloses.
   onToggle: (rowId: string, signals: number) => void;
   eventActions?: EventActions;
-  /// This row is the focused event row (event rows only).
+  /// The gridview cursor is on this row (event rows only). Event rows
+  /// are not selectable, so this is the only thing an event row can show
+  /// about the grid's state — and what says which row Space and F2 act
+  /// on.
   eventFocused: boolean;
-  onEventFocus: (id: string) => void;
+  /// This event row's label is being renamed in place (event rows only).
+  eventEditing: boolean;
+  /// Start or end that rename, by event id.
+  onEventEditing: (id: string, on: boolean) => void;
   /// The DOM id `aria-activedescendant` names this row by (ADR 0044).
   /// Taken as the layer's stable mapper rather than the finished string
   /// so the memo still skips a row whose id hasn't moved.
@@ -843,7 +924,8 @@ const Row = memo(function Row({
   onToggle,
   eventActions,
   eventFocused,
-  onEventFocus,
+  eventEditing,
+  onEventEditing,
   rowDomId,
   selected,
   onSelect,
@@ -859,7 +941,8 @@ const Row = memo(function Row({
         baseTimestamp={baseTimestamp}
         actions={eventActions}
         focused={eventFocused}
-        onFocus={onEventFocus}
+        editing={eventEditing}
+        onEditing={onEventEditing}
         domId={rowDomId(`${EVENT_ROW_PREFIX}${event.id}`)}
         onSelect={onSelect}
         isExpanded={isExpanded}
@@ -940,8 +1023,9 @@ const EVENT_KIND_COLOR: Record<string, () => string> = {
 /// origin, like a frame's time cell), a full-height color swatch, and the
 /// label. Used for the truncation marker and for notes.
 ///
-/// **Clicking the row focuses it** — it is a focus target in its own right,
-/// and the focused row is the one the row's controls act on. Editable events
+/// **Clicking the row puts the grid's cursor on it** — it is a focus target
+/// in its own right, and the cursor's row is the one the action keys act on
+/// (Space goes to the event, F2 renames it — ADR 0044). Editable events
 /// (notes, given `actions`) carry those controls inline: a rename button
 /// (which is what turns the label into a field), the swatch (click to recolor,
 /// the same native picker the plot uses), and a remove button. Double-clicking
@@ -953,7 +1037,8 @@ function EventRow({
   baseTimestamp,
   actions,
   focused,
-  onFocus,
+  editing,
+  onEditing,
   domId,
   onSelect,
   isExpanded,
@@ -963,8 +1048,13 @@ function EventRow({
   event: TimelineEvent;
   baseTimestamp: number | null;
   actions?: EventActions;
+  /// The grid's cursor is on this row.
   focused: boolean;
-  onFocus: (id: string) => void;
+  /// The label is a field rather than text. Owned by the view, so the
+  /// gridview's F2 reaches it (ADR 0044) and so a recycled row slot
+  /// drops the edit by construction — the state is keyed by event id.
+  editing: boolean;
+  onEditing: (id: string, on: boolean) => void;
   /// The DOM id `aria-activedescendant` names this row by. An event row
   /// takes part in the grid's cursor, but not in its selection — it is
   /// not a message (ADR 0044).
@@ -984,21 +1074,20 @@ function EventRow({
   const editable = event.editable && actions != null;
   const discloses = eventDiscloses(event);
   const onGoto = actions?.onGoto;
-  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(event.label);
 
   // This is a virtualized row slot: when scrolling reuses it for a different
-  // event (or the label changes under us), drop any in-progress edit and
-  // re-seed the draft from the new label.
+  // event (or the label changes under us), re-seed the draft from the new
+  // label. Any in-progress edit is dropped by the view's own state, which is
+  // keyed by event id and so names no row this slot now shows.
   useEffect(() => {
-    setEditing(false);
     setDraft(event.label);
   }, [event.id, event.label]);
 
   const commit = () => {
     const next = draft.trim();
     if (next && next !== event.label) actions?.onRename(event.id, next);
-    setEditing(false);
+    onEditing(event.id, false);
   };
 
   return (
@@ -1009,16 +1098,24 @@ function EventRow({
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
       title={event.label}
       id={domId}
+      // The row is what `aria-activedescendant` names, so the row is
+      // where its disclosed state has to be readable — the caret below
+      // carries its own, but a cursor on the row never reaches it. Same
+      // shape as every other gridview row (ADR 0044): absent, not
+      // `false`, where there is nothing to open. `aria-selected` is
+      // deliberately absent too — an event row is not selectable.
+      aria-expanded={discloses ? isExpanded : undefined}
       tabIndex={0}
-      onClick={(e) => {
-        onFocus(event.id);
-        onSelect(`${EVENT_ROW_PREFIX}${event.id}`, e);
-      }}
+      onClick={(e) => onSelect(`${EVENT_ROW_PREFIX}${event.id}`, e)}
     >
       {discloses ? (
         <button
           type="button"
           className="trace-event-disclose"
+          // Out of the tab order, like every other gridview's caret: what
+          // it does is already Left/Right's, and Tab into the row must
+          // land on a control the keyboard does not otherwise have.
+          tabIndex={-1}
           aria-expanded={isExpanded}
           aria-label={isExpanded ? "hide event details" : "show event details"}
           title={isExpanded ? "hide the tag and description" : "show the tag and description"}
@@ -1075,7 +1172,7 @@ function EventRow({
               // the edit would commit the draft being abandoned.
               e.preventDefault();
               setDraft(event.label);
-              setEditing(false);
+              onEditing(event.id, false);
             }
           }}
           onBlur={commit}
@@ -1084,7 +1181,7 @@ function EventRow({
         <span
           className={`trace-event-label${editable ? " trace-event-label-editable" : ""}`}
           title={editable ? "double-click to rename" : undefined}
-          onDoubleClick={editable ? () => setEditing(true) : undefined}
+          onDoubleClick={editable ? () => onEditing(event.id, true) : undefined}
         >
           {event.label}
         </span>
@@ -1095,7 +1192,7 @@ function EventRow({
           className="trace-event-edit"
           title="rename"
           aria-label="rename event"
-          onClick={() => setEditing(true)}
+          onClick={() => onEditing(event.id, true)}
         >
           ✎
         </button>

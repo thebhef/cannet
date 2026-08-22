@@ -247,6 +247,7 @@ describe("gridview key suppression", () => {
       "PageDown",
       " ",
       "Tab",
+      "F2",
     ]) {
       expect(isGridviewKey(plain(key))).toBe(true);
     }
@@ -315,6 +316,7 @@ describe("chordSuppressedInGridview", () => {
     { chord: "Tab", stroke: plain("Tab"), suppressed: true },
     { chord: "Shift+Tab", stroke: { ...plain("Tab"), shift: true }, suppressed: true },
     { chord: "Mod+A", stroke: { ...plain("a"), ctrl: true }, suppressed: true },
+    { chord: "F2", stroke: plain("F2"), suppressed: true },
     { chord: "f", stroke: plain("f"), suppressed: false },
     { chord: "Escape", stroke: plain("Escape"), suppressed: false },
     { chord: "Alt+ArrowLeft", stroke: { ...plain("ArrowLeft"), alt: true }, suppressed: false },
