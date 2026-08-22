@@ -165,6 +165,25 @@ import {
  * scale; enum/state signals; triggers; CSV/image export.
  */
 
+/**
+ * Whether the measurement strip draws at all. **It does not** — and
+ * this is the single switch that says so.
+ *
+ * The strip's readout needs rework before it is worth showing, and
+ * hiding it only from people who never turned it on would leave
+ * everyone who *had* it with a permanent strip and nothing left to
+ * dismiss it with: the toolbar toggle is gone. So it is hidden for
+ * everyone, whatever a saved config says.
+ *
+ * The persisted `measEnabled` is still read, still round-tripped and
+ * deliberately **not** written away, so whoever reworks the strip
+ * inherits each user's real preference rather than a field that was
+ * silently zeroed. Reworking the strip means deleting this constant
+ * and the `&&` that consumes it; nothing else here is conditional on
+ * it.
+ */
+const MEASUREMENT_STRIP_DRAWS: boolean = false;
+
 /** Stable empty set for areas with no manual picks yet. */
 const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 /** Stable empty list for areas with no patterns — a fresh `[]` per render
@@ -508,6 +527,10 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [followLive, setFollowLive] = useState(() => boolFromRaw(savedConfig?.followLive, true));
   const [cursorMode, setCursorMode] = useState<CursorMode>(() => cursorModeFromRaw(savedConfig?.cursorMode));
   const [measEnabled, setMeasEnabled] = useState(() => boolFromRaw(savedConfig?.measEnabled, false));
+  // What the panel acts on. `measEnabled` is the *stored* preference and
+  // stays exactly as the user left it; this is whether the strip is on
+  // screen, which it is not — see MEASUREMENT_STRIP_DRAWS.
+  const measShowing = measEnabled && MEASUREMENT_STRIP_DRAWS;
   const [measKeys, setMeasKeys] = useState<MeasurementKey[]>(() => measKeysFromRaw(savedConfig?.measKeys));
   /** Show the per-row y / t-range diagnostic readout under each
    * signal's value. Off by default — useful for development and for
@@ -1387,14 +1410,16 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const reportSeries = useCallback(
     (areaId: string, series: Map<string, Series>) => {
       diagCount("plot.reportSeries"); // DIAG
-      if (!measEnabled) return;
+      // Only the strip consumes these, so nothing accumulates while it
+      // is not drawing.
+      if (!measShowing) return;
       setSeriesByArea((p) => {
         const next = new Map(p);
         next.set(areaId, series);
         return next;
       });
     },
-    [measEnabled],
+    [measShowing],
   );
   // The four timing / size read-outs and the smoothness meter go through
   // the badge accumulator: they feed only the toolbar strip, so they are
@@ -2655,7 +2680,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         })}
       </div>
 
-      {measEnabled && (
+      {measShowing && (
         <PlotMeasurementStrip
           measKeys={measKeys}
           cursorX={cursorX}
