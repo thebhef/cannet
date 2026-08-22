@@ -4623,19 +4623,6 @@ button.color-chip {
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface-tx-toolbar);
 }
-.tx-panel-toolbar button {
-  background: var(--surface-control);
-  color: var(--text-muted);
-  border: 1px solid var(--border-default);
-  border-radius: 3px;
-  font: inherit;
-  padding: 0.1rem 0.5rem;
-  cursor: pointer;
-}
-.tx-panel-toolbar button:hover {
-  color: var(--text-primary);
-  border-color: var(--border-hover);
-}
 .tx-panel-list {
   flex: 1 1 auto;
   overflow-y: auto;
