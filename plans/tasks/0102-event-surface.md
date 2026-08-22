@@ -143,3 +143,57 @@ close.
   historical trace views and (for `EVENT_COMMENT`) the graph view.
 - The macOS picker item is closed by a verdict from a Mac — confirmed
   fixed, or reverted with the anchor path investigated.
+
+## Status log
+
+### 2026-08-21 — (branch `task-102-event-surface`)
+
+**Phase 1 — the third category.** `EventKind` splits two ways in the code
+today only in prose; the split is now typed. `EventCategory`
+(`notes.rs`) names **user-authored** and **host-derived**; the third,
+*frontend-derived*, deliberately has no Rust variant because those kinds
+(the truncation marker) never cross the wire, and the rustdoc says so.
+`EventKind::BusError` is the first host-derived kind. Category — not the
+individual kind — fixes the lifecycle: `persisted()` and `exported()`
+both derive from it.
+
+The store grew a second list. `NotesStore::inner` stays the durable,
+scratch-persisted set; `derived` is the host-derived one, replaced
+wholesale by `replace_derived` and never written anywhere. Three read
+paths, deliberately distinct:
+
+| reader | returns | why |
+|---|---|---|
+| `snapshot()` | durable only | what the scratch file is |
+| `events()` | merged, chronological | what every view renders |
+| `exportable()` | durable ∧ `kind.exported()` | what Save Capture writes |
+
+`fetch_notes` / `notes-changed` now carry `events()`; `save_capture`
+takes `exportable()`. `add()` refuses a non-durable kind outright, so
+there is no path by which a host-derived event becomes user data.
+
+**Where coalescing happens, and the write-side contract.** Coalescing
+itself is not built here — it belongs to the bus-health producer. What
+is built is the rule it must obey: a coalesced summary is an event, the
+frames it summarises are frames, and only the frames are written.
+
+- *Observation.* A `busError` event and a user note are both timeline
+  events in one store; a save must write exactly one of them.
+- *Hypothesis.* Routing Save Capture through `exportable()` rather than
+  the merged set is what makes that true.
+- *Experiment.* `a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises`
+  (`tests.rs`) writes a 200-frame error storm plus one note plus one
+  coalesced `busError` through `write_blf_capture`, off the very
+  expression `save_capture` builds its marker list from. Control: the
+  user note, which must survive — without it, "no bus-error marker"
+  would also pass on a save that dropped all markers.
+- *Data.* `marker_count == 1`, the surviving marker is `storm starts`,
+  and all 200 error frames read back with their exact timestamps. With
+  `exportable()` swapped to `events()` the same test reads
+  `marker_count == 2` and fails.
+- *Conclusion.* The export boundary, not the renderer, is what keeps the
+  file lossless; the summary is display-only by construction.
+
+ADR 0035 amended in the same commit with the three-category table and
+the two consequences that follow (a summary is not a substitute for what
+it summarises; the delivery path is shared, the storage is not).
