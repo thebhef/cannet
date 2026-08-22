@@ -26,7 +26,9 @@ import { useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { useTrace } from "./trace";
 import { TraceControls } from "./TraceControls";
 import { useNotes } from "./notesContext";
-import { TRUNCATION_EVENT_ID } from "./notes";
+import { timelineEvents } from "./notes";
+import { plotTimelineEvents } from "./plotEvents";
+import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { mergeSeries } from "./plotData";
 import { hostSettings, useSetting } from "./hostSettings";
@@ -600,6 +602,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // `notes-changed` event broadcasts the new list to every plot
   // panel.
   const { notes: sessionNotes, addNote: dispatchAddNote } = useNotes();
+  // Per-kind event visibility, view-local (ADR 0035) — a kind hidden by
+  // default draws no cursor here until this panel is told to show it.
+  const eventKinds = useEventKindFilter();
 
   // Per-area last-sampled series (only kept while the measurement strip
   // is on — it's the only consumer; the side-panel values come from the
@@ -2281,37 +2286,28 @@ export function PlotPanel(props: IDockviewPanelProps) {
   // x axis. When the cache hasn't anchored yet (`baseSeconds`
   // null — no frames yet), notes don't render; an area reports a
   // base on its first non-empty fetch.
-  const notes = useMemo<NoteEvent[]>(() => {
-    if (baseSeconds == null || !Number.isFinite(baseSeconds)) return [];
-    return sessionNotes.map((n) => ({
-      id: n.id,
-      t: n.timestampNs / 1e9 - baseSeconds,
-      label: n.label,
-      // Carry the note's color (ADR 0035) so its cursor matches the trace
-      // and events panel; `undefined` falls back to the default event blue.
-      color: n.color ?? undefined,
-    }));
-  }, [sessionNotes, baseSeconds]);
-  // The derived truncation marker (ADR 0035) as a plot cursor, when the
-  // disk-spill store has truncated the oldest history (`firstIndex > 0`).
-  const truncation = useMemo<NoteEvent | null>(() => {
-    if (baseSeconds == null || model.truncationTsNs == null) return null;
-    return {
-      id: TRUNCATION_EVENT_ID,
-      t: model.truncationTsNs / 1e9 - baseSeconds,
-      label: "history truncated here",
-      // A muted amber, distinct from the note-event blue (ADR 0035).
-      // Matches the trace floor row.
-      color: theme().eventTruncation,
-    };
-  }, [model.truncationTsNs, baseSeconds, themeName]);
+  const notes = useMemo<NoteEvent[]>(
+    () =>
+      plotTimelineEvents(sessionNotes, model.truncationTsNs, baseSeconds, eventKinds.visible, (k) =>
+        // A note with no color of its own takes the plot's default event
+        // blue, so it asks for none; the other kinds are colored by kind.
+        k === "truncation"
+          ? theme().eventTruncation
+          : k === "busError"
+            ? theme().eventBusError
+            : undefined,
+      ),
+    [sessionNotes, model.truncationTsNs, baseSeconds, eventKinds.visible, themeName],
+  );
   const events = useMemo<NoteEvent[]>(
-    () => [
-      { id: "__t0", t: 0, label: "T0" },
-      ...notes,
-      ...(truncation ? [truncation] : []),
-    ],
-    [notes, truncation],
+    () => [{ id: "__t0", t: 0, label: "T0" }, ...notes],
+    [notes],
+  );
+  // What the kind filter is hiding, counted off the *unfiltered* set so a
+  // kind with something to show says so even while it is off.
+  const eventKindCounts = useMemo(
+    () => countByKind(timelineEvents(sessionNotes, model.truncationTsNs)),
+    [sessionNotes, model.truncationTsNs],
   );
   // Cursor *positions* render in the trace's elapsed-time format
   // (ADR 0024 — one string for one timeline position across views), with
@@ -2543,6 +2539,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
             </span>
             show diagnostics
           </button>
+          <EventKindFilter state={eventKinds} counts={eventKindCounts} />
           <SourcesMenuSection
             value={currentSources}
             buses={buses}

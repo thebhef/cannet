@@ -38,3 +38,19 @@ describe("gotoEventItems", () => {
     expect(items[0].hint).toBe("4.000 s");
   });
 });
+
+describe("gotoEventItems and hidden kinds", () => {
+  it("leaves out a kind that is hidden by default", () => {
+    // "By default not shown anywhere" reaches the palette too; the events
+    // view is where a bus error is found, and it offers its own goto.
+    const items = gotoEventItems(
+      [
+        { id: "n", timestampNs: 1_000_000_000, label: "brake" },
+        { id: "e", timestampNs: 2_000_000_000, label: "bus error x40", kind: "busError" },
+      ],
+      null,
+      0,
+    );
+    expect(items.map((i) => i.label)).toEqual(["brake"]);
+  });
+});

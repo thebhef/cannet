@@ -1793,6 +1793,14 @@ fn notes_via_import_walk(blf_path: &str) -> Vec<crate::notes::Note> {
             collected.lock().unwrap().push(note);
         }
     });
+    source.on_comment({
+        let collected = Arc::clone(&collected);
+        let mut synthetic_idx = 0u64;
+        move |c| {
+            let note = capture::note_from_comment(&c, &mut synthetic_idx);
+            collected.lock().unwrap().push(note);
+        }
+    });
     while source.next_frame().unwrap().is_some() {}
     let notes = collected.lock().unwrap().clone();
     notes
@@ -1855,6 +1863,9 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             label: "first".into(),
             kind: notes::EventKind::Note,
             color: Some("#FF8800".into()),
+            description: None,
+            tag: None,
+            commented_event_type: None,
         },
         notes::Note {
             id: "b".into(),
@@ -1862,6 +1873,9 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             label: "second".into(),
             kind: notes::EventKind::Note,
             color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
         },
     ];
 
@@ -2233,6 +2247,9 @@ fn a_marker_outside_the_import_range_is_dropped_and_does_not_move_the_origin() {
         label: id.into(),
         kind: crate::notes::EventKind::Note,
         color: None,
+        description: None,
+        tag: None,
+        commented_event_type: None,
     };
     crate::session::anchor_replay_session(&state, &mut anchor, 2_000_000_000);
 
@@ -3058,6 +3075,244 @@ fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
     assert!(warning.contains("Analog/CoolantTemp"), "{warning}");
 }
 
+/// Both BLF annotation record types round-trip: a note as a
+/// `GLOBAL_MARKER`, a message-bound event as an `EVENT_COMMENT` that keeps
+/// the object type of the event it comments on, so it still tracks with
+/// that message on the way back out.
+///
+/// The third annotation is the control: a comment written by another tool,
+/// with no `cannet:event:` packing at all. It has to survive as an event
+/// too — reading only our own packing would silently drop every comment a
+/// `CANalyzer` user made.
+#[test]
+fn both_blf_annotation_records_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("annotated.blf");
+    let ts = 1_700_000_000_000_000_000u64;
+    let frames = vec![trace_store::RawTraceFrame {
+        timestamp_ns: ts,
+        channel: 0,
+        id: 0x100,
+        extended: false,
+        direction: Direction::Rx,
+        payload: CanFramePayload::Classic(vec![1]),
+        bus_id: None,
+    }];
+
+    let notes_in = vec![
+        notes::Note {
+            id: "n1".into(),
+            timestamp_ns: ts + 1_000,
+            label: "a marker".into(),
+            kind: notes::EventKind::Note,
+            color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
+        },
+        notes::Note {
+            id: "c1".into(),
+            timestamp_ns: ts + 2_000,
+            label: "contactor closed".into(),
+            kind: notes::EventKind::MessageBound,
+            color: None,
+            description: Some("commanded from the BMS".into()),
+            tag: Some("contactor".into()),
+            // CAN_MESSAGE2 — the comment is on a classic CAN frame.
+            commented_event_type: Some(86),
+        },
+    ];
+
+    capture::write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();
+    let mut back = notes_via_import_walk(dest.to_str().unwrap());
+    back.sort_by_key(|n| n.timestamp_ns);
+    assert_eq!(
+        back, notes_in,
+        "both records come back as the events that wrote them"
+    );
+
+    // The control: another tool's comment, unpacked prose.
+    let dest = dir.path().join("foreign.blf");
+    {
+        let mut w = cannet_blf::BlfCaptureWriter::create_with_start(&dest, ts).unwrap();
+        w.append_comment(ts + 3_000, "looks wrong here\nwatch this ID", 86)
+            .unwrap();
+        w.finish().unwrap();
+    }
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].kind, notes::EventKind::MessageBound);
+    assert_eq!(back[0].label, "looks wrong here");
+    assert_eq!(back[0].description.as_deref(), Some("watch this ID"));
+    assert_eq!(back[0].tag, None);
+    assert_eq!(back[0].id, "blf-comment-0", "a deterministic synthetic id");
+    assert_eq!(back[0].commented_event_type, Some(86));
+}
+
+/// An event's tag and description have no field of their own in a BLF
+/// `GLOBAL_MARKER`, so they ride the marker's opaque `description` behind a
+/// `cannet:event:` prefix — in the file, no sidecar. A note carrying neither
+/// still writes the bare id it always did, which is the control: it proves
+/// the round-trip below is reading the structured form and not simply
+/// echoing whatever text it found.
+#[test]
+fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let ts = 1_700_000_000_000_000_000u64;
+    let frames = vec![trace_store::RawTraceFrame {
+        timestamp_ns: ts,
+        channel: 0,
+        id: 0x100,
+        extended: false,
+        direction: Direction::Rx,
+        payload: CanFramePayload::Classic(vec![1]),
+        bus_id: None,
+    }];
+
+    let rich = notes::Note {
+        id: "n-rich".into(),
+        timestamp_ns: ts + 1_000,
+        label: "contactor".into(),
+        kind: notes::EventKind::Note,
+        color: Some("#FF8800".into()),
+        description: "opened under load\nsecond line".to_string().into(),
+        tag: Some("fault".into()),
+        commented_event_type: None,
+    };
+    let plain = notes::Note {
+        id: "n-plain".into(),
+        timestamp_ns: ts + 2_000,
+        label: "just a note".into(),
+        kind: notes::EventKind::Note,
+        color: None,
+        description: None,
+        tag: None,
+        commented_event_type: None,
+    };
+
+    let dest = dir.path().join("marked.blf");
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        std::slice::from_ref(&rich),
+        &[],
+    )
+    .unwrap();
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].id, "n-rich");
+    assert_eq!(back[0].label, "contactor");
+    assert_eq!(back[0].tag.as_deref(), Some("fault"));
+    assert_eq!(
+        back[0].description.as_deref(),
+        Some("opened under load\nsecond line"),
+    );
+    assert_eq!(back[0].color.as_deref(), Some("#FF8800"));
+
+    // The control: nothing to pack, so nothing is packed — the marker's
+    // description is the bare id, exactly as before the structured form
+    // existed, and it still reads back as an id rather than as a body.
+    let dest = dir.path().join("plain.blf");
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        std::slice::from_ref(&plain),
+        &[],
+    )
+    .unwrap();
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back[0].id, "n-plain");
+    assert_eq!(back[0].description, None);
+    assert_eq!(back[0].tag, None);
+}
+
+/// Coalescing an error storm is a **display** decision with a **write-side**
+/// contract: the summary event never reaches the file, and every error frame
+/// the session received does (ADR 0035).
+///
+/// The control that discriminates is the user note alongside the summary —
+/// both are timeline events in the same store, and exactly one is written.
+/// Without it, "no bus-error marker in the file" would also be satisfied by
+/// a save that dropped markers altogether.
+///
+/// Drives `write_blf_capture` off the very expression `save_capture` builds
+/// its marker list from (`NotesStore::exportable`), the layer under the
+/// Tauri command the suite has no `AppHandle` harness for.
+#[test]
+fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises() {
+    use cannet_core::CanFrameSource as _;
+
+    // An error storm at bus frame rate, as a persistent physical fault
+    // produces: error, retransmit, error.
+    const STORM: u64 = 200;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("storm.blf");
+    let ts = 1_700_000_000_000_000_000u64;
+    let frames: Vec<trace_store::RawTraceFrame> = (0..STORM)
+        .map(|i| trace_store::RawTraceFrame {
+            timestamp_ns: ts + i * 40_000,
+            channel: 0,
+            id: 0,
+            extended: false,
+            direction: Direction::Rx,
+            payload: CanFramePayload::Error,
+            bus_id: None,
+        })
+        .collect();
+
+    let store = notes::NotesStore::new();
+    store
+        .add(notes::Note {
+            id: "user".into(),
+            timestamp_ns: ts,
+            label: "storm starts".into(),
+            kind: notes::EventKind::Note,
+            color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
+        })
+        .unwrap();
+    store.replace_derived(vec![notes::Note {
+        id: "bus-error-0".into(),
+        timestamp_ns: ts,
+        label: format!("bus error x{STORM}"),
+        kind: notes::EventKind::BusError,
+        color: None,
+        description: None,
+        tag: None,
+        commented_event_type: None,
+    }]);
+    // Both are on the timeline the views render...
+    assert_eq!(store.events().len(), 2);
+
+    // ...and exactly one is on the timeline the file records.
+    let outcome =
+        capture::write_blf_capture(dest.to_str().unwrap(), &frames, &store.exportable(), &[])
+            .unwrap();
+    assert_eq!(outcome.marker_count, 1);
+    assert_eq!(
+        notes_via_import_walk(dest.to_str().unwrap())
+            .iter()
+            .map(|n| n.label.clone())
+            .collect::<Vec<_>>(),
+        vec!["storm starts".to_string()],
+    );
+
+    // Every error frame survives: the summary is not a substitute for them.
+    let mut back = cannet_blf::BlfCanFrameSource::open(&dest).unwrap();
+    let read_back: Vec<u64> = std::iter::from_fn(|| back.next_frame().unwrap())
+        .filter(|f| matches!(f.payload, CanFramePayload::Error))
+        .map(|f| f.timestamp_ns)
+        .collect();
+    assert_eq!(read_back.len() as u64, STORM);
+    assert_eq!(
+        read_back,
+        frames.iter().map(|f| f.timestamp_ns).collect::<Vec<_>>()
+    );
+}
+
 /// The full round-trip contract for an MDF save: import → export →
 /// re-import preserves frame content bit for bit (id + extended,
 /// payload, FD flags, remote and error frames), frame-accurate absolute
@@ -3146,6 +3401,11 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             label: "first".into(),
             kind: notes::EventKind::Note,
             color: Some("#FF8800".into()),
+            // The disclosed body and the user tag have their own
+            // `common_properties` keys, so they round-trip like the color.
+            description: Some("what it looked like".into()),
+            tag: Some("fault".into()),
+            commented_event_type: None,
         },
         notes::Note {
             id: "note-b".into(),
@@ -3153,6 +3413,9 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             label: "second & last".into(),
             kind: notes::EventKind::Note,
             color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
         },
     ];
 
@@ -4145,6 +4408,9 @@ fn write_blf_capture_preserves_every_timestamp_of_an_out_of_order_capture() {
         label: "end".into(),
         kind: notes::EventKind::Note,
         color: None,
+        description: None,
+        tag: None,
+        commented_event_type: None,
     }];
 
     let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();
