@@ -641,6 +641,103 @@ header {
   color: var(--text-muted);
 }
 
+/* === The header status bar (StatusBar.tsx) ===
+   One row, always. It never wraps and never grows the header — a
+   wrapped status bar reflows every panel below it — so when content
+   will not fit, metrics drop into the label tooltip and pinned chips
+   are pushed into the overflow menu.
+
+   `overflow: hidden` is deliberately NOT used here: the overflow menu
+   is an absolutely-positioned child, and a clipping bar swallows its
+   own dropdown. Fit is guaranteed by dropping items, not by clipping
+   them. If a future layout genuinely needs the bar to clip, the menu
+   has to be portaled out of it first. */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.status-bar > * {
+  flex: none;
+}
+/* The connection chip, the bus-health launcher and the divider after
+   them: measured as one block, because none of them ever gives way. */
+.status-bar-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.status-bar-separator {
+  display: inline-block;
+  width: 1px;
+  height: 1.4em;
+  background: var(--divider);
+}
+/* Whatever is happening, and the response to it. Shrinks and
+   ellipsises before the numbers give way, and takes whatever they
+   leave once they have. */
+.status-bar .status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.status-bar-spacer {
+  flex: 1 1 auto;
+}
+.status-bar-pinned {
+  display: inline-flex;
+}
+/* The collapsed pinned chips. Same dropdown shape as the toolbar's
+   recent-captures menu, dropping from the bar rather than expanding
+   inside it. */
+.status-bar-overflow {
+  position: relative;
+  display: inline-flex;
+}
+.status-bar-overflow-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  cursor: pointer;
+  background: var(--surface-toolbar-control);
+  border: 1px solid var(--border-wash);
+  border-radius: 2px;
+  padding: 0.14rem 0.45rem;
+}
+.status-bar-overflow-button:hover {
+  background: var(--surface-toolbar-control-hover);
+}
+ul.status-bar-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin: 4px 0 0 0;
+  padding: 4px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--surface-control);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  z-index: 50;
+  box-shadow: 0 4px 12px var(--shadow-menu);
+}
+ul.status-bar-menu .status-chip {
+  width: 100%;
+}
+/* === end header status bar === */
+
 /* One metric: a figure and the word beside it. The figure is tabular
    so the digits change without the row moving; the word carries the
    whole-readout tooltip. A live-only metric (bus load — a capture has
