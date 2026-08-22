@@ -154,7 +154,13 @@ each carries the reading implementation takes if no ruling arrives.
   `refresh` unused, so it comes out of the context value in the same
   commit (the "clean up your own orphans" rule), leaving the internal
   `refreshCatalog` callback as the effect's driver.
-- **The registry is 42 icons.** The prototype's inventory names them:
+- **The registry is 36 icons.** (Corrected 2026-08-22: the grooming
+  first said 42, from a miscount of the prototype's inventory markup.
+  The prototype defines **37** `<symbol>`s and its inventory section
+  lists **36** — `reload` is defined but deliberately excluded, because
+  the catalog-reload command it serves is retired in phase 4. Phase 1
+  built the 36, correctly trusting the prototype over the summary.)
+  The prototype's inventory names them:
   folder, save, import, clock, db, db-add, bus, plug, clear, plus,
   rows, chart, signals, send, loop, palette, wave, eye, graph, flag,
   tree, bell, play, pause, stop, fit-x, fit-y, search, cursors,
@@ -203,7 +209,7 @@ control it labels.
 
 | # | Phase | Model | What lands |
 |---|---|---|---|
-| 1 | The icon registry | Sonnet | The 42-icon module + `<Icon>`, path data copied from the prototype, the set-level tests, and the two audit fixes: `BusHealthLauncher`'s inline ECG zigzag replaced by the registry's `bus` topology (it collides with `signals`), and `db` split from `db-add`. No toolbar changes. |
+| 1 | The icon registry | Sonnet | The 36-icon module + `<Icon>`, path data copied from the prototype, the set-level tests, and the two audit fixes: `BusHealthLauncher`'s inline ECG zigzag replaced by the registry's `bus` topology (it collides with `signals`), and `db` split from `db-add`. No toolbar changes. |
 | 2 | The command chip and the shared overflow | Opus | `ChipButton` extending `StatusChip`'s silhouette (icon-only / icon+label, 22px chip, 12px type, badge, state on the hairline, press affordance); `statusBarFit` generalized into the toolbar overflow planner both the status bar and panel bars consume, with `…` spill and unbreakable-cluster support. Tests: no state changes geometry; a cluster never splits; drop order. |
 | 3 | The top-level toolbar | Opus | All ~20 `App.tsx` items regrouped onto chips, the Add-menu collapse, the badge treatment, Title Case. The connection / System Messages / Signal Mapping / RBS chips stay in the status bar — the toolbar gains no duplicate launcher. |
 | 4 | The plot panel toolbar | Opus | Cursor modes as icon buttons (x / y / note segment, press again for off) rather than a dropdown; the perf readout hidden by default behind the toolbar's existing right-click menu; catalog reload retired (button, command, and the orphaned context export); the solo cluster (field + paging + clear) one unbreakable unit placed left, with "Add Plot Area" to its right; overflow rather than wrap. The measurements strip **stays hidden** — no toggle anywhere. |
