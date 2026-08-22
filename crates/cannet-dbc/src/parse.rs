@@ -261,7 +261,9 @@ fn message_send_type(dbc: &Dbc, msg_id: MessageId, labels: Option<&Vec<String>>)
 /// message's signals (ADR 0027). At most one of each per message —
 /// the first (in `SG_` declared order) wins and any further
 /// designation is reported as a warning, as is a value that fails to
-/// parse. Empty attribute values mean "unconfigured" and are skipped.
+/// parse; a failure quotes the attribute text, since its only other
+/// symptom is a designation that is silently not there. Empty
+/// attribute values mean "unconfigured" and are skipped.
 fn collect_calc_fields(
     message_name: &str,
     signals: &[SignalEntry],
@@ -286,7 +288,8 @@ fn collect_calc_fields(
                         "{message_name}.{signal_name}: second CannetCounter designation ignored"
                     )),
                     Err(e) => warnings.push(format!(
-                        "{message_name}.{signal_name}: bad CannetCounter attribute: {e}"
+                        "{message_name}.{signal_name}: bad CannetCounter attribute \"{value}\": {e}",
+                        value = attr.value
                     )),
                 }
             } else {
@@ -296,7 +299,8 @@ fn collect_calc_fields(
                         "{message_name}.{signal_name}: second CannetCrc designation ignored"
                     )),
                     Err(e) => warnings.push(format!(
-                        "{message_name}.{signal_name}: bad CannetCrc attribute: {e}"
+                        "{message_name}.{signal_name}: bad CannetCrc attribute \"{value}\": {e}",
+                        value = attr.value
                     )),
                 }
             }
