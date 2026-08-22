@@ -194,3 +194,95 @@ contingent on the ruling.
 Nothing here needs an hours-long run. The exit criterion "if an index
 is built, its cost is measured on a realistic cache" only binds under
 the *rejected* branch; under the recommended ruling no index is built.
+
+## Status log
+
+### 2026-08-22 — phases 1 and 2 folded into one branch
+
+**Fold, and why.** Phases 1 and 2 land as one branch
+(`task-106-any-bus-series`, from `a2c5ed59`), because shipping the rule
+without the surface that reports it *is* the silent emptying
+[task 88 phase 2](0088-bus-assignment-governs-decode.md) refused to do.
+Two commits, each green.
+
+**The ruling being implemented is the overseer's recommendation and the
+owner has not confirmed it.** It is implemented as written, unsoftened
+and unhedged: *a DBC-backed series naming no bus resolves nothing; it is
+kept, reported `NotDecoded`, and repaired by the user in the signal
+mapping panel.* The rejected branch's machinery (a prefix-maximum
+`t_seconds` index in the cache and its pyramid levels) is **not** built.
+If the owner reverses the ruling, this branch's two commits are the
+whole of the diff to revert.
+
+### 2026-08-22 — phase 1: a DBC target with no bus resolves nothing
+
+**Landed** (commit recorded below):
+
+- `SignalKey::dbc` takes `bus_id: String`, not `Option<String>`. The
+  any-bus series is now unrepresentable rather than merely unused.
+  `SignalKey::bus_id` stays `Option<String>` — `SignalKey::file` still
+  uses `None`, as task 88's exit-criteria grooming ruled.
+- `scan_chunk`'s per-target bus filter lost its `None`-target arm.
+  `GroupTarget::bus_id` is `&str`, so there is no arm left to take: the
+  invariant is discharged once, in `plan_batch`, where the DBC-backed
+  key's bus is read.
+- `CacheQuery::key` and `PersistedSignal::key` return `Option<SignalKey>`.
+  A busless DBC-backed query answers empty through `slice_many`,
+  `min_max_many` and `time_span`, index-parallel with the batch.
+- `SignalCacheStore::restore` **drops** a DBC-backed manifest row that
+  names no bus, with its files — not restored, not parked, not counted
+  as owed a rebuild. Nothing can ever fill it, and parking it would hold
+  disk against a definition that can never return. The retention pool
+  read out of a manifest is filtered the same way.
+- `partition_by_t`'s doc comment now *describes* the order instead of
+  asserting it, and says why it holds: a DBC-backed series is scoped to
+  one bus and one bus's frames arrive in order (the dip ADR 0024
+  measures is *between* buses); a file-backed series follows its source
+  channel group's own order; every pyramid level folds the level below
+  in slot order.
+- The two tests that pinned the old behaviour are turned around, each
+  carrying a comment saying what the old rule was and why it changed:
+  `an_unscoped_series_decodes_each_frame_by_its_own_bus` is now
+  `a_series_naming_no_bus_decodes_nothing`, and
+  `bus_id_scoping_keeps_per_bus_series_independent`'s last assertion now
+  reads `assert!(any.is_empty())`.
+- New: `a_persisted_row_naming_no_bus_is_dropped_rather_than_restored`.
+- Stale doc comments corrected in the same commit:
+  `filter::dbc_applies`, `ipc::SignalQuery::bus_id`,
+  `SignalCacheStore::slice`, `scan_chunk`'s bus-scoping note and
+  `SignalKey`'s own rustdoc.
+- ~46 incidental test queries that passed `bus_id: None` because it was
+  the shortest thing that decoded now name the bus their fixture frames
+  actually carry. Three tests over `mixed_capture` (which spreads frames
+  across `bus0`/`p`/`c`) gained the assignment set that fixture always
+  implied; `one_group_fetches_each_chunk_once_for_all_its_signals` now
+  asserts a per-bus split of its frames instead of an any-bus total.
+
+**Does a file-backed target reach `scan_chunk`?** No — checked, not
+assumed. `group_keys` filters `!key.file_backed` before any group is
+formed, so a file-backed key never becomes a `GroupTarget`;
+`ensure_caches` also mints no cache for one. Its samples arrive only
+through `fill_file_backed`. So the `&str` bus on `GroupTarget` costs
+file-backed series nothing.
+
+**Mutation evidence.**
+
+- *Observation.* `a_series_naming_no_bus_decodes_nothing` and
+  `bus_id_scoping_keeps_per_bus_series_independent` were written in
+  their new form first and both failed against the unchanged code
+  (`888 passed; 2 failed`), then passed after `scan_chunk` changed.
+- *Experiment on the restore guard.* Replacing
+  `if row.bus_id.is_none()` with `if false && row.bus_id.is_none()`
+  made `a_persisted_row_naming_no_bus_is_dropped_rather_than_restored`
+  fail with `left: (1, 1, 0) / right: (1, 0, 0)`.
+- *Conclusion.* Without the guard the busless row is judged against the
+  no-definition fingerprint, fails, and is **parked** — disk held
+  indefinitely for a series nothing can revive. The guard is what drops
+  it; the test discriminates.
+
+**Suites.** Before: `cargo test -p cannet-gui` 890 passed / 6 ignored;
+`cargo test --workspace` green. After: 891 passed / 6 ignored (the one
+new test); workspace green. `cargo clippy --workspace --all-targets`
+clean but for the known `redundant_closure` in `cannet-dbc/src/tests.rs`;
+`cargo fmt --all -- --check` clean;
+`git grep -Ein "task [0-9]|plans/" -- apps/ crates/` empty.
