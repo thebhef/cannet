@@ -201,6 +201,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "palette.show", label: "Show command palette", category: "Palette" },
   { id: "goto.view", label: "Go to view…", category: "Palette" },
   { id: "goto.event", label: "Go to event…", category: "Palette" },
+  {
+    id: "goto.timeInTrace",
+    label: "Go to time in trace…",
+    category: "Palette",
+    context: (ctx) => ctx.hasProjectOpen,
+  },
   { id: "view.back", label: "Previous view", category: "View" },
   { id: "view.forward", label: "Next view", category: "View" },
   { id: "view.close", label: "Close view", category: "View" },
@@ -219,6 +225,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     id: "plot.followLive.enable",
     label: "Plot: follow live",
+    category: "Plot",
+    context: plotFocused,
+  },
+  {
+    id: "plot.setVisibleRange",
+    label: "Plot: set visible range…",
     category: "Plot",
     context: plotFocused,
   },
@@ -251,6 +263,8 @@ export const DEFAULT_BINDINGS: readonly BindingSpec[] = [
   { chord: "Mod+y", commandId: "view.redo", skipEditable: true },
   { chord: "Mod+Shift+Z", commandId: "view.redo", skipEditable: true },
   { chord: "Mod+Enter", commandId: "view.fullscreen" },
+  { chord: "Mod+T", commandId: "goto.timeInTrace" },
+  { chord: "Mod+E", commandId: "goto.event" },
   // Plain Escape, but context-gated to `hasMaximizedView` — while
   // nothing is maximized the key passes through untouched (modals,
   // in-panel handlers), and the palette's own input suppresses
