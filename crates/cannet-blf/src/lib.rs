@@ -43,7 +43,7 @@
 pub mod format;
 mod scan;
 
-pub use scan::{scan_blf, BlfScan, ScannedMarker};
+pub use scan::{scan_blf, scan_blf_cancellable, BlfScan, ScanOutcome, ScanProgress, ScannedMarker};
 
 use std::fs;
 use std::io;
