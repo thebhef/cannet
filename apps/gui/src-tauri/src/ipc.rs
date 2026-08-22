@@ -1141,9 +1141,13 @@ pub struct DecodedFrameRecord {
 #[derive(serde::Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SignalQuery {
-    /// Bus the signal is bound to. `None` is the legacy "any bus"
-    /// path — kept so a plot from a project that pre-dates per-bus
-    /// signal binding still samples.
+    /// Bus the signal is bound to. `None` on a DBC-backed query names
+    /// no bus, which resolves nothing: bus assignment governs decode and
+    /// no assignment can contain "no bus" (ADR 0054). A view saved
+    /// before per-bus signal binding still sends one, and still gets an
+    /// answer — an empty one — while the signal mapping panel reports
+    /// the reference as Not Decoded and is where it is re-pointed at a
+    /// bus. Always `None` for a file-backed signal, which has no bus.
     pub bus_id: Option<String>,
     /// The message id — or, when `file_backed`, the source file's signal
     /// channel group index, which is what identifies a file-backed
