@@ -24,7 +24,8 @@ use cannet_mdf::MdfCanFrameSource;
 
 use crate::app_state::AppState;
 use crate::ipc::{
-    ImportMdfResult, LoadProgress, LogFinished, OpenLogResult, ValueTableEntryRecord,
+    ImportMdfResult, LoadProgress, LogFinished, OpenLogResult, RebuildProgressRecord,
+    ValueTableEntryRecord,
 };
 use crate::notes::{self, Note};
 use crate::sampling::off_async_workers;
@@ -1867,21 +1868,25 @@ pub struct RestoredCapture {
 }
 
 /// Whether the session is still owed the cold pyramid rebuild a restore
-/// forced (ADR 0047). Factored out from [`signal_pyramids_rebuilding`]
-/// so it's testable against a plain `AppState` — the command wrapper
-/// needs a live Tauri app to construct its `State`.
-pub(crate) fn pyramids_rebuilding_now(state: &AppState) -> bool {
-    state.signal_caches.rebuilding(state.trace_store.len())
+/// forced (ADR 0047), and how far it has got. Factored out from
+/// [`signal_pyramids_rebuilding`] so it's testable against a plain
+/// `AppState` — the command wrapper needs a live Tauri app to construct
+/// its `State`.
+pub(crate) fn pyramids_rebuilding_now(state: &AppState) -> RebuildProgressRecord {
+    state
+        .signal_caches
+        .rebuild_progress(state.trace_store.len())
+        .into()
 }
 
-/// The still-rebuilding fact, polled by the frontend while it shows the
+/// The rebuild's progress, polled by the frontend while it shows the
 /// rebuild chip. A queryable fact rather than an event: the answer is
 /// derived from where the caches' decode cursors have reached, so there
 /// is no single moment for the host to fire, and the chip only asks
 /// while it is up.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn signal_pyramids_rebuilding(state: State<'_, AppState>) -> bool {
+pub(crate) fn signal_pyramids_rebuilding(state: State<'_, AppState>) -> RebuildProgressRecord {
     pyramids_rebuilding_now(&state)
 }
 
@@ -1942,7 +1947,7 @@ pub(crate) async fn restore_scratch_capture(app: AppHandle) -> RestoredCapture {
     // fast and then every plot over it spent minutes re-decoding, with
     // nothing said. The frontend announces this and offers to drop the
     // capture instead of paying for it.
-    let pyramids_rebuilding = pyramids_rebuilding_now(&state);
+    let pyramids_rebuilding = pyramids_rebuilding_now(&state).rebuilding;
     let first_index = first_index_usize as u64;
     let session_start_ns = state.trace_store.session_start_ns();
     // Bring the session's events back too (ADR 0002 DS-7 / ADR 0035) — the
