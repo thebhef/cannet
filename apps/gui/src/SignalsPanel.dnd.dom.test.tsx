@@ -458,7 +458,7 @@ describe("add-path proof: the picker is gone, drop is the only manual add", () =
         { signalName: "Brake", busId: "p", messageId: 999, extended: false },
       ]);
     });
-    expect(screen.getByRole("button", { name: /selection \(1\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Selection \(1\)/ })).toBeInTheDocument();
   });
 
   it("adds a file-backed signal dropped from the Database panel, no picker involved", async () => {
@@ -483,6 +483,6 @@ describe("add-path proof: the picker is gone, drop is the only manual add", () =
         { signalName: "TankLevel", busId: null, messageId: 3, extended: false, fileBacked: true },
       ]);
     });
-    expect(screen.getByRole("button", { name: /selection \(1\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Selection \(1\)/ })).toBeInTheDocument();
   });
 });
