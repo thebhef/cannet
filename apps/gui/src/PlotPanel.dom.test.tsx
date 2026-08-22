@@ -1029,16 +1029,30 @@ describe("PlotPanel", () => {
     expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
   });
 
-  it("shows the measurement strip with the default cells when a saved config asked for it", () => {
-    // The strip needs rework and stays hidden until it gets it: the bar
-    // carries no toggle for it, so the only way in is a config that
-    // already had it on.
+  it("draws no measurement strip, even for a config that says it was on", () => {
+    // The strip needs rework and stays hidden until it gets it. Hiding
+    // it only from people who never turned it on would leave everyone
+    // who had it with a permanent strip and no toggle left to dismiss
+    // it with — strictly worse than before. So: hidden for everyone.
     renderPanel();
     expect(document.querySelector(".plot-meas-strip")).toBeNull();
     cleanup();
     renderPanel({ params: { measEnabled: true } });
-    expect(document.querySelector(".plot-meas-strip")).not.toBeNull();
-    expect(screen.getByText("Δt")).toBeInTheDocument();
+    expect(document.querySelector(".plot-meas-strip")).toBeNull();
+    expect(screen.queryByText("Δt")).toBeNull();
+  });
+
+  it("keeps the stored measurement preference untouched while it is suppressed", () => {
+    // Suppressed on read, never written away: whoever reworks the strip
+    // inherits each user's real preference rather than a field this
+    // change silently zeroed. A test that only checked the strip was
+    // absent would pass over an implementation that erased it.
+    const { api } = renderPanel({ params: { measEnabled: true } });
+    // Force a persist by changing something unrelated.
+    fireEvent.click(screen.getByRole("button", { name: "Add Plot Area" }));
+    const calls = api.updateParameters.mock.calls;
+    const last = (calls[calls.length - 1]?.[0] ?? {}) as { measEnabled?: unknown };
+    expect(last.measEnabled).toBe(true);
   });
 
   it("stores no color for a dropped signal and renders the resolved one", async () => {
@@ -1310,23 +1324,14 @@ describe("PlotPanel", () => {
     expect(axisLabels()).toEqual(["EngineSpeed", "EngineTemp"]);
   });
 
-  it("measurement strip lists each signal exactly once in per-unit mode", async () => {
-    // Regression guard for the derived-axis id mismatch: the strip's
-    // per-trace cells must enumerate the *derived* axes (where
-    // reportSeries stores each axis's series), and each signal lives
-    // in exactly one derived axis, so per-unit mode shows one cell
-    // set per signal — not zero (lookup miss) and not duplicates. The
-    // strip has no toggle any more, so it comes on from the config.
-    renderPanel({ params: { measEnabled: true } });
-    addFocusedSignal("EngineSpeed");
-    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
-    addFocusedSignal("EngineTemp");
-    await waitFor(() => expect(screen.getByText("EngineTemp")).toBeInTheDocument());
-    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
-    // Default measurement keys include the per-trace value@A cell.
-    expect(screen.getAllByText(/EngineData\.EngineSpeed @A/).length).toBe(1);
-    expect(screen.getAllByText(/EngineData\.EngineTemp @A/).length).toBe(1);
-  });
+  // The guard that read "measurement strip lists each signal exactly
+  // once in per-unit mode" lived here. It asserted on the strip's
+  // rendered per-trace cells, and the strip does not render — nor does
+  // `reportSeries` collect the series it read, so there is nothing left
+  // for it to observe. Removed rather than left passing over an empty
+  // document; the rework that brings the strip back brings it back with
+  // it, and the derived-axis id mismatch it guarded is worth a failing
+  // test first.
 
   it("show-points tri-state defaults to auto and persists to panel params", () => {
     const { api } = renderPanel();
@@ -7055,7 +7060,9 @@ describe("PlotPanel rehydration", () => {
     });
     expect(document.querySelectorAll(".plot-area").length).toBe(2);
     expect(followChip()).toHaveAttribute("aria-pressed", "false");
-    expect(document.querySelector(".plot-meas-strip")).not.toBeNull();
+    // The rewritten config turns measurements on; the strip stays away
+    // regardless, because it is suppressed until it is reworked.
+    expect(document.querySelector(".plot-meas-strip")).toBeNull();
   });
 
   it("keeps the panel's own edit — a persist is not a resync trigger", () => {

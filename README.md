@@ -1741,8 +1741,10 @@ resample at the end.
   **notes** (left-click drops an event note at that time); the
   clear-cursors chip removes them all. The measurement readout strip
   (A, B, Δt, 1/Δt, and per-trace value@A / value@B / Δ / min / max /
-  mean over [A, B]) needs rework and is **hidden**: the toolbar carries
-  no toggle for it. Event markers — the
+  mean over [A, B]) needs rework and does **not draw at all** for now —
+  there is no toggle for it, and a project saved with it on will not
+  show it either. The saved setting is left alone, so it comes back
+  with the rework. Event markers — the
   capture-start "T0" plus your notes — draw as vertical lines across the
   areas; the event log under the panel renames (click the label) and
   removes notes.
