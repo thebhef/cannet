@@ -12,7 +12,11 @@
 //!
 //! The writer streams to `<dest>.part` before atomically renaming
 //! into place on [`BlfCaptureWriter::finish`] — a mid-write crash
-//! therefore leaves no half-file behind at `<dest>`.
+//! therefore leaves no half-file behind at `<dest>`. A hard kill
+//! skips [`Drop`] and does leave the `<dest>.part`, carrying the
+//! placeholder header the writer stamped at open; the reader recovers
+//! what such a file holds rather than refusing it (see
+//! [`format::reader`]).
 //!
 //! A third entry point, [`scan_blf`], walks a file header-only for a
 //! channel census, time span, and markers — everything the import
@@ -104,6 +108,24 @@ impl BlfCanFrameSource {
     /// re-reading the file.
     pub fn file_statistics(&self) -> &format::header::FileStatistics {
         self.reader.file_statistics()
+    }
+
+    /// True when the file still carries the placeholder header its
+    /// writer stamped at open, i.e. the writer never finished. The
+    /// frames are read the same way either way; what the file cannot
+    /// supply is its wall clock, so
+    /// [`Self::file_statistics`]`().measurement_start_time` is the
+    /// unset sentinel and every frame's timestamp is an offset from
+    /// zero.
+    pub fn is_unfinalized(&self) -> bool {
+        self.reader.file_statistics().is_unfinalized()
+    }
+
+    /// Size of the incomplete record this source stopped on, once the
+    /// walk has run out. See
+    /// [`format::reader::BlfReader::truncated_tail_bytes`].
+    pub fn truncated_tail_bytes(&self) -> Option<u64> {
+        self.reader.truncated_tail_bytes()
     }
 }
 
