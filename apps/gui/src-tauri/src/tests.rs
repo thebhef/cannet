@@ -794,9 +794,13 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     // decode cursor at the tip.
     assert!(slice(&[]).is_empty(), "no DBC -> nothing decodes");
 
-    // The DBC arrives; plant an active filter index too (a filtered view
-    // would have one) so we can see it reset.
-    let db = Database::parse(&tiny_dbc(256, "Msg", "S")).unwrap();
+    // The DBC arrives — into the *project*, assigned to the bus the
+    // frames are on, because that is the set `invalidate_derived_caches`
+    // judges the live caches against. Plant an active filter index too
+    // (a filtered view would have one) so we can see it reset.
+    let entry = loaded_scoped("late.dbc", &tiny_dbc(256, "Msg", "S"), &[TEST_BUS]);
+    let db = entry.db.clone();
+    *state.databases.lock().unwrap() = vec![entry];
     let fi_dir = std::env::temp_dir().join(format!("cannet-inval-fi-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&fi_dir).unwrap();
     *state.filter_index.lock().unwrap() = Some(ActiveFilterIndex {
@@ -821,7 +825,7 @@ fn dbc_set_change_invalidates_stale_derived_caches() {
     // The rebuilt cache now decodes the whole series.
     assert_eq!(
         slice(&[crate::signal_fingerprint::DbcScope {
-            db: &db,
+            db: db.as_ref(),
             buses: &test_bus_scope(),
         }])
         .len(),
@@ -4627,37 +4631,15 @@ fn ab_cold_store(n: u64) -> TraceStore {
     store
 }
 
-/// Stamp the live pyramids with the encoding they were decoded under —
-/// what the periodic persist does. An unstamped cache is *dropped* by a
-/// DBC-set change rather than parked (ADR 0047), so a test about parking
-/// and revival has to have persisted first.
-fn ab_stamp(state: &AppState) {
-    let v = crate::signal_cache::PyramidValidity {
-        capture_id: "capture-a".to_string(),
-        low_water: 0,
-    };
-    let dbcs = state.databases();
-    let scopes = crate::app_state::dbc_scopes(&dbcs);
-    assert!(
-        state
-            .signal_caches
-            .persist(&v, &scopes, crate::signal_cache::Harden::All),
-        "the live pyramids were stamped with what decoded them",
-    );
-}
-
 /// Assign a loaded database to [`TEST_BUS`] — what the Database panel's
-/// bus checkbox does, and what makes it decode at all.
+/// bus checkbox does, through the command's own body, and what makes it
+/// decode at all.
 fn ab_assign(state: &AppState, path: &str) {
-    {
-        let mut list = state.databases();
-        let slot = list
-            .iter_mut()
-            .find(|d| d.path == path)
-            .expect("the database is loaded");
-        slot.buses = test_bus_scope();
-    }
-    invalidate_derived_caches(state);
+    assert!(
+        state.databases().iter().any(|d| d.path == path),
+        "the database is loaded",
+    );
+    crate::dbc_commands::set_dbc_buses_inner(state, path, test_bus_scope());
 }
 
 /// `remove_dbc`'s body without its `AppHandle`: drop the entry and
@@ -4690,7 +4672,6 @@ fn a_reload_in_place_keeps_the_unchanged_signals_pyramid_and_rebuilds_the_change
         ab_serve(&state, &state.trace_store, Some(TEST_BUS), "B"),
         200
     );
-    ab_stamp(&state);
 
     // Re-export the same file with `B` rescaled and reload it in place.
     let reloaded = crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 2)).unwrap();
@@ -4744,7 +4725,6 @@ fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyrami
         ab_serve(&state, &state.trace_store, Some(TEST_BUS), "B"),
         200
     );
-    ab_stamp(&state);
 
     // Step 1: the replacement is installed alongside. `A` is defined
     // exactly as before; `B` is rescaled. Loading it changes nothing
@@ -4823,7 +4803,6 @@ fn a_replacement_dbc_does_not_inherit_the_bus_scoping_of_the_file_it_replaced() 
     invalidate_derived_caches(&state);
     assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "A"), 200);
     assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "B"), 200);
-    ab_stamp(&state);
 
     // A byte-identical file under a new name, installed and the old one
     // removed — the same content, the same signals, the same scale.
@@ -4853,6 +4832,136 @@ fn a_replacement_dbc_does_not_inherit_the_bus_scoping_of_the_file_it_replaced() 
     let cold = ab_cold_store(200);
     assert_eq!(ab_serve(&state, &cold, Some("pt"), "A"), 200);
     assert_eq!(ab_serve(&state, &cold, Some("pt"), "B"), 200);
+}
+
+// ---- Assignment is the cache lifecycle boundary --------------------
+
+#[test]
+fn unassigning_a_database_parks_its_caches_and_re_assigning_revives_them() {
+    // `set_dbc_buses` is where the pool is consulted (ADR 0047).
+    // Unassigning a database takes it out of every candidate chain it
+    // was in, so the pyramids it decoded are re-encoded and park;
+    // assigning it puts the chains back, so the same call hands them
+    // home rather than re-decoding a capture. There is no second
+    // mechanism: a bus change is a DBC-set change.
+    let scratch = tempfile::TempDir::new().unwrap();
+    let state = ab_state(scratch.path(), Some("pt"), 200);
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "A"), 200);
+    assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "B"), 200);
+
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", Vec::new());
+    let usage = state.signal_caches.usage();
+    assert_eq!(
+        (usage.live, usage.retained, usage.revivals),
+        (0, 2, 0),
+        "unassigned: both pyramids parked, neither deleted",
+    );
+
+    // The view it was configured for keeps asking — a plot panel does
+    // not stop polling because a database was unassigned — so an empty
+    // live cache is minted under each key while the park waits. That
+    // must not strand the park: the re-assign re-encodes the empty
+    // caches first (they hold nothing, so they are wiped rather than
+    // parked) and only then consults the pool, which is why the keys
+    // are free when the revival looks for them.
+    let cold = ab_cold_store(200);
+    assert_eq!(
+        ab_serve(&state, &cold, Some("pt"), "A"),
+        0,
+        "an unassigned database decodes nothing",
+    );
+    assert_eq!(ab_serve(&state, &cold, Some("pt"), "B"), 0);
+    assert_eq!(state.signal_caches.usage().live, 2, "…but the view asked");
+
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    let usage = state.signal_caches.usage();
+    assert_eq!(
+        (usage.live, usage.retained, usage.revivals),
+        (2, 0, 2),
+        "re-assigned: both came out of the pool",
+    );
+    // Proof rather than counting: nothing here decodes, so the samples
+    // are the parked ones.
+    assert_eq!(ab_serve(&state, &cold, Some("pt"), "A"), 200);
+    assert_eq!(ab_serve(&state, &cold, Some("pt"), "B"), 200);
+}
+
+#[test]
+fn a_view_is_restored_by_the_signal_and_its_samples_by_the_fingerprint() {
+    // The guarantee is by signal and fingerprint, **not** by file
+    // identity (owner ruling). A view config names
+    // `bus | message id : signal` and carries no DBC path, so any
+    // assigned database defining that signal restores the view; cache
+    // revival keys on the encoding, so a database defining it the way
+    // the samples were decoded restores the samples too — and one
+    // defining it differently restores the view alone.
+    //
+    // Both halves are exercised against a file the samples never came
+    // from: the database that decoded them is unassigned, then removed
+    // from the project outright, before the replacement arrives.
+    let scratch = tempfile::TempDir::new().unwrap();
+    let state = ab_state(scratch.path(), Some("pt"), 200);
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "A"), 200);
+    assert_eq!(ab_serve(&state, &state.trace_store, Some("pt"), "B"), 200);
+
+    // Unassigned, then gone. The view keeps its configuration — nothing
+    // here touches it — and resolves nothing, because no assigned
+    // database provides the signals.
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", Vec::new());
+    ab_remove(&state, "a.dbc");
+    assert!(
+        state.databases().is_empty(),
+        "the file the samples were decoded from is out of the project",
+    );
+    assert_eq!(state.signal_caches.usage().retained, 2, "both parked");
+    assert!(
+        state.scoped_descriptor_snapshot().is_empty(),
+        "and the universe a view resolves through is empty",
+    );
+
+    // A different file. `A` is defined exactly as the parked samples
+    // were decoded; `B` is rescaled, so it is the same *signal* under a
+    // different *encoding*.
+    crate::dbc_commands::install_dbc(&state, "b.dbc", &ab_dbc_text(1, 2)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["pt".to_string()]);
+
+    // The view comes back whole, on signal identity alone.
+    let named: Vec<(Option<String>, u32, String)> = state
+        .scoped_descriptor_snapshot()
+        .iter()
+        .map(|(bus, d)| (bus.clone(), d.message_id, d.signal_name.clone()))
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            (Some("pt".to_string()), 256, "A".to_string()),
+            (Some("pt".to_string()), 256, "B".to_string()),
+        ],
+        "both signals resolve again, from a file that never decoded them",
+    );
+
+    // The samples come back only where the fingerprint answers.
+    let usage = state.signal_caches.usage();
+    assert_eq!(
+        (usage.live, usage.retained, usage.revivals),
+        (1, 1, 1),
+        "A revived by fingerprint; B is the same signal differently encoded",
+    );
+    let cold = ab_cold_store(200);
+    assert_eq!(
+        ab_serve(&state, &cold, Some("pt"), "A"),
+        200,
+        "A's samples came out of the pool, not off the frames",
+    );
+    assert_eq!(
+        ab_serve(&state, &cold, Some("pt"), "B"),
+        0,
+        "B's park stays parked: its encoding is not the one on disk",
+    );
 }
 
 // ---- A `VAL_` renamed on disk -------------------------------------
