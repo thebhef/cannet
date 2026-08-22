@@ -8,10 +8,9 @@
 // (and wrong) number: the trace store's count excludes the frames a
 // skipped channel or an import range filtered out.
 
-import type { LoadProgress } from "./types";
-import { loadProgressReadout } from "./statusLine";
+import { loadProgressReadout, type ProgressReport } from "./statusLine";
 
-export function LoadProgressChip({ progress }: { progress: LoadProgress | null }) {
+export function LoadProgressChip({ progress }: { progress: ProgressReport | null }) {
   const readout = loadProgressReadout(progress);
   // Nothing reported yet, or a phase with no denominator: the wait is
   // real but its length is not known, which is exactly what the sliding

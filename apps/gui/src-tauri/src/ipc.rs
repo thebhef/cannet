@@ -582,6 +582,32 @@ pub enum LogFinished {
     Error { message: String },
 }
 
+/// How far the cold pyramid rebuild a restore forced (ADR 0047) has
+/// got — a queried fact rather than an event, because the answer is
+/// derived from where the caches' decode cursors have reached and there
+/// is no single moment for the host to fire.
+///
+/// `decoded` / `total` are frames across the pyramids being rebuilt.
+/// `total` is zero while a rebuild is owed but no plot has served yet,
+/// so no cache exists to have a cursor: a real state, and the caller
+/// shows an indeterminate wait for it rather than inventing a fraction.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RebuildProgressRecord {
+    pub rebuilding: bool,
+    pub decoded: u64,
+    pub total: u64,
+}
+
+impl From<crate::signal_cache::RebuildProgress> for RebuildProgressRecord {
+    fn from(p: crate::signal_cache::RebuildProgress) -> Self {
+        Self {
+            rebuilding: p.rebuilding,
+            decoded: p.decoded,
+            total: p.total,
+        }
+    }
+}
+
 /// How far the trace load in flight has got.
 ///
 /// Opening a capture is two walks over the same file and each is

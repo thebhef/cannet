@@ -228,6 +228,13 @@ function shortenPath(path: string): string {
   return slash >= 0 ? path.slice(slash + 1) : path;
 }
 
+/// One phase's progress, in whatever the phase counts. The two load
+/// phases come off the `load-progress` event; the cache rebuild is
+/// polled, so it is not part of that union but draws in the same chip.
+export type ProgressReport =
+  | LoadProgress
+  | { phase: "cache_rebuild"; decoded: number; total: number };
+
 /// The determinate readout beside a load's progress bar: how full the
 /// bar is, and the number next to it.
 ///
@@ -236,17 +243,26 @@ function shortenPath(path: string): string {
 /// with no bus records). The caller shows the indeterminate chip then:
 /// a bar pinned at 0 % would claim a measurement that has not been made.
 ///
-/// The two phases read differently because they count different things.
-/// The census counts bytes, which are meaningless to the user as a
-/// figure, so it shows only the percentage. The import counts frames,
+/// The phases read differently because they count different things.
+/// The census counts bytes and the rebuild counts frames across every
+/// pyramid at once, neither of which means anything to the reader as a
+/// figure, so both show only the percentage. The import counts frames,
 /// which are the thing being imported, so it shows them.
 export function loadProgressReadout(
-  progress: LoadProgress | null,
+  progress: ProgressReport | null,
 ): { fraction: number; text: string } | null {
   if (progress === null) return null;
   if (progress.phase === "census") {
     if (progress.total_bytes <= 0) return null;
     const fraction = clampFraction(progress.bytes_read / progress.total_bytes);
+    return { fraction, text: `${Math.round(fraction * 100)} %` };
+  }
+  // The rebuild counts frames too, but across every pyramid at once —
+  // a figure whose magnitude means nothing to anyone — so it shows the
+  // percentage the way the census does.
+  if (progress.phase === "cache_rebuild") {
+    if (progress.total <= 0) return null;
+    const fraction = clampFraction(progress.decoded / progress.total);
     return { fraction, text: `${Math.round(fraction * 100)} %` };
   }
   if (progress.total_frames <= 0) return null;

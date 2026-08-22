@@ -128,6 +128,18 @@ export type LoadProgress =
   | { phase: "census"; bytes_read: number; total_bytes: number }
   | { phase: "import"; frames: number; total_frames: number };
 
+/// How far the cold pyramid rebuild a restore forced has got
+/// (`signal_pyramids_rebuilding`, mirrors `ipc.rs::RebuildProgressRecord`).
+/// Polled rather than pushed: the answer is where the caches' decode
+/// cursors have reached, and no single moment in the host corresponds to
+/// it. `total` is zero while a rebuild is owed but nothing has been
+/// plotted yet, so there is no cursor to measure.
+export interface RebuildProgress {
+  rebuilding: boolean;
+  decoded: number;
+  total: number;
+}
+
 export interface OpenLogResult {
   blf_path: string;
 }

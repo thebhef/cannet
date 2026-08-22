@@ -23,6 +23,7 @@ import type {
   ProjectElement,
   ProjectElementKind,
   RbsDirtyRecord,
+  RebuildProgress,
   RemoteSessionResult,
   TraceFrameRecord,
   TraceGrew,
@@ -340,6 +341,9 @@ export function App() {
   // (`restore_scratch_capture`'s own answer); the frontend never infers
   // it from how slow a plot feels.
   const [rebuildingCaches, setRebuildingCaches] = useState(false);
+  // The rebuild's own progress, polled alongside the still-rebuilding
+  // fact. `null` until the first poll answers.
+  const [rebuildProgress, setRebuildProgress] = useState<RebuildProgress | null>(null);
   const [framesPerSecond, setFramesPerSecond] = useState(0);
   const [bufferSeconds, setBufferSeconds] = useState(0);
   // On-disk scratch footprint from the latest `trace-grew`; `null` when the
@@ -1546,6 +1550,7 @@ export function App() {
     // Down immediately: the click is the answer, and the host stops
     // announcing a rebuild that no longer has anything to rebuild.
     setRebuildingCaches(false);
+    setRebuildProgress(null);
     await resetSession({
       onError: (err) => setState({ kind: "error", message: String(err) }),
       resetOnClearError: true,
@@ -1566,9 +1571,11 @@ export function App() {
     if (!rebuildingCaches) return;
     let stopped = false;
     const timer = window.setInterval(() => {
-      void invoke<boolean>("signal_pyramids_rebuilding")
-        .then((still) => {
-          if (!stopped && !still) setRebuildingCaches(false);
+      void invoke<RebuildProgress>("signal_pyramids_rebuilding")
+        .then((progress) => {
+          if (stopped) return;
+          setRebuildProgress(progress);
+          if (!progress.rebuilding) setRebuildingCaches(false);
         })
         .catch(() => {});
     }, REBUILD_POLL_MS);
@@ -3529,14 +3536,24 @@ export function App() {
           {/* The restore threw the persisted pyramids away and every
               plotted signal is being decoded again (ADR 0047) — minutes
               on a large capture, and until now completely silent, which
-              read as the app being broken. Same indeterminate chip the
-              census uses, because it is the same kind of wait: no
-              progress to report, only that something is happening.
-              Beside it the offramp, for the user who would rather have
-              the capture gone than wait for it. */}
+              read as the app being broken. Same chip the load uses, and
+              determinate for the same reason: every pyramid re-decodes
+              the same store, so the host can say how far along they all
+              are. Beside it the offramp, for the user who would rather
+              have the capture gone than wait for it. */}
           {rebuildingCaches && (
             <span className="cache-rebuild">
-              <span className="trace-scan-bar" aria-hidden="true" />
+              <LoadProgressChip
+                progress={
+                  rebuildProgress === null
+                    ? null
+                    : {
+                        phase: "cache_rebuild",
+                        decoded: rebuildProgress.decoded,
+                        total: rebuildProgress.total,
+                      }
+                }
+              />
               Rebuilding signal caches…
               <button
                 type="button"
