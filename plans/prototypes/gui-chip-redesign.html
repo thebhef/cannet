@@ -583,6 +583,12 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   the cursor-mode segment (x / y / note as icon buttons —
   press the active one again for off), clear cursors, and the perf chip
   — icon-only where the icon is unambiguous, a word where it is not.
+  Two things the app does differently, deliberately: the perf read-out is
+  a <code>&lt;span&gt;</code> rather than a button (a read-out is not
+  pressable, and it carries no dot), and the run controls and
+  “All Data” are still the shared <code>TraceControls</code>
+  buttons — they become chips in the trace-panel sweep, which owns that
+  component.
   The catalog-reload button is retired (owner ruling 2026-08-21 — it has
   outlived its usefulness). The measurements strip <b>needs rework and stays hidden</b> (owner
   ruling 2026-08-21) — no toggle anywhere until it is reworked
