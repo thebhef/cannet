@@ -7,6 +7,8 @@ import { TraceView, type EventActions } from "./TraceView";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { ByIdTable } from "./ByIdTable";
 import { TraceControls } from "./TraceControls";
+import { ChipButton } from "./ChipButton";
+import { ChipSegment } from "./ChipSegment";
 import { useTraceModel } from "./traceData";
 import { LIVE_TAIL_ROWS, useLiveTailDemand } from "./liveTailDemand";
 import { useTrace, type TraceRow } from "./trace";
@@ -424,41 +426,35 @@ export function TracePanel(props: IDockviewPanelProps) {
           onResume={trace.resume}
           onClear={trace.clear}
         />
-        <span className="mode-toggle">
-          <button
-            type="button"
-            className={mode === "chronological" ? "active" : undefined}
-            onClick={() => switchMode("chronological")}
-          >
-            trace
-          </button>
-          <button
-            type="button"
-            className={mode === "by-id" ? "active" : undefined}
-            onClick={() => switchMode("by-id")}
-          >
-            by&nbsp;ID
-          </button>
-        </span>
+        <ChipSegment label="Trace Mode">
+          <ChipButton
+            label="Trace"
+            pressed={mode === "chronological"}
+            onPress={() => switchMode("chronological")}
+          />
+          <ChipButton
+            label={"By ID"}
+            ariaLabel="By ID"
+            pressed={mode === "by-id"}
+            onPress={() => switchMode("by-id")}
+          />
+        </ChipSegment>
         {mode === "chronological" && (
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={autoScroll}
-              onChange={(e) => setAutoScroll(e.target.checked)}
-            />
-            auto-scroll
-          </label>
+          <ChipButton
+            label="Auto-Scroll"
+            title="follow the live edge"
+            pressed={autoScroll}
+            onPress={() => setAutoScroll((v) => !v)}
+          />
         )}
         {mode === "chronological" && (
-          <label className="checkbox">
-            <input
-              type="checkbox"
-              checked={showEvents}
-              onChange={(e) => setShowEvents(e.target.checked)}
-            />
-            events
-          </label>
+          <ChipButton
+            icon="flag"
+            label="Events"
+            title="interleave timeline events"
+            pressed={showEvents}
+            onPress={() => setShowEvents((v) => !v)}
+          />
         )}
         {mode === "chronological" && showEvents && (
           <EventKindFilter state={kindFilter} counts={eventCounts} />

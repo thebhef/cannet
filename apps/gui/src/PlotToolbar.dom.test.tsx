@@ -92,8 +92,14 @@ function renderBar(over: Partial<PlotToolbarProps> = {}): Spies {
 }
 
 /// The chips on the bar with no solo pattern typed, in order: their
-/// accessible name and the tooltip behind it.
+/// accessible name and the tooltip behind it. The run controls (from
+/// the shared `TraceControls`) are the bar's first chips — this test
+/// renders with `status: "stopped"` and an `onAllData` handler, so
+/// that group is Start, Clear, All Data.
 const BAR: readonly [string, string][] = [
+  ["Start", "Start"],
+  ["Clear", "Clear"],
+  ["All Data", "widen the window to the whole session buffer and fit the x-axis to it"],
   ["Fit Data", "fit x axis to the data"],
   [
     "Fit Y",
@@ -108,9 +114,9 @@ const BAR: readonly [string, string][] = [
   ["Clear Cursors", "remove all placed cursors"],
 ];
 
-/// The chips actually on the bar, in DOM order — the run controls are
-/// still the shipped buttons and are not chips yet, so they are skipped
-/// by asking for chips specifically.
+/// Every chip on the bar, in DOM order — including the run controls
+/// and "All Data", which are chips too now that `TraceControls`
+/// itself renders them as chips.
 function chips(): HTMLButtonElement[] {
   return Array.from(
     document.querySelectorAll<HTMLButtonElement>(".plot-panel-toolbar .chip-button"),

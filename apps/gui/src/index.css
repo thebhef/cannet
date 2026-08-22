@@ -540,8 +540,7 @@ header {
    `.toolbar button` rule here would out-specify the shared chip and
    quietly restyle it. */
 
-.toolbar label.checkbox,
-.trace-panel-toolbar label.checkbox {
+.toolbar label.checkbox {
   display: flex;
   align-items: center;
   gap: 0.3rem;
@@ -2526,27 +2525,14 @@ ul.status-bar-menu .status-chip {
   border-bottom: 1px solid var(--border-subtle);
 }
 
-/* Start / Stop / Pause / Resume / Clear controls in a trace panel's
-   toolbar (the shared `TraceControls` component). */
+/* Start / Stop / Pause / Resume / Clear chips in a trace panel's
+   toolbar (the shared `TraceControls` component): a `ChipSegment` for
+   the run controls, an optional "All Data" chip, and the status
+   read-out. */
 .trace-controls {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-}
-
-.trace-controls button {
-  font: inherit;
-  font-size: 0.85rem;
-  background: transparent;
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  padding: 0.05rem 0.45rem;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.trace-controls button:hover {
-  background: var(--surface-button-hover);
+  gap: 0.4rem;
 }
 
 .trace-status {
@@ -2566,37 +2552,6 @@ ul.status-bar-menu .status-chip {
 
 .trace-status-stopped {
   color: var(--text-muted);
-}
-
-/* Chronological / by-ID mode toggle in a trace panel's toolbar. */
-.mode-toggle {
-  display: inline-flex;
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  overflow: hidden;
-}
-
-.mode-toggle button {
-  font: inherit;
-  font-size: 0.85rem;
-  background: transparent;
-  border: 0;
-  color: var(--text-muted);
-  padding: 0.05rem 0.5rem;
-  cursor: pointer;
-}
-
-.mode-toggle button + button {
-  border-left: 1px solid var(--border-subtle);
-}
-
-.mode-toggle button:hover {
-  background: var(--surface-button-hover);
-}
-
-.mode-toggle button.active {
-  background: var(--surface-toggle-active);
-  color: var(--text-primary);
 }
 
 /* Right-click-the-header column show/hide menu (positioned at the
@@ -3168,19 +3123,6 @@ button.color-chip {
 .plot-toolbar-overflow .chip-menu-list {
   left: auto;
   right: 0;
-}
-
-/* The run controls are still the shipped buttons; everything else on
-   this bar is a chip, and a bar-wide `button` rule would out-specify
-   `.status-chip` (0,1,1 beats 0,1,0) and restyle the lot. */
-.plot-panel-toolbar .trace-controls button {
-  background: var(--surface-control);
-  color: var(--text-primary);
-  border: 1px solid var(--border-default);
-  border-radius: 4px;
-  padding: 0.15rem 0.4rem;
-  font: inherit;
-  font-size: 0.82rem;
 }
 
 

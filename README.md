@@ -1500,14 +1500,14 @@ oscilloscope-style view, docked like any other panel. It's backed by a
 session buffer with **Start / Stop / Pause / Clear** — it just renders
 signal *values* over time instead of message rows: while running it
 follows the live capture, Pause/Stop freeze the window (which also stops
-the re-sampling), Clear re-anchors what's plotted to "now". **All data**,
+the re-sampling), Clear re-anchors what's plotted to "now". **All Data**,
 beside Clear, is the other direction: it widens the window back out to
 the whole session buffer (still following live if the trace was already
 running) and fits the x-axis to it. This pairs with Clear for the
 DBC-reload recovery workflow — replacing a DBC with a full capture buffer
 is otherwise painful while re-picking every signal selection: **Clear**
 first, so each re-pick resamples against a near-empty window instead of
-the whole buffer; then **All data** once, for a single full-history
+the whole buffer; then **All Data** once, for a single full-history
 resample at the end.
 
 - **Y-axis mode.** Each plot area carries a y-axis-mode selector

@@ -219,7 +219,7 @@ describe("a DBC changed on disk", () => {
     expect(running.length).toBe(1);
     const panel = running[0].closest(".trace-panel") as HTMLElement;
     const stop = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find(
-      (b) => b.textContent === "Stop",
+      (b) => b.getAttribute("aria-label") === "Stop",
     );
     if (!stop) throw new Error("no Stop button on the running panel");
     await act(async () => {

@@ -457,6 +457,12 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <div class="workspace">
     <div class="panel">
       <div class="tabs"><span class="tab active">Trace 1</span><span class="tab">Signals</span><span class="src">TracePanel.tsx · TraceControls.tsx · TraceView.tsx</span></div>
+      <!-- The app keeps one control this mock doesn't draw: a small
+           uppercase "running / paused / stopped" read-out after the run
+           controls, wearing no chip shape. It is not a command — many
+           App-level tests use it as their "the trace panel has mounted"
+           signal and one pins its text — so the sweep left it exactly as
+           it was rather than folding it into a chip or dropping it. -->
       <div class="appbar panelbar">
   <span class="seg">
     <button class="chip icon-only" title="Start"><svg><use href="#i-play"/></svg></button>
