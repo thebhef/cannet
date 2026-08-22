@@ -1111,7 +1111,55 @@ ul.status-bar-menu .status-chip {
     animation: none;
   }
 }
+/* A chip that is off because its own command is still running, not
+   because it is unavailable: it keeps full contrast and takes the
+   progress cursor, so "working" doesn't read as "greyed out". The
+   pulsing hairline above is the rest of what it says. */
+.chip-button[aria-busy="true"]:disabled {
+  opacity: 1;
+  cursor: progress;
+}
 /* === end shared command chip === */
+
+/* === Chip menus (a ChipButton that opens a list of ChipButtons) ===
+   The toolbar's Add and Recent menus, and any menu a later bar hangs
+   off a chip. The list is absolutely positioned, so a bar that hosts
+   one must not clip — the same rule the status bar's overflow menu
+   carries. Inside the list the chips drop their hairline until hovered:
+   a column of outlined chips reads as a grid, not a menu. */
+.chip-menu {
+  position: relative;
+  display: inline-flex;
+}
+.chip-menu-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin: 4px 0 0 0;
+  padding: 4px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--surface-pop);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  z-index: 50;
+  box-shadow: 0 4px 12px var(--shadow-menu);
+}
+.chip-menu-list > li {
+  display: flex;
+  min-width: 0;
+}
+.chip-menu-list .chip-button {
+  border-color: transparent;
+  width: 100%;
+  justify-content: flex-start;
+}
+.chip-menu-list .chip-button:hover:not(:disabled) {
+  border-color: var(--border-wash);
+}
+/* === end chip menus === */
 
 /* A capture census walking: indeterminate, since the walk's length is
    the file's length. Same sliding chip the plot shows while its first
