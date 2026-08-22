@@ -210,6 +210,39 @@ debounce is never in the user's way for their own gesture.
   case that must not be delayed — the host's own knowledge that its
   caches are already gone.
 
+## Amendment (2026-08-20) — the deliberate counterpart to §1
+
+§1 protects a transmitting element from a *file changing underneath it*:
+an RBS that is running does not swap in place, it notifies. It says
+nothing about the user reaching the same place on purpose.
+
+Unassigning a database from a bus is that gesture. Once no database
+assigned to a bus defines a message any more, a periodic still firing
+for it is putting frames on a real bus from definitions the project no
+longer applies — §1's uncommanded send, reached deliberately instead of
+by an external edit. So:
+
+- **The periodic stops**, through the same path the user's own Stop
+  takes (`transmit_commands::stop_periodic_transmit_inner`). It is not a
+  half-state only this path can produce: the row keeps its
+  configuration, and the running flag every view reads is the one a Stop
+  leaves.
+- **The assignment change always proceeds.** Refusing while something
+  runs was rejected: it would make assignment conditional on the user
+  first hunting down what is transmitting, which is the opposite of what
+  the Database panel's checkbox is for.
+- **One system-log entry records it, however many stopped.** No modal
+  and no per-element notice — the gesture was deliberate, so the user
+  does not need to be interrupted with its consequence, only to be able
+  to find it.
+
+"Built from a database that left" is measured against what the bus can
+still decode, not against file identity: a row another assigned database
+still defines keeps firing, and a row no database on the bus ever
+described — a CAN id typed by hand — is none of the change's business.
+Removing a database from the project removes it from its assigned buses,
+so it reaches this rule by the same route.
+
 ## Consequences
 
 - A `VAL_` label edited on disk reaches the RBS panel, the plot's enum

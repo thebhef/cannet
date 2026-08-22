@@ -34,7 +34,7 @@ const PARKED_ROUTE_PROBE: Duration = Duration::from_secs(1);
 // (`spawn_periodic_transmit`), not a JS `setInterval`.
 
 /// Notify open transmit views that the pool changed so they re-fetch.
-fn emit_transmit_frames_changed(app: &AppHandle) {
+pub(crate) fn emit_transmit_frames_changed(app: &AppHandle) {
     let _ = app.emit("transmit-frames-changed", ());
 }
 
@@ -227,13 +227,78 @@ pub(crate) fn start_periodic_transmit(
     Ok(())
 }
 
+/// [`stop_periodic_transmit`]'s body without its `AppHandle`: clear the
+/// entry's running flag and unschedule it. Every stop goes through here
+/// — the user's, and the one a DBC assignment change makes
+/// ([`stop_periodics_left_unbacked`]) — so a periodic can only ever be
+/// in the state the panel's own Stop leaves it in.
+pub(crate) fn stop_periodic_transmit_inner(state: &AppState, id: &str) {
+    state.transmit_frames().stop_periodic(id);
+    state.transmit_scheduler.stop(id.to_string());
+}
+
 /// Stop a message's periodic schedule. A no-op if it isn't running.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn stop_periodic_transmit(app: AppHandle, state: State<'_, AppState>, id: String) {
-    state.transmit_frames().stop_periodic(&id);
-    state.transmit_scheduler.stop(id);
+    stop_periodic_transmit_inner(state.inner(), &id);
     emit_transmit_frames_changed(&app);
+}
+
+/// Whether a database assigned to this periodic's bus defines the
+/// message it transmits — i.e. whether the loaded set is what the row
+/// is driven from. The same per-bus priority scan the transmit panel's
+/// describe / decode / encode queries use, so the answer is exactly
+/// "does the app still show this row a message".
+fn dbc_backs(state: &AppState, p: &transmit_frames::RunningPeriodic) -> bool {
+    let Ok(id) = CanId::new(p.can_id, p.extended) else {
+        return false;
+    };
+    state
+        .first_dbc_on_bus(Some(&p.bus_id), |db| db.describe_message(id))
+        .is_some()
+}
+
+/// The ids of the periodics the current DBC set is driving: firing
+/// right now, and defined by a database assigned to their bus. Taken
+/// **before** a change to the set; [`stop_periodics_left_unbacked`]
+/// re-asks the same question after it.
+///
+/// A row the set never backed — a hand-typed id no database on the bus
+/// describes — is absent from both answers, so an assignment change is
+/// never its business.
+pub(crate) fn dbc_backed_running_periodics(state: &AppState) -> Vec<String> {
+    let running = state.transmit_frames().running_periodics();
+    running
+        .into_iter()
+        .filter(|p| dbc_backs(state, p))
+        .map(|p| p.id)
+        .collect()
+}
+
+/// Stop every periodic in `backed_before` that no database assigned to
+/// its bus defines any more, and return the ids stopped in pool order.
+///
+/// This is the transmit half of the rule on
+/// [`crate::dbc_commands::set_dbc_buses_inner`]: continuing to put
+/// frames on a real bus from definitions the project no longer applies
+/// is [ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+/// §1's uncommanded send, reached deliberately instead of by a file
+/// changing underneath. Stopping is all it does — the row keeps its
+/// configuration, exactly as the user's own Stop leaves it.
+pub(crate) fn stop_periodics_left_unbacked(
+    state: &AppState,
+    backed_before: &[String],
+) -> Vec<String> {
+    let running = state.transmit_frames().running_periodics();
+    let mut stopped = Vec::new();
+    for p in running {
+        if backed_before.contains(&p.id) && !dbc_backs(state, &p) {
+            stop_periodic_transmit_inner(state, &p.id);
+            stopped.push(p.id);
+        }
+    }
+    stopped
 }
 
 /// The next fixed-rate deadline. The schedule advances `prev` by one

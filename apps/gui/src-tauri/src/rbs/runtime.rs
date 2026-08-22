@@ -1055,4 +1055,58 @@ BO_ 1280 AuxFrame: 8 AUX
             2
         );
     }
+
+    #[test]
+    fn unassigning_a_database_stops_the_rbs_rows_it_was_driving() {
+        // An RBS row is a periodic like any other: once no database
+        // assigned to its bus defines the message, it is transmitting
+        // definitions the project no longer applies, so it stops —
+        // counted in the one entry the unassign logs, before the row
+        // rebuild takes the row away entirely.
+        let state = crate::tests::test_state();
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+        let file = RbsFile::parse(
+            r#"{ "schema_version": 1, "buses": {
+                 "Powertrain": { "ecus": { "BMS": { "messages": { "0x123": {} } } } }
+             } }"#,
+        )
+        .unwrap();
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
+            rbs.elements.insert(
+                "el1".into(),
+                RbsElementState {
+                    watch: crate::watched_file::WatchedFile::default(),
+                    changed_on_disk: false,
+                    file,
+                    dirty: false,
+                    run: true,
+                },
+            );
+        }
+        rebuild_element_rows(&state, "el1");
+        sync_schedules(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
+
+        let stopped = crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", Vec::new());
+
+        assert_eq!(stopped, vec![status_id.clone()]);
+        assert!(!state.transmit_frames.lock().unwrap().is_running(&status_id));
+        // And the rebuild the announcement runs takes the row away, so
+        // the stop is not a state only this path can produce.
+        rebuild_element_rows(&state, "el1");
+        sync_schedules(&state);
+        assert!(state
+            .transmit_frames
+            .lock()
+            .unwrap()
+            .rbs_row_ids("el1")
+            .is_empty());
+    }
 }

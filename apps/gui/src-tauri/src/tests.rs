@@ -4642,14 +4642,10 @@ fn ab_assign(state: &AppState, path: &str) {
     crate::dbc_commands::set_dbc_buses_inner(state, path, test_bus_scope());
 }
 
-/// `remove_dbc`'s body without its `AppHandle`: drop the entry and
-/// re-judge the derived state.
+/// Drop a loaded database from the project, through the command's own
+/// body rather than a copy of it.
 fn ab_remove(state: &AppState, path: &str) {
-    {
-        let mut list = state.databases();
-        list.retain(|d| d.path != path);
-    }
-    invalidate_derived_caches(state);
+    crate::dbc_commands::remove_dbc_inner(state, path).expect("the database was loaded");
 }
 
 #[test]
@@ -5012,4 +5008,162 @@ fn a_val_rename_reloaded_in_place_is_what_the_value_table_lookup_answers() {
         vec!["Standby", "On"],
         "the lookup answers off the swapped database, with no cache in the way",
     );
+}
+
+// ---- Unassigning stops what it was driving -------------------------
+//
+// The counterpart to ADR 0053 §1's uncommanded-send rule: a periodic
+// the user started is putting frames on a real bus, and once no
+// database assigned to that bus defines the message any more, those
+// frames come from definitions the project no longer applies. The
+// unassign is a deliberate gesture, so it proceeds — and the periodic
+// stops, through the same path the user's own Stop takes.
+
+/// A periodic project transmit row on `bus` for `can_id`, already
+/// firing — `start_periodic_transmit`'s registry half, which is all the
+/// stop rule reads (the scheduler thread does not run under test).
+fn running_row(state: &AppState, row_id: &str, bus: &str, can_id: u32) {
+    let mut registry = state.transmit_frames();
+    registry.set(crate::transmit_frames::TransmitFrame {
+        id: row_id.to_string(),
+        description: String::new(),
+        request: crate::ipc::TransmitRequest {
+            bus_id: bus.to_string(),
+            id: can_id,
+            extended: false,
+            kind: crate::ipc::TransmitKind::Classic,
+            data: vec![0; 8],
+            brs: false,
+            esi: false,
+            dlc: 0,
+        },
+        cycle_ms: 100,
+        mode: crate::transmit_frames::TransmitMode::Periodic,
+        source: crate::transmit_frames::TransmitSource::Project,
+        calc: None,
+    });
+    assert_eq!(
+        registry.begin_periodic(row_id),
+        Ok(true),
+        "the row starts firing",
+    );
+}
+
+#[test]
+fn unassigning_a_database_stops_the_periodics_it_was_driving() {
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    // One row the database defines, one raw row it never did — a user
+    // may transmit an id no DBC on the bus describes, and a database
+    // leaving the bus says nothing about that row.
+    running_row(&state, "from-dbc", "pt", 256);
+    running_row(&state, "hand-typed", "pt", 0x555);
+
+    let stopped = crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", Vec::new());
+
+    assert_eq!(stopped, vec!["from-dbc".to_string()]);
+    let registry = state.transmit_frames();
+    assert!(!registry.is_running("from-dbc"));
+    assert!(
+        registry.is_running("hand-typed"),
+        "a row no database was driving is none of the unassign's business",
+    );
+    // The state the panel reads is the one the user's own Stop leaves:
+    // the row is still in the pool, still periodic, not running.
+    let view = registry
+        .list()
+        .into_iter()
+        .find(|v| v.frame.id == "from-dbc")
+        .expect("the row keeps its configuration");
+    assert!(!view.running);
+    assert_eq!(
+        view.frame.mode,
+        crate::transmit_frames::TransmitMode::Periodic
+    );
+    assert_eq!(view.frame.cycle_ms, 100);
+}
+
+#[test]
+fn a_row_another_assigned_database_still_defines_keeps_firing() {
+    // "Built from a database that is unassigned" is measured against
+    // what the bus can still decode, not against file identity: a
+    // second database on the bus defining the same message means the
+    // definitions the row transmits from are still applied.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::install_dbc(&state, "b.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["pt".to_string()]);
+    running_row(&state, "row", "pt", 256);
+
+    let stopped = crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", Vec::new());
+
+    assert!(stopped.is_empty(), "{stopped:?}");
+    assert!(state.transmit_frames().is_running("row"));
+}
+
+#[test]
+fn a_row_on_another_bus_is_untouched_by_an_unassign() {
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(
+        &state,
+        "a.dbc",
+        vec!["pt".to_string(), "ch".to_string()],
+    );
+    running_row(&state, "pt-row", "pt", 256);
+    running_row(&state, "ch-row", "ch", 256);
+
+    // Narrowed to `pt`: only the row on the bus the database left stops.
+    let stopped = crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+
+    assert_eq!(stopped, vec!["ch-row".to_string()]);
+    assert!(state.transmit_frames().is_running("pt-row"));
+    assert!(!state.transmit_frames().is_running("ch-row"));
+}
+
+#[test]
+fn assigning_a_database_stops_nothing() {
+    // The rule is one-directional. Assigning only ever adds candidates
+    // to a bus, so nothing can lose the database behind it.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    running_row(&state, "row", "pt", 256);
+
+    let stopped = crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+
+    assert!(stopped.is_empty(), "{stopped:?}");
+    assert!(state.transmit_frames().is_running("row"));
+}
+
+#[test]
+fn a_row_that_was_not_firing_is_not_reported_as_stopped() {
+    // One log line records what *stopped*; a row parked in Manual mode,
+    // or one the user had already stopped, stopped nothing.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    running_row(&state, "row", "pt", 256);
+    state.transmit_frames().stop_periodic("row");
+
+    let stopped = crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", Vec::new());
+
+    assert!(stopped.is_empty(), "{stopped:?}");
+}
+
+#[test]
+fn removing_a_database_stops_the_periodics_it_was_driving() {
+    // Removing a database removes it from its assigned buses (the
+    // task's model, rule 3), so it reaches the same rule by the same
+    // route — a row transmitting definitions the project has dropped.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    running_row(&state, "row", "pt", 256);
+
+    let stopped = crate::dbc_commands::remove_dbc_inner(&state, "a.dbc");
+
+    assert_eq!(stopped, Some(vec!["row".to_string()]));
+    assert!(!state.transmit_frames().is_running("row"));
 }

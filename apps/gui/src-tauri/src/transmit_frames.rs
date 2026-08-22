@@ -189,6 +189,18 @@ pub struct RbsRowKey {
     pub message: String,
 }
 
+/// One firing periodic, as the bus-assignment rule reads it: the
+/// registry id plus the message it is putting on the wire. Enough to
+/// ask whether a database assigned to that bus still defines it, and
+/// nothing more — the payload buffer is deliberately not cloned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningPeriodic {
+    pub id: String,
+    pub bus_id: String,
+    pub can_id: u32,
+    pub extended: bool,
+}
+
 /// The ordered, id-keyed pool of TX messages. Order is the pool order
 /// (persisted, and what `reorder_transmit_frames` rewrites); lookups
 /// are by [`TransmitFrame::id`]. Wrapped in a `Mutex` on `AppState`.
@@ -342,6 +354,24 @@ impl TransmitFrameRegistry {
     pub fn request_data(&self, id: &str) -> Option<Vec<u8>> {
         self.position(id)
             .map(|i| self.entries[i].frame.request.data.clone())
+    }
+
+    /// Every entry firing right now, in pool order — what a change to
+    /// the DBC set consults to decide which periodics it has left with
+    /// no database behind them — the rule is stated on
+    /// [`crate::dbc_commands::set_dbc_buses_inner`].
+    #[must_use]
+    pub fn running_periodics(&self) -> Vec<RunningPeriodic> {
+        self.entries
+            .iter()
+            .filter(|e| e.running)
+            .map(|e| RunningPeriodic {
+                id: e.frame.id.clone(),
+                bus_id: e.frame.request.bus_id.clone(),
+                can_id: e.frame.request.id,
+                extended: e.frame.request.extended,
+            })
+            .collect()
     }
 
     /// Whether `id` is currently marked running (scheduled).
