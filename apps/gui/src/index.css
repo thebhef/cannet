@@ -665,6 +665,50 @@ header {
   color: var(--text-message);
 }
 
+/* Bus health is a launcher, not a chip (BusHealthLauncher.tsx): with
+   several buses a single summary cannot name which one is off, which
+   is the only thing worth knowing when one is, so the panel it opens
+   is where that is answered. An icon keeps it tight. It stays neutral
+   while every bus is error-active and tints plus grows a count when
+   one is not — the tooltip names the bus. */
+.bus-health-launcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+  cursor: pointer;
+  background: var(--surface-toolbar-control);
+  border: 1px solid var(--border-wash);
+  border-radius: 2px;
+  padding: 0.14rem 0.35rem;
+}
+.bus-health-launcher:hover:not(:disabled) {
+  background: var(--surface-toolbar-control-hover);
+  color: var(--text-primary);
+}
+.bus-health-launcher:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.bus-health-launcher svg {
+  display: block;
+}
+.bus-health-launcher-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.bus-health-launcher[data-state="degraded"] {
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+.bus-health-launcher[data-state="failed"] {
+  border-color: var(--danger-text);
+  color: var(--danger-text);
+}
+
 /* === Shared status chip (StatusChip.tsx) ===
    A chip shows a state and pressing it goes to where that state is
    managed. Its shape is the shared colour chip's — 2px radius over a
