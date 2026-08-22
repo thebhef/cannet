@@ -73,6 +73,8 @@ import {
 import {
   capturePath,
   splitStatus,
+  statusMetrics,
+  statusMetricsTooltip,
   type LogState,
   type RemoteStatus,
   type TransientStatus,
@@ -3121,30 +3123,31 @@ export function App() {
       splitStatus({
         state,
         remoteSessions,
-        dbcPaths,
         count,
-        firstIndex,
-        framesPerSecond,
-        bufferSeconds,
-        scratchBytes,
-        memBytes,
         scanningBlfPath,
         scanningMdfPath,
       }),
-    [
-      state,
-      remoteSessions,
-      dbcPaths,
-      count,
-      firstIndex,
-      framesPerSecond,
-      bufferSeconds,
-      scratchBytes,
-      memBytes,
-      scanningBlfPath,
-      scanningMdfPath,
-    ],
+    [state, remoteSessions, count, scanningBlfPath, scanningMdfPath],
   );
+  // The numbers the header shows, as discrete metrics rather than a
+  // sentence. Every figure is the host's: the rate, the elapsed span
+  // and the two residency figures arrive on `trace-grew`, the frame
+  // count is the store's. Bus load has no host-side source yet, so
+  // nothing reports it and it stays out of the list.
+  const metrics = useMemo(
+    () =>
+      statusMetrics({
+        count,
+        firstIndex,
+        framesPerSecond,
+        busLoadPercent: null,
+        bufferSeconds,
+        scratchBytes,
+        memBytes,
+      }),
+    [count, firstIndex, framesPerSecond, bufferSeconds, scratchBytes, memBytes],
+  );
+  const metricsTooltip = useMemo(() => statusMetricsTooltip(metrics), [metrics]);
   // Transient status notices (errors, completions, remote connect/error
   // summaries) flash in the header for a few seconds and mirror to the
   // system log, then the bar reverts to the resting residency line — a
@@ -3509,10 +3512,7 @@ export function App() {
     <main className="app">
       <header>
         <div className="toolbar">{toolbarItems.map(renderToolbarItem)}</div>
-        <div
-          className="status"
-          title="buffered frames · frame rate · elapsed capture · resident memory (app + WebView) · disk-spill cache on disk"
-        >
+        <div className="status">
           {/* The load in flight: how far it has got, and the way out of
               it. Spans the census and the pump — it must not drop out
               just because data has started reaching the plot panel —
@@ -3593,6 +3593,16 @@ export function App() {
             />
           )}
           {status}
+          {/* The numbers, as discrete aligned metrics rather than a
+              sentence — and the whole readout as one tooltip on each
+              label, which is where a reader looking for a number that
+              a narrow bar has dropped looks. */}
+          {metrics.map((m) => (
+            <span key={m.id} className={m.live ? "status-metric live" : "status-metric"}>
+              <b>{m.value}</b>
+              <span title={metricsTooltip}>{m.label}</span>
+            </span>
+          ))}
         </div>
       </header>
       <ProjectContext.Provider value={projectContextValue}>
