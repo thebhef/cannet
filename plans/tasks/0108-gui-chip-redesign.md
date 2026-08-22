@@ -838,6 +838,166 @@ sit beside the "show diagnostics" the menu already had. The
 `<symbol id="i-reload">` gained a comment saying why it is drawn but
 absent from the inventory and from the app's registry.
 
+- **2026-08-22 — Phase 5, the trace panel toolbar and the nine
+  remaining bars, landed.** Branch `task-108-phase-5-panel-bars` from
+  `80ee6534`.
+  - `20fd3f54` — trace panel toolbar: `TraceControls` (shared with the
+    plot bar and the signals view) becomes a `ChipSegment` of icon-only
+    run chips plus an optional "All Data" chip; the mode toggle becomes
+    a `ChipSegment`; Auto-Scroll and Events become toggle `ChipButton`s.
+  - `23674d64` — signals view: Selection (toggle, dynamic label) and
+    Add Section (plus icon).
+  - `62b4b282` — transmit panel: "+ frame" → Frame (plus icon).
+  - `d582b85d` — RBS panel: Run (toggle), Save, the filter field
+    (chip-field), Open, Signals.
+  - `1190598b` — RBS signals: six status filters, the bus filter menu,
+    Row Highlights, the footer shortcut.
+  - `d44f83a2` — database panel: the search field (chip-field), Details
+    and Values (toggles).
+  - `649fb0b0` — graph panel: Add Filter (plus icon), Reset Layout.
+  - `470512ff` — servers panel: the search field (chip-field), Add
+    Server (toggle).
+  - `0daa7696` — system messages: Source / Min Level (shared Combobox,
+    chip-classed trigger), Copy All, Clear.
+  - `07ac9a80` — view signals: the same status-filter / bus-menu /
+    wash-toggle / footer-shortcut pattern as RBS signals.
+  - Frontend tests: 2751/207 files before → 2757/207 files after (all
+    green — the file count does not move because every addition landed
+    in an existing panel's test file). `tsc --noEmit` and `vite build`
+    clean at every commit; the `comment-references` grep
+    (`git grep --untracked -Ein "task [0-9]|plans/" -- apps/ crates/`)
+    empty at every commit. No Rust touched.
+
+### Bar-by-bar table
+
+| Bar | Commit | Not a straight restyle |
+|---|---|---|
+| Trace panel | `20fd3f54` | The status read-out (`trace-status`) is untouched chrome, not a chip — see below. |
+| Signals view | `23674d64` | The prototype's mock drew a live add-by-pattern field that was never built; the toggle-and-editor control that actually exists was restyled instead, and the mock corrected. |
+| Transmit | `62b4b282` | Straight restyle. |
+| RBS | `d582b85d` | Straight restyle. |
+| RBS signals | `1190598b` | Status chips keep their existing tall swatch (shared with each row's own status cell) rather than the shared round dot. |
+| Database | `d44f83a2` | Straight restyle. |
+| Graph | `649fb0b0` | Straight restyle. |
+| Servers | `470512ff` | Straight restyle. |
+| System messages | `0daa7696` | Source / Min Level keep the shared fzf `Combobox` rather than a bespoke chip+menu; its trigger wears `.status-chip .chip-button` directly. |
+| View signals | `07ac9a80` | Same swatch divergence as RBS signals. |
+
+### Why the run controls ripple through three bars
+
+`TraceControls` (`apps/gui/src/TraceControls.tsx`) is shared by
+`TracePanel`, `SignalsPanel` and `PlotToolbar` — phase 4 deliberately
+left it for this phase ("the run controls plus 'All Data' are still
+the shared `TraceControls`, which the trace sweep owns"). Chip-ifying
+it once therefore restyled all three consumers in the trace-panel
+commit; the plot bar needed no code change at all; `PlotToolbar.dom.test.tsx`
+needed its `BAR` table and its `chips()` helper's doc comment updated
+because the run controls (Start/Pause/Stop/Clear, All Data) are now
+real `.chip-button`s the helper's existing selector picks up, where
+before it explicitly skipped them ("not chips yet").
+
+### Two patterns repeat across bars
+
+- **A custom-colour status dot the shared chip can't carry.** RBS
+  signals' and view signals' status filters each need a *per-status*
+  dot colour (six and five colours respectively, already tuned,
+  matching a taller swatch shape shared with each row's own status
+  cell) — `ChipButton`'s `state` prop only carries the fixed
+  `idle/connecting/connected/degraded/failed` vocabulary. Rather than
+  widen that vocabulary or fork the chip, both bars apply
+  `.status-chip .chip-button` directly to a bespoke `<button>` and keep
+  their existing swatch element — the same trick phase 4's perf
+  read-out used (`<span className="status-chip chip-button plot-perf">`).
+  This is deliberately **not** unified with the registry's icon system:
+  it is in-panel content (the row's own status cell uses the identical
+  swatch), out of this phase's scope.
+- **A shared picker whose trigger, not the picker, gets chipped.**
+  System messages' Source / Min Level filters are the shared fzf
+  `Combobox` (the app's one select-like control everywhere) — forking
+  a second bespoke chip+dropdown just for this bar, as the prototype's
+  mock sketches, would be exactly the kind of parallel implementation
+  the repo's one-shared-implementation rule forbids. Its trigger
+  carries `.status-chip .chip-button` via `className`, same trick as
+  above; the `▾` affordance, the fzf popup and the keyboard handling
+  are all untouched.
+
+### The status read-out and one other control, kept exactly as they were
+
+`TraceControls`' `trace-status` span (`running`/`paused`/`stopped`,
+uppercase, no chip shape) is not a command — it is a read-out — and it
+is load-bearing for roughly twenty `App.*.dom.test.tsx` files that use
+`.trace-panel .trace-status` as their "the trace panel has mounted"
+polling signal, plus one that pins its exact class per state. It is
+untouched, and the prototype gained a comment recording why. Nothing
+else on any of the ten bars was left un-restyled for a similar reason.
+
+### How the tests were proved by mutation
+
+Two per-bar pins, each proved by breaking the wiring and watching the
+right (and only the right) test fail, then restoring it:
+
+1. **Trace panel: Pause vs. Stop.** Both freeze the trace window at the
+   current session count, so a test that only checks "the window
+   froze" cannot tell one chip from the other wired to the wrong
+   handler. `TracePanel.dom.test.tsx`'s new "Pause freezes the window
+   but marks it resumable" reads `isPaused` off the registry's `trace`
+   state. Pointing the Pause chip's `onPress` at `onStop` failed
+   exactly that test (`isPaused` false instead of true); every other
+   test in the file, including the sibling "Stop freezes the window
+   without leaving it resumable", stayed green — proof the two chips
+   are otherwise indistinguishable to a coarser assertion.
+2. **System messages: Copy All vs. Clear.** Adjacent chips with
+   opposite blast radii (read the clipboard vs. wipe the log). A new
+   test asserts `writeText` fires and `clear` does not on a Copy All
+   press, and the reverse on a Clear press. Pointing Clear's `onPress`
+   at `copyAll` failed "Clear clears without copying" (`clearSpy`
+   never called) while leaving the Copy-All half of the same test
+   passing — proof the assertion is discriminating the handler, not
+   just noticing a click landed.
+
+Mutation was not re-run on all ten bars. Signals view's "opens and
+closes the selection editor…" test (added this phase) was separately
+proved the same way — re-pointing Selection's `onPress` at
+`createSection(null)` failed it while the rest of the suite passed —
+and every other bar's status-quo tests (RBS's Run/Save/Signals, the
+two status-filter panels' filter/bus/wash/footer clicks, the graph
+panel's `create('filter')` check) already assert a *specific* outcome
+per control (a distinct invoke call, a distinct row set, a distinct
+registry field) rather than "something changed", so they carry the
+same discriminating power without a fresh mutation run.
+
+### What is **not** verified
+
+- **Nothing here proves any bar fits, wraps, or lines up in a
+  browser.** As every phase before this one: jsdom does no layout. All
+  ten bars are single unbroken runs (none needed `useToolbarFit` — the
+  ruling's "reach for it only where a bar genuinely needs to
+  overflow" — since none of the nine remaining bars packs anywhere
+  near the plot bar's density, and the trace panel's own controls are
+  few enough that phase 3's `.appbar { flex-wrap: wrap }` treatment,
+  already in place, is sufficient).
+- The chip-classed `Combobox` trigger (system messages) was not
+  visually checked in a browser; only its accessible role/name and its
+  class list are asserted in jsdom.
+- The GUI was not launched (phase rule) and the ADR 0031 harness was
+  not run (the overseer owns it); this phase touched no control
+  `perfInteract.ts` drives (confirmed by reading it — its three targets
+  are `.u-over`, `.trace-rows` and the plot bar's Follow Live chip,
+  none of which moved this phase).
+
+### Prototype
+
+Updated in the same commits as the bars that diverged from it, four
+places: the trace-panel section gained a comment on the untouched
+status read-out; the signals-view section's illustrative
+add-by-pattern chipfield was replaced with the real toggle-and-count
+chip the app ships; the RBS signals and view signals sections each
+gained a comment recording the swatch-shape divergence and naming the
+two controls (Row Highlights, the footer shortcut) the mock never
+drew; the system-messages section gained a comment on the shared
+`Combobox` in place of a bespoke picker. Every other bar matched the
+mock closely enough to need no note.
+
 ## Blockers / side effects
 
 - **`useConnectionStates` still hand-rolls fetch-then-listen, and still
@@ -957,3 +1117,38 @@ absent from the inventory and from the app's registry.
   don't-delete-pre-existing-dead-code rule;
   `.plot-cursor-ctl`, which *this* phase orphaned, was removed from the
   same grouped selector.
+
+- **Two custom-colour status swatches did not go through `ChipButton`,
+  by choice rather than by extending it** (phase 5). RBS signals' and
+  view signals' status filters each need a per-status dot colour (six
+  and five colours, already tuned, shared with each row's own status
+  cell) that `ChipButton`'s `state` prop can't carry — it only offers
+  the fixed `idle/connecting/connected/degraded/failed` vocabulary.
+  Rather than widen that prop or fork the chip, both bars apply
+  `.status-chip .chip-button` directly to a bespoke `<button>` that
+  keeps its existing swatch markup, following the precedent phase 4's
+  perf read-out set. The alternative — a `dotColor?: string` escape
+  hatch on `ChipButton` — was not taken because it would let a chip
+  colour itself outside the state vocabulary silently everywhere else
+  it's used, not just here. Flagging per the instruction to say so
+  when a bar needs something the shared component lacks; a later phase
+  is free to reopen this if the pattern needs to spread further.
+
+- **The Servers "Add Server" chip uses `pressed`, not `menuOpen`, for a
+  disclosure it isn't quite either of** (phase 5). It reveals an inline
+  address-entry form, not a menu — `menuOpen`'s `aria-haspopup="menu"`
+  would misdescribe it — but it is not a toggleable *setting* either.
+  `pressed` was the closer fit of the two existing props and is what
+  shipped; a dedicated "disclosure" affordance on `ChipButton`, if more
+  bars turn out to need one, is a question for whichever phase hits it
+  next.
+
+- **The signals-view toolbar's live control diverges from the
+  prototype's own earlier sketch** (phase 5). The mock (`plans/prototypes/gui-chip-redesign.html`
+  — corrected in this phase's own commit) drew a chipfield that adds
+  signals by live pattern typing, matching the plot's solo box's
+  dialect; the app has never had that control. What exists — a toggle
+  chip that opens an in-panel editor with manual picks and patterns —
+  was restyled instead, and the mock corrected to match. If the
+  live-add field was actually wanted as new functionality, that is a
+  separate, unscoped decision this phase did not make.
