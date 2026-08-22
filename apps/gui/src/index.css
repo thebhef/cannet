@@ -1389,11 +1389,6 @@ ul.status-bar-menu .status-chip {
 }
 
 .servers-search {
-  background: var(--surface-field);
-  border: 1px solid var(--border-default);
-  color: var(--text-primary);
-  border-radius: 4px;
-  padding: 0.2rem 0.4rem;
   min-width: 14rem;
 }
 

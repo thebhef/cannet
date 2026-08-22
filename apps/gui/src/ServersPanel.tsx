@@ -61,6 +61,8 @@ import {
   setServerToken,
   type TrustPrompt,
 } from "./serverTrust";
+import { ChipButton } from "./ChipButton";
+import { Icon } from "./Icon";
 
 export function ServersPanel(_props: IDockviewPanelProps) {
   const { servers, browse } = useServerList();
@@ -171,25 +173,28 @@ export function ServersPanel(_props: IDockviewPanelProps) {
         is a decision for this machine, not for a project.
       </p>
       <div className="servers-toolbar">
-        <input
-          type="text"
-          className="servers-search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="search"
-          aria-label="search servers"
-        />
-        <button
-          type="button"
+        <span className="chip-field servers-search" title="search servers">
+          <Icon name="search" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="search"
+            aria-label="search servers"
+          />
+        </span>
+        <ChipButton
+          icon="plus"
+          label="Server"
+          ariaLabel="Add Server"
           title="Add a server this machine cannot hear advertising — one on another subnet, or one started --no-mdns."
-          onClick={() => {
+          pressed={adding}
+          onPress={() => {
             setAdding((prev) => !prev);
             setAddError(null);
             setAddNote(null);
           }}
-        >
-          Add server…
-        </button>
+        />
       </div>
       {adding && (
         <form
