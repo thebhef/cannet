@@ -23,8 +23,12 @@ the order below is the order of work, top first.
    cache that can mix buses, so `partition_by_t`'s "non-decreasing"
    precondition is asserted rather than enforced. One task because
    settling the first half dissolves the second. Opened by the overseer
-   2026-08-21 out of task 91's audit; groomed 2026-08-22, with the
-   ruling on the legacy series recommended and awaiting the owner.
+   2026-08-21 out of task 91's audit; groomed 2026-08-22 and
+   **implemented the same day** (3 phases, 5 commits: the busless series
+   made unrepresentable, the mapping panel able to re-point it, and the
+   order sweep). Remains listed pending close-out — the ruling shipped on
+   the overseer's recommendation and needs the owner's ratification
+   (owner-review-queue 1.19).
 2. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — two steps: the typed-argument prompt infrastructure with the
    commands that need it (go-to-time and set-visible-range, with
