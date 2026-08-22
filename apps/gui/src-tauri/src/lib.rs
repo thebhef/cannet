@@ -145,8 +145,8 @@ use capture::{
 };
 #[cfg(test)]
 use capture::{
-    cancel_import_now, census_blf, census_mdf, pyramids_rebuilding_now, write_blf_capture,
-    ImportProgress, ProgressPacer,
+    cancel_import_now, census_blf, census_mdf, import_was_cancelled, pyramids_rebuilding_now,
+    write_blf_capture, ImportProgress, ProgressPacer,
 };
 use clock_status::spawn_clock_status_emitter;
 #[cfg(test)]

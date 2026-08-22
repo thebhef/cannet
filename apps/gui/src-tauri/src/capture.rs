@@ -277,6 +277,9 @@ pub(crate) async fn open_log(
     // whichever way.
     let cancel = Arc::new(AtomicBool::new(false));
     *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
+    // Read back after the pump: it is what tells a cancellation apart
+    // from an end of file on this side (see `import_was_cancelled`).
+    let cancelled_probe = Arc::clone(&cancel);
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
@@ -312,6 +315,12 @@ pub(crate) async fn open_log(
                     return;
                 }
             };
+            // Abandoned: the frames this walk appended are being
+            // cleared right now, so its markers have no capture to
+            // belong to. Stop before applying them.
+            if import_was_cancelled(&cancelled_probe) {
+                return;
+            }
             // The markers the pump walked past. Applied once the pass is
             // over — the file's annotations are only fully known when
             // its last object has been read. A marker can precede the
@@ -336,6 +345,24 @@ pub(crate) async fn open_log(
         .map_err(|e| format!("failed to spawn pump thread: {e}"))?;
 
     Ok(result)
+}
+
+/// Whether the import that has just ended was cancelled rather than
+/// finishing, and so must apply none of what its walk collected.
+///
+/// A pump exits through the same clean path whichever way it stopped,
+/// and everything an import gathers *alongside* the frames — a BLF's
+/// `GLOBAL_MARKER` notes, an MDF's file-backed signal series — is
+/// applied after it, because none of it is fully known until the walk
+/// is over. The frontend, meanwhile, has seen `log-finished` and is
+/// already clearing the partial capture. Applying afterwards would put
+/// content into a session whose frames are gone.
+///
+/// For an MDF this is not a race but a certainty: filling the file's
+/// signal series takes as long as the content is big, and it starts
+/// after the pump has already announced it finished.
+pub(crate) fn import_was_cancelled(cancel: &AtomicBool) -> bool {
+    cancel.load(Ordering::Relaxed)
 }
 
 /// Flip whichever import's cancel flag [`AppState::import_cancel`] holds
@@ -1202,8 +1229,12 @@ pub(crate) fn census_blf(
 /// the Tauri main thread.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-#[allow(clippy::unused_async)] // `async` is what makes Tauri run it off the main thread
-#[allow(clippy::too_many_arguments)] // a Tauri command — args are the IPC payload fields
+#[allow(clippy::unused_async)]
+// `async` is what makes Tauri run it off the main thread
+// A Tauri command: the args are the IPC payload fields, and the body is
+// one pump thread with one linear tail — opening, the pump, and what the
+// walk collected, in the order they happen.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn import_mdf(
     app: AppHandle,
     mdf_path: String,
@@ -1267,6 +1298,7 @@ pub(crate) async fn import_mdf(
     // spawns, checked by `run_pump`'s loop, cleared once the pump ends.
     let cancel = Arc::new(AtomicBool::new(false));
     *app.state::<AppState>().import_cancel() = Some(Arc::clone(&cancel));
+    let cancelled_probe = Arc::clone(&cancel);
 
     let app_for_thread = app.clone();
     std::thread::Builder::new()
@@ -1294,6 +1326,14 @@ pub(crate) async fn import_mdf(
                     let _ = app_for_thread.emit("log-finished", LogFinished::Ok { total: 0 });
                     None
                 };
+                // Abandoned: the frames are being cleared right now, so
+                // the file's signals and events have no capture to
+                // belong to. Stop before the fill, which is the
+                // expensive part and would otherwise run to completion
+                // long after the user asked for it to stop.
+                if import_was_cancelled(&cancelled_probe) {
+                    return;
+                }
                 // The file's signals and events are on the capture's
                 // timeline too, and either can start before its first
                 // frame — an MDF's earliest content routinely does. Fold
