@@ -2614,8 +2614,11 @@ ul.status-bar-menu .status-chip {
   min-width: 6ch;
 }
 
-/* Jump every trace and plot to this event (events view only). Neutral, not
-   destructive — distinct from the × remove. */
+/* Jump every trace and plot to this event — on every surface that draws
+   event rows, and the gridview's Space from the keyboard. Neutral, not
+   destructive — distinct from the × remove. Left-anchored, between the
+   time cell and the swatch, so a wide column layout cannot push it off
+   the row the way it does the right-pinned ✎ / ×. */
 .trace-event-goto {
   flex: 0 0 auto;
   font: inherit;

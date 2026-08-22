@@ -34,12 +34,17 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 // The panel subscribes to the cross-panel "goto" bus at mount; the tests
-// don't fire it, but `listen()` must resolve to an unsubscriber.
+// don't fire it, but `listen()` must resolve to an unsubscriber. It also
+// *emits* on that bus, from its event rows' goto control.
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
+  emit: vi.fn(async () => {}),
 }));
 
+import { emit } from "@tauri-apps/api/event";
+
 import { TracePanel } from "./TracePanel";
+import { GOTO_EVENT } from "./gotoEvent";
 import { NotesContext, type NotesContextValue } from "./notesContext";
 import type { Note } from "./notes";
 import { TraceDataProvider, type TraceData } from "./traceData";
@@ -461,7 +466,7 @@ describe("TracePanel event kinds", () => {
     removeNote: vi.fn(),
   });
 
-  function renderWithNotes(notes: Note[]) {
+  function renderWithNotes(notes: Note[], ctx: NotesContextValue = notesCtx(notes)) {
     const props = {
       params: { elementId: "t1", mode: "chronological" },
       api: { updateParameters: vi.fn() },
@@ -474,7 +479,7 @@ describe("TracePanel event kinds", () => {
           <ElementRegistryContext.Provider
             value={makeRegistry([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement])}
           >
-            <NotesContext.Provider value={notesCtx(notes)}>
+            <NotesContext.Provider value={ctx}>
               <TracePanel {...props} />
             </NotesContext.Provider>
           </ElementRegistryContext.Provider>
@@ -507,5 +512,129 @@ describe("TracePanel event kinds", () => {
     });
     await waitFor(() => expect(eventLabels()).toEqual(["bus error x40", "boom"]));
     ch.mockRestore();
+  });
+});
+
+describe("TracePanel event rows: the same interactions as the events view", () => {
+  // Owner ruling: an event row carries the same content and the same
+  // interactions wherever it is drawn. The chronological trace draws
+  // them interleaved with frames; these tests are the second surface
+  // of the pair, the events view being the first
+  // (`EventsPanel.dom.test.tsx`).
+  const note: Note = { id: "n1", timestampNs: 1_000_000_000, label: "boom", kind: "note" };
+
+  const notesCtx = (notes: Note[]): NotesContextValue => ({
+    notes,
+    addNote: vi.fn(),
+    renameNote: vi.fn(),
+    recolorNote: vi.fn(),
+    describeNote: vi.fn(),
+    retagNote: vi.fn(),
+    removeNote: vi.fn(),
+  });
+
+  function renderWithNotes(notes: Note[], ctx: NotesContextValue = notesCtx(notes)) {
+    const props = {
+      params: { elementId: "t1", mode: "chronological" },
+      api: { updateParameters: vi.fn() },
+    } as unknown as Parameters<typeof TracePanel>[0];
+    render(
+      <TraceDataProvider value={{ ...traceData, count: 0 }}>
+        <ProjectContext.Provider value={projectCtx}>
+          <ElementRegistryContext.Provider
+            value={makeRegistry([{ kind: "trace", id: "t1", sources: ["*"] } as ProjectElement])}
+          >
+            <NotesContext.Provider value={ctx}>
+              <TracePanel {...props} />
+            </NotesContext.Provider>
+          </ElementRegistryContext.Provider>
+        </ProjectContext.Provider>
+      </TraceDataProvider>,
+    );
+  }
+
+  const eventLabels = () =>
+    Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+
+  function grid(): HTMLElement {
+    const el = document.querySelector(".trace-rows");
+    if (!el) throw new Error("no rows container");
+    return el as HTMLElement;
+  }
+
+  /// jsdom lays nothing out, so the row virtualizer would see a
+  /// zero-height viewport and draw one row. Give it a real one.
+  let restoreHeight: (() => void) | null = null;
+  beforeEach(() => {
+    const spy = vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(400);
+    restoreHeight = () => spy.mockRestore();
+  });
+  afterEach(() => restoreHeight?.());
+
+  it("carries the goto control, and Space on the cursor's row broadcasts it", async () => {
+    // The control was the events view's alone; the trace panel wired no
+    // `onGoto`, so the button was hidden there and Space had nothing to
+    // run.
+    renderWithNotes([note]);
+    await waitFor(() => expect(eventLabels()).toEqual(["boom"]));
+    const button = document.querySelector<HTMLElement>(".trace-event-goto");
+    expect(button).not.toBeNull();
+    expect(button?.getAttribute("aria-label")).toBe("go to this event");
+
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    fireEvent.keyDown(grid(), { key: " " });
+    expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 1_000_000_000);
+
+    // …and it is the button's own call, not a second path.
+    vi.mocked(emit).mockClear();
+    fireEvent.click(button!);
+    expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 1_000_000_000);
+  });
+
+  it("renames the cursor's event row on F2", async () => {
+    const ctx = notesCtx([note]);
+    renderWithNotes([note], ctx);
+    await waitFor(() => expect(eventLabels()).toEqual(["boom"]));
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    fireEvent.keyDown(grid(), { key: "F2" });
+    const input = document.querySelector<HTMLInputElement>(".trace-event-label-input");
+    if (!input) throw new Error("F2 opened no label editor");
+    fireEvent.change(input, { target: { value: "crunch" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(ctx.renameNote).toHaveBeenCalledWith("n1", "crunch");
+  });
+
+  it("leaves a derived event read-only here too, but still goes to it", async () => {
+    const busError: Note = {
+      id: "e1",
+      timestampNs: 500_000_000,
+      label: "bus error x40",
+      kind: "busError",
+    };
+    const ctx = notesCtx([busError]);
+    renderWithNotes([busError], ctx);
+    const box = await waitFor(() => {
+      const el = document.querySelector<HTMLInputElement>(
+        '.event-kind-filter input[aria-label="Bus Errors"]',
+      );
+      if (!el) throw new Error("no bus-error row in the kind filter");
+      return el;
+    });
+    await act(async () => {
+      fireEvent.click(box);
+    });
+    await waitFor(() => expect(eventLabels()).toEqual(["bus error x40"]));
+    // The mouse is offered no rename here…
+    expect(document.querySelector('[aria-label="rename event"]')).toBeNull();
+
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    fireEvent.keyDown(grid(), { key: "F2" });
+    // …and neither is the keyboard.
+    expect(document.querySelector(".trace-event-label-input")).toBeNull();
+    expect(ctx.renameNote).not.toHaveBeenCalled();
+
+    // Read-only is about editing; every event is still a place in time.
+    fireEvent.keyDown(grid(), { key: " " });
+    expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 500_000_000);
   });
 });

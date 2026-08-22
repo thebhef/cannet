@@ -111,10 +111,10 @@ interface TraceViewProps {
 /// panel to the host notes commands. A single object so the memoised row
 /// takes one stable prop rather than three. `onGoto` is the odd one out: a
 /// cross-panel timeline jump keyed by the event's timestamp (not its id),
-/// since every panel resolves it against time (ADR 0024). Only the events
-/// view supplies it; where it's absent the goto button is hidden, and it
-/// works on any event (the truncation marker included), not just editable
-/// ones.
+/// since every panel resolves it against time (ADR 0024). Both views that
+/// draw event rows supply it; where it's absent the goto button is hidden
+/// and the gridview's Space has nothing to run, and it works on any event
+/// (the truncation marker included), not just editable ones.
 export interface EventActions {
   onRename: (id: string, label: string) => void;
   onRecolor: (id: string, color: string | null) => void;
