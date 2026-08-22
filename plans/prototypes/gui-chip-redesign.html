@@ -232,7 +232,9 @@ ul.q li { margin:.3rem 0; }
 .tabs .src { margin-left:auto; padding:.25rem .4rem; }
 .vbar .appbar { flex:1; }
 /* Plot bars never wrap: what does not fit spills into the … menu,
-   the status bar's own overflow pattern. */
+   the status bar's own overflow pattern. In the app both bars go
+   through one planner (toolbarFit.ts), which also keeps the solo
+   cluster whole — all of it on the bar or all of it in the menu. */
 .appbar.plotbar { flex-wrap:nowrap; }
 .appbar.plotbar .ovf { margin-left:auto; }
 .ovf .drop li { display:flex; }
@@ -563,8 +565,9 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
 <p class="note">
   The bar&rsquo;s content is modal — the shipped <code>StatusBar.tsx</code>
   swaps what the notices slot and metrics show, and
-  <code>statusBarFit.ts</code> drops metrics and collapses chips
-  (alternating from the right) as width shrinks. As the deleted
+  <code>toolbarFit.ts</code> &mdash; the planner every bar in the app
+  shares &mdash; drops metrics and collapses chips (alternating from the
+  right) as width shrinks. As the deleted
   status-bar prototype did, each state gets its own instance; the
   assembled view above shows only the default. The Cancel / Discard
   responses are chips of the same language.

@@ -8,8 +8,9 @@
 /// **The bar is one row and never wraps.** A header that grows a second
 /// line reflows every panel beneath it, so running out of room is
 /// handled by removing things rather than by taking more space. What
-/// gives way, and in what order, is {@link planStatusBarFit}; this
-/// component only measures and renders the answer.
+/// gives way, and in what order, is {@link planToolbarFit} — the
+/// planner every bar in the app shares; this component only measures
+/// and renders the answer.
 ///
 /// **The bar must not clip.** `overflow: hidden` looks like the
 /// belt-and-braces companion to `nowrap` and it breaks the overflow
@@ -22,7 +23,7 @@ import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "
 
 import { BusHealthLauncher, type BusHealthLauncherProps } from "./BusHealthLauncher";
 import { StatusChip, statusChipBadgeText } from "./StatusChip";
-import { planStatusBarFit, type StatusBarFit } from "./statusBarFit";
+import { planToolbarFit, type ToolbarFit } from "./toolbarFit";
 import { useDismissableMenu } from "./useDismissableMenu";
 import type { ConnectionSummary } from "./connectionStates";
 import type { StatusMetric } from "./statusLine";
@@ -91,7 +92,7 @@ export function StatusBar({
   // been dropped cannot be measured, and its last width is what says
   // whether it would fit again.
   const widthsRef = useRef(new Map<string, number>());
-  const [fit, setFit] = useState<StatusBarFit>({ metrics: metrics.length, chips: chips.length });
+  const [fit, setFit] = useState<ToolbarFit>({ metrics: metrics.length, chips: chips.length });
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useDismissableMenu<HTMLDivElement>(menuOpen, () => setMenuOpen(false));
 
@@ -114,10 +115,13 @@ export function StatusBar({
       bar.clientWidth -
       (leadRef.current?.offsetWidth ?? 0) -
       Math.min(noticeNatural, NOTICE_RESERVE_PX);
-    const next = planStatusBarFit({
+    const next = planToolbarFit({
       available,
-      metricWidths: metrics.map((m) => width(`metric:${m.id}`, 0)),
-      chipWidths: chips.map((c) => width(`chip:${c.id}`, 0)),
+      runs: [
+        // The metrics drop; the pinned chips collapse into the menu.
+        { id: "metrics", widths: metrics.map((m) => width(`metric:${m.id}`, 0)) },
+        { id: "chips", widths: chips.map((c) => width(`chip:${c.id}`, 0)), overflow: true },
+      ],
       overflowWidth: width("overflow", OVERFLOW_ESTIMATE_PX),
     });
     setFit((prev) => (prev.metrics === next.metrics && prev.chips === next.chips ? prev : next));
