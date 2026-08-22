@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { splitStatus, type LogState, type RemoteStatus, type StatusInputs } from "./statusLine";
+import {
+  loadProgressReadout,
+  splitStatus,
+  type LogState,
+  type RemoteStatus,
+  type StatusInputs,
+} from "./statusLine";
 import type { RemoteSessionResult } from "./types";
 
 // Baseline inputs: no session, no DBC, no residency figures. Override
@@ -115,5 +121,46 @@ describe("splitStatus", () => {
     const { resting, transient } = splitStatus(inputs({ remoteSessions }));
     expect(resting).toMatch(/Open a BLF log/);
     expect(transient).toEqual({ text: "1 connecting.", level: "info" });
+  });
+});
+
+describe("loadProgressReadout", () => {
+  it("reads a census as a percentage of the file", () => {
+    expect(loadProgressReadout({ phase: "census", bytes_read: 380, total_bytes: 1000 })).toEqual({
+      fraction: 0.38,
+      text: "38 %",
+    });
+  });
+
+  it("reads an import as frames against the count the census found", () => {
+    const readout = loadProgressReadout({
+      phase: "import",
+      frames: 2_981_210,
+      total_frames: 4_662_118,
+    });
+    expect(readout?.fraction).toBeCloseTo(2_981_210 / 4_662_118, 10);
+    expect(readout?.text).toBe(
+      `${(2_981_210).toLocaleString()} / ${(4_662_118).toLocaleString()} frames`,
+    );
+  });
+
+  it("has nothing to report before the first checkpoint lands", () => {
+    // The caller shows the indeterminate chip for this: a bar pinned at
+    // zero would claim a measurement nobody has made.
+    expect(loadProgressReadout(null)).toBeNull();
+  });
+
+  it("has nothing to report for a phase with no denominator", () => {
+    expect(loadProgressReadout({ phase: "census", bytes_read: 0, total_bytes: 0 })).toBeNull();
+    expect(loadProgressReadout({ phase: "import", frames: 0, total_frames: 0 })).toBeNull();
+  });
+
+  it("keeps the bar inside itself when an import moves fewer frames than the census counted", () => {
+    // A windowed import, or one with channels skipped, pumps a subset —
+    // and a subset of a count taken over the whole file can still be
+    // reported past it if the wrong things are compared. Clamp rather
+    // than draw outside the bar.
+    const readout = loadProgressReadout({ phase: "import", frames: 900, total_frames: 500 });
+    expect(readout?.fraction).toBe(1);
   });
 });

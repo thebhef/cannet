@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 //
-// The trace-open busy launcher must stay busy until the import is
-// actually done — not until the plot starts getting data — and
-// clicking it while busy with an import in flight cancels that import.
+// The trace-open busy launcher must stay busy until the load is
+// actually done — not until the plot starts getting data — and both
+// phases of that load must be stoppable from a control that says
+// "Cancel".
 //
 // `open_log`/`import_mdf` themselves resolve as soon as the host's pump
 // thread is spawned (`Ok(result)` right after `.spawn(...)` — see
@@ -20,6 +21,19 @@ type Handler = (event: { payload: unknown }) => void;
 const listeners = new Map<string, Handler[]>();
 
 const invokeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+
+/// Set to hold `scan_blf_channels` open, so a test can act while the
+/// census is still walking — the phase that used to have no way out.
+/// Production's census resolves on its own; these tests decide when.
+let stalledCensus: { promise: Promise<unknown>; settle: (value: unknown) => void } | null = null;
+
+function stallTheCensus() {
+  let settle: (value: unknown) => void = () => {};
+  const promise = new Promise<unknown>((resolve) => {
+    settle = resolve;
+  });
+  stalledCensus = { promise, settle };
+}
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
@@ -49,6 +63,7 @@ vi.mock("@tauri-apps/api/core", () => ({
       case "cancel_import":
         return null;
       case "scan_blf_channels":
+        if (stalledCensus) return stalledCensus.promise;
         return {
           channels: [0],
           frame_count: 1,
@@ -212,11 +227,24 @@ function fireTraceGrew(count: number) {
   });
 }
 
+function fireLoadProgress(payload: unknown) {
+  return act(async () => {
+    for (const h of listeners.get("load-progress") ?? []) h({ payload });
+  });
+}
+
+function cancelButton(): HTMLButtonElement {
+  const btn = document.querySelector<HTMLButtonElement>(".trace-load-cancel");
+  if (!btn) throw new Error("the status line has no Cancel button");
+  return btn;
+}
+
 beforeEach(async () => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   localStorage.clear();
   listeners.clear();
   invokeCalls.length = 0;
+  stalledCensus = null;
   await hydrateState();
 });
 
@@ -256,18 +284,20 @@ describe("import busy feedback persists past first data", () => {
   }, 30_000);
 });
 
-describe("click-to-cancel", () => {
-  it("cancels the running import, cleans up, and leaves a later open working", async () => {
+describe("cancelling the import phase", () => {
+  it("cancels the running import from the Cancel button, cleans up, and leaves a later open working", async () => {
     await mountAndSeed();
     await openThroughToLoading();
     await fireTraceGrew(200);
 
     const clearCallsBeforeCancel = invokeCalls.filter((c) => c.cmd === "clear_trace_store").length;
 
-    // Click the busy launcher itself — it doubles as Cancel while an
-    // import is actually running (not merely censusing).
+    // The launcher itself is inert while a load runs — it is busy, it
+    // is disabled, and it no longer carries a hidden second meaning.
+    expect(importButton()).toBeDisabled();
+
     await act(async () => {
-      fireEvent.click(importButton());
+      fireEvent.click(cancelButton());
     });
     await waitFor(() => {
       if (!invokeCalls.some((c) => c.cmd === "cancel_import"))
@@ -294,6 +324,7 @@ describe("click-to-cancel", () => {
     expect(idle).not.toHaveAttribute("aria-busy");
     expect(statusText()).not.toContain("Done:");
     expect(statusText()).toMatch(/Open a BLF log/);
+    expect(document.querySelector(".trace-load-cancel")).toBeNull();
 
     // A subsequent open works: the guard isn't left wedged by the
     // cancellation.
@@ -305,5 +336,149 @@ describe("click-to-cancel", () => {
       if (invokeCalls.filter((c) => c.cmd === "scan_blf_channels").length <= scansBefore)
         throw new Error("a later Import trace… click was blocked after the cancel");
     });
+  }, 30_000);
+
+  it("leaves the capture alone when the import is let run to its end", async () => {
+    // The control for the test above: the same load, nothing cancelling
+    // it, keeps its frames and reports them — so "the cancel cleared the
+    // partial capture" is about the cancel and not about every load
+    // ending in a clear.
+    await mountAndSeed();
+    await openThroughToLoading();
+    await fireTraceGrew(200);
+
+    const clearsBefore = invokeCalls.filter((c) => c.cmd === "clear_trace_store").length;
+    await fireLogFinished({ status: "ok", total: 137 });
+
+    expect(invokeCalls.filter((c) => c.cmd === "clear_trace_store").length).toBe(clearsBefore);
+    expect(statusText()).toContain("Done:");
+  }, 30_000);
+});
+
+describe("cancelling the census phase", () => {
+  it("stops a census that is still walking, and opens no mapping dialog", async () => {
+    await mountAndSeed();
+    stallTheCensus();
+
+    await act(async () => {
+      fireEvent.click(importButton());
+    });
+    await waitFor(() => {
+      if (!invokeCalls.some((c) => c.cmd === "scan_blf_channels"))
+        throw new Error("the census never started");
+    });
+
+    // The phase that used to be a plain-disabled wait now has a way out.
+    const busy = importButton();
+    expect(busy.textContent).toBe("Loading trace…");
+    expect(busy).toBeDisabled();
+    await act(async () => {
+      fireEvent.click(cancelButton());
+    });
+    await waitFor(() => {
+      if (!invokeCalls.some((c) => c.cmd === "cancel_import"))
+        throw new Error("cancel_import was never invoked for the census");
+    });
+
+    // A cancelled census resolves with `null`: it produced nothing, so
+    // there is no dialog to show and nothing to clean up.
+    await act(async () => {
+      stalledCensus?.settle(null);
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      if (importButton().textContent !== "Import trace…")
+        throw new Error("the launcher never came back to idle");
+    });
+    expect(document.querySelector(".blf-channel-map-modal")).toBeNull();
+    expect(
+      Array.from(document.querySelectorAll("button")).some((b) => b.textContent === "Open"),
+    ).toBe(false);
+    expect(statusText()).not.toMatch(/error/i);
+    expect(invokeCalls.some((c) => c.cmd === "open_log")).toBe(false);
+  }, 30_000);
+
+  it("opens the mapping dialog when the census is let finish", async () => {
+    // The control: the same stalled census, resolved with a real scan
+    // instead of `null`, does show its dialog.
+    await mountAndSeed();
+    stallTheCensus();
+
+    await act(async () => {
+      fireEvent.click(importButton());
+    });
+    await waitFor(() => {
+      if (!invokeCalls.some((c) => c.cmd === "scan_blf_channels"))
+        throw new Error("the census never started");
+    });
+    await act(async () => {
+      stalledCensus?.settle({
+        channels: [0],
+        frame_count: 1,
+        first_timestamp_ns: 1_000_000_000,
+        last_timestamp_ns: 1_000_000_000,
+        start_unix_nanos: 1_700_000_000_000_000_000,
+        markers: [],
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => findButton("Open"));
+  }, 30_000);
+});
+
+describe("determinate load progress", () => {
+  it("shows the census as a fraction of the file, not an indeterminate chip", async () => {
+    await mountAndSeed();
+    stallTheCensus();
+
+    await act(async () => {
+      fireEvent.click(importButton());
+    });
+    await waitFor(() => {
+      if (!invokeCalls.some((c) => c.cmd === "scan_blf_channels"))
+        throw new Error("the census never started");
+    });
+
+    // Before the host has reported anything there is no honest
+    // fraction, so the indeterminate chip stands.
+    expect(document.querySelector(".trace-scan-bar")).not.toBeNull();
+    expect(document.querySelector(".trace-progress-bar")).toBeNull();
+
+    await fireLoadProgress({ phase: "census", bytes_read: 380, total_bytes: 1_000 });
+
+    const bar = document.querySelector(".trace-progress-bar");
+    expect(bar).not.toBeNull();
+    expect(bar).toHaveAttribute("aria-valuenow", "38");
+    expect(document.querySelector(".trace-scan-bar")).toBeNull();
+    expect(document.querySelector(".trace-progress-readout")?.textContent).toBe("38 %");
+
+    await act(async () => {
+      stalledCensus?.settle(null);
+      await Promise.resolve();
+    });
+  }, 30_000);
+
+  it("shows the import as frames against the count the census returned", async () => {
+    await mountAndSeed();
+    await openThroughToLoading();
+
+    // The census's count travels with the open, which is what gives the
+    // pump a denominator at all.
+    const open = invokeCalls.find((c) => c.cmd === "open_log");
+    expect(open?.args.totalFrames).toBe(1);
+
+    await fireLoadProgress({ phase: "import", frames: 250, total_frames: 1_000 });
+
+    const bar = document.querySelector(".trace-progress-bar");
+    expect(bar).toHaveAttribute("aria-valuenow", "25");
+    expect(document.querySelector(".trace-progress-readout")?.textContent).toBe(
+      `${(250).toLocaleString()} / ${(1_000).toLocaleString()} frames`,
+    );
+
+    // The next load starts from no report rather than inheriting this
+    // one's last fraction.
+    await fireLogFinished({ status: "ok", total: 250 });
+    expect(document.querySelector(".trace-progress-bar")).toBeNull();
   }, 30_000);
 });
