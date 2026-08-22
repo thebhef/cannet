@@ -302,3 +302,101 @@ reads back `kind: Note, commented_event_type: None` and fails.
 **Historical-mode trace views** need nothing extra: both kinds are
 visible by default and the chronological trace splices whatever the
 event set holds, which `TracePanel.dom.test.tsx` exercises directly.
+
+**Phase 5 — the goto palette obeys the same default.** "By default not
+shown anywhere" reaches the command palette's go-to-event list too, so
+it filters to the default-visible kinds. The events view lists every
+kind with its count and offers a goto on each row, so a hidden kind is
+still one place away rather than unreachable (`gotoEvent.test.ts`,
+"leaves out a kind that is hidden by default").
+
+### Where the backlog-era prose had gone stale
+
+Two of the four scope items no longer fit the code, and one of them is
+an exit criterion.
+
+1. **"`EVENT_COMMENT` markers render in the graph view."** There is no
+   timeseries graph view. The only graph view is `ProjectGraphPanel` —
+   a topology of gateways, buses and filters, no time axis — and the
+   backlog section this item was promoted from sits two headings above
+   "### Graph view (and bus topology)", so it did mean that one. A
+   timeline event has no coordinate to land on there. What ships
+   instead: message-bound comments render in the **plot**, which is the
+   timeseries view the clause was presumably reaching for, and in both
+   trace modes. ADR 0035's decision point 3 carries the same stale
+   clause; the amendment records the observation rather than striking
+   it, because deleting a decision point is the owner's call.
+2. **"Create marker from message."** The task itself says "UI design
+   needed for picking the source message and authoring the text", so it
+   is deferred by its own terms and not built. Note what that leaves:
+   `messageBound` events arrive from imported captures only. That is
+   still the more valuable half — before this change cannet read a BLF
+   full of another tool's comments and wrote it back without them.
+
+Everything else in the scope held up.
+
+### Exit criteria — verdict
+
+| Criterion | Verdict | The test that earns it |
+|---|---|---|
+| `EventKind` carries more than one variant and every event surface filters by kind | **met** | four variants (`note`, `messageBound`, `busError`, `truncation`); `notes.test.ts` "gives every kind a category, and the category fixes the lifecycle"; per surface — `TracePanel.dom.test.tsx` "keeps a hidden-by-default kind out of the trace until this trace enables it", `plotEvents.test.ts` "leaves out the kinds this panel is not showing", `EventsPanel.dom.test.tsx` "lists both BLF annotation records and filters them apart" |
+| A kind can declare itself hidden by default, and is then absent from the trace, the plot and the event view until enabled | **met** | `notes.test.ts` "declares which kinds are noise until asked for" plus the three per-surface tests above; `gotoEvent.test.ts` "leaves out a kind that is hidden by default" extends it to the palette. Control: flipping `busError.visibleByDefault` to `true` fails all of them |
+| The event view is top-level, filters by kind / record type / tag, and shows an expandable description per marker | **met** | top-level already — `useCommands.tsx` registers `singleton(EVENTS_PANEL_ID, "Events", …)` beside Project / Graph / System messages. Kind **is** record type (`EVENT_KIND_META[kind].blfRecord`), asserted in `EventsPanel.dom.test.tsx` "lists both BLF annotation records and filters them apart"; tag — "narrows to the events carrying a matching tag"; description — "keeps the body collapsed until the row is disclosed" and "edits the description in place and commits it to the host" |
+| `GLOBAL_MARKER` and `EVENT_COMMENT` round-trip and appear in historical trace views and (for `EVENT_COMMENT`) the graph view | **partly met** | round-trip: `both_blf_annotation_records_round_trip`, with a third-party comment as the control. Historical trace views: both kinds are visible by default and splice into the chronological trace (`TracePanel.dom.test.tsx`). **Graph view: not done** — the clause is stale, see the finding above |
+| The macOS picker item is closed by a verdict from a Mac | **not met** | no Mac available to this session; see Blockers |
+
+### Blockers / side effects
+
+- **The macOS colour-picker item cannot close here.** The candidate CSS
+  fix (`.trace-event-swatch-input` filling the swatch's footprint) is
+  still unverified, and this session has no Mac. Nothing in this change
+  touched that CSS. The item needs a Mac scheduled against it, exactly
+  as the task already said.
+- **The graph-view clause needs an owner ruling** — strike it from ADR
+  0035 decision point 3 and from this task's exit criteria, or restate
+  it against a view that has a time axis. Recorded in the ADR
+  amendment.
+- **An MDF round-trip drops a comment's `commented_event_type`.** MDF
+  `##EV` has no analogue for "the object type of the event this comment
+  is attached to", so a message-bound event saved to MDF and reimported
+  comes back freestanding. Documented at `note_from_event`; BLF is the
+  interchange home for annotations and round-trips it exactly.
+- **`NotesStore::replace_derived` is `#[allow(dead_code)]`** until a
+  host-side detector calls it. It is the host-derived category's only
+  entry point, so the category is unreachable without it; the bus-health
+  producer is its first caller.
+
+### Handoff to bus health (task 101)
+
+What is built, so 101 does not rebuild it:
+
+- `EventKind::BusError` exists, is host-derived, and is hidden by
+  default in every surface. Its display label is "Bus Errors" and its
+  default colour is the new `eventBusError` theme entry.
+- `NotesStore::replace_derived(Vec<Note>)` is the producer's entry
+  point: hand it the current coalesced set and every view updates
+  through the existing `notes-changed` broadcast. It drops any
+  non-derived kind, so it cannot be used to smuggle an event into the
+  durable store, and the derived set is cleared by a capture clear and
+  by an Open Capture.
+- Nothing derived is persisted or exported. `save_capture` reads
+  `NotesStore::exportable()`, and
+  `a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises`
+  guards it.
+- A coalesced event's detail goes in `label` and `description` — the
+  description is the disclosed body the events view already renders. If
+  a structured count and span turn out to be needed as fields rather
+  than text, add them then; nothing here is shaped to prevent it.
+
+**One thing 101's own file contradicts itself on, which this
+handoff resolves in favour of the later ruling.** Under "Groomed
+decisions" it says *"Coalescing is model work. It happens host-side,
+before the trace store. The uncoalesced frames are counted, not
+stored."* Under "Open questions" the overseer then resolved *"coalesce
+for display, preserve on write — a saved capture keeps every error
+frame that was received."* Those cannot both hold: frames that are
+counted and not stored cannot be in the saved capture. The write-side
+contract built here follows the later ruling — **error frames go into
+the trace store like any other frame, and the coalescing produces a
+`busError` event beside them, not instead of them**. The earlier
+sentence should be corrected when 101 is picked up.
