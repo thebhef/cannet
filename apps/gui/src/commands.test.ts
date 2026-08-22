@@ -52,11 +52,21 @@ describe("the shipped command set", () => {
     expect(byId.get("goto.event")).toBe("Mod+E");
   });
 
-  it("goto.timeInTrace requires a project open; plot.setVisibleRange requires a focused plot", () => {
+  it("leaves both goto commands ungated; plot.setVisibleRange requires a focused plot", () => {
+    // The two gotos target the session timeline, which no project has to
+    // be open for — an imported trace is the case, and every other
+    // capture-scoped command (`trace.import`, `capture.save`,
+    // `capture.clear`) is ungated for the same reason. `hasProjectOpen`
+    // means a project *file* is open, which is what `project.close`
+    // needs and nothing else here does.
     const available = (c: CommandContext) =>
       commandsAvailableIn(COMMANDS, c).map((s) => s.id);
-    expect(available(ctx({ hasProjectOpen: true }))).toContain("goto.timeInTrace");
-    expect(available(ctx({ hasProjectOpen: false }))).not.toContain("goto.timeInTrace");
+    for (const hasProjectOpen of [true, false]) {
+      expect(available(ctx({ hasProjectOpen }))).toContain("goto.timeInTrace");
+      expect(available(ctx({ hasProjectOpen }))).toContain("goto.event");
+    }
+    expect(available(ctx({ hasProjectOpen: false }))).toContain("project.open");
+    expect(available(ctx({ hasProjectOpen: false }))).not.toContain("project.close");
     expect(available(ctx({ focusedPanelKind: "plot" }))).toContain("plot.setVisibleRange");
     expect(available(ctx({ focusedPanelKind: "trace" }))).not.toContain("plot.setVisibleRange");
   });

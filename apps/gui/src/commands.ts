@@ -201,12 +201,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "palette.show", label: "Show command palette", category: "Palette" },
   { id: "goto.view", label: "Go to view…", category: "Palette" },
   { id: "goto.event", label: "Go to event…", category: "Palette" },
-  {
-    id: "goto.timeInTrace",
-    label: "Go to time in trace…",
-    category: "Palette",
-    context: (ctx) => ctx.hasProjectOpen,
-  },
+  // Ungated, like `goto.event` beside it: both target the session
+  // timeline, and a session needs no project — an imported trace is the
+  // case, and every other capture-scoped command is ungated too.
+  { id: "goto.timeInTrace", label: "Go to time in trace…", category: "Palette" },
   { id: "view.back", label: "Previous view", category: "View" },
   { id: "view.forward", label: "Next view", category: "View" },
   { id: "view.close", label: "Close view", category: "View" },
