@@ -124,6 +124,45 @@ fn unfinalized_decodes_identically_to_its_finalized_twin() {
     assert!(!twin.is_unfinalized());
 }
 
+/// An unfinalized file's last data block runs to the end of the file, so
+/// a writer killed mid-record leaves a partial one there. The walk stops
+/// at it and keeps every whole record before it — the same rule the BLF
+/// reader follows for a trailing fragment, and the reason that fix does
+/// not need porting here.
+#[test]
+fn a_partial_trailing_record_costs_only_itself() {
+    let whole = decode("unsorted_unfinalized_classic");
+    let bytes = std::fs::read(fixture_path("unsorted_unfinalized_classic")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+
+    let mut ever_cost_a_record = false;
+    for lost in [1usize, 8, 32, 64] {
+        let path = dir.path().join(format!("torn-{lost}.mf4"));
+        std::fs::write(&path, &bytes[..bytes.len() - lost]).unwrap();
+        let mut source = MdfCanFrameSource::open(&path)
+            .unwrap_or_else(|e| panic!("lost={lost}: a partial record is not a bad file: {e}"));
+        let mut seen = Vec::new();
+        while let Some(frame) = source
+            .next_frame()
+            .unwrap_or_else(|e| panic!("lost={lost}: the walk does not fail: {e}"))
+        {
+            seen.push(frame);
+        }
+        assert!(!seen.is_empty(), "lost={lost}: the whole records are kept");
+        assert!(seen.len() <= whole.len());
+        assert_eq!(
+            seen,
+            whole[..seen.len()],
+            "lost={lost}: what is kept is unchanged"
+        );
+        ever_cost_a_record |= seen.len() < whole.len();
+    }
+    assert!(
+        ever_cost_a_record,
+        "the truncations have to actually damage the file"
+    );
+}
+
 /// Frames leave the source in ascending timestamp order even when the file
 /// keeps each bus group in its own data group.
 #[test]
