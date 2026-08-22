@@ -316,9 +316,9 @@ parallel chip class; do not add one.
 | `busy?: boolean` | the chip's own work is running → `aria-busy`, a pulsing accent hairline (the import chip's treatment) |
 | `title?`, `ariaLabel?`, `disabled?`, `className?`, `onPress` | as `StatusChip`. The accessible name falls back `ariaLabel ?? label ?? title`, so **an icon-only chip needs a `title` or an `ariaLabel`** |
 
-Segmented groups (the prototype's `.seg`) are **not** built — no phase
-needed one yet. A phase that wants one adds `.seg` to `index.css`
-around `ChipButton`s; it must not fork the chip.
+Segmented groups (the prototype's `.seg`) were **not** built by this
+phase — no phase needed one yet. Phase 4 built one, as `ChipSegment` /
+`.chip-seg`; see its status entry for the API.
 
 **`toolbarFit.ts`** — the one overflow planner. Exports
 `planToolbarFit(input): ToolbarFit`, `toolbarRemovalOrder(runs)`, and
@@ -518,8 +518,9 @@ const { barRef, fit } = useToolbarFit<HTMLDivElement>({
 **The top toolbar does not use it.** The prototype gives `.appbar` (the
 header) `flex-wrap: wrap` and reserves the no-wrap-plus-overflow
 treatment for `.plotbar`; the Add-menu collapse leaves the header at
-twelve chips, so nothing there needed to give way. `StatusBar` is the
-hook's only consumer until phase 4.
+twelve chips, so nothing there needed to give way. `StatusBar` was the
+hook's only consumer until phase 4, which added the plot bar and taught
+the hook to subtract the bar's own padding.
 
 ### The pattern a sweep phase should copy
 
@@ -558,9 +559,10 @@ hook's only consumer until phase 4.
   `findButton` now skips `.toolbar`; and a menu opened inside an outer
   `act(...)` has not rendered yet when the same statement looks for its
   entry, so `addPanelChip` opens it inside `flushSync`.
-- **What not to copy**: `.seg` is still unbuilt (phase 4 needs it
-  first), and this bar wraps rather than overflowing — a bar that must
-  not wrap takes `useToolbarFit`, not `flex-wrap`.
+- **What not to copy**: this bar wraps rather than overflowing — a bar
+  that must not wrap takes `useToolbarFit`, not `flex-wrap`. (`.seg`
+  was unbuilt when this was written; phase 4 built it as
+  `ChipSegment`.)
 
 ### How the tests were proved by mutation
 
@@ -596,6 +598,198 @@ the app's `.chip-menu` / `.chip-menu-list` classes and the
 import chip is *also* disabled while it runs, so it keeps full contrast
 and takes the progress cursor rather than dimming.
 
+
+- **2026-08-22 — Phase 4, the plot panel toolbar, landed.** Branch
+  `task-108-phase-4-plot-toolbar` from `63269d73`.
+  - `4b379ad6` adds `apps/gui/src/ChipSegment.tsx`, its `.chip-seg` CSS
+    block and `ChipSegment.dom.test.tsx`, and lifts the
+    stylesheet-reading half of `ChipButton`'s geometry test into
+    `chipCssTestKit.ts` so the second component that needs it does not
+    copy it.
+  - `6e6ac95f` retires the catalog reload: the button, `refresh` on
+    `SignalCatalogContextValue`, and the fallback's no-op.
+  - `24260b5d` adds `apps/gui/src/PlotToolbar.tsx` +
+    `PlotToolbar.dom.test.tsx`, moves the bar out of `PlotPanel`,
+    chips every control, removes the measurements toggle, reworks the
+    bar's CSS, gives `ChipButton.onPress` the click event, and follows
+    the ADR 0031 interaction script onto the follow-live chip.
+  - `38098b7d` hides the performance read-out behind the toolbar's
+    existing right-click menu.
+  - `ef258a5a` makes the bar spill rather than wrap, through
+    `useToolbarFit`, and teaches the shared hook to take the bar's own
+    padding off the top.
+  - Frontend tests: 2718/205 files before → 2751/207 files after (all
+    green). `tsc --noEmit` and `vite build` clean; the
+    `comment-references` grep (run as `git grep --untracked`) empty at
+    each commit. No Rust touched.
+
+### Ruling by ruling
+
+- **Cursor modes are icon buttons, not a dropdown.** A `ChipSegment`
+  of three icon-only `ChipButton`s — `cursor-x` / `cursor-y` / `note` —
+  each `pressed` when it is the mode. Pressing the pressed one sends
+  `off`; there is no fourth position, deliberately, and that is the
+  only way back to off. The `CURSOR_MODE_OPTIONS` combobox is gone.
+- **The `.seg` segmented group is built, as a wrapper.** See the API
+  below. The chip was not forked: what the segment needed and the chip
+  lacked was the *click event* on `onPress` (the solo position chip
+  opens its match list at the pointer), and that was added to
+  `ChipButton`, widening `() => void` to
+  `(event: MouseEvent<HTMLButtonElement>) => void` — every existing
+  caller is still assignable.
+- **The perf readout is hidden by default, from the existing menu.**
+  `showPerf` is view-local state in `PlotPanel`, default `false`, and
+  the toolbar's own right-click menu gained one
+  `role="menuitemcheckbox"` entry, "show performance readout", beside
+  the "show diagnostics" it already carried. No new menu, no visible
+  toggle. Deliberately *not* persisted: a diagnostic turned on to look
+  at something once is not a preference (`showDiag` is persisted; this
+  is a divergence from its sibling, taken on purpose and flagged here).
+- **The catalog-reload button is retired.** Verified rather than
+  trusted before removing it: `git grep` for `useSignalCatalog` shows
+  six consumers, and `PlotPanel` was the only one destructuring
+  `refresh`. `refresh` came off the context value and off the
+  fallback in the same commit; `refreshCatalog` stays as the effects'
+  own driver. The `reload` icon was **never in the app's registry** —
+  phase 1 built the 36 the prototype's inventory names and left it
+  out — so there was nothing to remove there; the prototype's
+  `<symbol id="i-reload">` is **kept and annotated** with why it is
+  defined but unlisted, since the prototype is the durable reference
+  for the drawn set and deleting a drawing loses information the note
+  preserves.
+- **The bar never wraps.** One run through `planToolbarFit`, measured
+  by `useToolbarFit` — the hook's second consumer, consumed and not
+  copied. Removed controls collapse into a `…` `ChipButton` ("More
+  Plot Controls") over the shared `.chip-menu` / `.chip-menu-list`,
+  anchored right. `.plot-panel-toolbar` lost its `overflow-x: hidden`,
+  which is the rule the hook cannot enforce, and a test asserts that
+  against `index.css`.
+- **The solo cluster is one unbreakable unit, placed left.** Its
+  field, its paging segment and its clear are three separate bar items
+  carrying one `cluster` id — not one wrapper element, because a
+  wrapper would be a single item and the cluster contract would go
+  unused, leaving the ruling resting on nothing. They sit third,
+  fourth and fifth, so only the run controls and the two fits survive
+  them.
+- **"Add Plot Area" sits right of the solo cluster.** Item order is
+  pinned by a literal list in `PlotToolbar.dom.test.tsx`.
+- **The measurements strip stays hidden, with no toggle anywhere.**
+  The checkbox and the `MeasurementMenu` trigger are off the bar. The
+  strip, its `measEnabled` / `measKeys` state and their persistence
+  are untouched, so the rework has its wiring — see blockers for the
+  one consequence.
+- **Labels are Title Case; tooltips stay sentence case.** "Area",
+  "Follow", "Points: Auto"; every tooltip is the phrase the old
+  control carried, or the prototype's where it carried none.
+
+### The `.seg` API phase 5 consumes
+
+**`ChipSegment` (`apps/gui/src/ChipSegment.tsx`)** — several chips, one
+hairline. It renders `<span class="chip-seg" role="group" aria-label=…>`
+around `ChipButton` children and adds nothing else.
+
+| prop | meaning |
+|---|---|
+| `label: string` | Title Case; the group's accessible name, read before the chips ("Cursor Mode") |
+| `title?: string` | sentence-case tooltip for the group, for what the individual chips' tooltips leave out |
+| `className?: string` | the caller's own hook |
+| `children` | `ChipButton`s. Always — the segment is a wrapper, and a segment that needs something a chip lacks grows the chip |
+
+- The class is **`.chip-seg`**, not the prototype's bare `.seg`: a
+  one-word global class in a shared stylesheet is too broad.
+- The group draws the 1px `--border-wash` hairline and the 2px radius;
+  `.chip-seg .chip-button` drops its own border and stands 20px, so the
+  group totals the same 22px a lone chip is and a mixed bar keeps one
+  baseline. `.chip-seg .chip-button + .chip-button` is the divider.
+- **A pressed segment says so with fill and text, not with an edge.**
+  The inner chips lose the border rather than having it made
+  transparent, so the accent hairline stays the group's to spend —
+  and, incidentally, so no ordering fight with
+  `.chip-button[aria-pressed="true"]`'s `border-color` can arise.
+- A segment is one thing to the fit planner as well: on the plot bar
+  each segment is one measurable item, not three.
+
+### The plot bar as it now reads
+
+Run controls · **Fit X** · **Fit Y** │ **solo** (field + paging + clear,
+one cluster) · **Area** · **Follow** · **Points: Auto** │ cursor segment
+(**x** / **y** / **note**) · **Clear Cursors** │ (perf read-out, off) ·
+**…**. Twelve controls where there were fourteen: the catalog reload and
+the measurements toggle are gone; the cursor dropdown became three
+buttons and the points dropdown became one cycling chip.
+
+`PlotToolbar` is stateless and takes a callback per control, which is
+what lets `PlotToolbar.dom.test.tsx` drive the whole bar with spies.
+`plotToolbarItems(props)` is exported alongside it — the bar's *order
+and clustering* without the render — because jsdom lays nothing out and
+that is the only way to check the clustering at this bar directly.
+
+### How the four tests were proved by mutation
+
+1. **The solo cluster never splits, at this bar.** Deleting
+   `cluster: item.cluster` from `PlotToolbar`'s run failed two tests —
+   "never leaves half the solo control on the bar" (a sweep from 0 to
+   1400px asserting the count of solo items on the bar is never 1 or 2,
+   *and* that the sweep reached both 0 and 3, so it cannot pass over a
+   bar that never drops anything) and "gives up the solo cluster last
+   of all, and whole". `toolbarFit.test.ts`'s own 16 tests stayed green
+   under the same mutation — which is exactly the gap the phase prompt
+   named.
+2. **Press-again-turns-it-off.** Changing the segment's handler to
+   `onCursorMode(m.mode)` failed *only* "turns the mode off when the one
+   that is on is pressed again"; "switches to a mode when it is off"
+   passed, confirming that an activation-only test discriminates
+   nothing here.
+3. **The perf readout stays hidden by default.** `useState(true)` for
+   `showPerf` failed both perf tests, including "is hidden by default,
+   and the bar carries no toggle for it", which reads the bar's own
+   text rather than the menu's.
+4. **Retiring catalog reload broke nothing.** Three mutations, one per
+   claim. Dropping `dbcPaths` from the provider's effect deps failed
+   "refetches when the loaded DBC-path set changes, even if buses stay
+   the same"; dropping `dbcGeneration` failed "refetches on the host's
+   dbc-changed event"; putting `refresh` back on the context value
+   failed the new "offers no way to force a re-fetch — the triggers
+   above are all of them". All three restored and re-run green.
+
+Two more, for the shared pieces this phase touched: adding
+`border-width` back to `.chip-seg .chip-button` — not run, since the
+segment's own "draws the outline once" test reads `border-style`
+directly from the sheet; and the hook's new padding subtraction, whose
+test ("does not count the bar's own padding as room for items") is the
+only one of the hook's that supplies a padding at all.
+
+### What is **not** verified
+
+- **Nothing here proves the bar fits in a browser.** jsdom does no
+  layout: `offsetWidth` / `clientWidth` are 0, so every width in the
+  overflow tests is supplied and what is under test is the arrangement
+  the planner reaches from them. That the hook reads a *real* rendered
+  box, that 22px chips and a 20px segment actually line up, that the
+  `…` menu opens inside the panel rather than off its edge, and that
+  the spill happens at a sensible width — all of that needs the running
+  app. The GUI was not launched (phase rule) and the ADR 0031 harness
+  was not run (the overseer owns it).
+- The perf read-out's own text is built in `PlotPanel` and asserted
+  only for `/dpr/`; its numbers are not pinned.
+
+### Prototype
+
+Kept and updated in the same commits, six places: the `.seg` comment
+names the app's `.chip-seg` / `ChipSegment.tsx` and records that the
+inner chips lose their border rather than going transparent; `.chipfield`
+names the app's `.chip-field`; `.solo-group` records that the app does
+*not* use a wrapper element and why (the cluster contract would go
+unused); the plot-bar note adds the two deliberate divergences (the perf
+read-out is a `<span>`, not a button, and the run controls plus "All
+Data" are still the shared `TraceControls`, which the trace sweep owns);
+the `.ovf` CSS names the app's `.plot-toolbar-overflow` and says the
+spill is `toolbarFit.ts`, not a `scrollWidth` loop; and the context-menu
+script records that the app's entry reads "show performance readout", to
+sit beside the "show diagnostics" the menu already had. The
+`<symbol id="i-reload">` gained a comment saying why it is drawn but
+absent from the inventory and from the app's registry.
+
 ## Blockers / side effects
 
 - **`useConnectionStates` still hand-rolls fetch-then-listen, and still
@@ -603,17 +797,15 @@ and takes the progress cursor rather than dimming.
   without changing behaviour a named shipped test pins — see phase 2's
   status entry for the two ways out. It wants an owner call, because it
   changes a shipped connection path rather than chrome.
-- **Toolbar width *measurement* is not shared, only the planning is**
-  (phase 2). `StatusBar.tsx` measures its own items; phases 3 and 4
-  each need the same plumbing. Whichever lands second should lift the
-  first's into a shared hook rather than copy it — phase 2's API
-  section lists what that plumbing has to get right.
-- **The prototype's segmented group (`.seg`) has no implementation**
-  (phase 2). The command chip covers icon-only, icon+label, toggle and
-  badge; nothing in phase 2's scope needed a segmented run of chips
-  sharing one hairline, so none was built. The phase that first needs
-  one (the trace mode toggle, the plot's cursor segment) adds the
-  wrapper class around `ChipButton`s — it must not fork the chip.
+- ~~**Toolbar width *measurement* is not shared, only the planning is**
+  (phase 2).~~ **Closed by phase 3**, which lifted it into
+  `useToolbarFit`; phase 4 consumed that hook rather than copying it,
+  and extended it with the bar's-own-padding subtraction.
+- ~~**The prototype's segmented group (`.seg`) has no implementation**
+  (phase 2).~~ **Closed by phase 4**, which needed one for the cursor
+  modes and built `ChipSegment` / `.chip-seg` as a wrapper around
+  `ChipButton`s. The chip was not forked; what the segment needed and
+  the chip lacked (the click event on `onPress`) was added to the chip.
 
 - **"42 icons" vs. the prototype's actual inventory (36).** Both the
   task's main description and the grooming section's "Implementation
@@ -664,3 +856,49 @@ and takes the progress cursor rather than dimming.
   rot from task 103, which moved the control to the status bar. The line
   was corrected in passing because it names the toolbar; nothing else in
   that section was touched.
+
+- **`MeasurementMenu` is now an orphan, deliberately kept** (phase 4).
+  Removing the measurements toggle from the plot bar left
+  `PlotMeasurements.tsx`'s `MeasurementMenu` exported and rendered
+  nowhere. The "clean up your own orphans" rule says it should go; the
+  owner ruling says the strip **needs rework** and the rework is
+  backlogged, and the prototype's own note names `MeasurementMenu` as
+  part of what is backlogged. Deleting it would throw away the thing to
+  be reworked, so it stays — flagged rather than drifted into. The
+  strip itself, `measEnabled` / `measKeys` and their persistence are all
+  untouched.
+
+- **A saved config with `measEnabled: true` shows a strip that cannot be
+  turned off** (phase 4). "No toggle anywhere" was implemented as
+  removing the control, not as forcing the state — the strip still
+  renders when the persisted config says so, which is what keeps the
+  config round-trip and the strip's own tests meaningful for the
+  rework. A project saved before this change with measurements on will
+  therefore show the strip with no way back short of editing the
+  project file. Judged the lesser evil against ignoring a persisted
+  setting, but it is a user-visible consequence of the ruling as
+  written and wants the owner's eye.
+
+- **The plot bar's perf visibility is view-local, unlike `showDiag`**
+  (phase 4). Its sibling on the same menu persists to the panel config;
+  this does not. The reading taken is that a diagnostic switched on to
+  look at one thing is not a preference — but the two entries now
+  behave differently on the same menu, which is a small inconsistency
+  someone will notice. One line of `plotPanelConfig` either way.
+
+- **The ADR 0031 interaction script had to follow the follow-live
+  control** (phase 4). `perfInteract.ts` resumed follow-live by finding
+  `label.checkbox input[type=checkbox]` whose label read "follow live";
+  that control is a chip toggle now, so the script finds
+  `.plot-panel-toolbar button[aria-label="Follow Live"]` and reads
+  `aria-pressed`. Two consequences the overseer owns: the capture must
+  be re-run to confirm the gesture still lands, and at a width narrow
+  enough for the chip to spill into the `…` menu the script cannot
+  reach it at all (it does not open menus). The harness runs at a wide
+  window, so this is a caveat rather than a defect.
+
+- **`.plot-window-ctl` is dead CSS, and was before this phase**
+  (phase 4). No `.tsx` references it. Left alone under the
+  don't-delete-pre-existing-dead-code rule;
+  `.plot-cursor-ctl`, which *this* phase orphaned, was removed from the
+  same grouped selector.

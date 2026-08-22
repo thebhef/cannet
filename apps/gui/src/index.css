@@ -4375,8 +4375,7 @@ button.color-chip {
 .sources-context-menu-action:hover {
   background: var(--surface-hover);
 }
-.plot-window-ctl,
-.plot-cursor-ctl {
+.plot-window-ctl {
   display: flex;
   align-items: center;
   gap: 0.25rem;
