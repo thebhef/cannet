@@ -257,9 +257,9 @@ describe("EventsPanel kind filter", () => {
     renderPanel([busError, note]);
     expect(labels()).toEqual(["boom"]);
 
-    const box = screen.getByTitle("Bus Errors").querySelector("input") as HTMLInputElement;
+    const box = screen.getByLabelText("Bus Errors") as HTMLInputElement;
     expect(box.checked).toBe(false);
-    expect(screen.getByTitle("Bus Errors").textContent).toContain("1");
+    expect(screen.getByLabelText("Bus Errors").closest("label")?.textContent).toContain("1");
 
     fireEvent.click(box);
     expect(labels()).toEqual(["bus error x40", "boom"]);
@@ -267,7 +267,7 @@ describe("EventsPanel kind filter", () => {
 
   it("offers no edit controls on a host-derived event", () => {
     renderPanel([busError]);
-    fireEvent.click(screen.getByTitle("Bus Errors").querySelector("input") as HTMLInputElement);
+    fireEvent.click(screen.getByLabelText("Bus Errors") as HTMLInputElement);
     expect(labels()).toEqual(["bus error x40"]);
     expect(screen.queryByLabelText("rename event")).toBeNull();
     expect(screen.queryByLabelText("remove event")).toBeNull();
@@ -329,7 +329,7 @@ describe("EventsPanel event body", () => {
         description: "bit errors on powertrain over 1.2 s",
       },
     ]);
-    fireEvent.click(screen.getByTitle("Bus Errors").querySelector("input") as HTMLInputElement);
+    fireEvent.click(screen.getByLabelText("Bus Errors") as HTMLInputElement);
     fireEvent.click(screen.getByLabelText("show event details"));
     expect(screen.getByText("bit errors on powertrain over 1.2 s")).toBeInTheDocument();
     fireEvent.click(screen.getByText("bit errors on powertrain over 1.2 s"));
@@ -364,5 +364,24 @@ describe("EventsPanel tag filter", () => {
     fireEvent.change(screen.getByLabelText("filter by tag"), { target: { value: "" } });
     expect(labels()).toEqual(["one", "two", "three"]);
     ch.mockRestore();
+  });
+});
+
+describe("EventsPanel record types", () => {
+  it("lists both BLF annotation records and filters them apart", () => {
+    // The record a kind rides is a property of the kind, so the kind
+    // checklist is the record-type filter — and it names the record.
+    renderPanel([
+      { id: "n1", timestampNs: 1_000_000_000, label: "a marker", kind: "note" },
+      { id: "c1", timestampNs: 2_000_000_000, label: "a comment", kind: "messageBound" },
+    ]);
+    const labels = () =>
+      Array.from(document.querySelectorAll(".trace-event-label")).map((e) => e.textContent);
+    expect(labels()).toEqual(["a marker", "a comment"]);
+    expect(screen.getByLabelText("Notes").closest("label")?.title).toContain("GLOBAL_MARKER");
+    expect(screen.getByLabelText("Comments").closest("label")?.title).toContain("EVENT_COMMENT");
+
+    fireEvent.click(screen.getByLabelText("Notes"));
+    expect(labels()).toEqual(["a comment"]);
   });
 });

@@ -497,8 +497,9 @@ describe("TracePanel event kinds", () => {
     // The note splices in; the bus error does not (ADR 0035).
     await waitFor(() => expect(eventLabels()).toEqual(["boom"]));
 
-    const box = document
-      .querySelector<HTMLInputElement>('.event-kind-filter-row[title="Bus Errors"] input');
+    const box = document.querySelector<HTMLInputElement>(
+      '.event-kind-filter input[aria-label="Bus Errors"]',
+    );
     if (!box) throw new Error("no bus-error row in the kind filter");
     expect(box.checked).toBe(false);
     await act(async () => {

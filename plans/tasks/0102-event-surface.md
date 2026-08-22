@@ -264,3 +264,41 @@ the BLF record a kind round-trips as is a property of the kind
 (`EVENT_KIND_META[kind].blfRecord`), so the kind checklist *is* the
 record-type filter. Two controls over one fact could only ever
 disagree.
+
+**Phase 4 — both BLF annotation records.** `EventKind::MessageBound` is
+the second user-authored kind, and it exists because of the record it
+rides: `EVENT_COMMENT` (type 92) attaches to the event it sits beside,
+where a `GLOBAL_MARKER` floats on the timeline. `EventKind::blf_record()`
+is now the single statement of that mapping, and `exported()` is derived
+from it — a kind is written out exactly when it has a record.
+
+`cannet-blf` grew the three pieces it was missing: `append_comment` on
+the writer, an `on_comment` sink on `BlfCanFrameSource` (the same deal
+`on_marker` already offered — found on the walk the pump was making, no
+second pass), and `BlfScan::comments` so the import dialog's count
+matches what the import will produce.
+
+An `EVENT_COMMENT` has one text field and nothing else, so the id, tag,
+label and description pack into it behind the same `cannet:event:`
+prefix. **The `commented_event_type` had to become a field on the
+event**: without somewhere to hold it, an imported comment would
+re-export with type 0 and come loose from the message it was attached
+to — a silent degradation of somebody else's file, which is the failure
+this codebase does not accept. It is `Option<u32>`, `None` on every
+other kind, and MDF has no analogue so an MDF round-trip is documented
+as losing it.
+
+*Experiment / control.* `both_blf_annotation_records_round_trip` writes
+a note and a message-bound comment, walks them back, and asserts the
+`Note`s equal what went in — kind, tag, description and commented event
+type included. The control is a **third-party comment**: unpacked prose,
+written straight through `append_comment`, which must still come back as
+an event (first line the label, remainder the description, deterministic
+synthetic id, object type preserved). Reading only our own packing would
+silently drop every comment a CANalyzer user made. Falsified by making
+`MessageBound.blf_record()` return `GlobalMarker`: the round-trip then
+reads back `kind: Note, commented_event_type: None` and fails.
+
+**Historical-mode trace views** need nothing extra: both kinds are
+visible by default and the chronological trace splices whatever the
+event set holds, which `TracePanel.dom.test.tsx` exercises directly.

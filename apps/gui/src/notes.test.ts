@@ -78,7 +78,10 @@ describe("event kinds", () => {
     expect(EVENT_KIND_META.busError.category).toBe("hostDerived");
     expect(EVENT_KIND_META.truncation.category).toBe("frontendDerived");
     // Only the user's own events are editable.
-    expect(EVENT_KINDS.filter((k) => EVENT_KIND_META[k].editable)).toEqual(["note"]);
+    expect(EVENT_KINDS.filter((k) => EVENT_KIND_META[k].editable)).toEqual([
+      "note",
+      "messageBound",
+    ]);
   });
 
   it("declares which kinds are noise until asked for", () => {
@@ -90,6 +93,7 @@ describe("event kinds", () => {
 
   it("names the BLF record a kind round-trips as, or none", () => {
     expect(EVENT_KIND_META.note.blfRecord).toBe("GLOBAL_MARKER");
+    expect(EVENT_KIND_META.messageBound.blfRecord).toBe("EVENT_COMMENT");
     expect(EVENT_KIND_META.busError.blfRecord).toBe(null);
     expect(EVENT_KIND_META.truncation.blfRecord).toBe(null);
   });

@@ -922,6 +922,9 @@ const EVENT_KIND_COLOR: Record<string, () => string> = {
   note: () => theme().eventMarker,
   truncation: () => theme().eventTruncation,
   busError: () => theme().eventBusError,
+  // A comment is the user's own annotation like a note, so it takes the
+  // same default; what distinguishes it is the record it rides, not a hue.
+  messageBound: () => theme().eventMarker,
 };
 
 /// One timeline-event row (ADR 0035), rendered by the same `Row` path as a
