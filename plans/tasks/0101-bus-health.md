@@ -57,25 +57,44 @@ More than it looks like. Nothing here needs inventing.
 
 And what is missing:
 
-- **Nobody produces `InterfaceState`.** No driver path emits it.
+- ~~**Nobody produces `InterfaceState`.** No driver path emits it.~~
+  **Wrong, checked 2026-08-22:** the python-can sidecar runs a
+  state-poll thread that emits one on every change and pushes a
+  snapshot to each subscriber on attach. It is the only hardware
+  producer there is — `cannet-server` is a BLF-replay / virtual-bus
+  server with no controller behind it.
 - **Nobody consumes it.** `cannet-client` explicitly discards it in an
   ignore arm alongside `ConfigureBus`.
 - **Nothing computes bus load live.** The only bus-load number in the
   codebase is the one Vector wrote into a BLF.
-- **`TraceView.tsx` never reads `kind`.** So an imported BLF's error
-  frames render *today* as ordinary rows with an empty payload,
-  indistinguishable from a zero-byte data frame. Error frames are
-  already in our historical data, silently.
+- ~~**`TraceView.tsx` never reads `kind`.**~~ **Imprecise, checked
+  2026-08-22:** it does, through `formatKind`, in the `type` column —
+  which is `defaultHidden`. The observation holds: in the default column
+  set an imported BLF's error frames render as ordinary rows with an
+  empty payload, indistinguishable from a zero-byte data frame. Error
+  frames are already in our historical data, silently.
 
 ## Groomed decisions (owner, 2026-08-20)
 
 - **Error frames are surfaced as rows, coalesced.** Owner: *"I do think
   that error frames should be surfaced as frames, but I don't want it
   to fill the trace buffer with error frames if we're getting flooded
-  with them."* Coalesce consecutive errors on a bus by class into one
-  row carrying a **count and a span**. Given property 2 above this
+  with them."* Coalesce consecutive errors on a bus ~~by class~~ into
+  one row carrying a **count and a span**. Given property 2 above this
   loses almost nothing; given property 1 it is what makes the trace
   survive a fault at all.
+
+  **"By class" could not be implemented as written (2026-08-22).**
+  `CanFramePayload::Error` is a unit variant: the model carries no error
+  class anywhere, the wire's `FRAME_KIND_ERROR` has no field for one,
+  and python-can does not surface one uniformly across drivers. BLF's
+  `CAN_ERROR_EXT` has an `ecc` byte and `can_error_ext_to_frame`
+  discards it, so even for imported data the class is not in the model.
+  Coalescing is therefore **by bus**, which is the closest faithful
+  reading — property 2 says the errors carry no identity, so the count
+  and the span are what the summary was for. Carrying the class would
+  mean a new field on the core payload plus the wire, BLF, MDF and
+  sidecar paths that round-trip it; see Blockers.
 - **An error is an event kind, hidden by default.** Owner: *"I think it
   would be nice if they were an event type, and by default not shown
   anywhere."* So this consumes **[task 102](0102-event-surface.md)** —
@@ -168,9 +187,11 @@ And what is missing:
     this). The chip is the first instance of a wider direction —
     see [task 103](0103-toolbar-status-chips.md) — so its visual
     language is not this task's to invent alone.
-- **Who produces `InterfaceState`?** The local driver path and the
-  server both need to emit it; today neither does. Scope check: is the
-  python-can sidecar in scope, or only local buses?
+- ~~**Who produces `InterfaceState`?**~~ **Answered 2026-08-22 by
+  reading the code: the python-can sidecar already does, and it is the
+  only hardware path there is.** `cannet-server` replays BLFs and hosts
+  virtual buses, neither of which has a controller; the in-process vbus
+  likewise. So nothing needed producing — only consuming.
 
 ## What task 102 already built for this task
 
@@ -253,3 +274,243 @@ Two decisions are baked into the mock and should be read as proposals:
   a bus that reports them.
 - Bus load is shown where it can be known and absent where it cannot;
   never estimated from an unknown bitrate.
+
+## Status log
+
+### 2026-08-22 — (branch `task-101-bus-health`)
+
+**Phase 0 — investigation, before any surface was designed.** Four of
+this file's "what is missing" claims were checked against the code, and
+two of them are stale.
+
+| claim in this file | verdict | evidence |
+|---|---|---|
+| "Nobody produces `InterfaceState`. No driver path emits it." | **false for the sidecar** | `servers/cannet-python-can/.../server/shared_interface.py` runs a state-poll thread that calls `ch.state()` and emits an `InterfaceState` envelope on every change, and pushes a snapshot to each subscriber on `attach`. `driver_python_can.py::state()` maps python-can's `BusState` onto active / passive / bus-off and reads `tec`/`rec` where the driver exposes them. So the producer exists; the consumer is what is missing. |
+| "Nobody consumes it. `cannet-client` explicitly discards it." | **true** | the ignore arm at `crates/cannet-client/src/lib.rs`, whose own comment says "the GUI host bridges them into its own surfaces" — which nothing does, because the client offers no surface to bridge from. |
+| "Nothing computes bus load live." | **true** | the only bus-load number is Vector's, parsed out of a BLF `CAN_STATISTIC`. |
+| "`TraceView.tsx` never reads `kind`." | **imprecise, but the observation holds** | it does read it, through `formatKind` in the `type` column — and that column is `defaultHidden: true` (`traceColumns.ts`). So in the default column set an error frame really is indistinguishable from a zero-byte data frame: same blank data cell, same blank message cell, `len` 0. |
+
+Two further findings that shaped the design:
+
+- **The model carries no error *class*.** `CanFramePayload::Error` is a
+  unit variant. BLF's `CAN_ERROR_EXT` has an `ecc` byte, and
+  `can_error_ext_to_frame` drops it; the wire's `FRAME_KIND_ERROR` has
+  no room for one; python-can does not surface a class uniformly across
+  drivers. So "coalesce by class" cannot be implemented as written —
+  see Blockers.
+- **A frame's on-wire bit count already exists in the codebase**, as
+  `shared_bus.rs::frame_duration`'s private arithmetic (47/67 header
+  bits, 8 per data byte, an FD data-phase tail of 25 + 8/byte, 13 bits
+  for an error frame). Bus load needs the same number, so it was
+  promoted rather than written a second time.
+
+**Phase 1 — an error frame stops reading as an empty data frame.**
+
+- *Observation.* A BLF carrying `CAN_ERROR_EXT` records imports today
+  and renders each one as a row with a blank data cell, a blank message
+  cell and `len` 0 — identical to a zero-byte data frame.
+- *Hypothesis.* The distinction is missing from the **default** column
+  set, not from the data: `kind` reaches the frontend and `formatKind`
+  already renders "ERR", but only in a column that is hidden by default.
+- *Experiment.* `TraceView.gridview.dom.test.tsx` renders one error-kind
+  row with the default columns and asserts the row carries
+  `trace-row-error-frame`, that its message cell reads "Bus error", and
+  that it has an explanatory `title`. **Control**: a second test renders
+  a *classic* frame that also carries no payload and asserts the row has
+  none of those. Without the control, "the row says Bus error" would
+  also pass on a change that labelled every empty frame.
+- *Data.* Before the change the error test failed on the class
+  (`Received: trace-row`) while the control passed. After it, both pass.
+- *Conclusion.* The message cell is where the row says what it is; the
+  class only tints it, so the distinction survives a reader who cannot
+  see the colour.
+
+**Phase 2 — a run of errors becomes one event beside the frames.**
+
+- *Observation.* An error frame aborts the frame in flight, which is
+  retransmitted, which errors again. A persistent fault therefore
+  produces errors at roughly the bus's whole frame rate — thousands a
+  second — and each one is indistinguishable from the next.
+- *Hypothesis.* Folding consecutive errors on a bus into one run with a
+  count and a span bounds what the views hold without touching what the
+  store holds, so the trace survives a fault *and* a saved capture stays
+  complete.
+- *Experiment.* `ErrorRuns` (`bus_health.rs`) is pure — no clock, no
+  locks, no Tauri — so the rule is testable on its own.
+  `a_storm_at_bus_frame_rate_becomes_one_summary` feeds 10 000 errors
+  100 µs apart and asserts one run. **Controls**:
+  `a_quiet_gap_starts_a_new_episode` (without it, "one run" would also
+  pass on a coalescer that merged forever) and
+  `the_run_set_is_bounded_but_the_count_is_not` (alternating
+  fault-and-quiet is the shape that would otherwise grow the event set
+  without limit). Both were then run against a **mutated** coalescer
+  with the gap filter deleted: 3 tests failed, and the storm test
+  passed — which is exactly why the gap test is its control and not a
+  duplicate of it. A second mutation made an unknown bitrate read `0 %`
+  instead of absent, and
+  `load_is_absent_without_a_bitrate_and_zero_on_a_silent_configured_bus`
+  failed.
+- *Data.* 14 tests in `bus_health::tests`; 3 fail under mutation, 0
+  under the real implementation.
+- *Conclusion.* The gap, not the bus alone, is what makes a run a run.
+
+**And the write path, proved off the producer rather than a hand-built
+note.** `a_real_storm_coalesces_to_one_event_while_every_frame_reaches_the_file`
+(`tests.rs`) runs 10 000 error frames through the real `ErrorRuns`, hands
+`runs_as_events`' output to `NotesStore::replace_derived`, and asserts
+`events()` holds exactly one summary while `exportable()` holds nothing —
+then writes the frames through `write_blf_capture` off the very
+expression `save_capture` builds its marker list from and reads all
+10 000 back with their exact timestamps, with `marker_count == 0`. The
+existing guard from the event-surface work covers the same boundary from
+the other side, with a user note as its control.
+
+**Where the coalescer sits.** `run_pump` — the single ingest path for a
+remote session, an in-process virtual bus and a file import alike — folds
+each error frame in *after* routing and *after* the frame that mints a
+replay capture has cleared the previous session's health. Republication
+is a **1 Hz poll**, not a callback: the producer runs at bus rate on a
+worker thread and must not be the thing that decides when a `WebView`
+repaints. The same reasoning, and the same cadence, as the clock-status
+emitter.
+
+**Phase 3 — the controller state that was already arriving.**
+
+- *Observation.* `InterfaceState` is defined in `cannet.proto`,
+  round-trip tested, forwarded untouched by the server and the proxy,
+  **and produced** by the sidecar's state poll. `cannet-client` drops it
+  in an ignore arm whose own comment says "the GUI host bridges them into
+  its own surfaces".
+- *Hypothesis.* Nothing bridged it because the session has no outward
+  channel for a non-frame: `FrameReceiver` yields frames and nothing
+  else.
+- *Experiment.* Give it one, shaped like `SessionClock` —
+  `ControllerStates`, a cheap-to-clone handle the worker writes and a
+  control surface reads. `controller.rs`'s tests were then run against a
+  **mutated** `record` that took the lock and discarded the write: 4 of 5
+  failed, the survivor being the enum-naming test, which does not touch
+  the map.
+- *Data.* 5 tests; 4 fail under mutation.
+- *Conclusion.* The map is genuinely written and genuinely shared across
+  clones.
+
+It lives on the **session**, not in the bus-health singleton, so a
+disconnect takes the reading with it rather than leaving a stale one that
+looks live. A state this build cannot name (`UNSPECIFIED`, or anything a
+future peer sends) is dropped rather than stored — asserted by
+`a_state_this_build_cannot_name_is_not_reported_at_all`, whose second
+half proves an unknown report does not displace a known one.
+
+**Phase 4 — bus load, computed where the bitrate is known.**
+
+- *Observation.* A frame's on-wire occupancy was already modelled once,
+  privately, inside `shared_bus.rs::frame_duration`.
+- *Hypothesis.* Bus load needs the same number, and a second copy of it
+  would be a second answer.
+- *Experiment.* Promote it to `CanFramePayload::on_wire_bits`, returning
+  the count **split by the phase each bit is clocked at**, and refactor
+  `frame_duration` onto it under the existing green `shared_bus` suite.
+  Four new tests pin the numbers, the discriminating one being
+  `only_a_bitrate_switched_fd_frame_puts_bits_in_the_data_phase`: without
+  BRS the frame runs end to end at the nominal rate, and charging its
+  payload to the data rate would understate the wire it used.
+- *Data.* `cannet-core` 43 → 47 tests, all passing, `frame_duration`'s
+  own tests unchanged.
+
+The store accumulates those bit times per bus through
+`RateTrack::observe_weighted` — the same windowed sampler and pruning its
+frame rates already use, over a different unit.
+`bits_per_second_by_bus_reads_the_wire_not_the_frame_count` is the
+experiment that shows the two are different measurements: two buses at an
+**identical** frame rate, one carrying empty frames and one carrying
+eight bytes, read 470 and 1110 bit/s while their `f/s` figures match to
+1e-9.
+
+**Where bus load is computed, and why there.** In three places, each
+holding the only part it can know:
+
+| piece | where | why there |
+|---|---|---|
+| bit times on the wire, per bus, per phase | `TraceStore` (`rate.rs::by_bus_bits`) | it is a fact about the frame stream, and the store already owns the windowed rate machinery the figure has to share to be consistent with `f/s` |
+| the denominator | `ConnectionStates` (`AppliedBusConfig::speed_bps`) | `ConfigureBus` is fire-and-forget, so what the host *sent* is the deepest truth available about a controller's timing |
+| the division | `bus_health::load_percent` / `health_rows` | it needs both, and CLAUDE.md § thin views puts domain computation host-side — the frontend formats the percentage and never derives it |
+
+The status bar's single figure is `worst_load_percent`: the **worst**
+load across the buses that report one, because the bar has room for one
+number and an average over four buses hides the one that is saturating.
+It rides `trace-grew` with every other metric, so ADR 0055's "every
+figure is the host's" holds literally.
+
+**Phase 5 — the panel, the launcher, and the prototype's deletion.**
+`busHealth.ts` joins three host models against the project's own bus
+list; `BusHealthPanel.tsx` renders them; `App.tsx` passes
+`busHealthProps` to `StatusBar`, which is the one prop the launcher was
+waiting for, and `busLoadPercent` to `statusMetrics`, which is the one
+argument the metric was waiting for. `plans/prototypes/bus-health.html`
+is deleted in the same commit.
+
+*The experiment that matters here is the em dash.*
+`BusHealthPanel.dom.test.tsx` renders a bus-off bus, a healthy bus and a
+virtual bus together and reads the cells off: the bus-off row is
+`0 %` / `256` / `9,471 (2.1k/s)`, the virtual bus is `—` / `—` / `—`.
+**Control:** a second test renders the same project with an empty host
+map and asserts every one of those cells is an em dash — so the first
+test is reading "we cannot know" and not merely "there is no number".
+
+## Blockers / side effects
+
+- **Coalescing is by bus, not by class.** The groomed wording said "by
+  class" and the model has none: `CanFramePayload::Error` is a unit
+  variant, the wire's `FRAME_KIND_ERROR` carries no field for one, the
+  BLF reader discards `CAN_ERROR_EXT`'s `ecc`, and python-can does not
+  expose a class uniformly. Adding one means a new field on the core
+  payload plus every path that round-trips it (BLF, MDF, the proto, the
+  sidecar's frame mapping) **and** a producer that can fill it for live
+  hardware — otherwise the coalescing key would differ between an import
+  and a live session, which is worse than not having it. Recorded as a
+  divergence rather than implemented; the task file's groomed decision
+  is annotated in place.
+- **A summary cannot name its bus.** The host holds bus *ids* (`b1`,
+  `b2`); the project's bus **names** are the frontend's, pushed
+  host-side only into the RBS runtime. So a coalesced event's label
+  reads "1 284 bus errors over 4.1 s" and the bus rides the event's
+  `tag`, which is the axis the event view already filters on. The health
+  panel — which ADR 0055 makes the place "which bus" is answered — names
+  it properly. Giving the host the name map would want one small sync
+  command; not built, because nothing else needs it.
+- **Bus load excludes stuff bits.** The number of them depends on the
+  transmitted bit pattern including the controller-computed CRC, which
+  the model does not retain, so the figure is a **floor** and reads low
+  against a heavily-stuffed stream. `on_wire_bits`' rustdoc says so and
+  the README says so. Computing them exactly would mean synthesising the
+  CRC-15 / CRC-17 / CRC-21 for every frame on the ingest path.
+- **The virtual bus's adapter cell differs from the mock.** The mock drew
+  `driver default (nothing sent)` against the Sim row; that is
+  `describeAppliedConfig`'s answer for a *real* adapter left on its own
+  default, and a virtual bus has no controller at all, for which the
+  formatter answers nothing. Reusing the formatter was the ruling, so the
+  formatter's answer stands and the cell is blank. Flagged for the owner
+  in case the mock's reading was the intent.
+- **No hardware verification.** The owner's own session holds the PCAN
+  dongles, and this session neither launched the GUI nor ran the perf
+  harness, per the contract. Everything below the wire — the sidecar's
+  state poll, the client's consumption, the coalescer, the load
+  arithmetic, the panel — is covered by tests, but no error-passive
+  dongle was put in front of it. The end-to-end path is the one thing
+  only hardware can close.
+- **The 1 Hz emitter is not unit-tested as a task.** It is a thin
+  composition (`collect_health_rows` → `runs_as_events` →
+  `replace_derived` → emit) over functions that are each tested, and the
+  suite has no `AppHandle` harness — `tests.rs` says so in several
+  places about `run_pump` too. Worth an integration harness if one ever
+  lands; not worth inventing one here.
+
+## Exit criteria — verdicts (2026-08-22)
+
+| criterion | verdict | earned by |
+|---|---|---|
+| An error frame is never rendered as an ordinary empty data frame | **met** | `TraceView.gridview.dom.test.tsx` — "says what it is in the default columns, and marks the row", with "leaves a zero-byte data frame alone" as the control |
+| An error storm at bus frame rate does not grow trace memory in proportion to the errors; tested with a synthetic storm | **met, on the post-correction reading** | `a_real_storm_coalesces_to_one_event_while_every_frame_reaches_the_file` — 10 000 errors, one event; `a_storm_at_bus_frame_rate_becomes_one_summary` and `the_run_set_is_bounded_but_the_count_is_not` bound the set at `MAX_RUNS`. The *frames* do grow, and must: the correction above rules they are stored like any other frame, subject to the same windowed-ring bound. What coalescing controls, and what this criterion can now mean, is the event set the views hold whole in RAM |
+| A saved capture still contains every error frame that was received | **met** | the same test: all 10 000 read back from the written BLF with their exact timestamps, `marker_count == 0`, `exportable()` empty |
+| Controller state and TEC/REC are produced, carried and displayed for a bus that reports them | **met in code, unverified on hardware** | produced — the sidecar's state poll (read, not changed); carried — `controller.rs`'s five tests plus the client's `InterfaceState` arm; displayed — `busHealth.test.ts` "separates an error-passive bus and carries its counters" and `BusHealthPanel.dom.test.tsx`. No dongle was available to close it end to end; see Blockers |
+| Bus load is shown where it can be known and absent where it cannot; never estimated from an unknown bitrate | **met** | `load_is_absent_without_a_bitrate_and_zero_on_a_silent_configured_bus`, `a_configured_bus_reports_a_load_and_a_silent_one_reports_zero`, `a_row_carries_no_load_where_the_host_has_no_bitrate_for_the_bus` (bits on the wire with no bitrate is still not a load), and `BusHealthPanel.dom.test.tsx`'s em-dash pair |

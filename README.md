@@ -365,6 +365,42 @@ numbers, as discrete aligned metrics: `f/s`, `bus load`, `frames`,
 condition: **System messages**, **Signal mapping** and **RBS
 mapping**, each badged with what needs attention.
 
+Between the connection chip and the notices sits the **bus health
+launcher** — an icon, not a chip, because a single summary across
+several buses cannot name the one that is off, which is the only thing
+worth knowing when one is. It stays neutral while every controller that
+reports is error-active, and tints with a count when one is not, naming
+the bus in its tooltip. Pressing it opens the **Bus health** panel: one
+row per logical bus with its ISO 11898-1 fault-confinement state
+(error-active / error-passive / bus-off), the transmit and receive error
+counters, the bus load, the error-frame tally and rate, and the adapter
+with the configuration the host actually put on the wire for it.
+
+**Absent is not zero anywhere in that panel.** An in-process virtual bus
+has no configurable bitrate and therefore no defined load; a bus with no
+binding has no counters; a driver that reports no state contributes
+none. Those cells read an em dash. A **bus-off** bus, by contrast, reads
+`0 %` — the controller is off the wire, so zero is the true reading, and
+"no traffic" and "we cannot know" are different answers of which only
+one is an alarm.
+
+**Bus load is computed only where the bitrate is known** — from the
+configuration the host sent for the bus, over the bit times its frames
+actually occupied. Bit-stuffing overhead is not counted (it depends on
+the transmitted pattern including the controller's CRC, which is not
+retained), so the figure is a floor rather than an estimate. Where no
+bitrate was sent there is nothing to divide by and the panel shows
+nothing rather than a guess.
+
+**Error frames** are surfaced two ways. Each one is a row in the trace
+saying `Bus error` — before, with the `type` column hidden by default,
+an imported log's error frames were indistinguishable from zero-byte
+data frames. And a run of them is coalesced host-side into one
+**Bus errors** timeline event carrying a count and a span, hidden by
+default in every event surface and switchable on per view. The
+coalescing is display only: a saved capture still contains every error
+frame that was received, and the summary is never written to a file.
+
 The bar is one row and never wraps — a header that grew a second line
 would reflow every panel beneath it. When the window is too narrow the
 metrics drop from the right, and hovering any metric label shows the

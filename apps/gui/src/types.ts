@@ -86,6 +86,11 @@ export interface TraceGrew {
   /// localise a slowdown to a specific bus on a multi-bus stream. There
   /// is no unassigned bucket — every stored frame is on a bus.
   frames_per_second_by_bus: { bus_id: string; frames_per_second: number }[];
+  /// Percentage of the wire in use on the busiest bus that reports one,
+  /// or `null` while none does — a loaded file has no wire, and a bus
+  /// the host sent no bitrate for has none to divide by. Never
+  /// estimated: absent and zero are different answers.
+  bus_load_percent: number | null;
   /// Cumulative frames dropped by the session-start guard.
   frames_dropped_before_session: number;
   /// Session-start timestamp (Unix epoch seconds, fractional). The
@@ -406,6 +411,26 @@ export interface InterfaceRecord {
   display_name: string;
   fd_capable: boolean;
 }
+
+/// One bus's low-level health, as the host reports it. Mirrors
+/// `src-tauri/src/bus_health.rs::BusHealthRecord`.
+///
+/// Every optional field is optional because the answer can genuinely be
+/// "we cannot know", which is a different answer from zero: a bus with
+/// no controller reports no state, and a bus with no known bitrate has
+/// no defined load. The map holds only buses the host has something to
+/// say about — a project bus with no entry reads as an em dash all the
+/// way across.
+export interface BusHealthRecord {
+  controller?: { state: string; tec: number; rec: number };
+  loadPercent?: number;
+  errorCount: number;
+  errorRate: number;
+  lastErrorTsNs?: number;
+}
+
+/// The whole per-bus health map, keyed by logical bus id.
+export type BusHealthMap = Record<string, BusHealthRecord>;
 
 /// Coarse lifecycle of the auto-launched python-can sidecar. Mirrors
 /// `src-tauri/src/sidecar.rs::SidecarPhase`. The connection panel

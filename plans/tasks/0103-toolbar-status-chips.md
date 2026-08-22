@@ -97,7 +97,7 @@ to where that state is managed.**
 |---|---|---|
 | ~~`plans/prototypes/connect-disconnect-chip.html`~~ | the chip's shape and its five states | accepted 2026-08-20, **implemented and deleted** 2026-08-21 |
 | ~~`plans/prototypes/toolbar-status-bar.html`~~ | the full toolbar plus a status bar replacing the prose status line | accepted 2026-08-21, **implemented and deleted** 2026-08-21 |
-| `plans/prototypes/bus-health.html` | the bus health panel ([task 101](0101-bus-health.md)) | panel accepted; adapter column still open |
+| ~~`plans/prototypes/bus-health.html`~~ | the bus health panel ([task 101](0101-bus-health.md)) | panel accepted; **implemented and deleted** 2026-08-22 |
 
 The toolbar prototype was written 2026-08-20 by owner instruction:
 *"the cohesive connect + status chip + status label and the formatted

@@ -135,14 +135,50 @@ contradicted in the one-config case, which is the common case.
 problems view as its own task.** Flagged rather than left to be
 discovered.
 
-### 1.14 Bus load has no source
-[Task 103](tasks/0103-toolbar-status-chips.md)
+### ~~1.14 Bus load has no source~~
+[Task 103](tasks/0103-toolbar-status-chips.md) · **RESOLVED 2026-08-22 by
+[task 101](tasks/0101-bus-health.md)** (`a0fb49fb`, `63c665c2`). Bit times
+per bus come from `TraceStore`'s existing windowed sampler
+(`rate.rs::by_bus_bits`), the denominator from `ConnectionStates`'
+applied `speed_bps`, and the division is host-side in
+`bus_health::load_percent`. The bar shows the **worst** bus, not the
+mean. See 1.16 for what the figure excludes.
 
-The metric's slot, drop order and formatting are implemented and tested,
-but nothing computes bus load — the app passes `null`, so the readout
-never appears. It is one of the six metrics the owner ordered, and
-[task 101](tasks/0101-bus-health.md) is where the model for it would
-come from.
+### 1.16 Bus load is a documented floor, not an exact figure
+[Task 101](tasks/0101-bus-health.md)
+
+The percentage **excludes bit stuffing**, because stuff bits depend on
+the transmitted pattern including the controller-computed CRC, which the
+model does not retain. So the number is always a little low — by up to
+roughly a fifth on worst-case payloads. The phase chose a documented
+floor over an estimate, which is the right instinct, but this is a
+number on screen that a reader will take literally.
+
+**Needed: accept the floor, or label it as one in the UI.**
+
+### 1.17 The virtual-bus adapter cell is blank where the mock drew text
+[Task 101](tasks/0101-bus-health.md) · flagged by the phase
+
+The bus-health mock drew "driver default (nothing sent)" for a Sim bus.
+That string is `describeAppliedConfig`'s answer for a *real* adapter
+sitting on its default; a vbus has no controller, so the formatter — which
+the ruling said to reuse — answers nothing and the cell is empty.
+Faithful to the ruling, different from the mock.
+
+**Needed: accept the blank, or give a vbus its own words.**
+
+### 1.18 Error coalescing keys on the bus, not on the error class
+[Task 101](tasks/0101-bus-health.md) · FYI
+
+The model carries no error class **anywhere**: `CanFramePayload::Error`
+is a unit variant, `FRAME_KIND_ERROR` has no field, the BLF reader
+discards `CAN_ERROR_EXT`'s `ecc`, and python-can does not expose one
+uniformly. Adding it is a core-payload field plus BLF / MDF / proto /
+sidecar round-trips *and* a live producer — otherwise an import and a
+live session would key differently. Closest faithful reading taken and
+annotated in place. A summary also cannot name its bus (bus *names* are
+the frontend's), so the label reads "1 284 bus errors over 4.1 s" with
+the bus riding the event's `tag`.
 
 ### 1.15 Pressing the connection chip while connecting disconnects
 [Task 103](tasks/0103-toolbar-status-chips.md)
@@ -169,8 +205,8 @@ and the three calculated-field sites all ignored the pick map. Phase 3
 routed them through the resolver that honours picks, so the premise the
 ruling rests on is now true everywhere rather than at one site in four.
 
-### 1.7 The perf baseline no longer describes the project it is measured against
-[Task 96](tasks/0096-long-names-render.md) · **interacts with the gate deferral (2.2)**
+### ~~1.7 The perf baseline no longer describes the project it is measured against~~
+[Task 96](tasks/0096-long-names-render.md) · **RESOLVED 2026-08-22 — re-baselined on the owner's ruling** (`04e3ab76`; ADR 0031 amended with the ruling and its caveats). The stored `baseline.json` is now measured against the grown `ev-zonal` with `--rbs-run-on-start`, so the ambiguity below is gone and no `b6fca9c8~1` control is needed at close-out. Kept for the record.
 
 Task 96 added a long-name message to both example projects, as ruled:
 `zonal.dbc` 151 → **152 messages**, 536 → **541 signals**; `bms.dbc`
@@ -201,8 +237,8 @@ final tree, or re-baseline deliberately with the owner's sign-off.**
 Not a licence to promote a baseline to make a run pass — limits still
 ratchet down only.
 
-### 1.10 The perf harness's bus load was a project field, and is now a flag
-[Task 99](tasks/0099-transmit-controls.md) · **the close-out gate cannot be run without reading this**
+### ~~1.10 The perf harness's bus load was a project field, and is now a flag~~
+[Task 99](tasks/0099-transmit-controls.md) · **RESOLVED 2026-08-22.** `--rbs-run-on-start` is now part of ADR 0031's documented invocation and of the re-baselined reading, and the pre-flag control is no longer needed (see 1.7). The standing rule survives: **sanity-check `ids_measured` and the rx/tx rates on every report** — a gate that passes without load is meaningless, not reassuring.
 
 ADR 0031's render-tier run got its bus traffic from the example
 projects' `"run": true` — which is precisely the open-a-file-and-start
@@ -272,6 +308,8 @@ Recorded by the phases that found them, not yet decided.
 | 3.10 | **An abandoned MDF `.part` opens as a silently empty capture.** `MdfCanFrameSource::open` accepts a 572 kB part file, walks to **zero** frames, and `is_unfinalized()` returns `false`. The writer emits the group description at `finish()`, so the records on disk have nothing describing their shape, and the ID block still reads `MDF` rather than `UnFinMF`. Fixing it is a writer change, and it is only reachable through the UI once `.part` discovery exists — out of task 105's scope. | [task 105](tasks/0105-unfinalized-blf-recovery.md) |
 | 3.7 | **A DBC-declared calculated field cannot be suppressed by a project.** `merge_calc_override` is `o.counter.or(default)` — there is no value meaning "the DBC says counter, this project says none", so unchecking a section showing a DBC `Default` writes nothing and the field returns on reopen. That is ADR 0027's model as written, but task 100's seeding is what turns that checkbox into a live control over a DBC-declared field for the first time, so the gap is newly reachable. Expressing suppression is an ADR-level change to `CalcFieldsSpec` and the `.cannet_rbs` format. | [task 100](tasks/0100-calc-fields-dbc-config.md) |
 | 3.8 | The RBS feed collapses the DBC and override layers, so on an overridden field the `Override` chip is right but the "DBC default: …" hint is empty — where the transmit panel fills it in. | [task 100](tasks/0100-calc-fields-dbc-config.md) |
+| 3.13 | **`useBusHealth` hand-rolls the host-mirror instead of using `useHostMirror`.** It fetches a snapshot, then registers the listener, with no post-listener refetch — precisely the launch race the shared hook exists to close (six other call sites use it). It copied `useConnectionStates`, which predates the hook. The 1 Hz emitter closes the stale window fast, so the user impact is small; the duplication is the real problem. **Assigned to task 108 phase 2**, the shared-layer phase. | [task 101](tasks/0101-bus-health.md) |
+| 3.14 | **Controller state and TEC/REC are unverified on hardware.** The sidecar's state-poll thread was already producing `InterfaceState`; task 101 built the consumer and tested it at unit tier, but no dongle was available to the phase. The owner holds the hardware. | [task 101](tasks/0101-bus-health.md) |
 | 3.6 | Task 97's grooming asked that the owner see both axes before the **lanes** axis changed. No comparison was produced, because the lanes axis has no y-gutter labelling to compare — it already draws nothing there, and its labels are the tiles. If the owner meant the lane *tiles*, that is a different request, and it cuts against the stated reason for removing the axis labels. | [task 97](tasks/0097-enum-labels-on-axis.md) |
 
 ---
@@ -303,18 +341,17 @@ test or artefact.
 | 105 | Reading a BLF whose writer never finalized, read-only |
 | 104 | Determinate load progress, and a discoverable cancel |
 | 103 | The toolbar's status bar, status chips, and ADR 0055 |
+| 101 | Bus health — error frames labelled and coalesced, controller state, bus load |
 
 ## 5. Housekeeping owed at close-out
 
 - Retire the accepted tasks from [the roadmap](tasks/roadmap.md).
   Completed tasks are removed; the detail stays in git history.
-- Delete the untracked `scratch-perf/` and `scratch-perf-p6/`
-  directories — throwaway harness app-data.
-- Run the render-tier gate once on the final tree (§2.2) — **designed
-  around §1.7 and §1.10, not just repeated**: `--rbs-run-on-start` on
-  the current tree, the `b6fca9c8~1` control without it, and a
-  deliberate decision about the baseline the grown example projects
-  invalidated.
+- ~~Delete the untracked `scratch-perf/` and `scratch-perf-p6/`
+  directories~~ — done by the owner 2026-08-22.
+- Run the render-tier gate once on the final tree (§2.2). Now a plain
+  run: §1.7 and §1.10 are resolved, so it is four 60 s captures against
+  the 2026-08-22 baseline with `--rbs-run-on-start`, read as a band.
 - Replace the repo's pre-existing ignored mDNS round-trip test, which
   advertises a real `_cannet._tcp` instance on the LAN. It is the
   pattern agents copy, and real advertisements collide on the shared

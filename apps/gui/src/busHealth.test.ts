@@ -1,0 +1,169 @@
+// The bus-health join: three host models against the project's own bus
+// list. The rule under test throughout is that **absent is not zero** —
+// a cell the host cannot know reads as `null`, and only a bus that is
+// genuinely configured and silent reads as a figure.
+
+import { describe, expect, it } from "vitest";
+
+import { busHealthConcerns, busHealthRows, type BusHealthInputs } from "./busHealth";
+import type { Bus, BusConnStates, BusHealthMap, InterfaceBinding } from "./types";
+
+const buses: Bus[] = [
+  { id: "b1", name: "Powertrain" },
+  { id: "b2", name: "Chassis" },
+  { id: "b3", name: "Diagnostics" },
+  { id: "b4", name: "Sim" },
+];
+
+const bindings: InterfaceBinding[] = [
+  { server: "local", interface: "pcan:PCAN_USBBUS1(SN:1)", bus_id: "b1" },
+  { server: "local", interface: "pcan:PCAN_USBBUS2(SN:1)", bus_id: "b2" },
+  { kind: "local-virtual-bus", server: "local-vbus://v", interface: "bus", bus_id: "b4" },
+];
+
+const interfaces = [
+  { id: "pcan:PCAN_USBBUS1(SN:1)", display_name: "PEAK PCAN-USB FD (ch:1)", fd_capable: true },
+  { id: "pcan:PCAN_USBBUS2(SN:1)", display_name: "PEAK PCAN-USB FD (ch:2)", fd_capable: true },
+];
+
+const connStates: BusConnStates = {
+  b1: {
+    kind: "connected",
+    applied: { speedBps: 500000, fdEnabled: true, fdDataSpeedBps: 2000000 },
+  },
+  b2: { kind: "connected", applied: { speedBps: 500000, fdEnabled: false, fdDataSpeedBps: null } },
+  // A virtual bus has no controller to configure, so the host applied
+  // nothing at all.
+  b4: { kind: "connected", applied: null },
+};
+
+const health: BusHealthMap = {
+  b1: { controller: { state: "active", tec: 0, rec: 0 }, loadPercent: 34, errorCount: 0, errorRate: 0 },
+  b2: {
+    controller: { state: "passive", tec: 142, rec: 9 },
+    loadPercent: 71,
+    errorCount: 1284,
+    errorRate: 312,
+    lastErrorTsNs: 1_000_000,
+  },
+  b4: { errorCount: 0, errorRate: 0 },
+};
+
+const inputs: BusHealthInputs = { buses, bindings, interfaces, connStates, health };
+
+const row = (id: string, over: Partial<BusHealthInputs> = {}) => {
+  const found = busHealthRows({ ...inputs, ...over }).find((r) => r.busId === id);
+  if (!found) throw new Error(`no row for ${id}`);
+  return found;
+};
+
+describe("busHealthRows", () => {
+  it("gives every project bus a row, in project order", () => {
+    expect(busHealthRows(inputs).map((r) => r.name)).toEqual([
+      "Powertrain",
+      "Chassis",
+      "Diagnostics",
+      "Sim",
+    ]);
+  });
+
+  it("reads a healthy bus's state, load, counters and adapter", () => {
+    const r = row("b1");
+    expect(r.stateText).toBe("Error-active");
+    expect(r.tone).toBe("active");
+    expect(r.loadPercent).toBe(34);
+    expect(r.tec).toBe(0);
+    expect(r.rec).toBe(0);
+    expect(r.adapter).toBe("PEAK PCAN-USB FD (ch:1)");
+    // The applied configuration is the project panel's own formatter's
+    // output, so one bitrate has exactly one spelling in the app.
+    expect(r.applied).toBe("500k · FD data 2M");
+  });
+
+  it("separates an error-passive bus and carries its counters", () => {
+    const r = row("b2");
+    expect(r.stateText).toBe("Error-passive");
+    expect(r.tone).toBe("passive");
+    expect(r.tec).toBe(142);
+    expect(r.rec).toBe(9);
+    expect(r.errorCount).toBe(1284);
+    expect(r.applied).toBe("500k");
+  });
+
+  it("reads an unbound, unconnected bus as absent all the way across", () => {
+    const r = row("b3");
+    expect(r.stateText).toBe("Not connected");
+    expect(r.tone).toBe("off");
+    expect(r.loadPercent).toBeNull();
+    expect(r.tec).toBeNull();
+    expect(r.rec).toBeNull();
+    expect(r.errorCount).toBeNull();
+    expect(r.adapter).toBeNull();
+    expect(r.applied).toBeNull();
+  });
+
+  it("says why a virtual bus has no load rather than showing it as zero", () => {
+    const r = row("b4");
+    expect(r.loadPercent).toBeNull();
+    expect(r.loadAbsentReason).toMatch(/no configurable bitrate/);
+    expect(r.tec).toBeNull();
+    // `describeAppliedConfig` answers `null` for a bus the host applied
+    // nothing to, and an in-process virtual bus is exactly that: there
+    // is no controller and therefore no configuration to report. The
+    // accepted mock drew "driver default (nothing sent)" in this cell,
+    // which is the *different* case of a real adapter left on its own
+    // default — reusing the formatter is the ruling, so the formatter's
+    // answer stands.
+    expect(r.applied).toBeNull();
+  });
+
+  it("shows a bus-off bus at zero per cent, because that is the true reading", () => {
+    // The distinction the panel exists to draw, and the control for the
+    // test above: both cells would render identically if "off the wire"
+    // and "we cannot know" collapsed into one answer.
+    const r = row("b2", {
+      health: {
+        ...health,
+        b2: {
+          controller: { state: "busOff", tec: 256, rec: 0 },
+          loadPercent: 0,
+          errorCount: 9471,
+          errorRate: 2100,
+        },
+      },
+    });
+    expect(r.tone).toBe("busoff");
+    expect(r.stateText).toBe("Bus-off");
+    expect(r.loadPercent).toBe(0);
+    expect(r.loadAbsentReason).toBeNull();
+  });
+
+  it("falls back to the wire id for an interface the app has not enumerated", () => {
+    expect(row("b1", { interfaces: [] }).adapter).toBe("pcan:PCAN_USBBUS1(SN:1)");
+  });
+});
+
+describe("busHealthConcerns", () => {
+  it("names only the buses whose controller is not error-active", () => {
+    expect(busHealthConcerns(busHealthRows(inputs))).toEqual([
+      { bus: "Chassis", state: "error-passive", busOff: false },
+    ]);
+  });
+
+  it("treats a bus that has reported nothing as no concern at all", () => {
+    // The control: silence is not a fault. Without this the launcher
+    // would tint for every virtual bus and every driver that does not
+    // answer, which is exactly the alarm nobody would keep looking at.
+    expect(busHealthConcerns(busHealthRows({ ...inputs, health: {} }))).toEqual([]);
+  });
+
+  it("counts a bus-off bus as a fault rather than a warning", () => {
+    const concerns = busHealthConcerns(
+      busHealthRows({
+        ...inputs,
+        health: { b1: { controller: { state: "busOff", tec: 256, rec: 0 }, errorCount: 0, errorRate: 0 } },
+      }),
+    );
+    expect(concerns).toEqual([{ bus: "Powertrain", state: "bus-off", busOff: true }]);
+  });
+});

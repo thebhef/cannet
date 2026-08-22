@@ -32,6 +32,7 @@ export const FOCUSED_PANEL_KINDS = [
   "settings",
   "about",
   "events",
+  "bus-health",
   "shortcuts",
   "servers",
 ] as const;
@@ -173,6 +174,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.show.settings", label: "Show settings", category: "Panels" },
   { id: "panel.show.about", label: "Show about", category: "Panels" },
   { id: "panel.show.events", label: "Show events", category: "Panels" },
+  {
+    id: "panel.show.busHealth",
+    label: "Show bus health",
+    category: "Panels",
+    keywords: "bus load error frames controller state",
+  },
   { id: "panel.show.shortcuts", label: "Show keyboard shortcuts", category: "Panels" },
   { id: "panel.show.servers", label: "Show servers", category: "Panels" },
   {
