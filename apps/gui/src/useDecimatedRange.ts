@@ -260,7 +260,13 @@ export function useDecimatedRange(): DecimatedRange {
       if (cache.fetchKey === fetchKey && cache.complete && cache.byKey.size > 0) {
         return { kind: "unchanged", firstT: cache.firstT, lastT: cache.lastT };
       }
-      if (req.winEnd <= req.winStart) {
+      // A collapsed frame window means "no data" only for signals decoded
+      // from frames. A file-backed series (`docs/CONTEXT.md`) is read out
+      // of the capture file, not the session buffer — a signals-only
+      // import holds zero frames yet has every sample — so a request
+      // carrying one still goes to the host.
+      const anyFileBacked = req.signals.some((s) => s.fileBacked === true);
+      if (req.winEnd <= req.winStart && !anyFileBacked) {
         cache.byKey = new Map();
         cache.fetchKey = fetchKey;
         cache.complete = true;

@@ -255,8 +255,9 @@ fn sample_signals_inner(
     // level above `max_points` (ADR 0002 DS-5), so a "fit data" over a
     // huge capture serves `O(max_points)` points instead of
     // materializing and decimating the whole raw window here every tick.
+    let queries = cache_queries(signals);
     let served = state.signal_caches.slice_many(
-        &cache_queries(signals),
+        &queries,
         slice_from,
         slice_to,
         max_points as usize,
@@ -295,9 +296,23 @@ fn sample_signals_inner(
         .collect();
     let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
+    // A capture with no frames has no window anchors to report — but it
+    // still has a timeline: its file-backed series' own span (ADR 0024,
+    // a signals-only import anchors the session at its first sample).
+    // Answer that span so the plot keeps its x anchors — the fit floor,
+    // the data extent, the follow edge — over such a capture. Read after
+    // `slice_many`, which is what catches the queried caches up.
+    let (from_seconds, last_seconds) = match (from_ts, last_ts) {
+        (None, None) => state
+            .signal_caches
+            .time_span(&queries)
+            .map_or((None, None), |(first, last)| (Some(first), Some(last))),
+        _ => (from_ts.map(ns_to_seconds), last_ts.map(ns_to_seconds)),
+    };
+
     DecimatedRange {
-        from_seconds: from_ts.map(ns_to_seconds),
-        last_seconds: last_ts.map(ns_to_seconds),
+        from_seconds,
+        last_seconds,
         series,
         complete: served.complete,
         slice_ms,

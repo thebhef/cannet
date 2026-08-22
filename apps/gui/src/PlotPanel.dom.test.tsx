@@ -515,10 +515,15 @@ function renderPanel(opts?: {
   params?: Record<string, unknown>;
   registry?: ElementRegistry;
   notes?: NotesContextValue;
+  /// Overrides for the session-buffer facts the panel mounts against —
+  /// e.g. `{ count: 0 }` for a capture that holds no frames at all
+  /// (a signals-only MDF import).
+  trace?: Partial<TraceData>;
 }) {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof PlotPanel>[0];
   const registry = opts?.registry ?? makeRegistry();
+  const baseData = { ...traceData, ...opts?.trace };
   let generatorIndexes: ReadonlyMap<string, number> = new Map();
   const build = (data: TraceData) => {
     let tree = (
@@ -537,18 +542,18 @@ function renderPanel(opts?: {
     if (opts?.notes) tree = <NotesContext.Provider value={opts.notes}>{tree}</NotesContext.Provider>;
     return tree;
   };
-  const { rerender } = render(build(traceData));
+  const { rerender } = render(build(baseData));
   return {
     api,
     registry,
     /// Push a new session-buffer frame count through the trace context —
     /// what a `trace-grew` event does, and what moves the plot's `winEnd`.
-    growTrace: (count: number) => rerender(build({ ...traceData, count })),
+    growTrace: (count: number) => rerender(build({ ...baseData, count })),
     /// Publish a new host-evaluated generator answer — what editing a
     /// generator rule does to every panel.
     setGeneratorIndexes: (m: ReadonlyMap<string, number>) => {
       generatorIndexes = m;
-      rerender(build(traceData));
+      rerender(build(baseData));
     },
   };
 }
@@ -6919,6 +6924,23 @@ describe("PlotPanel file-backed signals", () => {
         expect.objectContaining({ signalName: "AmbientTemp", fileBacked: true }),
       ]);
       // And therefore the series reaches the canvas.
+      await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3));
+    });
+  });
+
+  /// A signals-only capture (e.g. an MDF whose channel groups are all
+  /// recorded signals, no bus traffic): the session buffer holds zero
+  /// frames, but the file-backed series exist and the session origin is
+  /// anchored at their first sample. The plot must still fetch and draw
+  /// them — a frame-count gate that reads "no frames" as "no data"
+  /// silently blanks every signal the import just brought in.
+  it("draws a file-backed signal when the capture holds no frames", async () => {
+    mockFileBackedSignals.add("AcVoltage");
+    mockSampleSeries.AcVoltage = { t: [0, 1, 2], v: [10, 20, 15] };
+    await withSizedCanvas(async () => {
+      renderPanel({ trace: { count: 0 } });
+      dropFileSignal("AcVoltage", "V");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
       await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3));
     });
   });
