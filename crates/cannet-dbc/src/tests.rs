@@ -1518,7 +1518,12 @@ fn malformed_and_duplicate_designations_warn_but_load() {
     assert_eq!(config.counter.as_ref().unwrap().increment, 2);
     let warnings = db.parse_warnings();
     assert_eq!(warnings.len(), 2, "{warnings:?}");
-    assert!(warnings.iter().any(|w| w.contains("bad CannetCounter")));
+    // The bad one quotes the attribute text verbatim: a reader whose
+    // counter silently vanished needs the offending value, not just
+    // the message and signal it sat on.
+    assert!(warnings.iter().any(|w| w.contains("bad CannetCounter")
+        && w.contains("Status.AliveCtr")
+        && w.contains("\"rolover=15\"")));
     assert!(warnings.iter().any(|w| w.contains("second CannetCounter")));
     // CRC unaffected.
     assert!(config.crc.is_some());
