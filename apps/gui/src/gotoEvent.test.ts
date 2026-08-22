@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { gotoEventItems } from "./gotoEvent";
+import { gotoEventItems, parseTimeInTrace, timeInTraceTargetNs } from "./gotoEvent";
 import { TRUNCATION_EVENT_ID, type Note } from "./notes";
 
 const note = (id: string, timestampNs: number, label: string): Note => ({
@@ -52,5 +52,47 @@ describe("gotoEventItems and hidden kinds", () => {
       0,
     );
     expect(items.map((i) => i.label)).toEqual(["brake"]);
+  });
+});
+
+describe("parseTimeInTrace", () => {
+  it("accepts a non-negative number", () => {
+    expect(parseTimeInTrace("12.5")).toEqual({ ok: true, seconds: 12.5 });
+  });
+
+  it("accepts zero (the session start itself)", () => {
+    expect(parseTimeInTrace("0")).toEqual({ ok: true, seconds: 0 });
+  });
+
+  it("tolerates surrounding whitespace", () => {
+    expect(parseTimeInTrace("  3  ")).toEqual({ ok: true, seconds: 3 });
+  });
+
+  it("rejects an empty value", () => {
+    const r = parseTimeInTrace("");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/enter/i);
+  });
+
+  it("rejects a non-numeric value", () => {
+    const r = parseTimeInTrace("soon");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/number/i);
+  });
+
+  it("rejects a negative value (owner ruling: a validation error, not a pre-session seek)", () => {
+    const r = parseTimeInTrace("-1");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/zero or later/i);
+  });
+});
+
+describe("timeInTraceTargetNs", () => {
+  it("adds the parsed seconds onto the session start, in ns", () => {
+    expect(timeInTraceTargetNs(100, 2.5)).toBe(102_500_000_000);
+  });
+
+  it("treats a null session start as zero (same tolerance as gotoEventItems' hint)", () => {
+    expect(timeInTraceTargetNs(null, 2)).toBe(2_000_000_000);
   });
 });
