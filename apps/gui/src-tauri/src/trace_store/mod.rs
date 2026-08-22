@@ -134,6 +134,11 @@ pub struct StatusSnapshot {
     pub frames_per_second_tx: f64,
     /// As [`TraceStore::frames_per_second_by_bus`].
     pub frames_per_second_by_bus: Vec<(String, f64)>,
+    /// Bit times per second per logical bus, as
+    /// `(bus, arbitration, data)` — the numerator of bus load. The store
+    /// reports what went over the wire; only the session knows the
+    /// bitrate that turns it into a percentage.
+    pub bits_per_second_by_bus: Vec<(String, f64, f64)>,
 }
 
 /// Identifies a "kind of frame" for the latest-by-id view: the
@@ -268,6 +273,12 @@ struct Inner {
     /// [`TraceStore::frames_per_second_by_bus`], the per-bus throughput
     /// readout used to localise where a high-rate stream is slowing.
     per_bus: HashMap<String, RateTrack>,
+    /// Per-bus **bit times** rather than frames, split by the phase each
+    /// is clocked at — the numerator of a bus-load figure. Two buckets
+    /// because CAN FD switches rate mid-frame, so one number cannot
+    /// describe an FD bus's occupancy.
+    per_bus_arb_bits: HashMap<String, RateTrack>,
+    per_bus_data_bits: HashMap<String, RateTrack>,
     /// Append rate split by [`Direction`]: received frames and
     /// transmit-confirmed frames tracked separately, so a stall on one
     /// direction is visible even when the aggregate looks healthy.
@@ -345,6 +356,8 @@ impl TraceStore {
                 mux_rates: HashMap::new(),
                 mux_index_from: 0,
                 per_bus: HashMap::new(),
+                per_bus_arb_bits: HashMap::new(),
+                per_bus_data_bits: HashMap::new(),
                 rx_rate: RateTrack::default(),
                 tx_rate: RateTrack::default(),
                 dropped_before_session: 0,
@@ -426,6 +439,7 @@ impl TraceStore {
             frames_per_second_rx,
             frames_per_second_tx,
             frames_per_second_by_bus: rate::by_bus_fps(&mut inner, now),
+            bits_per_second_by_bus: rate::by_bus_bits(&mut inner, now),
         }
     }
 
@@ -457,6 +471,7 @@ impl TraceStore {
         let bus_id = frame.bus_id.clone()?;
         let key: FrameKey = (bus_id, frame.channel, frame.id, frame.extended);
         let direction = frame.direction;
+        let on_wire_bits = frame.payload.on_wire_bits(frame.extended);
         let mut inner = self.lock_inner();
         if ts_ns < inner.session_start_ns {
             inner.dropped_before_session = inner.dropped_before_session.saturating_add(1);
@@ -507,6 +522,22 @@ impl TraceStore {
         // no second clone per frame (it drops it when the bucket exists,
         // which is every frame after the first on that bus).
         inner.agg_rate.observe(ts_ns, now);
+        // Bit times alongside the frame count, so bus load reads off the
+        // same window as the frame rate does. Stuff bits are not in the
+        // model (`CanFramePayload::on_wire_bits`), so this is a floor.
+        let bits = on_wire_bits;
+        inner
+            .per_bus_arb_bits
+            .entry(key.0.clone())
+            .or_default()
+            .observe_weighted(ts_ns, now, bits.arbitration);
+        if bits.data > 0 {
+            inner
+                .per_bus_data_bits
+                .entry(key.0.clone())
+                .or_default()
+                .observe_weighted(ts_ns, now, bits.data);
+        }
         inner.per_bus.entry(key.0).or_default().observe(ts_ns, now);
         match direction {
             Direction::Rx => &mut inner.rx_rate,
