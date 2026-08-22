@@ -103,6 +103,20 @@ and the license / platform constraints we need to be aware of.
   [`../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md`](../docs/adr/0034-settings-vs-state-and-custom-settings-panel.md)
   decision 4.
 
+- **External icon set** (lucide, tabler, codicons, …) — `rejected` by
+  owner ruling 2026-08-21 (task 108 grooming). The hand-drawn inline-SVG
+  icons from the chip-language prototype are **`adopted`** as the app's
+  own icon language: 14 px grid, 1.4 px rounded stroke, one icon = one
+  meaning (an icon may repeat only as the same *verb* — save / add /
+  search / clear — with the label naming the object). They live as an
+  in-repo registry (a shared SVG sprite the frontend consumes), so the
+  set stays cohesive and grows deliberately.
+
+  Reference sheet: `plans/prototypes/gui-chip-redesign.html` — the
+  chip-language prototype, kept after implementation (owner ruling
+  2026-08-21) as the living reference for the icon registry and the
+  chrome design, to support fast iteration.
+
 ### CAN / CANFD Abstraction
 
 In-process: a hand-written `cannet-core` crate defines the frame types and
