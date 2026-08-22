@@ -109,7 +109,11 @@ export function decodeSignalsSample(buf: ArrayBuffer): SignalsSample {
 }
 
 export interface RawSeries {
-  /** Strictly-increasing sample times (seconds). */
+  /** Strictly-increasing sample times (seconds). Guaranteed by the host:
+   * each series is one signal cache key, and its pyramid is
+   * non-decreasing in time by construction — one bus's own frames for a
+   * DBC-backed key, one file's channel group for a file-backed one — so
+   * nothing here has to re-sort what it's handed. */
   t: number[];
   /** Parallel sampled values. */
   v: number[];

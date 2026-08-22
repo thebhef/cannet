@@ -343,6 +343,11 @@ impl SignalCache {
     }
 
     /// The newest level-0 sample, or `None` for an empty series.
+    ///
+    /// Reads the last live slot directly rather than searching for it,
+    /// which is only the newest sample because level 0 is non-decreasing
+    /// in `t_seconds` — see [`partition_by_t`] for why that holds for
+    /// every level of every series this cache can hold.
     fn latest(&self) -> Option<SamplePoint> {
         let level = &self.levels[0];
         (level.live_len() > 0).then(|| {
@@ -354,6 +359,10 @@ impl SignalCache {
     /// Average samples per second across the series' own span, or `None`
     /// when fewer than two live samples (or a zero-length span) leave it
     /// undefined.
+    ///
+    /// Takes the first and last live slot as the span's bounds without
+    /// searching for the extremes — sound because level 0 is
+    /// non-decreasing in `t_seconds` ([`partition_by_t`]'s rationale).
     #[allow(clippy::cast_precision_loss)]
     fn rate(&self) -> Option<f64> {
         let level = &self.levels[0];
@@ -374,6 +383,10 @@ impl SignalCache {
 
     /// The series' own first and last sample times (absolute seconds),
     /// or `None` for an empty series.
+    ///
+    /// The first and last live slot **are** the series' earliest and
+    /// latest sample, with no search needed, because level 0 is
+    /// non-decreasing in `t_seconds` ([`partition_by_t`]'s rationale).
     fn time_span(&self) -> Option<(f64, f64)> {
         let level = &self.levels[0];
         (level.live_len() > 0).then(|| {
@@ -455,6 +468,10 @@ impl SignalCache {
     /// Every live level-0 sample, in time order — the series entire,
     /// with no window and no decimation. Used where the consumer is a
     /// file rather than a viewport.
+    ///
+    /// "In time order" holds because level 0 itself is non-decreasing in
+    /// `t_seconds` ([`partition_by_t`]'s rationale); this just walks it
+    /// slot by slot rather than searching it.
     fn all_samples(&self) -> Vec<SamplePoint> {
         let level = &self.levels[0];
         (level.first_slot()..level.len())
@@ -2655,9 +2672,14 @@ impl SignalCacheStore {
     /// `points` are `(absolute nanoseconds, physical value)` in
     /// non-decreasing time order (ADR 0024 — a series' timestamps are
     /// absolute), which is the order the reader yields them in and the
-    /// order every pyramid level is searched by. Re-filling a group and
-    /// name that already has a series replaces it, so a re-import is not
-    /// an append.
+    /// order every pyramid level is searched by ([`partition_by_t`]).
+    /// Unlike a DBC-backed series' frames, nothing here interleaves two
+    /// sources: one channel group is one continuously-sampled channel of
+    /// one file, so there is no second stream whose deliveries could
+    /// race it the way two CAN adapters do, and no call here re-sorts the
+    /// points — this cache trusts the reader's own record order.
+    /// Re-filling a group and name that already has a series replaces
+    /// it, so a re-import is not an append.
     pub fn fill_file_backed(&self, info: &FileSignalInfo, points: &[(u64, f64)]) {
         let key = SignalKey::file(info.group, info.name.clone());
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
