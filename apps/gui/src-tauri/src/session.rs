@@ -22,7 +22,7 @@ use cannet_client::{
 use cannet_core::CanFrameSource;
 
 use crate::app_state::AppState;
-use crate::capture::restamp_scratch_for_capture;
+use crate::capture::{restamp_scratch_for_capture, ImportProgress};
 use crate::connect_flow::{self, Attempt, Outcome};
 use crate::connection_state::{self, AppliedBusConfig, BusConnState};
 use crate::ipc::{self, InterfaceRecord, LogFinished, RemoteSessionResult};
@@ -551,7 +551,14 @@ pub(crate) async fn connect_remote_server(
     std::thread::Builder::new()
         .name(format!("cannet-remote-pump:{address}"))
         .spawn(move || {
-            run_pump(&app_for_thread, receiver, stop, pump_channel_to_bus, false);
+            run_pump(
+                &app_for_thread,
+                receiver,
+                stop,
+                pump_channel_to_bus,
+                false,
+                None,
+            );
             // Pump exited (server hung up or user disconnected). Drop
             // our entry so the address is free for a fresh connect, and
             // retire the bus rows' connected state with it.
@@ -705,7 +712,7 @@ fn connect_local_vbus(
             .name(format!("cannet-vbus-pump:{address_for_cleanup}#{channel}"))
             .spawn(move || {
                 let adapter = LocalSourceFrameSource { source, channel };
-                run_pump(&app_for_thread, adapter, stop, channel_to_bus, false);
+                run_pump(&app_for_thread, adapter, stop, channel_to_bus, false, None);
                 // When the *last* participant's pump exits, drop the
                 // session entry so the URL is free for a fresh
                 // connect. Use a guarded check — pumps may exit out
@@ -887,6 +894,7 @@ pub(crate) fn run_pump<S>(
     stop: Arc<AtomicBool>,
     channel_to_bus: Vec<(u8, String)>,
     replay_origin: bool,
+    mut progress: Option<ImportProgress>,
 ) -> Option<u64>
 where
     S: CanFrameSource,
@@ -904,6 +912,18 @@ where
     loop {
         if stop.load(Ordering::Relaxed) {
             break;
+        }
+        // Determinate progress for a replay (`None` for a live session,
+        // which has no end to be a fraction of). It reports what the
+        // *source* has read, not `total` below: an import range or a
+        // skipped channel drops frames after the read, and the census's
+        // count — the denominator — counted what was read.
+        if let Some(progress) = &mut progress {
+            if progress.checkpoint() {
+                if let Some(frames_read) = source.frames_read() {
+                    progress.report(app, frames_read);
+                }
+            }
         }
         match source.next_frame() {
             Ok(Some(frame)) => {

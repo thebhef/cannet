@@ -7,7 +7,13 @@
 // bar settles back to the residency readout. Kept here as pure logic so
 // the classification is unit-testable without rendering.
 
-import type { ImportMdfResult, OpenLogResult, RemoteSessionResult, SystemLogLevel } from "./types";
+import type {
+  ImportMdfResult,
+  LoadProgress,
+  OpenLogResult,
+  RemoteSessionResult,
+  SystemLogLevel,
+} from "./types";
 import { formatFrameCount } from "./format";
 
 /// Whatever a capture-source command (`open_log`, `import_mdf`) handed
@@ -220,4 +226,43 @@ export function formatBytes(bytes: number): string {
 function shortenPath(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash >= 0 ? path.slice(slash + 1) : path;
+}
+
+/// The determinate readout beside a load's progress bar: how full the
+/// bar is, and the number next to it.
+///
+/// `null` when there is nothing honest to show — no report has arrived
+/// yet, or the phase's denominator is zero (an empty file, a capture
+/// with no bus records). The caller shows the indeterminate chip then:
+/// a bar pinned at 0 % would claim a measurement that has not been made.
+///
+/// The two phases read differently because they count different things.
+/// The census counts bytes, which are meaningless to the user as a
+/// figure, so it shows only the percentage. The import counts frames,
+/// which are the thing being imported, so it shows them.
+export function loadProgressReadout(
+  progress: LoadProgress | null,
+): { fraction: number; text: string } | null {
+  if (progress === null) return null;
+  if (progress.phase === "census") {
+    if (progress.total_bytes <= 0) return null;
+    const fraction = clampFraction(progress.bytes_read / progress.total_bytes);
+    return { fraction, text: `${Math.round(fraction * 100)} %` };
+  }
+  if (progress.total_frames <= 0) return null;
+  const fraction = clampFraction(progress.frames / progress.total_frames);
+  return {
+    fraction,
+    text: `${progress.frames.toLocaleString()} / ${progress.total_frames.toLocaleString()} frames`,
+  };
+}
+
+/// A load reports what it walked, and what it walked is not always what
+/// lands: an import windowed to a time range, or with channels skipped,
+/// pumps fewer frames than the census counted. Clamping keeps the bar
+/// inside itself rather than letting a rounding or a filter push it past
+/// the end.
+function clampFraction(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
 }
