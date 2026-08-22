@@ -47,7 +47,7 @@ use notify::{
     event::{CreateKind, ModifyKind},
     EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::{sys_error, sys_info, sys_warn};
 
@@ -289,8 +289,7 @@ pub fn reload_one(app: &AppHandle, path: &str) {
         let state: State<'_, crate::app_state::AppState> = app.state();
         crate::app_state::invalidate_derived_caches(&state);
     }
-    crate::rbs::refresh_all_elements(app);
-    let _ = app.emit("dbc-changed", path);
+    crate::dbc_commands::announce_dbc_change(app, path);
 }
 
 #[cfg(test)]

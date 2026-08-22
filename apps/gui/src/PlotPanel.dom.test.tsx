@@ -346,11 +346,22 @@ vi.mock("@tauri-apps/api/core", () => ({
   }),
 }));
 // `listen` is hooked up by the filter-defined-areas / file-watcher
-// pathway for `dbc-changed`. The tests don't fire that event, but
-// the mount-time `listen()` call needs a resolved unsubscriber.
+// pathway for `dbc-changed`. Handlers for that event are captured so a
+// test can deliver it the way the host's watcher does; everything else
+// just needs a resolved unsubscriber.
+let dbcChangedHandlers: Array<() => void> = [];
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (name: string, handler: () => void) => {
+    if (name === "dbc-changed") dbcChangedHandlers.push(handler);
+    return () => {
+      dbcChangedHandlers = dbcChangedHandlers.filter((h) => h !== handler);
+    };
+  }),
 }));
+/// The host announcing that the loaded DBC set changed.
+function announceDbcChange(): void {
+  for (const h of [...dbcChangedHandlers]) h();
+}
 
 import * as uplotModule from "uplot";
 
@@ -691,6 +702,7 @@ async function withSizedCanvas(body: () => Promise<void>): Promise<void> {
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   uplotInstances.length = 0;
+  dbcChangedHandlers = [];
 });
 afterEach(async () => {
   cleanup();
@@ -7013,5 +7025,40 @@ describe("PlotPanel DBC-set change", () => {
       });
       expect(sampleCalls()).toBeGreaterThan(before);
     });
+  });
+});
+
+describe("PlotPanel enum overlays after a DBC change", () => {
+  it("relabels a lane that mounted before its DBCs were installed", async () => {
+    // The owner's report, exactly (task 86 item 3): a project reopened
+    // under a newer build had one enum lane render numeric until the
+    // view was closed and reopened. The panel asks for its value tables
+    // once per signal set; a panel that asked before the project's DBCs
+    // were installed got "no table" and had nothing to make it ask
+    // again. `dbc-changed` is that something (ADR 0053 §4).
+    mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [0, 1, 2] };
+    renderPanel();
+    addFocusedSignal("EngineSpeed");
+    await waitFor(() => expect(screen.getByText("EngineSpeed")).toBeInTheDocument());
+    await pickCombobox(screen.getByLabelText("y-axis mode"), "per-unit");
+    // No table yet: the signal is numeric, so it lands on its unit axis.
+    await waitFor(() => expect(document.querySelectorAll(".plot-area").length).toBe(1));
+    const areaId = () =>
+      document.querySelector(".plot-area")?.getAttribute("data-area-id") ?? "";
+    await waitFor(() => expect(areaId()).not.toBe(""));
+    expect(areaId().endsWith("/u:enum")).toBe(false);
+
+    // The project's DBCs are installed (or the file was edited on disk):
+    // the host now has a table for it.
+    mockValueTables.EngineSpeed = [
+      { raw: 0, label: "Idle" },
+      { raw: 1, label: "Run" },
+      { raw: 2, label: "Fault" },
+    ];
+    await act(async () => {
+      announceDbcChange();
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    await waitFor(() => expect(areaId().endsWith("/u:enum")).toBe(true));
   });
 });

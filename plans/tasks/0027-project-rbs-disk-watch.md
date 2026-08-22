@@ -12,7 +12,9 @@ the in-memory copy intact, deletions don't unload). The hand-written
 surface should stay small — register the project/RBS paths with the
 same watch set and route events to the existing reload commands.
 
-An ADR should be captured about reloading files.
+The reload contract is written down in
+[`docs/adr/0053-reload-when-it-applies-and-what-it-tells.md`](../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+— when a disk change is applied, and what a reload must tell.
 
 ## Scope
 
@@ -82,7 +84,8 @@ Resolutions:
 
 ## Phases
 
-1. **The reload ADR and the propagation contract.** Write the ADR,
+1. **The reload ADR and the propagation contract.** Write the ADR
+   (landed as ADR 0053),
    then implement the propagation half: a DBC-set change (add, remove,
    re-scope, watcher reload) invalidates and notifies every consumer
    of derived state, with the failing `VAL_`-rename test from the exit
@@ -92,3 +95,239 @@ Resolutions:
    explicit Reload action.
 3. **RBS-file watch.** Same for `.cannet_rbs`, with the clean-and-
    stopped rule from note 3.
+
+## Status log
+
+### 2026-08-19 — Phase 1 (the reload ADR and the propagation contract)
+
+Branch `task-27-phase-1-dbc-propagation`, off
+`task-86-phase-3-dbc-replace`. Carries task 86 item 3 (enum overlays),
+folded in here by owner ruling.
+
+#### Investigation
+
+**Observation 1 (the two leads this task recorded).** The task named two
+suspects for the `VAL_`-rename gap: `reload_one` not clearing
+`state.signal_caches`, and `RbsPanel` listening for `rbs-changed` rather
+than `dbc-changed`.
+
+**Experiment 1.** Read both paths end to end and pinned the host half
+with a test: install a DBC, install it again under the same identity
+with raw 0 renamed, and ask `list_value_tables_inner` what it answers.
+
+**Data 1.** `reload_one` *does* call `invalidate_derived_caches`
+(`dbc_watcher.rs`), which nulls the filter index and the descriptor
+snapshot and re-judges every pyramid per ADR 0047; and the value-table
+lookup reads the swapped `Database` with no cache in front of it
+(`a_val_rename_reloaded_in_place_is_what_the_value_table_lookup_answers`,
+passes as written). `rbs::refresh_all_elements` likewise rebuilds every
+element's rows — an RBS row's `label` is taken from the freshly decoded
+signal (`rbs/view.rs:318`), not cached — and emits `rbs-changed "*"`,
+which the panel already refetches on (`RbsPanel.dom.test.tsx`, "recovers
+when the host state lands after mount").
+
+**Conclusion 1.** **Both recorded leads are refuted.** The host was not
+serving stale labels, and the RBS rows were not un-refreshed. What was
+stale is the *enum label list* the panel's picker renders, which comes
+from the shared `useValueTables` fetch — the same fetch task 86 item 3
+names — and that fetch keyed on the signal set alone. So task 27's gap
+and task 86's item 3 are not merely the same family: they are the same
+code path, reached from two different reports.
+
+**Observation 2.** `add_dbc`, `set_dbc_buses`, `remove_dbc` and
+`clear_dbcs` changed what the app decodes and announced nothing; only
+the watcher reload and the MDF import emitted `dbc-changed`. Meanwhile
+the frontend refreshed some views on a DBC-*set* change it made itself
+and others on `dbc-changed`.
+
+**Conclusion 2.** Neither half was complete, so which consumers heard
+about a change depended on which path it came in by. That asymmetry —
+not any one panel's subscription — is the defect. It is what ADR 0053 §2
+and §3 close: the host announces every change without exception, and the
+frontend subscribes once.
+
+**Experiment 3 (an attempt, recorded because it failed).** Task 86
+phase 3 recorded that `reload_one` is not unit-testable for want of a
+Tauri mock-app harness. Tried to close that: added
+`tauri = { features = ["test"] }` as a dev-dependency and wrote a probe
+that emits `dbc-changed` on a `tauri::test::mock_app` and listens for it
+Rust-side.
+
+**Data 3.** The `cannet-gui` lib test binary then failed to start at all
+— `process didn't exit successfully … (exit code: 0xc0000139,
+STATUS_ENTRYPOINT_NOT_FOUND)`, before any test ran. Not one test
+failing: the whole suite unable to load.
+
+**Conclusion 3.** The mock runtime does not load on this platform
+without more work than this phase can carry (a missing DLL export, most
+likely the WebView2 loader the `test` feature links differently).
+Reverted; the blocker stands, and the announcement's coverage is
+frontend-side.
+
+**Observation 4 (found by reading every windowed source against the
+contract, not from a report).** `useByIdView`'s descriptor is
+`${winStart}:${sort}:${filter}` — no model epoch — exactly like
+`useFilteredTrace`'s, and a by-id row carries the message name and
+decoded columns the DBC set defines. Measured red, then fixed by the
+same one-line change (`traceWindowEpoch.dom.test.tsx`).
+
+#### The carrier, and why
+
+Two mechanisms existed and neither covered everything: the host's
+`dbc-changed` event, and the frontend's trace-model re-anchor epoch.
+**The event is the carrier** (ADR 0053 §3), for the one reason that
+decides it — it is the only one of the two that can see a change the
+frontend did not make: a file edited on disk, a capture's embedded
+databases. The epoch conforms by becoming a consumer of it, subscribed
+once in `App`, which is what carries a watcher reload to every windowed
+view and to the plot. The frontend's own DBC gestures still re-anchor at
+their call sites; that is a latency shortcut on a path the carrier also
+covers, not a second contract.
+
+The reverse choice was considered and rejected on plumbing: the epoch
+lives in the trace-model context, and `SignalCatalogProvider` — one of
+the consumers — is mounted *outside* `TraceDataProvider`, so making the
+epoch the carrier would have meant either moving providers or coupling
+the signal catalog to the trace model.
+
+#### The four consumers (five, as it turned out)
+
+| Consumer | Before | After | Red evidence |
+| --- | --- | --- | --- |
+| `useValueTables` (plot labels, RBS picker, colormap, transmit) | keyed on the signal set alone | folds the DBC generation | `expected +0 to be 1` — the map stayed empty across the announcement |
+| RBS view | rows rebuilt (host + `rbs-changed`); *labels* stuck | served by the fetch above | `expected [ 'Off (0)', 'Standby (1)' ] to deeply equal [ 'Off (0)', 'Ready (1)' ]` |
+| The plot, watcher path | epoch bumped only by frontend gestures | `App` translates the carrier | "the stopped view never re-asked the host"; for the overlay, `expected false to be true` |
+| `useFilteredTrace` | `${winStart}:${filter}` | epoch leads the descriptor | `expected [ 'fetch_filtered_trace' ] to deeply equal [ …, …(1) ]` |
+| `useByIdView` (not on the phase's list) | `${winStart}:${sort}:${filter}` | epoch leads the descriptor | `expected [ 'fetch_by_id_page' ] to deeply equal [ …, …(1) ]` |
+
+Every red measurement above was taken on a **stopped** capture. That is
+not a convenience: a live capture's window moves and re-keys these
+fetches incidentally, which is why every one of these defects was
+reported as intermittent.
+
+#### Coalescing, stated rather than buried
+
+The host now announces per *change* while the work it triggers is per
+*set*, so the single subscription coalesces (ADR 0053 §5): a trailing
+250 ms debounce for an editor save's burst of filesystem events, and an
+explicit batch guard that `loadDbcSet` holds across a project open —
+`clear_dbcs` plus an add and a re-scope per database, which need not
+finish inside any debounce window. A project open therefore still costs
+one re-anchor, as it did before the host started announcing. Pinned by
+`dbcChanged.test.ts` ("a suppressed batch costs exactly one fan-out")
+and at App level (one editor save's burst → one round of re-pages).
+
+#### What landed
+
+| Commit | Subject | Tests |
+| --- | --- | --- |
+| `bc4294d6` | Write down the reload contract: when a disk change applies, and what it tells | — |
+| `3a2342d5` | Every DBC-set change announces itself, through one function | +1 (`cannet-gui`) |
+| `42614710` | One frontend subscription to the DBC-change carrier, with the coalescing it needs | +5 (frontend) |
+| `5b23774e` | Enum labels re-ask when the DBC set changes | +2 (frontend) |
+| `ace5cfc3` | The filtered and by-id windows re-page when the DBC set changes | +2 (frontend) |
+| `6ee01a7e` | A DBC changed on disk re-anchors the trace model | +1 (frontend) |
+| `eec704f2` | The catalog and the Database view read the carrier, they do not listen for it | — |
+| `9da0aa63` | Pin the plot's enum overlay against the DBC-set change that fills it in | +1 (frontend) |
+
+Suite totals after the phase: `cannet-gui` 722 passed / 6 ignored (was
+721/6), frontend 2249 across 168 files (was 2238 across 165). `cargo
+clippy --workspace --all-targets -- -D warnings`, `cargo fmt --all`,
+`pnpm --dir apps/gui test` and `pnpm --dir apps/gui build` clean on every
+commit (the pre-commit gate ran them).
+
+Phases 2 and 3 (the project and RBS watches) are untouched: this phase
+implements ADR 0053's *what a reload must tell* half only.
+
+#### ADR-0031 perf gate
+
+The phase adds invalidation and refetch traffic on a path every panel
+consumes, so the gate was run rather than skipped. Two release runs on
+the real rig (`pnpm --dir apps/gui tauri build --no-bundle`, then
+`target/release/cannet-gui` with `--project <abs ev-zonal.cannet_prj>
+--app-data-dir <the operator's seeded perf app-data dir>
+--connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both connected and ran
+59.0 s at rate — `rx_gap.ids_measured` 173 on both, rx 1599.8 / 1604.9,
+tx 1606.4 / 1608.2 — so neither is the empty-capture failure mode.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>`: **passed on both runs, 31 metrics gated.**
+No baseline promoted or edited, no gate limit widened.
+
+| metric | baseline | run 1 | run 2 | worst | limit |
+| --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 1.350 | 1.183 | 1.350 | 10.000 |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 |
+| lag_ms_max | 10.500 | 28.300 | 2.000 | 28.300 | 41.000 |
+| jank_fraction | 0.000 | 0.017 | 0.017 | 0.017 | 0.050 |
+| jsheap_mb_peak | 70.300 | 70.900 | 72.700 | 72.700 | 204.600 |
+| jsheap_mb_drift_per_min | 9.547 | 8.663 | 4.436 | 8.663 | 24.094 |
+| renderer_mb_peak | 299.363 | 309.098 | 305.035 | 309.098 | 662.727 |
+| renderer_mb_drift_per_min | 40.168 | 50.492 | 35.108 | 50.492 | 85.336 |
+| host_mb_peak | 59.227 | 58.441 | 58.371 | 58.441 | 182.453 |
+| tree_mb_peak | 714.051 | 719.164 | 718.891 | 719.164 | 1492.102 |
+| tree_mb_drift_per_min | 67.120 | 79.440 | 64.700 | 79.440 | 139.240 |
+| flush_ms_mean | 25.000 | 4.617 | 4.783 | 4.783 | 25.000 |
+| flush_ms_max | 23.772 | 11.293 | 10.873 | 11.293 | 72.544 |
+| tx_late_ms_mean | 18.000 | 7.106 | 7.442 | 7.442 | 18.000 |
+| tx_late_ms_max | 65.695 | 82.098 | 70.473 | 82.098 | 156.391 |
+| rx_gap_p95_ratio_worst | 1.199 | 1.163 | 1.168 | 1.168 | 2.898 |
+| rx_gap_short_frac_worst | 0.008 | 0.002 | 0.002 | 0.002 | 0.166 |
+| rx_fps_retention | 0.998 | 0.994 | 0.996 | 0.994 | 0.800 |
+| tx_fps_retention | 1.001 | 1.001 | 0.999 | 0.999 | 0.800 |
+
+Means across the two runs sit between the per-run figures in every row
+(`lag_ms_max` 15.2, `tx_late_ms_max` 76.3, `renderer_mb_drift_per_min`
+42.8); nothing straddles a limit. The three host modes (`tracebuffer`,
+`grpc`, `hardware-peak`) re-ran as part of `check` and passed on both.
+
+Reading it against this change: the traffic this phase adds lands at
+*project open*, not during a capture. The perf project loads two DBCs,
+so the run exercises the batch guard — and the guard is why boot still
+costs one re-anchor rather than five announcements' worth. Nothing
+announces during the 60 s capture (no DBC is loaded mid-run), so the
+steady-state rows should be unchanged, and they are: `flush_ms`,
+`rx_gap`, retention and the host modes all sit at or below baseline.
+
+`lag_ms_max` 28.3 on run 1 against 2.0 on run 2 is the widest spread in
+the table and is not reproduced across the pair; both are inside the
+41.0 limit. `tx_late_ms_max` is the row task 86's phases have been
+tracking — 82.1 / 70.5 here against a baseline of 65.7 and a limit of
+156.4, after phase 3's 73.3 / 72.5 and phase 2's 101.4 / 86.7. That is
+now a **fourth** consecutive elevated reading across four unrelated
+diffs, with `tx_late_ms_mean` moving with it and staying well inside its
+own limit (7.1 / 7.4 against 18.0). Same reading as phase 3 recorded: a
+rig whose scheduling tail has got longer, not a transmit path that has
+got slower. It needs a bisect against an unchanged tree rather than an
+attribution to any of these phases.
+
+Reports were not committed (nothing under
+`docs/performance-measurements/frontend/` is tracked); they are at
+`task27-phase1-run{1,2}.json` in the operator's seeded perf app-data dir
+(outside the repo).
+
+## Blockers / side effects
+
+- **The watcher reload's announcement is still not covered by a host
+  test.** `reload_one` and every DBC command take an `AppHandle`, and
+  Tauri's mock runtime does not load on this platform (Experiment 3
+  above). What is asserted host-side is the state half — the swap, the
+  invalidation, and what the value-table lookup answers afterwards; that
+  the announcement *fires* is asserted frontend-side, where every
+  consumer of it lives. Closing it properly needs whatever makes
+  `tauri/test` link, and is worth its own look.
+- **The `dbc-changed` payload is now sometimes `"*"`.** `clear_dbcs`
+  announces a whole-set change and has no single path to name, matching
+  `rbs-changed`'s convention. No consumer reads the payload (ADR 0053 §2
+  says so explicitly), but anything that starts to has to handle it.
+- **Frontend-initiated DBC changes now re-anchor twice**: once
+  synchronously at the call site, once when the coalesced announcement
+  arrives ~250 ms later. Deliberate — the call-site bump is what keeps a
+  user's own gesture instant — but a user adding a DBC does pay two
+  rounds of re-page. Removing the call-site bumps would make the carrier
+  the single cause; not done here because it widens the change into
+  `App`'s project lifecycle for no measured gain.
+- **No UI verification.** Every claim above comes from tests and
+  code-level measurement; nothing was checked by driving the GUI, per
+  the standing rule against UI automation on the owner's machine.

@@ -4333,10 +4333,10 @@ fn bench_blf_import() {
 //   The slot's `db` is swapped and its bus scoping is left alone.
 // - **The watcher reload** — `dbc_watcher::reload_one`. Swaps the same
 //   slot the same way, then calls the same
-//   [`invalidate_derived_caches`]; it differs from the reload above in
-//   exactly one thing a view can see, the `dbc-changed` event it emits.
-//   Not exercised here: it takes an `AppHandle`, and this crate has no
-//   Tauri mock-app harness.
+//   [`invalidate_derived_caches`] and the same announcement every other
+//   path makes (ADR 0053 §2), so nothing a view can see distinguishes
+//   it from the reload above. Not exercised here: it takes an
+//   `AppHandle`, and this crate has no Tauri mock-app harness.
 // - **Replace** — a *different* file installed and the old one removed.
 //   Two DBC-set changes, with both databases loaded in between.
 //
@@ -4590,4 +4590,53 @@ fn a_replacement_dbc_does_not_inherit_the_bus_scoping_of_the_file_it_replaced() 
     let cold = ab_cold_store(200);
     assert_eq!(ab_serve(&state, &cold, Some("pt"), "A"), 200);
     assert_eq!(ab_serve(&state, &cold, Some("pt"), "B"), 200);
+}
+
+// ---- A `VAL_` renamed on disk -------------------------------------
+//
+// Task 27's exit criterion, host half. The watcher's `reload_one` is
+// `install_dbc` under the path already loaded, plus the announcement
+// (ADR 0053 §2) — and the announcement needs an `AppHandle`, which this
+// crate cannot build in a test (see the module note under
+// `dbc_watcher::tests`). What *is* testable here is the half the
+// frontend depends on: that after the swap the host answers with the
+// new label rather than the one it was serving a moment ago. The half
+// that carries it to a view is pinned frontend-side.
+
+/// Message 256 with one enum signal `Mode`, whose raw `0` is named
+/// `zero_label` — the one thing a `VAL_` rename moves.
+fn mode_dbc_text(zero_label: &str) -> String {
+    format!(
+        "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\nBO_ 256 Msg: 8 ECU\n \
+         SG_ Mode : 0|8@1+ (1,0) [0|0] \"\" Vector__XXX\n\n\
+         VAL_ 256 Mode 0 \"{zero_label}\" 1 \"On\" ;\n"
+    )
+}
+
+fn mode_labels(state: &AppState) -> Vec<String> {
+    crate::dbc_commands::list_value_tables_inner(state, 256, false, "Mode", false, None)
+        .into_iter()
+        .map(|e| e.label)
+        .collect()
+}
+
+#[test]
+fn a_val_rename_reloaded_in_place_is_what_the_value_table_lookup_answers() {
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "mode.dbc", &mode_dbc_text("Off")).unwrap();
+    assert_eq!(mode_labels(&state), vec!["Off", "On"]);
+
+    // The file is edited outside the app and re-read under the same
+    // identity — what `dbc_watcher::reload_one` does to the loaded set.
+    let installed =
+        crate::dbc_commands::install_dbc(&state, "mode.dbc", &mode_dbc_text("Standby")).unwrap();
+    assert!(
+        installed.reloaded,
+        "same identity -> a swap, not a second entry"
+    );
+    assert_eq!(
+        mode_labels(&state),
+        vec!["Standby", "On"],
+        "the lookup answers off the swapped database, with no cache in the way",
+    );
 }

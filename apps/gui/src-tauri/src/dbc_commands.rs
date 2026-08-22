@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use cannet_core::CanId;
 use cannet_dbc::{Database, DecodedSignal};
@@ -37,6 +37,26 @@ fn dbc_list(state: &AppState) -> Vec<DbcInfo> {
             buses: d.buses.clone(),
         })
         .collect()
+}
+
+/// Tell every consumer of DBC-derived state that the loaded set
+/// changed ([ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+/// §2): rebuild what the host rebuilds eagerly — RBS rows, calculated
+/// -field resolutions, verification — then emit `dbc-changed`.
+///
+/// **Every** path that changes what the set decodes calls this, and
+/// none of them emits by hand: add, reload in place, re-scope, remove,
+/// clear, the filesystem watcher's reload, the capture-embedded
+/// install. The caller has already invalidated at the point it mutated
+/// (`invalidate_derived_caches`), so a consumer that reacts to the
+/// event cannot read a cache the change has not reached.
+///
+/// `path` names the database that changed, or `"*"` when the whole set
+/// did. It is news for the log, not a filter: a consumer re-asks the
+/// host for whatever it renders rather than diffing the payload.
+pub(crate) fn announce_dbc_change(app: &AppHandle, path: &str) {
+    rbs::refresh_all_elements(app);
+    let _ = app.emit("dbc-changed", path.to_owned());
 }
 
 /// What [`install_dbc`] did with one DBC source.
@@ -138,7 +158,7 @@ pub(crate) fn add_dbc(
             w.watch_dbc(std::path::Path::new(&path));
         }
     }
-    rbs::refresh_all_elements(&app);
+    announce_dbc_change(&app, &path);
     Ok(dbc_list(state.inner()))
 }
 
@@ -162,7 +182,7 @@ pub(crate) fn set_dbc_buses(
         }
     }
     invalidate_derived_caches(state.inner());
-    rbs::refresh_all_elements(&app);
+    announce_dbc_change(&app, &path);
     dbc_list(state.inner())
 }
 
@@ -183,7 +203,7 @@ pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: Strin
             w.unwatch_dbc(std::path::Path::new(&path));
         }
         invalidate_derived_caches(state.inner());
-        rbs::refresh_all_elements(&app);
+        announce_dbc_change(&app, &path);
     }
     dbc_list(state.inner())
 }
@@ -202,7 +222,8 @@ pub(crate) fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
     if count > 0 {
         sys_info!(&app, "dbc", "cleared {count} loaded DBC(s)");
         invalidate_derived_caches(state.inner());
-        rbs::refresh_all_elements(&app);
+        // The whole set changed, so nothing names one database.
+        announce_dbc_change(&app, "*");
     }
     if let Some(w) = state.dbc_watcher().as_mut() {
         w.unwatch_all();
