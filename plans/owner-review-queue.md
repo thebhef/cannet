@@ -163,6 +163,46 @@ final tree, or re-baseline deliberately with the owner's sign-off.**
 Not a licence to promote a baseline to make a run pass — limits still
 ratchet down only.
 
+### 1.10 The perf harness's bus load was a project field, and is now a flag
+[Task 99](tasks/0099-transmit-controls.md) · **the close-out gate cannot be run without reading this**
+
+ADR 0031's render-tier run got its bus traffic from the example
+projects' `"run": true` — which is precisely the open-a-file-and-start
+transmitting that the owner's ruling forbids. Removing persisted run
+state therefore **disarmed the harness silently**: a gate run would have
+connected, measured an idle bus, and passed.
+
+Fixed in `a4009bbb` with an explicit `--rbs-run-on-start`, and the dead
+field removed from `ev-zonal` and `ev-demo`.
+
+**Consequences for the close-out gate, which now has three moving
+parts:**
+
+1. Every run against the current tree **must pass
+   `--rbs-run-on-start`**, or it measures nothing. A gate that passes
+   without it is meaningless, not reassuring.
+2. The control build named in 1.7 (`b6fca9c8~1`, before the DBCs grew)
+   predates the flag and still carries `"run": true`, so it arms itself
+   and must be run *without* the flag. The two invocations differ by
+   design; the load they produce should not.
+3. So a bare "run the gate" at close-out is now wrong in two distinct
+   ways. It needs designing, not repeating.
+
+### 1.11 Unassigning now clears a running RBS element's Run
+[Task 99](tasks/0099-transmit-controls.md) · **changes a landed task 88 phase 4 behaviour**
+
+Phase 4 deliberately left Run set when an unassign stopped an element,
+because Run was mirrored from the project file. That reason is gone with
+persistence, so the asymmetry went with it. Deliberate, recorded, and a
+reversal of something already reviewed and accepted.
+
+### 1.12 `start` on a transmit row is no longer disabled by a disconnected bus
+[Task 99](tasks/0099-transmit-controls.md)
+
+Not named in the exit criteria. Taken because leaving it would have had
+the button refuse what Space now accepts — the owner's no-guard ruling
+applied consistently. `send` stays locked.
+
 ### 2.2 The perf gate is deferred to the end of the chain
 Ruled by the owner 2026-08-21
 
@@ -214,6 +254,7 @@ test or artefact.
 | 97 | Enum value labels on the plot's y axis |
 | 96 | Long signal and `VAL_` names rendering |
 | 94 | Server bind defaults, mDNS honesty, servers panel from the project view |
+| 99 | Transmit controls: kill switch out, run state unpersisted, Space unguarded |
 
 ## 5. Housekeeping owed at close-out
 
@@ -221,4 +262,13 @@ test or artefact.
   Completed tasks are removed; the detail stays in git history.
 - Delete the untracked `scratch-perf/` and `scratch-perf-p6/`
   directories — throwaway harness app-data.
-- Run the render-tier gate once on the final tree (§2.2).
+- Run the render-tier gate once on the final tree (§2.2) — **designed
+  around §1.7 and §1.10, not just repeated**: `--rbs-run-on-start` on
+  the current tree, the `b6fca9c8~1` control without it, and a
+  deliberate decision about the baseline the grown example projects
+  invalidated.
+- Replace the repo's pre-existing ignored mDNS round-trip test, which
+  advertises a real `_cannet._tcp` instance on the LAN. It is the
+  pattern agents copy, and real advertisements collide on the shared
+  hostname and breed near-duplicate servers in the owner's list. No task
+  opened.
