@@ -16,7 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, render, fireEvent, waitFor } from "@testing-library/react";
+import { act, cleanup, render, fireEvent, screen, waitFor } from "@testing-library/react";
 
 import type { RbsView } from "./types";
 
@@ -146,9 +146,9 @@ describe("an RBS file changing on disk", () => {
   it("says nothing while the host has nothing pending", async () => {
     VIEW = view(false);
     renderPanel();
-    // The toolbar's Run control stands in for "the panel has rendered".
+    // The toolbar's Run chip stands in for "the panel has rendered".
     await waitFor(() =>
-      expect(document.querySelector('input[aria-label="run simulation"]')).toBeTruthy(),
+      expect(screen.queryByRole("button", { name: "Run" })).toBeTruthy(),
     );
     expect(document.body.textContent).not.toContain("changed on disk");
   });

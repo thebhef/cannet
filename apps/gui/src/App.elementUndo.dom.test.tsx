@@ -932,8 +932,11 @@ describe("element undo", () => {
     await waitFor(() => {
       if (!document.querySelector(".rbs-panel")) throw new Error("no RBS panel yet");
     });
-    const runBox = () =>
-      document.querySelector<HTMLInputElement>(".rbs-run-toggle input[type=checkbox]")!;
+    const runChip = () =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>(".rbs-panel button")).find(
+        (b) => b.getAttribute("aria-label") === "Run" || b.textContent === "Run",
+      )!;
+    const runPressed = () => runChip().getAttribute("aria-pressed") === "true";
 
     // A view change (undoable) …
     await act(async () => {
@@ -942,10 +945,10 @@ describe("element undo", () => {
     expect(traceMode()).toBe("Trace");
     // … then a bus-facing one (never undoable): arm the simulation.
     await act(async () => {
-      fireEvent.click(runBox());
+      fireEvent.click(runChip());
     });
     await waitFor(() => {
-      if (!runBox().checked) throw new Error("run flag did not take");
+      if (!runPressed()) throw new Error("run flag did not take");
     });
     const armed = rbsHostCalls();
     expect(armed).toContain("rbs_set_run");
@@ -958,7 +961,7 @@ describe("element undo", () => {
     await waitFor(() => {
       if (traceMode() !== "By ID") throw new Error(`undo left mode "${traceMode()}"`);
     });
-    expect(runBox().checked).toBe(true);
+    expect(runPressed()).toBe(true);
     expect(rbsHostCalls()).toEqual(armed);
 
     // Same on the way back out.
@@ -968,7 +971,7 @@ describe("element undo", () => {
     await waitFor(() => {
       if (traceMode() !== "Trace") throw new Error(`redo left mode "${traceMode()}"`);
     });
-    expect(runBox().checked).toBe(true);
+    expect(runPressed()).toBe(true);
     expect(rbsHostCalls()).toEqual(armed);
   }, 30_000);
 });

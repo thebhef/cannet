@@ -518,13 +518,13 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
 
   it("writes Run straight to the host, and reads it back off the view", async () => {
     // Run is session state with one copy — the host's. The panel is a
-    // view over it: the control sends `rbs_set_run` and never touches
-    // the project element, and what the checkbox shows is `view.run`.
+    // view over it: the chip sends `rbs_set_run` and never touches the
+    // project element, and what the chip shows pressed is `view.run`.
     VIEW = sampleView();
     const { updates } = renderPanel("/tmp/sim.cannet_rbs");
-    const box = (await screen.findByLabelText("run simulation")) as HTMLInputElement;
-    expect(box.checked).toBe(false);
-    fireEvent.click(box);
+    const chip = await screen.findByRole("button", { name: "Run" });
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(chip);
     await waitFor(() => expect(lastCall("rbs_set_run")).toBeDefined());
     expect(lastCall("rbs_set_run")?.args).toMatchObject({ elementId: "el", run: true });
     expect(updates).toEqual([]);
@@ -536,7 +536,7 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
       emitHost("rbs-changed", "el");
     });
     await waitFor(() =>
-      expect((screen.getByLabelText("run simulation") as HTMLInputElement).checked).toBe(true),
+      expect(screen.getByRole("button", { name: "Run" })).toHaveAttribute("aria-pressed", "true"),
     );
   });
 
