@@ -84,8 +84,9 @@ content inside a row is reached by Tab, not by the grid cursor.
 | Escape (in a row's content) | back to the container, cursor intact | ″ | ″ |
 
 Space, not Enter, is the action key, and the action is the panel's
-to define (transmit: send the focused message once); expansion is
-already covered by Left/Right, so no default action is bound.
+to define (transmit: send the focused frame once, or start / stop it
+when the row is periodic); expansion is already covered by Left/Right,
+so no default action is bound.
 
 **The layer owns the way into a row's content, and the way back
 out.** Tab pressed on the container moves focus to the cursor row's

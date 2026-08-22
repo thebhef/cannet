@@ -1735,7 +1735,12 @@ The collapsed face is the everyday control surface:
   the message's cycle-time (not a UI-rate `setInterval`); removing
   the message, flipping back to manual, or stopping it ends the loop,
   and reopening a project leaves every periodic stopped until you
-  press `start`.
+  press `start`. **Space** does whichever of these the cursor's row
+  calls for — a one-shot row sends, a periodic row starts or stops —
+  the same key the RBS panel uses for its own rows. With no bus
+  connected there is nowhere to send, so a send is silently nothing
+  and is never queued; a periodic still starts, and puts frames out
+  once its bus connects.
 - **Identity strip.** Description, bus, hex id, the DBC message name
   when the id matches a loaded DBC, and a per-frame `×` remove
   (confirm-on-click so an accidental tap doesn't drop a frame).

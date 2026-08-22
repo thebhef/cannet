@@ -302,6 +302,10 @@ export function TransmitPanel(props: IDockviewPanelProps) {
     for (const r of pool) m.set(r.id, r.running);
     return m;
   }, [pool]);
+  /// Read by the Space handler, which is memoised against the grid and
+  /// must not be rebuilt every time a row's schedule state moves.
+  const runningByIdRef = useRef(runningById);
+  runningByIdRef.current = runningById;
 
   const sendOnce = useCallback((id: string) => {
     void invoke("transmit_frame_once", { id }).catch(() => {});
@@ -369,15 +373,28 @@ export function TransmitPanel(props: IDockviewPanelProps) {
   const expandedIdsRef = useRef(expandedIds);
   expandedIdsRef.current = expandedIds;
   /// ADR 0044's Space: the panel's primary action on the cursor's row.
-  /// Gated exactly like the row's own send button — an unconnected bus
-  /// has nothing to send to.
+  /// The row's kind decides which action that is — a one-shot row
+  /// fires, a periodic row starts or stops — so there is one idiom
+  /// across both, and never two answers for one key.
+  ///
+  /// No connection guard: with no bus connected there is nowhere to
+  /// send, so a manual row's send is silently nothing and is never
+  /// queued. A periodic still toggles — the scheduler is what parks a
+  /// row whose bus has no route (ADR 0039), and its state is the
+  /// user's intent, not a claim that frames are going out.
   const onPrimaryAction = useCallback(
     (id: string) => {
       const f = framesRef.current.find((x) => x.id === id);
-      if (!f || !isConnected(f.busId)) return;
+      if (!f) return;
+      if (f.cycleMode === "periodic") {
+        if (runningByIdRef.current.get(id) === true) stopCyclic(id);
+        else startCyclic(id);
+        return;
+      }
+      if (!isConnected(f.busId)) return;
       sendOnce(id);
     },
-    [isConnected, sendOnce],
+    [isConnected, sendOnce, startCyclic, stopCyclic],
   );
   const grid = useGridview({
     adapter,
