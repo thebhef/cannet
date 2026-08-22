@@ -1168,6 +1168,18 @@ close saves silently instead; see below. Not carried in
 the project: a trace's window
 position (it re-anchors to the session buffer on each launch anyway),
 and the BLF replay path.
+The open project file is watched on disk, the way a loaded DBC is —
+edit it in another tool (or pull a new revision) and cannet picks the
+change up. Unlike a DBC it is not applied blindly, because cannet
+writes this file too: it re-opens the project silently only when there
+is nothing to lose — no unsaved changes and no session up — and
+otherwise says *Project changed on disk* beside the status readout,
+with **Reload** and **Dismiss**. Reload is the only thing that applies
+it, and it is an ordinary project open: unsaved changes go, and the
+session is dropped and re-rooted. Dismiss keeps what you have (and the
+next Save overwrites the file). A project file that is mid-edit and
+won't parse is logged and ignored, and one that disappears doesn't
+close the project.
 
 **The project directory.** To keep a project's data with the project
 rather than in cannet's cache, make a `.cannet/` folder next to the

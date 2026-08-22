@@ -155,7 +155,7 @@ pub(crate) fn add_dbc(
         // Start watching this file's parent dir for FS
         // events (only on first-load — a reload is already watched).
         if let Some(w) = state.dbc_watcher().as_mut() {
-            w.watch_dbc(std::path::Path::new(&path));
+            w.watch_file(std::path::Path::new(&path));
         }
     }
     announce_dbc_change(&app, &path);
@@ -200,7 +200,7 @@ pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: Strin
     if removed {
         sys_info!(&app, "dbc", "removed DBC {path}");
         if let Some(w) = state.dbc_watcher().as_mut() {
-            w.unwatch_dbc(std::path::Path::new(&path));
+            w.unwatch_file(std::path::Path::new(&path));
         }
         invalidate_derived_caches(state.inner());
         announce_dbc_change(&app, &path);
@@ -213,20 +213,26 @@ pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: Strin
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn clear_dbcs(app: AppHandle, state: State<'_, AppState>) {
-    let count = {
+    let cleared: Vec<String> = {
         let mut list = state.databases();
-        let n = list.len();
+        let paths = list.iter().map(|d| d.path.clone()).collect();
         list.clear();
-        n
+        paths
     };
-    if count > 0 {
-        sys_info!(&app, "dbc", "cleared {count} loaded DBC(s)");
+    if !cleared.is_empty() {
+        sys_info!(&app, "dbc", "cleared {} loaded DBC(s)", cleared.len());
         invalidate_derived_caches(state.inner());
         // The whole set changed, so nothing names one database.
         announce_dbc_change(&app, "*");
     }
+    // Unwatch the paths this actually unloaded, rather than dropping
+    // every watch: the open project file rides on the same watch set
+    // (`crate::project_watch`), and opening a project runs this command
+    // first.
     if let Some(w) = state.dbc_watcher().as_mut() {
-        w.unwatch_all();
+        for path in &cleared {
+            w.unwatch_file(std::path::Path::new(path));
+        }
     }
 }
 /// Decode a raw frame against the loaded DBCs, in order — the first
