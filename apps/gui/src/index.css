@@ -5124,6 +5124,21 @@ button.color-chip {
   color: var(--text-faint);
   font-size: 11px;
 }
+/* Which layer a calculated-field section came from — the same
+   Default / Override vocabulary the RBS signals grid uses. */
+.calc-provenance {
+  font-weight: 600;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  color: var(--surface-app);
+}
+.calc-provenance--override {
+  background: var(--modified-marker);
+}
+.calc-provenance--default {
+  background: var(--text-dim);
+}
 .calc-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

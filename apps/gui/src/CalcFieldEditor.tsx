@@ -4,13 +4,18 @@
 // and the transmit panel (per-message override on the TX entry) — one
 // mechanism, two consumers.
 //
-// The editor produces *override specs*; clearing a section restores
-// the DBC-declared default for that field (an override replaces the
-// default wholesale, per field). Validation here is shape-level
-// (numbers parse, ranges byte-aligned, prefix is whole hex bytes,
-// named XOR raw); placement-level errors (unknown signal, range
-// overlapping the destination) surface from the host as system-log
-// warnings when the config resolves.
+// The editor shows the *effective* designation — the project's
+// override for a field, else the DBC's declared default for it — and
+// says which layer each section came from, in the Default / Override
+// vocabulary the RBS signals grid already uses. It produces *override
+// specs*: a section left tracking its DBC default writes no override,
+// editing one makes it an override of that field alone, and clearing
+// a section restores the DBC-declared default for that field (an
+// override replaces the default wholesale, per field). Validation
+// here is shape-level (numbers parse, ranges byte-aligned, prefix is
+// whole hex bytes, named XOR raw); placement-level errors (unknown
+// signal, range overlapping the destination) surface from the host as
+// system-log warnings when the config resolves.
 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
@@ -24,8 +29,9 @@ export interface CalcFieldEditorProps {
   messageLabel: string;
   /// Signal names on the message (destination pickers).
   signalNames: string[];
-  /// The DBC-declared defaults, for the "default" placeholders and
-  /// the effect of clearing an override. `null` = none declared.
+  /// The DBC-declared defaults (`CannetCounter` / `CannetCrc`). A
+  /// field the override layer leaves alone is shown from here, and
+  /// clearing an override falls back to it. `null` = none declared.
   dbcDefaults: CalcFieldsSpec | null;
   /// The current override (absent fields fall back to the DBC layer).
   current: CalcFieldsSpec | null;
@@ -53,13 +59,24 @@ export function CalcFieldEditor({
   onSave,
   onCancel,
 }: CalcFieldEditorProps) {
+  // What the controls show: the override for a field when there is
+  // one, else the DBC's declared default for it. The two layers are
+  // per field (ADR 0027), so a message can have an overridden counter
+  // and a DBC-declared CRC at once and both must come up populated.
   const effective = useMemo<CalcFieldsSpec>(
     () => ({
-      counter: current?.counter ?? null,
-      crc: current?.crc ?? null,
+      counter: current?.counter ?? dbcDefaults?.counter ?? null,
+      crc: current?.crc ?? dbcDefaults?.crc ?? null,
     }),
-    [current],
+    [current, dbcDefaults],
   );
+
+  // Whether the user has edited a section since the modal opened.
+  // A section that still mirrors its DBC default writes no override —
+  // opening the editor and applying it must not silently copy the
+  // DBC's designation into the project.
+  const [counterEdited, setCounterEdited] = useState(false);
+  const [crcEdited, setCrcEdited] = useState(false);
 
   // --- counter section state ---
   const presetCounter = preset?.role === "counter" ? preset.signal : null;
@@ -123,9 +140,34 @@ export function CalcFieldEditor({
 
   const [error, setError] = useState<string | null>(null);
 
+  const defaultCounter = dbcDefaults?.counter ?? null;
+  const defaultCrc = dbcDefaults?.crc ?? null;
+
+  /// Which layer a section belongs to once applied: an override stays
+  /// one, an edited section becomes one, and a section with no DBC
+  /// default behind it can only be one. The negative case — on, from
+  /// the DBC, untouched — is the one that writes nothing.
+  const counterIsOverride = current?.counter != null || counterEdited || defaultCounter == null;
+  const crcIsOverride = current?.crc != null || crcEdited || defaultCrc == null;
+
+  /// Wrap a section's setter so editing anything in it moves that
+  /// field from the DBC layer to the project's.
+  const editCounter =
+    <T,>(set: (v: T) => void) =>
+    (v: T) => {
+      setCounterEdited(true);
+      set(v);
+    };
+  const editCrc =
+    <T,>(set: (v: T) => void) =>
+    (v: T) => {
+      setCrcEdited(true);
+      set(v);
+    };
+
   const handleSave = () => {
     let counter: CounterSpec | null = null;
-    if (counterOn) {
+    if (counterOn && counterIsOverride) {
       const inc = Math.floor(Number(increment));
       if (!Number.isFinite(inc) || inc < 1) {
         setError("counter increment must be a positive integer");
@@ -143,7 +185,7 @@ export function CalcFieldEditor({
     }
 
     let crc: CrcSpec | null = null;
-    if (crcOn) {
+    if (crcOn && crcIsOverride) {
       const start = Math.floor(Number(rangeStart));
       const len = Math.floor(Number(rangeLen));
       if (!Number.isFinite(start) || !Number.isFinite(len) || len <= 0) {
@@ -196,8 +238,16 @@ export function CalcFieldEditor({
     onSave(counter == null && crc == null ? null : { counter, crc });
   };
 
-  const defaultCounter = dbcDefaults?.counter ?? null;
-  const defaultCrc = dbcDefaults?.crc ?? null;
+  /// The Default / Override chip a populated section carries — the
+  /// same vocabulary the RBS signals grid uses for the same fact.
+  const provenance = (isOverride: boolean) => (
+    <span
+      className={`calc-provenance calc-provenance--${isOverride ? "override" : "default"}`}
+      data-testid="calc-provenance"
+    >
+      {isOverride ? "Override" : "Default"}
+    </span>
+  );
 
   // Rendered through a portal: the backdrop is `position: fixed` over
   // the whole window, and one of its call sites (the transmit panel's
@@ -218,7 +268,8 @@ export function CalcFieldEditor({
               aria-label="counter configured"
             />
             <span>Sequence counter</span>
-            {defaultCounter && (
+            {counterOn && provenance(counterIsOverride)}
+            {counterIsOverride && defaultCounter && (
               <span className="calc-default-hint">
                 DBC default: {defaultCounter.signal}
               </span>
@@ -231,7 +282,7 @@ export function CalcFieldEditor({
                 <Combobox
                   options={signalNames.map((n) => ({ value: n, label: n }))}
                   value={counterSignal}
-                  onChange={setCounterSignal}
+                  onChange={editCounter(setCounterSignal)}
                   ariaLabel="counter signal"
                 />
               </label>
@@ -239,7 +290,7 @@ export function CalcFieldEditor({
                 increment
                 <input
                   value={increment}
-                  onChange={(e) => setIncrement(e.target.value)}
+                  onChange={(e) => editCounter(setIncrement)(e.target.value)}
                   aria-label="counter increment"
                 />
               </label>
@@ -248,7 +299,7 @@ export function CalcFieldEditor({
                 <input
                   value={rollover}
                   placeholder="signal width"
-                  onChange={(e) => setRollover(e.target.value)}
+                  onChange={(e) => editCounter(setRollover)(e.target.value)}
                   aria-label="counter rollover"
                 />
               </label>
@@ -265,7 +316,8 @@ export function CalcFieldEditor({
               aria-label="crc configured"
             />
             <span>CRC</span>
-            {defaultCrc && (
+            {crcOn && provenance(crcIsOverride)}
+            {crcIsOverride && defaultCrc && (
               <span className="calc-default-hint">DBC default: {defaultCrc.signal}</span>
             )}
           </label>
@@ -276,7 +328,7 @@ export function CalcFieldEditor({
                 <Combobox
                   options={signalNames.map((n) => ({ value: n, label: n }))}
                   value={crcSignal}
-                  onChange={setCrcSignal}
+                  onChange={editCrc(setCrcSignal)}
                   ariaLabel="crc signal"
                 />
               </label>
@@ -284,7 +336,7 @@ export function CalcFieldEditor({
                 <input
                   type="checkbox"
                   checked={useRaw}
-                  onChange={(e) => setUseRaw(e.target.checked)}
+                  onChange={(e) => editCrc(setUseRaw)(e.target.checked)}
                   aria-label="raw parameters"
                 />
                 raw Rocksoft parameters
@@ -293,25 +345,25 @@ export function CalcFieldEditor({
                 <>
                   <label>
                     width
-                    <input value={width} onChange={(e) => setWidth(e.target.value)} aria-label="crc width" />
+                    <input value={width} onChange={(e) => editCrc(setWidth)(e.target.value)} aria-label="crc width" />
                   </label>
                   <label>
                     poly
-                    <input value={poly} onChange={(e) => setPoly(e.target.value)} aria-label="crc poly" />
+                    <input value={poly} onChange={(e) => editCrc(setPoly)(e.target.value)} aria-label="crc poly" />
                   </label>
                   <label>
                     init
-                    <input value={init} placeholder="0" onChange={(e) => setInit(e.target.value)} aria-label="crc init" />
+                    <input value={init} placeholder="0" onChange={(e) => editCrc(setInit)(e.target.value)} aria-label="crc init" />
                   </label>
                   <label>
                     xorout
-                    <input value={xorout} placeholder="0" onChange={(e) => setXorout(e.target.value)} aria-label="crc xorout" />
+                    <input value={xorout} placeholder="0" onChange={(e) => editCrc(setXorout)(e.target.value)} aria-label="crc xorout" />
                   </label>
                   <label className="calc-raw-toggle">
                     <input
                       type="checkbox"
                       checked={refin}
-                      onChange={(e) => setRefin(e.target.checked)}
+                      onChange={(e) => editCrc(setRefin)(e.target.checked)}
                     />
                     refin
                   </label>
@@ -319,7 +371,7 @@ export function CalcFieldEditor({
                     <input
                       type="checkbox"
                       checked={refout}
-                      onChange={(e) => setRefout(e.target.checked)}
+                      onChange={(e) => editCrc(setRefout)(e.target.checked)}
                     />
                     refout
                   </label>
@@ -333,7 +385,7 @@ export function CalcFieldEditor({
                       label: n,
                     }))}
                     value={algorithm}
-                    onChange={setAlgorithm}
+                    onChange={editCrc(setAlgorithm)}
                     ariaLabel="crc algorithm"
                   />
                 </label>
@@ -342,7 +394,7 @@ export function CalcFieldEditor({
                 range start (bits)
                 <input
                   value={rangeStart}
-                  onChange={(e) => setRangeStart(e.target.value)}
+                  onChange={(e) => editCrc(setRangeStart)(e.target.value)}
                   aria-label="crc range start"
                 />
               </label>
@@ -350,7 +402,7 @@ export function CalcFieldEditor({
                 range length (bits)
                 <input
                   value={rangeLen}
-                  onChange={(e) => setRangeLen(e.target.value)}
+                  onChange={(e) => editCrc(setRangeLen)(e.target.value)}
                   aria-label="crc range length"
                 />
               </label>
@@ -359,7 +411,7 @@ export function CalcFieldEditor({
                 <input
                   value={prefix}
                   placeholder="none"
-                  onChange={(e) => setPrefix(e.target.value)}
+                  onChange={(e) => editCrc(setPrefix)(e.target.value)}
                   aria-label="crc prefix"
                   title="Bytes prepended to the ranged data before computing — an AUTOSAR E2E Data ID"
                 />
