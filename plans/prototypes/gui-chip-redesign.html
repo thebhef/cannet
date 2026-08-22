@@ -83,8 +83,15 @@ ul.q li { margin:.3rem 0; }
    commands — 2px radius, --border-wash hairline, 12px type, ~22px
    tall, the full idle/connecting/connected/degraded/failed state
    vocabulary. State tints the hairline and the dot; nothing resizes
-   (the shipped component tests exactly that invariant). */
-.chip { display:inline-flex; align-items:center; gap:.35rem; font:inherit;
+   (the shipped component tests exactly that invariant).
+   In the app this is not a second class: the command chip
+   (ChipButton.tsx) carries `.status-chip` *and* `.chip-button`, so the
+   hairline, the radius, the dot, the badge and every state tint are
+   the shipped status chip's own declarations, and `.chip-button` adds
+   only the 22px density, the icon, the pressed state and the focus
+   ring. The dot appears only on a chip that carries a state — and then
+   in every one of its states, idle included. */
+.chip { display:inline-flex; align-items:center; gap:.4rem; font:inherit;
   font-size:12px; height:22px; color:var(--text-body); cursor:pointer;
   background:var(--surface-toolbar-control);
   border:1px solid var(--border-wash); border-radius:2px;
@@ -92,7 +99,7 @@ ul.q li { margin:.3rem 0; }
   transition:background .12s, border-color .12s; }
 .chip:hover { background:var(--surface-toolbar-control-hover); }
 .chip:focus-visible { outline:2px solid var(--accent-marker); outline-offset:1px; }
-.chip:disabled { color:var(--text-dim); cursor:default; }
+.chip:disabled { opacity:.7; cursor:default; }
 .chip:disabled:hover { background:var(--surface-toolbar-control); }
 .chip svg { width:13px; height:13px; flex:none; stroke:currentColor;
   fill:none; stroke-width:1.4; stroke-linecap:round; stroke-linejoin:round; }
