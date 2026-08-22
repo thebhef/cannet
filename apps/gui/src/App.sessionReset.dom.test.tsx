@@ -175,6 +175,15 @@ function grew(count: number): TraceGrew {
   };
 }
 
+/// The connection control: a status chip in the bar rather than a
+/// toolbar button, so it is found by its own class and its state reads
+/// off its accessible name.
+function connectionChip(): HTMLButtonElement {
+  const chip = document.querySelector<HTMLButtonElement>("button.status-chip--connection");
+  if (!chip) throw new Error("no connection chip");
+  return chip;
+}
+
 function findButton(label: string): HTMLButtonElement {
   const btn = Array.from(
     document.querySelectorAll<HTMLButtonElement>("button"),
@@ -258,14 +267,14 @@ describe("session-reset error policies", () => {
     });
     // Connect enables once the project's binding lands in state.
     await waitFor(() => {
-      if (findButton("Connect").disabled) throw new Error("Connect still disabled");
+      if (connectionChip().disabled) throw new Error("Connect still disabled");
     });
     await driveSession(5000);
 
     rig.failClear = true;
     const callsBefore = invokeCalls.length;
     await act(async () => {
-      fireEvent.click(findButton("Connect"));
+      fireEvent.click(connectionChip());
     });
 
     await waitFor(() => {
