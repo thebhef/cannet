@@ -47,8 +47,21 @@ pub struct BlfScan {
     /// Every `GLOBAL_MARKER` in the file, in file order, decoded.
     pub markers: Vec<ScannedMarker>,
     /// The file's measurement start time (ns since the UNIX epoch) —
-    /// the wall clock the per-event timestamps are relative to.
+    /// the wall clock the per-event timestamps are relative to. Zero
+    /// when the file states none, which an `unfinalized` capture never
+    /// does.
     pub start_unix_nanos: u64,
+    /// True when the file still carries the placeholder header its
+    /// writer stamped at open — the writer never finished. Everything
+    /// this scan reports was derived from the walk, so the counts hold;
+    /// what such a file cannot supply is its wall clock (see
+    /// `start_unix_nanos`).
+    pub unfinalized: bool,
+    /// Size of the incomplete record at the end of the file, when the
+    /// walk met one. Everything before it is in the counts above; the
+    /// fragment itself, and whatever the writer still had buffered, is
+    /// lost.
+    pub truncated_tail_bytes: Option<u64>,
 }
 
 /// One `GLOBAL_MARKER` found by [`scan_blf`], with its timestamp already
@@ -101,6 +114,7 @@ fn relative_timestamp_ns(object_bytes: &[u8]) -> Option<u64> {
 pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
     let mut reader = BlfReader::open(path)?;
     let start_unix_nanos = reader.start_unix_nanos();
+    let unfinalized = reader.file_statistics().is_unfinalized();
     let mut channels: BTreeSet<u8> = BTreeSet::new();
     let mut frame_count = 0u64;
     let mut first_timestamp_ns: Option<u64> = None;
@@ -133,6 +147,10 @@ pub fn scan_blf<P: AsRef<Path>>(path: P) -> Result<BlfScan, BlfSourceError> {
         last_timestamp_ns,
         markers,
         start_unix_nanos,
+        unfinalized,
+        // Read after the walk: the fragment is at the end of the file,
+        // so the reader can only have met it once it got there.
+        truncated_tail_bytes: reader.truncated_tail_bytes(),
     })
 }
 

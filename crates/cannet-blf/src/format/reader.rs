@@ -8,6 +8,25 @@
 //! buffer and refills it from disk as needed. This matches what
 //! every other BLF implementation does (Vector's own reference,
 //! `vector_blf`, `blf_asc`).
+//!
+//! ## A file whose writer never finished
+//!
+//! A writer killed mid-run leaves the placeholder `FileStatistics` it
+//! stamped at open — no object count, no file size, no measurement
+//! start — and, if it buffered its writes, a trailing fragment of a
+//! record it never completed. Neither stops this reader: the walk is
+//! bounded by end of file rather than by the header's counts, and a
+//! trailing fragment ends it the same way a clean end of file does,
+//! keeping every whole object that precedes it. The fragment's size is
+//! reported by [`BlfReader::truncated_tail_bytes`] so a caller can say
+//! what it recovered.
+//!
+//! The tolerance stops there. Damage anywhere but the very end — a bad
+//! record signature, a container that will not inflate — is still an
+//! error, because recovering past it would mean guessing where the next
+//! record begins. And recovery is strictly read-only: nothing here
+//! writes the file back, so a damaged capture is byte-identical after
+//! being read.
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -96,9 +115,6 @@ pub enum BlfReadError {
     /// A `CAN_STATISTIC` / `DATA_LOST_BEGIN` / `DATA_LOST_END`
     /// failed to decode.
     Diagnostic(DiagnosticError),
-    /// The file ended mid-object — we had the base header but the
-    /// body was truncated.
-    UnexpectedEof,
 }
 
 impl std::fmt::Display for BlfReadError {
@@ -113,7 +129,6 @@ impl std::fmt::Display for BlfReadError {
             Self::Marker(e) => write!(f, "BLF GLOBAL_MARKER decode failed: {e}"),
             Self::Text(e) => write!(f, "BLF text-annotation decode failed: {e}"),
             Self::Diagnostic(e) => write!(f, "BLF diagnostic decode failed: {e}"),
-            Self::UnexpectedEof => write!(f, "BLF ended mid-object"),
         }
     }
 }
@@ -129,7 +144,6 @@ impl std::error::Error for BlfReadError {
             Self::Marker(e) => Some(e),
             Self::Text(e) => Some(e),
             Self::Diagnostic(e) => Some(e),
-            Self::UnexpectedEof => None,
         }
     }
 }
@@ -195,6 +209,9 @@ pub struct BlfReader {
     /// while `tail` still has whole objects; `next_object` returns
     /// `Ok(None)` once both are exhausted.
     disk_eof: bool,
+    /// Size of the incomplete record the walk stopped on, once one has
+    /// been met. See [`Self::truncated_tail_bytes`].
+    truncated_tail_bytes: Option<u64>,
 }
 
 impl BlfReader {
@@ -218,7 +235,31 @@ impl BlfReader {
             tail: Vec::new(),
             tail_pos: 0,
             disk_eof: false,
+            truncated_tail_bytes: None,
         })
+    }
+
+    /// Size of the incomplete record the walk stopped on, or `None`
+    /// while none has been met.
+    ///
+    /// Only meaningful once the walk has run to completion — the
+    /// fragment is at the end of the file, so nothing before the last
+    /// `Ok(None)` can have seen it. A `Some` says the writer never
+    /// finished its last record and everything this reader yielded is
+    /// what survived; the bytes are the on-disk fragment, or the
+    /// inflated remainder when a container's payload is what ends
+    /// mid-object.
+    pub fn truncated_tail_bytes(&self) -> Option<u64> {
+        self.truncated_tail_bytes
+    }
+
+    /// Record the incomplete record the walk stopped on. First one
+    /// wins: a fragment on disk is the cause, and the inflated
+    /// remainder it leaves behind is only its consequence.
+    fn note_trailing_fragment(&mut self, bytes: usize) {
+        if bytes > 0 && self.truncated_tail_bytes.is_none() {
+            self.truncated_tail_bytes = Some(bytes as u64);
+        }
     }
 
     /// Parsed `FileStatistics` header — measurement start time,
@@ -255,6 +296,8 @@ impl BlfReader {
             // Make sure we have at least the 16-byte base header.
             if self.tail.len() - self.tail_pos < OBJECT_HEADER_BASE_BYTES {
                 if !self.pull_one_container()? {
+                    let resident = self.tail.len() - self.tail_pos;
+                    self.note_trailing_fragment(resident);
                     return Ok(None);
                 }
                 continue;
@@ -265,10 +308,23 @@ impl BlfReader {
             // under usize::MAX on any platform we target.
             let advance = usize::try_from(base.advance_bytes())
                 .expect("advance_bytes ≤ object_size + 3 fits in usize");
+            let object_size = base.object_size as usize;
             // Make sure we have the full object + its padding.
             while self.tail.len() - self.tail_pos < advance {
                 if !self.pull_one_container()? {
-                    return Err(BlfReadError::UnexpectedEof);
+                    let resident = self.tail.len() - self.tail_pos;
+                    if resident >= object_size {
+                        // Only the inter-object padding is missing, so
+                        // the object itself is whole. Yield it and end
+                        // the walk on the shortened advance — nothing
+                        // was lost, so there is no fragment to report.
+                        return Ok(Some((base, self.tail_pos, resident)));
+                    }
+                    // The inflated stream ends mid-object: keep what
+                    // came before and stop here rather than failing the
+                    // whole file.
+                    self.note_trailing_fragment(resident);
+                    return Ok(None);
                 }
             }
             return Ok(Some((base, self.tail_pos, advance)));
@@ -356,21 +412,28 @@ impl BlfReader {
         }
         loop {
             let mut base_buf = [0u8; OBJECT_HEADER_BASE_BYTES];
-            if !read_exact_or_eof(&mut self.file, &mut base_buf)? {
+            let got = read_up_to(&mut self.file, &mut base_buf)?;
+            if got < OBJECT_HEADER_BASE_BYTES {
+                // `got == 0` is a clean end of file; anything else is a
+                // record the writer never finished, which ends the walk
+                // the same way — everything before it stands.
                 self.disk_eof = true;
+                self.note_trailing_fragment(got);
                 return Ok(false);
             }
             let base = ObjectHeaderBase::parse(&base_buf).map_err(BlfReadError::TopLevelHeader)?;
             let body_len = base.object_size as usize - OBJECT_HEADER_BASE_BYTES;
             let padding = (base.object_size % 4) as usize;
             let mut body = vec![0u8; body_len + padding];
-            self.file.read_exact(&mut body).map_err(|e| {
-                if e.kind() == io::ErrorKind::UnexpectedEof {
-                    BlfReadError::UnexpectedEof
-                } else {
-                    BlfReadError::Io(e)
-                }
-            })?;
+            let got = read_up_to(&mut self.file, &mut body)?;
+            if got < body_len {
+                // The record's own bytes are incomplete. A short read
+                // that only clipped the inter-object padding is not:
+                // the record is whole, so it is decoded below.
+                self.disk_eof = true;
+                self.note_trailing_fragment(OBJECT_HEADER_BASE_BYTES + got);
+                return Ok(false);
+            }
             if base.object_type != object_type::LOG_CONTAINER {
                 // Top-level non-container — skip past it. Vector's
                 // spec doesn't define non-container top-level objects,
@@ -389,26 +452,19 @@ impl BlfReader {
     }
 }
 
-/// Read until `buf` is filled, returning `Ok(false)` if EOF is hit
-/// before reading any bytes (a clean end-of-file) and propagating
-/// `UnexpectedEof` if we got some bytes but not enough.
-fn read_exact_or_eof(file: &mut File, buf: &mut [u8]) -> io::Result<bool> {
+/// Read until `buf` is filled or the file ends, returning how many
+/// bytes landed in `buf`. A short count is the caller's signal that the
+/// file ended there — a clean end of file at 0, an unfinished record
+/// otherwise.
+fn read_up_to(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
     let mut read = 0;
     while read < buf.len() {
         match file.read(&mut buf[read..])? {
-            0 => {
-                if read == 0 {
-                    return Ok(false);
-                }
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "short read of BLF object header",
-                ));
-            }
+            0 => break,
             n => read += n,
         }
     }
-    Ok(true)
+    Ok(read)
 }
 
 #[cfg(test)]
