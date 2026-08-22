@@ -75,7 +75,8 @@ filter editor) and listed wherever elements are listed, but the
 
 - **Project element, not DBC:** the DBC is read-only in our stack;
   project state is where mutable, user-authored overlays already live
-  (calculated-field overrides, layout, RBS run flags).
+  (calculated-field overrides, layout, the RBS element's file
+  reference).
 - **Standalone, not wired:** coloring is a presentation concern that
   should *just apply* wherever the signal appears. Wiring each
   trace/plot to a colormap (the filter model) would be ceremony with
