@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { IDockviewPanelProps } from "dockview";
 
 // A stand-in for the host's `settings.json`. `stored` is mutable so a
@@ -177,5 +177,40 @@ describe("SystemMessagesPanel horizontal scroll", () => {
       ".system-messages-scroll-content",
     ) as HTMLElement;
     expect(content.style.getPropertyValue("--system-messages-message-chars")).toBe("0");
+  });
+});
+
+describe("SystemMessagesPanel toolbar buttons", () => {
+  // Copy All and Clear are adjacent chips with opposite blast radii —
+  // one reads the clipboard, the other wipes the log — so a test that
+  // only checks "a click did something" cannot tell one wired to the
+  // other's handler.
+  const msg = (seq: number): SystemMessage => ({
+    seq,
+    source: "sidecar",
+    level: "info",
+    message: `entry ${seq}`,
+    ts_ms: 1_700_000_000_000 + seq,
+  });
+
+  it("Copy All copies without clearing; Clear clears without copying", async () => {
+    await hydrateSettings();
+    const clearSpy = vi.fn();
+    const writeText = vi.fn();
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <SystemLogContext.Provider
+        value={{ messages: [msg(0), msg(1)], unread: 0, clear: clearSpy, markRead: () => {} }}
+      >
+        <SystemMessagesPanel {...panelProps().props} />
+      </SystemLogContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy All" }));
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("entry 0"));
+    expect(clearSpy).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(clearSpy).toHaveBeenCalledTimes(1);
   });
 });
