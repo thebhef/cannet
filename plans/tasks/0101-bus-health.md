@@ -91,9 +91,17 @@ And what is missing:
   both the events and that state machine, naming the events "faults"
   would collide with the one concept genuinely called a fault. The
   displayed label says "Bus Error" for the same reason.
-- **Coalescing is model work.** It happens host-side, before the trace
-  store, not in a renderer (CLAUDE.md § thin views). The uncoalesced
-  frames are counted, not stored.
+- **Coalescing is model work.** It happens host-side, not in a renderer
+  (CLAUDE.md § thin views). ~~The uncoalesced frames are counted, not
+  stored.~~ **Corrected 2026-08-21 while building
+  [task 102](0102-event-surface.md):** that clause contradicts the
+  ruling two sections below, which this task's exit criteria also carry
+  ("a saved capture still contains every error frame that was
+  received"). Frames that are counted and not stored cannot be in the
+  saved capture. **The error frames go into the trace store like any
+  other frame; the coalescing produces a `busError` event beside them,
+  not instead of them.** The write-side contract for that is already
+  built and guarded — see the handoff below.
 
 ## Open questions — grooming
 
@@ -163,6 +171,44 @@ And what is missing:
 - **Who produces `InterfaceState`?** The local driver path and the
   server both need to emit it; today neither does. Scope check: is the
   python-can sidecar in scope, or only local buses?
+
+## What task 102 already built for this task
+
+Landed on `task-102-event-surface`. Phase 3 of the plan below — "host-side
+coalescing into the `busError` event kind, hidden by default" — no longer
+has to invent any of the event machinery:
+
+- **`EventKind::BusError` exists** (`apps/gui/src-tauri/src/notes.rs`) as
+  the first **host-derived** kind — a third source category added to
+  [ADR 0035](../../docs/adr/0035-timeline-event-model.md) for exactly this
+  event. Host-derived means: not editable, not persisted to the scratch,
+  not exported. The displayed label is "Bus Errors"; the default colour is
+  the `eventBusError` theme entry.
+- **It is hidden by default in every surface.** `EVENT_KIND_META`
+  (`apps/gui/src/notes.ts`) declares `visibleByDefault: false`, and the
+  chronological trace, the plot and the events view each carry the shared
+  per-kind checklist that turns it on view-locally. The events view lists
+  the kind with its count even while it is off, so it is findable.
+- **`NotesStore::replace_derived(Vec<Note>)` is the producer's entry
+  point.** Hand it the current coalesced set; every view updates through
+  the existing `notes-changed` broadcast. It drops any non-derived kind,
+  so it cannot be used to smuggle an event into the durable store, and the
+  derived set is cleared by a capture clear and by an Open Capture. It is
+  `#[allow(dead_code)]` until this task calls it.
+- **The write path is already guarded.** `save_capture` reads
+  `NotesStore::exportable()`, which is user-authored events only, and
+  `a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises`
+  (`tests.rs`) writes a 200-frame error storm plus a note plus a coalesced
+  `busError` and asserts every error frame survives while only the note is
+  written as a marker.
+- **A coalesced event's detail goes in `label` and `description`.** The
+  description is the body the events view discloses under the row. If a
+  structured count and span turn out to be wanted as fields rather than
+  text, add them then — nothing is shaped to prevent it.
+
+What is *not* built here, deliberately: the coalescer itself, anything
+reading `CanFramePayload::Error`, `InterfaceState`, bus load, or the health
+panel. This task owns all of it.
 
 ## Suggested phases
 

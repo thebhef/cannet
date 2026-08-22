@@ -5,7 +5,7 @@
 // the event's absolute frame timestamp in nanoseconds; each listener resolves
 // it against its own timing model, all sharing the one origin (ADR 0024).
 
-import { timelineEvents, type Note } from "./notes";
+import { defaultVisibleKinds, timelineEvents, visibleEvents, type Note } from "./notes";
 
 /// The frontend event name carrying a goto request.
 export const GOTO_EVENT = "goto-event";
@@ -23,15 +23,18 @@ export interface GotoEventItem {
 }
 
 /// Build the go-to-event palette rows from the timeline events, hinting
-/// each with its time relative to the session start. The same merged
-/// note + truncation model the events view renders (`timelineEvents`).
+/// each with its time relative to the session start. The same model the
+/// events view renders (`timelineEvents`), less the kinds that are hidden
+/// by default — "not shown anywhere by default" (ADR 0035) covers the
+/// palette too. The events view lists those kinds and offers a goto on
+/// each row, so they stay reachable.
 export function gotoEventItems(
   notes: readonly Note[],
   truncationTsNs: number | null,
   sessionStartSeconds: number | null,
 ): GotoEventItem[] {
   const base = sessionStartSeconds ?? 0;
-  return timelineEvents(notes, truncationTsNs).map((e) => ({
+  return visibleEvents(timelineEvents(notes, truncationTsNs), defaultVisibleKinds()).map((e) => ({
     id: String(e.timestampNs),
     label: e.label,
     hint: `${(e.timestampNs / 1e9 - base).toFixed(3)} s`,
