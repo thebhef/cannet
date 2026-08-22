@@ -7605,3 +7605,41 @@ describe("a plot area's axis label with a long name", () => {
     expect(labels[1].textContent).toBe("TopSignal");
   });
 });
+
+// The performance read-out is a diagnostic, and its numbers change
+// width every tick beside controls that must not move — so it is off,
+// and it lives with the other diagnostics on the toolbar's own
+// right-click menu rather than taking a visible toggle.
+describe("the plot toolbar's performance read-out", () => {
+  const openToolbarMenu = () =>
+    fireEvent.contextMenu(document.querySelector(".plot-panel-toolbar")!, {
+      clientX: 10,
+      clientY: 10,
+    });
+  const perfItem = () =>
+    screen.getByRole("menuitemcheckbox", { name: /performance readout/i });
+
+  it("is hidden by default, and the bar carries no toggle for it", () => {
+    renderPanel();
+    expect(document.querySelector(".plot-perf")).toBeNull();
+    // Nothing on the bar itself offers to bring it back — the menu is
+    // the only way in.
+    const bar = document.querySelector(".plot-panel-toolbar")!;
+    expect(bar.textContent).not.toMatch(/performance|dpr| Hz/i);
+  });
+
+  it("comes on from the toolbar's right-click menu, and goes off again", () => {
+    renderPanel();
+    openToolbarMenu();
+    expect(perfItem()).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(perfItem());
+    const perf = document.querySelector(".plot-perf");
+    expect(perf).not.toBeNull();
+    expect(perf!.textContent).toMatch(/dpr/);
+
+    openToolbarMenu();
+    expect(perfItem()).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(perfItem());
+    expect(document.querySelector(".plot-perf")).toBeNull();
+  });
+});

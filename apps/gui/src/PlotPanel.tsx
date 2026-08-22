@@ -24,7 +24,7 @@ import { buildColorResolver } from "./colorMap";
 import { buildSignalColorResolver } from "./signalColorResolver";
 import { useSignalGeneratorIndexes } from "./signalGeneratorContext";
 import { useTrace } from "./trace";
-import { PlotToolbar } from "./PlotToolbar";
+import { PERF_TITLE, PlotToolbar } from "./PlotToolbar";
 import { useNotes } from "./notesContext";
 import { timelineEvents } from "./notes";
 import { plotTimelineEvents } from "./plotEvents";
@@ -514,6 +514,13 @@ export function PlotPanel(props: IDockviewPanelProps) {
    * users debugging cache / auto-norm issues, but visually noisy in
    * normal use. Persisted in panel params. */
   const [showDiag, setShowDiag] = useState(() => boolFromRaw(savedConfig?.showDiag, false));
+  /** Whether the toolbar shows the performance read-out. Off: it is a
+   * diagnostic, and a row of numbers that changes width every tick sits
+   * badly beside controls that must not move. Turned on from the
+   * toolbar's own right-click menu, where the other diagnostics are.
+   * View-local rather than persisted — a diagnostic you turned on to
+   * look at something is not a preference. */
+  const [showPerf, setShowPerf] = useState(false);
   const [showPoints, setShowPoints] = useState<ShowPointsMode>(() => showPointsFromRaw(savedConfig?.showPoints));
   /** Pixel width of every area's side panel — user-resizable via a
    * drag handle, persisted in panel config. */
@@ -2415,7 +2422,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
         cursorMode={cursorMode}
         onCursorMode={setCursorMode}
         onClearCursors={clearCursors}
-        perfText={perfText}
+        perfText={showPerf ? perfText : null}
         onOpenMenu={setToolbarMenuAt}
       />
       {soloMenuAt && soloMenuItems.length > 0 && (
@@ -2447,6 +2454,21 @@ export function PlotPanel(props: IDockviewPanelProps) {
               {showDiag ? "✓" : ""}
             </span>
             show diagnostics
+          </button>
+          <button
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked={showPerf}
+            title={PERF_TITLE}
+            onClick={() => {
+              setShowPerf((v) => !v);
+              setToolbarMenuAt(null);
+            }}
+          >
+            <span className="plot-toolbar-menu-mark" aria-hidden="true">
+              {showPerf ? "✓" : ""}
+            </span>
+            show performance readout
           </button>
           <EventKindFilter state={eventKinds} counts={eventKindCounts} />
           <SourcesMenuSection
