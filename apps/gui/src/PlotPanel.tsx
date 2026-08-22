@@ -566,7 +566,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
   const [signalSelection, setSignalSelection] = useState<PlotSignalSelection>(
     NO_PLOT_SIGNAL_SELECTION,
   );
-  const { catalog, refresh: refreshCatalog } = useSignalCatalog();
+  const { catalog } = useSignalCatalog();
 
   const [cursorX, setCursorX] = useState<XCursors>(() => cursorXFromRaw(savedConfig?.cursorX));
   const [cursorYByArea, setCursorYByArea] = useState<Record<string, { h1: number | null; h2: number | null }>>(
@@ -2407,9 +2407,6 @@ export function PlotPanel(props: IDockviewPanelProps) {
           onAllData={handleAllData}
         />
         <span className="plot-toolbar-sep" />
-        <button onClick={refreshCatalog} title="reload signal list from the attached DBC">
-          ↻
-        </button>
         <button onClick={addArea}>add plot area</button>
         <button onClick={fitData}>fit data</button>
         <button onClick={fitYAll} title="fit each area's y-axis to its currently visible data — useful after zooming in">

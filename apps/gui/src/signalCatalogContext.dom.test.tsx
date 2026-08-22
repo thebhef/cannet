@@ -238,4 +238,28 @@ describe("SignalCatalogProvider / useSignalCatalog", () => {
     renderProvider(baseProjectCtx());
     await waitFor(() => expect(screen.getByTestId("catalog").children.length).toBe(0));
   });
+
+  it("offers no way to force a re-fetch — the triggers above are all of them", async () => {
+    // The plot toolbar carried a manual "reload the signal list"
+    // button and it was the only consumer of a `refresh` on this
+    // context. It is retired: everything it could do, one of the
+    // effects here already does, so the context hands out the catalog
+    // and nothing else. Pinned rather than left to the type checker,
+    // because re-adding an escape hatch should be a decision and not a
+    // drift.
+    let seen: Record<string, unknown> | null = null;
+    function Probe() {
+      seen = useSignalCatalog() as unknown as Record<string, unknown>;
+      return null;
+    }
+    render(
+      <ProjectContext.Provider value={baseProjectCtx()}>
+        <SignalCatalogProvider>
+          <Probe />
+        </SignalCatalogProvider>
+      </ProjectContext.Provider>,
+    );
+    await waitFor(() => expect(seen).not.toBeNull());
+    expect(Object.keys(seen!)).toEqual(["catalog"]);
+  });
 });
