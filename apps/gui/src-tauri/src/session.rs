@@ -901,6 +901,11 @@ where
     S::Error: fmt::Display,
 {
     let state: State<'_, AppState> = app.state();
+    // Bus errors are coalesced host-side for display (ADR 0035). The
+    // frames still go into the store below like any other frame — the
+    // summary is produced *beside* them, never instead of them, so a
+    // saved capture keeps every error frame that was received.
+    let health = app.try_state::<crate::bus_health::BusHealth>();
     let mut total: u64 = 0;
     // For replay sources (BLF, MDF) the session timeline is the file's
     // own; `anchor` tracks the earliest timestamp seen so far, which is
@@ -934,6 +939,16 @@ where
                 }
                 if replay_origin && anchor_replay_session(&state, &mut anchor, raw.timestamp_ns) {
                     restamp_scratch_for_capture(&state);
+                    // This frame mints a new capture, so the previous
+                    // one's health has nothing left to describe.
+                    if let Some(health) = health.as_ref() {
+                        health.clear();
+                    }
+                }
+                if matches!(raw.payload, cannet_core::CanFramePayload::Error) {
+                    if let (Some(health), Some(bus_id)) = (health.as_ref(), raw.bus_id.as_deref()) {
+                        health.observe_error(bus_id, raw.timestamp_ns);
+                    }
                 }
                 // Ingest-time verification (ADR 0027): ids with a
                 // calculated-field config get checked against the

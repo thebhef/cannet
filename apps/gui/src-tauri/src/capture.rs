@@ -2052,6 +2052,11 @@ pub(crate) fn clear_trace_store(app: AppHandle, state: State<'_, AppState>) {
     if let Some(applied) = state.notes.clear() {
         let _ = app.emit("notes-changed", applied.notes);
     }
+    // The coalescer is the derived events' producer, so clearing them
+    // without clearing it would only have them republished a tick later.
+    if let Some(health) = app.try_state::<crate::bus_health::BusHealth>() {
+        health.clear();
+    }
 }
 
 /// What a successful scratch restore brings back: the reloaded frame
