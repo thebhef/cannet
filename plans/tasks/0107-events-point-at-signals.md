@@ -329,3 +329,107 @@ Rules the implementation must hold:
 Phase 2 records this table in the ADR as the honest statement of what
 each carrier does, per the task's "records exactly what a round-trip
 through the constrained format loses".
+
+### MDF's own vocabularies are closed — ours has to live beside them
+
+Every classification field on an `##EV` block is a **fixed enum**, not an
+application-extensible tag. As `mdf4-rs 0.6.0` exposes them:
+
+| Field | Values | Extensible? |
+| --- | --- | --- |
+| `event_type` | `Recording` 0, `Trigger` 1, `Marker` 2 | no |
+| `cause` | `Other` 0, `Error` 1, `Tool` 2, `Script` 3, `User` 4 | no |
+| `range_type` | `Point` 0, `RangeBegin` 1, `RangeEnd` 2 | no |
+| `sync_type` | time / angle / distance / index | no |
+
+So an application cannot mint a type. This matters directly:
+`EventKind` was built to grow — that is task 102's whole premise — and it
+**cannot** be carried in `event_type`. The mapping is therefore: write
+`event_type = Marker` (the user-marker slot), `cause = User`, and carry
+the real kind as a property. Anything else would either lie about the
+kind or lose it.
+
+The extension point is `common_properties`, exactly as with the
+subjects. That is the sanctioned place for application semantics, and
+it is where every open axis of ours belongs.
+
+**One thing phase 2 must verify against the ASAM spec before writing
+anything, because we already ship it.** `mdf4-rs` defines three
+`EventType` variants numbered 0/1/2, and its `from_u8` returns `None`
+for 3–6. Published ASAM MDF 4.x lists seven event types, with
+`EV_T_MARKER` at **6** and value 2 meaning acquisition interrupt. If
+that is right, the library's numbering disagrees with the standard, and
+`write.rs` — which already writes `EventType::Marker` for every note —
+has been emitting an `ev_type` a conformant reader would interpret as
+something else entirely. Two consequences either way: our existing
+markers may be mislabelled to other tools, and a foreign file using
+types 3–6 fails to parse for us. **Check the spec, do not trust the
+crate or this paragraph**; if the crate is wrong, the fix is ours to
+work around at the write boundary and the finding goes to the owner.
+
+### The serialized form — one grammar, two containers
+
+The payload must read as something a person understands when they open
+the file in someone else's tool, not as an opaque blob (owner ruling,
+2026-08-22). So it is **line-oriented `key: value` text with repeated
+keys for lists** — readable, diffable, and each line standing alone —
+rather than JSON.
+
+The same grammar serves both carriers, because both already hold
+repeated keys: BLF's marker `description` is free text, and
+`cannet-mdf`'s `parse_properties` / `comment_xml` already round-trip
+duplicate `<e name="…">` entries in order.
+
+**BLF — inside the marker's `description`:**
+
+```text
+Contactor opened under load
+
+cannet-event/1
+id: 7f3a1c
+kind: note
+signal: 0x180 PackCurrent
+signal: 0x180 ContactorState
+message: 0x2A1
+link: 91c2de
+```
+
+**MDF — the same fields as `common_properties` entries:**
+
+| key | value |
+| --- | --- |
+| `cannet.event.id` | `7f3a1c` |
+| `cannet.event.kind` | `note` |
+| `cannet.subject` | `signal 0x180 PackCurrent` |
+| `cannet.subject` | `message 0x2A1` |
+| `cannet.link` | `91c2de` |
+
+MDF additionally carries the subjects natively in `scope_addrs`; the
+properties are the structural form, and the reader prefers them.
+
+**Grammar**
+
+- A reference's id is `0x` hex, with `/ext` suffixed for a 29-bit id:
+  `0x18DA00F1/ext`.
+- `signal: <id> <name>` — the name is *the rest of the line*, so a name
+  containing a space survives.
+- `message: <id>` — no name; the reference is structural and the name
+  belongs to whatever database is assigned at render time.
+- `link: <event id>`.
+- The header line is `cannet-event/1`: the name and the schema version
+  in one token, so a reader sees the version without parsing.
+
+**Parsing rules, which are as much of the contract as the fields**
+
+- The human description comes **first and verbatim**, then one blank
+  line, then the header. A reader in Vector's tooling sees their own
+  words on line one.
+- Split at the **last** line that is exactly a recognised header. If
+  there is none, the entire string is the description — a foreign
+  marker whose text happens to mention `cannet-event` must round-trip
+  unharmed rather than being eaten.
+- **Unknown keys are preserved verbatim on rewrite.** A file written by
+  a later version, opened and saved by this one, keeps the fields this
+  version does not understand.
+- A malformed line is preserved, not dropped, and does not invalidate
+  the block.
