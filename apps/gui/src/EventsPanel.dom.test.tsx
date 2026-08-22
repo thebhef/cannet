@@ -189,3 +189,50 @@ describe("EventsPanel goto", () => {
     expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 5_000_000_000);
   });
 });
+
+describe("EventsPanel in a narrow panel", () => {
+  // Reported from a narrow *vertical* dock: the ✎ and × controls were off
+  // the row's right edge and horizontal scrolling would not bring them
+  // back. The rows are `position: absolute; left: 0; right: 0` inside the
+  // sticky viewport, so their width is the width of `.trace-scroll-content`
+  // — which is `min-width: calc(var(--trace-content-width) + 2 *
+  // padding)`, the *columns'* total. This view has no columns, but it was
+  // handing TraceView `columnsFromParams(undefined)`, which is the default
+  // frame layout: 1144 px of tracks that are never drawn.
+  //
+  // Measured in headless Edge (the WebView2 engine) with the real
+  // `index.css` and this panel's own rendered DOM, in a 220 px group: the
+  // row laid out 1163 px wide, `.trace-rows` reported `scrollWidth` 1163
+  // against a `clientWidth` of 220, and the controls sat at x 1105-1128
+  // (✎) and 1136-1154 (×) — 885 px past the panel's right edge, behind
+  // 943 px of empty scroll. (They were *reachable* at `scrollLeft` 943 —
+  // the row is not clipped at the viewport, it is simply laid out for
+  // columns that do not exist.) With no columns declared:
+  // `--trace-content-width` 0, `.trace-scroll-content` 220 px,
+  // `scrollWidth === clientWidth === 220` and `maxScrollLeft` 0 (nothing
+  // to scroll at all), the label ellipsised to 40 px, and both controls
+  // rendered inside the panel at x 161-185 and 193-210.
+  //
+  // jsdom does no layout, so this asserts the width the view publishes —
+  // the fact the measurement traces the geometry back to.
+  it("declares no column width, so its rows lay out at the panel's own width", () => {
+    renderPanel([{ id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" }]);
+    const content = document.querySelector(".trace-scroll-content") as HTMLElement;
+    expect(content).toBeTruthy();
+    expect(content.style.getPropertyValue("--trace-content-width")).toBe("0px");
+  });
+
+  // The controls come after the label in the row, which is what
+  // `margin-left: auto` pins to the right edge; the label is the flex item
+  // that gives way (`flex: 0 1 auto; min-width: 0; overflow: hidden`).
+  it("renders the rename and remove controls after the label", () => {
+    renderPanel([{ id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" }]);
+    const row = document.querySelector(".trace-event-row") as HTMLElement;
+    const classes = Array.from(row.children).map((c) => c.className);
+    expect(classes.slice(-3)).toEqual([
+      "trace-event-label trace-event-label-editable",
+      "trace-event-edit",
+      "trace-event-remove",
+    ]);
+  });
+});
