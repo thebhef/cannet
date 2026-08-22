@@ -192,6 +192,61 @@ describe("EventsPanel goto", () => {
   });
 });
 
+describe("EventsPanel event rows on the keyboard", () => {
+  // The gridview action keys on this surface (ADR 0044). The trace
+  // panel's interleaved event rows are the other one, covered in
+  // `TracePanel.dom.test.tsx` — the keys must work in both.
+  const note: Note = { id: "n1", timestampNs: 5_000_000_000, label: "boom", kind: "note" };
+
+  function grid(): HTMLElement {
+    const el = document.querySelector(".trace-rows");
+    if (!el) throw new Error("no rows container");
+    return el as HTMLElement;
+  }
+
+  /// Step the gridview cursor onto the view's first row.
+  function cursorToFirstRow() {
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(document.querySelector(".trace-event-row")).toHaveClass("trace-event-focused");
+  }
+
+  it("goes to the cursor's event on Space", () => {
+    renderPanel([note]);
+    cursorToFirstRow();
+    fireEvent.keyDown(grid(), { key: " " });
+    expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 5_000_000_000);
+  });
+
+  it("renames the cursor's event on F2, and commits it to the host", () => {
+    const ctx = notesCtx([note]);
+    render(
+      <TraceDataProvider value={traceData}>
+        <NotesContext.Provider value={ctx}>
+          <EventsPanel {...({} as Parameters<typeof EventsPanel>[0])} />
+        </NotesContext.Provider>
+      </TraceDataProvider>,
+    );
+    cursorToFirstRow();
+    fireEvent.keyDown(grid(), { key: "F2" });
+    const input = screen.getByLabelText("event label") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "crunch" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(ctx.renameNote).toHaveBeenCalledWith("n1", "crunch");
+  });
+
+  it("takes no F2 on the truncation marker, which offers no rename either", () => {
+    // The derived event of this view's own space (ADR 0035).
+    renderPanel([], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 });
+    expect(screen.queryByLabelText("rename event")).toBeNull();
+    cursorToFirstRow();
+    fireEvent.keyDown(grid(), { key: "F2" });
+    expect(screen.queryByLabelText("event label")).toBeNull();
+    // …and Space still goes to it: read-only is about editing.
+    fireEvent.keyDown(grid(), { key: " " });
+    expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 3_000_000_000);
+  });
+});
+
 describe("EventsPanel in a narrow panel", () => {
   // Reported from a narrow *vertical* dock: the ✎ and × controls were off
   // the row's right edge and horizontal scrolling would not bring them
