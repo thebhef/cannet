@@ -100,7 +100,6 @@ function treeView(): RbsView {
     dirty: false,
     changedOnDisk: false,
     run: false,
-    killSwitch: false,
     buses: [
       {
         key: "Powertrain",
@@ -126,7 +125,7 @@ function treeView(): RbsView {
 
 function renderPanel() {
   const fakeTrace = {} as TraceState;
-  let element: ProjectElement = { kind: "rbs", id: "el", path: "/tmp/sim.cannet_rbs", run: false };
+  let element: ProjectElement = { kind: "rbs", id: "el", path: "/tmp/sim.cannet_rbs" };
   const registry = {
     get entries() {
       return [{ element, trace: fakeTrace }] as RegistryEntry[];

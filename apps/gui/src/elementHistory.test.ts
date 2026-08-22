@@ -19,12 +19,11 @@ import type { ProjectElement } from "./types";
 const plot = (id: string, config?: Record<string, unknown>): ProjectElement =>
   ({ kind: "plot", id, name: `Plot ${id}`, sources: ["*"], config }) as ProjectElement;
 
-const rbs = (id: string, path: string | null, run: boolean): ProjectElement => ({
+const rbs = (id: string, path: string | null): ProjectElement => ({
   kind: "rbs",
   id,
   name: "RBS 1",
   path,
-  run,
 });
 
 const transmit = (id: string, frameIds: string[], sinks: string[]): ProjectElement => ({
@@ -55,8 +54,8 @@ describe("the undo mask (ADR 0050)", () => {
     });
   });
 
-  it("drops an RBS element's path and run flag", () => {
-    const [masked] = maskElements([rbs("r1", "/tmp/sim.cannet_rbs", true)]);
+  it("drops an RBS element's path", () => {
+    const [masked] = maskElements([rbs("r1", "/tmp/sim.cannet_rbs")]);
     expect(masked).toEqual({ id: "r1", kind: "rbs", name: "RBS 1" });
   });
 
@@ -110,8 +109,8 @@ describe("element history", () => {
   });
 
   it("a change to an excluded field is not a step", () => {
-    const before = [rbs("r1", null, false), transmit("t1", [], ["b1"])];
-    const after = [rbs("r1", "/tmp/sim.cannet_rbs", true), transmit("t1", ["f1"], ["b2"])];
+    const before = [rbs("r1", null), transmit("t1", [], ["b1"])];
+    const after = [rbs("r1", "/tmp/sim.cannet_rbs"), transmit("t1", ["f1"], ["b2"])];
     const h = recordElements(initElementHistory(before), after);
     expect(undoElements(h)).toBeNull();
   });
@@ -192,8 +191,8 @@ describe("syncElements", () => {
   });
 
   it("returns the same history when nothing masked changed", () => {
-    const h = initElementHistory([rbs("r1", null, false)]);
-    expect(syncElements(h, [rbs("r1", "/tmp/sim.cannet_rbs", true)])).toBe(h);
+    const h = initElementHistory([rbs("r1", null)]);
+    expect(syncElements(h, [rbs("r1", "/tmp/sim.cannet_rbs")])).toBe(h);
   });
 
   it("grafts an element created outside a step into the stored snapshots", () => {
@@ -229,8 +228,8 @@ describe("restoreElements", () => {
     // them — the mask means those fields aren't even in the snapshot.
     expect(
       patches(
-        [rbs("r1", null, false), transmit("t1", [], [])],
-        [rbs("r1", "/tmp/sim.cannet_rbs", true), transmit("t1", ["f1"], ["b1"])],
+        [rbs("r1", null), transmit("t1", [], [])],
+        [rbs("r1", "/tmp/sim.cannet_rbs"), transmit("t1", ["f1"], ["b1"])],
       ),
     ).toEqual([]);
   });

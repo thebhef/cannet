@@ -30,34 +30,39 @@ describe("isProjectElement", () => {
 });
 
 describe("normalizeElement", () => {
-  it("normalises an rbs element: path string-or-null, run strictly boolean", () => {
+  it("normalises an rbs element: path string-or-null, and no run flag at all", () => {
     // A bare element (hand-edited project / older save) gets the
-    // safe defaults: no file, Run off (ADR 0028 — a malformed flag
-    // must never auto-transmit).
+    // safe default: no file.
     const bare = { kind: "rbs", id: "r" } as unknown as ProjectElement;
     expect(normalizeElement(bare)).toMatchObject({
       kind: "rbs",
       path: null,
-      run: false,
     });
     const full = {
       kind: "rbs",
       id: "r",
       path: "/sims/rig-a.cannet_rbs",
-      run: true,
     } as unknown as ProjectElement;
     expect(normalizeElement(full)).toMatchObject({
       path: "/sims/rig-a.cannet_rbs",
-      run: true,
     });
-    // Non-boolean run / non-string path are dropped, not coerced.
+    // A project saved before Run became session state carries the
+    // field; it is dropped on load, so it can neither arm a simulation
+    // nor be written back out.
+    const legacy = {
+      kind: "rbs",
+      id: "r",
+      path: "/sims/rig-a.cannet_rbs",
+      run: true,
+    } as unknown as ProjectElement;
+    expect(normalizeElement(legacy)).not.toHaveProperty("run");
+    // A non-string path is dropped, not coerced.
     const mangled = {
       kind: "rbs",
       id: "r",
       path: 7,
-      run: "yes",
     } as unknown as ProjectElement;
-    expect(normalizeElement(mangled)).toMatchObject({ path: null, run: false });
+    expect(normalizeElement(mangled)).toMatchObject({ path: null });
   });
 
   it("defaults `sources` to ['*'] for a consumer loaded without one (old project)", () => {

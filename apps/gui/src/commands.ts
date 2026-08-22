@@ -153,11 +153,6 @@ export const COMMANDS: readonly CommandSpec[] = [
     label: "Clear project colors…",
     category: "Project",
   },
-  {
-    id: "rbs.killSwitch",
-    label: "RBS: toggle global kill-switch",
-    category: "Panels",
-  },
   { id: "panel.show.project", label: "Show project panel", category: "Panels" },
   { id: "panel.show.systemMessages", label: "Show system messages", category: "Panels" },
   { id: "panel.show.projectGraph", label: "Show project graph", category: "Panels" },

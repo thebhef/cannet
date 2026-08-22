@@ -20,9 +20,9 @@ use super::runtime::{for_each_scoped_message, reconstruct_payload, row_id};
 /// buffers.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-// Four independent facts about the element — unsaved edits, a change
-// waiting on disk, the Run flag, the global kill-switch. Collapsing any
-// of them would erase which input it came from.
+// Three independent facts about the element — unsaved edits, a change
+// waiting on disk, the Run flag. Collapsing any of them would erase
+// which input it came from.
 #[allow(clippy::struct_excessive_bools)]
 pub struct RbsView {
     pub element_id: String,
@@ -36,7 +36,6 @@ pub struct RbsView {
     /// *Apply anyway* runs the load path.
     pub changed_on_disk: bool,
     pub run: bool,
-    pub kill_switch: bool,
     pub buses: Vec<RbsBusView>,
 }
 
@@ -85,7 +84,7 @@ pub struct RbsMessageView {
     /// an enable). DBC messages not in the file render disabled.
     pub in_file: bool,
     pub enabled: bool,
-    /// Scheduled right now (run flag && enables && !kill-switch).
+    /// Scheduled right now (run flag && enables).
     pub running: bool,
     /// The effective period: the file override, else
     /// `GenMsgCycleTime`. `None` = no period anywhere — the message
@@ -254,7 +253,6 @@ pub async fn rbs_view(
         fill_bit: element.file.fill_bit,
         dirty: element.dirty,
         run: element.run,
-        kill_switch: rbs.kill_switch,
         buses,
     }))
 }

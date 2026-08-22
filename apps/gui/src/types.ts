@@ -547,11 +547,6 @@ export type ProjectElement =
       /// references the config by path and never embeds the content
       /// (ADR 0028); `null` until the user picks / creates one.
       path: string | null;
-      /// The element's Run flag — persisted in the project, default
-      /// off. A project saved with RBS running resumes transmitting
-      /// on open once its bus connects (the global kill-switch is
-      /// the guard rail).
-      run: boolean;
     };
 
 /// Wildcard entry in {@link ProjectElement.sources} / {@link
@@ -1063,7 +1058,6 @@ export interface RbsView {
   /// the element was dirty or running when it landed (ADR 0053 §1).
   changedOnDisk: boolean;
   run: boolean;
-  killSwitch: boolean;
   buses: RbsBusView[];
 }
 
@@ -1094,7 +1088,7 @@ export interface RbsMessageView {
   /// Whether the file lists this message.
   inFile: boolean;
   enabled: boolean;
-  /// Scheduled right now (run && enables && !kill-switch).
+  /// Scheduled right now (run && enables).
   running: boolean;
   /// Effective period (override else `GenMsgCycleTime`); `null` =
   /// none anywhere, the message can't run.
