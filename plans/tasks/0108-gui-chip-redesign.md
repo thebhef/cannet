@@ -441,6 +441,10 @@ to extend and were aligned to it: `gap` `.35rem` → `.4rem`, and
   - `6ed0b251` mounts it in `App`, retires the legacy toolbar CSS, adds
     `toolbarTestKit.ts`, migrates the 20 App tests that clicked the old
     buttons, amends ADR 0055 and updates the README and the prototype.
+  - `ab92c24c` drops a task number from a comment in the new test file.
+    The `comment-references` gate was run before each commit and read
+    clean — wrongly: `git grep` without `--untracked` cannot see a file
+    that is still new. Run it as `git grep --untracked`.
   - Frontend tests: 2704/203 files before → 2718/205 files after (all
     green). `tsc --noEmit` and `vite build` clean; the
     `comment-references` grep empty at each commit. No Rust touched.
