@@ -129,14 +129,12 @@ impl ErrorRuns {
     }
 
     /// Every error seen on `bus_id` this session, eviction-proof.
-    #[allow(dead_code)] // the health panel's emitter is its first caller.
     pub(crate) fn total(&self, bus_id: &str) -> u64 {
         self.totals.get(bus_id).copied().unwrap_or(0)
     }
 
     /// The most recent run on `bus_id`, which is where the panel reads
     /// its error rate and its "last error" instant.
-    #[allow(dead_code)] // the health panel's emitter is its first caller.
     pub(crate) fn latest(&self, bus_id: &str) -> Option<&ErrorRun> {
         self.runs.iter().rev().find(|r| r.bus_id == bus_id)
     }
@@ -212,7 +210,6 @@ pub(crate) struct ControllerHealth {
 /// host has something to say about appear; the frontend walks the
 /// project's buses and renders an em dash for the rest, because "no
 /// traffic" and "we cannot know" are different answers.
-#[allow(dead_code)] // built by the health panel's emitter.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BusHealthRecord {
@@ -272,14 +269,15 @@ pub(crate) fn load_percent(
 /// connection-state map. Separate from `AppState` for the same reason
 /// `ConnectionStates` is: it is the session's low-level status, not part
 /// of the trace model.
+///
+/// The **controller** side of bus health is deliberately not held here:
+/// it lives on the session that reported it
+/// (`RemoteSession::controllers`), so a disconnect takes it with the
+/// session rather than leaving a stale reading behind that looks like a
+/// live one.
 #[derive(Default)]
 pub struct BusHealth {
     errors: Mutex<ErrorRuns>,
-    /// Controller state keyed by **wire interface id**, which is what
-    /// `InterfaceState` names. The bus it belongs to is resolved through
-    /// the session's channel maps at read time, so a rebinding cannot
-    /// leave a stale bus attribution behind.
-    controllers: Mutex<BTreeMap<String, ControllerHealth>>,
 }
 
 impl BusHealth {
@@ -294,36 +292,86 @@ impl BusHealth {
             .expect("bus health errors mutex poisoned")
     }
 
-    /// Record what a driver reported for one interface. Returns whether
-    /// anything moved, so a caller can skip a no-op republish.
-    #[allow(dead_code)] // the session's `InterfaceState` reader is its caller.
-    pub(crate) fn set_controller(&self, interface_id: &str, health: ControllerHealth) -> bool {
-        let mut guard = self.controllers();
-        if guard.get(interface_id) == Some(&health) {
-            return false;
-        }
-        guard.insert(interface_id.to_string(), health);
-        true
-    }
-
-    #[allow(dead_code)] // the health panel's emitter is its first caller.
-    pub(crate) fn controller(&self, interface_id: &str) -> Option<ControllerHealth> {
-        self.controllers().get(interface_id).copied()
-    }
-
-    fn controllers(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, ControllerHealth>> {
-        self.controllers
-            .lock()
-            .expect("bus health controllers mutex poisoned")
-    }
-
     /// Drop everything — a capture clear or an Open Capture starts a new
     /// session, and a summary of the previous one has nothing to
     /// summarise any more.
     pub(crate) fn clear(&self) {
         self.errors().clear();
-        self.controllers().clear();
     }
+}
+
+/// Which logical bus each wire interface with a reported controller
+/// state belongs to, folded across every open session.
+///
+/// The mapping is the session's own (`channel -> interface`, `channel ->
+/// bus`), read at the moment the row is built rather than cached, so a
+/// rebinding cannot leave a controller attributed to the bus it used to
+/// serve. A session with no controller map at all — the in-process
+/// virtual bus — contributes nothing, which is the honest answer for a
+/// bus that has no controller.
+pub(crate) fn controllers_by_bus(
+    sessions: &std::collections::HashMap<String, crate::session::RemoteSession>,
+) -> BTreeMap<String, ControllerHealth> {
+    let mut out = BTreeMap::new();
+    for session in sessions.values() {
+        let Some(states) = session.controllers.as_ref() else {
+            continue;
+        };
+        for (channel, bus_id) in &session.channel_to_bus {
+            let Some((_, interface_id)) = session
+                .channel_to_interface
+                .iter()
+                .find(|(c, _)| c == channel)
+            else {
+                continue;
+            };
+            if let Some(status) = states.get(interface_id) {
+                out.insert(
+                    bus_id.clone(),
+                    ControllerHealth {
+                        state: status.state.as_str(),
+                        tec: status.tec,
+                        rec: status.rec,
+                    },
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Build the per-bus rows the health panel renders, for every bus the
+/// host has something to say about.
+///
+/// A bus is included when a session maps it *or* when it has seen an
+/// error. Everything else is left out on purpose: the frontend walks the
+/// project's own bus list and renders an em dash for a bus with no row,
+/// which is what keeps "we cannot know" distinct from a zero.
+pub(crate) fn health_rows(
+    controllers: &BTreeMap<String, ControllerHealth>,
+    mapped_buses: &[String],
+    errors: &ErrorRuns,
+) -> BTreeMap<String, BusHealthRecord> {
+    let mut buses: Vec<&str> = mapped_buses.iter().map(String::as_str).collect();
+    buses.extend(errors.runs().iter().map(|r| r.bus_id.as_str()));
+    buses.sort_unstable();
+    buses.dedup();
+    buses
+        .into_iter()
+        .map(|bus_id| {
+            let latest = errors.latest(bus_id);
+            (
+                bus_id.to_string(),
+                BusHealthRecord {
+                    controller: controllers.get(bus_id).copied(),
+                    load_percent: None,
+                    error_count: errors.total(bus_id),
+                    error_rate: latest.map_or(0.0, ErrorRun::rate),
+                    last_error_ts_ns: latest.map(|r| r.last_ts_ns),
+                },
+            )
+        })
+        .collect()
 }
 
 /// Republish the coalesced bus-error summaries on [`BUS_HEALTH_POLL`],
@@ -340,21 +388,59 @@ pub(crate) fn spawn_bus_health_emitter(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(BUS_HEALTH_POLL);
         let mut published: Vec<Note> = Vec::new();
+        let mut published_rows: BTreeMap<String, BusHealthRecord> = BTreeMap::new();
         loop {
             interval.tick().await;
             let Some(health) = app.try_state::<BusHealth>() else {
                 continue;
             };
+            let state: State<'_, AppState> = app.state();
+            let rows = {
+                let sessions = state.remote_sessions();
+                let controllers = controllers_by_bus(&sessions);
+                let mapped: Vec<String> = sessions
+                    .values()
+                    .flat_map(|s| s.channel_to_bus.iter().map(|(_, b)| b.clone()))
+                    .collect();
+                drop(sessions);
+                health_rows(&controllers, &mapped, &health.errors())
+            };
+            if rows != published_rows {
+                published_rows.clone_from(&rows);
+                let _ = app.emit(BUS_HEALTH_CHANGED_EVENT, rows);
+            }
             let events = runs_as_events(health.errors().runs());
             if events == published {
                 continue;
             }
             published.clone_from(&events);
-            let state: State<'_, AppState> = app.state();
             let applied = state.notes.replace_derived(events);
             let _ = app.emit("notes-changed", applied.notes);
         }
     });
+}
+
+/// Tauri event carrying the whole per-bus health map. Bounded by the
+/// project's bus count, so there is no diff format — the same shape the
+/// connection-state map uses.
+pub(crate) const BUS_HEALTH_CHANGED_EVENT: &str = "bus-health-changed";
+
+/// Initial read for a panel that just mounted; the event carries every
+/// subsequent change (ADR 0016's pull-then-follow shape).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn get_bus_health(
+    health: tauri::State<'_, BusHealth>,
+    state: State<'_, AppState>,
+) -> BTreeMap<String, BusHealthRecord> {
+    let sessions = state.remote_sessions();
+    let controllers = controllers_by_bus(&sessions);
+    let mapped: Vec<String> = sessions
+        .values()
+        .flat_map(|s| s.channel_to_bus.iter().map(|(_, b)| b.clone()))
+        .collect();
+    drop(sessions);
+    health_rows(&controllers, &mapped, &health.errors())
 }
 
 #[cfg(test)]
@@ -499,35 +585,56 @@ mod tests {
     }
 
     #[test]
-    fn a_controller_report_that_repeats_itself_is_not_a_change() {
-        let health = BusHealth::default();
-        let h = ControllerHealth {
-            state: "passive",
-            tec: 142,
-            rec: 9,
-        };
-        assert!(health.set_controller("PCAN_USBBUS1", h));
-        assert!(!health.set_controller("PCAN_USBBUS1", h));
-        assert!(health.set_controller("PCAN_USBBUS1", ControllerHealth { tec: 143, ..h }));
-        assert_eq!(health.controller("PCAN_USBBUS1").unwrap().tec, 143);
-        assert_eq!(health.controller("PCAN_USBBUS2"), None);
-    }
-
-    #[test]
-    fn a_cleared_session_forgets_its_errors_and_its_controllers() {
+    fn a_cleared_session_forgets_its_errors() {
         let health = BusHealth::default();
         health.observe_error("b1", 0);
-        health.set_controller(
-            "i1",
-            ControllerHealth {
-                state: "busOff",
-                tec: 256,
-                rec: 0,
-            },
-        );
         health.clear();
         assert!(health.errors().is_empty());
         assert_eq!(health.errors().total("b1"), 0);
-        assert_eq!(health.controller("i1"), None);
+    }
+
+    #[test]
+    fn a_row_is_built_for_a_mapped_bus_and_for_a_bus_that_only_faulted() {
+        let mut errors = ErrorRuns::default();
+        errors.observe("b9", ms(1));
+        errors.observe("b9", ms(1001));
+        let controllers = BTreeMap::from([(
+            "b1".to_string(),
+            ControllerHealth {
+                state: "passive",
+                tec: 142,
+                rec: 9,
+            },
+        )]);
+        let rows = health_rows(&controllers, &["b1".to_string()], &errors);
+
+        assert_eq!(
+            rows.keys().collect::<Vec<_>>(),
+            vec!["b1", "b9"],
+            "a mapped bus and a faulting one both get a row",
+        );
+        assert_eq!(rows["b1"].controller.unwrap().tec, 142);
+        assert_eq!(rows["b1"].error_count, 0);
+        // The control: a bus the host has nothing to say about gets no
+        // row at all, so the panel renders an em dash rather than a zero.
+        assert!(!rows.contains_key("b2"));
+        assert_eq!(rows["b9"].controller, None);
+        assert_eq!(rows["b9"].error_count, 2);
+        assert_eq!(rows["b9"].last_error_ts_ns, Some(ms(1001)));
+        assert!(rows["b9"].error_rate > 0.0);
+    }
+
+    #[test]
+    fn a_row_carries_no_load_where_the_host_has_no_bitrate_for_the_bus() {
+        let errors = ErrorRuns::default();
+        let rows = health_rows(&BTreeMap::new(), &["b1".to_string()], &errors);
+        assert_eq!(rows["b1"].load_percent, None);
+        let json = serde_json::to_value(&rows["b1"]).unwrap();
+        assert!(
+            json.get("loadPercent").is_none(),
+            "absent, not zero: {json}",
+        );
+        assert!(json.get("controller").is_none());
+        assert_eq!(json["errorCount"], 0);
     }
 }
