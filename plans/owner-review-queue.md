@@ -88,6 +88,31 @@ is a *list* becomes rows; content that is an *editor face* stays a
 Tab-reached block, kept safe by the toggle rule instead. ADR 0044
 amended to say so. A wider reading is possible and was not taken.
 
+### 1.8 `--no-tls` is now one flag from an unprotected routable listener
+[Task 94](tasks/0094-server-defaults-and-discovery.md) · **security posture**
+
+With the default bind moved to `0.0.0.0:50051`, `--no-tls` alone now
+serves the hardware in the clear on the LAN. It used to be a no-op by
+itself, because the default bind was loopback — putting the hardware on
+the wire unprotected took *two* flags and therefore two decisions.
+
+ADR 0041 names `--no-tls` as exactly this escape hatch, so the posture
+is unchanged **in kind** — the sentence just got shorter. The phase left
+it alone rather than narrow it, because requiring an explicit `--bind`
+alongside `--no-tls` would be rewriting the ADR's escape hatch, which is
+not a phase agent's call.
+
+**Needed: leave it, or narrow `--no-tls` to require an explicit
+`--bind`.** Worth a moment's thought — the flag's blast radius grew
+without its documentation changing.
+
+### 1.9 A bare launch now draws a second firewall prompt
+[Task 94](tasks/0094-server-defaults-and-discovery.md) · FYI
+
+A routable TCP listener on first bare run means a Windows Defender
+Firewall prompt, separate from the mDNS one and on a different port.
+Documented in the README; nothing in code can pre-empt it.
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost
@@ -188,6 +213,7 @@ test or artefact.
 | 95 | Gridview content click collapsing the message |
 | 97 | Enum value labels on the plot's y axis |
 | 96 | Long signal and `VAL_` names rendering |
+| 94 | Server bind defaults, mDNS honesty, servers panel from the project view |
 
 ## 5. Housekeeping owed at close-out
 
