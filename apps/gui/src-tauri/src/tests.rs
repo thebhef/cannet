@@ -2591,6 +2591,45 @@ fn write_census_fixture(path: &std::path::Path, frames: u64) {
     writer.finish().unwrap();
 }
 
+/// Everything an import gathers alongside its frames — a BLF's markers,
+/// an MDF's file-backed signal series — is applied *after* the pump, and
+/// by then the frontend has already seen `log-finished` and is clearing
+/// the partial capture. So the pump thread has to still know it was
+/// cancelled at that point, and the thing it asks is not the slot in
+/// `AppState`: the pump clears that the moment its loop ends. It is the
+/// clone it kept, which outlives the slot.
+#[test]
+fn an_import_is_still_known_to_have_been_cancelled_after_its_slot_is_cleared() {
+    let state = test_state();
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.import_cancel() = Some(Arc::clone(&cancel));
+    let kept = Arc::clone(&cancel);
+
+    cancel_import_now(&state);
+    // What the pump thread does the moment its loop ends.
+    *state.import_cancel() = None;
+
+    assert!(
+        import_was_cancelled(&kept),
+        "the thread must not have to ask the slot it just emptied",
+    );
+}
+
+/// The control: an import nobody cancelled reads as finished at the same
+/// point, so the guard above does not stop every import from applying
+/// what its walk collected.
+#[test]
+fn an_import_nobody_cancelled_is_not_treated_as_abandoned() {
+    let state = test_state();
+    let cancel = Arc::new(AtomicBool::new(false));
+    *state.import_cancel() = Some(Arc::clone(&cancel));
+    let kept = Arc::clone(&cancel);
+
+    *state.import_cancel() = None;
+
+    assert!(!import_was_cancelled(&kept));
+}
+
 /// The cancellation path end to end at the pump-loop level: a click on
 /// the busy launcher cooperatively cancels the import, and the partial
 /// frames already ingested are exactly the ones read before the flag
