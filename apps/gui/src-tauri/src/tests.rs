@@ -966,6 +966,42 @@ fn per_bus_dbc_scoping_filters_decode() {
 }
 
 #[test]
+fn list_value_tables_inner_resolves_per_bus() {
+    // Two DBCs define the same message/signal (256 / "A") with
+    // different VAL_ tables, each scoped to a different bus. A
+    // bus-scoped lookup must read its own bus's table — not whichever
+    // DBC loaded first.
+    let state = test_state();
+    let dbc_p = format!(
+        "{}VAL_ 256 A 0 \"Park\" 1 \"Drive\" ;\n",
+        tiny_dbc(256, "Msg", "A"),
+    );
+    let dbc_c = format!(
+        "{}VAL_ 256 A 0 \"Open\" 1 \"Closed\" ;\n",
+        tiny_dbc(256, "Msg", "A"),
+    );
+    *state.databases.lock().unwrap() = vec![
+        loaded_scoped("p.dbc", &dbc_p, &["p"]),
+        loaded_scoped("c.dbc", &dbc_c, &["c"]),
+    ];
+
+    let labels = |bus: Option<&str>| -> Vec<String> {
+        list_value_tables_inner(&state, 256, false, "A", false, bus)
+            .into_iter()
+            .map(|e| e.label)
+            .collect()
+    };
+
+    assert_eq!(labels(Some("p")), vec!["Park", "Drive"]);
+    assert_eq!(labels(Some("c")), vec!["Open", "Closed"]);
+
+    // `bus_id: None` means "the bus is unknown", not "on no bus" — it
+    // keeps the pre-scoping first-match-across-all-databases behaviour
+    // rather than `dbc_applies`'s literal (scoped-out) answer.
+    assert_eq!(labels(None), vec!["Park", "Drive"]);
+}
+
+#[test]
 fn decode_candidates_resolve_name_and_signal_leaves_to_ids() {
     let dbs = vec![
         loaded("a.dbc", &tiny_dbc(256, "String1JustDetectedFault", "Sa")),

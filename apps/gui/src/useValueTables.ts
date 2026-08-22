@@ -76,6 +76,7 @@ export function useValueTables(
             extended: s.extended,
             signalName: s.signalName,
             fileBacked: s.fileBacked ?? false,
+            busId: s.busId,
           });
           if (rows.length > 0) {
             accum.set(

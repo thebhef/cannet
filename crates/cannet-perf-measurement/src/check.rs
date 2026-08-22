@@ -117,6 +117,14 @@ pub struct Verdict {
     pub current: f64,
     pub limit: f64,
     pub pass: bool,
+    /// Measured and reported, but excluded from the pass/fail aggregate
+    /// (`main.rs`'s `verdicts.iter().filter(|v| !v.advisory).all(|v| v.pass)`
+    /// and its "N metrics gated" count) — a metric whose `_worst`/`_peak`
+    /// extreme-value spread on a desktop rig is wider than any gate limit
+    /// can absorb without false-tripping (ADR 0031's 2026-08-19
+    /// amendment). `baseline`/`current`/`limit`/`pass` are still computed
+    /// so a human reading the report sees the same numbers as a gated row.
+    pub advisory: bool,
 }
 
 /// Verdict for a two-sided expected-rate band: `measured` must land within
@@ -148,6 +156,7 @@ pub fn expected_band_verdict(
         current: measured,
         limit,
         pass,
+        advisory: false,
     }
 }
 
@@ -165,6 +174,7 @@ pub fn check_mode(mode: &'static str, baseline: &Metrics, current: &HarnessRepor
         current: current.ingest_fps_overall,
         limit: ingest_limit,
         pass: current.ingest_fps_overall >= ingest_limit,
+        advisory: false,
     });
 
     let retention_limit =
@@ -176,6 +186,7 @@ pub fn check_mode(mode: &'static str, baseline: &Metrics, current: &HarnessRepor
         current: current.fps_retention,
         limit: retention_limit,
         pass: current.fps_retention >= retention_limit,
+        advisory: false,
     });
 
     // Lower-is-better, relative-to-baseline ceilings.
@@ -195,6 +206,7 @@ pub fn check_mode(mode: &'static str, baseline: &Metrics, current: &HarnessRepor
             current: cur,
             limit,
             pass: cur <= limit,
+            advisory: false,
         });
     }
 

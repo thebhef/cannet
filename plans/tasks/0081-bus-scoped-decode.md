@@ -279,6 +279,240 @@ Reports were written outside the repo: the owner deleted the historical
 `docs/performance-measurements/frontend/*.json` set in `292f3051`, so
 this phase records the numbers here rather than re-adding files there.
 
+### 2026-08-19 — phase 2, slice 1: `list_value_tables` resolves per bus (host)
+
+Branch `task-81-phase-2-bus-scoped-value-tables`, from
+`task-81-phase-1-bus-scoped-decode`.
+
+- `list_value_tables` gains `bus_id: Option<String>`, split into the
+  `#[tauri::command]` and a testable `list_value_tables_inner` —
+  matching `describe_message`/`decode_frame`/`encode_frame`'s existing
+  `_inner` split in `dbc_commands.rs`. The DBC-backed branch resolves
+  only through databases `filter::dbc_applies` admits for the bus,
+  first-match-wins within that admitted set; the file-backed branch is
+  unaffected (no DBC bears on a file-backed series). `bus_id: None`
+  ("the bus is unknown", not "on no bus" — grooming note 2) keeps the
+  pre-scoping first-match-across-all-databases behaviour rather than
+  `dbc_applies`'s literal (scoped-out) answer, mirroring phase 1's
+  any-bus rule for the encoding fingerprint.
+- `AppState::first_dbc` is left alone; the bus-scoped branch filters
+  `state.databases()` directly, the same shape `resolve_effective_calc`
+  uses for its own bus-scoped resolution.
+
+Before/after value-table lookup (exit criterion), on a two-bus fixture
+(`list_value_tables_inner_resolves_per_bus`): message 256 signal `A`
+defined twice — a `p`-scoped DBC with `VAL_` table `{0: Park, 1:
+Drive}`, a `c`-scoped DBC with `{0: Open, 1: Closed}`.
+
+| Query | Before (no scoping) | After |
+| --- | --- | --- |
+| bus `p` | `[Park, Drive]` (p.dbc loads first) | `[Park, Drive]` (unchanged — p.dbc is also the one that applies) |
+| bus `c` | `[Park, Drive]` — **wrong**, p.dbc answers regardless of bus | `[Open, Closed]` — c's own table |
+| bus `None` | `[Park, Drive]` | `[Park, Drive]` (unchanged — null-bus keeps first-match-across-all, per the ruling) |
+
+Red-first evidence: with `bus_id` plumbed through but the filter not
+yet added, `list_value_tables_inner_resolves_per_bus` failed on the
+bus-`c` query:
+
+```text
+assertion `left == right` failed
+  left: ["Park", "Drive"]
+ right: ["Open", "Closed"]
+```
+
+(`tests.rs:996`) — `p.dbc` answered because it loaded first, exactly
+the seam grooming note 2 describes. Adding the
+`filter::dbc_applies(&d.buses, bus_id)` filter turned it green.
+
+Tests: `cargo test -p cannet-gui` 710 passed / 0 failed / 6 ignored.
+Gate `cargo clippy --workspace --all-targets -- -D warnings` clean;
+`cargo fmt --all` clean.
+
+Commit `4515ca6e` "list_value_tables resolves per bus".
+
+### 2026-08-19 — phase 2, slice 2: `busId` plumbed through the frontend
+
+- `useValueTables` — the one fetch every enum-label consumer routes
+  through (`PlotArea`, `PlotPanel`, `ColorMapPanel`'s target-signal
+  readout, `RbsPanel`, `TransmitSignalsTable`) — sends `busId:
+  s.busId` on its `list_value_tables` invoke.
+- `ColorMapPanel`'s other call site, the direct `invoke` in
+  `onPickSignal`, sends `busId: d.bus_id` from the catalog descriptor
+  it already has in hand.
+- Grepped `apps/gui/src` for `"list_value_tables"`: no other direct
+  caller exists — every other panel reaches the command through
+  `useValueTables`, so these two edits cover the whole frontend.
+
+Red-first evidence: `useValueTables.test.ts`'s file-backed-vs-DBC-backed
+assertion (updated to expect `busId`) and a new test sending two
+signals with different `busId`s both failed before the hook sent the
+field:
+
+```text
+Received:
+  1st spy call:
+  Array [ "list_value_tables", Object {
+-   "busId": "powertrain",
+    "extended": false,
+    "fileBacked": false,
+    "messageId": 100,
+    "signalName": "Gear",
+  } ]
+```
+
+Tests: `pnpm --dir apps/gui test` 2234 passed (165 files). `pnpm --dir
+apps/gui build` clean (`tsc -b && vite build`).
+
+Commit `66c91fc6` "Plumb busId through list_value_tables' frontend
+callers".
+
+### 2026-08-19 — phase 2: ADR-0031 render-tier gate
+
+Two release runs on `ev-zonal`, same procedure as phase 1: fresh
+`pnpm --dir apps/gui tauri build --no-bundle` (binary timestamped
+after both commits above), the same operator-local seeded app-data dir
+phase 1 left in place (outside the repo, reused as-is), same flags
+(`--connect-on-start --perf-capture-secs 60 --perf-interact scrub
+--expected-rx-fps 1608 --expected-tx-fps 1608`). Both runs connected
+(`ids_measured` 173, rx/tx non-zero — the dongles were free): run 1 rx
+1573.2 / tx 1609.8 fps, run 2 rx 1599.6 / tx 1608.4 fps, both inside
+the ±15 % band — neither is the empty-capture failure mode.
+
+`cargo run --release -p cannet-perf-measurement -- check
+--frontend-report <report>` against the untouched
+`docs/performance-measurements/baseline.json`:
+
+| metric | baseline | run 1 | run 2 | worst | limit | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| longtask_ms_per_s_mean | 0.000 | 0.000 | 0.000 | 0.000 | 10.000 | ok |
+| longtask_ms_per_s_p95 | 0.000 | 0.000 | 0.000 | 0.000 | 17.000 | ok |
+| lag_ms_max | 10.500 | 13.000 | 22.100 | 22.100 | 41.000 | ok |
+| jank_fraction | 0.000 | 0.000 | 0.000 | 0.000 | 0.050 | ok |
+| flush_ms_mean | 5.211 | 4.986 | 4.417 | 4.986 | 25.000 | ok |
+| flush_ms_max | 23.772 | 16.501 | 16.221 | 16.501 | 72.544 | ok |
+| tx_late_ms_mean | 7.600 | 6.837 | 5.633 | 6.837 | 18.000 | ok |
+| tx_late_ms_max | 65.695 | 60.133 | 22.847 | 60.133 | 156.391 | ok |
+| jsheap_mb_peak | 70.300 | 69.200 | 70.500 | 70.500 | 204.600 | ok |
+| jsheap_mb_drift_per_min | 9.547 | 2.557 | 8.903 | 8.903 | 24.094 | ok |
+| renderer_mb_peak | 299.363 | 297.195 | 304.664 | 304.664 | 662.727 | ok |
+| renderer_mb_drift_per_min | 40.168 | 40.433 | 45.624 | 45.624 | 85.336 | ok |
+| host_mb_peak | 59.227 | 59.258 | 58.250 | 59.258 | 182.453 | ok |
+| tree_mb_peak | 714.051 | 714.984 | 715.031 | 715.031 | 1492.102 | ok |
+| tree_mb_drift_per_min | 67.120 | 72.259 | 75.747 | 75.747 | 139.240 | ok |
+| rx_gap_p95_ratio_worst | 1.199 | 2.150 | 1.166 | 2.150 | 2.898 | ok |
+| rx_gap_short_frac_worst | 0.008 | 0.097 | 0.004 | 0.097 | 0.046 | **REGRESSED** |
+| rx_fps_retention | 0.998 | 0.993 | 0.997 | 0.993 | ≥0.800 | ok |
+| tx_fps_retention | 1.001 | 1.002 | 1.000 | 1.000 | ≥0.800 | ok |
+
+Run 1 alone: `check` exits non-zero on `rx_gap_short_frac_worst`
+(0.097 vs limit 0.046). Run 2 alone: `check passed (27 metrics
+gated)` — the `grpc` mode was skipped that run ("virtual-bus server
+exited before binding," a harness-side teardown hiccup unrelated to
+this phase's change, not one of run 2's 27 gated metrics). **Comparing
+worst-to-worst, the gate fails**: `rx_gap_short_frac_worst` 0.097 >
+limit 0.046. No baseline was promoted or edited; every other metric —
+18 of 19 frontend rows, plus every tracebuffer/hardware-peak row —
+passes on both runs.
+
+Observation: both runs' worst offender is the same id, `zonal/0x10E`
+(`PackCurrentHiRes`, `GenMsgCycleTime` 10 ms, pack-bus-scoped) — run 1
+`worst_short_frac` 0.097, run 2 0.004, baseline 0.008. The two runs of
+the identical binary disagree by ~24x on this one id.
+
+Hypothesis: this is run-to-run rx-side jitter, not a regression this
+phase's code introduced — `list_value_tables` is a UI enum-label
+lookup command, never called on the frame-ingest path `rx_gap`
+characterizes (CAN-frame inter-arrival timing at the sidecar, upstream
+of any DBC or value-table lookup). Supporting data: `flush_ms` and
+`tx_late_ms` (the metrics a decode-path change would move, per phase
+1's own reading) sit at or below baseline on both runs, the same
+pattern phase 1 found for its own scoping change.
+
+This hypothesis is **not** confirmed by a falsifying experiment in this
+phase — no third run and no controlled A/B against the pre-phase-2
+binary were taken, so it stands as a hypothesis, not a conclusion.
+Recorded as an open finding rather than waived or fixed; see
+Blockers.
+
+Tests/gate summary: host 710 passed / 0 failed / 6 ignored; frontend
+2234 passed; render-tier gate **worst-to-worst FAILED** on
+`rx_gap_short_frac_worst` (1 of 19 frontend metrics).
+
+### 2026-08-19 — task 81 exit-criteria walk (phase 2, not a completion declaration)
+
+Per the task's exit criteria, with phase 1 + phase 2 evidence. This is
+a status check, not a completion call — that is the overseer's, with
+the owner.
+
+1. *"The pyramid decode consults the same `dbc_applies` scoping as
+   every other decode consumer; a signal scoped to bus A is never
+   decoded by a DBC scoped only to bus B; tested."* — **Met**, phase 1.
+   Evidence: `signal_cache.rs::a_scoped_database_never_decodes_another_bus`
+   and its siblings; phase 1 slice 1's before/after table (2026-08-19,
+   above) showing the chassis series stops reading the powertrain
+   DBC's value.
+2. *"`list_value_tables` resolves per bus; lanes/labels on two
+   differently-scoped buses read their own tables; tested."* —
+   **Met**, phase 2. Evidence:
+   `dbc_commands.rs::list_value_tables_inner_resolves_per_bus` (host)
+   and `useValueTables.test.ts`'s `busId` assertions (frontend), this
+   entry.
+3. *"The behavior change is called out in the status log with a
+   before/after decode comparison on a two-bus fixture."* — **Met**.
+   Phase 1 slice 1 has the decode before/after; phase 2 slice 1 (above)
+   has the value-table-lookup before/after on the same shape of
+   fixture.
+
+Outstanding, not an exit criterion but load-bearing for the overseer's
+call: the ADR-0031 gate's worst-to-worst failure on
+`rx_gap_short_frac_worst` (above) is unresolved — hypothesized as
+unrelated environmental jitter, not confirmed.
+
+### 2026-08-19 — `rx_gap_short_frac_worst` ungated (owner ruling, out of scope)
+
+Not part of this task's exit criteria — an owner ruling on the open
+finding above (the phase-2 ADR-0031 gate's worst-to-worst failure), and
+the overseer control measurement that resolved it as environmental
+(15 further captures, both branches, spread 0.0022-0.0967 with no code
+regression present). The owner's disposition of that finding:
+`rx_gap_short_frac_worst` **stops being a gate** — it cannot be resolved
+on a desktop PC, or at least not on every desktop PC, so gating on it
+wastes review time. It stays measured and reported.
+
+Landed on branch `task-81-phase-2-bus-scoped-value-tables` (continuing
+this task's branch, since the finding surfaced here, though the fix
+itself is unrelated to bus-scoped decode):
+
+- `Verdict` (`crates/cannet-perf-measurement/src/check.rs`) gains an
+  `advisory: bool` field. `rx_gap_short_frac_worst`'s row in
+  `check_frontend` (`frontend.rs`) sets it `true`; every other verdict
+  in the crate sets it `false`. `main.rs`'s aggregate pass/fail and its
+  "N metrics gated" count both filter `!v.advisory`; the printed table
+  shows `advisory` in the result column instead of `ok`/`REGRESSED` for
+  that row — still visible, never gating.
+- `rx_gap_gates_catch_on_wire_bunching` (the failing-case test at
+  `frontend.rs:955`, formerly ~932) now covers only
+  `rx_gap_p95_ratio_worst`, which stays a real gate. A new test,
+  `rx_gap_short_frac_worst_is_advisory_not_a_gate`, proves the metric is
+  still computed and reported at the same baseline/current/limit values
+  a gated row would carry (including that a breach still reads `pass:
+  false` on the row itself), and that the breach does not fail the
+  aggregate `check` a caller would compute by excluding advisory rows.
+- ADR 0031 amended (dated status-header line plus a new "Amendment
+  (2026-08-19)" section): records the control-measurement evidence,
+  names which gate families are trustworthy on a desktop rig vs.
+  advisory, and notes that a future `_worst`/`_peak` gate wants the
+  median-across-reports treatment already used for `_mb_drift_per_min`,
+  with a 3-run minimum.
+- No baseline touched; no other metric's limit changed.
+
+Tests: `cargo test -p cannet-perf-measurement` 48 passed / 0 failed (was
+47; net +1 across the split test). `cargo test -p cannet-gui` 710 passed
+/ 0 failed / 6 ignored (unchanged — no host code outside
+`cannet-perf-measurement` touched). Gate
+`cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo
+fmt --all` clean.
+
 ## Blockers / side effects
 
 Phase 1 hit no blockers. Side effects worth the next phase's
@@ -301,3 +535,61 @@ attention:
 - **`list_value_tables` is still unscoped**, so a lane's labels can
   still come from a database that cannot decode the series. That is
   phase 2 and is unchanged by this phase.
+  **Resolved by phase 2** (2026-08-19): `list_value_tables` now takes
+  `bus_id` and resolves through `filter::dbc_applies`-admitted
+  databases only, per the status log entries above.
+
+Phase 2 hit one open finding, unresolved at hand-off:
+
+- **ADR-0031 render-tier gate, worst-to-worst FAILED on
+  `rx_gap_short_frac_worst`** (2026-08-19): run 1 measured 0.097 on id
+  `zonal/0x10E` against a 0.046 limit (baseline 0.008); run 2 measured
+  0.004 on the same id. Hypothesis recorded in the status log: this is
+  rx-side jitter unrelated to `list_value_tables` (a UI enum-lookup
+  command with no role in frame ingest, upstream of where `rx_gap` is
+  measured), not a regression from this phase's code — supported by
+  `flush_ms`/`tx_late_ms` sitting at or below baseline on both runs,
+  but **not confirmed by a falsifying experiment** (no third run, no
+  A/B against the pre-phase-2 binary). This is a finding for the
+  overseer, not something this phase resolved — no baseline was
+  promoted or edited, and the code was not changed to chase it. If the
+  next investigation reruns the gate, `zonal/0x10E` /
+  `PackCurrentHiRes` (pack bus, `GenMsgCycleTime` 10 ms) is where to
+  look first.
+
+  **Resolved — environmental, not attributable** (overseer control
+  measurement, 2026-08-19). 11 further captures on the same rig, same
+  session: 7 on the phase-2 binary (bit-identical to the one that
+  failed) and 4 on a freshly-built phase-1 control. The spike did not
+  reproduce on either branch; both branches' gates pass on the
+  untouched baseline (phase-2 7 reports, 141 metrics gated, exit 0;
+  phase-1 4 reports, 87 metrics gated, exit 0).
+
+  The falsifying datum: ordering all 15 runs by `rx_fps`, the two
+  lowest are the two runs with the highest `short_frac` — and one of
+  them is a **phase-1** run (0.012 at 1589 fps), which a
+  phase-2-attributable regression cannot produce. The elevated
+  short-gap fraction tracks a depressed on-wire receive rate, and it
+  occurs on both branches. Supporting: the 4-vs-4 same-session
+  distributions are a perfect tie (Mann-Whitney U = 8 of 16; medians
+  0.0045 vs 0.0047), and the argmax id shuffles across three ids
+  (`0x10F` 8x, `0x10E` 3x, `0x100` 2x) rather than naming one hurt
+  signal — the fingerprint of an extreme-value statistic over a
+  near-flat field.
+
+- **The gate's own limit for this metric is too tight** (finding about
+  the harness, not about this task; for the owner to dispose of).
+  `rx_gap_short_frac_worst`'s limit is `baseline x 2 + 0.03` = 0.046
+  (`ftol::FACTOR` / `ftol::RX_GAP_SHORT_FRAC_FLOOR`,
+  `crates/cannet-perf-measurement/src/frontend.rs`), while 15 healthy
+  runs spread 0.0022-0.0967 (44x) with a mode near 0.004 — the 0.008
+  baseline was itself captured on a slightly unlucky run. That is a
+  ~7 % spurious breach rate per run, ~13 % per two-run phase gate.
+  Options: raise the floor (costs sensitivity — 0.097 would need
+  ~0.081), or gate it on the **median across the supplied reports**
+  the way ADR 0031 already treats the `_mb_drift_per_min` family,
+  which is the principled treatment for a statistic that is itself a
+  max — though that wants a 3-run minimum to bite. `tree_mb_peak`
+  shows the same shape (709-998 MB across 7 runs, well inside its
+  limit), so the `_worst` / `_peak` families as a class are
+  extreme-value statistics gated as if they were means.

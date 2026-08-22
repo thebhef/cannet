@@ -562,15 +562,22 @@ fn run_check(
             v.baseline,
             v.current,
             v.limit,
-            if v.pass { "ok" } else { "REGRESSED" }
+            if v.advisory {
+                "advisory" // measured and reported, never gates a build
+            } else if v.pass {
+                "ok"
+            } else {
+                "REGRESSED"
+            }
         );
     }
     for (mode, e) in &skipped {
         eprintln!("{mode}: skipped — {e}");
     }
 
-    if verdicts.iter().all(|v| v.pass) {
-        eprintln!("check passed ({} metrics gated)", verdicts.len());
+    let gated = verdicts.iter().filter(|v| !v.advisory).count();
+    if verdicts.iter().filter(|v| !v.advisory).all(|v| v.pass) {
+        eprintln!("check passed ({gated} metrics gated)");
         Ok(ExitCode::SUCCESS)
     } else {
         eprintln!("check FAILED — a gated metric regressed past tolerance");

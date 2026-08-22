@@ -196,6 +196,13 @@ pub struct FrontendMetrics {
     /// ~1.2 / ~2%; the pre-stagger cohort regression ~3.5 / ~28%.
     #[serde(default)]
     pub rx_gap_p95_ratio_worst: f64,
+    /// **Advisory, not a gate** (ADR 0031's 2026-08-19 amendment, owner
+    /// ruling). Still computed and reported the same way as
+    /// `rx_gap_p95_ratio_worst`, but a control measurement of 15 healthy
+    /// captures on one rig spread it 0.0022-0.0967 (44x) with no code
+    /// change — a false-trip rate no desktop-rig limit can absorb, so it
+    /// no longer contributes to `check`'s pass/fail verdict. Read it as
+    /// a per-run number, not a threshold.
     #[serde(default)]
     pub rx_gap_short_frac_worst: f64,
 }
@@ -299,7 +306,10 @@ mod ftol {
     /// ~2.9 before gating; the cohort regression measured ~3.5.
     pub const RX_GAP_RATIO_FLOOR: f64 = 0.5;
     /// Floor for the on-wire worst short-gap fraction — a ~2% baseline
-    /// gates at ~7%; the cohort regression measured ~28%.
+    /// would gate at ~7%; the cohort regression measured ~28%. Still used
+    /// to compute the reported limit, but the metric itself is advisory
+    /// (ADR 0031's 2026-08-19 amendment): 15 healthy same-rig captures
+    /// spread 0.22%-9.67% with no code change, well past this floor.
     pub const RX_GAP_SHORT_FRAC_FLOOR: f64 = 0.03;
 }
 
@@ -316,6 +326,10 @@ mod ftol {
 ///   sim rate, when handed in. Baseline-independent, so a uniformly-slow
 ///   run is caught even against a slow baseline, and a deterministic
 ///   schedule makes an overshoot as wrong as a shortfall.
+///
+/// One row, `rx_gap_short_frac_worst`, is computed and returned like any
+/// other but marked [`Verdict`]'s `advisory` field — it never fails the
+/// aggregate `check` verdict (ADR 0031's 2026-08-19 amendment).
 #[must_use]
 #[allow(clippy::too_many_lines)] // a flat list of independent gate blocks
 pub fn check_frontend(
@@ -359,6 +373,7 @@ pub fn check_frontend(
             current: cur,
             limit,
             pass: cur <= limit,
+            advisory: false,
         }
     })
     .collect();
@@ -424,6 +439,7 @@ pub fn check_frontend(
             current: cur,
             limit,
             pass: cur <= limit,
+            advisory: false,
         });
     }
 
@@ -453,6 +469,7 @@ pub fn check_frontend(
             current: cur,
             limit: ceiling,
             pass: cur <= ceiling,
+            advisory: false,
         });
     }
 
@@ -481,6 +498,7 @@ pub fn check_frontend(
             current: cur,
             limit,
             pass: cur <= limit,
+            advisory: false,
         });
     }
 
@@ -489,18 +507,28 @@ pub fn check_frontend(
     // throughput refills within the second and `tx_late_ms` is cause-side
     // only, so neither sees it. Baseline-armed like the spike tier (a
     // sim-only baseline has no hardware rx and holds 0 ⇒ inert).
-    for (metric, base, cur, floor) in [
+    //
+    // `rx_gap_short_frac_worst` is **advisory only** (ADR 0031's
+    // 2026-08-19 amendment, owner ruling): a control measurement of 15
+    // healthy captures on one rig spread the metric 44x (0.0022-0.0967)
+    // with no code change, wider than any floor can absorb without a
+    // desktop-rig-dependent false-trip rate — so it is still computed and
+    // shown, but excluded from the pass/fail aggregate. `rx_gap_p95_ratio_worst`
+    // stays a real gate.
+    for (metric, base, cur, floor, advisory) in [
         (
             "rx_gap_p95_ratio_worst",
             baseline.rx_gap_p95_ratio_worst,
             current.rx_gap_p95_ratio_worst,
             ftol::RX_GAP_RATIO_FLOOR,
+            false,
         ),
         (
             "rx_gap_short_frac_worst",
             baseline.rx_gap_short_frac_worst,
             current.rx_gap_short_frac_worst,
             ftol::RX_GAP_SHORT_FRAC_FLOOR,
+            true,
         ),
     ] {
         if base <= 0.0 {
@@ -513,6 +541,7 @@ pub fn check_frontend(
             baseline: base,
             current: cur,
             limit,
+            advisory,
             pass: cur <= limit,
         });
     }
@@ -539,6 +568,7 @@ pub fn check_frontend(
             current: cur,
             limit,
             pass: cur >= limit,
+            advisory: false,
         });
     }
 
@@ -670,6 +700,7 @@ pub fn check_frontend_gate(
             current: med,
             limit,
             pass: med <= limit,
+            advisory: false,
         });
     }
 
@@ -923,39 +954,35 @@ mod tests {
     #[test]
     fn rx_gap_gates_catch_on_wire_bunching() {
         // The stagger measurement (ADR 0039): pre-fix cohorts drove the
-        // worst per-id p95/median gap ratio to ~3.5 and the short-gap
-        // (catch-up pair) fraction to ~28%; healthy rig ~1.2 / ~2%.
+        // worst per-id p95/median gap ratio to ~3.5; healthy rig ~1.2.
         // Baseline-armed like the stall rows — inert until a baseline
-        // carries the fields.
+        // carries the field. `rx_gap_short_frac_worst` is covered
+        // separately by `rx_gap_short_frac_worst_is_advisory_not_a_gate`
+        // — it is reported alongside this row but does not gate (ADR
+        // 0031's 2026-08-19 amendment).
         let mut base = metrics(1.0, 12.0, 27.0, 0.03);
         base.rx_gap_p95_ratio_worst = 1.25;
-        base.rx_gap_short_frac_worst = 0.02;
         let mut cur = base.clone();
         cur.rx_gap_p95_ratio_worst = 3.5; // > 1.25*2 + 0.5 = 3.0 ⇒ fails
-        cur.rx_gap_short_frac_worst = 0.28; // > 0.02*2 + 0.03 = 0.07 ⇒ fails
         let verdicts = check_frontend(&base, &cur, Expected::default());
         let ratio = verdicts
             .iter()
             .find(|v| v.metric == "rx_gap_p95_ratio_worst")
             .unwrap();
-        let short = verdicts
-            .iter()
-            .find(|v| v.metric == "rx_gap_short_frac_worst")
-            .unwrap();
         assert!(!ratio.pass, "cohort-regression ratio must fail");
-        assert!(!short.pass, "catch-up-pair fraction must fail");
+        assert!(!ratio.advisory, "the ratio row is still a real gate");
 
         // Ordinary run-to-run wobble stays green.
         let mut wobble = base.clone();
         wobble.rx_gap_p95_ratio_worst = 1.5;
-        wobble.rx_gap_short_frac_worst = 0.03;
         let verdicts = check_frontend(&base, &wobble, Expected::default());
         assert!(
             verdicts
                 .iter()
-                .filter(|v| v.metric.starts_with("rx_gap_"))
-                .all(|v| v.pass),
-            "healthy wobble must not flap the rx-gap gates",
+                .find(|v| v.metric == "rx_gap_p95_ratio_worst")
+                .unwrap()
+                .pass,
+            "healthy wobble must not flap the ratio gate",
         );
 
         // Inert without a baseline (sim-only baseline: no hardware rx).
@@ -963,6 +990,57 @@ mod tests {
         assert!(
             !verdicts.iter().any(|v| v.metric.starts_with("rx_gap_")),
             "rx-gap gates must stay inert until the baseline carries them",
+        );
+    }
+
+    #[test]
+    fn rx_gap_short_frac_worst_is_advisory_not_a_gate() {
+        // Owner ruling, ADR 0031's 2026-08-19 amendment: a control
+        // measurement of 15 healthy same-rig captures spread this metric
+        // 44x (0.0022 to 0.0967) with no code change — wider than any
+        // floor a gate could set without a desktop-rig-dependent
+        // false-trip rate. It stays measured and reported at the same
+        // baseline/current/limit math a gated row carries, but a breach
+        // must not fail a build.
+        let mut base = metrics(1.0, 12.0, 27.0, 0.03);
+        base.rx_gap_short_frac_worst = 0.02;
+        let mut cur = base.clone();
+        cur.rx_gap_short_frac_worst = 0.28; // would have failed the old gate (> 0.02*2+0.03=0.07)
+        let verdicts = check_frontend(&base, &cur, Expected::default());
+
+        let short = verdicts
+            .iter()
+            .find(|v| v.metric == "rx_gap_short_frac_worst")
+            .unwrap();
+        assert!(
+            short.advisory,
+            "rx_gap_short_frac_worst must be marked advisory"
+        );
+        // Still measured and reported — the breach is visible in the row.
+        approx(short.baseline, 0.02);
+        approx(short.current, 0.28);
+        approx(short.limit, 0.07);
+        assert!(!short.pass, "the breach is still visible in the verdict");
+
+        // The breach does not fail the aggregate check (main.rs excludes
+        // advisory rows from the pass/fail aggregate the same way).
+        assert!(
+            verdicts.iter().filter(|v| !v.advisory).all(|v| v.pass),
+            "an rx_gap_short_frac_worst breach alone must not fail the gate",
+        );
+        assert_eq!(
+            verdicts.iter().filter(|v| v.advisory).count(),
+            1,
+            "only rx_gap_short_frac_worst is advisory in this scenario",
+        );
+
+        // Inert without a baseline, same as the ratio row.
+        let verdicts = check_frontend(&metrics(1.0, 12.0, 27.0, 0.03), &cur, Expected::default());
+        assert!(
+            !verdicts
+                .iter()
+                .any(|v| v.metric == "rx_gap_short_frac_worst"),
+            "stays inert until the baseline carries the rx-gap tier",
         );
     }
 
