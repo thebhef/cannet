@@ -553,6 +553,23 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     });
   });
 
+  it("opens the editor on the message's DBC-declared counter and CRC", async () => {
+    // The sample row's designations come from the DBC — neither is
+    // overridden by the file — so the editor must come up on them
+    // rather than empty, and say which layer they are.
+    VIEW = sampleView();
+    renderPanel("/tmp/sim.cannet_rbs");
+    fireEvent.click(await screen.findByText("fields…"));
+    expect((await screen.findByLabelText("counter configured")) as HTMLInputElement).toBeChecked();
+    expect(screen.getByLabelText("crc configured")).toBeChecked();
+    expect((screen.getByLabelText("counter signal") as HTMLInputElement).value).toBe("AliveCtr");
+    expect((screen.getByLabelText("crc signal") as HTMLInputElement).value).toBe("Crc8");
+    expect(screen.getAllByTestId("calc-provenance").map((n) => n.textContent)).toEqual([
+      "Default",
+      "Default",
+    ]);
+  });
+
   // The signal right-click menu (configure as counter/CRC) shares the
   // dismiss-on-outside-click + Escape hook with the other floating
   // menus — previously this menu closed on *any* click (including
