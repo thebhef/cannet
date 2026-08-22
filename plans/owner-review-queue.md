@@ -187,6 +187,30 @@ The prototype's state table left this undecided. A connect that never
 lands has no other escape, so the phase chose cancel. Reasonable, and
 recorded because it was a choice rather than a ruling.
 
+### 1.19 A DBC-backed plot series naming no bus now resolves nothing
+[Task 106](tasks/0106-any-bus-series-and-sample-order.md) · **implemented on the overseer's recommendation, not an owner ruling**
+
+Task 88 phase 2 named this fix and declined to take it. The grooming
+recommended it, development proceeded on the recommendation rather than
+stopping, and it shipped in `e20bb41b` + `2158b9c7` — which are the
+whole diff to revert.
+
+What it means in practice: a project saved before per-bus signal binding
+keeps its plot series, but they decode nothing until re-pointed. They
+report `NotDecoded`, the most severe of the five mapping states, count
+toward the signal-mapping attention badge, and the panel's picker now
+offers every bus the loaded databases decode on. No migration, no silent
+emptying, no auto-binding to "the only bus".
+
+One consequence worth naming separately: **`restore` drops a busless
+persisted cache row and its segment files** rather than restoring or
+parking it. That is cache, not user data — the view's reference
+survives — but it is a deletion. The mutation test showed the
+alternative: without the guard the row is *parked*, holding disk for a
+series nothing can revive.
+
+**Needed: ratify, or revert the two commits.**
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost
@@ -310,6 +334,8 @@ Recorded by the phases that found them, not yet decided.
 | 3.8 | The RBS feed collapses the DBC and override layers, so on an overridden field the `Override` chip is right but the "DBC default: …" hint is empty — where the transmit panel fills it in. | [task 100](tasks/0100-calc-fields-dbc-config.md) |
 | 3.13 | **`useBusHealth` hand-rolls the host-mirror instead of using `useHostMirror`.** It fetches a snapshot, then registers the listener, with no post-listener refetch — precisely the launch race the shared hook exists to close (six other call sites use it). It copied `useConnectionStates`, which predates the hook. The 1 Hz emitter closes the stale window fast, so the user impact is small; the duplication is the real problem. **Assigned to task 108 phase 2**, the shared-layer phase. | [task 101](tasks/0101-bus-health.md) |
 | 3.14 | **Controller state and TEC/REC are unverified on hardware.** The sidecar's state-poll thread was already producing `InterfaceState`; task 101 built the consumer and tested it at unit tier, but no dongle was available to the phase. The owner holds the hardware. | [task 101](tasks/0101-bus-health.md) |
+| 3.15 | **`cannet-mdf::FileSignal::timestamps_ns` is documented "ascending" with nothing enforcing it** — no sort in `signal_groups`. Argued structurally sound (one source, no CAN-style interleave), but it is a data-source crate *below* the signal cache and outside the phase's boundary, so it was recorded rather than swept. | [task 106](tasks/0106-any-bus-series-and-sample-order.md) |
+| 3.16 | **`plotCursors::statsOver` undercounted a span with tied sample times** — fixed in `3b8fd808` with a real lower bound. FYI rather than a decision: worth knowing because the measurement strip it feeds is the surface [task 108](tasks/0108-gui-chip-redesign.md) rules stays hidden pending rework, so the wrong numbers were not on screen. | [task 106](tasks/0106-any-bus-series-and-sample-order.md) |
 | 3.6 | Task 97's grooming asked that the owner see both axes before the **lanes** axis changed. No comparison was produced, because the lanes axis has no y-gutter labelling to compare — it already draws nothing there, and its labels are the tiles. If the owner meant the lane *tiles*, that is a different request, and it cuts against the stated reason for removing the axis labels. | [task 97](tasks/0097-enum-labels-on-axis.md) |
 
 ---
@@ -342,6 +368,7 @@ test or artefact.
 | 104 | Determinate load progress, and a discoverable cancel |
 | 103 | The toolbar's status bar, status chips, and ADR 0055 |
 | 101 | Bus health — error frames labelled and coalesced, controller state, bus load |
+| 106 | The any-bus series ruled on, and the signal cache's sample-order sweep |
 
 ## 5. Housekeeping owed at close-out
 
