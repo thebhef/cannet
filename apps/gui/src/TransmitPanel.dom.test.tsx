@@ -787,15 +787,72 @@ describe("TransmitPanel on the gridview", () => {
     );
   });
 
-  it("Space sends nothing when the frame's bus is not connected", async () => {
-    // Gated exactly like the row's own send button — `b2` is no bus this
-    // project routes.
-    POOL = [frame("a", { request: { ...frame("a").request, busId: "b2" } })];
+  it("Space starts and stops a periodic row instead of sending it", async () => {
+    // One idiom, two row kinds: the primary action of a periodic row is
+    // its schedule, so Space toggles it — never a one-off send, which
+    // would be a second answer to what the key does.
+    POOL = [frame("a", { mode: "periodic", running: false })];
     renderPanel("el", ["a"]);
     await waitFor(() => expect(tiles()).toHaveLength(1));
     fireEvent.keyDown(list(), { key: "ArrowDown" });
     fireEvent.keyDown(list(), { key: " " });
+    await waitFor(() =>
+      expect(lastCall("start_periodic_transmit")?.args).toMatchObject({ id: "a" }),
+    );
     expect(lastCall("transmit_frame_once")).toBeUndefined();
+  });
+
+  it("Space stops a periodic row that is already running", async () => {
+    POOL = [frame("a", { mode: "periodic", running: true })];
+    renderPanel("el", ["a"]);
+    await waitFor(() => expect(tiles()).toHaveLength(1));
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: " " });
+    await waitFor(() =>
+      expect(lastCall("stop_periodic_transmit")?.args).toMatchObject({ id: "a" }),
+    );
+    expect(lastCall("start_periodic_transmit")).toBeUndefined();
+  });
+
+  it("leaves the start button live on an unconnected bus, and the send button locked", async () => {
+    // The two controls answer the same question Space does, so they
+    // answer it the same way: starting a periodic is a state change and
+    // is always allowed, sending is an act that needs somewhere to go.
+    POOL = [
+      frame("m", { request: { ...frame("m").request, busId: "b2" } }),
+      frame("p", { mode: "periodic", request: { ...frame("p").request, busId: "b2" } }),
+    ];
+    renderPanel("el", ["m", "p"]);
+    await waitFor(() => expect(tiles()).toHaveLength(2));
+    expect(screen.getByText("send")).toBeDisabled();
+    const start = screen.getByText("start");
+    expect(start).not.toBeDisabled();
+    fireEvent.click(start);
+    await waitFor(() =>
+      expect(lastCall("start_periodic_transmit")?.args).toMatchObject({ id: "p" }),
+    );
+  });
+
+  it("Space is not guarded on a connection: the send is a silent no-op, the toggle still lands", async () => {
+    // With no bus connected there is nowhere to send, so a manual row's
+    // Space does nothing and queues nothing. A periodic row's Space
+    // still changes its state — the scheduler simply emits no frames
+    // until a route exists (ADR 0039).
+    POOL = [
+      frame("a", { request: { ...frame("a").request, busId: "b2" } }),
+      frame("p", { mode: "periodic", request: { ...frame("p").request, busId: "b2" } }),
+    ];
+    renderPanel("el", ["a", "p"]);
+    await waitFor(() => expect(tiles()).toHaveLength(2));
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: " " });
+    expect(lastCall("transmit_frame_once")).toBeUndefined();
+
+    fireEvent.keyDown(list(), { key: "ArrowDown" });
+    fireEvent.keyDown(list(), { key: " " });
+    await waitFor(() =>
+      expect(lastCall("start_periodic_transmit")?.args).toMatchObject({ id: "p" }),
+    );
   });
 
   it("Right discloses a tile's expanded face in place, adding no rows", async () => {
