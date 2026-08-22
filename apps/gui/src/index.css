@@ -5170,12 +5170,6 @@ button.color-chip {
 }
 .dbc-panel-search {
   flex: 1 1 0;
-  background: var(--surface-raised);
-  color: var(--text-primary);
-  border: 1px solid var(--border-strong);
-  padding: 0.2rem 0.5rem;
-  border-radius: 3px;
-  font-size: 0.85rem;
 }
 .dbc-panel-match-count {
   color: var(--text-muted);
@@ -5298,17 +5292,9 @@ button.color-chip {
   text-overflow: ellipsis;
 }
 
-/* Phase 12 polish: panel-wide "details" toggle + per-row detail block. */
-.dbc-panel-details-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  color: var(--text-secondary);
-  font-size: 0.78rem;
-  cursor: pointer;
-  user-select: none;
-}
-/* Also load-bearing for the virtualizer: a detail block is exactly
+/* The panel-wide "details" toggle is a ChipButton now; only the
+   per-row detail block it shows/hides is still this stylesheet's own.
+   Load-bearing for the virtualizer: a detail block is exactly
    `DETAIL_LINE_HEIGHT` per rendered `dt`/`dd` pair plus `DETAIL_CHROME`
    (3 px padding + the 1 px rule) — see `dbcPanelViewport.ts`. The
    zero row-gap, the fixed line-height, and `dd`'s `nowrap` are what

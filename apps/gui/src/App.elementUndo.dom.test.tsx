@@ -868,7 +868,7 @@ describe("element undo", () => {
     });
     expect(traceMode()).toBe("Trace");
 
-    const search = document.querySelector<HTMLInputElement>("input.dbc-panel-search")!;
+    const search = document.querySelector<HTMLInputElement>(".dbc-panel-search input")!;
     await act(async () => {
       fireEvent.change(search, { target: { value: "engine" } });
     });
@@ -882,7 +882,7 @@ describe("element undo", () => {
     await waitFor(() => {
       if (traceMode() !== "By ID") throw new Error(`undo left mode "${traceMode()}"`);
     });
-    expect(document.querySelector<HTMLInputElement>("input.dbc-panel-search")!.value).toBe(
+    expect(document.querySelector<HTMLInputElement>(".dbc-panel-search input")!.value).toBe(
       "engine",
     );
   }, 30_000);
