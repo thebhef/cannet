@@ -524,16 +524,21 @@ describe("payload sizing helpers", () => {
     // The strip shows the DBC default designation.
     expect(await screen.findByText(/counter: AliveCtr/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("fields…"));
-    // Turn the counter section on (an override) and Apply — the
-    // override rides through set_transmit_frame as `frame.calc`.
-    fireEvent.click(await screen.findByLabelText("counter configured"));
+    // The editor opens on the DBC's designation — the section is on
+    // and populated before anything is typed …
+    const toggle = (await screen.findByLabelText("counter configured")) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    expect((screen.getByLabelText("counter signal") as HTMLInputElement).value).toBe("AliveCtr");
+    // … and editing it makes an override, which rides through
+    // set_transmit_frame as `frame.calc`.
+    fireEvent.change(screen.getByLabelText("counter increment"), { target: { value: "2" } });
     fireEvent.click(screen.getByText("Apply"));
     await waitFor(() => {
       const call = lastCall("set_transmit_frame");
       expect(call).toBeDefined();
       const frameArg = (call?.args as { frame?: { calc?: unknown } }).frame;
       expect(frameArg?.calc).toMatchObject({
-        counter: { signal: "AliveCtr", increment: 1 },
+        counter: { signal: "AliveCtr", increment: 2 },
       });
     });
   });

@@ -2002,7 +2002,12 @@ BA_ "CannetDisplay" SG_ 1042 Crc8 "radix=hex";
 attribute, kept parseable by test). Both the
 RBS panel and the transmit panel expose the same configuration
 editor; a per-message override replaces the DBC default wholesale
-per field. On the receive side, frames on a configured `(bus, id)`
+per field. The editor opens on the *effective* designation — the
+override for a field, else the DBC's declared default — and marks
+each section `Default` or `Override` so the layer it came from is
+visible; leaving a section on its DBC default writes no override,
+and clearing a section restores it. On the receive side, frames on a
+configured `(bus, id)`
 are verified at ingest: a bad CRC or out-of-sequence counter paints
 the trace row red, per-id validity is queryable
 (`fetch_field_validity`), and a valid→invalid transition logs a
