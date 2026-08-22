@@ -2711,8 +2711,11 @@ button.color-chip {
 }
 /* === end shared colour chip === */
 
-/* The clicked event row. Selection is view-local and keyed by event id,
-   so it survives the row slots being recycled by a scroll. */
+/* The event row the gridview cursor is on — by click or by arrow key.
+   Event rows are not selectable (ADR 0044), so this is the only thing an
+   event row shows about the grid's state, and it is what says which row
+   Space and F2 act on. Keyed by event id, so it survives the row slots
+   being recycled by a scroll. */
 .trace-event-focused {
   background: var(--surface-row-focused);
   box-shadow: inset 2px 0 0 var(--focus-marker);
