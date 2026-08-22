@@ -135,3 +135,77 @@ that mattered was that *cannet writes files it then truncates*.
   it — not with the reported symptom, which grooming already showed
   does not apply to our reader.
 - The MDF path is fixed or its exemption is recorded with a reason.
+
+## Status log
+
+### 2026-08-21 — Phase 1: identify the rejection point (branch `task-105-unfinalized-blf`)
+
+Branched from `task-100-calc-fields-dbc-config` (`3e0b8b7a`).
+
+**The framing above does not survive contact with the code.** Neither
+of the two groomed candidates is what stops us, and the file we were
+told "cannot be opened" opens.
+
+**Observation.** A throwaway integration test (`tests/scratch_probe.rs`,
+deleted after the run) built three files from one 20 000-frame source
+and walked each with `BlfReader` and with `scan_blf`:
+
+| file | header parse | `object_count` | `scan_blf` |
+| --- | --- | --- | --- |
+| control — finalised by `BlfCaptureWriter::finish` | ok | 20 000 | `Ok`, 20 000 frames, start `1.7e18` |
+| A — our writer hard-killed (`mem::forget`, no `Drop`) | ok | 0 | `Ok`, **18 728 frames**, start **0** |
+| B — A with 1 / 17 / 4 096 trailing bytes removed | ok | 0 | `Err("BLF ended mid-object")`, **0 frames** |
+
+**Hypothesis 1 (groomed candidate 1): `statistics_size` is also a
+placeholder, so `parse` returns `StatisticsSizeTooSmall(0)`.**
+*Refuted.* `BlfFileWriter::create` stamps `statistics_size: 144` into
+its placeholder, and python-can's `BLFWriter._write_header` — the
+writer that produced the reported file — stamps `b"LOGG"` and
+`FILE_HEADER_SIZE` at open too. Both stub headers parse; row A above
+is the data.
+
+**Hypothesis 2: a zero `object_count` stops us.** *Refuted.* Row A
+recovered 18 728 frames from a file whose header says it holds none.
+`object_count` is written by `BlfFileWriter::finish` and read by
+`FileStatistics::parse`, and appears nowhere else on the read path
+(`git grep object_count crates/cannet-blf/src` — writer.rs and
+header.rs only). The walk is bounded by EOF, not by the count. A zero
+count is what *Vector* tools reject on; it is not what stops us.
+
+**Hypothesis 3 (groomed candidate 2): the truncated tail aborts the
+whole read.** *Confirmed.* Row B: removing a single trailing byte
+turns `scan_blf` from `Ok(18 728 frames)` into
+`Err(BlfReadError::UnexpectedEof)`. `scan_blf_channels` maps any
+scan error to a failed import, so **one lost byte discards 16 387
+recoverable frames** — the whole file minus its last container. The
+loss is not bounded at ≤128 kB as the report assumed; it is total.
+The rejection point is `BlfReader::pull_one_container`, where a short
+`read_exact` of a top-level record's body becomes
+`BlfReadError::UnexpectedEof`.
+
+**A third defect the experiment turned up, not in the report.** Row A
+opens, but with `start_unix_nanos == 0`: a stub header carries the
+all-zero SYSTEMTIME sentinel, so every frame is dated from 1970 and
+the capture silently loses its wall clock. This is unrecoverable by
+construction — per-event timestamps are unsigned offsets *from* that
+anchor, so the absolute time is not in the file at all — and a
+zero-start BLF is already a legitimate shape
+(`examples/time-origins/relative-zero.blf`). The only honest response
+is to say so, which is what the recovery log line now does.
+
+**Does cannet produce such a file?** Yes for the stub header, no for
+the torn tail. `BlfCaptureWriter` streams to `<dest>.part` and
+`Drop` removes it, so a clean crash leaves nothing at `<dest>` —
+confirmed in row A, where `dest exists = false`. A hard kill skips
+`Drop` and leaves `<dest>.part` with a stub header and 107 770 bytes
+of complete containers. It is *not* torn: `BlfFileWriter` writes each
+`LOG_CONTAINER` with one unbuffered `File::write_all`, so a killed
+process cannot split one. A torn tail needs a buffered writer
+(python-can opens its file through Python's `BufferedWriter`) or
+power loss, which is why row B has to be built by truncation.
+
+**Conclusion.** Two things to fix, one to report: the walk must end
+cleanly at a trailing fragment and keep everything before it
+(hypothesis 3); the stub header must not be treated as authoritative
+for counts (it never was); and the lost wall clock must be named in
+the log rather than passed off as a 1970 capture.
