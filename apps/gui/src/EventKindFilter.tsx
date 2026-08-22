@@ -60,9 +60,18 @@ export function EventKindFilter({
   return (
     <div className="event-kind-filter" role="group" aria-label="event kinds">
       {EVENT_KINDS.map((kind) => (
-        <label key={kind} className="event-kind-filter-row" title={EVENT_KIND_META[kind].label}>
+        <label
+          key={kind}
+          className="event-kind-filter-row"
+          // The BLF record a kind round-trips as is a property of the kind,
+          // so this checklist is also the record-type filter, and says so.
+          title={`${EVENT_KIND_META[kind].label} — ${
+            EVENT_KIND_META[kind].blfRecord ?? "not written to a capture file"
+          }`}
+        >
           <input
             type="checkbox"
+            aria-label={EVENT_KIND_META[kind].label}
             checked={state.visible.has(kind)}
             onChange={(e) => state.toggle(kind, e.target.checked)}
           />

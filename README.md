@@ -2695,6 +2695,17 @@ and description ride the saved file too — inside the BLF marker, no
 sidecar, and as `cannet.tag` / `cannet.description` properties on an
 MDF `##EV`.
 
+**Both BLF annotation records.** BLF carries annotations two ways, and
+cannet now reads and writes both. A note is a `GLOBAL_MARKER`
+(freestanding on the timeline); a **comment** is an `EVENT_COMMENT`
+(attached to the event it sits beside, so it tracks with that message
+rather than floating). Importing a capture picks up comments another
+tool wrote — CANalyzer's Trace window writes them — as events of the
+`messageBound` kind, and saving writes them back as comments, keeping
+the object type of the event each one is attached to. Which record a
+kind rides is a property of the kind, so the per-kind checklist names
+it and filtering by kind is filtering by record type.
+
 **Recent captures**. The toolbar grows a **Recent** dropdown next to
 **Import trace…** that lists the last 8 opened BLF and MDF paths
 alike, persisted host-side

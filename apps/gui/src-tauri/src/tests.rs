@@ -1793,6 +1793,14 @@ fn notes_via_import_walk(blf_path: &str) -> Vec<crate::notes::Note> {
             collected.lock().unwrap().push(note);
         }
     });
+    source.on_comment({
+        let collected = Arc::clone(&collected);
+        let mut synthetic_idx = 0u64;
+        move |c| {
+            let note = capture::note_from_comment(&c, &mut synthetic_idx);
+            collected.lock().unwrap().push(note);
+        }
+    });
     while source.next_frame().unwrap().is_some() {}
     let notes = collected.lock().unwrap().clone();
     notes
@@ -1857,6 +1865,7 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             color: Some("#FF8800".into()),
             description: None,
             tag: None,
+            commented_event_type: None,
         },
         notes::Note {
             id: "b".into(),
@@ -1866,6 +1875,7 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             color: None,
             description: None,
             tag: None,
+            commented_event_type: None,
         },
     ];
 
@@ -2239,6 +2249,7 @@ fn a_marker_outside_the_import_range_is_dropped_and_does_not_move_the_origin() {
         color: None,
         description: None,
         tag: None,
+        commented_event_type: None,
     };
     crate::session::anchor_replay_session(&state, &mut anchor, 2_000_000_000);
 
@@ -3064,6 +3075,80 @@ fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
     assert!(warning.contains("Analog/CoolantTemp"), "{warning}");
 }
 
+/// Both BLF annotation record types round-trip: a note as a
+/// `GLOBAL_MARKER`, a message-bound event as an `EVENT_COMMENT` that keeps
+/// the object type of the event it comments on, so it still tracks with
+/// that message on the way back out.
+///
+/// The third annotation is the control: a comment written by another tool,
+/// with no `cannet:event:` packing at all. It has to survive as an event
+/// too — reading only our own packing would silently drop every comment a
+/// `CANalyzer` user made.
+#[test]
+fn both_blf_annotation_records_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("annotated.blf");
+    let ts = 1_700_000_000_000_000_000u64;
+    let frames = vec![trace_store::RawTraceFrame {
+        timestamp_ns: ts,
+        channel: 0,
+        id: 0x100,
+        extended: false,
+        direction: Direction::Rx,
+        payload: CanFramePayload::Classic(vec![1]),
+        bus_id: None,
+    }];
+
+    let notes_in = vec![
+        notes::Note {
+            id: "n1".into(),
+            timestamp_ns: ts + 1_000,
+            label: "a marker".into(),
+            kind: notes::EventKind::Note,
+            color: None,
+            description: None,
+            tag: None,
+            commented_event_type: None,
+        },
+        notes::Note {
+            id: "c1".into(),
+            timestamp_ns: ts + 2_000,
+            label: "contactor closed".into(),
+            kind: notes::EventKind::MessageBound,
+            color: None,
+            description: Some("commanded from the BMS".into()),
+            tag: Some("contactor".into()),
+            // CAN_MESSAGE2 — the comment is on a classic CAN frame.
+            commented_event_type: Some(86),
+        },
+    ];
+
+    capture::write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();
+    let mut back = notes_via_import_walk(dest.to_str().unwrap());
+    back.sort_by_key(|n| n.timestamp_ns);
+    assert_eq!(
+        back, notes_in,
+        "both records come back as the events that wrote them"
+    );
+
+    // The control: another tool's comment, unpacked prose.
+    let dest = dir.path().join("foreign.blf");
+    {
+        let mut w = cannet_blf::BlfCaptureWriter::create_with_start(&dest, ts).unwrap();
+        w.append_comment(ts + 3_000, "looks wrong here\nwatch this ID", 86)
+            .unwrap();
+        w.finish().unwrap();
+    }
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].kind, notes::EventKind::MessageBound);
+    assert_eq!(back[0].label, "looks wrong here");
+    assert_eq!(back[0].description.as_deref(), Some("watch this ID"));
+    assert_eq!(back[0].tag, None);
+    assert_eq!(back[0].id, "blf-comment-0", "a deterministic synthetic id");
+    assert_eq!(back[0].commented_event_type, Some(86));
+}
+
 /// An event's tag and description have no field of their own in a BLF
 /// `GLOBAL_MARKER`, so they ride the marker's opaque `description` behind a
 /// `cannet:event:` prefix — in the file, no sidecar. A note carrying neither
@@ -3092,6 +3177,7 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
         color: Some("#FF8800".into()),
         description: "opened under load\nsecond line".to_string().into(),
         tag: Some("fault".into()),
+        commented_event_type: None,
     };
     let plain = notes::Note {
         id: "n-plain".into(),
@@ -3101,6 +3187,7 @@ fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
         color: None,
         description: None,
         tag: None,
+        commented_event_type: None,
     };
 
     let dest = dir.path().join("marked.blf");
@@ -3184,6 +3271,7 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
             color: None,
             description: None,
             tag: None,
+            commented_event_type: None,
         })
         .unwrap();
     store.replace_derived(vec![notes::Note {
@@ -3194,6 +3282,7 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
         color: None,
         description: None,
         tag: None,
+        commented_event_type: None,
     }]);
     // Both are on the timeline the views render...
     assert_eq!(store.events().len(), 2);
@@ -3316,6 +3405,7 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             // `common_properties` keys, so they round-trip like the color.
             description: Some("what it looked like".into()),
             tag: Some("fault".into()),
+            commented_event_type: None,
         },
         notes::Note {
             id: "note-b".into(),
@@ -3325,6 +3415,7 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             color: None,
             description: None,
             tag: None,
+            commented_event_type: None,
         },
     ];
 
@@ -4319,6 +4410,7 @@ fn write_blf_capture_preserves_every_timestamp_of_an_out_of_order_capture() {
         color: None,
         description: None,
         tag: None,
+        commented_event_type: None,
     }];
 
     let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();

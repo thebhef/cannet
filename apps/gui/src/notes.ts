@@ -5,10 +5,12 @@
 // unit tests) shares.
 
 /// The kind of a timeline event (ADR 0035). `note` is the user-placed
-/// marker the host stores; `busError` is a run of CAN bus errors the host
-/// coalesced into one event; `truncation` is the disk-spill marker
-/// synthesised here in the frontend (never sent by the host).
-export type EventKind = "note" | "busError" | "truncation";
+/// marker the host stores; `messageBound` is a comment attached to the
+/// message it sits beside (BLF's own `EVENT_COMMENT`); `busError` is a run
+/// of CAN bus errors the host coalesced into one event; `truncation` is the
+/// disk-spill marker synthesised here in the frontend (never sent by the
+/// host).
+export type EventKind = "note" | "messageBound" | "busError" | "truncation";
 
 /// Where an event came from (ADR 0035). The category, not the individual
 /// kind, decides the lifecycle: only a user-authored event is editable,
@@ -35,7 +37,12 @@ export interface EventKindMeta {
 }
 
 /// Every kind, in the order a filter control lists them.
-export const EVENT_KINDS: readonly EventKind[] = ["note", "busError", "truncation"];
+export const EVENT_KINDS: readonly EventKind[] = [
+  "note",
+  "messageBound",
+  "busError",
+  "truncation",
+];
 
 /// The per-kind declarations (ADR 0035).
 export const EVENT_KIND_META: Record<EventKind, EventKindMeta> = {
@@ -45,6 +52,13 @@ export const EVENT_KIND_META: Record<EventKind, EventKindMeta> = {
     visibleByDefault: true,
     editable: true,
     blfRecord: "GLOBAL_MARKER",
+  },
+  messageBound: {
+    label: "Comments",
+    category: "userAuthored",
+    visibleByDefault: true,
+    editable: true,
+    blfRecord: "EVENT_COMMENT",
   },
   busError: {
     label: "Bus Errors",

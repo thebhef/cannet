@@ -94,6 +94,14 @@ pub struct Note {
     /// back-compat.
     #[serde(default)]
     pub tag: Option<String>,
+    /// For an event that rides a BLF `EVENT_COMMENT`: the object type of
+    /// the event the comment is attached to — `CAN_MESSAGE2` /
+    /// `CAN_FD_MESSAGE_64` for a comment made on a message, `0` for a
+    /// freestanding one. Held so an imported comment re-exports as the
+    /// same kind of comment rather than coming loose from its message.
+    /// `None` on every other kind. `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub commented_event_type: Option<u32>,
 }
 
 /// Where a timeline event came from (ADR 0035). The category, not the
@@ -115,6 +123,18 @@ pub enum EventCategory {
     HostDerived,
 }
 
+/// Which BLF annotation record a kind is written as (ADR 0010 — in-file,
+/// no sidecar). A kind with no record is not written to a BLF at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlfRecord {
+    /// `GLOBAL_MARKER` (object type 96): a freestanding annotation on the
+    /// timeline, with its own name, description and colour fields.
+    GlobalMarker,
+    /// `EVENT_COMMENT` (object type 92): a comment attached to the event it
+    /// sits beside, carrying one text field and nothing else.
+    EventComment,
+}
+
 /// The kind of a timeline event (ADR 0035). Kinds the *host* can hold or
 /// produce appear here; frontend-derived kinds (the truncation marker) do
 /// not, per [`EventCategory`]. The set grows as kinds are added.
@@ -125,6 +145,11 @@ pub enum EventKind {
     /// scratch, exported to BLF `GLOBAL_MARKER`.
     #[default]
     Note,
+    /// A comment bound to the message it sits beside — BLF's own
+    /// `EVENT_COMMENT`. User-authored and durable like a note; what makes
+    /// it a kind of its own is the record it rides, which tracks with its
+    /// message rather than floating on the timeline.
+    MessageBound,
     /// A run of CAN bus errors coalesced by the host into one event with a
     /// count and a span. Host-derived: not editable, not persisted, not
     /// exported — the error frames it summarises stay in the capture and
@@ -137,8 +162,17 @@ impl EventKind {
     /// lifecycle.
     pub fn category(self) -> EventCategory {
         match self {
-            Self::Note => EventCategory::UserAuthored,
+            Self::Note | Self::MessageBound => EventCategory::UserAuthored,
             Self::BusError => EventCategory::HostDerived,
+        }
+    }
+
+    /// The BLF annotation record this kind is written as, if any.
+    pub fn blf_record(self) -> Option<BlfRecord> {
+        match self {
+            Self::Note => Some(BlfRecord::GlobalMarker),
+            Self::MessageBound => Some(BlfRecord::EventComment),
+            Self::BusError => None,
         }
     }
 
@@ -152,7 +186,7 @@ impl EventKind {
     /// events are not user data (ADR 0035): the frames they summarise are
     /// what the file carries.
     pub fn exported(self) -> bool {
-        matches!(self.category(), EventCategory::UserAuthored)
+        self.blf_record().is_some()
     }
 }
 
@@ -583,6 +617,7 @@ mod tests {
             color: None,
             description: None,
             tag: None,
+            commented_event_type: None,
         }
     }
 
@@ -849,6 +884,7 @@ mod category_tests {
             color: None,
             description: None,
             tag: None,
+            commented_event_type: None,
         }
     }
 
@@ -861,6 +897,7 @@ mod category_tests {
             color: None,
             description: None,
             tag: None,
+            commented_event_type: None,
         }
     }
 

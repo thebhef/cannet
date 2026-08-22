@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::format::marker::GlobalMarker;
 use crate::format::object::{object_type, EVENT_HEADER_BYTES};
 use crate::format::reader::{BlfReadError, BlfReader};
+use crate::format::text::EventComment;
 use crate::{adjust_channel_to_zero_based, BlfSourceError};
 
 /// What one header-only walk of a BLF file found.
@@ -47,6 +48,10 @@ pub struct BlfScan {
     pub last_timestamp_ns: Option<u64>,
     /// Every `GLOBAL_MARKER` in the file, in file order, decoded.
     pub markers: Vec<ScannedMarker>,
+    /// Every `EVENT_COMMENT` in the file, in file order. The other
+    /// annotation record type: a comment attached to the event it sits
+    /// beside, rather than a freestanding marker on the timeline.
+    pub comments: Vec<ScannedComment>,
     /// The file's measurement start time (ns since the UNIX epoch) —
     /// the wall clock the per-event timestamps are relative to. Zero
     /// when the file states none, which an `unfinalized` capture never
@@ -73,6 +78,17 @@ pub struct ScannedMarker {
     pub timestamp_ns: u64,
     /// The decoded record, for callers that need its names or color.
     pub marker: GlobalMarker,
+}
+
+/// One `EVENT_COMMENT` found by [`scan_blf`], with its timestamp already
+/// resolved to the absolute nanoseconds the rest of the system uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedComment {
+    /// Absolute timestamp (ns since the UNIX epoch).
+    pub timestamp_ns: u64,
+    /// The decoded record, for callers that need its text or the type of
+    /// the event it comments on.
+    pub comment: EventComment,
 }
 
 /// The wire channel a CAN-class object carries, read from its body
@@ -193,6 +209,7 @@ pub fn scan_blf_cancellable<P: AsRef<Path>>(
     let mut first_timestamp_ns: Option<u64> = None;
     let mut last_timestamp_ns: Option<u64> = None;
     let mut markers = Vec::new();
+    let mut comments = Vec::new();
     let total_bytes = reader.file_bytes();
     let mut until_checkpoint = CHECKPOINT_OBJECTS;
     loop {
@@ -221,6 +238,15 @@ pub fn scan_blf_cancellable<P: AsRef<Path>>(
             });
             continue;
         }
+        if raw.base.object_type == object_type::EVENT_COMMENT {
+            let comment =
+                crate::format::text::decode_event_comment(raw.bytes).map_err(BlfReadError::from)?;
+            comments.push(ScannedComment {
+                timestamp_ns: start_unix_nanos.saturating_add(comment.event.timestamp_ns()),
+                comment,
+            });
+            continue;
+        }
         let Some(disk_channel) = channel_of(raw.base.object_type, raw.bytes) else {
             continue;
         };
@@ -244,6 +270,7 @@ pub fn scan_blf_cancellable<P: AsRef<Path>>(
         first_timestamp_ns,
         last_timestamp_ns,
         markers,
+        comments,
         start_unix_nanos,
         unfinalized,
         // Read after the walk: the fragment is at the end of the file,
