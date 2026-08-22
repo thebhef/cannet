@@ -259,6 +259,22 @@ impl FileStatistics {
         bytes
     }
 
+    /// True when this header is still the placeholder a writer stamps
+    /// at open — the writer never came back to finalize it.
+    ///
+    /// `file_size` is the discriminator: every writer fills it in at
+    /// close, and even an empty BLF reports its 144 header bytes, so a
+    /// header claiming a zero-byte file is one whose writer was killed
+    /// mid-run. Its `object_count`, `uncompressed_file_size` and
+    /// `last_object_time` are placeholders too, and its
+    /// `measurement_start_time` is the unset sentinel — which means the
+    /// capture's wall clock is not in the file at all and cannot be
+    /// recovered from it, since per-event timestamps are offsets *from*
+    /// that anchor.
+    pub fn is_unfinalized(&self) -> bool {
+        self.file_size == 0
+    }
+
     /// Parse the fixed 144-byte prefix as a `FileStatistics` record.
     /// Trailing bytes past 144 (when `statistics_size` reports more)
     /// are the writer's responsibility to expose; this parse covers
@@ -411,6 +427,36 @@ mod tests {
             ..SystemTime::default()
         };
         assert_eq!(t.to_unix_nanos(), 1_709_164_800_000_000_000);
+    }
+
+    /// A placeholder header and a finalised one both report zero
+    /// objects when the capture is empty, so the count cannot tell them
+    /// apart — the file size can, and does.
+    #[test]
+    fn an_empty_finalised_header_is_not_mistaken_for_a_placeholder() {
+        use crate::BlfCaptureWriter;
+        use std::io::Read;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.blf");
+        BlfCaptureWriter::create(&path).unwrap().finish().unwrap();
+        let mut prefix = vec![0u8; FILE_STATISTICS_MIN_BYTES];
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_exact(&mut prefix)
+            .unwrap();
+        let finalised = FileStatistics::parse(&prefix).unwrap();
+        assert_eq!(finalised.object_count, 0);
+        assert!(!finalised.is_unfinalized());
+
+        // What `BlfFileWriter::create` stamps before any append.
+        let placeholder = FileStatistics {
+            statistics_size: 144,
+            file_size: 0,
+            object_count: 0,
+            ..finalised
+        };
+        assert!(placeholder.is_unfinalized());
     }
 
     #[test]
