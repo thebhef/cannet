@@ -493,3 +493,43 @@ Worth knowing for the extent bands (§ band styling: an event-coloured
 wash at low opacity): the wash is **derived** from the event's one
 colour at render time, not stored. Nothing here needs a second colour,
 and the model should not grow one just because BLF has a slot.
+
+### The second colour, checked against a reference implementation
+
+Vector publishes no field semantics we could find, but **python-can**'s
+BLF writer is an independent implementation and its literals settle the
+reading. It packs a global marker as:
+
+```python
+GLOBAL_MARKER_STRUCT.pack(
+    0, 0xFFFFFF, 0xFF3300, 0, len(text), len(marker), len(comment))
+#      ^fg white  ^bg orange
+```
+
+White foreground on a saturated background only makes sense as **text on
+a filled chip**; the inverse convention would have put the saturated
+colour in `foreground`. Two independent implementations naming the
+fields the same way and choosing values consistent with one reading is
+strong corroboration — it is still not Vector documentation, and nobody
+has watched CANoe draw one.
+
+**Consequence for our writer, which does the opposite.**
+`append_marker` sets `foreground_color` to the event's colour and
+hardcodes `background_color` to `0x00FF_FFFF` (white). Under the
+text-on-fill reading that renders the label's *text* in the event colour
+on a white chip — legible, but the event's colour is carried by thin
+glyphs rather than by the fill, where python-can's convention makes it a
+solid block. If the point of an event's colour is recognition at a
+glance, we are probably under-using the field.
+
+Not changed here: it is a one-line default, it affects only how other
+tools draw our markers, and the honest test is empirical — write two
+markers with clashing colours and open the file in CANoe, which needs
+the owner's machine. Recorded so the choice is deliberate rather than
+inherited.
+
+**Also worth knowing for interop expectations:** python-can's *reader*
+ignores object type 96 entirely — it writes global markers and never
+parses them back. Ours reads them. So a tool built on python-can will
+not show cannet's events at all, and that is the reader's limitation,
+not our encoding's.
