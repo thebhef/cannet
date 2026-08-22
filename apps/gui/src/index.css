@@ -641,6 +641,30 @@ header {
   color: var(--text-muted);
 }
 
+/* One metric: a figure and the word beside it. The figure is tabular
+   so the digits change without the row moving; the word carries the
+   whole-readout tooltip. A live-only metric (bus load — a capture has
+   no wire) is tinted, so it reads as belonging to the session rather
+   than to the buffer. */
+.status-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.28rem;
+  margin-left: 0.55rem;
+}
+.status-metric b {
+  color: var(--text-data);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.status-metric > span {
+  color: var(--text-faint);
+  cursor: help;
+}
+.status-metric.live b {
+  color: var(--text-message);
+}
+
 /* === Shared status chip (StatusChip.tsx) ===
    A chip shows a state and pressing it goes to where that state is
    managed. Its shape is the shared colour chip's — 2px radius over a
