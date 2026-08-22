@@ -12,6 +12,7 @@
 
 import { useMemo, useState } from "react";
 import { Fzf } from "fzf";
+import { NameText } from "./NameText";
 
 export interface PaletteItem {
   id: string;
@@ -99,7 +100,9 @@ export function PaletteModal({
               onMouseEnter={() => setSelected(i)}
               onClick={() => onPick(item)}
             >
-              <span className="palette-item-label">{item.label}</span>
+              <span className="palette-item-label">
+                <NameText name={item.label} />
+              </span>
               {item.hint && <span className="palette-item-hint">{item.hint}</span>}
             </li>
           ))}

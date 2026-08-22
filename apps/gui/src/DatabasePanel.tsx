@@ -41,6 +41,7 @@ import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridvie
 import { arrayRowSpace } from "./gridviewRows";
 import { usePanelCommands } from "./panelCommands";
 import { DBC_PANEL_ID } from "./dockLayout";
+import { NameText } from "./NameText";
 
 /**
  * The **Database** panel: the one catalog surface over every
@@ -1793,14 +1794,20 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
     );
   }
   if (kind.tag === "ecu") {
-    return <span className="dbc-row-label">{kind.label}</span>;
+    return (
+      <span className="dbc-row-label">
+        <NameText name={kind.label} />
+      </span>
+    );
   }
   if (kind.tag === "message") {
     const m = kind.message;
     const idLabel = dbcIdLabel(m);
     return (
       <>
-        <span className="dbc-row-label">{m.name}</span>
+        <span className="dbc-row-label">
+          <NameText name={m.name} />
+        </span>
         <span className="dbc-row-meta">{idLabel}</span>
         {m.comment && <span className="dbc-row-comment">{m.comment}</span>}
       </>
@@ -1816,14 +1823,20 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
     );
   }
   if (kind.tag === "filegroup") {
-    return <span className="dbc-row-label">{kind.label}</span>;
+    return (
+      <span className="dbc-row-label">
+        <NameText name={kind.label} />
+      </span>
+    );
   }
   if (kind.tag === "filesignal") {
     // Name + unit, and nothing else: a file-backed signal has no
     // comment, no value table and no bit layout to show.
     return (
       <>
-        <span className="dbc-row-label">{kind.signal.name}</span>
+        <span className="dbc-row-label">
+          <NameText name={kind.signal.name} />
+        </span>
         {kind.signal.unit && <span className="dbc-row-meta">[{kind.signal.unit}]</span>}
       </>
     );
@@ -1831,7 +1844,9 @@ function DbcRowContent({ kind }: { kind: RenderRow["kind"] }) {
   const s = kind.signal;
   return (
     <>
-      <span className="dbc-row-label">{s.name}</span>
+      <span className="dbc-row-label">
+        <NameText name={s.name} />
+      </span>
       {s.unit && <span className="dbc-row-meta">[{s.unit}]</span>}
       {s.comment && <span className="dbc-row-comment">{s.comment}</span>}
     </>

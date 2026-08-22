@@ -1,0 +1,87 @@
+/**
+ * Where a long entity name is split so the *middle* of it is what an
+ * over-narrow column drops.
+ *
+ * DBC symbols share prefixes by construction —
+ * `BmsPackCurrentFilteredHighRes` and `BmsPackCurrentFilteredLowRes`
+ * differ only at the end — so plain end-truncation reliably hides the
+ * one part that tells two names apart. Splitting the name into a
+ * shrinkable head and a fixed tail, and letting only the head
+ * ellipsize, keeps both ends visible: `BmsPackCurrentF…HighRes`.
+ *
+ * Enum labels are excluded on purpose. They are prose, read left to
+ * right, and their distinguishing word is at the front — those keep
+ * ordinary end-ellipsis.
+ */
+
+/**
+ * The classic DBC format's identifier limit. A name at or under it can
+ * be shown in the width every column was designed around, so it is
+ * left as a single text node and nothing here applies; past it, the
+ * name only exists because of the long-symbol extension, which is
+ * exactly the case this treatment is for.
+ */
+export const DBC_IDENTIFIER_LIMIT = 32;
+
+/** Characters the tail keeps, before the word-boundary search below. */
+const TAIL_CHARS = 10;
+/** Shortest tail that search will settle for. */
+const TAIL_MIN_CHARS = 6;
+/** Longest — a tail never shrinks, so it must stay small enough that
+ * the narrowest column can still show it. */
+const TAIL_MAX_CHARS = 16;
+/**
+ * Characters of head kept for a name so long that no column could show
+ * them. Measured rather than guessed: the split is flat in the name's
+ * length (0.0003 ms at 100 000 characters) and the rendered box is the
+ * same size whatever the length, because only the tail is unshrinkable
+ * — so nothing here needs a limit. What the cap removes is the
+ * *engine's* work: `text-overflow: ellipsis` shapes the whole line to
+ * place the mark, and the app's widest column cannot show a tenth of
+ * this. The full name stays on the tooltip, so nothing is lost.
+ */
+const HEAD_MAX_CHARS = 200;
+
+/** Whether `name[i]` starts a word — an underscore, a digit, or a
+ * capital following a non-capital, which is where CamelCase divides. */
+function startsWord(name: string, i: number): boolean {
+  const c = name[i];
+  if (c === "_") return true;
+  const prev = name[i - 1] ?? "";
+  if (c >= "0" && c <= "9") return !(prev >= "0" && prev <= "9");
+  return c >= "A" && c <= "Z" && !(prev >= "A" && prev <= "Z");
+}
+
+/**
+ * Split `name` into the head an over-narrow column ellipsizes and the
+ * tail it always keeps. A name of `DBC_IDENTIFIER_LIMIT` characters or
+ * fewer gets an empty tail, meaning "render it as one string".
+ *
+ * The split lands on the word boundary nearest `TAIL_CHARS`, searched
+ * outward in both directions so a boundary just past the preferred cut
+ * is taken rather than one far short of it — that is the difference
+ * between `…Broadcast` and `…yBroadcast`. A tie goes to the longer
+ * tail, and the search is bounded either side so no tail is too short
+ * to distinguish or too long to fit. With no boundary in range it falls
+ * back to a plain character count, which is still a tail. A head past
+ * `HEAD_MAX_CHARS` is cut there — see that constant.
+ */
+export function splitName(name: string): { head: string; tail: string } {
+  if (name.length <= DBC_IDENTIFIER_LIMIT) return { head: name, tail: "" };
+  const preferred = name.length - TAIL_CHARS;
+  const longest = Math.max(1, name.length - TAIL_MAX_CHARS);
+  const shortest = name.length - TAIL_MIN_CHARS;
+  for (let d = 0; d <= TAIL_MAX_CHARS; d++) {
+    for (const i of d === 0 ? [preferred] : [preferred - d, preferred + d]) {
+      if (i < longest || i > shortest) continue;
+      if (startsWord(name, i)) return { head: cap(name, i), tail: name.slice(i) };
+    }
+  }
+  return { head: cap(name, preferred), tail: name.slice(preferred) };
+}
+
+/** `name` up to `end`, or its first `HEAD_MAX_CHARS` — whichever is
+ * shorter. */
+function cap(name: string, end: number): string {
+  return name.slice(0, Math.min(end, HEAD_MAX_CHARS));
+}

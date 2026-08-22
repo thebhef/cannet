@@ -106,6 +106,38 @@ and the three calculated-field sites all ignored the pick map. Phase 3
 routed them through the resolver that honours picks, so the premise the
 ruling rests on is now true everywhere rather than at one site in four.
 
+### 1.7 The perf baseline no longer describes the project it is measured against
+[Task 96](tasks/0096-long-names-render.md) · **interacts with the gate deferral (2.2)**
+
+Task 96 added a long-name message to both example projects, as ruled:
+`zonal.dbc` 151 → **152 messages**, 536 → **541 signals**; `bms.dbc`
+gains `0x303` at 200 ms, about **+5 f/s** on ev-demo's ~515.
+
+`ev-zonal` is the render-tier harness's project, so **the gate's
+`baseline.json` was measured against a project that no longer exists.**
+The owner accepted the gate consequences when ruling that both examples
+get the long names — this records what they actually are.
+
+The consequence is for the *end-of-chain* gate specifically: a reading
+against the grown project is not comparable to the stored baseline
+line-for-line, so a difference there is ambiguous between "the chain
+regressed something" and "the project got bigger". Resolvable, but it
+has to be done deliberately:
+
+- A pre-change reading is recoverable by building `b6fca9c8~1` — the
+  commit before the DBC grew — and gating that. That is the honest
+  control, and it is a same-day build rather than a stale baseline.
+- Task 96's grooming had asked the *implementing* phase to take that
+  control before changing the DBCs. It did not, because the standing
+  contract forbids phase agents from running the harness and the
+  contract won. Neither side was wrong; the interaction was not
+  foreseen.
+
+**Needed at close-out: gate `b6fca9c8~1` as the control alongside the
+final tree, or re-baseline deliberately with the owner's sign-off.**
+Not a licence to promote a baseline to make a run pass — limits still
+ratchet down only.
+
 ### 2.2 The perf gate is deferred to the end of the chain
 Ruled by the owner 2026-08-21
 
@@ -155,6 +187,7 @@ test or artefact.
 | 98 | Signals rendering wrong on a common scale |
 | 95 | Gridview content click collapsing the message |
 | 97 | Enum value labels on the plot's y axis |
+| 96 | Long signal and `VAL_` names rendering |
 
 ## 5. Housekeeping owed at close-out
 

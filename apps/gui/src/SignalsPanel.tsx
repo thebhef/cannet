@@ -61,6 +61,7 @@ import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridvie
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
 import { diagCount } from "./diag"; // DIAG
+import { NameText } from "./NameText";
 
 /// This panel's persisted view config: the selection, the column
 /// layout, and the sections — see {@link useElementPanel}. The fold set
@@ -1414,13 +1415,13 @@ function SignalRow({
         // that says the row is not decoded from frames.
         return row.file_backed ? (
           <>
-            {row.message_name}
+            <NameText name={row.message_name} />
             <span className="signal-source-badge" title={FILE_BACKED_TITLE}>
               {FILE_BACKED_BADGE}
             </span>
           </>
         ) : (
-          row.message_name
+          <NameText name={row.message_name} />
         );
       case "signal":
         return (
@@ -1436,7 +1437,10 @@ function SignalRow({
               colorInputRef.current?.click();
             }}
           >
-            {row.signal_name}
+            <NameText
+              name={row.signal_name}
+              title={`${row.signal_name} — drag to a plot; right-click to recolor`}
+            />
             {manual.has(key) ? "" : " ◇"}
             <ColorChip
               ref={colorInputRef}

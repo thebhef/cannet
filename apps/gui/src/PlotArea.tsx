@@ -87,7 +87,7 @@ import {
   laneLabels,
   laneTileBand,
   laneValueRange,
-  measureTileLabel,
+  fitTileLabel,
   normalizeIntoLane,
   stripeOverlay,
   stripedOverlap,
@@ -102,6 +102,7 @@ import { useFirstSampleWait } from "./useFirstSampleWait";
 import { diagCount, diagGauge } from "./diag"; // DIAG
 import { theme, useThemeName } from "./theme";
 import { laneLabelInk } from "./laneLabelInk";
+import { NameText } from "./NameText";
 
 const ZOOM_STEP = 1.15;
 /** Line width (CSS px) for a *selected* series, against 1 for the rest.
@@ -984,9 +985,15 @@ export function drawEnumTiles(
     if (segW <= 0) continue;
     // Enum codes are integers, but arrive as f64 from the host.
     const raw = Math.round(seg.v);
-    const lbl = labelFor(raw);
-    const tw = measureTileLabel(ctx, lbl);
-    const labelX = tileLabelX({ lo: x0, hi: x1 }, { lo: o.left, hi: o.left + o.width }, tw, padX);
+    // Cut to what the visible part of the tile can hold. A `VAL_` label
+    // has no length limit, so this is the common case, not the corner:
+    // without it the tile draws mute.
+    const fitted = fitTileLabel(ctx, labelFor(raw), segW - padX * 2);
+    const lbl = fitted?.text ?? "";
+    const tw = fitted?.width ?? 0;
+    const labelX = fitted
+      ? tileLabelX({ lo: x0, hi: x1 }, { lo: o.left, hi: o.left + o.width }, tw, padX)
+      : null;
     const mapColor = o.target ? o.resolveColor(o.target, raw) : null;
     // ~65-85% fills keep the stepped line faintly visible underneath.
     const fill = mapColor ? colorMapLaneFill(mapColor) : theme().laneFillDefault;
@@ -3586,7 +3593,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             />
           )}
           {subtitle != null && !areaCollapsed && (
-            <span className="plot-area-axis-label">{subtitle}</span>
+            <span className="plot-area-axis-label" title={subtitle}>
+              <NameText name={subtitle} title={subtitle} />
+            </span>
           )}
           {headingOnly && (
             // What the collapsed row says instead of its rows: how many
@@ -3856,7 +3865,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                     className="plot-signal-name"
                     title={`${s.messageName}.${s.signalName} — drag to another plot area`}
                   >
-                    {s.signalName}
+                    <NameText
+                      name={s.signalName}
+                      title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                    />
                   </span>
                 ) : (
                   <>
@@ -3865,7 +3877,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                         className="plot-signal-name"
                         title={`${s.messageName}.${s.signalName} — drag to another plot area`}
                       >
-                        {s.signalName}
+                        <NameText
+                          name={s.signalName}
+                          title={`${s.messageName}.${s.signalName} — drag to another plot area`}
+                        />
                       </span>
                       <span className="plot-signal-message" title={messageLabelFor(s)}>
                         {s.busId ? (
@@ -3875,10 +3890,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                               size="dot"
                               swatchClassName="plot-bus-swatch"
                             />
-                            {messageLabelFor(s)}
+                            <NameText name={messageLabelFor(s)} />
                           </>
                         ) : (
-                          messageLabelFor(s)
+                          <NameText name={messageLabelFor(s)} />
                         )}
                       </span>
                     </div>

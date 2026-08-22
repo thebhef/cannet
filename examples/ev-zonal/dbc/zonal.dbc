@@ -872,6 +872,13 @@ BO_ 1649 HumiditySensor: 8 BodyGateway
  SG_ DewPointEstimate : 7|8@1+ (1,-40) [0|0] "degC" Vector__XXX
  SG_ FogRiskLevel : 15|2@1+ (1,0) [0|0] "" Vector__XXX
 
+BO_ 1776 CentralComputeThermalDerateAdvis: 8 CentralCompute
+ SG_ HighVoltageBatteryPackCoolantInl : 0|12@1+ (0.1,-40) [-40|369.5] "degC" Vector__XXX
+ SG_ ThermalDerateRequestingSubsystem : 12|4@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PropulsionInverterThermalDerateR : 16|8@1+ (0.5,0) [0|127.5] "%" Vector__XXX
+ SG_ DerateActive : 24|1@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ AdvisoryCounter : 25|4@1+ (1,0) [0|0] "" Vector__XXX
+
 CM_ SG_ 1024 DoorAjar "1 while the door is not fully latched.";
 CM_ SG_ 1025 PinchDetected "Anti-pinch reversal triggered this cycle.";
 CM_ SG_ 1029 LedFaultMask "Bit per LED string, 1 = open circuit.";
@@ -919,11 +926,17 @@ CM_ SG_ 784 Obj13DistX "Object 13 longitudinal distance.";
 CM_ SG_ 784 Obj14DistX "Object 14 longitudinal distance.";
 CM_ SG_ 784 Obj15DistX "Object 15 longitudinal distance.";
 CM_ BO_ 784 "Fused front object list -- cycles ObjectIndex over active tracks.";
+CM_ SG_ 1776 HighVoltageBatteryPackCoolantInl "Coolant inlet temperature at the pack, the derate input.";
+CM_ BO_ 1776 "Thermal derate advisory -- the long-name example.";
 BA_DEF_ BO_ "GenMsgCycleTime" INT 0 100000;
+BA_DEF_ BO_ "SystemMessageLongSymbol" STRING ;
+BA_DEF_ SG_ "SystemSignalLongSymbol" STRING ;
 BA_DEF_ SG_ "CannetCounter" STRING ;
 BA_DEF_ SG_ "CannetCrc" STRING ;
 BA_DEF_ SG_ "CannetDisplay" STRING ;
 BA_DEF_DEF_ "GenMsgCycleTime" 0;
+BA_DEF_DEF_ "SystemMessageLongSymbol" "";
+BA_DEF_DEF_ "SystemSignalLongSymbol" "";
 BA_DEF_DEF_ "CannetCounter" "";
 BA_DEF_DEF_ "CannetCrc" "";
 BA_DEF_DEF_ "CannetDisplay" "";
@@ -1078,6 +1091,11 @@ BA_ "GenMsgCycleTime" BO_ 1646 200;
 BA_ "GenMsgCycleTime" BO_ 1647 200;
 BA_ "GenMsgCycleTime" BO_ 1648 200;
 BA_ "GenMsgCycleTime" BO_ 1649 200;
+BA_ "GenMsgCycleTime" BO_ 1776 100;
+BA_ "SystemSignalLongSymbol" SG_ 1776 HighVoltageBatteryPackCoolantInl "HighVoltageBatteryPackCoolantInletTemperature";
+BA_ "SystemSignalLongSymbol" SG_ 1776 ThermalDerateRequestingSubsystem "ThermalDerateRequestingSubsystemIdentifier";
+BA_ "SystemSignalLongSymbol" SG_ 1776 PropulsionInverterThermalDerateR "PropulsionInverterThermalDerateRequestLevel";
+BA_ "SystemMessageLongSymbol" BO_ 1776 "CentralComputeThermalDerateAdvisoryBroadcast";
 BA_ "CannetCounter" SG_ 1546 AliveCtr "increment=1;rollover=15";
 BA_ "CannetCrc" SG_ 1546 Crc8 "alg=CRC-8/SAE-J1850;range=0:56;prefix=B7";
 BA_ "CannetDisplay" SG_ 1546 Crc8 "radix=hex";
@@ -1135,6 +1153,8 @@ VAL_ 1634 WiperSpeedActual 0 "Off" 1 "Intermittent" 2 "Low" 3 "High" ;
 VAL_ 1638 TriggerSource 0 "None" 1 "Door" 2 "Motion" 3 "Tilt" 4 "Glass" ;
 VAL_ 1640 ButtonPressed 0 "None" 1 "Lock" 2 "Unlock" 3 "Trunk" 4 "Panic" ;
 VAL_ 1649 FogRiskLevel 0 "None" 1 "Low" 2 "Medium" 3 "High" ;
+VAL_ 1776 ThermalDerateRequestingSubsystem 0 "NoDerateRequestedNominalThermalEnvelope" 1 "TractionInverterStatorWindingOverTemperature" 2 "HighVoltageBatteryCellOverTemperature" 3 "CabinHeatPumpCondenserOverPressure" 4 "OnBoardChargerPowerStageDerating" 5 "Fault" ;
+VAL_ 1776 DerateActive 0 "Off" 1 "On" ;
 SIG_VALTYPE_ 800 LaneLeftC0 : 1;
 SIG_VALTYPE_ 800 LaneLeftC1 : 1;
 SIG_VALTYPE_ 801 LaneRightC0 : 1;

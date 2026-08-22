@@ -25,6 +25,13 @@ import { defaultColumns } from "./traceColumns";
 import { SIGNAL_DND_MIME } from "./dragSignals";
 import { ROW_HEIGHT, SIGNAL_LINE_HEIGHT, expandedRowHeight } from "./traceViewport";
 import type { TraceFrameRecord } from "./types";
+import {
+  LONG_MESSAGE_NAME,
+  LONG_MESSAGE_TAIL,
+  LONG_SIGNAL_NAME,
+  LONG_SIGNAL_TAIL,
+  expectMiddleEllipsis,
+} from "./longNameTestKit";
 
 const defaultFrame: TraceFrameRecord = {
   index: 0,
@@ -259,5 +266,37 @@ describe("TraceView frame row disclosure", () => {
     const { row } = renderExpandedRow();
     expect(row.querySelector(".disclosure-toggle-glyph")).toBeNull();
     expect(row.querySelector(".col-msg")).toHaveTextContent("GearBox");
+  });
+});
+
+describe("TraceView with long names", () => {
+  const longFrame: TraceFrameRecord = {
+    ...defaultFrame,
+    decoded: {
+      name: LONG_MESSAGE_NAME,
+      signals: [
+        { name: LONG_SIGNAL_NAME, value: 21.5, unit: "degC", label: null },
+        // The control: a short name in the same row must stay a plain
+        // text node, so the split reads as a response to length.
+        { name: "Gear", value: 2, unit: "", label: "Drive" },
+      ],
+    },
+  };
+
+  it("splits the message column's name so its tail survives", () => {
+    const { row } = renderExpandedRow(longFrame);
+    expectMiddleEllipsis(row.querySelector(".col-msg"), LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL);
+  });
+
+  it("splits a disclosed signal's name, and leaves a short one alone", () => {
+    const { container } = renderExpandedRow(longFrame);
+    const lines = container.querySelectorAll(".trace-content-row");
+    expectMiddleEllipsis(
+      lines[0].querySelector(".signal-name"),
+      LONG_SIGNAL_NAME,
+      LONG_SIGNAL_TAIL,
+    );
+    expect(lines[1].querySelector(".signal-name")!.querySelector(".name-text")).toBeNull();
+    expect(lines[1].querySelector(".signal-name")).toHaveTextContent("Gear");
   });
 });

@@ -11,7 +11,8 @@ Three example *projects* live alongside this trace fixture:
   reproducible workload the `cannet-perf-measurement` harness runs.
 - [`ev-zonal/`](ev-zonal/README.md) — a deliberately large two-DBC
   fixture (150+ messages each, one message with 600 multiplexed
-  signals) for exercising DBC-view search and scaling.
+  signals) for exercising DBC-view search and scaling. Both projects
+  also carry the DBC long-name extension and over-long `VAL_` labels.
 - [`extrapolation/`](extrapolation/README.md) — a 20 s synthetic capture
   and its project, carrying one series per *extrapolated* shape a plot
   can draw (ADR 0026): a dashed tail, a dashed interior stall, a

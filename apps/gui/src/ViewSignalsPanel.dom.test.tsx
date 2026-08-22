@@ -13,6 +13,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 import type { ViewSignalRow } from "./types";
 
+import {
+  LONG_MESSAGE_NAME,
+  LONG_MESSAGE_TAIL,
+  LONG_SIGNAL_NAME,
+  LONG_SIGNAL_TAIL,
+  expectMiddleEllipsis,
+} from "./longNameTestKit";
+
 function row(over: Partial<ViewSignalRow> = {}): ViewSignalRow {
   return {
     id: "id",
@@ -493,5 +501,20 @@ describe("ViewSignalsPanel source picker", () => {
     renderPanel();
     await waitFor(() => expect(sourcePicker()).toBeDisabled());
     expect(calls.some((c) => c.cmd === "set_signal_dbc_pick")).toBe(false);
+  });
+});
+
+describe("ViewSignalsPanel with long names", () => {
+  it("splits the signal and message names, and leaves a short one alone", async () => {
+    ROWS = [
+      row({ id: "long", signalName: LONG_SIGNAL_NAME, messageName: LONG_MESSAGE_NAME }),
+      row({ id: "short", signalName: "VehicleSpeed", messageName: "Chassis" }),
+    ];
+    renderPanel({ elementId: "el1" });
+    await waitFor(() => expect(document.querySelectorAll(".trace-row")).toHaveLength(2));
+    const rows = document.querySelectorAll(".trace-row");
+    expectMiddleEllipsis(rows[0].querySelector(".col-vs-signal"), LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    expectMiddleEllipsis(rows[0].querySelector(".col-vs-msg"), LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL);
+    expect(rows[1].querySelector(".name-text")).toBeNull();
   });
 });

@@ -21,6 +21,7 @@ import {
   bytesToHexString,
   parseHexBytes,
 } from "./transmitFrameConfig";
+import { NameText } from "./NameText";
 
 interface SignalsTableProps {
   frame: TransmitFrameConfig;
@@ -199,7 +200,7 @@ function SignalRow({ busId, messageId, extended, sig, decoded, onCommit }: Signa
   return (
     <div className="tx-signal-row" role="row">
       <span className="tx-col-name" title={sig.name}>
-        {sig.name}
+        <NameText name={sig.name} />
       </span>
       {sig.hasValueTable ? (
         <EnumValueCell
@@ -295,6 +296,7 @@ function EnumValueCell({
     <Combobox
       className="tx-col-value tx-signal-input"
       options={options}
+      proseLabels
       value={currentLabel ?? ""}
       placeholder={display}
       onChange={(v) => {

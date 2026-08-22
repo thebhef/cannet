@@ -20,6 +20,7 @@ import { SignalValueText } from "./SignalValueText";
 import { type ColorResolver, colorMapTint } from "./colorMap";
 import { setSignalDragData } from "./dragSignals";
 import { SIGNAL_LINE_HEIGHT } from "./traceViewport";
+import { NameText } from "./NameText";
 
 export interface DecodedSignalCellProps {
   frame: TraceFrameRecord;
@@ -81,7 +82,9 @@ export const DecodedSignalCell = memo(function DecodedSignalCell({
         ]);
       }}
     >
-      <span className="signal-name">{sig.name}</span>
+      <span className="signal-name">
+        <NameText name={sig.name} />
+      </span>
       <span
         className="signal-value"
         style={tint ? { background: colorMapTint(tint) } : undefined}

@@ -17,8 +17,25 @@ vi.mock("@xyflow/react", () => {
   const Handle = () => null;
   const Background = () => null;
   const Controls = () => null;
-  const ReactFlow = ({ children }: { children?: React.ReactNode }) => (
-    <div data-testid="reactflow">{children}</div>
+  // Renders each node through its registered type component, so a
+  // node's own markup (its title, its subtitle) is testable — without
+  // that the panel's nodes never reach the DOM at all.
+  const ReactFlow = ({
+    children,
+    nodes,
+    nodeTypes,
+  }: {
+    children?: React.ReactNode;
+    nodes?: { id: string; type?: string; data?: unknown }[];
+    nodeTypes?: Record<string, (p: { data: unknown }) => React.ReactNode>;
+  }) => (
+    <div data-testid="reactflow">
+      {(nodes ?? []).map((n) => {
+        const C = n.type ? nodeTypes?.[n.type] : undefined;
+        return C ? <div key={n.id}>{C({ data: n.data })}</div> : null;
+      })}
+      {children}
+    </div>
   );
   const ReactFlowProvider = ({ children }: { children?: React.ReactNode }) => <>{children}</>;
   const applyNodeChanges = (_changes: unknown, nodes: unknown) => nodes;
@@ -41,6 +58,7 @@ import { ProjectGraphPanel } from "./ProjectGraphPanel";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
 import { ElementRegistryContext, type ElementRegistry } from "./projectElements";
 import { freshTrace } from "./trace";
+import { LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL, expectMiddleEllipsis } from "./longNameTestKit";
 
 afterEach(cleanup);
 
@@ -93,7 +111,7 @@ function makeRegistry(create: ReturnType<typeof vi.fn>): ElementRegistry {
   } as unknown as ElementRegistry;
 }
 
-function renderPanel(create: ReturnType<typeof vi.fn>) {
+function renderPanel(create: ReturnType<typeof vi.fn>, buses?: { id: string; name: string }[]) {
   const api = { updateParameters: vi.fn() };
   const props = { params: {}, api } as unknown as Parameters<typeof ProjectGraphPanel>[0];
   // Stub ResizeObserver — `@xyflow/react` (when not mocked) and a
@@ -102,7 +120,7 @@ function renderPanel(create: ReturnType<typeof vi.fn>) {
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver =
     class { observe() {} unobserve() {} disconnect() {} };
   render(
-    <ProjectContext.Provider value={projectCtx}>
+    <ProjectContext.Provider value={buses ? { ...projectCtx, buses } : projectCtx}>
       <ElementRegistryContext.Provider value={makeRegistry(create)}>
         <ProjectGraphPanel {...props} />
       </ElementRegistryContext.Provider>
@@ -125,5 +143,19 @@ describe("ProjectGraphPanel", () => {
     renderPanel(create);
     fireEvent.click(screen.getByRole("button", { name: /\+ filter/i }));
     expect(create).toHaveBeenCalledWith("filter");
+  });
+});
+
+describe("ProjectGraphPanel node names", () => {
+  it("splits a long bus name and leaves a short one alone", () => {
+    renderPanel(vi.fn(() => "f1"), [
+      { id: "p", name: LONG_MESSAGE_NAME },
+      { id: "q", name: "Powertrain" },
+    ]);
+    const titles = document.querySelectorAll(".graph-node-title");
+    expect(titles.length).toBeGreaterThanOrEqual(2);
+    expectMiddleEllipsis(titles[0], LONG_MESSAGE_NAME, LONG_MESSAGE_TAIL);
+    expect(titles[1].querySelector(".name-text")).toBeNull();
+    expect(titles[1].textContent).toBe("Powertrain");
   });
 });

@@ -32,6 +32,7 @@ import { useGridview } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter, type GridviewRow as GridviewRowModel } from "./gridviewRows";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
+import { NameText } from "./NameText";
 
 /// This panel's persisted view state — the column layout, sort, the
 /// toolbar filters and the wash toggle. All workspace state (nothing
@@ -540,11 +541,15 @@ function ViewSignalRowLine({
           case "bus":
             return <span className={className}>{row.busName ?? row.busId ?? "—"}</span>;
           case "signal":
-            return <span className={className}>{row.signalName}</span>;
+            return (
+              <span className={className}>
+                <NameText name={row.signalName} />
+              </span>
+            );
           case "msg":
             return (
               <span className={className}>
-                0x{formatCanIdHex(row.messageId, row.extended)} {row.messageName}
+                0x{formatCanIdHex(row.messageId, row.extended)} <NameText name={row.messageName} />
               </span>
             );
           case "database":

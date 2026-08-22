@@ -13,6 +13,12 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useRef } from "react";
 
 import { Combobox, type ComboboxOption } from "./Combobox";
+import {
+  LONG_ENUM_LABEL,
+  LONG_SIGNAL_NAME,
+  LONG_SIGNAL_TAIL,
+  expectMiddleEllipsis,
+} from "./longNameTestKit";
 
 afterEach(cleanup);
 
@@ -322,5 +328,46 @@ describe("Combobox", () => {
     expect(option.isConnected).toBe(true);
     fireEvent.click(option);
     expect(onChange).toHaveBeenCalledWith("y");
+  });
+});
+
+describe("Combobox with a long option label", () => {
+  it("splits the trigger's label and the option's, leaving short ones alone", () => {
+    const { trigger } = renderFlat({
+      options: [
+        { value: "long", label: LONG_SIGNAL_NAME },
+        { value: "short", label: "Gear" },
+      ],
+      value: "long",
+    });
+    expectMiddleEllipsis(trigger.querySelector(".combobox-trigger-label"), LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    fireEvent.click(trigger);
+    const options = document.querySelectorAll('[role="option"]');
+    expectMiddleEllipsis(options[0], LONG_SIGNAL_NAME, LONG_SIGNAL_TAIL);
+    // The control: a short label is still one text node.
+    expect(options[1].querySelector(".name-text")).toBeNull();
+    expect(options[1].textContent).toBe("Gear");
+  });
+});
+
+describe("Combobox with prose labels", () => {
+  it("leaves a long `VAL_` label whole and reachable, without splitting it", () => {
+    // Enum labels read front-first, so they take ordinary end-ellipsis
+    // and a tooltip — the opposite of the entity names above, whose
+    // distinguishing part is the tail. Same component, same fixture
+    // length: the only difference is `proseLabels`.
+    const { trigger } = renderFlat({
+      options: [{ value: "long", label: LONG_ENUM_LABEL }],
+      value: "long",
+      proseLabels: true,
+    });
+    const label = trigger.querySelector(".combobox-trigger-label")!;
+    expect(label.querySelector(".name-text")).toBeNull();
+    expect(label.textContent).toBe(LONG_ENUM_LABEL);
+    expect(label.getAttribute("title")).toBe(LONG_ENUM_LABEL);
+    fireEvent.click(trigger);
+    const option = document.querySelector('[role="option"]')!;
+    expect(option.querySelector(".name-text")).toBeNull();
+    expect(option.getAttribute("title")).toBe(LONG_ENUM_LABEL);
   });
 });

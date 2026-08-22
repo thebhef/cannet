@@ -650,11 +650,20 @@ describe("the lane label's background box", () => {
     expect(x + w).toBeLessThanOrEqual(80);
   });
 
-  it("draws no box on a tile too narrow to label", () => {
-    // A segment narrower than its label draws the colored tile and
-    // nothing else (ADR 0026); a box with no text in it would be a
-    // blank plate over the tile's own color.
+  it("boxes the ellipsized label on a tile too narrow for the whole one", () => {
+    // This assertion used to read "draws no box on a tile too narrow to
+    // label", because the label itself was dropped there. It is turned
+    // around deliberately: a narrow tile now carries as much of its
+    // label as fits (`fitTileLabel`), so it gets a plate like any other.
     const ops = tile("light", [0, 3]);
+    expect(ops.filter((o) => o.op === "fillText").map((o) => o.args[0])).toEqual(["Ru…"]);
+    expect(boxes(ops, "light")).toHaveLength(1);
+  });
+
+  it("draws no box on a tile too narrow for even one character", () => {
+    // A box with no text in it would be a blank plate over the tile's
+    // own color (ADR 0026).
+    const ops = tile("light", [0, 1]);
     expect(ops.filter((o) => o.op === "fillText")).toEqual([]);
     expect(boxes(ops, "light")).toEqual([]);
   });
@@ -880,5 +889,63 @@ describe("hover markers", () => {
     const dense = ramp(ticks(0.2, 20));
     const { marks } = hovered([stopped, dense], 12, { left: 100, width: 200 });
     expect(marks.map((m) => m.t)).toEqual([12]);
+  });
+});
+
+describe("a lane label too long for its tile", () => {
+  // `VAL_` labels carry no length limit at all, so a tile is routinely
+  // narrower than its label. Dropping the label there leaves the tile
+  // saying nothing — and the tiles are the overlay the enum axis
+  // relies on to name a value (ADR 0026), so a dropped label is the
+  // whole reading gone.
+  const LONG = "TractionInverterStatorWindingOverTemperature";
+
+  /** One untinted tile carrying `label`, `seg` wide in the fake
+   * uPlot's 1 unit = 10 px world. The stand-in measures 6 px a
+   * character. */
+  function labelOf(label: string, seg: [number, number] = [0, 10]): string | null {
+    const r = recorder();
+    drawEnumTiles(r.ctx, fakeU([seg, [1, 1]], [{}]), {
+      seriesIdx: 1,
+      table: [{ raw: 1, label }],
+      target: null,
+      resolveColor: vi.fn(),
+      bandTop: 40,
+      bandBot: 60,
+      accent: "#3b82f6",
+      left: 0,
+      width: 1000,
+      ratio: 1,
+    });
+    const text = r.ops.find((o) => o.op === "fillText");
+    return text ? (text.args[0] as string) : null;
+  }
+
+  it("ellipsizes at the end rather than vanishing", () => {
+    // 100 px of tile, 4 px padding either side: 92 px, 15 characters.
+    const drawn = labelOf(LONG);
+    expect(drawn).not.toBeNull();
+    expect(drawn!.endsWith("…")).toBe(true);
+    expect(LONG.startsWith(drawn!.slice(0, -1))).toBe(true);
+    expect(drawn!.length * 6).toBeLessThanOrEqual(92);
+  });
+
+  it("CONTROL: a label that fits is drawn whole, with no ellipsis", () => {
+    // The discrimination: same tile, a short label, no truncation. If
+    // this also came back ellipsized the test above would be reporting
+    // the helper rather than the fit.
+    expect(labelOf("Running")).toBe("Running");
+  });
+
+  it("draws nothing at all when not even one character and the mark fit", () => {
+    expect(labelOf(LONG, [0, 1])).toBeNull();
+  });
+
+  it("keeps the front of the label, which is what tells two labels apart", () => {
+    // Enum labels are prose, read left to right — the opposite of a DBC
+    // symbol, whose distinguishing part is its tail.
+    const a = labelOf("HighVoltageBatteryCellOverTemperature")!;
+    const b = labelOf("CabinHeatPumpCondenserOverPressure")!;
+    expect(a).not.toBe(b);
   });
 });
