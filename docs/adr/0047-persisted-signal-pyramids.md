@@ -465,7 +465,7 @@ being paid over and over.
 - A rejection is visible: the restore's system-log line says how many
   caches did not match, its breakdown line carries the
   reopened-vs-revived-vs-rebuilt split with the bytes on each side, and
-  the status line carries a rebuild chip with a discard action
+  the status bar carries a rebuild chip with a discard action
   until the rebuilt caches have caught up. The pyramids the same restore
   reopened are not evidence about that — their cursors came back at the
   tip — so they are left out of the answer. The fast path stays silent: a

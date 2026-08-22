@@ -1,6 +1,6 @@
-/// The header's status bar: the connection control, the bus-health
-/// launcher, whatever is happening, the numbers, and the chips that
-/// report a condition.
+/// The header's status bar (ADR 0055): the connection control, the
+/// bus-health launcher, whatever is happening, the numbers, and the
+/// chips that report a condition.
 ///
 /// It replaces the prose status line, whose numbers could not align
 /// because the prose in front of them changed length with the session.
