@@ -1251,6 +1251,7 @@ BO_ 1280 AuxFrame: 8 AUX
                     channel_to_bus: vec![(0, "p1".into())],
                     stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     clock: None,
+                    controllers: None,
                 },
             )
             .unwrap();

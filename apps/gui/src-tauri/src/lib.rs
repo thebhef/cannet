@@ -524,6 +524,7 @@ pub fn run() -> ! {
             fetch_signal_page,
             fetch_filtered_trace,
             clear_trace_store,
+            bus_health::get_bus_health,
             restore_scratch_capture,
             signal_pyramids_rebuilding,
             connect_remote_server,

@@ -659,6 +659,7 @@ fn seam_session(
         channel_to_bus: vec![(0, "p".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
+        controllers: None,
     }
 }
 
@@ -1502,6 +1503,7 @@ fn transmit_frame_inner_routes_through_local_virtual_bus_session() {
         channel_to_bus: vec![(0, "p".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
+        controllers: None,
     };
     state
         .remote_sessions
@@ -1683,6 +1685,7 @@ fn full_vbus_session_tx_decodes_for_sender_and_receiver_plots() {
         channel_to_bus: vec![(0, "p".into()), (1, "q".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
+        controllers: None,
     };
     state
         .remote_sessions
@@ -4757,6 +4760,7 @@ fn bench_tx_vbus_real_path() {
         channel_to_bus: vec![(0, "p".into()), (1, "q".into())],
         stop: Arc::new(AtomicBool::new(false)),
         clock: None,
+        controllers: None,
     };
     state
         .remote_sessions
