@@ -644,3 +644,29 @@ Phase 2 hit one open finding, unresolved at hand-off:
   `rx_gap_short_frac_worst` gates again. The median-across-reports
   option remains the documented path if a future `_worst`/`_peak`
   metric needs it (ADR 0031).
+
+## Close-out (overseer, 2026-08-19)
+
+**Complete.** All three exit criteria are met — the phase-2 walk above
+records the evidence for each, and nothing has changed since. The one
+item left open at that walk, the ADR-0031 gate's worst-to-worst failure
+on `rx_gap_short_frac_worst`, is resolved: an 11-run control on an
+unchanged tree reproduced the spread, which falsified "a regression from
+this phase" and confirmed rig jitter, and the owner ruled the metric
+re-gated at a noise-floor limit (`RX_GAP_SHORT_FRAC_FLOOR` 0.15) rather
+than left ungated. No baseline was promoted.
+
+Two of the recorded side effects were dispositioned into the model that
+supersedes part of this task, rather than fixed here:
+
+- The **perf bench's unscoped example DBCs** move to
+  [task 88](0088-bus-assignment-governs-decode.md), which makes them
+  decode nothing as written and so forces the one-time re-baseline.
+- The **`list_value_tables` null-bus fallback** this task deliberately
+  kept ("the bus is unknown", not "on no bus") is retired by task 88,
+  where every frame carries a bus and the fallback has no meaning. The
+  MDF case behind it stays recorded against
+  [task 84](0084-mdf-embedded-dbc.md).
+
+Task 81 is retired from the roadmap; task 88 carries the rule change
+its machinery now serves.

@@ -959,3 +959,54 @@ task 27's status log and ADR 0053.
   third path's row in the table above is a code read. Its cache
   behaviour is `install_dbc`'s reload branch verbatim; what is untested
   is that it is, and that it emits `dbc-changed`.
+
+### Disposition of the blockers above (overseer, 2026-08-19)
+
+| Blocker | Where it went |
+| --- | --- |
+| `BlfCaptureWriter` clamps an out-of-order timestamp | [Task 87](0087-blf-writer-timestamp-fidelity.md), opened by owner ruling — research the format question, then the writer change |
+| A replacement DBC inherits neither bus scoping nor priority position | [Task 88](0088-bus-assignment-governs-decode.md), opened by owner ruling — grilling it produced a different rule (assignment governs decode) rather than a "replace" gesture |
+| The fingerprint is stamped at persist, not when a cache is built | Task 88's grooming resolutions — it is what makes "assignment restores your caches" true of a session that just plotted a signal |
+| `reload_one` is not unit-testable (no Tauri mock-app harness) | Still open, now with evidence: task 27 phase 1 tried `tauri`'s `test` feature and the whole `cannet-gui` test binary failed to load (`STATUS_ENTRYPOINT_NOT_FOUND`). Recorded in task 27's blockers |
+| `tx_late_ms_max` above baseline on the phase-2 runs | Not attributed. Now four consecutive elevated readings across four unrelated diffs, mean well inside its limit; needs a bisect against an unchanged tree, not a fix |
+
+**Still needing an owner call: notes outside the selected import range
+are now dropped.** It follows from applying ADR 0046's range to a file's
+annotations as well as its frames, and BLF and MDF now agree — but the
+grooming did not rule on it, and it is a behaviour change a user can
+notice. Carried to task 86's completion review rather than assumed
+accepted.
+
+## Exit-criteria walk (overseer, 2026-08-19 — the completion call is the owner's)
+
+1. *"Each item is reproduced and fixed with a test, or explicitly ruled
+   out / deferred by the owner."* — **Met.** Item 1 (events-panel
+   controls) reproduced as 885 px of misplacement from
+   `columnsFromParams(undefined)` and fixed, phase 2. Item 2 (import
+   time origins) reproduced with generated fixtures and fixed, phase 1.
+   Item 3 (enum overlays) reproduced and fixed in task 27 phase 1 by
+   owner ruling, entry above. Item 4 (signal rebuild on DBC load)
+   reproduced in phase 3 — the plot did not re-ask the host after a
+   DBC-set change on a stopped capture — and fixed; the *further*
+   defect that phase found (a replacement DBC inherits neither scoping
+   nor priority) was deferred by owner ruling into
+   [task 88](0088-bus-assignment-governs-decode.md).
+2. *"Item 2 leaves a written rule (ADR-level) … and its relationship to
+   task 25's live-capture negatives is stated."* — **Met.**
+   [ADR 0024](../../docs/adr/0024-trace-like-view-timing.md) carries the
+   import time-origin rule, and phase 1's entry states the task 25
+   relationship (that item is live-capture-side and unaffected).
+3. *"Item 3 leaves the DBC-change propagation contract written down, and
+   task 27's overlapping item is either folded in or explicitly left to
+   task 27."* — **Met**, both halves: folded into task 27 by owner
+   ruling, and the contract is
+   [ADR 0053](../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md).
+4. *"Items touching render- or data-path behavior pass the ADR-0031
+   gate."* — **Met.** Every phase ran two release runs and passed; no
+   baseline was promoted and no limit widened. The `rx_gap` and
+   `tx_late` rows that read high are ruled rig noise and recorded in
+   ADR 0031.
+
+**One item still needs an owner call before this task closes**: notes
+outside the selected import range are now dropped (see the blockers
+above). Everything else is met.
