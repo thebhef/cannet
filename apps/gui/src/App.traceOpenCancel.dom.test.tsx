@@ -215,6 +215,7 @@ function fireTraceGrew(count: number) {
           frames_per_second_rx: 100,
           frames_per_second_tx: 0,
           frames_per_second_by_bus: [],
+          bus_load_percent: null,
           frames_dropped_before_session: 0,
           session_start_seconds: 1_700_000_000,
           buffer_seconds: 1,

@@ -148,6 +148,30 @@ function menuChips(): string[] {
 }
 
 describe("StatusBar", () => {
+  it("carries the bus-health launcher when there is a health model behind it", () => {
+    // The launcher was built with nothing to feed it. Given a model it
+    // sits in the bar beside the connection chip, tinted and counted.
+    renderBar(2000, {
+      busHealth: {
+        concerns: [{ bus: "Body", state: "bus-off", busOff: true }],
+        onOpen: () => presses.push("bus-health"),
+      },
+    });
+    const launcher = document.querySelector<HTMLElement>(".bus-health-launcher");
+    expect(launcher).not.toBeNull();
+    expect(launcher).toHaveAttribute("data-state", "failed");
+    expect(launcher).toHaveAttribute("title", "Bus health — Body is bus-off");
+    fireEvent.click(launcher!);
+    expect(presses).toContain("bus-health");
+  });
+
+  it("leaves the launcher out entirely when nothing reports bus health", () => {
+    // The control: an always-present, always-neutral icon would be
+    // decoration rather than a readout.
+    renderBar(2000);
+    expect(document.querySelector(".bus-health-launcher")).toBeNull();
+  });
+
   afterEach(() => {
     presses.length = 0;
   });

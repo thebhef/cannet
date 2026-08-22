@@ -809,6 +809,125 @@ ul.status-bar-menu .status-chip {
   color: var(--danger-text);
 }
 
+/* === Bus health panel (BusHealthPanel.tsx) ===
+   One row per logical bus. Absent is not zero: a cell the host cannot
+   know reads an em dash in `--text-dim`, and a bus-off bus reads 0 %
+   because that is the true reading. */
+.bus-health-panel {
+  height: 100%;
+  overflow: auto;
+  background: var(--surface-canvas);
+}
+.bus-health-empty {
+  color: var(--text-muted);
+  padding: 0.6rem 0.7rem;
+  margin: 0;
+}
+.bus-health-grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+.bus-health-grid th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-label);
+  background: var(--surface-section-header);
+  padding: 0.3rem 0.55rem;
+  border-bottom: 1px solid var(--divider);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+}
+.bus-health-grid td {
+  padding: 0.32rem 0.55rem;
+  border-bottom: 1px solid var(--divider-subtle);
+  color: var(--text-data);
+  white-space: nowrap;
+}
+.bus-health-grid tr:hover td {
+  background: var(--surface-hover);
+}
+.bus-health-grid .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.bus-health-bus {
+  color: var(--text-label);
+  font-weight: 600;
+}
+.bus-health-adapter {
+  color: var(--text-muted);
+}
+.bus-health-applied {
+  color: var(--text-faint);
+}
+.bus-health-absent {
+  color: var(--text-dim);
+}
+.bus-health-rate {
+  color: var(--text-faint);
+}
+
+.bus-health-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.bus-health-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 2px;
+  border: 1px solid var(--border-wash-strong);
+  background: var(--text-dim);
+}
+.bus-health-state[data-tone="active"] {
+  color: var(--ok-text);
+}
+.bus-health-state[data-tone="active"] .bus-health-dot {
+  background: var(--ok-dot);
+}
+.bus-health-state[data-tone="passive"] {
+  color: var(--warn-text);
+}
+.bus-health-state[data-tone="passive"] .bus-health-dot {
+  background: var(--warn-border);
+}
+.bus-health-state[data-tone="busoff"] {
+  color: var(--danger-text);
+}
+.bus-health-state[data-tone="busoff"] .bus-health-dot {
+  background: var(--danger-text);
+}
+.bus-health-state[data-tone="off"] {
+  color: var(--text-faint);
+}
+
+.bus-health-load {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.bus-health-meter {
+  width: 4.5rem;
+  height: 0.45rem;
+  border-radius: 2px;
+  background: var(--surface-field);
+  border: 1px solid var(--border-wash);
+  overflow: hidden;
+}
+.bus-health-meter > i {
+  display: block;
+  height: 100%;
+  background: var(--ok-dot);
+}
+.bus-health-meter[data-level="warn"] > i {
+  background: var(--warn-border);
+}
+.bus-health-meter[data-level="bad"] > i {
+  background: var(--danger-text);
+}
+
 /* === Shared status chip (StatusChip.tsx) ===
    A chip shows a state and pressing it goes to where that state is
    managed. Its shape is the shared colour chip's — 2px radius over a

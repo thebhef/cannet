@@ -66,6 +66,10 @@ export const SETTINGS_PANEL_COMPONENT = "settings";
 export const ABOUT_PANEL_COMPONENT = "about";
 /// The timeline-events view (ADR 0035) — a singleton panel.
 export const EVENTS_PANEL_COMPONENT = "events";
+/// The bus health view — a singleton panel holding the low-level
+/// state of every logical bus. Opened from the status bar's health
+/// launcher (ADR 0055) as well as the command palette.
+export const BUS_HEALTH_PANEL_COMPONENT = "bus-health";
 /// The keyboard-shortcuts editor (ADR 0018) — a singleton panel that
 /// lists and rebinds every command.
 export const SHORTCUTS_PANEL_COMPONENT = "shortcuts";
@@ -102,6 +106,11 @@ export const ABOUT_PANEL_ID = "about";
 /// instance, opened from the command palette.
 export const EVENTS_PANEL_ID = "events";
 
+/// The bus health panel is a singleton: bus health is a property of
+/// the session, not of any one view, and the status bar's launcher
+/// has exactly one panel to open (ADR 0055).
+export const BUS_HEALTH_PANEL_ID = "bus-health";
+
 /// The keyboard-shortcuts editor (ADR 0018) is a singleton — one
 /// app-global instance, opened from the command palette.
 export const SHORTCUTS_PANEL_ID = "shortcuts";
@@ -126,6 +135,7 @@ export const SINGLETON_PANEL_TITLES: Readonly<Record<string, string>> = {
   [SETTINGS_PANEL_ID]: "Settings",
   [ABOUT_PANEL_ID]: "About",
   [EVENTS_PANEL_ID]: "Events",
+  [BUS_HEALTH_PANEL_ID]: "Bus health",
   [SHORTCUTS_PANEL_ID]: "Keyboard shortcuts",
   [SERVERS_PANEL_ID]: "Servers",
 };
@@ -254,6 +264,8 @@ export function panelKindForFocus(
       return "about";
     case EVENTS_PANEL_ID:
       return "events";
+    case BUS_HEALTH_PANEL_ID:
+      return "bus-health";
     case SHORTCUTS_PANEL_ID:
       return "shortcuts";
     case SERVERS_PANEL_ID:
