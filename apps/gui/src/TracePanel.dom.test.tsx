@@ -591,6 +591,19 @@ describe("TracePanel event rows: the same interactions as the events view", () =
     expect(emit).toHaveBeenCalledWith(GOTO_EVENT, 1_000_000_000);
   });
 
+  it("names the row and states its disclosure the way the events view does", async () => {
+    // The row ARIA is the shared renderer's, and this is the surface
+    // that proves the sharing rather than assuming it.
+    renderWithNotes([note]);
+    await waitFor(() => expect(eventLabels()).toEqual(["boom"]));
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    const named = document.getElementById(grid().getAttribute("aria-activedescendant") ?? "");
+    expect(named).toHaveClass("trace-event-row");
+    expect(named).toHaveAttribute("aria-expanded", "false");
+    expect(named).not.toHaveAttribute("aria-selected");
+    expect(named?.querySelector(".trace-event-disclose")).toHaveAttribute("tabindex", "-1");
+  });
+
   it("renames the cursor's event row on F2", async () => {
     const ctx = notesCtx([note]);
     renderWithNotes([note], ctx);
