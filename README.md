@@ -350,7 +350,30 @@ loads a database for live decoding — load more than one and frames
 decode against each in order, first match wins (every loaded DBC
 applies to the one interface for now).
 
-**Opening a capture is two passes over the file**, and the status line
+**Under the toolbar is the status bar.** The toolbar is commands —
+things you press to make something happen. The bar beneath it is the
+readout, and it also carries the controls for what it reports. On the
+left the **connection chip**: it shows the aggregate of the host's
+per-bus connection state (Not connected / Connecting… / Connected /
+Connected with a short count when some buses are up and others failed /
+Failed), and pressing it connects or disconnects, so nothing reports
+the connection from two places. Beside it whatever is happening — a
+load and its **Cancel**, a cache rebuild and its **Discard**, a
+project that changed on disk with **Reload** and **Dismiss**. Then the
+numbers, as discrete aligned metrics: `f/s`, `bus load`, `frames`,
+`elapsed`, `RAM`, `cache`. On the right the chips that report a
+condition: **System messages**, **Signal mapping** and **RBS
+mapping**, each badged with what needs attention.
+
+The bar is one row and never wraps — a header that grew a second line
+would reflow every panel beneath it. When the window is too narrow the
+metrics drop from the right, and hovering any metric label shows the
+whole readout including the dropped ones; the chips never drop, they
+collapse into a **…** menu badged with the sum of the counts inside
+it, so something demanding attention can only become one click away,
+never invisible.
+
+**Opening a capture is two passes over the file**, and the status bar
 reports both against a real denominator: the census — the header-only
 walk that finds the file's channels, frame count and time span before
 the channel-mapping dialog can be shown — as a percentage of the file's
@@ -1094,12 +1117,13 @@ Singleton
 like the project panel, and read-only (DBCs are added / removed from
 the project panel, not from here).
 
-**View signals** opens the signal-mapping panel: one row per signal the
+**Signal mapping** (the status bar's chip) opens the signal-mapping
+panel: one row per signal the
 open views reference, live — what decodes it today, which views use it,
 and whether that still matches what the view was configured against
 (Not Decoded / Scale / Ambiguous / Stale / Decoded, most severe first).
-The launcher carries the count needing attention (Not Decoded, Scale,
-Ambiguous) and is quiet when there is nothing to look at. Assigning or
+The chip is badged with the count needing attention (Not Decoded,
+Scale, Ambiguous) and is quiet when there is nothing to look at. Assigning or
 unassigning a database moves rows without a reopen. It is a repair
 surface as well as a report, and the **source** column is where both
 repairs are made, with no apply step. Choosing the *same* signal under a
@@ -1204,9 +1228,9 @@ cannet-managed local storage under an OS cache directory —
 `$XDG_CACHE_HOME/dev.cannet.app` on Linux, the platform equivalent
 elsewhere); the kernel page cache keeps the hot part resident and pages
 cold history out under pressure, so RAM stays roughly flat while
-the on-disk cache grows (the status line shows both — `… RAM`, the
-whole application's resident memory, and `… cache`, the scratch
-footprint on disk). Decoded-signal plot data and the search indexes are built on
+the on-disk cache grows (the status bar shows both — the `RAM` metric,
+the whole application's resident memory, and the `cache` metric, the
+scratch footprint on disk). Decoded-signal plot data and the search indexes are built on
 demand and memory-mapped the same way. See
 [`docs/adr/0001-indefinite-length-capture.md`](docs/adr/0001-indefinite-length-capture.md)
 and [`docs/adr/0002-disk-spill-store.md`](docs/adr/0002-disk-spill-store.md).
@@ -1224,7 +1248,7 @@ the plots normally come back with it, so plotting a restored capture is
 immediate. When they can't — a DBC in the set changed, or the capture
 came back truncated, so what was cached no longer describes it — they
 are thrown away and rebuilt by decoding the capture's frames again,
-which on a long session is minutes. The status line says so
+which on a long session is minutes. The status bar says so
 (**Rebuilding signal caches…**), with a progress bar — every pyramid
 re-decodes the same frames, so how far the rebuild has got is a real
 figure and not a guess — and offers **Discard** beside it: that drops the restored capture — frames, caches
@@ -2446,8 +2470,8 @@ of it. Sources currently in use:
 `project`, `dbc`, `connection`, `blf-import` (vendor sidecars will
 use `sidecar:<vendor>` in Phase 8).
 
-**System Messages panel**. Add it from the toolbar's *System
-messages* button. The panel renders a virtualised list filterable by
+**System Messages panel**. Open it from the status bar's *System
+messages* chip. The panel renders a virtualised list filterable by
 source and by minimum level (default `info` — a session's worth of
 what you did; drop it to `debug` for the app's internal breadcrumbs,
 which reach the rolling log file either way). Copy-all and

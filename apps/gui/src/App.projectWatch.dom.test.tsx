@@ -165,6 +165,15 @@ async function bootWithProject(): Promise<void> {
   openProjectCalls.length = 0;
 }
 
+/// The connection control: a status chip in the bar rather than a
+/// toolbar button, so it is found by its own class and its state reads
+/// off its accessible name.
+function connectionChip(): HTMLButtonElement {
+  const chip = document.querySelector<HTMLButtonElement>("button.status-chip--connection");
+  if (!chip) throw new Error("no connection chip");
+  return chip;
+}
+
 function button(label: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll("button")).find((b) => b.textContent === label);
 }
@@ -210,13 +219,16 @@ async function runCommand(label: string): Promise<void> {
 /// Bring a session up through the toolbar's own Connect, so the state
 /// the policy reads is the state a real connect produces.
 async function connect(): Promise<void> {
-  const btn = button("Connect");
-  if (!btn) throw new Error('no "Connect" button');
+  const btn = connectionChip();
   await act(async () => {
     fireEvent.click(btn);
     await new Promise((r) => setTimeout(r, 50));
   });
-  await waitFor(() => expect(button("Disconnect")).toBeInTheDocument());
+  // The chip is the control and the readout at once: once a session is
+  // up, pressing it disconnects, and its accessible name says so.
+  await waitFor(() =>
+    expect(connectionChip().getAttribute("aria-label")).toMatch(/— Disconnect$/),
+  );
 }
 
 beforeEach(async () => {

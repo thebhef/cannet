@@ -1,4 +1,4 @@
-/// What the status bar gives up when it runs out of room.
+/// What the status bar gives up when it runs out of room (ADR 0055).
 ///
 /// The bar is one row and never wraps: a header that grows a second
 /// line reflows every panel beneath it, so running out of room is

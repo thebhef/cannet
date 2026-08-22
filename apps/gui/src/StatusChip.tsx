@@ -1,5 +1,5 @@
 /// The shared status chip: **it shows a state, and pressing it goes to
-/// where that state is managed.**
+/// where that state is managed** (ADR 0055).
 ///
 /// One implementation, not a per-panel copy — the same rule that
 /// governs the shared colour chip. Its shape *is* the colour chip's

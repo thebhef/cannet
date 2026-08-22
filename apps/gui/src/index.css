@@ -747,7 +747,7 @@ ul.status-bar-menu .status-chip {
   display: inline-flex;
   align-items: baseline;
   gap: 0.28rem;
-  margin-left: 0.55rem;
+  font-size: 0.75rem;
 }
 .status-metric b {
   color: var(--text-data);
@@ -4976,43 +4976,6 @@ button.color-chip {
 .system-messages-empty {
   padding: 1rem;
   color: var(--text-faint);
-  text-align: center;
-}
-
-/* Toolbar unread-error badge */
-.system-messages-button {
-  position: relative;
-}
-.system-messages-badge {
-  display: inline-block;
-  margin-left: 0.4rem;
-  padding: 0 0.35rem;
-  background: var(--danger-badge);
-  color: var(--text-on-solid);
-  border-radius: 999px;
-  font-size: 0.7rem;
-  line-height: 1.2;
-  vertical-align: middle;
-  min-width: 1.1rem;
-  text-align: center;
-}
-
-/* View-signals launcher badge: same recipe as the system-messages
-   badge above — quiet at zero, a small pill otherwise. */
-.view-signals-button {
-  position: relative;
-}
-.view-signals-badge {
-  display: inline-block;
-  margin-left: 0.4rem;
-  padding: 0 0.35rem;
-  background: var(--danger-badge);
-  color: var(--text-on-solid);
-  border-radius: 999px;
-  font-size: 0.7rem;
-  line-height: 1.2;
-  vertical-align: middle;
-  min-width: 1.1rem;
   text-align: center;
 }
 

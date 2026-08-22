@@ -1,4 +1,5 @@
-/// The bus-health control: a compact icon button, not a status chip.
+/// The bus-health control: a compact icon button, not a status chip —
+/// the launcher case of ADR 0055.
 ///
 /// It began as a chip reading "Bus health — OK", and that was wrong
 /// three ways. "Health" is a strange word for "this bus is fine"; it
