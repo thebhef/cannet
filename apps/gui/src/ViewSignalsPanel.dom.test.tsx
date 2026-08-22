@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import type { ViewSignalRow } from "./types";
+import type { ViewSignalCandidate, ViewSignalRow } from "./types";
 
 import {
   LONG_MESSAGE_NAME,
@@ -20,6 +20,19 @@ import {
   LONG_SIGNAL_TAIL,
   expectMiddleEllipsis,
 } from "./longNameTestKit";
+
+/// One candidate on the fixture's own bus — the ordinary case, where a
+/// choice is only ever about which database or which signal.
+function cand(
+  dbcPath: string,
+  signalName: string,
+  messageName: string,
+  unit: string,
+  busId = "power",
+  busName = "Powertrain",
+): ViewSignalCandidate {
+  return { busId, busName, dbcPath, signalName, messageName, unit };
+}
 
 function row(over: Partial<ViewSignalRow> = {}): ViewSignalRow {
   return {
@@ -63,7 +76,7 @@ const DEFAULT_ROWS: ViewSignalRow[] = [
     unit: "degF",
     usedBy: ["Plot 1"],
     diffs: [{ field: "unit", mapped: "degC", decoded: "degF" }],
-    candidates: [{ dbcPath: "powertrain.dbc", signalName: "CoolantTempF", messageName: "Chassis", unit: "degF" }],
+    candidates: [cand("powertrain.dbc", "CoolantTempF", "Chassis", "degF")],
   }),
 ];
 
@@ -296,9 +309,9 @@ const AMBIGUOUS = row({
   servingDbc: "/dbc/client.dbc",
   pickedDbc: null,
   candidates: [
-    { dbcPath: "/dbc/client.dbc", signalName: "PackVolts", messageName: "PackStatus", unit: "V" },
-    { dbcPath: "/dbc/client.dbc", signalName: "Other", messageName: "PackStatus", unit: "A" },
-    { dbcPath: "/dbc/private.dbc", signalName: "PackVolts", messageName: "PackStatus", unit: "V" },
+    cand("/dbc/client.dbc", "PackVolts", "PackStatus", "V"),
+    cand("/dbc/client.dbc", "Other", "PackStatus", "A"),
+    cand("/dbc/private.dbc", "PackVolts", "PackStatus", "V"),
   ],
 });
 
@@ -314,8 +327,27 @@ const STALE_NAME = row({
   pickedDbc: null,
   usedBy: ["Plot 1", "Color map 1"],
   candidates: [
-    { dbcPath: "/dbc/client.dbc", signalName: "PackVoltage", messageName: "PackStatus", unit: "mV" },
-    { dbcPath: "/dbc/client.dbc", signalName: "PackCurrent", messageName: "PackStatus", unit: "A" },
+    cand("/dbc/client.dbc", "PackVoltage", "PackStatus", "mV"),
+    cand("/dbc/client.dbc", "PackCurrent", "PackStatus", "A"),
+  ],
+});
+
+/// The row this task exists for: a reference saved before per-bus
+/// signal binding. It names no bus, so nothing decodes it, and the only
+/// repair on offer is a definition on a bus that does.
+const NO_BUS = row({
+  id: "*|s:256:PackVolts",
+  busId: null,
+  busName: null,
+  signalName: "PackVolts",
+  messageName: "PackStatus",
+  status: "not-decoded",
+  servingDbc: null,
+  pickedDbc: null,
+  usedBy: ["Plot 1"],
+  candidates: [
+    cand("/dbc/client.dbc", "PackVolts", "PackStatus", "V", "power", "Powertrain"),
+    cand("/dbc/client.dbc", "PackVolts", "PackStatus", "V", "body", "Body"),
   ],
 });
 
@@ -331,11 +363,11 @@ describe("ViewSignalsPanel source picker", () => {
     await waitFor(() => expect(sourcePicker()).toBeEnabled());
     // It opens on the database that decodes the signal today.
     expect((sourcePicker() as HTMLSelectElement).value).toBe(
-      `/dbc/client.dbc\0PackVolts`,
+      `power\0/dbc/client.dbc\0PackVolts`,
     );
 
     fireEvent.change(sourcePicker(), {
-      target: { value: `/dbc/private.dbc\0PackVolts` },
+      target: { value: `power\0/dbc/private.dbc\0PackVolts` },
     });
     expect(calls.filter((c) => c.cmd === "set_signal_dbc_pick")).toEqual([
       {
@@ -355,11 +387,11 @@ describe("ViewSignalsPanel source picker", () => {
     const before = calls.filter((c) => c.cmd === "list_view_signals").length;
 
     fireEvent.change(sourcePicker(), {
-      target: { value: `/dbc/private.dbc\0PackVolts` },
+      target: { value: `power\0/dbc/private.dbc\0PackVolts` },
     });
     // The picker still shows what the host last said, unchanged.
     expect((sourcePicker() as HTMLSelectElement).value).toBe(
-      `/dbc/client.dbc\0PackVolts`,
+      `power\0/dbc/client.dbc\0PackVolts`,
     );
     expect(calls.filter((c) => c.cmd === "list_view_signals")).toHaveLength(before);
 
@@ -374,7 +406,7 @@ describe("ViewSignalsPanel source picker", () => {
     emitHostEvent("dbc-changed");
     await waitFor(() =>
       expect((sourcePicker() as HTMLSelectElement).value).toBe(
-        `/dbc/private.dbc\0PackVolts`,
+        `power\0/dbc/private.dbc\0PackVolts`,
       ),
     );
   });
@@ -388,8 +420,8 @@ describe("ViewSignalsPanel source picker", () => {
     const byValue = (v: string) => options.find((o) => o.value === v);
     // The same signal under another database is the ambiguity pick;
     // another signal of the same message is the remap. Both are live.
-    expect(byValue(`/dbc/private.dbc\0PackVolts`)).toBeEnabled();
-    expect(byValue(`/dbc/client.dbc\0Other`)).toBeEnabled();
+    expect(byValue(`power\0/dbc/private.dbc\0PackVolts`)).toBeEnabled();
+    expect(byValue(`power\0/dbc/client.dbc\0Other`)).toBeEnabled();
   });
 
   /// The guarantee the shared operation exists for, at the gesture that
@@ -434,7 +466,7 @@ describe("ViewSignalsPanel source picker", () => {
     ]);
     await waitFor(() => expect(sourcePicker()).toBeEnabled());
 
-    fireEvent.change(sourcePicker(), { target: { value: `/dbc/client.dbc\0PackVoltage` } });
+    fireEvent.change(sourcePicker(), { target: { value: `power\0/dbc/client.dbc\0PackVoltage` } });
 
     await waitFor(() => {
       const plot = registry.entries().find((e) => e.element.id === "p1")?.element as unknown as {
@@ -484,7 +516,7 @@ describe("ViewSignalsPanel source picker", () => {
     renderPanel();
     await waitFor(() => expect(sourcePicker()).toBeEnabled());
 
-    fireEvent.change(sourcePicker(), { target: { value: `/dbc/client.dbc\0PackVoltage` } });
+    fireEvent.change(sourcePicker(), { target: { value: `power\0/dbc/client.dbc\0PackVoltage` } });
 
     await waitFor(() => {
       const written = calls.find((c) => c.cmd === "set_transmit_frame");
@@ -493,6 +525,75 @@ describe("ViewSignalsPanel source picker", () => {
           .signal,
       ).toBe("PackVoltage");
     });
+  });
+
+  it("offers a reference that names no bus the buses that decode", async () => {
+    ROWS = [NO_BUS];
+    ATTENTION_COUNT = 1;
+    renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+    // Nothing is in force, and the picker says so rather than showing
+    // the first offer as if it were.
+    expect((sourcePicker() as HTMLSelectElement).value).toBe("");
+    const options = screen.getAllByRole("option") as HTMLOptionElement[];
+    expect(options.map((o) => o.textContent)).toEqual([
+      "— not decoded —",
+      "Powertrain · client.dbc: PackVolts",
+      "Body · client.dbc: PackVolts",
+    ]);
+  });
+
+  it("re-points every stored reference onto the bus that was chosen", async () => {
+    ROWS = [NO_BUS];
+    ATTENTION_COUNT = 1;
+    const { registry } = renderPanel({}, [
+      {
+        kind: "plot",
+        id: "p1",
+        sources: ["*"],
+        config: {
+          areas: [
+            {
+              id: "a1",
+              signals: [
+                {
+                  busId: null,
+                  messageId: 0x100,
+                  extended: false,
+                  signalName: "PackVolts",
+                  messageName: "PackStatus",
+                  unit: "V",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+
+    fireEvent.change(sourcePicker(), {
+      target: { value: `power\0/dbc/client.dbc\0PackVolts` },
+    });
+
+    await waitFor(() => {
+      const plot = registry.entries().find((e) => e.element.id === "p1")?.element as unknown as {
+        config: { areas: { signals: { busId: string | null; signalName: string }[] }[] };
+      };
+      expect(plot.config.areas[0].signals[0]).toMatchObject({
+        busId: "power",
+        signalName: "PackVolts",
+      });
+    });
+    // A re-point is not an ambiguity pick: it moves the references, and
+    // the only thing recorded against the *new* identity is the
+    // database the choice named.
+    expect(
+      calls.filter((c) => c.cmd === "set_signal_dbc_pick").map((c) => c.args),
+    ).toEqual([
+      { signal: "power|s:256:PackVolts", dbcPath: "/dbc/client.dbc" },
+      { signal: "*|s:256:PackVolts", dbcPath: null },
+    ]);
   });
 
   it("has nothing to offer on a row with no candidates", async () => {

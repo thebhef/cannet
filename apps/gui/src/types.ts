@@ -1377,6 +1377,12 @@ export interface ViewSignalDiff {
 /// what the panel's source picker offers where there is a choice.
 /// Mirrors `view_signals::ViewSignalCandidate`.
 export interface ViewSignalCandidate {
+  /// The bus this definition decodes on — the row's own bus for every
+  /// candidate of an ordinary row, and the bus the candidate would
+  /// re-point at for a reference that names none.
+  busId: string;
+  /// The project's name for {@link busId}, or the id when it has none.
+  busName: string;
   dbcPath: string;
   signalName: string;
   messageName: string;
