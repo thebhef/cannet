@@ -2691,12 +2691,16 @@ describe("PlotArea y-normalisation", () => {
     }
   });
 
-  it("numeric: each unit group is normalised to [0, 1] by its own range", async () => {
-    // No value tables → both signals numeric. Values 10/20/15 against
-    // the host extent 10..20 → 0, 1, 0.5. rpm and degC are separate
-    // unit groups but share an extent here, so both rows match.
+  it("numeric: one axis draws one scale, whatever units its series carry", async () => {
+    // rpm 10..20 and degC 100..200 overlaid on one axis. The axis draws
+    // the union 10..200 — the rpm series in the bottom twentieth, the
+    // degC series filling the rest — so the tick labels are true of
+    // both. Scaling each unit group to fill the canvas on its own drew
+    // them on top of each other at amplitudes the axis never stated.
+    mockSignalExtents.EngineSpeed = { lo: 10, hi: 20 };
+    mockSignalExtents.EngineTemp = { lo: 100, hi: 200 };
     mockSampleSeries.EngineSpeed = { t: [0, 1, 2], v: [10, 20, 15] };
-    mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [10, 20, 15] };
+    mockSampleSeries.EngineTemp = { t: [0, 1, 2], v: [100, 200, 150] };
     const restore = stubSize();
     try {
       renderPanel();
@@ -2704,14 +2708,129 @@ describe("PlotArea y-normalisation", () => {
       await waitForData((data) => {
         expect(data[0]).toEqual([0, 1, 2]);
         expect(data[1]?.[0]).toBeCloseTo(0, 6);
-        expect(data[1]?.[1]).toBeCloseTo(1, 6);
-        expect(data[1]?.[2]).toBeCloseTo(0.5, 6);
-        expect(data[2]?.[0]).toBeCloseTo(0, 6);
+        expect(data[1]?.[1]).toBeCloseTo(10 / 190, 6);
+        expect(data[1]?.[2]).toBeCloseTo(5 / 190, 6);
+        expect(data[2]?.[0]).toBeCloseTo(90 / 190, 6);
         expect(data[2]?.[1]).toBeCloseTo(1, 6);
-        expect(data[2]?.[2]).toBeCloseTo(0.5, 6);
+        expect(data[2]?.[2]).toBeCloseTo(140 / 190, 6);
       });
+      await waitFor(() => expect(yTickLabels([0, 1])).toEqual(["10 rpm", "200 rpm"]));
     } finally {
       restore();
+    }
+  });
+
+  // The amplitude a series is *drawn* at and the range its axis
+  // *labels* are two different numbers, and nothing checked they were
+  // the same one. A series scaled privately under a shared axis is
+  // drawn against a range the axis never states — so a -200..0 A
+  // current overlaid with a -1.5..0 companion filled the canvas while
+  // the gutter read -1.5..0, and the trace was two orders of magnitude
+  // off its own data with nothing on screen to say so. The ratio is
+  // just the two signals' amplitudes, so it is whatever the pairing
+  // happens to be.
+  //
+  // These walk every y-axis mode and every way an axis can end up
+  // holding more than one would-be scale, and check the general claim
+  // rather than the one pairing: *every* drawn series reads back, in
+  // its own axis's labels, as the data it holds.
+  describe("a drawn series reads as its own data", () => {
+    /** The uPlot instance drawing each axis on screen right now. An
+     * area rebuilds its chart on a signal-set or mode change and the
+     * superseded instances stay in the array, so this keeps the newest
+     * instance per mounted root. */
+    function liveInstances() {
+      const all = uplotInstances as unknown as (FakeUPlotInst & {
+        opts: { axes: { values: (u: unknown, s: number[]) => string[] }[] };
+      })[];
+      const live: typeof all = [];
+      for (let i = all.length - 1; i >= 0; i--) {
+        if (!document.body.contains(all[i].root)) continue;
+        if (!live.some((l) => l.root === all[i].root)) live.unshift(all[i]);
+      }
+      return live;
+    }
+
+    /** What every drawn row reads as: its normalised extent mapped back
+     * through its own axis's tick labels — the range a viewer takes off
+     * the screen — sorted by lower bound. */
+    function drawnAmplitudes(): { lo: number; hi: number }[] {
+      const out: { lo: number; hi: number }[] = [];
+      for (const inst of liveInstances()) {
+        const [aLo, aHi] = inst.opts.axes[1].values(inst, [0, 1]);
+        const axLo = parseFloat(aLo);
+        const axHi = parseFloat(aHi);
+        for (const row of (inst.data as (number | null)[][]).slice(1)) {
+          let lo = Infinity;
+          let hi = -Infinity;
+          for (const v of row) {
+            if (v == null) continue;
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+          }
+          out.push({ lo: axLo + lo * (axHi - axLo), hi: axLo + hi * (axHi - axLo) });
+        }
+      }
+      return out.sort((a, b) => a.lo - b.lo);
+    }
+
+    /** A -200..0 current and a -1.5..0 companion, dropped in that
+     * order, with `units` — the companion first when the caller wants
+     * the small signal to be the one an axis would label through. */
+    async function plotBothWith(units: [string, string], mode: string) {
+      mockSampleSeries.BigCurrent = { t: [0, 1, 2], v: [-200, -100, 0] };
+      mockSignalExtents.BigCurrent = { lo: -200, hi: 0 };
+      mockSampleSeries.SmallCompanion = { t: [0, 1, 2], v: [-1.5, -0.75, 0] };
+      mockSignalExtents.SmallCompanion = { lo: -1.5, hi: 0 };
+      renderPanel();
+      dropSignal("Area 1", "SmallCompanion", units[0]);
+      await waitFor(() => expect(screen.getByText("SmallCompanion")).toBeInTheDocument());
+      dropSignal("Area 1", "BigCurrent", units[1]);
+      await waitFor(() => expect(screen.getByText("BigCurrent")).toBeInTheDocument());
+      await pickCombobox(screen.getByLabelText("y-axis mode"), mode);
+      await waitFor(() => {
+        const amps = drawnAmplitudes();
+        expect(amps.length).toBe(2);
+        expect(amps[0].lo).toBeCloseTo(-200, 3);
+        expect(amps[0].hi).toBeCloseTo(0, 3);
+        expect(amps[1].lo).toBeCloseTo(-1.5, 3);
+        expect(amps[1].hi).toBeCloseTo(0, 3);
+      });
+    }
+
+    for (const mode of ["unified", "per-unit", "individual"]) {
+      it(`holds for two units on one area, ${mode}`, async () => {
+        const restore = stubSize();
+        try {
+          await plotBothWith(["V", "A"], mode);
+        } finally {
+          restore();
+        }
+      });
+
+      it(`holds for two unitless signals on one area, ${mode}`, async () => {
+        // A DBC that declares no unit is the common case, and it is the
+        // one that put two would-be scales on a *per-unit* axis: the
+        // axis groups them by their (empty) unit while the scale split
+        // them apart.
+        const restore = stubSize();
+        try {
+          await plotBothWith(["", ""], mode);
+        } finally {
+          restore();
+        }
+      });
+
+      it(`holds for the same unit on one area, ${mode}`, async () => {
+        // The control: same-unit series always shared one scale, so
+        // this pairing read correctly before and must still.
+        const restore = stubSize();
+        try {
+          await plotBothWith(["A", "A"], mode);
+        } finally {
+          restore();
+        }
+      });
     }
   });
 

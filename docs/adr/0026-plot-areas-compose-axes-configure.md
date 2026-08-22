@@ -1,6 +1,10 @@
 # ADR 0026 — Plot areas compose signals; axes configure how they're viewed
 
-Status: accepted (2026-06-09; partially shipped — see "Implementation status")
+Status: accepted (2026-06-09; partially shipped — see "Implementation
+status"); amended (2026-08-21) — **an axis draws one scale**: every
+series on an axis is normalised by the union of what is drawn there,
+replacing the per-unit-group auto-scaling that let a series be drawn at
+an amplitude its axis never stated.
 
 The plot view grows a level. Until now a plot panel held a flat list
 of plot areas, each rendering as exactly one chart. This ADR records
@@ -30,24 +34,35 @@ with a clean division of responsibility:
 
 | Mode | Axes produced | Scaling |
 | --- | --- | --- |
-| **unified** | one axis; all series overlaid | each *unit group* auto-scaled independently to fill the axis; same-unit series share one y scale |
-| **per-unit** | one axis per unit, plus one shared **enum-lanes** axis | each unit axis auto-scaled to its unit's data; all enum series collect onto a single stacked-lane axis |
+| **unified** | one axis; all series overlaid | **one scale** — the union of every visible series on the axis |
+| **per-unit** | one axis per unit, plus one shared **enum-lanes** axis | one scale per axis, the union of that unit's data; all enum series collect onto a single stacked-lane axis |
 | **individual** | one axis per series | each axis auto-scaled to its one series |
+
+**An axis draws one scale.** Every series on an axis is normalised by
+the same range — the union of what each visible series holds — so the
+range the axis labels is the range each series was drawn against. A
+series scaled privately under a shared axis is drawn at an amplitude
+the axis never states, and nothing on screen contradicts it: a -200..0 A
+current overlaid with a -1.5..0 companion filled the canvas while the
+gutter read -1.5..0. Separating series that are not comparable is what
+the y-axis **mode** is for — `per-unit` gives each unit its own axis,
+`individual` gives each series one — not a second scale hidden under a
+single axis.
 
 **The visible y-scale labels are always a real signal's engineering
 values — never a 0–1 ratio.** Each axis labels its ticks through one
 signal's unit and value range: the parent area's **primary signal**
 (the user picks it by clicking a series) when that signal is on the
 axis, otherwise the axis's own first ranged signal. In per-unit mode
-each axis is a different unit group, so the primary is on at most one
-of them and every other axis labels through its own first signal — a
-volts / amps / percent stack reads V, A, % rather than all `0.0–1.0`.
-When several unit groups are overlaid on one axis (unified mode), only
-the chosen signal's unit is labelled; the other groups are still drawn
-at their own auto scale and read via the cursor/legend. This is the
-rule that fixes the bug where the y axis sometimes showed `0.0–1.0`
-instead of the selected signal's units. (The blank-gutter enum-lanes
-axis is exempt — its tiles carry the labels; see below.)
+each axis is a different unit, so the primary is on at most one of them
+and every other axis labels through its own first signal — a volts /
+amps / percent stack reads V, A, % rather than all `0.0–1.0`. Where
+several units are overlaid on one axis (unified mode) only the chosen
+signal's unit is named, but the *numbers* are true of every series
+drawn there, since they all share the axis's scale. This is the rule
+that fixes the bug where the y axis sometimes showed `0.0–1.0` instead
+of the selected signal's units. (The blank-gutter enum-lanes axis is
+exempt — its tiles carry the labels; see below.)
 
 **Y scales are auto-derived from the data, with a per-axis manual
 override.** Auto-derivation is the default and the whole behaviour of
@@ -374,8 +389,8 @@ synthetic ratio — is the bug we're fixing.
 
 **A manual range is per axis, and additive on the auto-derived
 default.** The semantics that once blocked it fall out of the axis
-level: an axis is one scale, so a pinned bound applies to every unit
-group drawn on it and there is no question of which series it means.
+level: an axis is one scale, so a pinned bound applies to every series
+drawn on it and there is no question of which series it means.
 It is an override, not a mode — an unpinned bound keeps auto-scaling —
 so nothing an unconfigured panel does changes, and the sparse store
 means nothing an unconfigured panel persists changes either.
@@ -394,9 +409,16 @@ a multi-region renderer uPlot doesn't natively provide.
   have nowhere to live. The redundancy between "many areas" and "one
   area, many axes" is intentional: areas are curated, axes are
   derived.
-- **One global y scale in unified mode (literal shared min/max).**
-  Volts and amps on the same min/max makes one of them a flat line.
-  Per-unit-group auto-scaling is what makes an overlaid chart usable.
+- **Per-unit-group auto-scaling in unified mode.** *Adopted 2026-06-09,
+  reversed on amendment 2026-08-21.* Scaling each unit group to fill
+  the canvas keeps an overlaid chart of volts and amps readable, where
+  one shared min/max flattens whichever has the smaller range. The
+  price turned out to be too high: only one group can be labelled, so
+  every other group is drawn at an amplitude the axis does not state,
+  with nothing on screen to say so. A flat line is honest; a trace two
+  orders of magnitude off its own data is not. The modes that separate
+  incomparable series (per-unit, individual) cover the case this
+  bought.
 - **Normalised (0–1) y axis in unified mode.** What we have today by
   accident; unreadable, and the thing this ADR sets out to fix.
 - **One uPlot instance per area with faked stacked regions.** uPlot
@@ -446,16 +468,17 @@ below:
   sits in each plot area's signal-panel head. Switching modes
   re-stacks the area's canvases. The per-axis derivation is the pure
   `deriveAxesForArea()` helper (covered by unit tests).
-- **Unit-based y-scale.** Same-unit series on an axis share one y
-  scale — the union of their observed ranges, computed by the pure
-  `groupScaleRanges()` helper in `plotData` — and each unit group
-  auto-scales independently to fill the axis. Four refinements on the
+- **One y scale per axis.** Every series on an axis shares one scale —
+  the union of their observed ranges, computed by the pure
+  `axisAutoRange()` helper in `plotData`. *Amended 2026-08-21:* this
+  was per unit *group* within an axis, with unitless series each
+  keeping a private scale on the grounds that two signals which merely
+  both lack a DBC unit are not known to be commensurable. Both splits
+  put more than one scale under one set of tick labels, and a series on
+  the unlabelled scale was drawn at an amplitude nothing on screen
+  stated — the unitless split did so even on a `per-unit` axis, which
+  the mode's own definition says is one scale. Three refinements on the
   decision table:
-  - **Unitless series each keep their own scale.** Two signals that
-    merely both lack a DBC unit are not known to be commensurable, and
-    pinning them to a shared min/max would flatten whichever has the
-    smaller range; "shares a unit" is read as "shares a *declared*
-    unit".
   - **Hidden series contribute nothing to the union.** An axis
     auto-scales to its data, and what is hidden is not drawn on the
     axis — so hiding a 3000 A nominal limit rescales the axis to the
@@ -466,17 +489,16 @@ below:
     plot-area config the host has no reason to know), so the selection
     is made in `PlotArea`'s normalisation and the host query is
     unchanged.
-  - **A constant series still joins its group.** A signal that never
+  - **A constant series still joins the union.** A signal that never
     moves has a degenerate extent (`hi === lo`) and so cannot be
-    normalised on its own; it contributes its one value to its unit
-    group's union all the same, and is drawn on the group's scale — a
-    constant 3000 A limit sits at the top of a 400–3000 A axis rather
-    than at the canvas midline beside a 500 A signal filling the
-    canvas.
-  - **A group with no span at all gets a minimum range.** When every
-    member is constant at the same value the union has no span, so
+    normalised on its own; it contributes its one value to the axis's
+    union all the same, and is drawn on the axis's scale — a constant
+    3000 A limit sits at the top of a 400–3000 A axis rather than at
+    the canvas midline beside a 500 A signal filling the canvas.
+  - **An axis with no span at all gets a minimum range.** When every
+    series is constant at the same value the union has no span, so
     there is nothing to normalise by and no measurement to draw. The
-    group is widened to **±10 % of that value**, centred on it — the
+    axis is widened to **±10 % of that value**, centred on it — the
     trace still sits mid-canvas, but the axis labels read the value it
     holds instead of a bare 0–1 that says nothing. At exactly zero the
     proportional band collapses, so the fallback there is an absolute
@@ -484,9 +506,9 @@ below:
     the axis in the signal's own units rather than inventing one. A
     constant has no span, so any scale for it is a *choice*, not a
     measurement — this records which choice. The widening happens in
-    `groupScaleRanges`, on the group union rather than per signal, so
-    a constant sharing its group with a moving signal still takes the
-    plain union above. The midline fallback in the renderer now covers
+    `axisAutoRange`, on the axis union rather than per signal, so a
+    constant sharing an axis with a moving signal still takes the plain
+    union above. The midline fallback in the renderer now covers
     only a signal with no range at all (nothing decoded yet), which is
     what keeps the normalise free of a divide-by-zero.
 - **Multi-uPlot per area.** Each derived axis is a stacked uPlot
@@ -692,8 +714,8 @@ What's still rough:
   schema version increments additively.
 - The frontend gains a per-axis derivation step: an area's series +
   y-axis mode → the set of axes (each with its series, primary signal,
-  unit-grouped scales, and render style). Today's single-axis path
-  becomes the unified case.
+  one scale, and render style). Today's single-axis path becomes the
+  unified case.
 - The y-axis labelling bug (normalised `0.0–1.0` instead of the
   primary signal's units) is fixed by the primary-signal rule.
 - New domain terms enter the glossary
