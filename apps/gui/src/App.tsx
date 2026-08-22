@@ -171,6 +171,7 @@ import {
   validateLayout,
 } from "./dockLayout";
 import { StatusBar, type StatusBarChip } from "./StatusBar";
+import { Toolbar } from "./Toolbar";
 import { summarizeConnection, useConnectionStates } from "./connectionStates";
 import { useRbsAttentionCount } from "./rbsAttention";
 import {
@@ -198,7 +199,6 @@ import {
 import { UndoGestureContext, type UndoGesture } from "./undoGesture";
 import { PanelCommandsContext } from "./panelCommands";
 import { useCommands } from "./useCommands";
-import { useDismissableMenu } from "./useDismissableMenu";
 import {
   beginDiagCapture,
   diagCount,
@@ -470,15 +470,6 @@ export function App() {
   // persisted host-side per ADR 0032). Offered in the Import-trace
   // flow; format routing at open time is by extension (`importFormat.ts`).
   const [recentCaptures, setRecentCaptures] = useState<string[]>(() => hostState().recent_blfs);
-  // The Recent-captures dropdown's own open/closed state: it must
-  // dismiss on outside click / Escape like every other transient
-  // popup, so — unlike its old native `<details>` markup — it now
-  // needs state, driven through the shared dismissal hook every other
-  // floating menu in the app uses.
-  const [recentCapturesOpen, setRecentCapturesOpen] = useState(false);
-  const recentCapturesRef = useDismissableMenu<HTMLDivElement>(recentCapturesOpen, () =>
-    setRecentCapturesOpen(false),
-  );
   const rememberRecentCapture = useCallback((path: string) => {
     setRecentCaptures((current) => {
       const next = recordRecentCapture(current, path);
@@ -3377,21 +3368,6 @@ export function App() {
     ],
   );
 
-  // Command-backed toolbar (ADR 0037): an ordered list of command ids —
-  // every button dispatches through `runCommand`, so a click gets the same
-  // recent-tracking and context gate as the palette and keyboard. The few
-  // buttons that carry view-extras (the disabled-while-empty Clear/Save,
-  // the Recent-captures dropdown) stay bespoke, keyed by a sentinel and
-  // interleaved in order.
-  //
-  // The toolbar is commands only. What used to sit here and report a
-  // *condition* rather than perform an action — the Connect toggle, the
-  // system-messages unread badge, the signal-mapping attention badge —
-  // is in the status bar below, where the condition already is.
-  type ToolbarItem =
-    | "sep"
-    | "recentCaptures"
-    | { id: string; label: string; disabled?: boolean; busy?: boolean };
   // The capture whose census is walking right now, in whichever format
   // — one trace-open at a time, so at most one of the two is set.
   const scanningTracePath = scanningBlfPath ?? scanningMdfPath;
@@ -3402,86 +3378,6 @@ export function App() {
   // genuinely finishes. Unlike the census, this phase is click-to-cancel
   // rather than merely disabled.
   const importingTracePath = state.kind === "loading" ? capturePath(state.result) : null;
-  const toolbarItems: ToolbarItem[] = [
-    { id: "project.open", label: "Open project…" },
-    { id: "project.save", label: "Save project" },
-    "sep",
-    // A load running is the one thing the user is waiting on, so the
-    // button that started it says so rather than sitting there looking
-    // idle — which is what got clicked through repeatedly. It is only
-    // ever busy: stopping the load is the status line's own Cancel
-    // button, not a second meaning on the launcher, which nothing about
-    // a greyed-out "Loading trace…" would have told anyone.
-    scanningTracePath !== null || importingTracePath !== null
-      ? { id: "trace.import", label: "Loading trace…", disabled: true, busy: true }
-      : { id: "trace.import", label: "Import trace…" },
-    "recentCaptures",
-    { id: "dbc.add", label: "Add DBC…" },
-    "sep",
-    { id: "capture.clear", label: "Clear", disabled: count === 0 },
-    { id: "capture.save", label: "Save capture…", disabled: count === 0 },
-    "sep",
-    { id: "panel.add.trace", label: "Add trace" },
-    { id: "panel.add.plot", label: "Add plot panel" },
-    { id: "panel.add.signals", label: "Add signal view" },
-    { id: "panel.add.transmit", label: "Add transmit panel" },
-    { id: "panel.add.rbs", label: "Add RBS panel" },
-    { id: "panel.add.colormap", label: "Add color map" },
-    { id: "panel.add.generator", label: "Add generator" },
-    { id: "panel.show.dbc", label: "Database panel" },
-    { id: "panel.show.projectGraph", label: "Graph panel" },
-    { id: "panel.show.events", label: "Events panel" },
-    { id: "panel.show.project", label: "Project panel" },
-  ];
-  const renderToolbarItem = (item: ToolbarItem, i: number) => {
-    if (item === "sep") {
-      return <span key={`sep-${i}`} className="toolbar-separator" aria-hidden="true" />;
-    }
-    if (item === "recentCaptures") {
-      if (recentCaptures.length === 0) return null;
-      return (
-        <div key="recent-captures" className="recent-captures" ref={recentCapturesRef}>
-          <button
-            type="button"
-            aria-label={`Recent captures (${recentCaptures.length})`}
-            aria-haspopup="menu"
-            aria-expanded={recentCapturesOpen}
-            title="Recent captures"
-            onClick={() => setRecentCapturesOpen((v) => !v)}
-          >
-            Recent
-          </button>
-          {recentCapturesOpen && (
-            <ul role="menu" className="recent-captures-menu">
-              {recentCaptures.map((p) => (
-                <li key={p} role="menuitem">
-                  <button
-                    onClick={() => {
-                      setRecentCapturesOpen(false);
-                      void handleImportTrace(p);
-                    }}
-                    title={p}
-                  >
-                    {p}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      );
-    }
-    return (
-      <button
-        key={item.id}
-        onClick={() => runCommand(item.id)}
-        disabled={item.disabled}
-        aria-busy={item.busy ? true : undefined}
-      >
-        {item.label}
-      </button>
-    );
-  };
 
   // The connection chip's state: the host's per-bus map, folded over
   // the project buses that carry a binding. The chip both reports the
@@ -3659,7 +3555,18 @@ export function App() {
   return (
     <main className="app">
       <header>
-        <div className="toolbar">{toolbarItems.map(renderToolbarItem)}</div>
+        {/* Command-backed (ADR 0037): every chip dispatches through
+            `runCommand`, so a click gets the same recent-tracking and
+            context gate as the palette and the keyboard. Re-opening a
+            recent capture is the one thing that is not a command — the
+            path is its argument. */}
+        <Toolbar
+          onRun={runCommand}
+          captureEmpty={count === 0}
+          importing={scanningTracePath !== null || importingTracePath !== null}
+          recentCaptures={recentCaptures}
+          onOpenRecent={(path) => void handleImportTrace(path)}
+        />
         <StatusBar
           connection={connectionSummary}
           onConnectionPress={() =>

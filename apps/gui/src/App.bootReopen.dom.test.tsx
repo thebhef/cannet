@@ -179,6 +179,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 import { App } from "./App";
 import { hydrateSettings } from "./hostSettings";
 import { hostState, hydrateState } from "./hostState";
+import { addPanelChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -195,15 +196,12 @@ async function boot(): Promise<void> {
   });
 }
 
-/// Click the toolbar's "Add trace" — a layout change after the boot has
-/// settled, so what it does or doesn't write is the write gate's doing.
+/// Add a trace panel from the toolbar's Add menu — a layout change
+/// after the boot has settled, so what it does or doesn't write is the
+/// write gate's doing.
 async function addTracePanel(): Promise<void> {
-  const btn = Array.from(document.querySelectorAll("button")).find(
-    (b) => b.textContent === "Add trace",
-  );
-  if (!btn) throw new Error('no "Add trace" button');
   await act(async () => {
-    fireEvent.click(btn);
+    fireEvent.click(addPanelChip("Trace"));
     await new Promise((r) => setTimeout(r, 20));
   });
 }

@@ -119,6 +119,7 @@ vi.mock("uplot/dist/uPlot.min.css", () => ({}));
 
 import type { TraceGrew } from "./types";
 import { App } from "./App";
+import { toolbarChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -145,14 +146,6 @@ function grew(count: number): TraceGrew {
   };
 }
 
-function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("button"),
-  ).find((b) => b.textContent === label);
-  if (!btn) throw new Error(`button "${label}" not found`);
-  return btn;
-}
-
 /// Mount the app, get a non-empty capture into it, and run Save Capture
 /// through the real toolbar button.
 async function saveThrough(path: string | null) {
@@ -166,7 +159,7 @@ async function saveThrough(path: string | null) {
     emitTauri("trace-grew", grew(1234));
   });
   await act(async () => {
-    fireEvent.click(findButton("Save capture…"));
+    fireEvent.click(toolbarChip("Capture"));
   });
   await waitFor(() => {
     if (saveOptions.length === 0) throw new Error("save dialog not opened yet");

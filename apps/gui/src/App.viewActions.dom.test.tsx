@@ -100,19 +100,12 @@ import { StrictMode } from "react";
 
 import { App } from "./App";
 import { hydrateState } from "./hostState";
+import { addPanelChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
-}
-
-function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("button"),
-  ).find((b) => b.textContent === label);
-  if (!btn) throw new Error(`button "${label}" not found`);
-  return btn;
 }
 
 /// The dockview tab element whose visible title matches.
@@ -159,7 +152,7 @@ describe("view actions", () => {
     await mountApp();
 
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");
@@ -218,7 +211,7 @@ describe("view actions", () => {
     await mountApp();
 
     await act(async () => {
-      fireEvent.click(findButton("Add plot panel"));
+      fireEvent.click(addPanelChip("Plot Panel"));
     });
     await waitFor(() => {
       if (!document.querySelector(".plot-panel")) throw new Error("no plot panel yet");

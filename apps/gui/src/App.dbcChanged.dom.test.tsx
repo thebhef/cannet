@@ -129,6 +129,7 @@ import { StrictMode } from "react";
 import type { TraceFrameRecord, TraceGrew } from "./types";
 import { App } from "./App";
 import { DBC_CHANGE_COALESCE_MS } from "./dbcChanged";
+import { addPanelChip } from "./toolbarTestKit";
 
 class FakeResizeObserver {
   observe() {}
@@ -171,14 +172,6 @@ function grew(count: number): TraceGrew {
   };
 }
 
-function findButton(label: string): HTMLButtonElement {
-  const btn = Array.from(
-    document.querySelectorAll<HTMLButtonElement>("button"),
-  ).find((b) => b.textContent === label);
-  if (!btn) throw new Error(`button "${label}" not found`);
-  return btn;
-}
-
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", FakeResizeObserver);
   localStorage.clear();
@@ -210,7 +203,7 @@ describe("a DBC changed on disk", () => {
       emitTauri("trace-grew", grew(5000));
     });
     await act(async () => {
-      fireEvent.click(findButton("Add trace"));
+      fireEvent.click(addPanelChip("Trace"));
     });
     await waitFor(() => {
       if (!rowPages.includes("fetch_by_id_page"))
