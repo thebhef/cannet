@@ -5457,7 +5457,7 @@ fn reloading_a_database_assigned_to_no_bus_stops_nothing() {
 // ---- The Database panel warns on a duplicate id ---------------------
 //
 // Priority stays one project-wide load order; assignment filters it
-// (`AppState::first_dbc_on_bus`). Two databases assigned to one bus
+// (`DecodeModel::eligible`). Two databases assigned to one bus
 // that define the same id is a weird case, but it warns rather than
 // silently deciding for the user which one wins.
 
