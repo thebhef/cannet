@@ -114,6 +114,10 @@ export interface EventActions {
   onRename: (id: string, label: string) => void;
   onRecolor: (id: string, color: string | null) => void;
   onRemove: (id: string) => void;
+  /// Set or clear the disclosed description body (ADR 0035).
+  onDescribe?: (id: string, description: string | null) => void;
+  /// Set or clear the user-defined tag the event view filters on.
+  onRetag?: (id: string, tag: string | null) => void;
   onGoto?: (timestampNs: number) => void;
 }
 
@@ -132,6 +136,32 @@ const frameRowId = (frame: TraceFrameRecord) => `${FRAME_ROW_PREFIX}${frame.inde
 function signalsOf(r: TraceRow | null): readonly SignalRecord[] {
   return r?.row === "frame" ? r.frame.decoded?.signals ?? [] : [];
 }
+/// The rows an event discloses when opened (ADR 0035): its user tag and
+/// its description body, each editable in place. Named so their content-row
+/// ids are stable across a re-render, like a signal's name.
+const EVENT_BODY_ROWS = ["tag", "description"] as const;
+
+/// Does this event disclose a body at all? One that carries a tag or a
+/// description does; so does an editable one, which is how an empty note
+/// gets given either. A read-only event with neither has nothing to open.
+function eventDiscloses(e: TimelineEvent): boolean {
+  return e.editable || e.description != null || e.tag != null;
+}
+
+/// How many rows a row discloses when opened — a frame's decoded signals,
+/// or an event's body. One notion, because the row heights, the scroll
+/// space and the keyboard cursor all have to agree on it.
+function contentCountOf(r: TraceRow | null): number {
+  if (r?.row === "event") return eventDiscloses(r.event) ? EVENT_BODY_ROWS.length : 0;
+  return signalsOf(r).length;
+}
+
+/// The name of the `i`th disclosed row, for its stable content-row id.
+function contentNameAt(r: TraceRow | null, i: number): string | null {
+  if (r?.row === "event") return EVENT_BODY_ROWS[i] ?? null;
+  return signalsOf(r)[i]?.name ?? null;
+}
+
 function rowIdOf(r: TraceRow | null): string | null {
   if (!r) return null;
   return r.row === "event" ? `${EVENT_ROW_PREFIX}${r.event.id}` : frameRowId(r.frame);
@@ -211,13 +241,10 @@ export function TraceView({
   // both disable auto-scroll and re-anchor the view to itself.
   const programmaticScrollRef = useRef(false);
 
-  // Signal count for expanded-row sizing: only frames have signals; an
-  // event row or a not-yet-loaded frame sizes as a plain row.
-  const signalCount = useCallback(
-    (absIdx: number) => {
-      const r = getRow(absIdx);
-      return r?.row === "frame" ? r.frame.decoded?.signals.length ?? 0 : 0;
-    },
+  // Disclosed-row count for expanded-row sizing: a frame's decoded
+  // signals, an event's body, nothing for a not-yet-loaded frame.
+  const contentCount = useCallback(
+    (absIdx: number) => contentCountOf(getRow(absIdx)),
     // `version` is a dep so a page landing re-derives the heights even
     // though it isn't read directly (what `getRow` answers changes
     // behind it).
@@ -235,9 +262,9 @@ export function TraceView({
     (absIdx: number) => {
       if (expanded.size === 0) return ROW_HEIGHT;
       const id = rowIdOf(getRow(absIdx));
-      return id != null && expanded.has(id) ? expandedRowHeight(signalCount(absIdx)) : ROW_HEIGHT;
+      return id != null && expanded.has(id) ? expandedRowHeight(contentCount(absIdx)) : ROW_HEIGHT;
     },
-    [expanded, getRow, signalCount],
+    [expanded, getRow, contentCount],
   );
   // Iterates the open rows, not the trace: `count` here is the whole
   // capture and reaches millions.
@@ -402,7 +429,7 @@ export function TraceView({
       if (abs >= count) break;
       const r = getRow(abs);
       const id = rowIdOf(r);
-      if (id != null && expanded.has(id)) out.push({ index: abs, content: signalsOf(r).length });
+      if (id != null && expanded.has(id)) out.push({ index: abs, content: contentCountOf(r) });
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -453,7 +480,9 @@ export function TraceView({
       // A disclosed row is named after the row that disclosed it, so
       // only that row's own signals can answer for it.
       if (!id.startsWith(`${rowId}/`)) continue;
-      const k = signalsOf(r).findIndex((sig) => contentRowId(rowId, sig.name) === id);
+      const k = Array.from({ length: contentCountOf(r) }, (_, i) =>
+        contentRowId(rowId, contentNameAt(r, i) ?? ""),
+      ).indexOf(id);
       if (k >= 0) return g.contentSpace.indexOf({ index: abs, content: k });
     }
     return -1;
@@ -466,17 +495,17 @@ export function TraceView({
       const id = rowIdOf(r);
       if (r == null || id == null) return null;
       if (pos.content != null) {
-        const sig = signalsOf(r)[pos.content];
+        const name = contentNameAt(r, pos.content);
         // Depth 1, so Left walks out of a disclosed row to the message
         // that disclosed it.
-        return sig == null
+        return name == null
           ? null
-          : { id: contentRowId(id, sig.name), kind: "leaf", expandable: false, depth: 1 };
+          : { id: contentRowId(id, name), kind: "leaf", expandable: false, depth: 1 };
       }
       return {
         id,
         kind: "leaf",
-        expandable: r.row === "frame" && r.frame.decoded != null,
+        expandable: contentCountOf(r) > 0,
         depth: 0,
       };
     },
@@ -512,9 +541,9 @@ export function TraceView({
     (id: string, want: boolean) => {
       if (expanded.has(id) === want) return;
       const abs = contentSpace.at(windowIndexOf(id))?.index ?? -1;
-      toggleExpanded(id, want ? signalCount(abs) : 0);
+      toggleExpanded(id, want ? contentCount(abs) : 0);
     },
-    [expanded, toggleExpanded, signalCount, windowIndexOf, contentSpace],
+    [expanded, toggleExpanded, contentCount, windowIndexOf, contentSpace],
   );
   const adapter = useMemo<GridviewAdapter>(
     () => ({
@@ -630,7 +659,7 @@ export function TraceView({
     [openRuns],
   );
 
-  const placements = buildPlacements(firstVisibleRow, count, rows, expandedPositions, signalCount);
+  const placements = buildPlacements(firstVisibleRow, count, rows, expandedPositions, contentCount);
   // How tall the rendered rows actually stack. The sticky viewport
   // clips (`overflow: hidden`), so it takes the larger of the panel
   // height and the stack — an expanded row taller than the panel then
@@ -722,6 +751,14 @@ export function TraceView({
                     onSelect={handleRowClick}
                     onDragStart={startRowDrag}
                   />
+                  {isExpanded && r?.row === "event" && (
+                    <EventBody
+                      event={r.event}
+                      top={top + ROW_HEIGHT}
+                      actions={eventActions}
+                      rowDomId={grid.rowDomId}
+                    />
+                  )}
                   {isExpanded &&
                     rowId != null &&
                     frame?.decoded &&
@@ -820,6 +857,8 @@ const Row = memo(function Row({
         onFocus={onEventFocus}
         domId={rowDomId(`${EVENT_ROW_PREFIX}${event.id}`)}
         onSelect={onSelect}
+        isExpanded={isExpanded}
+        onToggle={onToggle}
       />
     );
   }
@@ -906,6 +945,8 @@ function EventRow({
   onFocus,
   domId,
   onSelect,
+  isExpanded,
+  onToggle,
 }: {
   top: number;
   event: TimelineEvent;
@@ -918,6 +959,10 @@ function EventRow({
   /// not a message (ADR 0044).
   domId: string;
   onSelect: (rowId: string, e: React.MouseEvent) => void;
+  /// This row's body is disclosed. The body itself is drawn by the view,
+  /// under this row, like a message's decoded signals.
+  isExpanded: boolean;
+  onToggle: (rowId: string, contentRows: number) => void;
 }) {
   // An event with no color of its own takes the theme's. Subscribed
   // here rather than in `Row`: this is the component that resolves the
@@ -926,6 +971,7 @@ function EventRow({
   useThemeName();
   const color = event.color ?? (EVENT_KIND_COLOR[event.kind] ?? EVENT_KIND_COLOR.note)();
   const editable = event.editable && actions != null;
+  const discloses = eventDiscloses(event);
   const onGoto = actions?.onGoto;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(event.label);
@@ -958,6 +1004,23 @@ function EventRow({
         onSelect(`${EVENT_ROW_PREFIX}${event.id}`, e);
       }}
     >
+      {discloses ? (
+        <button
+          type="button"
+          className="trace-event-disclose"
+          aria-expanded={isExpanded}
+          aria-label={isExpanded ? "hide event details" : "show event details"}
+          title={isExpanded ? "hide the tag and description" : "show the tag and description"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggle(`${EVENT_ROW_PREFIX}${event.id}`, isExpanded ? 0 : EVENT_BODY_ROWS.length);
+          }}
+        >
+          {isExpanded ? "\u25be" : "\u25b8"}
+        </button>
+      ) : (
+        <span className="trace-event-disclose trace-event-disclose-empty" aria-hidden="true" />
+      )}
       <span className="trace-event-time">
         {formatTimestamp(event.timestampNs / 1e9, baseTimestamp)}
       </span>
@@ -1036,6 +1099,129 @@ function EventRow({
         >
           ×
         </button>
+      )}
+    </div>
+  );
+}
+
+/// The body an open event row discloses (ADR 0035): the user-defined tag
+/// the event view filters on, and the description. Two rows of the row space
+/// in their own right, like a message's decoded signals, so the keyboard
+/// cursor walks into them. Editable in place on a user-authored event; a
+/// host-derived one shows what it computed and takes no edits.
+function EventBody({
+  event,
+  top,
+  actions,
+  rowDomId,
+}: {
+  event: TimelineEvent;
+  top: number;
+  actions?: EventActions;
+  rowDomId: (id: string) => string;
+}) {
+  const rowId = `${EVENT_ROW_PREFIX}${event.id}`;
+  return (
+    <>
+      <EventBodyField
+        top={top}
+        domId={rowDomId(contentRowId(rowId, "tag"))}
+        name="tag"
+        value={event.tag ?? ""}
+        placeholder="no tag"
+        ariaLabel="event tag"
+        onCommit={
+          event.editable && actions?.onRetag
+            ? (v) => actions.onRetag?.(event.id, v || null)
+            : undefined
+        }
+      />
+      <EventBodyField
+        top={top + SIGNAL_LINE_HEIGHT}
+        domId={rowDomId(contentRowId(rowId, "description"))}
+        name="description"
+        value={event.description ?? ""}
+        placeholder="no description"
+        ariaLabel="event description"
+        onCommit={
+          event.editable && actions?.onDescribe
+            ? (v) => actions.onDescribe?.(event.id, v || null)
+            : undefined
+        }
+      />
+    </>
+  );
+}
+
+/// One disclosed field of an event body. Reads as text until it is clicked,
+/// which is the same direct-manipulation shortcut the label uses; a
+/// non-editable event renders the text and nothing else.
+function EventBodyField({
+  top,
+  domId,
+  name,
+  value,
+  placeholder,
+  ariaLabel,
+  onCommit,
+}: {
+  top: number;
+  domId: string;
+  name: string;
+  value: string;
+  placeholder: string;
+  ariaLabel: string;
+  onCommit?: (next: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  const [editing, setEditing] = useState(false);
+  // A virtualized slot is reused for a different event as the view
+  // scrolls, so the draft re-seeds whenever the value under it changes.
+  useEffect(() => {
+    setEditing(false);
+    setDraft(value);
+  }, [domId, value]);
+  const commit = () => {
+    const next = draft.trim();
+    if (next !== value) onCommit?.(next);
+    setEditing(false);
+  };
+  return (
+    <div
+      className="trace-event-body-row"
+      id={domId}
+      style={{ position: "absolute", top, left: 0, right: 0, height: SIGNAL_LINE_HEIGHT }}
+    >
+      <span className="trace-event-body-name">{name}</span>
+      {editing ? (
+        <input
+          className="trace-event-body-input"
+          autoFocus
+          aria-label={ariaLabel}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commit();
+            else if (e.key === "Escape") {
+              // Consumed, like the label editor: the grid's Escape would
+              // blur this field, and the blur commits.
+              e.preventDefault();
+              setDraft(value);
+              setEditing(false);
+            }
+          }}
+          onBlur={commit}
+        />
+      ) : (
+        <span
+          className={`trace-event-body-value${onCommit ? " trace-event-body-editable" : ""}${
+            value ? "" : " trace-event-body-placeholder"
+          }`}
+          title={onCommit ? `click to edit the ${name}` : value}
+          onClick={onCommit ? () => setEditing(true) : undefined}
+        >
+          {value || placeholder}
+        </span>
       )}
     </div>
   );

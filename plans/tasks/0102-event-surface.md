@@ -230,3 +230,37 @@ of the trace…"), `plotEvents.test.ts` ("leaves out the kinds this panel
 is not showing"). Control: flipping `busError.visibleByDefault` to `true`
 fails all three (`expected [ 'bus error x40', 'boom' ] to deeply equal
 [ 'boom' ]`), so they are reading the declaration and not a coincidence.
+
+**Phase 3 — the event grows a body, and the view grows a tag filter.**
+An event now carries a `description` (the disclosed body) and a `tag`
+(the second filter axis), edited through `describe_note` / `retag_note`.
+Both ride the scratch, the BLF and the MDF, in the same commit that made
+them editable — a field the user can fill and a save that drops it is the
+lossy write this codebase does not accept.
+
+**How they fit in a BLF marker, which has no field for either.** A
+`GLOBAL_MARKER` gives us `marker_name` (the label), `foreground_color`
+(the color) and an opaque `description` we already used for the id. The
+tag and the body pack into that field behind a `cannet:event:` prefix —
+`cannet:event:<tag>\n<id>\n<description>` — and a note carrying neither
+still writes the bare id, byte-for-byte what it always wrote. In the
+file, no sidecar. The bare-id case is the control in
+`a_marker_carries_the_event_tag_and_description_without_a_sidecar`: it
+proves the round-trip is reading the structured form rather than echoing
+whatever text it found.
+
+**The disclosure reuses the trace's own machinery rather than forking
+it.** A message row already discloses its decoded signals as rows of the
+row space in their own right (ADR 0044). What was `signalCount` /
+`signalsOf` in `TraceView` is now one notion — `contentCountOf` /
+`contentNameAt` — that answers for both: a frame's signals, or an
+event's `tag` and `description` lines. Row heights, the scroll spacer
+and the keyboard cursor all read the same function, so they cannot
+disagree, and the cursor walks into an event's body the way it walks
+into a message's signals.
+
+Filtering by **record type** turned out to need no control of its own:
+the BLF record a kind round-trips as is a property of the kind
+(`EVENT_KIND_META[kind].blfRecord`), so the kind checklist *is* the
+record-type filter. Two controls over one fact could only ever
+disagree.

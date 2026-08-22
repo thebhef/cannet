@@ -1778,6 +1778,8 @@ describe("PlotPanel", () => {
         addNote,
         renameNote: () => {},
         recolorNote: () => {},
+        describeNote: () => {},
+        retagNote: () => {},
         removeNote: () => {},
       };
       renderPanel({
