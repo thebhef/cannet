@@ -10,6 +10,7 @@ import type {
 } from "./types";
 import { sectionHeaderOf, signalOf } from "./types";
 import { TraceControls } from "./TraceControls";
+import { ChipButton } from "./ChipButton";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import { useTrace } from "./trace";
 import { useElementPanel, useElementRehydrate } from "./useElementPanel";
@@ -932,23 +933,21 @@ export function SignalsPanel(props: IDockviewPanelProps) {
           onResume={trace.resume}
           onClear={trace.clear}
         />
-        <button
-          type="button"
-          className={editOpen ? "active" : undefined}
+        <ChipButton
+          label={`Selection (${selection.keys.length}${
+            selection.patterns.length > 0 ? ` + ${selection.patterns.length} Patterns` : ""
+          })`}
           title="edit this view's selection: manual picks and regex patterns (bus/ecu/message/signal)"
-          onClick={() => setEditOpen((v) => !v)}
-        >
-          selection ({selection.keys.length}
-          {selection.patterns.length > 0 ? ` + ${selection.patterns.length} patterns` : ""})
-        </button>
-        <button
-          type="button"
-          aria-label="add section"
+          pressed={editOpen}
+          onPress={() => setEditOpen((v) => !v)}
+        />
+        <ChipButton
+          icon="plus"
+          label="Section"
+          ariaLabel="Add Section"
           title="group this view's signals under a named section"
-          onClick={() => createSection(null)}
-        >
-          + section
-        </button>
+          onPress={() => createSection(null)}
+        />
         {view.error && (
           <span className="signals-error" role="alert" title={view.error}>
             {view.error}

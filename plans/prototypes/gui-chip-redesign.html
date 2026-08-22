@@ -702,8 +702,14 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
     <button class="chip icon-only" title="Stop"><svg><use href="#i-stop"/></svg></button>
     <button class="chip icon-only" title="Clear"><svg><use href="#i-clear"/></svg></button>
   </span>
-  <span class="chipfield" title="add signals by pattern — same dialect as the plot's solo box"><svg><use href="#i-search"/></svg><input placeholder="add signals…" aria-label="signal pattern"></span>
-  <button class="chip" title="new section…"><svg><use href="#i-plus"/></svg>Section</button>
+  <!-- Divergence from this mock's own earlier draft: the app has no
+       live add-by-pattern field directly on the bar. The shipped
+       control is a toggle chip ("Selection (n)" / "Selection (n + m
+       Patterns)") that opens an in-panel editor with the manual picks
+       and the regex patterns — same control the panel had before this
+       pass, restyled rather than replaced. -->
+  <button class="chip toggle" title="edit this view's selection: manual picks and regex patterns (bus/ecu/message/signal)">Selection (3 + 1 Patterns)</button>
+  <button class="chip" title="group this view's signals under a named section"><svg><use href="#i-plus"/></svg>Section</button>
 </div></div>
 <div class="vbar"><span class="who">transmit<code>TransmitPanel.tsx</code></span><div class="appbar panelbar">
   <button class="chip" title="add a frame to transmit"><svg><use href="#i-plus"/></svg>Frame</button>
