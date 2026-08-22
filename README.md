@@ -2723,13 +2723,24 @@ per view.
 
 The **Events** view (command palette → *Show events*) is the browsing
 home: the whole event timeline, filtered by kind and by the
-user-defined **tag**, with a `⇥` button that jumps every trace and plot
-to that moment. Each row opens to disclose its **tag** and
+user-defined **tag**. Each row opens to disclose its **tag** and
 **description**, both editable in place on your own events; a
 host-derived event shows what it computed and takes no edits. The tag
 and description ride the saved file too — inside the BLF marker, no
 sidecar, and as `cannet.tag` / `cannet.description` properties on an
 MDF `##EV`.
+
+**An event row is the same row wherever it is drawn** — in the Events
+view and interleaved into the chronological trace alike. Every one
+carries a `⇥` button that jumps every trace and plot to that moment,
+and your own events carry the ✎ rename, the colour swatch and the ×
+remove beside it. On the keyboard, the arrows walk onto an event row
+like any other gridview row
+([ADR 0044](docs/adr/0044-gridview-interaction-base.md)), **Space** on
+it is that `⇥` jump, and **F2** starts the rename — on the rows that
+can be renamed at all, so a host-derived event stays read-only to the
+keyboard exactly as it is to the mouse. **→** / **←** open and shut the
+tag-and-description body.
 
 **Both BLF annotation records.** BLF carries annotations two ways, and
 cannet now reads and writes both. A note is a `GLOBAL_MARKER`
