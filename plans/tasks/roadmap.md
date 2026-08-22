@@ -38,7 +38,9 @@ the order below is the order of work, top first.
    rename, ARIA surface verified against the gridview layer).
    Events-view *filtering* stays with task 102. Pulled forward from
    position 32, groomed, and design questions resolved by owner
-   rulings 2026-08-21.
+   rulings 2026-08-21. **Implemented 2026-08-22** (2 steps, 15
+   commits; ADR 0018 and ADR 0044 both amended). Remains listed
+   pending close-out.
 3. [Task 103 — Toolbar Buttons Become Status Chips](0103-toolbar-status-chips.md)
    — **implemented 2026-08-21** (`StatusChip` / `StatusBar` /
    `statusBarFit`, ADR 0055; the toolbar lost its states to the bar).
