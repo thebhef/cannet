@@ -1855,6 +1855,8 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             label: "first".into(),
             kind: notes::EventKind::Note,
             color: Some("#FF8800".into()),
+            description: None,
+            tag: None,
         },
         notes::Note {
             id: "b".into(),
@@ -1862,6 +1864,8 @@ fn write_blf_capture_round_trips_frames_and_notes() {
             label: "second".into(),
             kind: notes::EventKind::Note,
             color: None,
+            description: None,
+            tag: None,
         },
     ];
 
@@ -2233,6 +2237,8 @@ fn a_marker_outside_the_import_range_is_dropped_and_does_not_move_the_origin() {
         label: id.into(),
         kind: crate::notes::EventKind::Note,
         color: None,
+        description: None,
+        tag: None,
     };
     crate::session::anchor_replay_session(&state, &mut anchor, 2_000_000_000);
 
@@ -3058,6 +3064,81 @@ fn a_blf_save_warns_about_the_file_backed_signals_it_drops() {
     assert!(warning.contains("Analog/CoolantTemp"), "{warning}");
 }
 
+/// An event's tag and description have no field of their own in a BLF
+/// `GLOBAL_MARKER`, so they ride the marker's opaque `description` behind a
+/// `cannet:event:` prefix — in the file, no sidecar. A note carrying neither
+/// still writes the bare id it always did, which is the control: it proves
+/// the round-trip below is reading the structured form and not simply
+/// echoing whatever text it found.
+#[test]
+fn a_marker_carries_the_event_tag_and_description_without_a_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let ts = 1_700_000_000_000_000_000u64;
+    let frames = vec![trace_store::RawTraceFrame {
+        timestamp_ns: ts,
+        channel: 0,
+        id: 0x100,
+        extended: false,
+        direction: Direction::Rx,
+        payload: CanFramePayload::Classic(vec![1]),
+        bus_id: None,
+    }];
+
+    let rich = notes::Note {
+        id: "n-rich".into(),
+        timestamp_ns: ts + 1_000,
+        label: "contactor".into(),
+        kind: notes::EventKind::Note,
+        color: Some("#FF8800".into()),
+        description: "opened under load\nsecond line".to_string().into(),
+        tag: Some("fault".into()),
+    };
+    let plain = notes::Note {
+        id: "n-plain".into(),
+        timestamp_ns: ts + 2_000,
+        label: "just a note".into(),
+        kind: notes::EventKind::Note,
+        color: None,
+        description: None,
+        tag: None,
+    };
+
+    let dest = dir.path().join("marked.blf");
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        std::slice::from_ref(&rich),
+        &[],
+    )
+    .unwrap();
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].id, "n-rich");
+    assert_eq!(back[0].label, "contactor");
+    assert_eq!(back[0].tag.as_deref(), Some("fault"));
+    assert_eq!(
+        back[0].description.as_deref(),
+        Some("opened under load\nsecond line"),
+    );
+    assert_eq!(back[0].color.as_deref(), Some("#FF8800"));
+
+    // The control: nothing to pack, so nothing is packed — the marker's
+    // description is the bare id, exactly as before the structured form
+    // existed, and it still reads back as an id rather than as a body.
+    let dest = dir.path().join("plain.blf");
+    capture::write_blf_capture(
+        dest.to_str().unwrap(),
+        &frames,
+        std::slice::from_ref(&plain),
+        &[],
+    )
+    .unwrap();
+    let back = notes_via_import_walk(dest.to_str().unwrap());
+    assert_eq!(back[0].id, "n-plain");
+    assert_eq!(back[0].description, None);
+    assert_eq!(back[0].tag, None);
+}
+
 /// Coalescing an error storm is a **display** decision with a **write-side**
 /// contract: the summary event never reaches the file, and every error frame
 /// the session received does (ADR 0035).
@@ -3101,6 +3182,8 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
             label: "storm starts".into(),
             kind: notes::EventKind::Note,
             color: None,
+            description: None,
+            tag: None,
         })
         .unwrap();
     store.replace_derived(vec![notes::Note {
@@ -3109,6 +3192,8 @@ fn a_coalesced_bus_error_summary_never_displaces_the_error_frames_it_summarises(
         label: format!("bus error x{STORM}"),
         kind: notes::EventKind::BusError,
         color: None,
+        description: None,
+        tag: None,
     }]);
     // Both are on the timeline the views render...
     assert_eq!(store.events().len(), 2);
@@ -3227,6 +3312,10 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             label: "first".into(),
             kind: notes::EventKind::Note,
             color: Some("#FF8800".into()),
+            // The disclosed body and the user tag have their own
+            // `common_properties` keys, so they round-trip like the color.
+            description: Some("what it looked like".into()),
+            tag: Some("fault".into()),
         },
         notes::Note {
             id: "note-b".into(),
@@ -3234,6 +3323,8 @@ fn an_mdf_save_round_trips_everything_the_model_holds() {
             label: "second & last".into(),
             kind: notes::EventKind::Note,
             color: None,
+            description: None,
+            tag: None,
         },
     ];
 
@@ -4226,6 +4317,8 @@ fn write_blf_capture_preserves_every_timestamp_of_an_out_of_order_capture() {
         label: "end".into(),
         kind: notes::EventKind::Note,
         color: None,
+        description: None,
+        tag: None,
     }];
 
     let outcome = write_blf_capture(dest.to_str().unwrap(), &frames, &notes_in, &[]).unwrap();

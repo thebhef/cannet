@@ -251,7 +251,7 @@ export function TracePanel(props: IDockviewPanelProps) {
   // Timeline events (ADR 0035): host notes + the derived truncation marker,
   // the whole (sparse) set. They render in the chronological trace, spliced
   // among the frame rows by timestamp.
-  const { notes, renameNote, recolorNote, removeNote } = useNotes();
+  const { notes, renameNote, recolorNote, describeNote, retagNote, removeNote } = useNotes();
   const allEvents = useMemo(
     () => timelineEvents(notes, model.truncationTsNs),
     [notes, model.truncationTsNs],
@@ -350,8 +350,14 @@ export function TracePanel(props: IDockviewPanelProps) {
   // remove, wired straight to the host notes commands. Memoised (the row is
   // memoised) — the dispatchers are themselves stable.
   const eventActions = useMemo<EventActions>(
-    () => ({ onRename: renameNote, onRecolor: recolorNote, onRemove: removeNote }),
-    [renameNote, recolorNote, removeNote],
+    () => ({
+      onRename: renameNote,
+      onRecolor: recolorNote,
+      onDescribe: describeNote,
+      onRetag: retagNote,
+      onRemove: removeNote,
+    }),
+    [renameNote, recolorNote, describeNote, retagNote, removeNote],
   );
 
   // Cross-panel "goto" (ADR 0035): a broadcast carries an event's absolute

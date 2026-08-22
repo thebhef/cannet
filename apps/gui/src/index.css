@@ -6671,3 +6671,90 @@ button.color-chip {
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border-subtle);
 }
+
+/* An event row's disclosure control (ADR 0035): opens the tag and
+   description body beneath the row, the same way a message row opens its
+   decoded signals. Events with nothing to disclose reserve the width so
+   the rows still line up. */
+.trace-event-disclose {
+  flex: 0 0 1rem;
+  font: inherit;
+  line-height: 1;
+  background: transparent;
+  color: var(--text-faint);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: center;
+}
+
+.trace-event-disclose:hover {
+  color: var(--text-secondary);
+}
+
+.trace-event-disclose-empty {
+  cursor: default;
+}
+
+/* One disclosed field of an event body, laid out on the same absolute
+   grid as a message's decoded signal lines. */
+.trace-event-body-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-left: 2.5rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.trace-event-body-name {
+  flex: 0 0 5rem;
+  color: var(--text-faint);
+}
+
+.trace-event-body-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-event-body-editable {
+  cursor: text;
+}
+
+.trace-event-body-placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.trace-event-body-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  padding: 0 0.2rem;
+}
+
+/* The events view's tag filter, beside the kind checklist. */
+.events-panel-tag-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.events-panel-tag-filter input {
+  font: inherit;
+  width: 8rem;
+  background: var(--surface-field);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+  padding: 0 0.25rem;
+}

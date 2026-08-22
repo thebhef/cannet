@@ -456,6 +456,8 @@ describe("TracePanel event kinds", () => {
     addNote: vi.fn(),
     renameNote: vi.fn(),
     recolorNote: vi.fn(),
+    describeNote: vi.fn(),
+    retagNote: vi.fn(),
     removeNote: vi.fn(),
   });
 

@@ -2882,6 +2882,12 @@ export function App() {
   const recolorNoteRemote = useCallback((id: string, color: string | null) => {
     void invoke("recolor_note", { id, color }).catch(() => { /* best effort */ });
   }, []);
+  const describeNoteRemote = useCallback((id: string, description: string | null) => {
+    void invoke("describe_note", { id, description }).catch(() => { /* best effort */ });
+  }, []);
+  const retagNoteRemote = useCallback((id: string, tag: string | null) => {
+    void invoke("retag_note", { id, tag }).catch(() => { /* best effort */ });
+  }, []);
   const removeNoteRemote = useCallback((id: string) => {
     void invoke("remove_note", { id }).catch(() => { /* best effort */ });
   }, []);
@@ -2891,9 +2897,19 @@ export function App() {
       addNote: addNoteRemote,
       renameNote: renameNoteRemote,
       recolorNote: recolorNoteRemote,
+      describeNote: describeNoteRemote,
+      retagNote: retagNoteRemote,
       removeNote: removeNoteRemote,
     }),
-    [notes, addNoteRemote, renameNoteRemote, recolorNoteRemote, removeNoteRemote],
+    [
+      notes,
+      addNoteRemote,
+      renameNoteRemote,
+      recolorNoteRemote,
+      describeNoteRemote,
+      retagNoteRemote,
+      removeNoteRemote,
+    ],
   );
 
   // The app-domain commands (ADR 0018): the toolbar/menu actions the

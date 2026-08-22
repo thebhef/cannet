@@ -2661,6 +2661,40 @@ third-party tools like CANalyzer see them too). Import trace reads
 those markers back into the session-scoped store. No sidecar
 file is written, per [ADR 0010](docs/adr/0010-no-sidecar-files.md).
 
+**Timeline events: kinds, filtering, and the events view.** A note is
+one *kind* of timeline event
+([ADR 0035](docs/adr/0035-timeline-event-model.md)). Each kind belongs
+to one of three source categories, and the category decides its
+lifecycle:
+
+| Category | Example | Editable | Saved with the capture | Written to BLF |
+|---|---|---|---|---|
+| user-authored | a note | yes | yes | yes |
+| host-derived | a coalesced run of bus errors | no | no | no |
+| frontend-derived | the history-truncated marker | no | no | no |
+
+A host-derived event summarises data the capture already holds, so it
+is never written out — the records it stands for are what a save
+records, and the summary is display only.
+
+**Each kind declares whether it shows by default**, and a kind that is
+noise until you go looking for it (bus errors) starts hidden
+everywhere. Every surface that draws events — the chronological trace,
+the plot, the **Events** view — carries the same per-kind checklist,
+which lists every kind with its count *even while the kind is switched
+off*, so nothing is hidden and unfindable. Switching a kind on is
+per view.
+
+The **Events** view (command palette → *Show events*) is the browsing
+home: the whole event timeline, filtered by kind and by the
+user-defined **tag**, with a `⇥` button that jumps every trace and plot
+to that moment. Each row opens to disclose its **tag** and
+**description**, both editable in place on your own events; a
+host-derived event shows what it computed and takes no edits. The tag
+and description ride the saved file too — inside the BLF marker, no
+sidecar, and as `cannet.tag` / `cannet.description` properties on an
+MDF `##EV`.
+
 **Recent captures**. The toolbar grows a **Recent** dropdown next to
 **Import trace…** that lists the last 8 opened BLF and MDF paths
 alike, persisted host-side
