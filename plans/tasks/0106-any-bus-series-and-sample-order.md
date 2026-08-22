@@ -112,3 +112,85 @@ sampled prefix maxima, 8 bytes per 1024 rows, folded as a delta.
   describes something enforced, or is corrected.
 - If an index is built, its cost is measured on a realistic cache, not
   asserted.
+
+## Grooming (overseer, 2026-08-22)
+
+### What the codebase answered
+
+- **`bus_id: None` is not only the legacy path.** `SignalKey` uses it
+  for *file-backed* series too (`SignalKey::file` — `slot` is the source
+  file's signal-channel-group index, `file_backed: true`). Those are
+  "filled once from an imported signal channel group, never from
+  frames", so their `t_seconds` follows the source group's own order and
+  cannot dip between buses. **The legacy DBC any-bus series is
+  therefore the only sequence in the cache that can mix buses**, which
+  confirms the task's premise: settle half 1 and half 2 dissolves.
+- **A no-bus series already has somewhere to land.**
+  `view_signals::ViewSignalStatus::NotDecoded` is the most severe of the
+  five states, `needs_attention()` counts it, and the signal-mapping
+  launcher badge reads that count live with the panel closed
+  (`viewSignalsAttention.ts`). A series naming no bus has no assigned
+  databases by construction, so it falls into that state without a
+  special case — and the panel is the surface built to repair exactly
+  this.
+- **The frontend type is already `busId: string | null`** on
+  `ViewSignalRef`, and `null` is legitimate there for `fileBacked`
+  series. So the fix is not "make the field non-nullable"; it is "a
+  DBC-backed target with no bus resolves nothing", enforced where DBC
+  keys are built rather than in the shared struct.
+
+### Recommended ruling — half 1
+
+**A DBC-backed series naming no bus resolves nothing. It is neither
+migrated nor deleted: it is kept, reported `NotDecoded`, and repaired
+by the user in the signal mapping panel.**
+
+This is the faithful fix task 88 phase 2 named and declined, plus the
+one thing phase 2 was missing — a place for the user to see what
+happened. The three reasons:
+
+1. **It makes the precondition true rather than asserted.** No mixed-bus
+   `SampleSeq` can exist, so `partition_by_t`'s doc comment becomes a
+   description instead of a hope, and no prefix-maximum index has to be
+   built into the cache or its pyramid levels. Half 2 costs nothing.
+2. **Nothing is lost silently.** The outcome phase 2 refused was an
+   *empty plot with no explanation*. A `NotDecoded` row with an
+   attention badge is the opposite of silent, and it is machinery that
+   already ships.
+3. **A migration would be guesswork.** Binding an any-bus series to
+   "the project's only bus" is only unambiguous when there is exactly
+   one, and a pre-per-bus-binding project **already opens with its
+   databases unassigned and decodes nothing** until the user assigns
+   them. The user is doing repair work on such a project regardless;
+   inventing a one-bus special case buys a narrow slice of that repair
+   at the cost of a permanent legacy read path — which is the shape the
+   owner has ruled against before.
+
+The two tests pinning today's behaviour
+(`an_unscoped_series_decodes_each_frame_by_its_own_bus` and
+`bus_id_scoping_keeps_per_bus_series_independent`'s last assertion) are
+**turned around**, with the reason recorded in the test.
+
+*If the owner rules the other way* — legacy any-bus series keep
+decoding — half 2 becomes real work: task 91's `TsAnchorIndex` shape
+applied to the base level *and* every pyramid level above it, since
+those aggregate in the same order. That is the branch this grooming is
+asking about, and it roughly triples the task.
+
+### Phases (under the recommended ruling)
+
+| # | Phase | Model | What lands |
+|---|---|---|---|
+| 1 | A DBC target with no bus resolves nothing | Opus | `signal_fingerprint`'s already-taken position extended to the decode path: `scan_chunk`'s `None`-target arm removed for DBC-backed targets, DBC key construction refusing a busless target, the two pinning tests turned around with their reasons. `partition_by_t`'s doc comment rewritten to describe what is now enforced — separately noting that file-backed `None` is a different thing and stays. |
+| 2 | The unresolvable series is visible and repairable | Opus | A busless DBC-backed reference reports `NotDecoded` in the signal mapping panel and counts toward the attention badge, with the panel's source picker able to re-point it at a bus. Verified against a fixture project carrying a busless series. |
+| 3 | The order sweep | Sonnet | The audit half 1 does not cover: every other reader of `t_seconds` (and of the pyramid levels) that assumes non-decreasing order — corrected where the assumption is false, documented where it is now enforced. Task 91 swept the trace store and `cannet-spill`; the signal cache above them never had the same pass. |
+
+Phase 3 stays whichever way half 1 is ruled — it is the "does anything
+else read `t_seconds` assuming order?" question, and the answer is not
+contingent on the ruling.
+
+### Wall clock
+
+Nothing here needs an hours-long run. The exit criterion "if an index
+is built, its cost is measured on a realistic cache" only binds under
+the *rejected* branch; under the recommended ruling no index is built.

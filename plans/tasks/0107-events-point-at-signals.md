@@ -124,3 +124,77 @@ renders it in the chip shape.
 
 - **Roadmap position** — provisionally slotted after task 108 in
   the roadmap; confirm or move.
+
+## Grooming — phases and the detail they need (overseer, 2026-08-22)
+
+### Roadmap position — closed
+
+The open question above is answered: the owner set the order
+**101 → 106 → 19 → 108 → 107** (2026-08-21), so 107 runs last of this
+chain and the provisional slot stands. It also means 107's event-surface
+toolbar is built *after* task 108's chip language exists, so the "Link
+Events" control is written in that language directly rather than
+retrofitted.
+
+### Implementation detail settled by reading the code
+
+- **The substrate is `notes.rs`'s `Note`** — today `id`,
+  `timestamp_ns`, `label`, `kind`, `color`, `description`, `tag`,
+  `commented_event_type`, with `EventCategory` deciding what persists
+  (`persisted()`) and what is exportable (`exported()` /
+  `NotesStore::exportable`). Subjects are **one new field on `Note`**,
+  not a side table: a `Vec` of tagged references. Any category may
+  carry them; only durable ones reach a carrier, which the shipped
+  export boundary already enforces.
+- **Reference form**, per the settled structural rule, with the one
+  detail the ruling left implicit: message identity in this app is
+  `(message_id, extended)` everywhere (`SignalKey`, the catalog, the
+  filter predicates), so both reference kinds carry `extended`.
+  - message → `{ message_id, extended }`
+  - signal → `{ message_id, extended, signal_name }`
+  - event → `{ id }`
+
+  No bus and no database identity is stored, so nothing here depends on
+  ADR 0054 / task 89 signal identity, and a reference resolves against
+  whatever databases are assigned at render time.
+- **Deletion sweep.** "Broken event references die" means
+  `NotesStore::remove` (and `clear`) sweeps every other note's subject
+  list for references to the removed id, in the same `Applied`. Signal
+  and message references are never swept — they persist unresolved.
+
+### Owner call — link symmetry
+
+A span is "a list of two events", and its band draws "while **one of
+the two** is selected or hovered", which reads as symmetric. Two ways
+to get that: store the link on both events, or store it once and read
+it symmetrically.
+
+**Recommended: store once, read symmetrically.** The authoring gesture
+writes one subject entry; every renderer that asks "what is this event
+linked to" answers over both directions (`a.subjects ∋ b` or
+`b.subjects ∋ a`). Storing both sides creates a two-place invariant
+that the deletion sweep, the carrier round-trip and any future importer
+each have to maintain, for no user-visible gain.
+
+### Wall clock
+
+Nothing in this task needs an hours-long run. The carrier work in
+phase 2 is round-trip tests over generated files (seconds), and the
+plot / trace work is exercised at panel tier the way task 98's was.
+
+### Phases
+
+| # | Phase | Model | What lands |
+|---|---|---|---|
+| 1 | The subject model | Opus | Subjects and untyped event links as a field on `Note`; the three reference kinds; the deletion sweep; store operations, serialization and IPC; an ADR for the model (a subject is a structural reference; span-ness is a relationship, never an event field). No UI. TDD throughout. |
+| 2 | The carrier — research, then implement | Opus | Investigation-first: what MDF4's EV blocks natively carry (point and range-pair events, channel scoping — the lead worth verifying) against BLF's `GLOBAL_MARKER` / `EVENT_COMMENT`, which anchor to time and messages only. ADR 0010 governs — no sidecar, whatever the answer. Ships the write/read for each format at whatever fidelity it honestly supports, and records in the ADR exactly what a round-trip through the constrained format loses. |
+| 3 | Subjects on the event row | Opus | Subject chips on `EventRow` with the `…` expansion (the status bar's pattern, never an unbounded wrap); resolution against the assigned databases at render time, including the unresolved rendering; multi-select in the events view plus the "Link Events" toolbar control, in task 108's chip language. |
+| 4 | Authoring gestures | Opus | Shift+click in a plot area with signals selected creates an event whose subjects are those signals and whose time is the clicked x; the trace row's context menu creates an event subjected to that message. Provenance-agnostic — the model does not know which gesture made it. |
+| 5 | Highlight and extent | Opus | Acting on an event transiently highlights its subjects in the plot and the trace; a linked pair draws its extent as an event-colored wash at low opacity, **only** while one of the two is selected or hovered. Nothing persists, nothing to undo, nothing draws at rest but the marker lines. |
+
+**The prototype is a design artefact, not a deliverable.** Unlike task
+108's, [`plans/prototypes/events-point-at-signals.html`](../prototypes/events-point-at-signals.html)
+carries no standing reference role, so it is deleted by the last phase
+that consumes it — the pattern the status-bar prototypes followed. Its
+trace view and plot panel show the general shape only and are **not** a
+cue to redesign any existing GUI surface (owner reading, 2026-08-21).

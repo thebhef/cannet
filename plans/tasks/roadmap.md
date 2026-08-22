@@ -17,7 +17,15 @@ the order below is the order of work, top first.
 
 ## Implementation order
 
-1. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
+1. [Task 106 — The Any-Bus Series, and the Sample Order It Breaks](0106-any-bus-series-and-sample-order.md)
+   — a DBC-backed plot series naming no bus decodes samples its
+   fingerprint cannot see, and it is the only sequence in the signal
+   cache that can mix buses, so `partition_by_t`'s "non-decreasing"
+   precondition is asserted rather than enforced. One task because
+   settling the first half dissolves the second. Opened by the overseer
+   2026-08-21 out of task 91's audit; groomed 2026-08-22, with the
+   ruling on the legacy series recommended and awaiting the owner.
+2. [Task 19 — Argument-Taking Palette Commands](0019-command-palette-goto.md)
    — two steps: the typed-argument prompt infrastructure with the
    commands that need it (go-to-time and set-visible-range, with
    `Mod+T` go-to-time and `Mod+E` go-to-event bindings; go-to-row
@@ -27,14 +35,14 @@ the order below is the order of work, top first.
    Events-view *filtering* stays with task 102. Pulled forward from
    position 32, groomed, and design questions resolved by owner
    rulings 2026-08-21.
-2. [Task 103 — Toolbar Buttons Become Status Chips](0103-toolbar-status-chips.md)
+3. [Task 103 — Toolbar Buttons Become Status Chips](0103-toolbar-status-chips.md)
    — **implemented 2026-08-21** (`StatusChip` / `StatusBar` /
    `statusBarFit`, ADR 0055; the toolbar lost its states to the bar).
    Remains listed pending close-out: owner-review-queue items 1.13–1.15
    (the RBS chip's destination diverges from its ruling; bus load has
    no producer until task 101; press-while-connecting means cancel)
    need owner verdicts before this comes off the roadmap.
-3. [Task 108 — The Chip Language: A GUI Polish Pass](0108-gui-chip-redesign.md)
+4. [Task 108 — The Chip Language: A GUI Polish Pass](0108-gui-chip-redesign.md)
    — the top-level button bar, plot and trace chrome, and every other
    panel toolbar regrouped onto the color-chip shape — smaller
    controls, the adopted in-repo icon registry, state on the
@@ -42,13 +50,13 @@ the order below is the order of work, top first.
    shared chip component this language styles. Prototype approved-in-
    substance and kept durable; also styles task 107's event-surface
    toolbar. Opened by owner instruction 2026-08-21.
-4. [Task 107 — Events Point at Signals](0107-events-point-at-signals.md)
+5. [Task 107 — Events Point at Signals](0107-events-point-at-signals.md)
    — an event gains subjects (signals / messages / other events, by
    structural reference), untyped event links whose pairs draw
    highlight-only extent bands, and provenance-agnostic authoring.
    Groomed and prototype approved 2026-08-21; position in this list
    is provisional pending owner ordering.
-5. [Task 86 — Usage Feedback: Import Time Origins, Enum Overlays,
+6. [Task 86 — Usage Feedback: Import Time Origins, Enum Overlays,
    Events-Panel Width](0086-usage-feedback-0.9.0.md) — four unrelated
    owner observations from 0.8.1 / 0.9.0-dev use, each
    investigation-first: the events panel's rename/remove controls need
@@ -192,7 +200,11 @@ the order below is the order of work, top first.
    Promoted from the backlog by owner instruction 2026-08-20;
    task 101 depends on it.
 24. [Task 101 — Bus Health: Error Frames, Bus Load, Adapter
-   Status](0101-bus-health.md) — the low-level state of the bus is
+   Status](0101-bus-health.md) — **implemented 2026-08-22** (7 commits;
+   error frames labelled in the trace and coalesced into `busError`
+   host-derived events, `ControllerStates` on the session, host-side bus
+   load, the panel mounted from the status bar). Remains listed pending
+   close-out and hardware verification (owner-review-queue 3.14). — the low-level state of the bus is
    surfaced nowhere. `InterfaceState` with controller state and TEC/REC
    is already in the protocol and discarded by the client; BLF error
    frames already reach the trace unlabelled. Error frames become a

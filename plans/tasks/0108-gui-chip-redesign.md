@@ -131,3 +131,89 @@ reviewed 2026-08-21:
 - **Task 107's event-surface toolbar speaks this language** — it
   appears in the prototype's all-views sweep, and the 107 prototype
   renders its control in the chip shape.
+
+## Grooming — phases and the detail they need (overseer, 2026-08-22)
+
+Answers the codebase could give, given here rather than asked. The
+three that are genuinely judgement calls are marked **owner call**;
+each carries the reading implementation takes if no ruling arrives.
+
+### Implementation detail settled by reading the code
+
+- **The overflow planner already exists.** `statusBarFit.ts`
+  (`planStatusBarFit`, `statusBarRemovalOrder`, 108 lines) is the
+  right-to-left drop planner task 103 shipped. Panel toolbars get the
+  *same* planner generalized — never a second copy per bar. The repo's
+  one-shared-implementation rule decides this; the shipped names widen
+  to a neutral toolbar vocabulary, `StatusBar` keeps consuming them.
+- **Retiring catalog reload orphans a context export.**
+  `PlotPanel.tsx:2378` is the only consumer of `useSignalCatalog()`'s
+  `refresh`, and `signalCatalogContext.tsx` already re-fetches on
+  `dbcPaths` / `dbcGeneration` and on two event subscriptions — the
+  button is genuinely redundant, not merely unloved. Removing it makes
+  `refresh` unused, so it comes out of the context value in the same
+  commit (the "clean up your own orphans" rule), leaving the internal
+  `refreshCatalog` callback as the effect's driver.
+- **The registry is 42 icons.** The prototype's inventory names them:
+  folder, save, import, clock, db, db-add, bus, plug, clear, plus,
+  rows, chart, signals, send, loop, palette, wave, eye, graph, flag,
+  tree, bell, play, pause, stop, fit-x, fit-y, search, cursors,
+  cursor-x, cursor-y, note, goto, edit, link, x (plus the audit's
+  splits). That is the set phase 1 lands; the prototype's path data is
+  the source, copied verbatim so prototype and app cannot drift on
+  day one.
+- **`.status-chip` is the silhouette to extend**, not to parallel —
+  `StatusChip.tsx` (101 lines) already carries the hairline-and-dot
+  tinting, the `--danger-badge` badge and the no-state-changes-geometry
+  test. The command chip is that component's shape with a press
+  affordance, sharing its tokens.
+
+### Owner call 1 — the registry's mechanism
+
+The rulings say "one shared SVG sprite the frontend consumes".
+**Recommended reading: one module exporting `<Icon name="…"/>` over a
+single `name → path-data` record**, rather than a `<symbol>` sprite
+plus `<use>`. Same single source of truth and the same
+reviewable-as-a-set property, but no sprite mount point in `index.html`,
+no `href` indirection that a test cannot see through, and a test can
+assert the set directly (every registry name renders; every name used
+in the app exists in the registry). If the owner meant a literal
+`<symbol>` sprite, say so and phase 1 takes that instead — the
+consuming code is identical either way.
+
+### Owner call 2 — how far "icons reach into the panels" goes in this task
+
+The ruling makes it opportunistic ("reinforced opportunistically as
+panels are touched"). **Recommended reading: one bounded sweep as
+phase 6** — the event rows' three text glyphs (⇥ ✎ ×) adopt their drawn
+forms, and any control in a panel this task already touches that the
+registry covers switches to the icon. New affordances draw from the
+registry first, from now on, as a standing rule rather than a phase.
+Anything wider is a separate task.
+
+### Owner call 3 — Title Case re-casing reaches shipped strings
+
+Re-casing the shipped chips ("System messages" → "System Messages") is
+named in the rulings and touches user-visible strings and their tests.
+**Recommended: take it, in the phase that sweeps each surface** rather
+than as one string-only commit, so each diff shows the label beside the
+control it labels.
+
+### Phases
+
+| # | Phase | Model | What lands |
+|---|---|---|---|
+| 1 | The icon registry | Sonnet | The 42-icon module + `<Icon>`, path data copied from the prototype, the set-level tests, and the two audit fixes: `BusHealthLauncher`'s inline ECG zigzag replaced by the registry's `bus` topology (it collides with `signals`), and `db` split from `db-add`. No toolbar changes. |
+| 2 | The command chip and the shared overflow | Opus | `ChipButton` extending `StatusChip`'s silhouette (icon-only / icon+label, 22px chip, 12px type, badge, state on the hairline, press affordance); `statusBarFit` generalized into the toolbar overflow planner both the status bar and panel bars consume, with `…` spill and unbreakable-cluster support. Tests: no state changes geometry; a cluster never splits; drop order. |
+| 3 | The top-level toolbar | Opus | All ~20 `App.tsx` items regrouped onto chips, the Add-menu collapse, the badge treatment, Title Case. The connection / System Messages / Signal Mapping / RBS chips stay in the status bar — the toolbar gains no duplicate launcher. |
+| 4 | The plot panel toolbar | Opus | Cursor modes as icon buttons (x / y / note segment, press again for off) rather than a dropdown; the perf readout hidden by default behind the toolbar's existing right-click menu; catalog reload retired (button, command, and the orphaned context export); the solo cluster (field + paging + clear) one unbreakable unit placed left, with "Add Plot Area" to its right; overflow rather than wrap. The measurements strip **stays hidden** — no toggle anywhere. |
+| 5 | The trace panel toolbar and the nine remaining bars | Sonnet | Trace run controls / mode toggle / auto-scroll / events toggles, then signals, transmit, RBS, RBS signals, database, graph, servers, system messages and view signals — same controls, same order, chip shape, per the prototype's sweep. |
+| 6 | Icons reach into the panels | Sonnet | The event rows' ⇥ ✎ × adopt their drawn forms; registry icons replace ad-hoc glyphs in the panels this task touched. |
+
+**The prototype is durable and is maintained in the same commits.**
+Where implementation diverges from
+[`plans/prototypes/gui-chip-redesign.html`](../prototypes/gui-chip-redesign.html),
+the phase updates the prototype so it stays the living reference for
+the icon set and the chrome — it is not deleted at the end (owner
+ruling 2026-08-21, restated 2026-08-21 evening). This is a standing
+instruction in every phase prompt, not a phase of its own.
