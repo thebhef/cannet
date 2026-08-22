@@ -83,9 +83,9 @@ const projectCtx = {
   connectedBusIds: ["p1"],
 } as unknown as ProjectContextValue;
 
-function makeRegistry(elementId: string, path: string | null, run: boolean) {
+function makeRegistry(elementId: string, path: string | null) {
   const fakeTrace = {} as TraceState;
-  let element: ProjectElement = { kind: "rbs", id: elementId, path, run };
+  let element: ProjectElement = { kind: "rbs", id: elementId, path };
   const updates: Array<Partial<ProjectElement>> = [];
   const registry = {
     get entries() {
@@ -106,8 +106,8 @@ function makeRegistry(elementId: string, path: string | null, run: boolean) {
   return { registry, updates };
 }
 
-function renderPanel(path: string | null, run = false) {
-  const { registry, updates } = makeRegistry("el", path, run);
+function renderPanel(path: string | null) {
+  const { registry, updates } = makeRegistry("el", path);
   const api = { updateParameters: vi.fn() };
   const containerApi = { panels: [] as unknown[], addPanel: vi.fn() };
   const props = { params: { elementId: "el" }, api, containerApi } as unknown as Parameters<
@@ -138,7 +138,6 @@ function sampleView(): RbsView {
     dirty: true,
     changedOnDisk: false,
     run: false,
-    killSwitch: false,
     buses: [
       {
         key: "Powertrain",
@@ -480,11 +479,28 @@ describe("RbsPanel (thin view over the host RBS model)", () => {
     expect(screen.getByText("(counter)")).toBeInTheDocument();
   });
 
-  it("pushes the Run flag through the element model (project-persisted)", async () => {
+  it("writes Run straight to the host, and reads it back off the view", async () => {
+    // Run is session state with one copy — the host's. The panel is a
+    // view over it: the control sends `rbs_set_run` and never touches
+    // the project element, and what the checkbox shows is `view.run`.
     VIEW = sampleView();
     const { updates } = renderPanel("/tmp/sim.cannet_rbs");
-    fireEvent.click(await screen.findByLabelText("run simulation"));
-    expect(updates).toContainEqual({ kind: "rbs", run: true });
+    const box = (await screen.findByLabelText("run simulation")) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    await waitFor(() => expect(lastCall("rbs_set_run")).toBeDefined());
+    expect(lastCall("rbs_set_run")?.args).toMatchObject({ elementId: "el", run: true });
+    expect(updates).toEqual([]);
+
+    // The host is the only thing that can flip it — including when it
+    // stops the element itself.
+    VIEW = { ...sampleView(), run: true };
+    await act(async () => {
+      emitHost("rbs-changed", "el");
+    });
+    await waitFor(() =>
+      expect((screen.getByLabelText("run simulation") as HTMLInputElement).checked).toBe(true),
+    );
   });
 
   it("opens the calc-field editor and applies through rbs_set_calc", async () => {
@@ -570,7 +586,7 @@ describe("RbsPanel gridview keys", () => {
 
 describe("RbsPanel command registration (panel.find)", () => {
   function renderWithCommands() {
-    const { registry } = makeRegistry("el", "/tmp/sim.cannet_rbs", false);
+    const { registry } = makeRegistry("el", "/tmp/sim.cannet_rbs");
     const commands = createPanelCommandRegistry();
     const api = { updateParameters: vi.fn() };
     const props = { params: { elementId: "el" }, api } as unknown as Parameters<
@@ -608,7 +624,7 @@ describe("RbsPanel rehydration", () => {
     // The RBS element carries no view `config` to resync: what the
     // panel shows of it (the file it references) is read every render.
     const { Provider, control } = makeLiveRegistry([
-      { kind: "rbs", id: "el", path: null, run: false } as ProjectElement,
+      { kind: "rbs", id: "el", path: null } as ProjectElement,
     ]);
     const api = { updateParameters: vi.fn() };
     const props = { params: { elementId: "el" }, api } as unknown as Parameters<typeof RbsPanel>[0];

@@ -84,14 +84,13 @@ function view(changedOnDisk: boolean): RbsView {
     dirty: false,
     changedOnDisk,
     run: false,
-    killSwitch: false,
     buses: [],
   };
 }
 
 function renderPanel() {
   const fakeTrace = {} as TraceState;
-  const element: ProjectElement = { kind: "rbs", id: "el", path: PATH, run: false };
+  const element: ProjectElement = { kind: "rbs", id: "el", path: PATH };
   const registry = {
     get entries() {
       return [{ element, trace: fakeTrace }] as RegistryEntry[];
@@ -147,7 +146,10 @@ describe("an RBS file changing on disk", () => {
   it("says nothing while the host has nothing pending", async () => {
     VIEW = view(false);
     renderPanel();
-    await waitFor(() => expect(document.body.textContent).toContain("Kill-switch"));
+    // The toolbar's Run control stands in for "the panel has rendered".
+    await waitFor(() =>
+      expect(document.querySelector('input[aria-label="run simulation"]')).toBeTruthy(),
+    );
     expect(document.body.textContent).not.toContain("changed on disk");
   });
 

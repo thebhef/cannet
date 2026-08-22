@@ -38,16 +38,14 @@ pub struct RbsElementState {
     pub changed_on_disk: bool,
 }
 
-/// All RBS host state: loaded elements, the project's logical-bus
-/// name → id map (pushed by the frontend, which owns the project),
-/// and the global runtime-only kill-switch.
+/// All RBS host state: loaded elements and the project's logical-bus
+/// name → id map (pushed by the frontend, which owns the project).
 #[derive(Default)]
 pub struct RbsRuntime {
     pub elements: HashMap<String, RbsElementState>,
     /// `(bus id, bus name)` pairs from the project — RBS bus keys are
     /// *names* (ADR 0028), the transmit layer routes by *id*.
     pub project_buses: Vec<(String, String)>,
-    pub kill_switch: bool,
 }
 
 impl RbsRuntime {
@@ -390,23 +388,22 @@ fn rebuild_element_rows(state: &AppState, element_id: &str) -> Vec<String> {
 
 /// Reconcile every RBS row's scheduled state with what the model says
 /// it should be: `element.run && bus.enabled && ecu.enabled &&
-/// !muted && !kill_switch` (per-bus *connectivity* gates inside the
+/// !muted` (per-bus *connectivity* gates inside the
 /// scheduler, not here — a disconnected bus parks its rows and they
 /// resume when the route returns, ADR 0039). Derives desired-state from the
 /// row keys the registry's provenance carries — no DBC lock, so the
-/// hot enable / run / kill-switch paths stay light. Idempotent.
+/// hot enable / run paths stay light. Idempotent.
 pub(super) fn sync_schedules(state: &AppState) {
     let rbs = state.rbs();
     let mut registry = state.transmit_frames();
     for row in registry.rbs_rows() {
-        let want = !rbs.kill_switch
-            && rbs.elements.get(&row.element).is_some_and(|element| {
-                element.run
-                    && element.file.buses.get(&row.bus).is_some_and(|bus| {
-                        bus.enabled && bus.ecus.get(&row.ecu).is_none_or(|e| e.enabled)
-                    })
-                    && element.file.is_message_enabled(&row.bus, &row.message)
-            });
+        let want = rbs.elements.get(&row.element).is_some_and(|element| {
+            element.run
+                && element.file.buses.get(&row.bus).is_some_and(|bus| {
+                    bus.enabled && bus.ecus.get(&row.ecu).is_none_or(|e| e.enabled)
+                })
+                && element.file.is_message_enabled(&row.bus, &row.message)
+        });
         if want {
             if registry.begin_periodic(&row.id) == Ok(true) {
                 let cycle_ms = registry.cycle_ms(&row.id).unwrap_or(0);
@@ -451,8 +448,38 @@ pub(crate) fn stop_elements_owning(state: &AppState, stopped_rows: &[String]) ->
     owners
 }
 
+/// Clear the Run flag of every loaded element and unschedule its rows.
+/// Returns the ids of the elements that were running, in element order.
+///
+/// Run is **session state**, not project state: nothing in a project
+/// file can arm a simulation, and opening or closing one must not leave
+/// the session it interrupts transmitting. The stop is the one the
+/// panel's own Run toggle makes — clear the flag, then let
+/// [`sync_schedules`] take the rows off the scheduler.
+pub(crate) fn stop_all_elements(state: &AppState) -> Vec<String> {
+    let mut stopped: Vec<String> = {
+        let mut rbs = state.rbs();
+        let mut running: Vec<String> = rbs
+            .elements
+            .iter()
+            .filter(|(_, e)| e.run)
+            .map(|(id, _)| id.clone())
+            .collect();
+        running.sort();
+        for id in &running {
+            if let Some(element) = rbs.elements.get_mut(id) {
+                element.run = false;
+            }
+        }
+        running
+    };
+    stopped.dedup();
+    sync_schedules(state);
+    stopped
+}
+
 /// The light mutation tail for edits that only change *scheduling*
-/// (enable toggles, run flag, kill-switch): reconcile and notify —
+/// (enable toggles, run flag): reconcile and notify —
 /// no row rebuild, no calc re-resolution, no verification rebuild.
 /// Keeps the interactive toggle path off the heavy locks while the
 /// scheduler is firing.
@@ -786,8 +813,8 @@ BO_ 1280 AuxFrame: 8 AUX
     }
 
     /// End-to-end host model: load a file into state, rebuild rows,
-    /// and reconcile schedules through run flag / enables /
-    /// kill-switch transitions.
+    /// and reconcile schedules through run flag / enable
+    /// transitions.
     #[test]
     #[allow(clippy::too_many_lines)]
     fn rows_register_and_schedules_follow_the_anded_enables() {
@@ -864,14 +891,6 @@ BO_ 1280 AuxFrame: 8 AUX
             // 0x200 has no period anywhere → can't run.
             assert!(!registry.is_running(&row_id("el1", "Powertrain", "0x200")));
         }
-
-        // Kill switch stops everything; releasing it resumes.
-        state.rbs.lock().unwrap().kill_switch = true;
-        sync_schedules(&state);
-        assert!(!state.transmit_frames.lock().unwrap().is_running(&status_id));
-        state.rbs.lock().unwrap().kill_switch = false;
-        sync_schedules(&state);
-        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
 
         // Disabling the ECU level mutes the message (ANDed enables).
         {
@@ -1187,6 +1206,87 @@ BO_ 1280 AuxFrame: 8 AUX
         }
         rebuild_element_rows(state, "el1");
         sync_schedules(state);
+    }
+
+    #[test]
+    fn connecting_and_disconnecting_a_bus_leave_run_alone() {
+        // Owner ruling: a user who armed the simulation and re-plugged
+        // an adapter has not changed their intent, so neither direction
+        // touches Run. The model has no connectivity input at all — a
+        // bus with no route keeps its rows armed and the *scheduler*
+        // parks them (ADR 0039) — which is why the flag and the rows'
+        // running state are unmoved either side of a session.
+        let state = crate::tests::test_state();
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+        running_element(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+        let armed = |state: &AppState| {
+            state.rbs.lock().unwrap().elements["el1"].run
+                && state.transmit_frames.lock().unwrap().is_running(&status_id)
+        };
+        // Armed with nothing connected: no session exists yet.
+        assert!(state.remote_sessions.lock().unwrap().is_empty());
+        assert!(armed(&state));
+
+        // Connect: a session covering the element's bus arrives.
+        state
+            .local_buses
+            .create("vbus", "v", cannet_core::BusConfig::classic_500k())
+            .unwrap();
+        let (sink, _source) = state.local_buses.attach_participant("vbus").unwrap();
+        state
+            .register_session(
+                "local-vbus://vbus".into(),
+                crate::session::RemoteSession {
+                    handle: None,
+                    tx: crate::session::SessionTx::Vbus(vec![(
+                        0,
+                        std::sync::Arc::new(std::sync::Mutex::new(sink)),
+                    )]),
+                    channel_to_interface: vec![(0, crate::project::LOCAL_VBUS_INTERFACE.into())],
+                    channel_to_bus: vec![(0, "p1".into())],
+                    stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    clock: None,
+                },
+            )
+            .unwrap();
+        sync_schedules(&state);
+        assert!(armed(&state), "connecting must not disturb the model");
+
+        // Disconnect: every session goes away, which is what the
+        // disconnect command does to host state.
+        let ended = state.unregister_sessions(None);
+        assert_eq!(ended.len(), 1);
+        sync_schedules(&state);
+        assert!(armed(&state), "disconnecting must not clear Run");
+    }
+
+    #[test]
+    fn opening_a_project_leaves_no_element_running() {
+        // Run is session state, not project state: a project open must
+        // not inherit a simulation from the session it interrupts, and
+        // there is nothing in the file that could arm one.
+        let state = crate::tests::test_state();
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded_scoped("a.dbc", RBS_DBC, &["p1"]));
+        running_element(&state);
+        let status_id = row_id("el1", "Powertrain", "0x123");
+        assert!(state.transmit_frames.lock().unwrap().is_running(&status_id));
+
+        let stopped = stop_all_elements(&state);
+
+        assert_eq!(stopped, vec!["el1".to_string()]);
+        assert!(!state.rbs.lock().unwrap().elements["el1"].run);
+        assert!(!state.transmit_frames.lock().unwrap().is_running(&status_id));
+        // Idempotent, and it reports only what it actually turned off.
+        assert!(stop_all_elements(&state).is_empty());
     }
 
     #[test]

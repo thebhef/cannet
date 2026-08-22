@@ -259,10 +259,9 @@ fn report_periodics_stopped(app: &AppHandle, path: &str, stopped: &[String]) {
 ///
 /// An RBS element whose rows were among them stops with them: its rows
 /// are derived, so the rebuild the announcement runs would otherwise put
-/// them straight back ([`rbs::stop_elements_owning`]). Its Run flag is
-/// the project's, mirrored onto the host, so `rbs-run-stopped` names the
-/// elements the host turned off and the project follows — the two halves
-/// of one flag cannot be left disagreeing.
+/// them straight back ([`rbs::stop_elements_owning`]). The Run flag is
+/// host state with no second copy anywhere, so the panel reads the stop
+/// off its next `rbs-changed` refetch.
 ///
 /// The reload itself always proceeds
 /// ([ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
@@ -274,11 +273,8 @@ pub(crate) fn report_reload_stops(
     backed_before: &[crate::transmit_commands::BackedPeriodic],
 ) {
     let stopped = crate::transmit_commands::stop_periodics_driven_by(state, backed_before, path);
-    let elements = rbs::stop_elements_owning(state, &stopped);
+    rbs::stop_elements_owning(state, &stopped);
     report_periodics_stopped(app, path, &stopped);
-    if !elements.is_empty() {
-        let _ = app.emit("rbs-run-stopped", elements);
-    }
 }
 
 /// Replace the bus assignment of a loaded DBC. An empty `buses`

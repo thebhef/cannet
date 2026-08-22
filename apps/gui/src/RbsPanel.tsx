@@ -96,14 +96,15 @@ export function RbsPanel(props: IDockviewPanelProps) {
   const project = useProjectContext();
   const { elementId, registry, element, persist } = useElementPanel(props, "rbs");
   // Persist just the elementId in panel params — no view-local
-  // config: `path`/`run` live on the element itself, written directly
-  // through `registry.update` at their own call sites below.
+  // config: `path` lives on the element itself, written directly
+  // through `registry.update` at their own call sites below. Run is
+  // host session state, read off the view and written with
+  // `rbs_set_run`.
   useEffect(() => {
     persist();
   }, [persist]);
 
   const path = element?.kind === "rbs" ? element.path : null;
-  const run = element?.kind === "rbs" ? element.run : false;
 
   // The assembled tree. `null` only until the host's `rbs_init` /
   // `rbs_load` (driven by App's lifecycle effect) lands — re-fetched on
@@ -123,6 +124,8 @@ export function RbsPanel(props: IDockviewPanelProps) {
     pollWhile: (v) =>
       v?.run === true && v.buses.some((b) => b.ecus.some((e) => e.messages.some((m) => m.running))),
   });
+
+  const run = view?.run === true;
 
   // ---- file picking ----
   const handleOpenFile = useCallback(async () => {
@@ -170,18 +173,16 @@ export function RbsPanel(props: IDockviewPanelProps) {
     void invoke("rbs_dismiss_disk_change", { elementId }).catch(() => {});
   }, [elementId]);
 
+  // Run is the host's, and nothing else writes it: the panel sends the
+  // command and re-reads the flag off the next `rbs-changed` view. That
+  // is what lets the host stop an element on its own — a reload, an
+  // unassign, a project open — without a second copy to disagree with.
   const setRun = useCallback(
     (value: boolean) => {
-      registry.update(elementId, { kind: "rbs", run: value });
+      void invoke("rbs_set_run", { elementId, run: value }).catch(() => {});
     },
-    [registry, elementId],
+    [elementId],
   );
-
-  const toggleKillSwitch = useCallback(() => {
-    void invoke("rbs_set_kill_switch", { on: !(view?.killSwitch ?? false) }).catch(
-      () => {},
-    );
-  }, [view]);
 
   // ---- the filter slot (ADR 0044) ----
   // The whole tree is client-held, so the panel opts into the layer's
@@ -319,7 +320,7 @@ export function RbsPanel(props: IDockviewPanelProps) {
   return (
     <div className="rbs-panel">
       <div className="rbs-toolbar">
-        <label className="rbs-run-toggle" title="Transmit enabled messages (persisted in the project, default off)">
+        <label className="rbs-run-toggle" title="Transmit enabled messages (session state, default off — never saved with the project)">
           <input
             type="checkbox"
             checked={run}
@@ -328,14 +329,6 @@ export function RbsPanel(props: IDockviewPanelProps) {
           />
           Run
         </label>
-        <button
-          type="button"
-          className={view?.killSwitch ? "rbs-kill rbs-kill-on" : "rbs-kill"}
-          onClick={toggleKillSwitch}
-          title="Global RBS kill-switch: stops every RBS transmission in the session (never persisted)"
-        >
-          {view?.killSwitch ? "Kill-switch ON" : "Kill-switch"}
-        </button>
         <button
           type="button"
           onClick={() => void handleSave()}
