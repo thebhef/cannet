@@ -874,7 +874,7 @@ impl SignalCache {
 /// cursor is re-read — and the same gate re-applied — when the chunk's
 /// samples are appended.
 struct GroupTarget<'a> {
-    bus_id: Option<&'a str>,
+    bus_id: &'a str,
     signal_name: &'a str,
     next_index: usize,
 }
@@ -926,8 +926,7 @@ struct ChunkSample {
 /// - **Bus scoping**, which is two questions with two different
 ///   answers. *Which frames a target takes* is the target's own filter,
 ///   not the group's: two series on one message id can be scoped to
-///   different buses (or to the legacy "any bus"), so that test runs
-///   per target. *Which databases may decode a frame* is the frame's:
+///   different buses, so that test runs per target. *Which databases may decode a frame* is the frame's:
 ///   [`filter::dbc_applies`] judges each database's scoping against the
 ///   bus the frame arrived on, so a database scoped to bus B never
 ///   supplies a value for a frame on bus A, however the target that
@@ -982,13 +981,13 @@ fn scan_chunk(
             if index < t.next_index {
                 continue;
             }
-            // Bus filter: when the query is scoped to a bus, drop
-            // frames whose `bus_id` doesn't match. `None` on the query
-            // is the legacy "any bus" path that takes every frame.
-            if let Some(want) = t.bus_id {
-                if frame.bus_id.as_deref() != Some(want) {
-                    continue;
-                }
+            // Bus filter: a target takes the frames of its own bus and
+            // no others. There is no "any bus" arm — a DBC-backed
+            // target always names a bus ([`SignalKey::dbc`]), because a
+            // decoded value has exactly one definition, on one bus
+            // (ADR 0054).
+            if frame.bus_id.as_deref() != Some(t.bus_id) {
+                continue;
             }
             pending.push(i);
             wanted.push(t.signal_name);
@@ -1010,11 +1009,9 @@ fn scan_chunk(
             // against the frame's bus is resolving against its own.
             if has_picks {
                 picks.clear();
-                picks.extend(
-                    targets
-                        .iter()
-                        .map(|t| dbs.picked_index(t.bus_id, message_id, extended, t.signal_name)),
-                );
+                picks.extend(targets.iter().map(|t| {
+                    dbs.picked_index(Some(t.bus_id), message_id, extended, t.signal_name)
+                }));
             }
             eligible_for = Some(frame.bus_id.clone());
         }
@@ -1047,10 +1044,29 @@ fn scan_chunk(
 }
 
 /// Smallest live slot `k` in `[first_slot, level.len())` whose `t_seconds`
-/// is `>= target` — the partition point of the (non-decreasing) `t_seconds`
-/// order, by binary search over [`SampleSeq::get`]. The lower bound starts
-/// at the level's low-water mark, so an evicted (front-trimmed) slot is
-/// never read.
+/// is `>= target` — the partition point of the `t_seconds` order, by
+/// binary search over [`SampleSeq::get`]. The lower bound starts at the
+/// level's low-water mark, so an evicted (front-trimmed) slot is never
+/// read.
+///
+/// **Why the order is non-decreasing**, rather than merely assumed to
+/// be. A binary search over a sequence that dips walks past an exact
+/// match, so this is a precondition the module has to enforce, not
+/// hope for:
+///
+/// - A *DBC-backed* series is scoped to one bus ([`SignalKey::dbc`]),
+///   and [`scan_chunk`] admits only that bus's frames. One bus's frames
+///   arrive in order; the dip
+///   [ADR 0024](../../../docs/adr/0024-trace-like-view-timing.md)
+///   measures is *between* buses — interleaved deliveries from separate
+///   adapters — and no series can mix two. A series naming no bus, which
+///   could, is unrepresentable rather than unused.
+/// - A *file-backed* series is filled once, completely, from one signal
+///   channel group ([`SignalCacheStore::fill_file_backed`]) and follows
+///   that group's own order. No frame, and so no bus, bears on it.
+/// - Every level above the base folds the level below in slot order and
+///   emits each bucket's extrema in time order, so a non-decreasing base
+///   makes every level non-decreasing.
 fn partition_by_t(level: &SampleSeq, target: f64) -> usize {
     lower_bound(level.first_slot(), level.len(), target, |k| level.get(k).0)
 }
@@ -1088,10 +1104,13 @@ fn window_slice(level: &SampleSeq, from: f64, to: f64) -> Vec<SamplePoint> {
 ///
 /// A *DBC-backed* series is one bucket per `(bus, message, signal)`
 /// triple, so the same arbitration id on two different buses (with
-/// different DBC scopes) decodes into two independent series.
-/// `bus_id = None` is the legacy "any bus" path: it matches every frame
-/// regardless of its bus tag, used by old plot panels that pre-date
-/// per-bus signal binding.
+/// different DBC scopes) decodes into two independent series. It always
+/// names a bus: a decoded value has exactly one definition, on one bus
+/// ([ADR 0054](../../../docs/adr/0054-a-decoded-value-has-one-definition.md)),
+/// and bus assignment is what admits a database to decode at all — no
+/// assignment can contain "no bus". [`SignalKey::dbc`] therefore takes
+/// the bus by value, so a series that names none has no key and
+/// resolves nothing rather than quietly taking every frame.
 ///
 /// A *file-backed* series has no bus and no message — nothing on the
 /// wire carries it and no DBC decodes it — so `slot` carries the source
@@ -1102,6 +1121,9 @@ fn window_slice(level: &SampleSeq, from: f64, to: f64) -> Vec<SamplePoint> {
 /// collide.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct SignalKey {
+    /// DBC-backed: the bus the series decodes from, always present.
+    /// File-backed: `None` — nothing on the wire carries the series, so
+    /// it has no bus to name.
     bus_id: Option<String>,
     /// DBC-backed: the message id. File-backed: the source file's
     /// signal-channel-group index.
@@ -1116,10 +1138,17 @@ struct SignalKey {
 }
 
 impl SignalKey {
-    /// The key of a DBC-backed series.
-    fn dbc(bus_id: Option<String>, message_id: u32, extended: bool, signal: String) -> Self {
+    /// The key of a DBC-backed series on `bus_id`.
+    ///
+    /// The bus is **not** optional here, which is what makes the
+    /// any-bus series unrepresentable: it is the one shape whose
+    /// samples could mix two buses, and so the one shape that could
+    /// break the non-decreasing `t_seconds` order [`partition_by_t`]
+    /// searches. `SignalKey::bus_id` stays an `Option` all the same,
+    /// because a *file-backed* series genuinely has none.
+    fn dbc(bus_id: String, message_id: u32, extended: bool, signal: String) -> Self {
         Self {
-            bus_id,
+            bus_id: Some(bus_id),
             slot: message_id,
             extended,
             signal,
@@ -1488,15 +1517,21 @@ impl PersistedSignal {
             * SAMPLE_ENTRY_BYTES as u64
     }
 
-    fn key(&self) -> SignalKey {
+    /// The cache key this row restores into, or `None` for a DBC-backed
+    /// row that names no bus — a series written before bus assignment
+    /// governed decode, which resolves nothing now and so has no bucket
+    /// to come back to ([`SignalKey::dbc`]). [`SignalCacheStore::restore`]
+    /// drops such a row rather than offering it, so the rows the rest of
+    /// the module handles all answer `Some`.
+    fn key(&self) -> Option<SignalKey> {
         match &self.file {
-            Some(f) => SignalKey::file(f.group, self.signal.clone()),
-            None => SignalKey::dbc(
-                self.bus_id.clone(),
+            Some(f) => Some(SignalKey::file(f.group, self.signal.clone())),
+            None => Some(SignalKey::dbc(
+                self.bus_id.clone()?,
                 self.message_id,
                 self.extended,
                 self.signal.clone(),
-            ),
+            )),
         }
     }
 }
@@ -1514,11 +1549,11 @@ fn reopen_set(root: &Path, signals: &[PersistedSignal]) -> Option<Vec<(SignalKey
     let keys: Vec<(SignalKey, String)> = signals
         .iter()
         .map(|s| {
-            let key = s.key();
+            let key = s.key()?;
             let base = key_prefix(&key);
-            (key, base)
+            Some((key, base))
         })
-        .collect();
+        .collect::<Option<_>>()?;
     let mut runs = Vec::new();
     let mut per_signal = Vec::with_capacity(signals.len());
     for (s, (_, base)) in signals.iter().zip(&keys) {
@@ -1625,8 +1660,11 @@ fn parked_seq(base: &str) -> Option<u64> {
 /// borrowed. A plot panel asks about many at once, and the ones sharing
 /// a `(message_id, extended)` are caught up in a single decode pass.
 pub struct CacheQuery<'a> {
-    /// Bus the series is scoped to; `None` is the legacy "any bus" path.
-    /// Always `None` for a file-backed signal, which has no bus.
+    /// Bus the series is scoped to. `None` on a DBC-backed query names
+    /// no bus, which resolves nothing: bus assignment governs decode and
+    /// no assignment can contain "no bus" (ADR 0054), so the query has
+    /// no key and is answered empty. Always `None` for a file-backed
+    /// signal, which has no bus.
     pub bus_id: Option<&'a str>,
     /// The message id, or — when `file_backed` — the source file's
     /// signal channel group index.
@@ -1671,39 +1709,52 @@ pub enum Reduction {
 }
 
 impl CacheQuery<'_> {
-    fn key(&self) -> SignalKey {
+    /// The series this query names, or `None` when it names none: a
+    /// DBC-backed query with no bus. Such a reference is kept — the
+    /// signal mapping panel reports it and is where the user re-points
+    /// it at a bus — but it resolves to no series here, so every serve
+    /// answers it empty.
+    fn key(&self) -> Option<SignalKey> {
         if self.file_backed {
-            SignalKey::file(self.message_id, self.signal_name.to_string())
+            Some(SignalKey::file(
+                self.message_id,
+                self.signal_name.to_string(),
+            ))
         } else {
-            SignalKey::dbc(
-                self.bus_id.map(str::to_owned),
+            Some(SignalKey::dbc(
+                self.bus_id?.to_owned(),
                 self.message_id,
                 self.extended,
                 self.signal_name.to_string(),
-            )
+            ))
         }
     }
 }
 
 /// Create a cache for every DBC-backed query that doesn't have one yet,
 /// and return the queries' keys in request order (duplicates included —
-/// the result of a batch is index-parallel with it).
+/// the result of a batch is index-parallel with it, `None` where the
+/// query names no series).
 ///
 /// A **file-backed** query creates nothing: its series is filled once by
 /// the import that read it ([`SignalCacheStore::fill_file_backed`]) and
 /// there is no decode that could fill an empty one, so minting a cache
 /// here would only leave an empty series in the store — and in the
 /// manifest — for a signal this capture does not have.
+///
+/// A **busless DBC-backed** query creates nothing either, for the
+/// mirror-image reason: nothing decodes it ([`CacheQuery::key`]), so a
+/// cache minted for it could only ever stay empty.
 fn ensure_caches(
     caches: &mut Caches,
     queries: &[CacheQuery<'_>],
     dbcs: &DecodeModel<'_>,
-) -> Vec<SignalKey> {
+) -> Vec<Option<SignalKey>> {
     let Caches { root, by_key, .. } = caches;
     queries
         .iter()
         .map(|q| {
-            let key = q.key();
+            let key = q.key()?;
             if !key.file_backed {
                 by_key.entry(key.clone()).or_insert_with(|| {
                     let mut cache = SignalCache::new(root, &key_prefix(&key), None);
@@ -1724,7 +1775,7 @@ fn ensure_caches(
                     cache
                 });
             }
-            key
+            Some(key)
         })
         .collect()
 }
@@ -1734,10 +1785,10 @@ fn ensure_caches(
 /// asked twice is one series and must be caught up once. File-backed keys
 /// are left out: they have no message to scan and their series is already
 /// complete.
-fn group_keys(keys: &[SignalKey]) -> HashMap<(u32, bool), Vec<&SignalKey>> {
+fn group_keys(keys: &[Option<SignalKey>]) -> HashMap<(u32, bool), Vec<&SignalKey>> {
     let mut seen: std::collections::HashSet<&SignalKey> = std::collections::HashSet::new();
     let mut groups: HashMap<(u32, bool), Vec<&SignalKey>> = HashMap::new();
-    for key in keys {
+    for key in keys.iter().flatten() {
         if !key.file_backed && seen.insert(key) {
             groups
                 .entry((key.slot, key.extended))
@@ -1921,7 +1972,10 @@ fn revive_retained(caches: &mut Caches, dbcs: &DecodeModel<'_>) -> usize {
     let mut i = 0;
     while i < caches.retained.len() {
         let entry = &caches.retained[i];
-        let key = entry.signal.key();
+        let Some(key) = entry.signal.key() else {
+            i += 1;
+            continue;
+        };
         let now = signal_fingerprint::dbc_encoding(
             dbcs,
             key.bus_id.as_deref(),
@@ -2175,7 +2229,12 @@ impl SignalCacheStore {
         caches.dirty |= changed || revived > 0 || evicted > 0;
         let mut keep = keep_bases(&caches);
         if let Some(manifest) = &caches.staged {
-            keep.extend(manifest.signals.iter().map(|s| key_prefix(&s.key())));
+            keep.extend(
+                manifest
+                    .signals
+                    .iter()
+                    .filter_map(|s| Some(key_prefix(&s.key()?))),
+            );
             keep.extend(manifest.retained.iter().map(|r| r.base.clone()));
         }
         if keep.is_empty() {
@@ -2382,6 +2441,15 @@ impl SignalCacheStore {
                 }
                 continue;
             }
+            if row.bus_id.is_none() {
+                // A DBC-backed series naming no bus resolves nothing
+                // (ADR 0054), so no decode will ever add to this pyramid
+                // and no returning definition can validate it. Dropped
+                // with its files rather than restored, parked or counted
+                // as owed a rebuild. Only a manifest written before bus
+                // assignment governed decode carries such a row.
+                continue;
+            }
             if !same_frames || row.next_index > store_len as u64 {
                 // Not a judgement about the encoding: the frames
                 // underneath are not the frames these samples describe.
@@ -2437,19 +2505,26 @@ impl SignalCacheStore {
         // Both are conditional on the whole-set gates; short of them the
         // parked files are simply not in the keep list below.
         if same_frames {
-            caches.retained_bytes = manifest.retained.iter().map(|r| r.bytes).sum();
+            // A parked row naming no bus goes the same way a live one
+            // does: nothing can revive it, so it is not carried into the
+            // pool and its files fall out of the keep list below.
+            let retained: Vec<RetainedPyramid> = manifest
+                .retained
+                .into_iter()
+                .filter(|r| r.signal.key().is_some())
+                .collect();
+            caches.retained_bytes = retained.iter().map(|r| r.bytes).sum();
             // Keep minting names above every one already in use, so a
             // park this session makes cannot land on a prior session's.
-            caches.park_seq = manifest
-                .retained
+            caches.park_seq = retained
                 .iter()
                 .filter_map(|r| parked_seq(&r.base))
                 .fold(caches.park_seq, u64::max);
-            caches.retained = manifest.retained;
+            caches.retained = retained;
         }
         let parked_now = park_rows.len();
         for row in park_rows {
-            let key = row.key();
+            let Some(key) = row.key() else { continue };
             park(&mut caches, &key, row);
         }
         let revived = revive_retained(&mut caches, dbcs);
@@ -2652,7 +2727,7 @@ impl SignalCacheStore {
         let caches = self.caches.lock().expect("signal cache mutex poisoned");
         let mut span: Option<(f64, f64)> = None;
         for query in queries {
-            let Some(cache) = caches.by_key.get(&query.key()) else {
+            let Some(cache) = query.key().and_then(|k| caches.by_key.get(&k)) else {
                 continue;
             };
             let Some((first, last)) = cache.time_span() else {
@@ -2716,7 +2791,11 @@ impl SignalCacheStore {
     /// the queries' keys in request order (duplicates included — the
     /// result of a batch is index-parallel with it). One short hold of
     /// the lock, taken and released before any decoding starts.
-    fn ensure_caches(&self, queries: &[CacheQuery<'_>], dbcs: &DecodeModel<'_>) -> Vec<SignalKey> {
+    fn ensure_caches(
+        &self,
+        queries: &[CacheQuery<'_>],
+        dbcs: &DecodeModel<'_>,
+    ) -> Vec<Option<SignalKey>> {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         ensure_caches(&mut caches, queries, dbcs)
     }
@@ -2757,7 +2836,7 @@ impl SignalCacheStore {
     /// beside the chunk's decoding.
     fn catch_up_keys(
         &self,
-        keys: &[SignalKey],
+        keys: &[Option<SignalKey>],
         store_len: usize,
         dbs: &DecodeModel<'_>,
         fetch: &impl Fn(u32, bool, usize, usize) -> Vec<(usize, RawTraceFrame)>,
@@ -2794,7 +2873,7 @@ impl SignalCacheStore {
     /// A group whose caches have gone from under the batch is left out:
     /// it is the same mid-serve `clear` seen a moment later, and the rest
     /// of the batch still has a serve to answer.
-    fn plan_batch<'a>(&self, keys: &'a [SignalKey]) -> (u64, Vec<GroupCatchUp<'a>>) {
+    fn plan_batch<'a>(&self, keys: &'a [Option<SignalKey>]) -> (u64, Vec<GroupCatchUp<'a>>) {
         let caches = self.caches.lock().expect("signal cache mutex poisoned");
         let mut groups: Vec<((u32, bool), Vec<&SignalKey>)> =
             group_keys(keys).into_iter().collect();
@@ -2803,12 +2882,16 @@ impl SignalCacheStore {
         for ((message_id, extended), keys) in groups {
             let mut targets = Vec::with_capacity(keys.len());
             for key in &keys {
-                let Some(cache) = caches.by_key.get(*key) else {
+                // The bus reads back as the invariant it is rather than
+                // as a case: `group_keys` yields DBC-backed keys only,
+                // and every one of those names a bus ([`SignalKey::dbc`]).
+                let (Some(bus_id), Some(cache)) = (key.bus_id.as_deref(), caches.by_key.get(*key))
+                else {
                     targets.clear();
                     break;
                 };
                 targets.push(GroupTarget {
-                    bus_id: key.bus_id.as_deref(),
+                    bus_id,
                     signal_name: key.signal.as_str(),
                     next_index: cache.next_index,
                 });
@@ -2937,8 +3020,8 @@ impl SignalCacheStore {
     /// capture length. Loaded-DBC iteration mirrors the rest of the
     /// host's "first DBC that decodes wins" semantics — among the
     /// databases whose bus scoping admits the frame in hand. `bus_id`
-    /// scopes the catch-up to frames tagged with that bus; pass `None`
-    /// for the legacy "any bus" path.
+    /// scopes the catch-up to frames tagged with that bus; `None` names
+    /// no series and serves nothing ([`CacheQuery::key`]).
     #[allow(clippy::too_many_arguments)]
     pub fn slice(
         &self,
@@ -3026,7 +3109,11 @@ impl SignalCacheStore {
         let mut series = Vec::with_capacity(keys.len());
         let mut extrapolated = Vec::with_capacity(keys.len());
         for key in &keys {
-            let Some(cache) = caches.by_key.get_mut(key) else {
+            // A query that names no series (a busless DBC-backed one) and
+            // one whose cache has gone are answered the same way: an
+            // empty window in its own slot, so the answer stays
+            // index-parallel with the batch.
+            let Some(cache) = key.as_ref().and_then(|k| caches.by_key.get_mut(k)) else {
                 series.push(Vec::new());
                 extrapolated.push(Vec::new());
                 continue;
@@ -3108,7 +3195,7 @@ impl SignalCacheStore {
         let mut caches = self.caches.lock().expect("signal cache mutex poisoned");
         keys.iter()
             .map(|key| {
-                let cache = caches.by_key.get_mut(key)?;
+                let cache = caches.by_key.get_mut(key.as_ref()?)?;
                 cache.read = true;
                 cache.extent()
             })
@@ -3162,8 +3249,8 @@ pub struct ServedWindows {
 /// group, so there is never a prefix to come back for. A file-backed key
 /// with no cache is a signal this capture doesn't have, which is also a
 /// settled answer.
-fn caught_up(caches: &Caches, keys: &[SignalKey], store_len: usize) -> bool {
-    keys.iter().all(|key| {
+fn caught_up(caches: &Caches, keys: &[Option<SignalKey>], store_len: usize) -> bool {
+    keys.iter().flatten().all(|key| {
         key.file_backed
             || caches
                 .by_key
@@ -3248,7 +3335,7 @@ mod tests {
 
         // Full time range — all four id-256 samples. `max_points = 0`
         // disables decimation, so the raw level-0 window comes back.
-        let all = cache.slice(None, 256, false, "X", 0.0, 10.0, 0, &store, dbs);
+        let all = cache.slice(Some(TEST_BUS), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(
             all.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
@@ -3259,7 +3346,7 @@ mod tests {
         // at t = 0 / 2 (just before) and t = 5 (just after), giving
         // uPlot the last-known-coming-in value and the next-going-out
         // value to draw a line across.
-        let mid = cache.slice(None, 256, false, "X", 2.5, 4.5, 0, &store, dbs);
+        let mid = cache.slice(Some(TEST_BUS), 256, false, "X", 2.5, 4.5, 0, &store, dbs);
         assert_eq!(
             mid.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
@@ -3268,7 +3355,7 @@ mod tests {
         // Very narrow zoom that contains zero matches: the slice still
         // returns the boundary samples on each side, so the plot draws
         // a line across the canvas instead of going blank.
-        let narrow = cache.slice(None, 256, false, "X", 0.5, 1.5, 0, &store, dbs);
+        let narrow = cache.slice(Some(TEST_BUS), 256, false, "X", 0.5, 1.5, 0, &store, dbs);
         assert_eq!(
             narrow.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
             vec![1, 2, 3]
@@ -3276,7 +3363,7 @@ mod tests {
 
         // Append a new sample — catch-up extends the cached series.
         store.append(dummy(6 * S, 256, vec![5, 0, 0, 0, 0, 0, 0, 0]));
-        let all2 = cache.slice(None, 256, false, "X", 0.0, 10.0, 0, &store, dbs);
+        let all2 = cache.slice(Some(TEST_BUS), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(
             all2.iter().map(|p| p.value as u32).collect::<Vec<_>>(),
             vec![1, 2, 3, 4, 5]
@@ -3284,7 +3371,7 @@ mod tests {
 
         // Clear drops the cache; the next slice rebuilds it.
         cache.clear();
-        let after = cache.slice(None, 256, false, "X", 0.0, 10.0, 0, &store, dbs);
+        let after = cache.slice(Some(TEST_BUS), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(after.len(), 5);
     }
 
@@ -3305,19 +3392,19 @@ mod tests {
         let cache = SignalCacheStore::new(tmp.path());
 
         assert_eq!(
-            cache.min_max(None, 256, false, "X", &store, dbs),
+            cache.min_max(Some(TEST_BUS), 256, false, "X", &store, dbs),
             Some((1.0, 5.0))
         );
         // A later sample inside the latch doesn't shrink it.
         store.append(dummy(3 * S, 256, vec![2, 0, 0, 0, 0, 0, 0, 0]));
         assert_eq!(
-            cache.min_max(None, 256, false, "X", &store, dbs),
+            cache.min_max(Some(TEST_BUS), 256, false, "X", &store, dbs),
             Some((1.0, 5.0))
         );
         // A new extreme widens it.
         store.append(dummy(4 * S, 256, vec![9, 0, 0, 0, 0, 0, 0, 0]));
         assert_eq!(
-            cache.min_max(None, 256, false, "X", &store, dbs),
+            cache.min_max(Some(TEST_BUS), 256, false, "X", &store, dbs),
             Some((1.0, 9.0))
         );
     }
@@ -3331,9 +3418,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         // Unknown id and unknown signal both have no decoded samples.
-        assert!(cache.min_max(None, 999, false, "X", &store, dbs).is_none());
         assert!(cache
-            .min_max(None, 256, false, "Nope", &store, dbs)
+            .min_max(Some(TEST_BUS), 999, false, "X", &store, dbs)
+            .is_none());
+        assert!(cache
+            .min_max(Some(TEST_BUS), 256, false, "Nope", &store, dbs)
             .is_none());
     }
 
@@ -3345,9 +3434,9 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let nope = cache.slice(None, 256, false, "Nope", 0.0, 1.0, 0, &store, dbs);
+        let nope = cache.slice(Some(TEST_BUS), 256, false, "Nope", 0.0, 1.0, 0, &store, dbs);
         assert!(nope.is_empty());
-        let no_id = cache.slice(None, 42, false, "X", 0.0, 1.0, 0, &store, dbs);
+        let no_id = cache.slice(Some(TEST_BUS), 42, false, "X", 0.0, 1.0, 0, &store, dbs);
         assert!(no_id.is_empty());
     }
 
@@ -3378,12 +3467,15 @@ mod tests {
         );
         let on_c = cache.slice(Some("c"), 256, false, "X", 0.0, 10.0, 0, &store, dbs);
         assert_eq!(on_c.iter().map(|p| p.value).collect::<Vec<_>>(), vec![2.0]);
-        // Legacy "any bus" path: takes every frame regardless of tag.
+        // A query naming no bus resolves nothing. This assertion used
+        // to read the other way — `None` was the legacy "any bus" path
+        // and took every frame regardless of tag, so one series mixed
+        // two buses' samples. A decoded value has exactly one
+        // definition, on one bus (ADR 0054), and no assignment can
+        // contain "no bus", so a DBC-backed series that names none has
+        // nothing to decode.
         let any = cache.slice(None, 256, false, "X", 0.0, 10.0, 0, &store, dbs);
-        assert_eq!(
-            any.iter().map(|p| p.value).collect::<Vec<_>>(),
-            vec![1.0, 2.0, 3.0]
-        );
+        assert!(any.is_empty(), "a series naming no bus decoded something");
     }
 
     /// A 16-bit LE value packed into the low two payload bytes — the
@@ -3507,8 +3599,28 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let dbs = &on_test_bus(&[&first, &second]);
-        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
-        let b = cache.slice(None, 256, false, "B", f64::MIN, f64::MAX, 0, &store, dbs);
+        let a = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
+        let b = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "B",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(
             a.iter().map(|p| p.value).collect::<Vec<_>>(),
             vec![3.0, 4.0]
@@ -3523,7 +3635,17 @@ mod tests {
         let tmp2 = TempDir::new().unwrap();
         let cache2 = SignalCacheStore::new(tmp2.path());
         let dbs = &on_test_bus(&[&second, &first]);
-        let a = cache2.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        let a = cache2.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(
             a.iter().map(|p| p.value).collect::<Vec<_>>(),
             vec![30.0, 40.0]
@@ -3743,13 +3865,25 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn an_unscoped_series_decodes_each_frame_by_its_own_bus() {
-        // Eligibility is a fact about the *frame*, not about the query.
-        // A legacy any-bus series (`bus_id: None`) takes frames from
-        // every bus, and each one is decoded by the databases that apply
-        // to the bus it arrived on — so one series carries unit-scale
-        // samples from `powertrain` and ×10 samples from `chassis`.
+    fn a_series_naming_no_bus_decodes_nothing() {
+        // **This test used to assert the opposite.** It was
+        // `an_unscoped_series_decodes_each_frame_by_its_own_bus`, and it
+        // pinned the legacy "any bus" path: a series with `bus_id: None`
+        // took frames from every bus and each was decoded by the
+        // databases assigned to the bus it arrived on, so one series
+        // carried unit-scale samples from `powertrain` and ×10 samples
+        // from `chassis`.
+        //
+        // That contradicted two things at once. A decoded value has
+        // exactly one definition — one signal, one message, one
+        // database, one bus (ADR 0054) — and such a series had several;
+        // and the samples were unreachable by the fingerprint, which
+        // already reports no definition at all for a busless series, so
+        // no DBC edit could invalidate them. Bus assignment governs
+        // decode and no assignment can contain "no bus", so the series
+        // resolves nothing. It is kept and reported, not deleted: the
+        // signal mapping panel shows it as Not Decoded and is where the
+        // user re-points it at a bus.
         let store = TraceStore::new();
         store.append(ab_frame_on("powertrain", 0, 3, 100));
         store.append(ab_frame_on("chassis", S, 4, 200));
@@ -3770,10 +3904,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
-        assert_eq!(
-            a.iter().map(|p| p.value).collect::<Vec<_>>(),
-            vec![3.0, 40.0]
-        );
+        assert!(a.is_empty(), "a series naming no bus decoded something");
     }
 
     #[test]
@@ -3798,7 +3929,17 @@ mod tests {
         }]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        let a = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert!(a.is_empty(), "a scoped DBC decoded another bus's frame");
     }
 
@@ -3837,8 +3978,28 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let m0 = cache.slice(None, 512, false, "M0", f64::MIN, f64::MAX, 0, &store, dbs);
-        let m1 = cache.slice(None, 512, false, "M1", f64::MIN, f64::MAX, 0, &store, dbs);
+        let m0 = cache.slice(
+            Some(TEST_BUS),
+            512,
+            false,
+            "M0",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
+        let m1 = cache.slice(
+            Some(TEST_BUS),
+            512,
+            false,
+            "M1",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(
             m0.iter()
                 .map(|p| (p.t_seconds, p.value))
@@ -3853,7 +4014,17 @@ mod tests {
         );
         // The selector itself is a plain signal of the same message and
         // takes every frame.
-        let sel = cache.slice(None, 512, false, "Sel", f64::MIN, f64::MAX, 0, &store, dbs);
+        let sel = cache.slice(
+            Some(TEST_BUS),
+            512,
+            false,
+            "Sel",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(sel.len(), 4);
     }
 
@@ -3880,8 +4051,28 @@ mod tests {
         store.append(val_frame(2 * S, 3));
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let std_series = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
-        let ext_series = cache.slice(None, 256, true, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let std_series = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
+        let ext_series = cache.slice(
+            Some(TEST_BUS),
+            256,
+            true,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(
             std_series.iter().map(|p| p.value).collect::<Vec<_>>(),
             vec![1.0, 3.0]
@@ -3908,19 +4099,49 @@ mod tests {
         let dbs = &on_test_bus(&[&first, &second]);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
-        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        let a = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(a.len(), 100);
 
         for i in 100..150u64 {
             store.append(ab_frame(i * S, i as u16, 1000 + i as u16));
         }
         // `B` joins here, 100 frames behind `A`.
-        let b = cache.slice(None, 256, false, "B", f64::MIN, f64::MAX, 0, &store, dbs);
+        let b = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "B",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(
             b.iter().map(|p| p.value).collect::<Vec<_>>(),
             (0..150).map(|i| f64::from(1000 + i)).collect::<Vec<_>>(),
         );
-        let a = cache.slice(None, 256, false, "A", f64::MIN, f64::MAX, 0, &store, dbs);
+        let a = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "A",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(
             a.iter().map(|p| p.value).collect::<Vec<_>>(),
             (0..150).map(f64::from).collect::<Vec<_>>(),
@@ -3946,7 +4167,7 @@ mod tests {
 
         let max_points = 200;
         let fit = cache.slice(
-            None,
+            Some(TEST_BUS),
             256,
             false,
             "X",
@@ -3984,7 +4205,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
 
-        let fit = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 100, &store, dbs);
+        let fit = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            100,
+            &store,
+            dbs,
+        );
         assert!(
             fit.iter().any(|p| (p.value - 60_000.0).abs() < 0.5),
             "spike (60000) lost during decimation; got max {:?}",
@@ -4010,7 +4241,7 @@ mod tests {
         cache
             .slice_many(
                 &[CacheQuery {
-                    bus_id: None,
+                    bus_id: Some(TEST_BUS),
                     message_id: 256,
                     extended: false,
                     signal_name: "X",
@@ -4136,7 +4367,17 @@ mod tests {
         // span whole 0..5 cycles keeps each bucket's argmin and argmax
         // only — the codes held in between are gone. This is the defect
         // the categorical path exists to avoid.
-        let envelope = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 4, &store, dbs);
+        let envelope = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            4,
+            &store,
+            dbs,
+        );
         let kept: std::collections::BTreeSet<u32> =
             envelope.iter().map(|p| p.value as u32).collect();
         assert!(
@@ -4301,7 +4542,7 @@ mod tests {
         let max_points = 100;
         // Whole capture.
         let fit = cache.slice(
-            None,
+            Some(TEST_BUS),
             256,
             false,
             "X",
@@ -4316,7 +4557,17 @@ mod tests {
         // sample is representable.
         let from = 1000.0;
         let to = 1500.0;
-        let zoom = cache.slice(None, 256, false, "X", from, to, max_points, &store, dbs);
+        let zoom = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            from,
+            to,
+            max_points,
+            &store,
+            dbs,
+        );
         // Both honour the budget…
         assert!(fit.len() <= 2 * max_points + 2);
         assert!(zoom.len() <= 2 * max_points + 2);
@@ -4629,7 +4880,7 @@ mod tests {
         let key = catch_up_through(
             &cache,
             &[CacheQuery {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 message_id: 256,
                 extended: false,
                 signal_name: "X",
@@ -4694,7 +4945,17 @@ mod tests {
             .filter(|i| i % 3 == 0)
             .map(|i| f64::from((i % 977) as u16))
             .collect();
-        let all = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let all = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(all.len(), expect.len());
         assert_eq!(all.iter().map(|p| p.value).collect::<Vec<_>>(), expect);
         assert_eq!(all.first().map(|p| p.t_seconds), Some(0.0));
@@ -4712,7 +4973,17 @@ mod tests {
             .filter(|i| i % 3 == 0)
             .map(|i| f64::from((i % 977) as u16))
             .collect();
-        let all2 = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let all2 = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(all2.iter().map(|p| p.value).collect::<Vec<_>>(), expect2);
     }
 
@@ -4740,7 +5011,7 @@ mod tests {
 
     fn query_on(message_id: u32, signal_name: &str) -> CacheQuery<'_> {
         CacheQuery {
-            bus_id: None,
+            bus_id: Some(TEST_BUS),
             message_id,
             extended: false,
             signal_name,
@@ -4980,7 +5251,7 @@ mod tests {
             );
             let cursors: Vec<usize> = keys
                 .iter()
-                .map(|k| with_cache(&cache, k, |c| c.next_index))
+                .map(|k| with_cache(&cache, named(k.as_ref()), |c| c.next_index))
                 .collect();
             assert!(
                 cursors.iter().all(|c| *c == cursors[0]),
@@ -5060,13 +5331,13 @@ mod tests {
         );
 
         assert_eq!(
-            with_cache(&cache, &joined[0], |c| c.next_index),
+            with_cache(&cache, named(joined[0].as_ref()), |c| c.next_index),
             3 * CATCH_UP_CHUNK_FRAMES,
             "the straggler should have had the whole serve, not one chunk of it",
         );
         for key in &settled {
             assert_eq!(
-                with_cache(&cache, key, |c| c.next_index),
+                with_cache(&cache, named(key.as_ref()), |c| c.next_index),
                 store_len,
                 "a caught-up group must keep its place",
             );
@@ -5176,7 +5447,17 @@ mod tests {
         let cache = SignalCacheStore::new(tmp.path());
 
         // Serving catches the pyramid up; its level files land under root.
-        let _ = cache.slice(None, 256, false, "X", 0.0, 1000.0, 100, &store, dbs);
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            0.0,
+            1000.0,
+            100,
+            &store,
+            dbs,
+        );
         let names: Vec<String> = std::fs::read_dir(tmp.path())
             .unwrap()
             .flatten()
@@ -5197,7 +5478,7 @@ mod tests {
         assert_eq!(after, 0, "clear must wipe the pyramid files");
 
         // A subsequent serve rebuilds the pyramid from the raw store.
-        let rebuilt = cache.slice(None, 256, false, "X", 0.0, 1000.0, 0, &store, dbs);
+        let rebuilt = cache.slice(Some(TEST_BUS), 256, false, "X", 0.0, 1000.0, 0, &store, dbs);
         assert_eq!(rebuilt.len(), 200);
     }
 
@@ -5217,7 +5498,17 @@ mod tests {
         let a = TempDir::new().unwrap();
         let b = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(a.path());
-        let _ = cache.slice(None, 256, false, "X", 0.0, 1000.0, 100, &store, dbs);
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            0.0,
+            1000.0,
+            100,
+            &store,
+            dbs,
+        );
         assert!(std::fs::read_dir(a.path()).unwrap().flatten().count() > 0);
 
         cache.reroot(b.path());
@@ -5229,7 +5520,7 @@ mod tests {
         }
         assert_eq!(std::fs::read_dir(b.path()).unwrap().flatten().count(), 0);
 
-        let rebuilt = cache.slice(None, 256, false, "X", 0.0, 1000.0, 0, &store, dbs);
+        let rebuilt = cache.slice(Some(TEST_BUS), 256, false, "X", 0.0, 1000.0, 0, &store, dbs);
         assert_eq!(rebuilt.len(), 200, "the pyramid rebuilds on demand");
         assert!(
             std::fs::read_dir(b.path()).unwrap().flatten().count() > 0,
@@ -5310,7 +5601,14 @@ mod tests {
     ) -> Vec<SignalKey> {
         let keys = store.ensure_caches(queries, dbs);
         store.catch_up_keys(&keys, store_len, dbs, &fetch, &store.serve_limit());
-        keys
+        keys.iter().map(|k| named(k.as_ref()).clone()).collect()
+    }
+
+    /// The series a batch slot names. Every query these tests send names
+    /// one; a query that does not (a DBC-backed one with no bus) is
+    /// asserted on through the serve paths, which answer it empty.
+    fn named(key: Option<&SignalKey>) -> &SignalKey {
+        key.expect("the query names a series")
     }
 
     /// Read one cached series' interior — the pyramid levels, cursors and
@@ -5387,19 +5685,26 @@ mod tests {
         store
     }
 
+    /// The three buses `mixed_capture` spreads its frames over. Every
+    /// query names one of them: a DBC-backed series always does
+    /// ([`SignalKey::dbc`]).
+    fn mixed_bus_set() -> Vec<String> {
+        bus_set(&[TEST_BUS, "p", "c"])
+    }
+
     /// The queries `mixed_capture` is built for — several per message,
     /// several buses, two message ids that differ only in `extended`.
     fn mixed_queries<'a>() -> Vec<CacheQuery<'a>> {
         vec![
             CacheQuery {
-                bus_id: None,
+                bus_id: Some("c"),
                 message_id: 256,
                 extended: false,
                 signal_name: "A",
                 file_backed: false,
             },
             CacheQuery {
-                bus_id: None,
+                bus_id: Some("p"),
                 message_id: 256,
                 extended: false,
                 signal_name: "B",
@@ -5420,35 +5725,35 @@ mod tests {
                 file_backed: false,
             },
             CacheQuery {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 message_id: 512,
                 extended: false,
                 signal_name: "M0",
                 file_backed: false,
             },
             CacheQuery {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 message_id: 512,
                 extended: false,
                 signal_name: "M1",
                 file_backed: false,
             },
             CacheQuery {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 message_id: 512,
                 extended: false,
                 signal_name: "Sel",
                 file_backed: false,
             },
             CacheQuery {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 message_id: 256,
                 extended: true,
                 signal_name: "X",
                 file_backed: false,
             },
             CacheQuery {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 message_id: 777,
                 extended: false,
                 signal_name: "Nothing",
@@ -5481,7 +5786,7 @@ mod tests {
         let owned = mixed_dbs();
         // `mixed_capture` spreads its frames over three buses, so the
         // databases are assigned to all three.
-        let all = bus_set(&[TEST_BUS, "p", "c"]);
+        let all = mixed_bus_set();
         let dbs = assigned_to(&owned.iter().collect::<Vec<_>>(), &all);
         let queries = mixed_queries();
 
@@ -5547,7 +5852,8 @@ mod tests {
         // y-extent (ADR 0025) has to come out of it unchanged too.
         let store = mixed_capture();
         let owned = mixed_dbs();
-        let dbs = on_test_bus(&owned.iter().collect::<Vec<_>>());
+        let all = mixed_bus_set();
+        let dbs = assigned_to(&owned.iter().collect::<Vec<_>>(), &all);
         let queries = mixed_queries();
 
         let a = TempDir::new().unwrap();
@@ -5585,7 +5891,7 @@ mod tests {
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         let queries = [
             CacheQuery {
-                bus_id: None,
+                bus_id: Some("c"),
                 message_id: 256,
                 extended: false,
                 signal_name: "A",
@@ -5599,7 +5905,7 @@ mod tests {
                 file_backed: false,
             },
             CacheQuery {
-                bus_id: None,
+                bus_id: Some("c"),
                 message_id: 256,
                 extended: false,
                 signal_name: "B",
@@ -5629,7 +5935,8 @@ mod tests {
             .iter()
             .map(|k| with_cache(&cache, k, |c| c.levels[0].len()))
             .collect();
-        assert_eq!(lens, vec![store_len, store_len.div_ceil(3), store_len]);
+        let on_p = store_len.div_ceil(3);
+        assert_eq!(lens, vec![store_len - on_p, on_p, store_len - on_p]);
         for key in &keys {
             assert_eq!(with_cache(&cache, key, |c| c.next_index), store_len);
         }
@@ -5652,14 +5959,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let a = CacheQuery {
-            bus_id: None,
+            bus_id: Some(TEST_BUS),
             message_id: 256,
             extended: false,
             signal_name: "A",
             file_backed: false,
         };
         let b = CacheQuery {
-            bus_id: None,
+            bus_id: Some(TEST_BUS),
             message_id: 256,
             extended: false,
             signal_name: "B",
@@ -5714,12 +6021,13 @@ mod tests {
         // internally — and a repeated query answers twice, identically.
         let store = mixed_capture();
         let owned = mixed_dbs();
-        let dbs = on_test_bus(&owned.iter().collect::<Vec<_>>());
+        let all = mixed_bus_set();
+        let dbs = assigned_to(&owned.iter().collect::<Vec<_>>(), &all);
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(tmp.path());
         let mut queries = mixed_queries();
         let repeat = CacheQuery {
-            bus_id: None,
+            bus_id: Some("c"),
             message_id: 256,
             extended: false,
             signal_name: "A",
@@ -5776,7 +6084,7 @@ mod tests {
 
     fn query_x<'a>() -> CacheQuery<'a> {
         CacheQuery {
-            bus_id: None,
+            bus_id: Some(TEST_BUS),
             message_id: 256,
             extended: false,
             signal_name: "X",
@@ -5785,7 +6093,7 @@ mod tests {
     }
 
     fn key_x() -> SignalKey {
-        SignalKey::dbc(None, 256, false, "X".to_string())
+        SignalKey::dbc(TEST_BUS.to_string(), 256, false, "X".to_string())
     }
 
     /// Run `probe` while a cold catch-up of message 256 sits blocked
@@ -5853,9 +6161,21 @@ mod tests {
         let finished = while_a_cold_rebuild_runs(&cache, dbs, store_len, || {
             // The other area's serve, its y-extent, and the flusher's
             // front-trim — the three the item names.
-            let points = cache.slice(None, 512, false, "Y", f64::MIN, f64::MAX, 0, &store, dbs);
+            let points = cache.slice(
+                Some(TEST_BUS),
+                512,
+                false,
+                "Y",
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                dbs,
+            );
             assert_eq!(points.len(), 200);
-            assert!(cache.min_max(None, 512, false, "Y", &store, dbs).is_some());
+            assert!(cache
+                .min_max(Some(TEST_BUS), 512, false, "Y", &store, dbs)
+                .is_some());
             cache.evict_below(50.0);
         });
         assert!(
@@ -5889,7 +6209,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cache = SignalCacheStore::new_unbounded(tmp.path());
         // Something already built, so the manifest write has work to do.
-        let _ = cache.slice(None, 512, false, "Y", f64::MIN, f64::MAX, 0, &store, dbs);
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            512,
+            false,
+            "Y",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         let v = validity("cap", 0);
         let store_len = 3 * CATCH_UP_CHUNK_FRAMES;
 
@@ -6037,7 +6367,17 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         let root = TempDir::new().unwrap();
         let cache = SignalCacheStore::new(root.path());
-        let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         cache.fill_file_backed(&file_info(7, "Speed"), &ramp(10));
 
         let scopes = DecodeModel::plain(vec![DbcScope {
@@ -6058,7 +6398,9 @@ mod tests {
         };
         assert_eq!(
             row("X").encoding.as_deref(),
-            Some(signal_fingerprint::dbc_encoding(&scopes, None, 256, false, "X").as_str()),
+            Some(
+                signal_fingerprint::dbc_encoding(&scopes, Some(TEST_BUS), 256, false, "X").as_str()
+            ),
             "the DBC-backed row carries its definition's fingerprint"
         );
         assert_eq!(
@@ -6192,13 +6534,13 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         let kept = key_prefix(&SignalKey::dbc(
-            Some(TEST_BUS.to_string()),
+            TEST_BUS.to_string(),
             256,
             false,
             "A".into(),
         ));
         let dropped = key_prefix(&SignalKey::dbc(
-            Some(TEST_BUS.to_string()),
+            TEST_BUS.to_string(),
             256,
             false,
             "B".into(),
@@ -6487,7 +6829,7 @@ mod tests {
         let mut buses: Vec<Option<String>> = caches
             .retained
             .iter()
-            .map(|r| r.signal.key().bus_id)
+            .map(|r| named(r.signal.key().as_ref()).bus_id.clone())
             .collect();
         buses.sort();
         assert_eq!(
@@ -6989,12 +7331,12 @@ mod tests {
         // frames contributes none.
         let targets = [
             GroupTarget {
-                bus_id: Some(TEST_BUS),
+                bus_id: TEST_BUS,
                 signal_name: "A",
                 next_index: 10,
             },
             GroupTarget {
-                bus_id: Some(TEST_BUS),
+                bus_id: TEST_BUS,
                 signal_name: "B",
                 next_index: 0,
             },
@@ -7044,7 +7386,17 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         {
             let cache = SignalCacheStore::new(root.path());
-            let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+            let _ = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                "X",
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                dbs,
+            );
             cache.fill_file_backed(&file_info(7, "Speed"), &ramp(10));
             assert!(cache.persist(&v, &scopes(&db), Harden::All));
         }
@@ -7073,6 +7425,95 @@ mod tests {
     }
 
     #[test]
+    fn a_persisted_row_naming_no_bus_is_dropped_rather_than_restored() {
+        // A project saved before bus assignment governed decode can have
+        // left a DBC-backed pyramid that names no bus. Nothing decodes
+        // such a series now (ADR 0054), so there is no bucket to restore
+        // it into: reopening it would leave a series in the store — and
+        // in the next manifest — that no decode can ever add to, and
+        // parking it would hold disk against a definition that can never
+        // come back. It is dropped, with its files, and it is not
+        // counted as owed a rebuild either, because nothing will rebuild
+        // it. What the user sees instead is the reference itself,
+        // reported Not Decoded in the signal mapping panel.
+        let root = TempDir::new().unwrap();
+        let v = validity("capture-a", 0);
+        let store = TraceStore::new();
+        for i in 0..200u64 {
+            store.append(val_frame(i * S, (i % 50) as u16));
+        }
+        let db = load_dbc();
+        let dbs = &on_test_bus(&[&db]);
+        {
+            let cache = SignalCacheStore::new(root.path());
+            let _ = cache.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                "X",
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                dbs,
+            );
+            cache.fill_file_backed(&file_info(7, "Speed"), &ramp(10));
+            assert!(cache.persist(&v, &scopes(&db), Harden::All));
+        }
+
+        // Rewrite what the prior session left into what a pre-per-bus
+        // project left: the DBC-backed row names no bus, and its level
+        // files sit under the name that key hashes to. The file-backed
+        // row rides along as the control — its `bus_id` is `None` too,
+        // and it must still come back.
+        let scoped = key_prefix(&SignalKey::dbc(
+            TEST_BUS.to_string(),
+            256,
+            false,
+            "X".to_string(),
+        ));
+        let busless = key_prefix(&SignalKey {
+            bus_id: None,
+            slot: 256,
+            extended: false,
+            signal: "X".to_string(),
+            file_backed: false,
+        });
+        assert!(rename_prefix(root.path(), &scoped, &busless));
+        let path = root.path().join(MANIFEST_FILE);
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        for signal in json["signals"].as_array_mut().unwrap() {
+            let row = signal.as_object_mut().unwrap();
+            if row.contains_key("file") {
+                continue;
+            }
+            row.insert("bus_id".into(), serde_json::Value::Null);
+        }
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+
+        let reopened = SignalCacheStore::new(root.path());
+        assert_eq!(
+            counts(reopened.restore(&v, &scopes(&db), store.len())),
+            (1, 0, 0),
+            "the file-backed row came back; the busless one was not restored, \
+             not rebuilt and not parked",
+        );
+        assert_eq!(reopened.file_signals().len(), 1);
+        assert_eq!(reopened.usage().retained, 0);
+        let left: Vec<String> = std::fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(&busless))
+            .collect();
+        assert!(
+            left.is_empty(),
+            "the dropped row's files are still there: {left:?}"
+        );
+    }
+
+    #[test]
     fn a_shutdown_persist_leaves_the_levels_owing_the_device_nothing() {
         // ADR 0047's shutdown rule: a manifest is only ever written over
         // pages the disk has already been given, and the shutdown flavour
@@ -7087,7 +7528,17 @@ mod tests {
         let cache = SignalCacheStore::new(root.path());
         let v = validity("capture-a", 0);
 
-        let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert!(cache.unflushed() > 0, "a fresh pyramid owes its pages");
         assert!(cache.persist(&v, &no_dbcs(), Harden::All));
         assert_eq!(
@@ -7123,7 +7574,17 @@ mod tests {
         let cache = SignalCacheStore::new(root.path());
         let v = validity("capture-a", 0);
 
-        let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         let owed = cache.unflushed();
         assert!(owed > 0);
         assert!(
@@ -7216,7 +7677,17 @@ mod tests {
                 store.append(val_frame(i * S, (i % 50) as u16));
             }
             let dbs = &on_test_bus(&[&db]);
-            let rebuilt = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+            let rebuilt = reopened.slice(
+                Some(TEST_BUS),
+                256,
+                false,
+                "X",
+                f64::MIN,
+                f64::MAX,
+                0,
+                &store,
+                dbs,
+            );
             assert_eq!(rebuilt.len(), 200);
         }
     }
@@ -7293,7 +7764,17 @@ mod tests {
         }
         let db = load_dbc();
         let dbs = &on_test_bus(&[&db]);
-        let rebuilt = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let rebuilt = reopened.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert_eq!(rebuilt.len(), 200, "the rebuild ran");
         assert!(
             !reopened.rebuilding(store.len()),
@@ -7335,7 +7816,17 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         assert_eq!(
             reopened
-                .slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs)
+                .slice(
+                    Some(TEST_BUS),
+                    256,
+                    false,
+                    "X",
+                    f64::MIN,
+                    f64::MAX,
+                    0,
+                    &store,
+                    dbs
+                )
                 .len(),
             200,
         );
@@ -7424,7 +7915,17 @@ mod tests {
         }
         let db = load_dbc();
         let dbs = &on_test_bus(&[&db]);
-        let _ = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let _ = reopened.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         assert!(
             !reopened.persist(&validity("capture-b", 0), &no_dbcs(), Harden::All),
             "nothing is written while a candidate is unjudged",
@@ -7508,7 +8009,17 @@ mod tests {
         let db = load_dbc();
         let dbs = &on_test_bus(&[&db]);
         let cache = SignalCacheStore::new(root.path());
-        let _ = cache.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &store, dbs);
+        let _ = cache.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &store,
+            dbs,
+        );
         cache.evict_below(1000.0);
         cache.persist(&v, &scopes(&db), Harden::All);
 
@@ -7520,7 +8031,17 @@ mod tests {
             1
         );
         let cold = undecodable_store(store.len());
-        let served = reopened.slice(None, 256, false, "X", f64::MIN, f64::MAX, 0, &cold, dbs);
+        let served = reopened.slice(
+            Some(TEST_BUS),
+            256,
+            false,
+            "X",
+            f64::MIN,
+            f64::MAX,
+            0,
+            &cold,
+            dbs,
+        );
         assert_eq!(served.len(), 1000, "only the live tail came back");
         assert!(served.iter().all(|p| p.t_seconds >= 1000.0));
     }
@@ -7586,7 +8107,7 @@ mod tests {
 
         for max_points in [0usize, 16, 200] {
             let a = decoded.slice(
-                None,
+                Some(TEST_BUS),
                 256,
                 false,
                 "X",
@@ -8012,7 +8533,7 @@ mod tests {
         let dbs = &on_test_bus(&[&db]);
         let queries: Vec<CacheQuery<'_>> = (0..signals)
             .map(|n| CacheQuery {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 message_id: 256 + n as u32,
                 extended: false,
                 signal_name: "X0",
@@ -8154,7 +8675,7 @@ mod tests {
         let names: Vec<String> = (0..per_message).map(|s| format!("X{s}")).collect();
         let queries: Vec<CacheQuery<'_>> = (0..signals)
             .map(|n| CacheQuery {
-                bus_id: None,
+                bus_id: Some(TEST_BUS),
                 message_id: 256 + (n / per_message) as u32,
                 extended: false,
                 signal_name: &names[n % per_message],

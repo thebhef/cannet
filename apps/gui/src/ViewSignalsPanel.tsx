@@ -136,19 +136,22 @@ const PAGE_ROWS = 20;
  * Singleton, like the Database / Events panels: the model is
  * project-wide, so a second instance would carry no differentiation.
  *
- * The source (candidate) picker makes both of this panel's picks, and
- * which one a choice is depends only on whether it names the row's own
- * signal:
+ * The source (candidate) picker makes all of this panel's picks, and
+ * which one a choice is depends only on how it differs from the row:
  *
- * - **the ambiguity pick** — the same signal under a different
- *   database. Recorded in the project (`set_signal_dbc_pick`) as the
- *   database the *decoder* resolves this signal through, not merely
- *   what this panel displays.
+ * - **the ambiguity pick** — the row's own signal on the row's own bus,
+ *   under a different database. Recorded in the project
+ *   (`set_signal_dbc_pick`) as the database the *decoder* resolves this
+ *   signal through, not merely what this panel displays.
  * - **the remap pick** — a different signal of the same message, which
  *   is what a renamed signal looks like from here. It rewrites every
  *   persisted reference to the old name through the one shared
  *   operation (`signalRemap.ts`), so it lands on every view at once
  *   rather than per view.
+ * - **the re-point** — a definition on a *different bus*, which the
+ *   host offers only to a reference that names no bus. Such a reference
+ *   decodes nothing (ADR 0054) and this is its repair; it goes through
+ *   the same shared rewrite, with the bus moving alongside the name.
  *
  * Neither has an apply step. The element writes land synchronously and
  * the host writes announce themselves (a DBC change, a transmit-pool
@@ -246,7 +249,8 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
   const onRemap = useCallback(
     (row: ViewSignalRow, candidate: ViewSignalCandidate) => {
       remapSignal({
-        busId: row.busId,
+        fromBusId: row.busId,
+        toBusId: candidate.busId,
         messageId: row.messageId,
         extended: row.extended,
         from: row.signalName,
@@ -478,18 +482,40 @@ export function ViewSignalsPanel(props: IDockviewPanelProps) {
   );
 }
 
-/// One candidate's `<option>` value: its database path and signal
-/// name, separated by a NUL so neither half can be confused with the
-/// other whatever a path contains.
-function candidateValue(dbcPath: string, signalName: string): string {
-  return `${dbcPath}\0${signalName}`;
+/// One candidate's `<option>` value: its bus, database path and signal
+/// name, separated by NULs so no part can be confused with another
+/// whatever a path contains. The bus is in the value because a
+/// candidate on a different bus is a different choice — the re-point a
+/// reference that names no bus needs.
+function candidateValue(busId: string, dbcPath: string, signalName: string): string {
+  return `${busId}\0${dbcPath}\0${signalName}`;
 }
 
-/// The `(database, signal)` pair an `<option>` value names.
-function parseCandidateValue(value: string): { dbcPath: string; signalName: string } | null {
-  const sep = value.lastIndexOf("\0");
-  if (sep < 0) return null;
-  return { dbcPath: value.slice(0, sep), signalName: value.slice(sep + 1) };
+/// The `(bus, database, signal)` triple an `<option>` value names.
+function parseCandidateValue(
+  value: string,
+): { busId: string; dbcPath: string; signalName: string } | null {
+  const first = value.indexOf("\0");
+  const last = value.lastIndexOf("\0");
+  if (first < 0 || last === first) return null;
+  return {
+    busId: value.slice(0, first),
+    dbcPath: value.slice(first + 1, last),
+    signalName: value.slice(last + 1),
+  };
+}
+
+/// What choosing one candidate would do, in words — the `<option>`'s
+/// tooltip. Nothing for the choice that is only "which database", which
+/// the option's own text already states.
+function optionTitle(row: ViewSignalRow, c: ViewSignalCandidate): string | undefined {
+  if (c.busId !== row.busId) {
+    return `point every view that references ${row.signalName} at ${c.signalName} on ${c.busName}`;
+  }
+  if (c.signalName !== row.signalName) {
+    return `point every view that references ${row.signalName} at ${c.signalName} instead`;
+  }
+  return undefined;
 }
 
 interface ViewSignalRowLineProps {
@@ -561,25 +587,35 @@ function ViewSignalRowLine({
               <select
                 className={className}
                 disabled={row.candidates.length === 0}
-                value={row.servingDbc ? candidateValue(row.servingDbc, row.signalName) : ""}
+                value={
+                  row.servingDbc
+                    ? candidateValue(row.busId ?? "", row.servingDbc, row.signalName)
+                    : ""
+                }
                 // The row's own click handler is selection, not a
                 // gesture the picker should also fire.
                 onClick={(e) => e.stopPropagation()}
-                // Which pick a choice is depends only on whether it
-                // names this row's own signal: the same signal under
-                // another database is the ambiguity pick, a different
-                // signal of the same message is the remap.
+                // Which pick a choice is depends only on how it differs
+                // from the row: the row's own signal on its own bus
+                // under another database is the ambiguity pick;
+                // anything else moves the stored references — a
+                // different signal is the rename repair, a different
+                // bus the re-point.
                 onChange={(e) => {
                   const chosen = parseCandidateValue(e.target.value);
                   if (chosen === null) return;
-                  if (chosen.signalName === row.signalName) {
-                    onPick(row.id, chosen.dbcPath);
+                  const candidate = row.candidates.find(
+                    (c) =>
+                      c.busId === chosen.busId &&
+                      c.dbcPath === chosen.dbcPath &&
+                      c.signalName === chosen.signalName,
+                  );
+                  if (candidate === undefined) return;
+                  if (candidate.busId === row.busId && candidate.signalName === row.signalName) {
+                    onPick(row.id, candidate.dbcPath);
                     return;
                   }
-                  const candidate = row.candidates.find(
-                    (c) => c.dbcPath === chosen.dbcPath && c.signalName === chosen.signalName,
-                  );
-                  if (candidate) onRemap(row, candidate);
+                  onRemap(row, candidate);
                 }}
               >
                 {row.candidates.length === 0 ? (
@@ -587,19 +623,22 @@ function ViewSignalRowLine({
                     {row.servingDbc ? row.signalName : "— nothing available —"}
                   </option>
                 ) : (
-                  row.candidates.map((c) => (
-                    <option
-                      key={candidateValue(c.dbcPath, c.signalName)}
-                      value={candidateValue(c.dbcPath, c.signalName)}
-                      title={
-                        c.signalName === row.signalName
-                          ? undefined
-                          : `point every view that references ${row.signalName} at ${c.signalName} instead`
-                      }
-                    >
-                      {basename(c.dbcPath)}: {c.signalName}
-                    </option>
-                  ))
+                  <>
+                    {/* Nothing decodes the row, so nothing is selected —
+                        without this the browser would show the first
+                        offer as if it were in force. */}
+                    {row.servingDbc === null && <option value="">— not decoded —</option>}
+                    {row.candidates.map((c) => (
+                      <option
+                        key={candidateValue(c.busId, c.dbcPath, c.signalName)}
+                        value={candidateValue(c.busId, c.dbcPath, c.signalName)}
+                        title={optionTitle(row, c)}
+                      >
+                        {c.busId === row.busId ? "" : `${c.busName} · `}
+                        {basename(c.dbcPath)}: {c.signalName}
+                      </option>
+                    ))}
+                  </>
                 )}
               </select>
             );

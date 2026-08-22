@@ -27,10 +27,12 @@ import { parseSignalDragData } from "./dragSignals";
 export type CursorMode = "off" | "x" | "y" | "note";
 
 export interface SignalRef {
-  /** Logical bus this signal is bound to. `null` is the legacy
-   * "any bus" path — kept so plots from projects that pre-date
-   * per-bus signal binding still sample. New picks always carry a
-   * concrete `busId`. */
+  /** Logical bus this signal is bound to. `null` is a series saved
+   * before per-bus signal binding: it decodes nothing, because bus
+   * assignment governs decode and no assignment can contain "no bus"
+   * (ADR 0054). The series is kept rather than dropped — the signal
+   * mapping panel reports it as Not Decoded and is where it is
+   * re-pointed at a bus. New picks always carry a concrete `busId`. */
   busId: string | null;
   messageId: number;
   extended: boolean;

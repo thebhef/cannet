@@ -23,6 +23,11 @@
 ///
 /// The stores it rewrites:
 ///
+/// A reference that names **no bus** is repaired the same way, and this
+/// is the only remap that moves a bus: the panel offers it the
+/// definitions on every bus that decodes, and choosing one rewrites
+/// every stored reference onto that bus.
+///
 /// | Store | What holds the reference |
 /// | --- | --- |
 /// | plot element `config` | each area's manual `signals`, and the area's `primarySignalKey` |
@@ -74,12 +79,24 @@ import type {
 } from "./types";
 
 /// One remap: the reference every store currently holds, and the
-/// definition it is re-pointed at. The target is always a signal of the
-/// *same* message on the *same* bus — the repair surface's candidates
-/// are the definitions that message offers — so only the name and the
-/// recorded fields move.
+/// definition it is re-pointed at. The target is always a definition of
+/// the *same* message — the repair surface's candidates are the
+/// definitions that message offers — so the message id and its std/ext
+/// flag never move.
+///
+/// The **bus** does move, in exactly one case: a reference saved before
+/// per-bus signal binding names none, decodes nothing
+/// ([ADR 0054](../../docs/adr/0054-a-decoded-value-has-one-definition.md)),
+/// and the only repair open to it is being re-pointed at a bus that
+/// does decode. Everywhere else {@link toBusId} equals
+/// {@link fromBusId} and the rename is the whole of the change.
 export interface SignalRemap {
-  busId: string | null;
+  /// The bus every stored reference names today. `null` for the
+  /// busless references the re-point exists for.
+  fromBusId: string | null;
+  /// The bus they are rewritten to. Equal to {@link fromBusId} for an
+  /// ordinary rename.
+  toBusId: string | null;
   messageId: number;
   extended: boolean;
   /// The name every stored reference holds today.
@@ -109,12 +126,12 @@ export interface SignalRemapStores {
 
 /// The identity the references hold today.
 export function remapFromKey(remap: SignalRemap): string {
-  return signalKey(remap.busId, remap.messageId, remap.extended, remap.from);
+  return signalKey(remap.fromBusId, remap.messageId, remap.extended, remap.from);
 }
 
 /// The identity they are rewritten to.
 export function remapToKey(remap: SignalRemap): string {
-  return signalKey(remap.busId, remap.messageId, remap.extended, remap.to);
+  return signalKey(remap.toBusId, remap.messageId, remap.extended, remap.to);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -168,12 +185,16 @@ function remapRefList(list: unknown, remap: SignalRemap): unknown[] | null {
     changed = true;
     if (taken.has(toKey)) continue;
     taken.add(toKey);
-    out.push({
+    const next: Record<string, unknown> = {
       ...entry,
       signalName: remap.to,
       messageName: remap.messageName,
       unit: remap.unit,
-    });
+    };
+    // The bus is written only where it moves, so an ordinary rename
+    // leaves an entry that never carried one exactly as it found it.
+    if (remap.toBusId !== remap.fromBusId) next.busId = remap.toBusId;
+    out.push(next);
   }
   return changed ? out : null;
 }
@@ -242,7 +263,10 @@ export function remapColorMapPatch(
     element.extended,
     element.signalName,
   );
-  return key === remapFromKey(remap) ? { signalName: remap.to } : null;
+  if (key !== remapFromKey(remap)) return null;
+  return remap.toBusId === remap.fromBusId
+    ? { signalName: remap.to }
+    : { signalName: remap.to, busId: remap.toBusId };
 }
 
 /// The patch one project element needs, or `null` when it holds no
@@ -279,10 +303,14 @@ export function remapTransmitFrames(
   frames: readonly TransmitFrameConfig[],
   remap: SignalRemap,
 ): TransmitFrameConfig[] {
+  // A bus re-point moves no transmit frame: the frame sits on the bus
+  // it transmits to, which is not the reference being repaired, and its
+  // calculated field still names the same signal.
+  if (remap.to === remap.from) return [];
   const out: TransmitFrameConfig[] = [];
   for (const frame of frames) {
     if (
-      (frame.busId ?? null) !== remap.busId ||
+      (frame.busId ?? null) !== remap.fromBusId ||
       frame.canId !== remap.messageId ||
       frame.extended !== remap.extended ||
       frame.calc == null
@@ -317,9 +345,11 @@ export async function remapSignal(
   stores: SignalRemapStores,
   remap: SignalRemap,
 ): Promise<void> {
-  if (remap.to === remap.from) return;
   const fromKey = remapFromKey(remap);
   const toKey = remapToKey(remap);
+  // Judged on the whole identity, not on the name alone: a re-point
+  // keeps the name and moves the bus, and is a real change.
+  if (fromKey === toKey) return;
 
   // The views' own stored references.
   for (const element of stores.elements) {

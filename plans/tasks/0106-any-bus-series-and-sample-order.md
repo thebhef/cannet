@@ -194,3 +194,188 @@ contingent on the ruling.
 Nothing here needs an hours-long run. The exit criterion "if an index
 is built, its cost is measured on a realistic cache" only binds under
 the *rejected* branch; under the recommended ruling no index is built.
+
+## Status log
+
+### 2026-08-22 — phases 1 and 2 folded into one branch
+
+**Fold, and why.** Phases 1 and 2 land as one branch
+(`task-106-any-bus-series`, from `a2c5ed59`), because shipping the rule
+without the surface that reports it *is* the silent emptying
+[task 88 phase 2](0088-bus-assignment-governs-decode.md) refused to do.
+Two commits, each green.
+
+**The ruling being implemented is the overseer's recommendation and the
+owner has not confirmed it.** It is implemented as written, unsoftened
+and unhedged: *a DBC-backed series naming no bus resolves nothing; it is
+kept, reported `NotDecoded`, and repaired by the user in the signal
+mapping panel.* The rejected branch's machinery (a prefix-maximum
+`t_seconds` index in the cache and its pyramid levels) is **not** built.
+If the owner reverses the ruling, this branch's two commits are the
+whole of the diff to revert.
+
+### 2026-08-22 — phase 1: a DBC target with no bus resolves nothing
+
+**Landed** (commit recorded below):
+
+- `SignalKey::dbc` takes `bus_id: String`, not `Option<String>`. The
+  any-bus series is now unrepresentable rather than merely unused.
+  `SignalKey::bus_id` stays `Option<String>` — `SignalKey::file` still
+  uses `None`, as task 88's exit-criteria grooming ruled.
+- `scan_chunk`'s per-target bus filter lost its `None`-target arm.
+  `GroupTarget::bus_id` is `&str`, so there is no arm left to take: the
+  invariant is discharged once, in `plan_batch`, where the DBC-backed
+  key's bus is read.
+- `CacheQuery::key` and `PersistedSignal::key` return `Option<SignalKey>`.
+  A busless DBC-backed query answers empty through `slice_many`,
+  `min_max_many` and `time_span`, index-parallel with the batch.
+- `SignalCacheStore::restore` **drops** a DBC-backed manifest row that
+  names no bus, with its files — not restored, not parked, not counted
+  as owed a rebuild. Nothing can ever fill it, and parking it would hold
+  disk against a definition that can never return. The retention pool
+  read out of a manifest is filtered the same way.
+- `partition_by_t`'s doc comment now *describes* the order instead of
+  asserting it, and says why it holds: a DBC-backed series is scoped to
+  one bus and one bus's frames arrive in order (the dip ADR 0024
+  measures is *between* buses); a file-backed series follows its source
+  channel group's own order; every pyramid level folds the level below
+  in slot order.
+- The two tests that pinned the old behaviour are turned around, each
+  carrying a comment saying what the old rule was and why it changed:
+  `an_unscoped_series_decodes_each_frame_by_its_own_bus` is now
+  `a_series_naming_no_bus_decodes_nothing`, and
+  `bus_id_scoping_keeps_per_bus_series_independent`'s last assertion now
+  reads `assert!(any.is_empty())`.
+- New: `a_persisted_row_naming_no_bus_is_dropped_rather_than_restored`.
+- Stale doc comments corrected in the same commit:
+  `filter::dbc_applies`, `ipc::SignalQuery::bus_id`,
+  `SignalCacheStore::slice`, `scan_chunk`'s bus-scoping note and
+  `SignalKey`'s own rustdoc.
+- ~46 incidental test queries that passed `bus_id: None` because it was
+  the shortest thing that decoded now name the bus their fixture frames
+  actually carry. Three tests over `mixed_capture` (which spreads frames
+  across `bus0`/`p`/`c`) gained the assignment set that fixture always
+  implied; `one_group_fetches_each_chunk_once_for_all_its_signals` now
+  asserts a per-bus split of its frames instead of an any-bus total.
+
+**Does a file-backed target reach `scan_chunk`?** No — checked, not
+assumed. `group_keys` filters `!key.file_backed` before any group is
+formed, so a file-backed key never becomes a `GroupTarget`;
+`ensure_caches` also mints no cache for one. Its samples arrive only
+through `fill_file_backed`. So the `&str` bus on `GroupTarget` costs
+file-backed series nothing.
+
+**Mutation evidence.**
+
+- *Observation.* `a_series_naming_no_bus_decodes_nothing` and
+  `bus_id_scoping_keeps_per_bus_series_independent` were written in
+  their new form first and both failed against the unchanged code
+  (`888 passed; 2 failed`), then passed after `scan_chunk` changed.
+- *Experiment on the restore guard.* Replacing
+  `if row.bus_id.is_none()` with `if false && row.bus_id.is_none()`
+  made `a_persisted_row_naming_no_bus_is_dropped_rather_than_restored`
+  fail with `left: (1, 1, 0) / right: (1, 0, 0)`.
+- *Conclusion.* Without the guard the busless row is judged against the
+  no-definition fingerprint, fails, and is **parked** — disk held
+  indefinitely for a series nothing can revive. The guard is what drops
+  it; the test discriminates.
+
+**Suites.** Before: `cargo test -p cannet-gui` 890 passed / 6 ignored;
+`cargo test --workspace` green. After: 891 passed / 6 ignored (the one
+new test); workspace green. `cargo clippy --workspace --all-targets`
+clean but for the known `redundant_closure` in `cannet-dbc/src/tests.rs`;
+`cargo fmt --all -- --check` clean;
+`git grep -Ein "task [0-9]|plans/" -- apps/ crates/` empty.
+
+### 2026-08-22 — phase 2: the unresolvable series is visible and repairable
+
+**Verified rather than assumed.** A busless DBC-backed reference already
+fell into `ViewSignalStatus::NotDecoded` without a special case:
+`describe_on_bus` filters through `filter::dbc_applies`, which answers
+`false` for a `None` bus, so nothing defines the signal and `serving` is
+`None`. `needs_attention()` counts `NotDecoded`, and the launcher badge
+reads that count live with the panel closed
+(`viewSignalsAttention.ts`). No code was needed for the status; the
+existing test `a_reference_bound_to_no_bus_is_not_decoded` now also
+asserts the badge counts it.
+
+**What was missing was the repair, and that is what landed.** The
+picker on such a row was *disabled and empty* — `describe_on_bus` on a
+`None` bus returns nothing, so there were no candidates. Shipping
+phase 1 with that surface would have been the silent emptying in a
+different costume: a row that says "Not Decoded" and offers nothing to
+do about it.
+
+- `ViewSignalCandidate` gains `bus_id` and `bus_name`. Every candidate
+  of an ordinary row carries the row's own bus; a reference that names
+  **none** takes its candidates from every bus the loaded databases are
+  assigned to, and those are its re-point offers.
+- `build_rows` now describes each row on the buses it needs and fills
+  the `(bus, message)` memo in a first pass, so the second pass reads it
+  by reference — no message descriptor is copied per row.
+- `SignalRemap` splits `busId` into `fromBusId` / `toBusId`. This is the
+  one remap that moves a bus, and every store the operation reaches
+  moves with it: a plot area's series and its `primarySignalKey`, the
+  signals view's selection keys and section assignments, a colormap's
+  target, and the project's per-signal colour override. A bus re-point
+  writes **no** transmit frame — the frame sits on the bus it transmits
+  to, which is not the reference being repaired — and `remapSignal`'s
+  no-op guard now compares whole identities, so a re-point that only
+  moves the bus is a real change while a choice that moves neither is
+  still nothing.
+- The panel's `<option>` value carries the bus, so a candidate on
+  another bus is a distinguishable choice; the choice is an ambiguity
+  pick only when it names the row's own signal **on the row's own bus**.
+  Cross-bus options are labelled `Bus · database: signal`.
+- A row nothing serves now shows a `— not decoded —` placeholder rather
+  than letting the browser display the first offer as if it were in
+  force. This also affects the pre-existing renamed-signal rows, which
+  had the same wart.
+- Doc corrections in the same commit: `view_signals`'s module docs (the
+  taxonomy's §1 and the list of repairs the panel offers),
+  `ViewSignalRef::bus_id`, `ViewSignalsPanel`'s header, `signalRemap`'s
+  module doc, and `plotPanelConfig.ts`'s `SignalRef.busId`, which said a
+  busless series was "kept so plots that pre-date per-bus signal binding
+  still sample" — false as of phase 1.
+
+**Mutation evidence.**
+
+- Making `buses_for` return only the row's own bus for a busless
+  reference fails `a_reference_bound_to_no_bus_is_offered_the_buses_that_decode`.
+- Making it return every bus for *every* reference fails
+  `an_ordinary_row_offers_only_its_own_bus`.
+- Dropping the `candidate.busId === row.busId` half of the panel's
+  ambiguity-pick condition fails
+  `re-points every stored reference onto the bus that was chosen` — a
+  re-point would silently degrade into a database pick that leaves the
+  reference where it was.
+
+**Suites.** `cargo test -p cannet-gui` 893 passed / 6 ignored (891 after
+phase 1, plus this phase's two `view_signals` tests);
+`cargo test --workspace` green; clippy clean but for the known
+`cannet-dbc` warning; `cargo fmt --all -- --check` clean. Frontend
+before: 2615 passed / 199 files; after: 2624 passed / 199 files.
+`npx tsc --noEmit` and `npx vite build` clean.
+
+## Blockers / side effects
+
+- **The ruling is unconfirmed by the owner.** Recorded here rather than
+  worked around: both commits implement the overseer's recommendation
+  verbatim.
+- **Phase 3's premise, from evidence rather than assumption.** Phase 1
+  makes `partition_by_t`'s precondition true for the signal cache's own
+  sequences, and the reason generalises: `SampleSeq` sample order is set
+  by whatever fills it, and after phase 1 both fills are ordered (one
+  bus's frames; one signal channel group). So phase 3's sweep of *other*
+  `t_seconds` readers is about readers of these same now-ordered
+  sequences, not about a second source of dips. Not verified beyond the
+  signal cache — that is phase 3's job.
+- **A pre-existing wart the placeholder fixed as a side effect.** A row
+  with candidates but nothing serving it (a renamed signal, not just a
+  busless reference) rendered its `<select>` with `value=""` against a
+  list of real options, so the browser displayed the first offer as
+  selected. Phase 2 could not leave it, because a busless row is exactly
+  that shape; the fix applies to the renamed-signal rows too.
+- **`examples/ev-zonal/dbc/pack.dbc` and `apps/gui/src-tauri/Cargo.toml`**
+  carry line-ending-only working-tree modifications that pre-date this
+  branch. Left untouched, unstaged, as instructed.
