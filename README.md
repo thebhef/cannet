@@ -2288,19 +2288,28 @@ no park, no rebuild, no wait. Only a change of definition — editing the
 of it, or unassigning it from the bus the samples came from — parks
 anything.
 
-**Unchecking a bus stops what it was driving.** A periodic transmit row
-or a rest-of-bus row that is *transmitting* is putting frames on a real
-bus, so once no database assigned to that bus defines its message any
-more, it stops — one line in the System Messages panel says how many
-did, and there is no prompt and no per-row notice. The unassign itself
-always proceeds: it is a deliberate gesture, and refusing it would make
-assignment conditional on first hunting down what is transmitting. A row
-the databases never described — a CAN id typed by hand — keeps firing,
-and so does one another database still on the bus defines. Removing a
-database from the project removes it from its buses and reaches the same
-rule the same way. A stopped transmit row keeps its configuration and is
-restarted with its own Run control; a rest-of-bus row is rebuilt by its
-element, so it resumes when the element's Run is still on.
+**Changing what a bus applies stops what it was driving.** A periodic
+transmit row or a rest-of-bus row that is *transmitting* is putting
+frames on a real bus, so it stops when the definition behind it moves:
+once no database assigned to that bus defines its message any more, and
+also when a database you check onto the bus **takes the message over**
+— it sits earlier in load order than the one the row was firing from,
+so the next frame out would carry an encoding you never armed. One line
+in the System Messages panel says how many stopped, and there is no
+prompt and no per-row notice. The change itself always proceeds: it is
+a deliberate gesture, and refusing it would make assignment conditional
+on first hunting down what is transmitting.
+
+What is *not* affected: a row the databases never described — a CAN id
+typed by hand; a database checked onto a bus where it loses the
+priority contest, or onto a bus the row does not live on; and a row
+whose winner simply falls back to a database the bus was already
+applying when you uncheck the one in front of it. Removing a database
+from the project removes it from its buses and reaches the same rule
+the same way. A stopped transmit row keeps its configuration and is
+restarted with its own Run control; a rest-of-bus element has its Run
+turned off, because its rows are rebuilt from the element and would
+otherwise come straight back.
 
 **Reloading a database stops what it was driving, too.** A DBC is
 re-read whenever the file changes on disk (with `dbc_auto_reload` on) or

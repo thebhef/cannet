@@ -219,11 +219,15 @@ debounce is never in the user's way for their own gesture.
 an RBS that is running does not swap in place, it notifies. It says
 nothing about the user reaching the same place on purpose.
 
-Unassigning a database from a bus is that gesture. Once no database
-assigned to a bus defines a message any more, a periodic still firing
-for it is putting frames on a real bus from definitions the project no
-longer applies — §1's uncommanded send, reached deliberately instead of
-by an external edit. So:
+Changing what a bus applies is that gesture, in both directions. Once
+no database assigned to a bus defines a message any more, a periodic
+still firing for it is putting frames on a real bus from definitions the
+project no longer applies — §1's uncommanded send, reached deliberately
+instead of by an external edit. **Assigning** reaches the same place
+from the other side: a database applied to a bus where it outranks the
+one a row is firing from becomes that message's winning definition
+(ADR 0054), and the next frame out carries an encoding nobody armed. So
+in both directions:
 
 - **The periodic stops**, through the same path the user's own Stop
   takes (`transmit_commands::stop_periodic_transmit_inner`). It is not a
@@ -234,17 +238,29 @@ by an external edit. So:
   runs was rejected: it would make assignment conditional on the user
   first hunting down what is transmitting, which is the opposite of what
   the Database panel's checkbox is for.
+- **A running RBS element stops with its rows.** An element's rows are
+  derived and the rebuild that follows the change would put them
+  straight back, so stopping them means clearing the element's Run —
+  the same flag its own toggle writes, and the only copy of it
+  (ADR 0028: Run is session state).
 - **One system-log entry records it, however many stopped.** No modal
   and no per-element notice — the gesture was deliberate, so the user
   does not need to be interrupted with its consequence, only to be able
   to find it.
 
-"Built from a database that left" is measured against what the bus can
-still decode, not against file identity: a row another assigned database
-still defines keeps firing, and a row no database on the bus ever
-described — a CAN id typed by hand — is none of the change's business.
-Removing a database from the project removes it from its assigned buses,
-so it reaches this rule by the same route.
+The measure is **the winning definition**, asked either side of the
+change and judged by ADR 0054's resolution rule — not file identity and
+not "the set changed". So a database assigned where it loses the
+priority contest, or to a bus the row does not live on, moves no winner
+and stops nothing; and a row no database on the bus ever described — a
+CAN id typed by hand — is none of the change's business either way.
+
+One case is deliberately outside it: the winner **falling back** to a
+database the bus was already applying, when the one in front of it is
+unassigned. Nothing new came into the picture there — the fallback is
+the resolution rule doing what it always does — so that row keeps
+firing. Removing a database from the project removes it from its
+assigned buses, so it reaches this rule by the same route.
 
 ## Amendment (2026-08-20) — a DBC swap stops what it was driving
 
