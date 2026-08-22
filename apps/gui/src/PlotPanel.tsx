@@ -30,6 +30,7 @@ import { timelineEvents } from "./notes";
 import { plotTimelineEvents } from "./plotEvents";
 import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
+import { parseVisibleRangeInput, resolveVisibleRange } from "./plotVisibleRange";
 import { mergeSeries } from "./plotData";
 import { hostSettings, useSetting } from "./hostSettings";
 import { fetchWindowExtent } from "./useDecimatedRange";
@@ -907,6 +908,36 @@ export function PlotPanel(props: IDockviewPanelProps) {
     [fitToRange, sharedStart, winStart, winEnd],
   );
 
+  /** `plot.setVisibleRange`: the prompt hands this
+   * panel its own typed text, since resolving a bare width needs this
+   * panel's *current* window — an explicit "min max"/"min,max"/"min..max"
+   * range passes straight through (`plotVisibleRange.ts`). Applied via
+   * the same programmatic x-window path every other jump uses
+   * (`applyXAll` → follow-live off → x-epoch bump); a shortcut around it
+   * leaves the resample loop pointed at the old slice while uPlot's
+   * scale has already moved, landing the jump on an empty draw. Falls
+   * back the same way `centerWindowOn` does when the panel has no
+   * window yet (nothing resampled since mount).
+   */
+  const setVisibleRange = useCallback(
+    (arg?: string) => {
+      if (arg === undefined) return;
+      const parsed = parseVisibleRangeInput(arg);
+      const sync = xSyncRef.current;
+      const current = {
+        min: sync.xMin ?? 0,
+        max: sync.xMax ?? hostSettings().follow_window_ms / 1000,
+      };
+      const resolved = resolveVisibleRange(parsed, current);
+      if (!resolved) return;
+      const [min, max] = resolved;
+      applyXAll(min, max, null);
+      setFollowLive(false);
+      bumpXEpoch();
+    },
+    [applyXAll, bumpXEpoch],
+  );
+
   // Hotkey / palette implementations for this panel instance
   // (ADR 0018): with the panel focused, `f` re-runs fit-data, `l`
   // re-enters follow-live (enable-only — panning the x axis is how
@@ -920,6 +951,7 @@ export function PlotPanel(props: IDockviewPanelProps) {
       soloInputRef.current?.focus();
       soloInputRef.current?.select();
     },
+    "plot.setVisibleRange": setVisibleRange,
   });
 
   /** Wrap the trace's Clear so it also wipes the panel-level overlays

@@ -540,6 +540,10 @@ function renderPanel(opts?: {
   /// e.g. `{ count: 0 }` for a capture that holds no frames at all
   /// (a signals-only MDF import).
   trace?: Partial<TraceData>;
+  /// Wire the panel-local command registry (`plot.setVisibleRange` and
+  /// the existing `f`/`l`/`Mod+F` hotkeys) so a test can drive it with
+  /// `commands.invoke(elementId, id, arg)`.
+  commands?: ReturnType<typeof createPanelCommandRegistry>;
 }) {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof PlotPanel>[0];
@@ -561,6 +565,9 @@ function renderPanel(opts?: {
       </TraceDataProvider>
     );
     if (opts?.notes) tree = <NotesContext.Provider value={opts.notes}>{tree}</NotesContext.Provider>;
+    if (opts?.commands) {
+      tree = <PanelCommandsContext.Provider value={opts.commands}>{tree}</PanelCommandsContext.Provider>;
+    }
     return tree;
   };
   const { rerender } = render(build(baseData));
@@ -2395,8 +2402,99 @@ describe("PlotPanel command registration (f / l hotkeys)", () => {
     expect(solo.selectionStart).toBe(0);
     expect(solo.selectionEnd).toBe(solo.value.length);
   });
+
+  it("registers plot.setVisibleRange for its element", () => {
+    const commands = renderWithCommands();
+    expect(commands.invoke("el-test", "plot.setVisibleRange", "0 10")).toBe(true);
+  });
 });
 
+// `plot.setVisibleRange` must land the jump through the same
+// programmatic x-window path as Fit Data / goto-event — `applyXAll`
+// followed by an x-epoch bump — or a *stopped* panel's window moves on
+// screen while its data stays the stale slice from before the jump (the
+// resample loop that would otherwise catch a running trace up is off).
+// `sampleCalls()` increasing is the epoch bump's fingerprint: nothing
+// else re-samples a stopped panel.
+describe("plot.setVisibleRange", () => {
+  const STOPPED = { id: "el-range", trace: { start: 0, end: 60, isPaused: false } };
+
+  it("an explicit range moves the uPlot x-scale and re-samples a stopped panel", async () => {
+    await withSizedCanvas(async () => {
+      const commands = createPanelCommandRegistry();
+      renderPanel({ params: { elementId: STOPPED.id }, registry: makeRegistry(STOPPED), commands });
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      const inst = liveInstanceIn("Area 1");
+
+      // The first jump also *drops* follow-live, and that transition's
+      // own effect forces a resample — which would mask a missing
+      // x-epoch bump. Spend that jump here, then check the epoch bump
+      // in isolation on a second jump, where follow-live is already
+      // off and cannot fire again.
+      act(() => {
+        commands.invoke(STOPPED.id, "plot.setVisibleRange", "10 20");
+      });
+      await act(async () => {});
+      inst.xCalls.length = 0;
+      const before = sampleCalls();
+
+      act(() => {
+        commands.invoke(STOPPED.id, "plot.setVisibleRange", "30 40");
+      });
+      await act(async () => {});
+
+      expect(inst.xCalls[inst.xCalls.length - 1]).toEqual({ min: 30, max: 40 });
+      // The resample-forcing half of the path: without the x-epoch bump,
+      // this stopped panel's data would stay the pre-jump slice under
+      // the new scale — follow-live is already off, so its own effect
+      // can't be what triggers this.
+      expect(sampleCalls()).toBeGreaterThan(before);
+    });
+  });
+
+  it("a bare width keeps the panel's current centre", async () => {
+    await withSizedCanvas(async () => {
+      const commands = createPanelCommandRegistry();
+      renderPanel({ params: { elementId: STOPPED.id }, registry: makeRegistry(STOPPED), commands });
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      const inst = liveInstanceIn("Area 1");
+
+      // Establish a known window (centre 15) before asking for a width.
+      act(() => {
+        commands.invoke(STOPPED.id, "plot.setVisibleRange", "10 20");
+      });
+      await act(async () => {});
+      inst.xCalls.length = 0;
+
+      act(() => {
+        commands.invoke(STOPPED.id, "plot.setVisibleRange", "4");
+      });
+      await act(async () => {});
+
+      expect(inst.xCalls[inst.xCalls.length - 1]).toEqual({ min: 13, max: 17 });
+    });
+  });
+
+  it("drops follow-live, the same as any other programmatic jump", async () => {
+    await withSizedCanvas(async () => {
+      const commands = createPanelCommandRegistry();
+      renderPanel({ params: { elementId: STOPPED.id }, registry: makeRegistry(STOPPED), commands });
+      addFocusedSignal("EngineSpeed");
+      await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
+      const checkbox = screen.getByRole("checkbox", { name: /follow live/i });
+      expect(checkbox).toBeChecked();
+
+      act(() => {
+        commands.invoke(STOPPED.id, "plot.setVisibleRange", "10 20");
+      });
+      await act(async () => {});
+
+      expect(checkbox).not.toBeChecked();
+    });
+  });
+});
 
 // Characterisation of the y-normalisation pipeline: the exact array
 // `PlotArea` hands uPlot via `setData` in each axis mode.
