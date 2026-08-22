@@ -41,7 +41,12 @@ import {
   gridTemplateColumns,
   visibleColumns,
 } from "./traceColumns";
-import { TraceTimeCell, cellContent } from "./traceTable";
+import {
+  ERROR_FRAME_ROW_CLASS,
+  ERROR_FRAME_TITLE,
+  TraceTimeCell,
+  cellContent,
+} from "./traceTable";
 import { GridviewHeader, GridviewRow, contentWidthStyle } from "./gridviewColumns";
 import { useGridview } from "./useGridview";
 import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
@@ -863,6 +868,7 @@ const Row = memo(function Row({
     );
   }
   const rowId = frame ? frameRowId(frame) : null;
+  const isErrorFrame = frame?.kind.kind === "error";
   // The row is the disclosure control (matching ByIdTable's settled
   // call): a row with no decode has nothing to open, so it reports no
   // expanded state at all rather than a permanent `false`.
@@ -879,11 +885,13 @@ const Row = memo(function Row({
       onDragStart={rowId == null ? undefined : (e) => onDragStart(rowId, e)}
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
         frame?.violation ? " trace-row-violation" : ""
-      }${selected ? " selected" : ""}`}
+      }${isErrorFrame ? ` ${ERROR_FRAME_ROW_CLASS}` : ""}${selected ? " selected" : ""}`}
       title={
         frame?.violation
           ? `calculated-field check failed: ${frame.violation}`
-          : undefined
+          : isErrorFrame
+            ? ERROR_FRAME_TITLE
+            : undefined
       }
       style={{ position: "absolute", top, left: 0, right: 0, height }}
       onClick={(e) => {
