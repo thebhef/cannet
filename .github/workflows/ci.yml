@@ -32,9 +32,16 @@ jobs:
       # reference to them rots. Measured to recur dozens of times while
       # every diff introducing it was under review, so it is enforced
       # here instead of relying on review alone.
+      #
+      # `--untracked` is load-bearing off CI. A fresh checkout has
+      # everything tracked, so the flag changes nothing here — but this
+      # is the spelling contributors copy for the pre-commit check, and
+      # without it `git grep` cannot see a file that has just been
+      # written. A new file's references pass the local gate and fail
+      # here, which has happened.
       - name: No task numbers or plans/ references under apps/ or crates/
         run: |
-          if git grep -Ein "task [0-9]|plans/" -- apps/ crates/; then
+          if git grep --untracked -Ein "task [0-9]|plans/" -- apps/ crates/; then
             echo "::error::Source comment above references a task number or a plans/ path (CLAUDE.md § Documentation) — state the reason inline or cite the governing ADR instead."
             exit 1
           fi
