@@ -198,3 +198,134 @@ carries no standing reference role, so it is deleted by the last phase
 that consumes it — the pattern the status-bar prototypes followed. Its
 trace view and plot panel show the general shape only and are **not** a
 cue to redesign any existing GUI surface (owner reading, 2026-08-21).
+
+## Carrier research — grooming (overseer, 2026-08-22)
+
+Answers phase 2's research questions ahead of the phase, so it
+implements rather than discovers. Grounded in the crates as they stand,
+not in spec memory alone: `mdf4-rs 0.6.0`'s `EventBlock`,
+`cannet-mdf/src/events.rs` + `write.rs`, and
+`cannet-blf/src/format/marker.rs`.
+
+### MDF4 — native support is close to exact
+
+An `##EV` block is not merely a timestamped label. `EventBlock` exposes,
+and `mdf4-rs` already parses and writes, every one of these:
+
+| 107 concept | Native MDF4 field | Fit |
+| --- | --- | --- |
+| an event at a time | `sync_type = Time`, `sync_base_value` × `sync_factor` | exact (shipped) |
+| its label | `name_addr` → `##TX` | exact (shipped) |
+| **subject = signal** | `scope_addrs` → `##CN` (channel) | **exact** |
+| **subject = message** | `scope_addrs` → `##CG` (channel group) | **exact** |
+| **a span of two events** | `range_type` = Begin/End + `range_ev_addr` | close, but *typed* |
+| **a chain of events** | `parent_ev_addr` | close, but *single-parent* |
+| provenance | `cause` = User / Tool / Script / Error | maps onto `EventCategory` |
+| anything else | `comment_addr` → `##MD` `common_properties` | **the format's own extension point, already implemented both ways** |
+
+`scope_addrs` is the headline: MDF4's event model already says *"this
+event is about these channels"*, as a list, mixing CN and CG references —
+which is 107's subject list, natively, including the mixed case. This is
+the common thing, and we should adopt it.
+
+`common_properties` is the MDF analogue of DBC's `BA_`, and
+`cannet-mdf` already reads it (`MdfEvent::properties`, `property()`) and
+writes it (`comment_xml`). ADR 0010's "use the format's own extension
+mechanism when one exists" is satisfied without inventing anything.
+
+**Where the fit stops being exact, and why it matters.** MDF4 has *two
+typed* link mechanisms where 107 has *one untyped list*:
+
+- `range_ev_addr` makes a pair a **span**. The owner ruled the opposite —
+  *"span-ness is nothing intrinsic to the events"* — so writing Begin/End
+  as the storage form would fabricate a property the model denies.
+- `parent_ev_addr` is **one** parent. A chain A←B←C survives; an event
+  linked to three others does not.
+
+So MDF's link fields are each *narrower* than ours, in different
+directions. Adopting them as the storage form would reverse two owner
+rulings and lose fan-out.
+
+**Recommendation — adopt the superset, keep ours where theirs is
+narrower, and write the native form as a bonus:**
+
+1. **Subjects → `scope_addrs`.** Exact fit; adopt outright.
+2. **Also write the structural reference into `common_properties`**
+   (`cannet.subject.N` = message id / extended / signal name). A scope
+   pointer resolves within *this* file; the structural reference is what
+   the model stores and is what survives being read against a different
+   database set. Read properties first, fall back to scope.
+3. **Event links → `common_properties`** as a list of event ids, with
+   `cannet.event.id` giving each event the id MDF has no field for.
+4. **Opportunistic interop write:** where a link *happens* to join
+   exactly two events and nothing else links either, additionally emit
+   `range_type` Begin/End + `range_ev_addr`, so other MDF tools render
+   the span. Read it back as an ordinary untyped link. Interop without
+   a model change.
+5. `cause = User` for user-authored, `Tool` for host-derived — though
+   host-derived never reaches a carrier anyway (`exportable()`).
+
+**Open question for the owner** — the one place new information touches
+a settled ruling: links were ruled *untyped* before it was known that
+MDF4 carries typed ones natively. If interop with other MDF tools
+matters more than fan-out, the ruling is worth revisiting. The
+recommendation above assumes it stands.
+
+### BLF — no native support, so this is the hand-rolled side
+
+`GLOBAL_MARKER` (object type 96) carries exactly: `commented_event_type`,
+foreground/background colour, `is_relocatable`, and three strings —
+`group_name`, `marker_name`, `description`. There is **no scope field, no
+event→event link, and no event id.** `EVENT_COMMENT` is narrower still.
+The prediction in the task file's opening was right: BLF is the
+constrained side.
+
+We already write `group_name = "cannet"`, so the namespace claim exists.
+
+**Rejected options.** `group_name` is a *grouping* label that Vector
+buckets markers by, so a per-event payload there produces one group per
+event — actively worse than nothing. A separate `APP_TEXT` record keeps
+user-visible strings clean but associates only by convention, and a tool
+that rewrites the file may keep the markers while dropping or reordering
+the `APP_TEXT`, silently orphaning every subject. That failure is
+invisible and unrecoverable.
+
+**Recommendation — the payload rides inside the record it describes**,
+in `description`, behind a sentinel:
+
+```text
+<the user's own description, verbatim>
+[cannet]{"v":1,"id":"…","subj":[…],"link":[…]}
+```
+
+The property that decides it: a tool that copies a marker copies its
+metadata, and a tool that drops a marker drops its metadata — which is
+correct. Orphaning is impossible by construction, which no out-of-record
+option can promise. The cost is one visible line in CANoe, below the
+user's own text.
+
+Rules the implementation must hold:
+
+- **Never lose text.** Parse by splitting at the last line beginning
+  with the sentinel. If it does not parse, the whole string stays the
+  description — a foreign marker whose description happens to contain
+  the sentinel must round-trip unharmed rather than being eaten.
+- **Versioned** (`"v":1`) from the first write.
+- **Structural references only**, matching the model: message id +
+  extended flag, plus signal name for a signal. No pointers — BLF has
+  nothing to point at.
+- The human description comes **first**, so a reader in Vector's tooling
+  sees their own words on line one.
+
+### What a round-trip loses, per format
+
+| | MDF4 | BLF |
+| --- | --- | --- |
+| subjects | kept (native + structural) | kept (hand-rolled) |
+| links | kept, and spans additionally legible to other tools | kept (hand-rolled) |
+| visible to other tools | yes — scope and range are standard | as a text line |
+| survives a foreign tool's rewrite | scope pointers yes; properties usually | yes, travels with the marker |
+
+Phase 2 records this table in the ADR as the honest statement of what
+each carrier does, per the task's "records exactly what a round-trip
+through the constrained format loses".
