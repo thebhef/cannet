@@ -120,7 +120,7 @@ describe("Toolbar", () => {
   });
 
   it("carries no launcher for anything the status bar already reports", () => {
-    // Task 103's ruling, which this sweep must not quietly undo: the
+    // The rule this sweep must not quietly undo (ADR 0055): the
     // connection control and the three badged launchers report from the
     // bar below, and a second copy up here would report the same
     // condition from two places.
