@@ -240,18 +240,7 @@ pub(crate) async fn open_log(
     // notes are session-scoped, so whatever the file carries replaces
     // what's in the store — Open BLF is a fresh-capture action that
     // wipes the trace store via the surrounding GUI flow.
-    let collected: Arc<Mutex<Vec<Note>>> = Arc::default();
-    source.on_marker({
-        let collected = Arc::clone(&collected);
-        let mut synthetic_idx = 0u64;
-        move |m| {
-            let note = note_from_marker(&m, &mut synthetic_idx);
-            collected
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(note);
-        }
-    });
+    let collected = collect_annotations(&mut source);
 
     let result = OpenLogResult {
         blf_path: blf_path.clone(),
@@ -731,7 +720,111 @@ pub(crate) fn note_from_marker(
         color: rgb_to_color(m.foreground_color),
         description,
         tag,
+        commented_event_type: None,
     }
+}
+
+/// Wire both annotation sinks onto `source` and hand back the list they
+/// fill: `GLOBAL_MARKER` and `EVENT_COMMENT` alike, collected on the walk
+/// the pump was already making rather than a second pass over the file.
+fn collect_annotations(source: &mut cannet_blf::BlfCanFrameSource) -> Arc<Mutex<Vec<Note>>> {
+    let collected: Arc<Mutex<Vec<Note>>> = Arc::default();
+    source.on_marker({
+        let collected = Arc::clone(&collected);
+        let mut synthetic_idx = 0u64;
+        move |m| {
+            let note = note_from_marker(&m, &mut synthetic_idx);
+            collected
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(note);
+        }
+    });
+    source.on_comment({
+        let collected = Arc::clone(&collected);
+        let mut synthetic_idx = 0u64;
+        move |c| {
+            let note = note_from_comment(&c, &mut synthetic_idx);
+            collected
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(note);
+        }
+    });
+    collected
+}
+
+/// Project one BLF `EVENT_COMMENT` onto a [`Note`] of the message-bound
+/// kind. The record has a single text field, so everything a marker keeps
+/// in fields of its own is packed into it behind the `cannet:event:`
+/// prefix ([`encode_comment_text`]). A comment written by another tool
+/// carries no such packing: its first line reads as the label, the rest as
+/// the description, and it gets a synthetic `blf-comment-<index>` id —
+/// mirroring what [`note_from_marker`] does for a third-party marker, so
+/// its rename / remove paths still work.
+pub(crate) fn note_from_comment(
+    scanned: &cannet_blf::ScannedComment,
+    synthetic_idx: &mut u64,
+) -> Note {
+    let text = String::from_utf8_lossy(&scanned.comment.text).into_owned();
+    let (id, tag, label, description) = decode_comment_text(&text, synthetic_idx);
+    Note {
+        id,
+        timestamp_ns: scanned.timestamp_ns,
+        label,
+        kind: notes::EventKind::MessageBound,
+        // `EVENT_COMMENT` has no colour field; the event takes the view's
+        // default for its kind.
+        color: None,
+        description,
+        tag,
+        commented_event_type: Some(scanned.comment.commented_event_type),
+    }
+}
+
+/// Pack a message-bound event into an `EVENT_COMMENT`'s one text field:
+/// `cannet:event:<tag>\n<id>\n<label>\n<description>`. Unlike a marker
+/// there is no unpacked form to fall back on — the record has nowhere else
+/// to put the label or the id.
+fn encode_comment_text(note: &Note) -> String {
+    format!(
+        "{EVENT_TEXT_PREFIX}{}\n{}\n{}\n{}",
+        note.tag.as_deref().unwrap_or_default(),
+        note.id,
+        note.label,
+        note.description.as_deref().unwrap_or_default(),
+    )
+}
+
+/// Unpack what [`encode_comment_text`] wrote: `(id, tag, label,
+/// description)`. Text without the prefix is another tool's comment —
+/// first line the label, remainder the description, synthetic id.
+fn decode_comment_text(
+    raw: &str,
+    synthetic_idx: &mut u64,
+) -> (String, Option<String>, String, Option<String>) {
+    let Some(rest) = raw.strip_prefix(EVENT_TEXT_PREFIX) else {
+        let (label, description) = raw.split_once('\n').unwrap_or((raw, ""));
+        let id = format!("blf-comment-{synthetic_idx}");
+        *synthetic_idx += 1;
+        return (
+            id,
+            None,
+            label.to_owned(),
+            (!description.is_empty()).then(|| description.to_owned()),
+        );
+    };
+    let mut parts = rest.splitn(4, '\n');
+    let tag = parts.next().unwrap_or_default();
+    let id = parts.next().unwrap_or_default();
+    let label = parts.next().unwrap_or_default();
+    let description = parts.next().unwrap_or_default();
+    (
+        id.to_owned(),
+        (!tag.is_empty()).then(|| tag.to_owned()),
+        label.to_owned(),
+        (!description.is_empty()).then(|| description.to_owned()),
+    )
 }
 
 /// Project one MDF `##EV` block onto a [`Note`] — the inverse of
@@ -759,6 +852,9 @@ pub(crate) fn note_from_event(event: &cannet_mdf::MdfEvent, synthetic_idx: &mut 
             .property(EVENT_DESCRIPTION_PROPERTY)
             .map(ToOwned::to_owned),
         tag: event.property(EVENT_TAG_PROPERTY).map(ToOwned::to_owned),
+        // MDF has no `EVENT_COMMENT` analogue, so a message-bound event
+        // exported to MDF and re-imported comes back freestanding.
+        commented_event_type: None,
     }
 }
 
@@ -833,14 +929,27 @@ pub(crate) fn write_blf_capture(
                 .map_err(|e| format!("failed to write frame: {e}"))?;
         } else {
             let note = note_iter.next().expect("peek matched");
-            writer
-                .append_marker(
-                    note.timestamp_ns,
-                    &note.label,
-                    &encode_marker_description(note),
-                    color_to_rgb(note.color.as_deref()),
-                )
-                .map_err(|e| format!("failed to write marker: {e}"))?;
+            match note.kind.blf_record() {
+                Some(notes::BlfRecord::EventComment) => writer
+                    .append_comment(
+                        note.timestamp_ns,
+                        &encode_comment_text(note),
+                        note.commented_event_type.unwrap_or(0),
+                    )
+                    .map_err(|e| format!("failed to write comment: {e}"))?,
+                // A kind with no record of its own is not written at all;
+                // `NotesStore::exportable` has already filtered those out,
+                // so falling back to a marker here only affects a caller
+                // that assembled its own list.
+                _ => writer
+                    .append_marker(
+                        note.timestamp_ns,
+                        &note.label,
+                        &encode_marker_description(note),
+                        color_to_rgb(note.color.as_deref()),
+                    )
+                    .map_err(|e| format!("failed to write marker: {e}"))?,
+            }
         }
     }
     let outcome = writer
@@ -1200,11 +1309,11 @@ pub(crate) async fn scan_blf_channels(
             &app,
             "blf-import",
             "scanned {blf_path} in {ms:.0} ms: {frames} frame(s) on {channels} channel(s), \
-             {markers} marker(s)",
+             {markers} annotation(s)",
             ms = started.elapsed().as_secs_f64() * 1000.0,
             frames = scan.frame_count,
             channels = scan.channels.len(),
-            markers = scan.markers.len(),
+            markers = scan.markers.len() + scan.comments.len(),
         );
         // A capture whose writer never finished is opened for what it
         // holds rather than refused, and says so once — the counts and
@@ -1214,11 +1323,18 @@ pub(crate) async fn scan_blf_channels(
             sys_warn!(&app, "blf-import", "{blf_path}: {warning}");
         }
         let mut synthetic_idx = 0u64;
-        let markers = scan
+        let mut markers: Vec<Note> = scan
             .markers
             .iter()
             .map(|m| note_from_marker(m, &mut synthetic_idx))
             .collect();
+        let mut synthetic_comment_idx = 0u64;
+        markers.extend(
+            scan.comments
+                .iter()
+                .map(|c| note_from_comment(c, &mut synthetic_comment_idx)),
+        );
+        markers.sort_by_key(|n| n.timestamp_ns);
         Ok(Some(BlfScanResult {
             channels: scan.channels,
             frame_count: scan.frame_count,
