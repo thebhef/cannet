@@ -259,6 +259,11 @@ ul.q li { margin:.3rem 0; }
    through one planner (toolbarFit.ts), which also keeps the solo
    cluster whole — all of it on the bar or all of it in the menu. */
 .appbar.plotbar { flex-wrap:nowrap; }
+/* In the app the spill control is a ChipButton labelled … inside a
+   `.chip-menu` wrapper (`.plot-toolbar-overflow`), named "More Plot
+   Controls"; its list opens rightwards-anchored so it does not run off
+   the panel. Which controls spill is `toolbarFit.ts` through
+   `useToolbarFit`, not a scrollWidth loop like the one below. */
 .appbar.plotbar .ovf { margin-left:auto; }
 .ovf .drop li { display:flex; }
 .chip.perf[hidden], .ovf[hidden] { display:none; }
