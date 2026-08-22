@@ -27,9 +27,9 @@ describe("Icon registry", () => {
   });
 
   it("pins the icon set itself — copied from the prototype's full inventory", () => {
-    // plans/prototypes/gui-chip-redesign.html, "The icon set — full
-    // inventory". Changing this list is changing the reviewable set, not
-    // an incidental effect of adding one icon somewhere else.
+    // Copied from the design prototype's "The icon set — full inventory"
+    // section. Changing this list is changing the reviewable set, not an
+    // incidental effect of adding one icon somewhere else.
     const expected = [
       "folder",
       "save",
