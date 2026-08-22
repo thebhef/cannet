@@ -224,7 +224,7 @@ describe("ViewSignalsPanel", () => {
   it("bus fly-out filters by bus, ANDed with the status filter", async () => {
     renderPanel();
     await waitFor(() => expect(screen.getByText("VehicleSpeed", { selector: ".col-vs-signal" })).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Bus: all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Bus: All" }));
     fireEvent.click(screen.getByRole("checkbox", { name: /Body/ }));
     await waitFor(() => expect(screen.queryByText("VehicleSpeed", { selector: ".col-vs-signal" })).not.toBeInTheDocument());
     expect(screen.getByText("AmbientTemp")).toBeInTheDocument();
@@ -256,7 +256,7 @@ describe("ViewSignalsPanel", () => {
     await waitFor(() => expect(screen.getByText("VehicleSpeed", { selector: ".col-vs-signal" })).toBeInTheDocument());
     // Off by default: no textual status label rendered, only the chip.
     expect(screen.queryByText("Scale")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("checkbox", { name: /row highlights/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Row Highlights" }));
     await waitFor(() => expect(screen.getByText("Scale")).toBeInTheDocument());
   });
 
