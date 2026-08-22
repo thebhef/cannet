@@ -69,6 +69,13 @@ export interface UseGridviewOptions {
   /// the layer binds no default. Enter is deliberately left unbound
   /// for the user's own keybindings.
   onPrimaryAction?: (id: string) => void;
+  /// F2: begin the cursor row's inline rename. The layer's second
+  /// action key beside Space, and optional the same way — a view that
+  /// has nothing to rename leaves it unbound and the press falls
+  /// through. It lives here rather than in a view because the rows that
+  /// carry an editable label appear in more than one of them, and a
+  /// per-view copy is what drifts.
+  onRenameAction?: (id: string) => void;
   /// Selectable items that are **not** rows of the scrolled space,
   /// appended to the selection order after them: ADR 0045's pattern
   /// chips, which are "selectable items in the same selection set as
@@ -121,6 +128,7 @@ export function useGridview({
   pageRows,
   idPrefix,
   onPrimaryAction,
+  onRenameAction,
   extraSelectableIds = EMPTY_EXTRAS,
 }: UseGridviewOptions): Gridview {
   const [cursor, setCursor] = useState<string | null>(null);
@@ -268,6 +276,15 @@ export function useGridview({
         onPrimaryAction(cursor);
         return;
       }
+      // F2 begins the cursor row's inline rename, the platform's rename
+      // key. A row already in an editor took the press above, where the
+      // editable-target exemption returns.
+      if (e.key === "F2") {
+        if (!onRenameAction || cursor == null) return;
+        e.preventDefault();
+        onRenameAction(cursor);
+        return;
+      }
       if (!NAV_KEYS.has(e.key)) return;
       // The grid consumes the navigation keys whether or not this
       // particular press has somewhere to go — otherwise a no-op Right
@@ -288,7 +305,16 @@ export function useGridview({
           break;
       }
     },
-    [adapter, cursor, moveCursor, onPrimaryAction, pageRows, rowDomId, selectionOrder],
+    [
+      adapter,
+      cursor,
+      moveCursor,
+      onPrimaryAction,
+      onRenameAction,
+      pageRows,
+      rowDomId,
+      selectionOrder,
+    ],
   );
 
   const onRowClick = useCallback(

@@ -66,6 +66,7 @@ const UNSELECTABLE = new Set(
 
 const scrolled: number[] = [];
 const primaryAction = vi.fn();
+const renameAction = vi.fn();
 
 /// The chip ids a consumer can put in the same selection set as its
 /// rows — ADR 0045's pattern chips, which are selectable alongside rows
@@ -107,6 +108,7 @@ function Harness({
     pageRows,
     idPrefix: "harness",
     onPrimaryAction: primaryAction,
+    onRenameAction: renameAction,
     extraSelectableIds: chips,
   });
   return (
@@ -161,6 +163,7 @@ function setup(
 ) {
   scrolled.length = 0;
   primaryAction.mockClear();
+  renameAction.mockClear();
   const view = render(<Harness {...props} />);
   const grid = view.getByTestId("grid");
   grid.focus();
@@ -271,6 +274,33 @@ describe("keys the layer does not bind", () => {
     // The grid still owns the press everywhere else on the row.
     fireEvent.keyDown(view.grid, { key: " " });
     expect(primaryAction).toHaveBeenCalledWith("bus");
+  });
+
+  it("runs the panel's rename action on F2", () => {
+    // F2 is the layer's second action key beside Space (ADR 0044): the
+    // rows that carry an inline label — an event row's, a section's —
+    // are in more than one view, so the binding lives once here rather
+    // than being copied into each of them.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "F2" });
+    // No cursor yet: there is no row to rename.
+    expect(renameAction).not.toHaveBeenCalled();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.grid, { key: "F2" });
+    expect(renameAction).toHaveBeenCalledWith("plain");
+    // …and it is a separate key from Space, not an alias for it.
+    expect(primaryAction).not.toHaveBeenCalled();
+  });
+
+  it("leaves F2 to a field that is already being edited", () => {
+    // The row's own editor owns its keys, F2 among them — re-entering
+    // rename on a row already in rename is the layer talking over the
+    // editor it opened.
+    const view = setup();
+    fireEvent.keyDown(view.grid, { key: "ArrowDown" });
+    fireEvent.keyDown(view.getByLabelText("rename bus"), { key: "F2" });
+    expect(renameAction).not.toHaveBeenCalled();
   });
 
   it("leaves an inline editor inside a row its own keys", () => {
