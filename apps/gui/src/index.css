@@ -6571,31 +6571,13 @@ button.color-chip {
   gap: 0.3rem;
   flex-wrap: wrap;
 }
-.rbs-signals-status-filter {
-  display: flex;
-  align-items: stretch;
-  gap: 0.35rem;
-  padding: 0.1rem 0.4rem 0.1rem 0.25rem;
-  font: inherit;
-  color: var(--text-muted);
-  background: var(--surface-field);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  cursor: pointer;
-}
-.rbs-signals-status-filter:hover {
-  background: var(--surface-hover);
-}
-.rbs-signals-status-filter[aria-pressed="true"] {
-  border-color: var(--accent-marker);
-  color: var(--text-primary);
-}
-.rbs-signals-status-filter[aria-pressed="false"] .rbs-signals-chip {
+/* The status filter chips keep their own tall status swatch (also used
+   in each row's status cell) rather than the shared chip's round dot —
+   two shapes for the same status taxonomy would be its own collision.
+   Everything else about the control is the shared `.status-chip
+   .chip-button` silhouette. */
+.chip-button[aria-pressed="false"] .rbs-signals-chip {
   opacity: 0.45;
-}
-.rbs-signals-status-filter > span {
-  align-self: center;
-  font-size: 0.8rem;
 }
 
 .rbs-signals-chip {
@@ -6624,25 +6606,6 @@ button.color-chip {
   background: var(--text-muted);
 }
 
-.rbs-signals-busfilter {
-  position: relative;
-  display: inline-flex;
-}
-.rbs-signals-busbtn {
-  font: inherit;
-  font-size: 0.8rem;
-  min-width: 8rem;
-  text-align: left;
-  color: var(--text-muted);
-  background: var(--surface-field);
-  border: 1px solid var(--border-subtle);
-  border-radius: 3px;
-  padding: 0.15rem 0.4rem;
-  cursor: pointer;
-}
-.rbs-signals-busbtn:hover {
-  background: var(--surface-hover);
-}
 .rbs-signals-busmenu {
   position: absolute;
   top: calc(100% + 4px);
@@ -6695,29 +6658,6 @@ button.color-chip {
 .rbs-signals-busmenu button:hover {
   background: var(--surface-hover);
   color: var(--text-primary);
-}
-
-.rbs-signals-wash-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-
-.rbs-signals-counts {
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-  font: inherit;
-  background: none;
-  border: none;
-  padding: 0.15rem 0.1rem;
-  cursor: pointer;
-}
-.rbs-signals-counts:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
 }
 
 .rbs-signals-rows {
