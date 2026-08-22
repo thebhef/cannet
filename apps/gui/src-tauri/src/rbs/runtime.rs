@@ -905,6 +905,73 @@ BO_ 1280 AuxFrame: 8 AUX
         assert!(!registry.is_running(&row_id("el1", "Powertrain", "0x200")));
     }
 
+    /// An RBS entry names a message by bus and hex id — never by the
+    /// database that defined it — so replacing a DBC with a different
+    /// *file* that defines the same messages leaves every entry, its
+    /// signal-value overrides included, resolving. The replace is the
+    /// two DBC-set changes it really is: the new file installed
+    /// alongside, then the old one removed, with the rows rebuilt after
+    /// each (which is what `add_dbc` / `remove_dbc` do through
+    /// `refresh_all_elements`).
+    #[test]
+    fn rbs_entries_survive_a_dbc_replaced_by_a_different_file() {
+        let state = crate::tests::test_state();
+        let file = RbsFile::parse(
+            r#"{ "schema_version": 1, "buses": {
+                 "Powertrain": { "ecus": { "BMS": { "messages": {
+                     "0x123": { "signals": { "PackVoltage": 403.2 } }
+                 } } } } } }"#,
+        )
+        .unwrap();
+        {
+            let mut rbs = state.rbs.lock().unwrap();
+            rbs.project_buses = vec![("p1".into(), "Powertrain".into())];
+            rbs.elements.insert(
+                "el1".into(),
+                RbsElementState {
+                    path: Some("/tmp/x.cannet_rbs".into()),
+                    file,
+                    dirty: false,
+                    run: false,
+                },
+            );
+        }
+        let resolved = |label: &str| {
+            let warnings = rebuild_element_rows(&state, "el1");
+            assert!(warnings.is_empty(), "{label}: {warnings:?}");
+            let registry = state.transmit_frames.lock().unwrap();
+            assert!(
+                registry
+                    .rbs_row_ids("el1")
+                    .contains(&row_id("el1", "Powertrain", "0x123")),
+                "{label}: the entry's row is registered",
+            );
+        };
+
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded("a.dbc", RBS_DBC));
+        resolved("under the original database");
+
+        // The replacement, installed alongside…
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .push(crate::tests::loaded("b.dbc", RBS_DBC));
+        resolved("with both loaded");
+
+        // …and the original removed.
+        state
+            .databases
+            .lock()
+            .unwrap()
+            .retain(|d| d.path != "a.dbc");
+        resolved("under the replacement alone");
+    }
+
     /// The seeded fallback is idempotent: first call creates the
     /// file-less default, repeats are no-ops (an `rbs_load` must never
     /// be overwritten by a late `rbs_init`).

@@ -523,7 +523,7 @@ function renderPanel(opts?: {
   const api = { updateParameters: vi.fn() };
   const props = { params: opts?.params ?? {}, api } as unknown as Parameters<typeof PlotPanel>[0];
   const registry = opts?.registry ?? makeRegistry();
-  const baseData = { ...traceData, ...opts?.trace };
+  let baseData = { ...traceData, ...opts?.trace };
   let generatorIndexes: ReadonlyMap<string, number> = new Map();
   const build = (data: TraceData) => {
     let tree = (
@@ -548,7 +548,17 @@ function renderPanel(opts?: {
     registry,
     /// Push a new session-buffer frame count through the trace context —
     /// what a `trace-grew` event does, and what moves the plot's `winEnd`.
-    growTrace: (count: number) => rerender(build({ ...baseData, count })),
+    growTrace: (count: number) => {
+      baseData = { ...baseData, count };
+      rerender(build(baseData));
+    },
+    /// Bump the trace model's re-anchor epoch — what `invalidateCache`
+    /// does on every DBC-set change the frontend makes (add, remove,
+    /// reload in place, re-scope, open project).
+    bumpEpoch: () => {
+      baseData = { ...baseData, epoch: baseData.epoch + 1 };
+      rerender(build(baseData));
+    },
     /// Publish a new host-evaluated generator answer — what editing a
     /// generator rule does to every panel.
     setGeneratorIndexes: (m: ReadonlyMap<string, number>) => {
@@ -6942,6 +6952,66 @@ describe("PlotPanel file-backed signals", () => {
       dropFileSignal("AcVoltage", "V");
       await waitFor(() => expect(sampleCalls()).toBeGreaterThan(0));
       await waitFor(() => expect(drawnPoints(liveInstanceIn("Area 1"))).toBe(3));
+    });
+  });
+});
+
+describe("PlotPanel DBC-set change", () => {
+  const sig = (signalName: string, unit: string) => ({
+    busId: null,
+    messageId: 256,
+    extended: false,
+    signalName,
+    messageName: "EngineData",
+    unit,
+    color: "#4ecbff",
+  });
+
+  /// A stopped panel with one signal on the plot, settled past the
+  /// post-mount rebuild and every async first fetch — so a round-trip
+  /// after this point was caused by the gesture under test and nothing
+  /// else. Stopped is the case that matters: a live capture's `winEnd`
+  /// moves every tick, which re-keys the fetch memo on its own.
+  async function settledPanel() {
+    const registry = makeRegistry({
+      id: "el-dbc-change",
+      config: { areas: [{ id: "a1", signals: [sig("EngineSpeed", "rpm")] }] },
+      trace: { start: 0, end: 60, isPaused: false },
+    });
+    const panel = renderPanel({ params: { elementId: "el-dbc-change" }, registry });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    for (let i = 0; i < 20; i++) {
+      const settled = sampleCalls();
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 100));
+      });
+      if (sampleCalls() === settled) break;
+    }
+    return panel;
+  }
+
+  it("refetches its window when the DBC set changes", async () => {
+    // A DBC load re-decodes the capture: the same window over the same
+    // signals is different numbers afterwards. The plot's fetch memo
+    // asks "could this request return different bytes?" and answers
+    // from the window and the slice alone — so on a *stopped* capture,
+    // where neither moves, an unchanged request would freeze the plot
+    // on the pre-load decode forever. The trace model's re-anchor epoch
+    // is what every frontend-initiated DBC change already bumps
+    // (`App.invalidateCache`), so the plot has to fold it into the
+    // request the way every row-addressed trace window does.
+    await withSizedCanvas(async () => {
+      const panel = await settledPanel();
+      const before = sampleCalls();
+      expect(before).toBeGreaterThan(0);
+
+      await act(async () => {
+        panel.bumpEpoch();
+        await new Promise((r) => setTimeout(r, 400));
+      });
+      expect(sampleCalls()).toBeGreaterThan(before);
     });
   });
 });

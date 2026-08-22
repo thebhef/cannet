@@ -616,6 +616,15 @@ interface PlotAreaProps {
    * x-axis origin, so the plot's `t=0` matches the trace table's. `null`
    * until a session start is known. */
   originSeconds: number | null;
+  /** The trace model's re-anchor epoch. Bumped whenever the decoded
+   * model changes under the view — a DBC loaded, removed, reloaded in
+   * place or re-scoped re-decodes the capture, so the same window over
+   * the same signals is different numbers afterwards. It is part of the
+   * fetch's identity for the same reason `winEnd` is: without it the
+   * decimated source's memo, which keys on the window and the visible
+   * slice, would hold the pre-change decode on screen for as long as
+   * neither moved — which on a stopped capture is forever. */
+  modelEpoch: number;
   live: boolean;
   followLive: boolean;
   /** Show-points tri-state from the panel toolbar — applied to every
@@ -1134,6 +1143,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     winStart,
     winEnd,
     originSeconds,
+    modelEpoch,
     live,
     followLive,
     showPoints,
@@ -1714,8 +1724,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
             {
               // Membership, not order: the cache is keyed by signal, so
               // re-anchoring it on a reorder would throw away a window
-              // every sample of which is still valid.
-              descriptor: signalMembershipKey,
+              // every sample of which is still valid. The model epoch
+              // rides in front of it — the same window's samples are
+              // not the same numbers once the DBC set has moved.
+              descriptor: `${modelEpoch}:${signalMembershipKey}`,
               // Provenance rides along, exactly as it does on the
               // extent sidecar above: a file-backed series is keyed by
               // it host-side, so a query that dropped the flag would
@@ -2171,6 +2183,7 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   }, [
     signals,
     signalMembershipKey,
+    modelEpoch,
     areaId,
     withSuppressed,
     recordRate,
@@ -3105,6 +3118,15 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
   useEffect(() => {
     void resampleRef.current();
   }, [xEpoch]);
+
+  // Forced re-sample when the decoded model moves under us — a DBC
+  // loaded, removed, reloaded in place or re-scoped. A running trace is
+  // covered by the loop above, but a stopped one has no tick at all and
+  // its window never moves, so nothing else would ever ask the host for
+  // the new decode.
+  useEffect(() => {
+    void resampleRef.current();
+  }, [modelEpoch]);
 
   // Panel asked us to refit y — drop any manual Fit Y override so the
   // next tick uses the host extent (follow-live) / visible slice fresh.
