@@ -1098,6 +1098,13 @@ function EventRow({
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
       title={event.label}
       id={domId}
+      // The row is what `aria-activedescendant` names, so the row is
+      // where its disclosed state has to be readable — the caret below
+      // carries its own, but a cursor on the row never reaches it. Same
+      // shape as every other gridview row (ADR 0044): absent, not
+      // `false`, where there is nothing to open. `aria-selected` is
+      // deliberately absent too — an event row is not selectable.
+      aria-expanded={discloses ? isExpanded : undefined}
       tabIndex={0}
       onClick={(e) => onSelect(`${EVENT_ROW_PREFIX}${event.id}`, e)}
     >
@@ -1105,6 +1112,10 @@ function EventRow({
         <button
           type="button"
           className="trace-event-disclose"
+          // Out of the tab order, like every other gridview's caret: what
+          // it does is already Left/Right's, and Tab into the row must
+          // land on a control the keyboard does not otherwise have.
+          tabIndex={-1}
           aria-expanded={isExpanded}
           aria-label={isExpanded ? "hide event details" : "show event details"}
           title={isExpanded ? "hide the tag and description" : "show the tag and description"}

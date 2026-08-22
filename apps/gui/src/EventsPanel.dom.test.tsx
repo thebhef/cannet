@@ -392,6 +392,81 @@ describe("EventsPanel event body", () => {
   });
 });
 
+describe("EventsPanel event row ARIA", () => {
+  // Measured against what the other gridviews put on a row (the database
+  // and RBS trees, `ByIdTable`): the DOM id `aria-activedescendant`
+  // names, `aria-expanded` where the row discloses something, and
+  // `aria-selected` only where the row can be selected.
+  const tagged: Note = {
+    id: "n1",
+    timestampNs: 5_000_000_000,
+    label: "contactor",
+    kind: "note",
+    tag: "fault",
+    description: "opened under load",
+  };
+
+  function grid(): HTMLElement {
+    const el = document.querySelector(".trace-rows");
+    if (!el) throw new Error("no rows container");
+    return el as HTMLElement;
+  }
+
+  /// The row the container currently names as active.
+  function activeRow(): HTMLElement | null {
+    const id = grid().getAttribute("aria-activedescendant");
+    return id == null ? null : document.getElementById(id);
+  }
+
+  it("states its expanded state on the row the container names, not only on the caret", () => {
+    // The caret is a nested node; the cursor is on the *row*, so a
+    // reader following `aria-activedescendant` never reaches the caret's
+    // own `aria-expanded` and was told nothing about the disclosure.
+    renderPanel([tagged]);
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(activeRow()).toHaveClass("trace-event-row");
+    expect(activeRow()).toHaveAttribute("aria-expanded", "false");
+    fireEvent.keyDown(grid(), { key: "ArrowRight" });
+    expect(activeRow()).toHaveAttribute("aria-expanded", "true");
+    fireEvent.keyDown(grid(), { key: "ArrowLeft" });
+    expect(activeRow()).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("says nothing about expansion on an event with nothing to disclose", () => {
+    // The truncation marker: derived, and carrying neither tag nor
+    // description, so there is no body behind it to open.
+    renderPanel([], { ...traceData, truncationTsNs: 3_000_000_000, count: 1, firstIndex: 1 });
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(activeRow()).toHaveClass("trace-event-row");
+    expect(activeRow()).not.toHaveAttribute("aria-expanded");
+  });
+
+  it("advertises no selection, because an event row is not selectable", () => {
+    // A frame row carries `aria-selected`; an event row is not a message
+    // and takes no part in the selection (ADR 0044), so claiming the
+    // attribute would say it does.
+    renderPanel([tagged]);
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(activeRow()).not.toHaveAttribute("aria-selected");
+  });
+
+  it("keeps the caret out of the tab order, so Tab lands on a control that needs it", () => {
+    // The layer's Tab moves into the cursor row's first tab stop
+    // (ADR 0044). The caret's job is already Left/Right's, so it opts
+    // out the way every other gridview's caret does — otherwise Tab
+    // spends its first press on a control the keyboard already has.
+    renderPanel([tagged]);
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    grid().focus();
+    fireEvent.keyDown(grid(), { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByLabelText("go to this event"));
+    // …and the caret is still a real control for the mouse.
+    const caret = document.querySelector(".trace-event-disclose") as HTMLElement;
+    expect(caret.tagName).toBe("BUTTON");
+    expect(caret.tabIndex).toBe(-1);
+  });
+});
+
 describe("EventsPanel tag filter", () => {
   it("narrows to the events carrying a matching tag", () => {
     // jsdom lays nothing out; give the row virtualizer a viewport so all
