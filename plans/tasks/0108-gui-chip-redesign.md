@@ -445,6 +445,20 @@ to extend and were aligned to it: `gap` `.35rem` → `.4rem`, and
     The `comment-references` gate was run before each commit and read
     clean — wrongly: `git grep` without `--untracked` cannot see a file
     that is still new. Run it as `git grep --untracked`.
+  - **Overseer review corrections, same branch.** `45e7b559` restores
+    ADR 0055's superseded rule instead of overwriting it — "do not
+    convert a command into a chip" is back, dated and annotated the way
+    ADR 0026 carries its own reversal, and the status line now reads
+    `accepted (2026-08-21); amended (2026-08-22)`. The rule itself is
+    unchanged. `5e142f53` adds `--untracked` to the
+    `comment-references` CI job (`.github/workflows/ci.yml`): the flag
+    is a no-op on CI, where a fresh checkout has everything tracked,
+    but CI is the spelling every phase copies for its pre-commit check,
+    and without it the check is blind to a file it has just written.
+    Verified by canary: a new untracked `apps/` file containing
+    `// task 999` is found by `git grep --untracked -Ein …` (exit 0,
+    the job would fail) and missed by the old spelling (exit 1, the job
+    would pass). The job body run verbatim on the clean tree passes.
   - Frontend tests: 2704/203 files before → 2718/205 files after (all
     green). `tsc --noEmit` and `vite build` clean; the
     `comment-references` grep empty at each commit. No Rust touched.
@@ -631,12 +645,13 @@ and takes the progress cursor rather than dimming.
 
 - **ADR 0055 §1 said "Do not convert a command into a chip"**
   (phase 3). That sentence and this task's chip language cannot both
-  stand, and the owner rulings are the newer decision, so the paragraph
-  was rewritten rather than left contradicting shipped code: the
-  silhouette is shared, and the dot — present only on a chip with a
-  state to report — is what keeps the distinction readable. Flagged
-  because it is an amendment to an accepted ADR made by an
-  implementation phase.
+  stand, and the owner rulings are the newer decision, so the ADR was
+  amended: the silhouette is shared, and the dot — present only on a
+  chip with a state to report — is what keeps the distinction readable.
+  The superseded rule is kept and annotated rather than overwritten
+  (`45e7b559`, after overseer review), and the status line records the
+  amendment. Flagged because it is an amendment to an accepted ADR made
+  by an implementation phase.
 
 - **The top-level toolbar wraps rather than overflowing** (phase 3), per
   the prototype (`.appbar` is `flex-wrap: wrap`; only `.plotbar` is
