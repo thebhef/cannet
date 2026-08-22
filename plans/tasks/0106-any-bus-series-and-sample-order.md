@@ -426,6 +426,104 @@ After: identical counts — doc-only change. `cargo clippy --workspace
 after (unchanged); `npx tsc --noEmit` and `npx vite build` clean.
 `git grep -Ein "task [0-9]|plans/" -- apps/ crates/` empty.
 
+### 2026-08-22 — phase 3 correction: non-decreasing, not strictly increasing, and one real consumer bug
+
+Overseer review of `4d0e4c8b` caught a contradiction the first pass
+introduced rather than resolved: `plotData.ts`'s `RawSeries.t` doc
+opened with "Strictly-increasing" while the justification I appended
+under it only established non-decreasing. Re-opened on the same branch
+to settle which is true and check consumers, per the review.
+
+**Observation.** `servers/cannet-python-can/scratch_pcan_timestamps.py`
+is a diagnostic already in the repo for exactly this question, and its
+own docstring records the mechanism: "Clusters of <1 ms gaps then
+20-50 ms gaps → python-can / PCAN-Basic itself is producing bursty
+timestamps." `driver_python_can.py::_msg_to_frame` converts python-can's
+`msg.timestamp` (a float second value backed by "PEAK's µs counter" per
+its own comment) to `timestamp_ns` via `int(ts_s * 1_000_000_000)`. A
+microsecond-resolution hardware counter and a CAN-FD bus that can move a
+frame in under a microsecond means two distinct frames on the same bus
+can legitimately convert to the identical `timestamp_ns`.
+
+**Hypothesis.** Two frames on one bus can share a `t_seconds`, so the
+signal cache's per-key order guarantee is non-decreasing, not strictly
+increasing — and any doc or consumer that assumed strict uniqueness is
+wrong.
+
+**Verdict — non-decreasing, confirmed rather than asserted.** Fixed
+`plotData.ts`'s `RawSeries.t` doc to say non-decreasing and name the
+mechanism (hardware timestamp ties under a burst), instead of softening
+the wording to straddle both claims.
+
+**Consumer check.** Read every function reachable from `RawSeries.t`,
+then ran a scratch vitest file (`src/_scratch_dup_ts.test.ts`, deleted
+before commit — not part of the diff) exercising each with a duplicate
+timestamp, to get data rather than a hand-trace:
+
+| consumer | tie behaviour | verdict |
+| --- | --- | --- |
+| `mergeSeries` (`plotData.ts`) | `xsSet` is a `Set`, so a duplicate `t` collapses to one merged column; the forward sample-and-hold walk (`s.t[j] <= xs[i]`) processes both tied entries and the *later* one wins — consistent, deterministic, no crash. | **Sound.** |
+| `sampleColumns` (`plotData.ts`) | Because `xs` already collapsed the tie to one column, the walk marks that column as a genuine sample exactly once — nothing to lose, since there was never a second column for the second duplicate to occupy. | **Sound.** |
+| `indexAtOrBefore` / `valueAt` (`plotCursors.ts`) | Binary search for "last index `<= x`" returns the *later* of a tied pair — correct sample-and-hold ("most recent value"), by construction. | **Sound.** |
+| `statsOver` (`plotCursors.ts`) | **Bug, confirmed by data**, not just argument: over `{t: [0,1,2,2,3], v: [5,1,9,4,7]}`, `statsOver(s, 2, 2)` should count both samples tied at `t=2` (`{count: 2, min: 4, max: 9, mean: 6.5}`) but returned `{count: 1, min: 4, max: 4, mean: 4}` — the earlier tied sample (value 9) silently dropped. The scratch run and then the committed regression test both reproduced it before the fix. | **Fixed.** |
+
+**Root cause, from the data above.** `statsOver` derived its walk's
+start index from `indexAtOrBefore(lo)` ("last index `<= lo`") plus a
+`+1` nudge on a non-exact hit. That derivation assumes "last `<= lo`"
+and "first `>= lo`" name the same position whenever `lo` matches a
+sample exactly — true only when that sample is unique. Under a tie
+exactly on `lo`, `indexAtOrBefore` returns the *last* of the tied
+indices, and the walk starting there skips every earlier tied sample,
+undercounting the span (and silently returning a possibly-wrong
+min/max/mean, not an error). This is the same defect class the whole
+phase is auditing — a search built for a stronger order guarantee than
+the one actually enforced — one level up from `RawSeries.t` itself, in
+a *consumer* rather than in the model.
+
+**Fix.** Added `indexAtOrAfter` (`plotCursors.ts`) — a direct
+lower-bound "first index `>= x`" binary search, the complement of the
+existing `indexAtOrBefore` — and rewrote `statsOver` to start its walk
+there instead of deriving a start point from the other search. This is
+inside the phase's signal-cache-and-above boundary (`apps/gui/src`, a
+consumer of the same per-key guarantee `RawSeries.t` documents), so it
+was fixed here rather than merely recorded.
+
+**Mutation evidence.** `statsOver > counts every sample at a tied
+lower-boundary timestamp, not just the last`
+(`plotCursors.test.ts`) was written first and watched fail against the
+pre-fix code: `{count: 1, min: 4, max: 4, mean: 4}` where the tied pair
+at `t=2` (values 9 and 4) should give `{count: 2, min: 4, max: 9, mean:
+6.5}`. It passed once `indexAtOrAfter` replaced the derived start
+index — the same before/after pair *is* the mutation test the debugging
+discipline asks for: the "mutation" is the bug itself, already present
+before the fix, not one introduced and reverted afterward.
+
+**`plotCursors.ts`'s own module doc and `Series.t` doc carried the same
+"strictly increasing" claim**, independently of `plotData.ts` — found
+while tracing consumers, not part of the original ask, but the same
+defect on the same underlying data (`PlotArea.tsx`'s `seriesRef` stores
+`RawSeries` objects directly as `Series`). Corrected alongside the fix
+rather than left to contradict the now-corrected `RawSeries.t`.
+
+**What was not changed.** `lastAtOrBefore` / `firstAtOrAfter`
+(`plotData.ts`, over `xs`) were not touched — `xs` is deduplicated by
+construction (`[...xsSet]`), so there is no tie for them to mishandle.
+`enumSegments` (`plotData.ts`) and the extrapolation-span math in
+`signal_cache.rs` degrade to a zero-width cosmetic artifact under a tie
+(a segment box or dashed stretch with no width) rather than a wrong
+answer — checked, not a defect, left alone.
+
+**Commit.** `3b8fd808` — doc corrections in `plotData.ts` and
+`plotCursors.ts`, the `indexAtOrAfter` fix and its regression test in
+`plotCursors.ts` / `plotCursors.test.ts`.
+
+**Suites after the correction.** Frontend: 2625 passed / 199 files (one
+new regression test over the 2624 baseline); `npx tsc --noEmit` and
+`npx vite build` clean. No Rust file touched this round, so the Rust
+suites were not re-run; they were green as of `4d0e4c8b` and nothing
+since has touched `apps/gui/src-tauri` or `crates/`.
+`git grep -Ein "task [0-9]|plans/" -- apps/ crates/` empty.
+
 ## Blockers / side effects
 
 - **The ruling is unconfirmed by the owner.** Recorded here rather than
