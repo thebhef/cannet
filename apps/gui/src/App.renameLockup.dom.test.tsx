@@ -197,7 +197,7 @@ describe("rename keystroke under a streaming session", () => {
     // the window arithmetic are live, like the real repro.
     const startButton = Array.from(
       document.querySelectorAll<HTMLButtonElement>("button"),
-    ).find((b) => b.textContent === "Start");
+    ).find((b) => b.getAttribute("aria-label") === "Start");
     if (!startButton) throw new Error("trace Start button not found");
     await act(async () => {
       fireEvent.click(startButton);
