@@ -281,7 +281,172 @@ instruction in every phase prompt, not a phase of its own.
     already reflected there, so the divergence to fix was in the app
     code only.
 
+
+- **2026-08-22 — Phase 2, the command chip and the shared overflow
+  planner, landed.** Branch `task-108-phase-2-command-chip` from
+  `7c2a8a97`.
+  - `9787f94d` replaces `statusBarFit.ts` with `toolbarFit.ts` — the
+    planner every bar shares — and points `StatusBar` at it.
+  - `00707719` adds `apps/gui/src/ChipButton.tsx`, its CSS block in
+    `index.css` and `ChipButton.dom.test.tsx`.
+  - `02f9b877` moves `useBusHealth` onto `useHostMirror`, with
+    `busHealth.dom.test.tsx`.
+  - Frontend tests: 2685/201 files before → 2704/203 files after (all
+    green). `tsc --noEmit` and `vite build` clean; the
+    `comment-references` grep empty at each commit. No Rust touched.
+
+### The API phases 3–6 consume
+
+**`ChipButton` (`apps/gui/src/ChipButton.tsx`)** — the command chip.
+It renders `<button type="button" class="status-chip chip-button …">`:
+it *carries* `.status-chip`, so the hairline, the 2px radius, the dot,
+the badge and every state tint are the shipped status chip's own
+declarations. `.chip-button` adds only the 22px density (at the status
+chip's 12px type, not restated), the 13px icon, the icon-only square,
+the pressed state, the busy hairline and the focus ring. There is no
+parallel chip class; do not add one.
+
+| prop | meaning |
+|---|---|
+| `icon?: IconName` | a registry icon, drawn left of the label |
+| `label?: string` | Title Case words. **Omit for the icon-only form** — the chip then also gets `.chip-button--icon-only` and is a 22px square |
+| `state?: StatusChipState` | `idle`/`connecting`/`connected`/`degraded`/`failed`. **Providing it at all is what gives the chip a dot**, in every state including `idle`; a plain command omits it and grows no dot |
+| `pressed?: boolean` | a toggle's position → `aria-pressed`. Omit entirely on non-toggles, so nothing announces a state that does not exist |
+| `badge?: number` | needs-attention count; absent or `0` renders nothing, capped at `99+` by the shipped `statusChipBadgeText` |
+| `busy?: boolean` | the chip's own work is running → `aria-busy`, a pulsing accent hairline (the import chip's treatment) |
+| `title?`, `ariaLabel?`, `disabled?`, `className?`, `onPress` | as `StatusChip`. The accessible name falls back `ariaLabel ?? label ?? title`, so **an icon-only chip needs a `title` or an `ariaLabel`** |
+
+Segmented groups (the prototype's `.seg`) are **not** built — no phase
+needed one yet. A phase that wants one adds `.seg` to `index.css`
+around `ChipButton`s; it must not fork the chip.
+
+**`toolbarFit.ts`** — the one overflow planner. Exports
+`planToolbarFit(input): ToolbarFit`, `toolbarRemovalOrder(runs)`, and
+the types `ToolbarRun`, `ToolbarRunUnits`, `ToolbarFitInput`,
+`ToolbarFit`. `statusBarFit.ts` and its `planStatusBarFit` /
+`statusBarRemovalOrder` / `StatusBarFit` / `StatusBarFitInput` /
+`StatusBarRemoval` names are **gone** — nothing may reintroduce a
+per-bar copy.
+
+- A bar is one or more **runs**, left to right:
+  `{ id, widths, clusters?, overflow? }`. `widths[i]` is the item's
+  natural width *including the gap that precedes it*. `overflow: true`
+  means items removed from that run collapse into the `…` menu (and
+  charge `overflowWidth`, once); the default `false` means they simply
+  drop off the bar, which is only right when the value survives
+  elsewhere.
+- The plan is `Readonly<Record<runId, keptCount>>` — how many items of
+  each run stay, counted from the left. `StatusBar` reads
+  `fit.metrics` / `fit.chips`; a single-run panel bar reads its own id.
+- Runs give way **in turn** (rightmost of run 0, rightmost of run 1, …,
+  continuing with whichever still has something), and always from the
+  right. Put a cluster **left** and it spills last, which is how the
+  plot's solo box gets its ruling for free.
+- **Cluster contract**: `clusters` is index-parallel to `widths`;
+  consecutive items sharing an id are one unbreakable unit, `undefined`
+  stands alone, and two spans of the same id with something between
+  them are two units. A cluster is removed whole, in one step, so a
+  kept count always lands on a cluster boundary — the planner can never
+  hand back "the solo field and its paging, but not its clear".
+- `available <= 0` means "not measured yet" and returns everything, so
+  a bar does not flash empty on mount.
+
+**Measuring is still each bar's own job.** `StatusBar.tsx` is the
+reference: `data-sb-measure` attributes on the droppable items, a
+`Map` of last-measured widths kept across the renders in which an item
+is off the bar (a dropped item cannot be measured, and its last width
+is what says whether it would fit again), `getComputedStyle(bar).columnGap`
+added per item, a `useLayoutEffect` re-measure after every render and a
+`ResizeObserver` on the bar. Two rules it learned the hard way: the bar
+must **not** be `overflow: hidden` (it swallows its own absolutely
+positioned menu), and the lead region is subtracted from `available`
+rather than being a run — the lead never gives way. Phase 3 and phase 4
+both need this plumbing; **the second one to arrive lifts the first's
+into a shared hook rather than copying it.**
+
+### `useConnectionStates`: it cannot move, and why
+
+`useBusHealth` moved onto `useHostMirror` cleanly.
+`useConnectionStates` — the hook `useBusHealth` was copied from —
+**cannot, without changing behaviour.** `useHostMirror` treats the host
+event as a *nudge to re-read*; it has no "the payload is the value"
+mode. `useConnectionStates` uses the payload directly, and
+`ProjectPanel.connectionState.dom.test.tsx` pins exactly that, by name:
+*"follows the host's change event without a refetch"*. Migrating it as
+it stands would turn that assertion false.
+
+That leaves `useConnectionStates` with the launch race still open (a
+connection state that moves in `listen`'s attach gap is lost until the
+next event). Closing it needs one of: a `fromPayload` option on
+`useHostMirror` that keeps the payload path while still doing the
+post-listener refetch — which would let both hooks share the
+implementation and preserve every current expectation — or accepting
+the refetch and re-pinning that test. Recorded under blockers rather
+than decided here; it is a behaviour change to a shipped connection
+path, not chrome.
+
+### How the three tests were proved by mutation
+
+1. **No reflow.** `ChipButton.dom.test.tsx` does not assert a class. It
+   puts `index.css` in the document, collects every rule the rendered
+   chip actually `matches()`, and compares the *geometry* declarations
+   among them (width/height/padding/margin/border-width/font-size/
+   line-height/gap/display/…, deliberately not colour, outline or
+   animation) across all five states, pressed, busy and disabled, in
+   both the labelled and the icon-only form — plus the chip's markup
+   with state attributes stripped, so "this state added an element" is
+   caught too. Proved three ways: adding `border-width: 2px` to
+   `.status-chip[data-state="failed"]` failed the across-states test;
+   adding `padding` to `.chip-button[aria-pressed="true"]` failed the
+   affordance test; making the component render an extra span only in
+   the `failed` state failed the markup comparison. All three restored
+   and re-run green.
+2. **The unbreakable cluster.** `toolbarFit.test.ts` sweeps every width
+   from 1 to 700 over a five-item run whose middle three are one
+   cluster and asserts the set of reachable kept-counts is exactly
+   `{0, 1, 4, 5}` — 2 and 3 would each leave half the cluster on the
+   bar. Proved by deleting the cluster back-off from `unitStarts` (one
+   unit per item): that test and the two other cluster tests failed,
+   while every status-bar expectation stayed green (correctly — the
+   status bar has no clusters).
+3. **The launch race.** `busHealth.dom.test.tsx` holds `listen`'s
+   promise open, changes the host's snapshot while it is held, releases
+   it, and fires no event at all — so only the post-listener refetch
+   can find the change. It was written and run **before** the
+   migration, against the shipped hand-rolled hook: that one arm failed
+   and the other three passed. It passes after.
+
+### Prototype
+
+Kept and updated in the same commits, three places:
+`statusBarFit.ts` → `toolbarFit.ts` in the status-bar note, with the
+"every bar shares it" wording; a note on the plot-bar CSS that both
+bars go through the one planner and that it keeps the solo cluster
+whole; and the `.chip` comment now records that the app's command chip
+is `.status-chip` + `.chip-button` rather than a second class, and that
+the dot appears only on a chip carrying a state. Two numbers in the
+prototype's own `.chip` were drifting from the shipped chip it claims
+to extend and were aligned to it: `gap` `.35rem` → `.4rem`, and
+`:disabled` from `color: var(--text-dim)` to `opacity: .7`.
+
 ## Blockers / side effects
+
+- **`useConnectionStates` still hand-rolls fetch-then-listen, and still
+  has the launch race** (phase 2). It cannot go through `useHostMirror`
+  without changing behaviour a named shipped test pins — see phase 2's
+  status entry for the two ways out. It wants an owner call, because it
+  changes a shipped connection path rather than chrome.
+- **Toolbar width *measurement* is not shared, only the planning is**
+  (phase 2). `StatusBar.tsx` measures its own items; phases 3 and 4
+  each need the same plumbing. Whichever lands second should lift the
+  first's into a shared hook rather than copy it — phase 2's API
+  section lists what that plumbing has to get right.
+- **The prototype's segmented group (`.seg`) has no implementation**
+  (phase 2). The command chip covers icon-only, icon+label, toggle and
+  badge; nothing in phase 2's scope needed a segmented run of chips
+  sharing one hairline, so none was built. The phase that first needs
+  one (the trace mode toggle, the plot's cursor segment) adds the
+  wrapper class around `ChipButton`s — it must not fork the chip.
 
 - **"42 icons" vs. the prototype's actual inventory (36).** Both the
   task's main description and the grooming section's "Implementation
