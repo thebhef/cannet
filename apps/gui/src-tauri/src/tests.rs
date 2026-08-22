@@ -2374,12 +2374,12 @@ fn lowering_the_session_start_keeps_the_frames_and_never_raises_the_anchor() {
 #[test]
 fn a_session_with_nothing_restored_is_not_rebuilding_pyramids() {
     let state = test_state();
-    assert!(!pyramids_rebuilding_now(&state));
+    assert!(!pyramids_rebuilding_now(&state).rebuilding);
     // …and it stays quiet once frames arrive by the ordinary route: a
     // live capture builds its pyramids for the first time, which is not
     // the loss this announces.
     state.trace_store.append(dummy_frame(0, 0x100));
-    assert!(!pyramids_rebuilding_now(&state));
+    assert!(!pyramids_rebuilding_now(&state).rebuilding);
 }
 
 /// `cancel_import` with nothing importing is a no-op, not a panic — the
