@@ -674,13 +674,61 @@ and takes the progress cursor rather than dimming.
 - **"Add Plot Area" sits right of the solo cluster.** Item order is
   pinned by a literal list in `PlotToolbar.dom.test.tsx`.
 - **The measurements strip stays hidden, with no toggle anywhere.**
-  The checkbox and the `MeasurementMenu` trigger are off the bar. The
-  strip, its `measEnabled` / `measKeys` state and their persistence
-  are untouched, so the rework has its wiring — see blockers for the
-  one consequence.
+  The checkbox and the `MeasurementMenu` trigger are off the bar, and
+  — after the overseer's correction, see below — the strip does not
+  draw at all, whatever a saved config says. `measEnabled` /
+  `measKeys` and their persistence are untouched, so the rework
+  inherits each user's real preference.
 - **Labels are Title Case; tooltips stay sentence case.** "Area",
   "Follow", "Points: Auto"; every tooltip is the phrase the old
   control carried, or the prototype's where it carried none.
+
+### Overseer review correction, same branch
+
+- `1a557b4c` — **"stays hidden" is the ruling; "no toggle" was only the
+  mechanism.** The first reading removed the control but left the
+  persisted `measEnabled` driving the strip, so a user who had
+  measurements on got a permanent, now-undismissable strip — strictly
+  worse than before the change, and the opposite of the ruling, for
+  exactly the people the ruling most affects. Corrected: the strip is
+  suppressed on *read*.
+  - **One switch decides**, at module scope in `PlotPanel.tsx`:
+    `const MEASUREMENT_STRIP_DRAWS: boolean = false`, with the reason
+    stated inline (no task number, no `plans/` path) and the removal
+    instruction for the rework phase — delete the constant and the one
+    `&&` that consumes it. `measShowing = measEnabled &&
+    MEASUREMENT_STRIP_DRAWS` is what the panel acts on; `measEnabled`
+    remains the *stored* preference and is what persists.
+  - **The preference is not written away.** Suppression is on the read
+    side only, so the value round-trips untouched and the rework
+    inherits what each user actually chose.
+  - **Both halves proved by mutation.** Flipping the switch to `true`
+    failed "draws no measurement strip, even for a config that says it
+    was on" and the rehydration test. Separately, the *tempting wrong
+    fix* — `useState(false)` instead of reading the saved value, which
+    zeroes the field on the next persist — failed **only** "keeps the
+    stored measurement preference untouched while it is suppressed",
+    which is the half the overseer said would otherwise be passed over.
+  - **Coverage this cost, named rather than quietly dropped.** The
+    guard "measurement strip lists each signal exactly once in per-unit
+    mode" asserted on the strip's rendered per-trace cells. With the
+    strip not drawing and `reportSeries` no longer collecting the
+    series it read, there is nothing left for it to observe, so it was
+    removed and a comment left in its place. The derived-axis id
+    mismatch it guarded is worth a failing test first when the rework
+    brings the strip back.
+  - README and the prototype say the same thing as the code: hidden for
+    everyone, saved setting left alone.
+
+### The interaction script, asked and answered
+
+The overseer owns `perfInteract.ts` and its capture. Asked whether this
+sweep moved or renamed any *other* control the script drives: **no.**
+The script has exactly three targets — `.u-over` (uPlot's own overlay
+element, untouched), `.trace-rows` (`ByIdTable.tsx` and the trace-style
+views, none of which this phase touched) and the follow-live control,
+which is the one that moved. Nothing else on the plot bar is driven by
+it.
 
 ### The `.seg` API phase 5 consumes
 
@@ -868,16 +916,23 @@ absent from the inventory and from the app's registry.
   strip itself, `measEnabled` / `measKeys` and their persistence are all
   untouched.
 
-- **A saved config with `measEnabled: true` shows a strip that cannot be
-  turned off** (phase 4). "No toggle anywhere" was implemented as
-  removing the control, not as forcing the state — the strip still
-  renders when the persisted config says so, which is what keeps the
-  config round-trip and the strip's own tests meaningful for the
-  rework. A project saved before this change with measurements on will
-  therefore show the strip with no way back short of editing the
-  project file. Judged the lesser evil against ignoring a persisted
-  setting, but it is a user-visible consequence of the ruling as
-  written and wants the owner's eye.
+- ~~**A saved config with `measEnabled: true` shows a strip that cannot
+  be turned off**~~ (phase 4). **Decided and fixed on overseer review**
+  (`1a557b4c`): "stays hidden" is the ruling and "no toggle" only the
+  mechanism, so the strip is suppressed on read and does not draw
+  whatever a saved config says. The persisted value is left intact for
+  the rework to inherit. One named switch,
+  `MEASUREMENT_STRIP_DRAWS` in `PlotPanel.tsx`, is the whole of it.
+  Nothing outstanding.
+
+- **The strip's per-unit regression guard is gone until the rework**
+  (phase 4). "Measurement strip lists each signal exactly once in
+  per-unit mode" guarded a derived-axis id mismatch in the strip's
+  `seriesFor` lookups by reading the strip's rendered cells. With the
+  strip suppressed, `reportSeries` no longer collects and the strip no
+  longer renders, so the test could only have passed over an empty
+  document — it was removed, with a comment in its place. The rework
+  should write it again, failing first.
 
 - **The plot bar's perf visibility is view-local, unlike `showDiag`**
   (phase 4). Its sibling on the same menu persists to the panel config;
