@@ -731,6 +731,21 @@ describe("DatabasePanel", () => {
     expect(screen.getByText("1=Drive")).toBeInTheDocument();
   });
 
+  it("clicking a row's detail block leaves the row it belongs to open", async () => {
+    // The rule the trace views now keep: a click inside what a row
+    // disclosed acts on that content, never on the row that disclosed
+    // it. Here the detail block is a sibling of the row element and
+    // only container rows toggle — this pins both.
+    renderPanel();
+    const eng = await screen.findByText("EngineData");
+    const row = eng.closest(".dbc-row") as HTMLElement;
+    fireEvent.click(row.querySelector(".dbc-row-chevron") as HTMLElement);
+    fireEvent.click(screen.getByLabelText(/details/i));
+    fireEvent.click(await screen.findByText("bits 0–15 (16)@1+"));
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("EngineSpeed")).toBeInTheDocument();
+  });
+
   it("'details' toggle reveals message length / id / attributes", async () => {
     renderPanel();
     await screen.findByText("EngineData");

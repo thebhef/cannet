@@ -1,10 +1,11 @@
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
-import type { TraceFrameRecord } from "./types";
+import type { SignalRecord, TraceFrameRecord } from "./types";
 import { type ColorResolver } from "./colorMap";
 import { DecodedSignalCell } from "./DecodedSignalCell";
 import {
   ROW_HEIGHT,
+  SIGNAL_LINE_HEIGHT,
   anchorFromScroll,
   buildPlacements,
   expandedExtraHeight,
@@ -15,6 +16,12 @@ import {
 import { useTraceViewport } from "./useTraceViewport";
 import { useGridview } from "./useGridview";
 import type { GridviewAdapter, GridviewRow as GridviewRowModel } from "./gridviewRows";
+import {
+  contentRowId,
+  contentRowSpace,
+  type ContentRowSpace,
+  type OpenContentRun,
+} from "./gridviewContentRows";
 import {
   messageDragRefs,
   setSignalDragPayload,
@@ -45,6 +52,14 @@ import { diagCount } from "./diag"; // DIAG
 export function byIdRowKey(f: TraceFrameRecord): string {
   return `${f.bus_id}:${f.id}:${f.extended ? "x" : "s"}`;
 }
+
+/// The decoded signals a row discloses — rows of the space in their own
+/// right (ADR 0044), empty for a row that discloses nothing.
+function signalsOf(r: ByIdSnapshotRecord | null): readonly SignalRecord[] {
+  return r?.frame.decoded?.signals ?? [];
+}
+
+const EMPTY_RUNS: readonly OpenContentRun[] = [];
 
 
 interface ByIdTableProps {
@@ -177,6 +192,31 @@ export function ByIdTable({
     );
   }, [anchorMax, count, viewportHeight, extraHeight]);
 
+  // The open rows in the render window, each with the number of rows it
+  // discloses: the runs the row space splices content into, and the
+  // positions the placement arithmetic sizes. Ascending by construction
+  // — the walk goes down the window. `version` is a dep so a page
+  // landing (or a live refresh) re-derives it, since the content it
+  // gates changes behind `getRow`.
+  const openRuns = useMemo<readonly OpenContentRun[]>(() => {
+    if (expanded.size === 0) return EMPTY_RUNS;
+    const out: OpenContentRun[] = [];
+    for (let i = 0; i < rows; i++) {
+      const abs = firstVisibleRow + i;
+      if (abs >= count) break;
+      const r = getRow(abs);
+      if (r && expanded.has(byIdRowKey(r.frame))) {
+        out.push({ index: abs, content: signalsOf(r).length });
+      }
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, firstVisibleRow, count, getRow, expanded, version]);
+  const contentSpace = useMemo<ContentRowSpace>(
+    () => contentRowSpace(count, openRuns),
+    [count, openRuns],
+  );
+
   // --- the gridview (ADR 0044) ---
   // The row space is the host-sorted snapshot itself: every row is a
   // leaf, expandable exactly when it has a decode to disclose, and the
@@ -185,10 +225,21 @@ export function ByIdTable({
   // cursor, the selection and the expansion all name the same thing.
   const rowModelAt = useCallback(
     (index: number): GridviewRowModel | null => {
-      const r = getRow(index);
+      const pos = contentSpace.at(index);
+      if (pos == null) return null;
+      const r = getRow(pos.index);
       if (!r) return null;
+      const id = byIdRowKey(r.frame);
+      if (pos.content != null) {
+        const sig = signalsOf(r)[pos.content];
+        // Depth 1, so Left walks out of a disclosed row to the message
+        // that disclosed it.
+        return sig == null
+          ? null
+          : { id: contentRowId(id, sig.name), kind: "leaf", expandable: false, depth: 1 };
+      }
       return {
-        id: byIdRowKey(r.frame),
+        id,
         kind: "leaf",
         expandable: r.frame.decoded != null,
         depth: 0,
@@ -196,7 +247,8 @@ export function ByIdTable({
     },
     // `version` is a dep for the same reason as everywhere else here:
     // what `getRow` answers changes behind it.
-    [getRow, version],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [contentSpace, getRow, version],
   );
   // The scaffold's live geometry, read by `scrollToRow` without making
   // the adapter a fresh object on every scroll.
@@ -208,6 +260,7 @@ export function ByIdTable({
     anchorMax,
     extraHeight,
     getRow,
+    contentSpace,
   });
   geometry.current = {
     firstVisibleRow,
@@ -217,18 +270,22 @@ export function ByIdTable({
     anchorMax,
     extraHeight,
     getRow,
+    contentSpace,
   };
   const scrollToRow = useCallback(
     (index: number) => {
       const g = geometry.current;
+      // The scroll geometry is in message rows: a disclosed row is
+      // brought into view by bringing its message there.
+      const target = g.contentSpace.at(index)?.index ?? index;
       // `rows` carries the two-row render pad, so the last *whole* row
       // is two short of the window's end.
       const page = Math.max(1, g.rows - 2);
       const next =
-        index < g.firstVisibleRow
-          ? index
-          : index > g.firstVisibleRow + page - 1
-            ? index - page + 1
+        target < g.firstVisibleRow
+          ? target
+          : target > g.firstVisibleRow + page - 1
+            ? target - page + 1
             : null;
       if (next == null) return;
       const anchor = Math.max(0, Math.min(g.anchorMax, next));
@@ -253,13 +310,23 @@ export function ByIdTable({
     [expanded, onToggleExpand],
   );
   const adapter = useMemo<GridviewAdapter>(() => {
-    // Bounded by id space, like `expandedExtraHeight`'s walk above.
+    // Bounded by id space, like `expandedExtraHeight`'s walk above. The
+    // walk is over message rows; a disclosed row is found through the
+    // message that disclosed it, which is what its id names.
     const indexOf = (id: string) => {
-      for (let i = 0; i < count; i++) if (rowModelAt(i)?.id === id) return i;
+      for (let i = 0; i < count; i++) {
+        const r = getRow(i);
+        if (!r) continue;
+        const rowKey = byIdRowKey(r.frame);
+        if (rowKey === id) return contentSpace.indexOf({ index: i, content: null });
+        if (!id.startsWith(`${rowKey}/`)) continue;
+        const k = signalsOf(r).findIndex((sig) => contentRowId(rowKey, sig.name) === id);
+        if (k >= 0) return contentSpace.indexOf({ index: i, content: k });
+      }
       return -1;
     };
     return {
-      count,
+      count: contentSpace.count,
       rowIdAt: (index) => rowModelAt(index)?.id ?? null,
       indexOf,
       rowAt: (id) => {
@@ -271,7 +338,7 @@ export function ByIdTable({
       setExpanded: setRowExpanded,
       isSelectable: () => true,
     };
-  }, [count, rowModelAt, expanded, scrollToRow, setRowExpanded]);
+  }, [contentSpace, count, getRow, rowModelAt, expanded, scrollToRow, setRowExpanded]);
   // Namespaces this instance's row DOM ids, so two by-id tables on
   // screen can't name each other's rows.
   const instanceId = useId();
@@ -319,22 +386,12 @@ export function ByIdTable({
     [],
   );
 
-  // Which visible positions are expanded — derived from the loaded rows'
-  // stable keys, so `buildPlacements` can size them. `version` is a dep so
-  // a page landing (or a live refresh) re-derives it.
-  const expandedPositions = useMemo(() => {
-    const s = new Set<number>();
-    for (let i = 0; i < rows; i++) {
-      const abs = firstVisibleRow + i;
-      if (abs >= count) break;
-      const r = getRow(abs);
-      if (r && expanded.has(byIdRowKey(r.frame))) s.add(abs);
-    }
-    return s;
-    // `version` is a dep so a page landing / live refresh re-derives the
-    // set even though it isn't read directly (the row content it gates
-    // changes behind `getRow`).
-  }, [rows, firstVisibleRow, count, getRow, expanded, version]);
+  // The open rows as positions, which is how the placement arithmetic
+  // asks. The same walk as `openRuns`, read a second way.
+  const expandedPositions = useMemo(
+    () => new Set(openRuns.map((r) => r.index)),
+    [openRuns],
+  );
 
   // Signal count for expanded-row sizing; a not-yet-loaded row sizes as
   // a plain row.
@@ -398,25 +455,50 @@ export function ByIdTable({
           >
             {placements.map(({ posKey, absIdx, top, isExpanded, height }) => {
               const row = getRow(absIdx);
+              const rowKey = row ? byIdRowKey(row.frame) : null;
               return (
-                <ByIdRow
-                  key={posKey}
-                  top={top}
-                  height={height}
-                  row={row}
-                  isExpanded={isExpanded}
-                  columns={visible}
-                  gridTemplate={gridTemplate}
-                  baseTimestamp={baseTimestamp}
-                  idFormat={idFormat}
-                  busLookup={busLookup}
-                  resolveColor={resolveColor}
-                  onToggle={onToggleExpand}
-                  rowDomId={grid.rowDomId}
-                  selected={row != null && grid.selection.has(byIdRowKey(row.frame))}
-                  onSelect={handleRowClick}
-                  onDragStart={startRowDrag}
-                />
+                <Fragment key={posKey}>
+                  <ByIdRow
+                    top={top}
+                    // The message line is one row tall; what it
+                    // discloses stacks below it as rows of its own, and
+                    // the placement's `height` is the block they make
+                    // together.
+                    height={isExpanded ? ROW_HEIGHT : height}
+                    row={row}
+                    isExpanded={isExpanded}
+                    columns={visible}
+                    gridTemplate={gridTemplate}
+                    baseTimestamp={baseTimestamp}
+                    idFormat={idFormat}
+                    busLookup={busLookup}
+                    onToggle={onToggleExpand}
+                    rowDomId={grid.rowDomId}
+                    selected={rowKey != null && grid.selection.has(rowKey)}
+                    onSelect={handleRowClick}
+                    onDragStart={startRowDrag}
+                  />
+                  {isExpanded &&
+                    rowKey != null &&
+                    row?.frame.decoded &&
+                    signalsOf(row).map((sig, k) => {
+                      const id = contentRowId(rowKey, sig.name);
+                      return (
+                        <DecodedSignalCell
+                          key={sig.name}
+                          frame={row.frame}
+                          messageName={row.frame.decoded!.name}
+                          sig={sig}
+                          resolveColor={resolveColor}
+                          top={top + ROW_HEIGHT + k * SIGNAL_LINE_HEIGHT}
+                          rowId={id}
+                          domId={grid.rowDomId(id)}
+                          selected={grid.selection.has(id)}
+                          onSelect={handleRowClick}
+                        />
+                      );
+                    })}
+                </Fragment>
               );
             })}
           </div>
@@ -438,7 +520,6 @@ interface ByIdRowProps {
   baseTimestamp: number | null;
   idFormat: CanIdFormat;
   busLookup: BusLookup;
-  resolveColor: ColorResolver | null;
   onToggle: (rowKey: string) => void;
   /// The DOM id `aria-activedescendant` names this row by (ADR 0044).
   /// Taken as the layer's stable mapper rather than the finished string
@@ -461,7 +542,6 @@ const ByIdRow = memo(function ByIdRow({
   baseTimestamp,
   idFormat,
   busLookup,
-  resolveColor,
   onToggle,
   rowDomId,
   selected,
@@ -534,21 +614,7 @@ const ByIdRow = memo(function ByIdRow({
           <span className={className}>{content}</span>
         );
       }}
-    >
-      {isExpanded && frame?.decoded && (
-        <div className="signals">
-          {frame.decoded.signals.map((sig) => (
-            <DecodedSignalCell
-              key={sig.name}
-              frame={frame}
-              messageName={frame.decoded!.name}
-              sig={sig}
-              resolveColor={resolveColor}
-            />
-          ))}
-        </div>
-      )}
-    </GridviewRow>
+    />
   );
 });
 

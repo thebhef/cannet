@@ -153,10 +153,16 @@ export function TransmitFrameRow({
     return () => window.clearTimeout(t);
   }, [pendingRemove]);
 
-  // Toggle expansion when the user clicks anywhere on the row that
+  // Toggle expansion when the user clicks the tile's own line and it
   // isn't an interactive element. `closest(...)` catches clicks
   // inside the bus picker, byte cells, value-cells, send button, etc.
   // so those keep their own behaviour.
+  //
+  // What the tile disclosed is not part of its toggle (ADR 0044): a
+  // click on a signal name in the expanded face is a click on that
+  // content, not on the row above it, and shutting the face the user
+  // is reading out from under them is the defect that rule exists to
+  // stop.
   //
   // The containment check is what keeps the row's floating layers
   // alive: a combobox dropdown (and the calculated-fields modal) render
@@ -172,6 +178,7 @@ export function TransmitFrameRow({
     // Every click on the tile moves the gridview's cursor here…
     onGridRowClick(e);
     // …but only a click on the tile's own background toggles it.
+    if (target.closest(".tx-expanded")) return;
     if (
       target.closest(
         "input, button, textarea, label, [contenteditable], [draggable=true]",

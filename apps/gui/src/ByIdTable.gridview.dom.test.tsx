@@ -115,6 +115,13 @@ function activeRow(): HTMLElement | null {
 
 const msgOf = (el: HTMLElement | null) => el?.querySelector(".col-msg")?.textContent ?? null;
 
+/// The signal a disclosed row shows.
+const nameOf = (el: HTMLElement | null) => el?.querySelector(".signal-name")?.textContent ?? null;
+
+/// The rows the open messages disclosed, in display order.
+const contentNames = (): (string | null)[] =>
+  [...document.querySelectorAll<HTMLElement>(".trace-content-row")].map(nameOf);
+
 function rowFor(name: string): HTMLElement {
   const el = [...document.querySelectorAll<HTMLElement>(".trace-row")].find(
     (r) => r.querySelector(".col-msg")?.textContent === name,
@@ -164,22 +171,43 @@ describe("by-id cursor", () => {
   });
 
   it("discloses the row's content with Right and retracts it with Left", () => {
-    // Leaf-with-content: the row grows in place, and no row is added.
+    // Leaf-with-content: what it discloses are rows of the space
+    // (ADR 0044), so Right steps into them.
     render(<Harness />);
     fireEvent.keyDown(grid(), { key: "ArrowDown" });
     expect(rowFor("GearBox")).toHaveAttribute("aria-expanded", "false");
     fireEvent.keyDown(grid(), { key: "ArrowRight" });
     expect(rowFor("GearBox")).toHaveAttribute("aria-expanded", "true");
     expect(document.querySelectorAll(".trace-row")).toHaveLength(ROWS.length);
-    // Right again is a no-op — an open leaf has no child to step into.
+    expect(contentNames()).toEqual(["Gear", "Ratio"]);
     fireEvent.keyDown(grid(), { key: "ArrowRight" });
+    expect(nameOf(activeRow())).toBe("Gear");
+    // Left walks back out to the row that disclosed it, and again
+    // retracts it.
+    fireEvent.keyDown(grid(), { key: "ArrowLeft" });
     expect(msgOf(activeRow())).toBe("GearBox");
-    expect(rowFor("GearBox")).toHaveAttribute("aria-expanded", "true");
     fireEvent.keyDown(grid(), { key: "ArrowLeft" });
     expect(rowFor("GearBox")).toHaveAttribute("aria-expanded", "false");
     // …and Left on a closed top-level row has no parent to walk out to.
     fireEvent.keyDown(grid(), { key: "ArrowLeft" });
     expect(msgOf(activeRow())).toBe("GearBox");
+  });
+
+  it("selects a disclosed signal rather than collapsing the message", () => {
+    render(<Harness initial={[gearBox]} />);
+    const line = document.querySelectorAll<HTMLElement>(".trace-content-row")[1];
+    fireEvent.click(line);
+    expect(rowFor("GearBox")).toHaveAttribute("aria-expanded", "true");
+    expect(line).toHaveAttribute("aria-selected", "true");
+    expect(selectedMessages()).toEqual([]);
+    expect(activeRow()).toBe(line);
+  });
+
+  it("still collapses the message when the message line is clicked", () => {
+    render(<Harness initial={[gearBox]} />);
+    fireEvent.click(rowFor("GearBox").querySelector(".col-id")!);
+    expect(rowFor("GearBox")).toHaveAttribute("aria-expanded", "false");
+    expect(contentNames()).toEqual([]);
   });
 
   it("leaves a row with nothing to disclose alone", () => {
@@ -263,7 +291,7 @@ describe("by-id drag identity (D9)", () => {
 
   it("still drags one signal from a line inside the expanded block", () => {
     render(<Harness initial={[gearBox]} />);
-    const line = document.querySelectorAll<HTMLElement>(".signals .signal")[1];
+    const line = document.querySelectorAll<HTMLElement>(".trace-content-row")[1];
     const dt = fakeDataTransfer();
     fireEvent.dragStart(line, { dataTransfer: dt });
     const payload = JSON.parse(dt.getData(SIGNAL_DND_MIME));
