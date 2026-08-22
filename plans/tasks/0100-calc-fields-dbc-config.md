@@ -226,6 +226,17 @@ the only half that changed.
   "rolover"`. A GUI-side test walks it from the parse through
   `install_dbc` to the warnings the DBC log prints, with a clean load
   of the same file as its control.
+- `54522ab2` — **a regression the seeding change caused, found while
+  reviewing its own diff.** The RBS signal menu's "Configure as
+  sequence counter…" opens the editor with a `preset` destination. On
+  a message whose DBC already declares that field elsewhere the
+  section was now on, populated and *untouched*, so the override gate
+  read it as tracking the default and Apply wrote nothing — the pick
+  showed in the control and vanished on Apply. A `preset` counts as an
+  edit from the moment the modal opens; naming a destination is an
+  authoring act whether or not the DBC has already designated the
+  field. Pinned by "\"configure as …\" overrides a DBC-declared field
+  it moves".
 
 **Falsification control.** Each knob turned off in turn and the
 suites re-run:
@@ -235,6 +246,7 @@ suites re-run:
 | `effective` back to the override layer alone | **5** — three editor cases, the RBS panel's and the transmit panel's |
 | Apply writes every on section (the override gate dropped) | **4** — all four Apply cases |
 | the warning drops the attribute text | **2** — `malformed_and_duplicate_designations_warn_but_load` and the GUI-side walk |
+| a `preset` no longer counts as an edit | **1** — the "configure as …" case |
 
 No other test moves under any of the three, so the suite
 discriminates the change rather than describing it.
@@ -244,7 +256,7 @@ ignored**; `cargo test -p cannet-dbc --lib` 111 → **112**; `cargo
 test --workspace` **47 binaries, 0 failures**; `cargo clippy
 --workspace --all-targets` clean but for the pre-existing
 `redundant_closure`; `cargo fmt --all -- --check` clean. Frontend:
-`npx tsc --noEmit` clean, `npx vitest run` 2504 → **2512 passed / 190
+`npx tsc --noEmit` clean, `npx vitest run` 2504 → **2513 passed / 190
 files**, `npx vite build` clean.
 `git grep -Ein "task [0-9]|plans/" -- apps/ crates/` empty. The
 render-tier perf harness was **not** run — the overseer owns it.
