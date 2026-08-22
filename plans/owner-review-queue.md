@@ -315,6 +315,17 @@ append/scan drift was machine state and not the change.
 
 ---
 
+### 2.3 The gate does not run until development is done and the owner has looked
+Ruled by the owner 2026-08-22
+
+*"Don't run perf test until the dev is done and I have a chance to look
+at everything."* This is tighter than 2.2, which deferred the gate to
+the end of the chain: the run now waits on the **owner's review**, not
+merely on the last phase landing. Nothing in §5's gate item — including
+the harness tally fix it depends on — starts before that.
+
+---
+
 ## 3. Open findings nobody has dispositioned
 
 Recorded by the phases that found them, not yet decided.
