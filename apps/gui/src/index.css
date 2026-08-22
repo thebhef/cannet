@@ -5481,6 +5481,14 @@ button.color-chip {
   color: var(--danger-text-bright);
 }
 
+/* A bus error frame is not a data frame that happened to carry nothing:
+   it has no id payload and no decode. The row says so in its message
+   cell; this tints it so a run of them is visible while scrolling. */
+.trace-row-error-frame .col-msg {
+  color: var(--warn-text);
+  font-style: italic;
+}
+
 /* transmit panel: calculated-fields strip (shared editor, ADR 0027) */
 .tx-calc-strip {
   display: flex;

@@ -409,3 +409,62 @@ describe("chronological drag identity (D9)", () => {
     expect(payload.signals.map((s: { signalName: string }) => s.signalName)).toEqual(["Sig1"]);
   });
 });
+
+describe("an error frame is not an ordinary empty data frame", () => {
+  /// A bus error frame as it arrives from the host: no payload, and —
+  /// with the `type` column hidden by default — nothing in the default
+  /// column set that distinguishes it from a zero-byte data frame.
+  function errorRow(index: number): TraceRow {
+    return {
+      row: "frame",
+      frame: {
+        index,
+        timestamp_seconds: index / 1000,
+        channel: 0,
+        id: 0x100 + index,
+        extended: false,
+        direction: "Rx",
+        kind: { kind: "error" },
+        data: [],
+        decoded: null,
+        bus_id: "b1",
+      },
+    } as unknown as TraceRow;
+  }
+
+  /// The control: an ordinary frame that also carries no payload. If the
+  /// assertions below passed for this one too they would be reading
+  /// "empty", not "error".
+  function emptyDataRow(index: number): TraceRow {
+    return {
+      row: "frame",
+      frame: {
+        index,
+        timestamp_seconds: index / 1000,
+        channel: 0,
+        id: 0x100 + index,
+        extended: false,
+        direction: "Rx",
+        kind: { kind: "classic" },
+        data: [],
+        decoded: null,
+        bus_id: "b1",
+      },
+    } as unknown as TraceRow;
+  }
+
+  it("says what it is in the default columns, and marks the row", () => {
+    render(view({ count: 1, getRow: () => errorRow(0) }));
+    const row = rowShowing(0);
+    expect(row).toHaveClass("trace-row-error-frame");
+    expect(row.querySelector(".col-msg")?.textContent).toBe("Bus error");
+    expect(row).toHaveAttribute("title", expect.stringContaining("error"));
+  });
+
+  it("leaves a zero-byte data frame alone", () => {
+    render(view({ count: 1, getRow: () => emptyDataRow(0) }));
+    const row = rowShowing(0);
+    expect(row).not.toHaveClass("trace-row-error-frame");
+    expect(row.querySelector(".col-msg")?.textContent).toBe("");
+  });
+});
