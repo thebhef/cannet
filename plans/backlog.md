@@ -97,6 +97,13 @@ trip over it.
 
 ### Trace view
 
+- `[idea]` **`goto.traceRow` — go to an absolute row by index.**
+  Dropped from task 19 at grooming (owner ruling 2026-08-21): with the
+  event-merged chronological view, a raw row number is a shaky target
+  (display row ≠ frame index once events interleave) and no use case
+  named it. If it comes back, the pieces exist: the prompt
+  infrastructure from task 19 and `TraceView`'s `scrollTarget`
+  mechanism, routed per-panel.
 - `[feat]` **Timestamp display mode (absolute / delta), and the ADR
   amendment it needs.** Task 45 Stage 5 listed "CAN-ID and timestamp
   formatting" as a default with no way to change it. The CAN-ID half
@@ -150,6 +157,12 @@ trip over it.
 
 ### Plot panel
 
+- `[feat]` **Measurements strip rework.** Owner ruling 2026-08-21
+  (task 108 grooming): the strip needs rework and stays hidden — the
+  chip-language pass removes its toolbar toggle and no replacement
+  entry point ships until the rework happens. `MeasurementMenu` and
+  the `measEnabled` strip in `PlotPanel.tsx` are the code; what the
+  rework should look like is undesigned.
 - `[bug]` `cannet-gui` `PlotPanel.tsx`: **cursor A/B marker chips and
   the x-axis intermittently don't render.** Reachable state where the
   cursor marker titles/text disappear, and possibly where the x-axis
@@ -174,6 +187,7 @@ trip over it.
   signals means 16 axes and the panel is basically taken over.
   (Owner test drive 2026-08-07; the collapsible plot areas that have
   since shipped may mitigate.)
+
 ### DBC view
 
 - `[ui]` **DBC panel table-tree rework.** The current per-signal detail
