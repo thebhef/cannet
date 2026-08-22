@@ -69,6 +69,7 @@ import {
 } from "./plotPoints";
 import { nextResampleDelayMs } from "./plotPacing";
 import { Combobox, type ComboboxOption } from "./Combobox";
+import { ColorChip } from "./ColorChip";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { formatDurationSeconds, formatElapsed, fracDigitsForSpan } from "./format";
 import { SIGNAL_DND_MIME, setSignalDragData } from "./dragSignals";
@@ -316,12 +317,11 @@ function areaDrop(
 
 /** Color swatch in a plot-area signal row. Left-click toggles hidden
  * (preserves prior behaviour); right-click opens the browser's native
- * color picker so the user can re-skin the series. The picker is a
- * stacked hidden `<input type="color">` whose value seeds from the
- * current swatch — committing fires `onPickColor` with the new
- * `#rrggbb`. (Native picker chosen over a bespoke palette so we
- * don't paint a custom UI for a one-off control; OSes render their
- * own with eye-droppers and recently-used swatches.) */
+ * color picker so the user can re-skin the series — the same
+ * `ColorChip` the trace events panel uses. (Native picker chosen over
+ * a bespoke palette so we don't paint a custom UI for a one-off
+ * control; OSes render their own with eye-droppers and recently-used
+ * swatches.) */
 function SignalSwatch({
   hidden,
   color,
@@ -333,40 +333,28 @@ function SignalSwatch({
   onToggleHidden: () => void;
   onPickColor: (hex: string) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
   return (
-    <span className="plot-signal-swatch-wrap">
-      <button
-        type="button"
-        className={`plot-signal-swatch${hidden ? " hidden" : ""}`}
-        style={{ background: color }}
-        title={
-          hidden
-            ? "show this signal · right-click to pick a color"
-            : "hide this signal · right-click to pick a color"
-        }
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleHidden();
-        }}
-        onContextMenu={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          inputRef.current?.click();
-        }}
-      />
-      <input
-        ref={inputRef}
-        type="color"
-        aria-label="pick series color"
-        className="plot-signal-swatch-input"
-        value={color}
-        onChange={(e) => onPickColor(e.target.value)}
-        // Keep the row's click handler from interpreting the input
-        // click as "promote to primary".
-        onClick={(e) => e.stopPropagation()}
-      />
-    </span>
+    <ColorChip
+      color={color}
+      hidden={hidden}
+      onChange={onPickColor}
+      swatchClassName="plot-signal-swatch"
+      inputClassName="plot-signal-swatch-input"
+      pickerAriaLabel="pick series color"
+      title={
+        hidden
+          ? "show this signal · right-click to pick a color"
+          : "hide this signal · right-click to pick a color"
+      }
+      onSwatchClick={(e) => {
+        e.stopPropagation();
+        onToggleHidden();
+      }}
+      onSwatchContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    />
   );
 }
 
@@ -3887,10 +3875,10 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                       <span className="plot-signal-message" title={messageLabelFor(s)}>
                         {s.busId ? (
                           <>
-                            <span
-                              className="plot-bus-swatch"
-                              style={{ background: busColorLookup.get(s.busId) ?? theme().busUnknown }}
-                              aria-hidden="true"
+                            <ColorChip
+                              color={busColorLookup.get(s.busId) ?? theme().busUnknown}
+                              size="dot"
+                              swatchClassName="plot-bus-swatch"
                             />
                             {messageLabelFor(s)}
                           </>

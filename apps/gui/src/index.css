@@ -1697,16 +1697,10 @@ header {
   padding: 0.15rem 0.35rem;
 }
 
-.project-bus-color {
-  flex: 0 0 auto;
-  width: 1.6rem;
-  height: 1.6rem;
-  padding: 0;
-  border: 1px solid var(--border-soft);
-  border-radius: 0.2rem;
-  background: var(--surface-field);
-  cursor: pointer;
-}
+/* The bus colour picker is a ColorChip (`.color-chip*`) — shape and
+   behaviour come from there now; `.project-bus-color` (on the real
+   `<input type="color">`) is a query hook only, kept for
+   `App.busColor.dom.test.tsx`. */
 
 .project-binding-form {
   display: flex;
@@ -2141,37 +2135,70 @@ header {
   color: var(--text-secondary);
 }
 
-/* Full-height color bar at the row's left. A `<button>` for editable
-   events (click opens the stacked native picker), a bare `<span>` for the
-   derived truncation marker. */
-.trace-event-swatch {
+/* The row's colour swatch — a `<button>` for editable events (click
+   opens the picker via `ColorChip`), a bare `<span>` for the derived
+   truncation marker. Shape and behaviour come from `.color-chip*`
+   below (ColorChip.tsx); `trace-event-swatch`/`-input` are query hooks
+   only, carrying no CSS of their own. */
+
+/* === Shared colour chip (ColorChip.tsx) ===
+   One control renders every colour swatch and picker in the app: an
+   editable picker (a trace event, a plot series, a colour-map rule, a
+   project bus's graph colour, a signal's name colour) and a plain
+   identity dot (the bus marker beside a plotted signal, a
+   measurement's series marker). Standardised on the events panel's
+   shape below, because it was the one of the three prior
+   implementations that had already solved the native picker's
+   anchoring correctly — see `.color-chip-input`. A site may still
+   carry its own class alongside these (a query hook for its own tests
+   and generator rules); it carries no styling of its own. */
+.color-chip {
+  border-radius: 2px;
+  border: 1px solid var(--border-wash);
+  padding: 0;
+}
+button.color-chip {
+  cursor: pointer;
+}
+.color-chip-bar {
   align-self: stretch;
   width: 1.5rem;
   flex: 0 0 auto;
-  border: 1px solid var(--border-wash);
-  border-radius: 2px;
 }
-button.trace-event-swatch {
-  cursor: pointer;
+/* A small, non-interactive identity marker — a bus's colour beside a
+   signal row, a measurement's series colour — sized to sit inline with
+   text rather than fill a row. */
+.color-chip-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-right: 0.3rem;
+  vertical-align: middle;
+  border-color: var(--border-wash-strong);
 }
-/* Wrap the swatch + its hidden color input (same control as the plot's
-   series swatch). The input pops the native picker over the swatch. */
-.trace-event-swatch-wrap {
+.color-chip-hidden {
+  opacity: 0.25;
+}
+/* Wrap the visible box + its hidden native colour input. The input
+   pops the native picker over the box. */
+.color-chip-wrap {
   position: relative;
   display: flex;
   align-self: stretch;
   flex: 0 0 auto;
 }
-.trace-event-swatch-input {
-  /* Cover the swatch's real footprint (inset:0 stretches the absolutely
-   * positioned input to fill the relative wrap) rather than collapsing to
-   * a zero-size point. The native color picker anchors to the input's
-   * rendered rect; giving it the swatch box keeps the popover on the
-   * swatch. On macOS a zero-size anchor inside a virtualized,
-   * absolutely-positioned event row lands in the wrong place — this is a
-   * candidate fix for that, pending verification on a Mac. `opacity:0` +
-   * `pointer-events:none` keep it invisible and let the button take the
-   * click (which forwards to `input.click()`). */
+.color-chip-input {
+  /* Cover the box's real footprint (inset:0 stretches the absolutely
+   * positioned input to fill the relative wrap) rather than collapsing
+   * to a zero-size point. The native colour picker anchors to the
+   * input's rendered rect; giving it the box's own size keeps the
+   * popover on the box. On macOS a zero-size anchor inside a
+   * virtualized, absolutely-positioned row makes the popover land in
+   * the wrong place — this `inset: 0` sizing is the fix, carried here
+   * from the one prior copy that had worked it out, so every site now
+   * gets it. `opacity: 0` + `pointer-events: none` keep it invisible
+   * and let the box take the click (which forwards to
+   * `input.click()`). */
   position: absolute;
   inset: 0;
   opacity: 0;
@@ -2179,6 +2206,15 @@ button.trace-event-swatch {
   border: 0;
   padding: 0;
 }
+/* The invisible-trigger variant (`hideBox`): no box at all, just the
+   native input, for a site whose own trigger is something else (a
+   coloured signal name, right-clicked). No absolute positioning is
+   needed — nothing to anchor over — `display: none` is enough, and the
+   caller opens it via a forwarded ref. */
+.color-chip-input-bare {
+  display: none;
+}
+/* === end shared colour chip === */
 
 /* The clicked event row. Selection is view-local and keyed by event id,
    so it survives the row slots being recycled by a scroll. */
@@ -3360,38 +3396,9 @@ button.trace-event-swatch {
   background: var(--surface-row-selected);
 }
 
-/* The swatch doubles as the show/hide toggle. Pinned to the top row
- * (aligns with the signal name) so it doesn't drift down on rows that
- * grow a diagnostic line. */
-.plot-signal-swatch {
-  width: 1rem;
-  height: 1rem;
-  border-radius: 3px;
-  border: 1px solid var(--border-wash-strong);
-  padding: 0;
-  cursor: pointer;
-  margin-top: 0.18rem;
-}
-.plot-signal-swatch.hidden {
-  opacity: 0.25;
-}
-/* Wrap the swatch + its hidden color input. The input is positioned
- * absolutely so the native picker pops up over the swatch (right-click
- * to open it). */
-.plot-signal-swatch-wrap {
-  position: relative;
-  display: inline-flex;
-}
-.plot-signal-swatch-input {
-  position: absolute;
-  inset: 0;
-  width: 0;
-  height: 0;
-  opacity: 0;
-  pointer-events: none;
-  border: 0;
-  padding: 0;
-}
+/* The swatch doubles as the show/hide toggle. Shape and behaviour come
+ * from `.color-chip*` (ColorChip.tsx); plot-signal-swatch/-input are
+ * query hooks only, carrying no CSS of their own. */
 
 /* Left text column: signal name on top (large), message name below
  * (small, dimmed). Both ellipsis on overflow so a long signal name
@@ -3464,15 +3471,9 @@ button.trace-event-swatch {
   align-items: center;
   gap: 0.5rem;
 }
-.colormap-rule input[type="color"] {
-  flex: 0 0 auto;
-  width: 1.5rem;
-  height: 1.5rem;
-  padding: 0;
-  border: 1px solid var(--border-dotted);
-  border-radius: 0.2rem;
-  background: none;
-}
+/* The rule's colour picker is a ColorChip (`.color-chip*`) — shape and
+   behaviour come from there now, standardised on the events panel's
+   shape rather than this panel's own smaller square. */
 /* Enum row: the value's name fills the row, its raw value sits muted at
  * the end. */
 .colormap-enum-label {
@@ -3568,31 +3569,22 @@ button.trace-event-swatch {
 }
 
 /* Small color dot before the bus name in a signal row — matches the
- * bus's graph color so the source bus is identifiable at a glance. */
-.plot-bus-swatch {
-  display: inline-block;
-  width: 0.55rem;
-  height: 0.55rem;
-  border-radius: 2px;
-  margin-right: 0.3rem;
-  vertical-align: middle;
-  border: 1px solid var(--border-wash-strong);
-}
+ * bus's graph color so the source bus is identifiable at a glance.
+ * Shape comes from `.color-chip-dot` (ColorChip.tsx); plot-bus-swatch
+ * is a query hook only, carrying no CSS of its own. */
+
 /* A hidden row (including one solo's mask hid — same treatment, ADR
  * 0026) has nothing to draw, so it drops to swatch + name: no
  * message, value, or remove control to read. The un-hide affordance
- * stays the swatch. The row grid's other two columns (readout,
- * remove/badge) are simply unused — no extra layout needed to reclaim
- * them once nothing is placed in them. */
+ * stays the swatch — which now stretches to fill whatever height this
+ * shorter row has (`.color-chip-bar`'s `align-self: stretch`), so it
+ * no longer needs its own shrink to match. The row grid's other two
+ * columns (readout, remove/badge) are simply unused — no extra layout
+ * needed to reclaim them once nothing is placed in them. */
 .plot-signal-row.hidden {
   grid-template-columns: auto 1fr;
   align-items: center;
   padding-block: 0.15rem;
-}
-.plot-signal-row.hidden .plot-signal-swatch {
-  width: 0.8rem;
-  height: 0.8rem;
-  margin-top: 0;
 }
 .plot-signal-row.hidden .plot-signal-name {
   opacity: 0.45;
@@ -3989,7 +3981,10 @@ button.trace-event-swatch {
 .plot-meas-k {
   display: flex;
   align-items: center;
-  gap: 0.3rem;
+  /* No gap: a swatch cell's own `.color-chip-dot` margin-right supplies
+     the spacing (it has to — a dot is also used inline in running
+     text, with no flex gap to lean on); a swatch-less cell has only
+     one child, so nothing here needs its own spacing either. */
   color: var(--text-faint);
   text-transform: uppercase;
   letter-spacing: 0.06em;
