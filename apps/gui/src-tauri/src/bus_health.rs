@@ -404,18 +404,20 @@ pub(crate) fn worst_load_percent(rows: &BTreeMap<String, BusHealthRecord>) -> Op
         })
 }
 
-/// The whole per-bus map plus the one figure the status bar shows, taken
-/// together so a caller that needs both reads one instant.
-pub(crate) fn health_snapshot(
+/// The status bar's bus-load figure, off a store snapshot the caller
+/// has **already taken**.
+///
+/// The live-update emitter takes one `status_snapshot` per tick for
+/// every other metric, and taking a second one here would both cost a
+/// lock at 10 Hz and describe a different instant from the numbers
+/// beside it.
+pub(crate) fn worst_load_from(
     app: &AppHandle,
     state: &AppState,
-) -> (BTreeMap<String, BusHealthRecord>, Option<f64>) {
-    let Some(health) = app.try_state::<BusHealth>() else {
-        return (BTreeMap::new(), None);
-    };
-    let rows = collect_health_rows(app, state, &health);
-    let worst = worst_load_percent(&rows);
-    (rows, worst)
+    bits_by_bus: &[(String, f64, f64)],
+) -> Option<f64> {
+    let health = app.try_state::<BusHealth>()?;
+    worst_load_percent(&collect_health_rows(app, state, &health, bits_by_bus))
 }
 
 /// What the host put on the wire for each bus it has connected — the
@@ -459,7 +461,8 @@ pub(crate) fn spawn_bus_health_emitter(app: AppHandle) {
                 continue;
             };
             let state: State<'_, AppState> = app.state();
-            let rows = collect_health_rows(&app, &state, &health);
+            let bits = state.trace_store.status_snapshot().bits_per_second_by_bus;
+            let rows = collect_health_rows(&app, &state, &health, &bits);
             if rows != published_rows {
                 published_rows.clone_from(&rows);
                 let _ = app.emit(BUS_HEALTH_CHANGED_EVENT, rows);
@@ -489,7 +492,8 @@ pub(crate) fn get_bus_health(
     health: tauri::State<'_, BusHealth>,
     state: State<'_, AppState>,
 ) -> BTreeMap<String, BusHealthRecord> {
-    collect_health_rows(&app, &state, &health)
+    let bits = state.trace_store.status_snapshot().bits_per_second_by_bus;
+    collect_health_rows(&app, &state, &health, &bits)
 }
 
 /// Gather one instant's worth of every input the rows are built from —
@@ -499,6 +503,7 @@ fn collect_health_rows(
     app: &AppHandle,
     state: &AppState,
     health: &BusHealth,
+    bits_by_bus: &[(String, f64, f64)],
 ) -> BTreeMap<String, BusHealthRecord> {
     let sessions = state.remote_sessions();
     let controllers = controllers_by_bus(&sessions);
@@ -511,8 +516,13 @@ fn collect_health_rows(
         .try_state::<crate::connection_state::ConnectionStates>()
         .map(|states| applied_configs(&states))
         .unwrap_or_default();
-    let bits = state.trace_store.status_snapshot().bits_per_second_by_bus;
-    health_rows(&controllers, &applied, &bits, &mapped, &health.errors())
+    health_rows(
+        &controllers,
+        &applied,
+        bits_by_bus,
+        &mapped,
+        &health.errors(),
+    )
 }
 
 #[cfg(test)]
