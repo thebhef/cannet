@@ -201,3 +201,16 @@ The `trigger` kind moves from the original table's "not persisted?
 persisted" reading to host-derived for the same reason `busError` is: the
 host owns the detection, and the frames that caused it are what the file
 records.
+
+### An observation this amendment does not settle: "the graph view"
+
+Decision point 3 lists "the graph view" among the timeseries views that
+render events, alongside the plot and the trace. There is no such view in
+the code and there was none when this was written: the only graph view is
+the **project graph**, a topology of gateways, buses and filters with no
+time axis, so a timeline event has no coordinate to land on there. The
+timeseries views that render events are the plot and the chronological /
+filtered trace, and both do.
+
+Recorded rather than struck, because removing a decision point is the
+owner's call and not a consequence of the change this amendment makes.
