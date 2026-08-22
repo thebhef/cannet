@@ -121,20 +121,64 @@ fix phase, or surface it to the user — never let it ride silently.
 
 ## 5. Performance gate
 
-Run the repo's performance test (ADR-0031 render-tier harness)
-**regularly** — at minimum after any phase touching a render or
-data-path hot spot, and always before declaring a task complete.
+**Collect as you go; judge at the end.** The ADR-0031 render-tier
+harness is cheap enough to run through a cycle (a release build plus
+four 60 s captures is under twenty minutes), and the value is in the
+*series*, not in any one reading. So take the data regularly — after
+a phase touching a render or data-path hot spot, and at natural
+cycle boundaries — and keep every report under
+`docs/performance-measurements/frontend/`, named by date and by the
+commit it measured.
+
+**Do not stop development for a gate result unless it is a major,
+anticipated regression.** The owner's thresholds (2026-08-22):
+
+- **A timing regression of more than ~10 ms sustained across all
+  runs** of a build — not one run, all of them.
+- **Memory creeping toward 400+ MB** for a load of this size
+  (ev-zonal, ~1608 f/s). Judge the process split, not just the tree
+  total.
+
+Anything short of that is recorded and development continues. A
+single alarming run is data, not a stop signal.
+
+**At the end of a chain, produce the report and decide whether to go
+back.** Chart every metric across every build measured, with each
+one's limit, its baseline and the per-build spread, plus a note on
+what did and did not move it. That report — not a per-phase pass/fail
+— is what tells the owner whether anything needs revisiting.
+
+Rules that still hold absolutely:
 
 - **All of the metrics are important.** They were developed from
   observed performance problems; there are no "minor" columns. A fix
   that buys one metric by regressing another is a regression.
-- Single runs are untrustworthy: run-to-run variance is real (GC
-  timing, machine state). Use multiple runs per build and compare
-  worst-to-worst as well as means; when a result is surprising, run
-  a same-day control build rather than trusting a stale baseline.
-- Never promote a baseline to make a failure pass. A failed gate
-  stops the roadmap: the task is not complete, and the next task
-  does not start, until the gate passes or the user rules otherwise.
+- **Never promote a baseline and never widen a limit** to make a
+  reading pass. Limits ratchet down only; raising one is an owner
+  ruling recorded in ADR 0031.
+- **Single runs are untrustworthy.** Several metrics are worst-of-N
+  or single-sample tails and move on an unchanged build — an
+  eight-run control on one binary spanned nearly the whole distance
+  to `lag_ms_max`'s limit. Use multiple runs per build and read the
+  band.
+- **When a reading is surprising, build a same-day control** rather
+  than trusting the stored baseline. The older commit measured on
+  today's machine is the honest comparison; the baseline may have
+  been taken on a different machine state, or against a project that
+  has since changed.
+
+Two failure modes this repo has actually hit — check for both before
+believing a clean run:
+
+- **The baseline can outlive the project it describes.** Growing the
+  example projects (ev-zonal is the harness's project) invalidates a
+  line-for-line baseline comparison. When that happens, gate a
+  pre-growth control alongside the current tree and report the pair.
+- **The harness's load can be silently disarmed.** It once drew its
+  bus traffic from a persisted project field; removing that field
+  left the harness connecting and measuring an idle bus — and
+  *passing*. Sanity-check `ids_measured` and the rx/tx rates on every
+  report before reading anything else into it.
 
 ## 6. Completion
 
