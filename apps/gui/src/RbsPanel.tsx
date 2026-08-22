@@ -31,7 +31,13 @@ import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
-import type { CalcFieldsSpec, RbsMessageView, RbsSignalView, RbsView } from "./types";
+import type {
+  CalcFieldsSpec,
+  RbsMessageStatus,
+  RbsMessageView,
+  RbsSignalView,
+  RbsView,
+} from "./types";
 import { useProjectContext } from "./projectContext";
 import { elementLabel } from "./elementLabel";
 import { showRbsSignalsPanel } from "./dockLayout";
@@ -61,6 +67,16 @@ import {
   type VisibleBus,
 } from "./rbsRowIdentity";
 import { NameText } from "./NameText";
+
+/// The message row's status cell. The words are the RBS signals grid's
+/// where they overlap — *Muted* means the same thing in both: the
+/// message won't play regardless of what it carries. The other two are
+/// what the scheduled dot used to say, said in words.
+const STATUS_LABEL: Record<RbsMessageStatus, string> = {
+  running: "Running",
+  stopped: "Stopped",
+  muted: "Muted",
+};
 
 /// Address of one message row, as the `rbs_*` commands take it.
 interface Target {
@@ -714,7 +730,9 @@ function MessageRow({
           onChange={(e) => onEnable(e.target.checked)}
           aria-label={`${m.key} enabled`}
         />
-        {m.running && <span className="rbs-dot rbs-dot-on" title="scheduled" />}
+        <span className={`rbs-status rbs-status-${m.status}`} title={m.statusDetail}>
+          {STATUS_LABEL[m.status]}
+        </span>
         <span className="rbs-msg-key">{m.key}</span>
         <span className="rbs-msg-name">
           {m.name ?? "(not in DBC — not loaded)"}

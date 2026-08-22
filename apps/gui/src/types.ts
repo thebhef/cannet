@@ -1090,6 +1090,14 @@ export interface RbsMessageView {
   enabled: boolean;
   /// Scheduled right now (run && enables).
   running: boolean;
+  /// Whether the row will transmit, and why not when it will not.
+  /// `"muted"` is the same word — and the same meaning — the RBS
+  /// signals grid uses: the message won't play regardless of what it
+  /// carries.
+  status: RbsMessageStatus;
+  /// The reason behind {@link status}, host-worded, for the cell's
+  /// tooltip.
+  statusDetail: string;
   /// Effective period (override else `GenMsgCycleTime`); `null` =
   /// none anywhere, the message can't run.
   periodMs: number | null;
@@ -1131,6 +1139,10 @@ export interface RbsSignalView {
   floatKind: "integer" | "float32" | "float64";
   hasValueTable: boolean;
 }
+
+/// Whether one RBS message row will transmit. Mirrors
+/// `rbs::view::RbsMessageStatus`.
+export type RbsMessageStatus = "running" | "stopped" | "muted";
 
 /// The RBS signals panel's taxonomy, drawn from what the encoder
 /// actually reports (`reconstruct_payload`) rather than invented.
