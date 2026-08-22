@@ -9,6 +9,7 @@ import {
 import type { IDockviewPanelProps } from "dockview";
 
 import { Combobox } from "./Combobox";
+import { ChipButton } from "./ChipButton";
 import { hostSettings, subscribeSettings, updateSettings } from "./hostSettings";
 import {
   applySystemLogFilter,
@@ -159,9 +160,10 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
   return (
     <div className="system-messages-panel">
       <div className="system-messages-toolbar">
-        <label>
+        <span className="system-messages-filter">
           Source:{" "}
           <Combobox
+            className="status-chip chip-button"
             options={[
               { value: "", label: "All" },
               ...sources.map((s) => ({ value: s, label: s })),
@@ -169,21 +171,29 @@ export function SystemMessagesPanel(props: IDockviewPanelProps) {
             value={filterSource}
             onChange={setFilterSource}
           />
-        </label>
-        <label>
-          Min level:{" "}
+        </span>
+        <span className="system-messages-filter">
+          Min Level:{" "}
           <Combobox
+            className="status-chip chip-button"
             options={MIN_LEVEL_OPTIONS}
             value={minLevel}
             onChange={(v) => chooseLevel(v as SystemLogLevel)}
           />
-        </label>
-        <button type="button" onClick={copyAll} disabled={filtered.length === 0}>
-          Copy all
-        </button>
-        <button type="button" onClick={clear} disabled={messages.length === 0}>
-          Clear
-        </button>
+        </span>
+        <ChipButton
+          label="Copy All"
+          title="copy the filtered messages to the clipboard"
+          disabled={filtered.length === 0}
+          onPress={copyAll}
+        />
+        <ChipButton
+          icon="clear"
+          label="Clear"
+          title="clear the log"
+          disabled={messages.length === 0}
+          onPress={clear}
+        />
         <span className="system-messages-count">
           {filtered.length} / {messages.length}
         </span>

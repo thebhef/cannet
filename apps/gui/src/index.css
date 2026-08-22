@@ -5062,27 +5062,10 @@ button.color-chip {
   border-bottom: 1px solid var(--border-soft);
   background: var(--surface-pop);
 }
-.system-messages-toolbar .combobox-trigger {
-  background: var(--surface-raised);
-  color: var(--text-primary);
-  border: 1px solid var(--border-strong);
-  padding: 0.15rem 0.35rem;
-  border-radius: 3px;
-}
-.system-messages-toolbar button {
-  background: var(--surface-raised);
-  color: var(--text-primary);
-  border: 1px solid var(--border-strong);
-  padding: 0.15rem 0.6rem;
-  border-radius: 3px;
-  cursor: pointer;
-}
-.system-messages-toolbar button:hover:not(:disabled) {
-  background: var(--surface-control-hover);
-}
-.system-messages-toolbar button:disabled {
-  opacity: 0.5;
-  cursor: default;
+.system-messages-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
 }
 .system-messages-count {
   color: var(--text-muted);

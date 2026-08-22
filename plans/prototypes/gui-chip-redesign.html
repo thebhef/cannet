@@ -764,6 +764,16 @@ table.cmp { border-collapse:collapse; width:100%; margin-top:.4rem; }
   <button class="chip" title="Add a server this machine cannot hear advertising — one on another subnet, or one started --no-mdns"><svg><use href="#i-plus"/></svg>Server</button>
 </div></div>
 <div class="vbar"><span class="who">system messages<code>SystemMessagesPanel.tsx</code></span><div class="appbar panelbar">
+  <!-- Divergence: the app's Source and Min Level pickers are the
+       shared fzf `Combobox` (the one select-like control the app
+       uses everywhere), not a bespoke chip + `<ul>` menu — forking a
+       second picker just for these two bars would be exactly the kind
+       of parallel implementation this pass avoids. The combobox's
+       trigger button wears the chip silhouette directly
+       (`className="status-chip chip-button"`, same trick the plot
+       bar's perf read-out and the status-filter chips use), so it
+       still reads as one chip on the row; its own "▾" affordance and
+       dropdown are untouched. -->
   <span class="menu-wrap">
     <button class="chip" data-menu="srcMenu" title="filter by source">Source: All&nbsp;▾</button>
     <ul class="drop" id="srcMenu" hidden>
