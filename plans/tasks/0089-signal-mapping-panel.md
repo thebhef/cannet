@@ -921,3 +921,184 @@ data → conclusion, as far as the delegation contract allows):
   report is reported here with the full population so the owner can rule
   on whether the rx-gap pair is jittery beyond the band its brief
   currently names (0.002–0.011), which two runs of twelve exceeded.
+
+### Phase 5 — the remap pick (2026-08-20)
+
+Branch `task-89-phase-5-remap-pick`, from `task-89-phase-4-ambiguity-pick`
+(`d55f7910`). Two commits (`85780fd4` the shared operation, `33c8896a`
+the panel's picker) plus this log. Frontend tests 2340 → 2367 (+27, 178
+files, was 177), zero failures; `pnpm build` (tsc + vite) clean.
+Workspace Rust tests unchanged at 1494 (the only Rust edit this phase is
+a module-doc correction); `cargo test --workspace`, `cargo clippy
+--workspace --all-targets` and `cargo fmt --all` all reconfirmed green.
+
+**The one operation, and where it lives.** `remapSignal`
+(`apps/gui/src/signalRemap.ts`) — one function over every store, with
+`useRemapSignal` binding it to the live element registry and the
+project's colour overrides. The ruling's "built once, not per store" is
+the module's whole reason for existing, and its doc says so: a rewrite
+spread across call sites is one missed store away from a repair that
+silently did not happen, and *a new persisted signal reference anywhere
+in the app belongs in here*.
+
+| Store | What holds the reference |
+| --- | --- |
+| plot element `config` | each area's manual `signals`, and the area's `primarySignalKey` |
+| signals element `config` | the manual `selection.keys`, and the `sections.assignments` entry keyed on the signal |
+| colormap element | its one target signal (ADR 0029) |
+| transmit pool (host) | a frame's calculated-field counter / CRC target (ADR 0027) |
+| project `signal_colors` | the user's colour override for the signal (ADR 0026) |
+
+**The test that proves the guarantee**, at both levels. At the
+operation: `reaches every store from a single invocation`
+(`signalRemap.test.ts`) — one `remapSignal` call, and all five stores
+above are asserted to have moved. At the gesture:
+`a remap pick reaches every view's stored reference from one gesture`
+(`ViewSignalsPanel.dom.test.tsx`) — one `change` event on the picker,
+and a **plot element's series** and a **colour map's target** both move,
+two different stores neither of which the panel knows anything about.
+That test renders the panel under a real element registry
+(`registryTestKit`, real state and real `applyElementPatch`) rather than
+a per-file fake, so what it observes is what a mounted view would.
+`rewrites the transmit pool's calculated-field target in the same
+gesture` covers the host-side store from the same click.
+
+Falsified rather than assumed: deleting the colormap branch from
+`remapElementPatch` fails both of those tests and nothing else, so
+neither passes for a reason other than the store it names.
+
+**How the panel's own rows come back.** Nothing new was built for this;
+the rewrite lands on the chain phases 1–2 already wired, which is part
+of why it had to be a rewrite of the element registry rather than a
+host-side edit. `registry.update` is called **without a writer token**,
+which is precisely the app's "this is an external write" signal:
+`applyElementPatch` bumps `configEpoch`, `useElementRehydrate` re-reads
+the config into the mounted panel's state (`setAreas` for the plot,
+`setSelection` for the signals view; a colormap reads its element live
+every render), the panel's `viewSignalRefs` memo recomputes, and
+`usePushViewSignals` pushes — at which point the host emits
+`view-signals-changed`, one of the two events this panel and its badge
+already refetch on. The transmit half rides the same shape through
+`transmit-frames-changed`. No manual refresh, and no fifth event.
+
+**Closed views are rewritten too, and that is the point.** The panel
+lists what the *open* views reference, but the registry holds every
+element. A plot whose panel is shut has no row here and is rewritten
+anyway, so reopening it does not resurrect the dead name — the ruling is
+"every persisted signal reference", not "every visible one".
+
+**What deliberately holds nothing to rewrite.** The ruling names the
+signal generator and solo state among the stores; measured against the
+code, neither carries a stored identity. A generator rule is a regex
+matched against catalog signal *names* for a colour-wheel slot
+(ADR 0026); solo is a regex over the canonical path, composed as a
+view-layer mask that `plotSolo.ts` documents as never written back; a
+plot area's `patterns` and the signals view's selection patterns are the
+same. All four are re-evaluated against the live catalog every render,
+so a rename makes them start (or stop) matching on their own, which is
+what a user who typed a pattern asked for. This is the same split
+`viewSignalsPush.ts` already drew for what a view *reports* here, and
+for the same reason; it is recorded in `signalRemap.ts`'s module doc so
+it does not read as an omission.
+
+**Two stores the ruling did not name, both included.** A transmit
+frame's calculated-field target (ADR 0027) is a persisted per-signal
+identity and *does* become a row here (phase 2 wired its push), so
+leaving it out would be exactly the silent miss the ruling warns of —
+the panel reporting a repair while a frame still names the dead signal.
+The project's `signal_colors` entry is keyed on the same identity: the
+series is the same series under a new name, so the colour the user
+picked travels with it. A target that already carries a colour of its
+own keeps it, rather than being clobbered.
+
+**The pick names a pair, so both halves are acted on.** The picker's
+options are `(database, signal)`, and a remap option would otherwise
+have made its database half decorative — two databases defining the
+target would offer two options doing the same thing. So the operation
+also records the chosen database for the *target* through phase 4's
+`set_signal_dbc_pick`, which keeps only a real, non-default choice: in
+the common case (one database defines the target) it records nothing and
+announces nothing. Whatever was recorded against the **old** name is
+dropped in the same breath — nothing references it any more, and a pick
+nothing consults is precisely the durable indirection the ruling
+rejected.
+
+**It self-heals, and the residue is nil.** There is no undo path here
+and no memory of the old name: revert the database and the panel reports
+the difference the other way round, on the same row, through the same
+picker. `round-trips a config when the opposite pick is made` pins the
+symmetry — the opposite pick restores the config object exactly,
+`toEqual` on the whole blob, so nothing accumulates across a
+there-and-back.
+
+**Small correctness calls, each with a test.** A rewritten reference
+keeps every field it carried that the rename does not touch (a series'
+colour pick, its hidden flag) and is **dropped** where the list already
+holds the target, so a view that showed both the stale and the new name
+does not end up with the same series twice. A **file-backed** series can
+never match: its identity keys under its own flag, and no database ever
+bore on it. An area's `primarySignalKey` follows the rename, and a
+section assignment moves onto the new identity unless the target already
+has a section of its own. Config blobs are edited structurally and
+tolerantly (`unknown` in, `unknown` out) — every key the operation does
+not understand rides through untouched, which a test pins on `cursorX`.
+
+**Doc-vs-code fixes in passing.** `view_signals.rs`'s taxonomy said
+Ambiguous was "the one status the panel can *resolve*"; it is now the
+one it resolves **host-side**, with the remap named as a rewrite of
+references the host deliberately does not interpret. README had no entry
+for this panel at all — phases 2–4 shipped the panel, its badge and the
+ambiguity pick without one — so it gains a paragraph covering the row
+model, the attention badge and both picks.
+
+**Recorded for task 92, not fixed here:** the remap rewrites what the
+views *store*, so it is unaffected by the per-message decode paths that
+do not honour phase 4's per-signal pick. The one boundary it touches is
+the pick it records for the target, which inherits that same bounded
+consequence and nothing more.
+
+**Not touched:** `TraceStore::frame_index_at_ns` (task 91) — nothing in
+this phase reads it.
+
+#### ADR-0031 perf gate
+
+`pnpm --dir apps/gui tauri build --no-bundle`
+(`target/release/cannet-gui.exe`, frontend embedded), `cargo build
+--release -p cannet-perf-measurement`; `examples/ev-zonal` at ~1608 fps,
+`--connect-on-start`, `--perf-interact scrub`, four 60 s captures into
+an isolated `--app-data-dir` (`scratch-perf/app-data`), gated by `cargo
+run --release -p cannet-perf-measurement -- check --expected-rx-fps 1608
+--expected-tx-fps 1608` (one `--frontend-report` per run) against the
+committed `docs/performance-measurements/baseline.json`. **No baseline
+was promoted and no gate limit was touched.** Reports are review
+artifacts and stay out of the repository.
+
+Four runs, `check` over all four: **passed, 87 metrics gated.** Every
+metric read `ok`; nothing regressed and nothing widened.
+
+| run | rx fps | tx fps | `rx_gap` p95 ratio worst | `rx_gap` short-frac worst | `lag_ms` max | `tree_mb` peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1607.2 | 1611.5 | 1.155 | 0.0008 | 3.1 | 724.5 |
+| 2 | 1606.0 | 1608.8 | 1.167 | 0.0018 | 1.4 | **982.2** |
+| 3 | 1602.4 | 1604.8 | 1.165 | 0.0007 | 21.7 | 732.6 |
+| 4 | 1604.2 | 1607.1 | 1.168 | 0.0012 | 4.3 | 729.7 |
+
+`ids_measured` is 173 on every run (no sidecar throttling — the
+throttled fingerprint is 156). The rx-gap pair, the metric brief flagged
+as twice having spiked unreproducibly, is the tightest and most uniform
+of any phase so far: p95 ratio 1.155–1.168 against a 2.898 limit,
+short-frac 0.0007–0.0018 against 0.166, with no run near either. The
+three memory-drift metrics gate on the median across the four reports
+and are all `ok` (`jsheap` 5.1 vs 24.1, `renderer` 38.4 vs 85.3, `tree`
+70.3 vs 139.2), as are the tracebuffer / grpc / hardware-peak host
+modes.
+
+**One elevated reading, reported not chased:** run 2's `tree_mb_peak` is
+982.2 MB against a 1492 limit, where the other three sit at 724.5–732.6
+and prior phases reported 705–768. It passes, and it is nowhere near the
+8233 MB sighting the brief names as unexplained; the other three runs of
+this same build are inside the usual band, and this phase adds no
+allocation to any path a capture exercises (the rewrite runs once per
+user gesture, in the frontend, over the element registry). Recorded here
+with the full distribution rather than discarded, per ADR 0031's
+unreproducible-outlier rule.

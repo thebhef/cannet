@@ -61,6 +61,10 @@ const DEFAULT_ROWS: ViewSignalRow[] = [
 
 let ROWS: ViewSignalRow[] = DEFAULT_ROWS;
 let ATTENTION_COUNT = 2;
+/// The host's transmit pool, as `list_transmit_frames` answers it — the
+/// one store the remap operation reaches through a command rather than
+/// through the element registry.
+let POOL: unknown[] = [];
 const calls: { cmd: string; args: Record<string, unknown> | undefined }[] = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -69,6 +73,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     if (cmd === "list_view_signals") {
       return { rows: ROWS, attentionCount: ATTENTION_COUNT, total: ROWS.length };
     }
+    if (cmd === "list_transmit_frames") return POOL;
     return undefined;
   }),
 }));
@@ -87,23 +92,35 @@ function emitHostEvent(event: string) {
 
 import { ViewSignalsPanel } from "./ViewSignalsPanel";
 import { ProjectContext, type ProjectContextValue } from "./projectContext";
+import { makeLiveRegistry } from "./registryTestKit";
+import type { ProjectElement } from "./types";
 
+const setSignalColor = vi.fn();
 const projectCtx = {
   buses: [
     { id: "power", name: "Powertrain" },
     { id: "body", name: "Body" },
   ],
+  signalColors: {},
+  onSetSignalColor: setSignalColor,
 } as unknown as ProjectContextValue;
 
-function renderPanel(params: Record<string, unknown> = {}) {
+/// The panel's remap pick writes through the element registry, so it
+/// renders under a real one (`registryTestKit`) — the same state and
+/// `applyElementPatch` bookkeeping the app uses, so a write is
+/// observable exactly as a mounted view would see it.
+function renderPanel(params: Record<string, unknown> = {}, elements: ProjectElement[] = []) {
   const api = { updateParameters: vi.fn() };
   const props = { params, api } as unknown as Parameters<typeof ViewSignalsPanel>[0];
+  const { Provider, control } = makeLiveRegistry(elements);
   render(
     <ProjectContext.Provider value={projectCtx}>
-      <ViewSignalsPanel {...props} />
+      <Provider>
+        <ViewSignalsPanel {...props} />
+      </Provider>
     </ProjectContext.Provider>,
   );
-  return { api };
+  return { api, registry: control };
 }
 
 function lastListCall() {
@@ -113,7 +130,9 @@ function lastListCall() {
 beforeEach(() => {
   ROWS = DEFAULT_ROWS;
   ATTENTION_COUNT = 2;
+  POOL = [];
   calls.length = 0;
+  setSignalColor.mockClear();
   mockListeners.clear();
 });
 afterEach(() => cleanup());
@@ -275,6 +294,23 @@ const AMBIGUOUS = row({
   ],
 });
 
+/// The row the *remap* pick exists for: the database renamed the
+/// signal, so nothing decodes the name every view still holds, and the
+/// message's own definitions are the candidates to re-point at.
+const STALE_NAME = row({
+  id: "power|s:256:PackVolts",
+  signalName: "PackVolts",
+  messageName: "PackStatus",
+  status: "not-decoded",
+  servingDbc: null,
+  pickedDbc: null,
+  usedBy: ["Plot 1", "Color map 1"],
+  candidates: [
+    { dbcPath: "/dbc/client.dbc", signalName: "PackVoltage", messageName: "PackStatus", unit: "mV" },
+    { dbcPath: "/dbc/client.dbc", signalName: "PackCurrent", messageName: "PackStatus", unit: "A" },
+  ],
+});
+
 function sourcePicker() {
   return screen.getByRole("combobox");
 }
@@ -335,17 +371,120 @@ describe("ViewSignalsPanel source picker", () => {
     );
   });
 
-  it("offers a remap candidate but does not act on it yet", async () => {
+  it("offers a remap candidate alongside the database choices", async () => {
     ROWS = [AMBIGUOUS];
     ATTENTION_COUNT = 1;
     renderPanel();
     await waitFor(() => expect(sourcePicker()).toBeEnabled());
     const options = screen.getAllByRole("option") as HTMLOptionElement[];
     const byValue = (v: string) => options.find((o) => o.value === v);
+    // The same signal under another database is the ambiguity pick;
+    // another signal of the same message is the remap. Both are live.
     expect(byValue(`/dbc/private.dbc\0PackVolts`)).toBeEnabled();
-    // Another signal of the same message is the remap case, not a
-    // database choice.
-    expect(byValue(`/dbc/client.dbc\0Other`)).toBeDisabled();
+    expect(byValue(`/dbc/client.dbc\0Other`)).toBeEnabled();
+  });
+
+  /// The guarantee the shared operation exists for, at the gesture that
+  /// invokes it: **one** pick, and every view that referenced the old
+  /// name moves — here a plot and a colormap, two different stores,
+  /// neither of which the panel knows anything about.
+  it("a remap pick reaches every view's stored reference from one gesture", async () => {
+    ROWS = [STALE_NAME];
+    ATTENTION_COUNT = 1;
+    const { registry } = renderPanel({}, [
+      {
+        kind: "plot",
+        id: "p1",
+        sources: ["*"],
+        config: {
+          areas: [
+            {
+              id: "a1",
+              signals: [
+                {
+                  busId: "power",
+                  messageId: 0x100,
+                  extended: false,
+                  signalName: "PackVolts",
+                  messageName: "PackStatus",
+                  unit: "V",
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        kind: "colormap",
+        id: "cm1",
+        busId: "power",
+        messageId: 0x100,
+        extended: false,
+        signalName: "PackVolts",
+        rules: [],
+      },
+    ]);
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+
+    fireEvent.change(sourcePicker(), { target: { value: `/dbc/client.dbc\0PackVoltage` } });
+
+    await waitFor(() => {
+      const plot = registry.entries().find((e) => e.element.id === "p1")?.element as unknown as {
+        config: { areas: { signals: { signalName: string; unit: string }[] }[] };
+      };
+      expect(plot.config.areas[0].signals[0]).toMatchObject({
+        signalName: "PackVoltage",
+        messageName: "PackStatus",
+        unit: "mV",
+      });
+      const colormap = registry.entries().find((e) => e.element.id === "cm1")
+        ?.element as unknown as { signalName: string };
+      expect(colormap.signalName).toBe("PackVoltage");
+    });
+    // …and it is a rewrite, not an alias: nothing durable is recorded
+    // that maps the old name onto the new one.
+    expect(
+      calls.filter((c) => c.cmd === "set_signal_dbc_pick").map((c) => c.args),
+    ).toEqual([
+      { signal: "power|s:256:PackVoltage", dbcPath: "/dbc/client.dbc" },
+      { signal: "power|s:256:PackVolts", dbcPath: null },
+    ]);
+  });
+
+  it("rewrites the transmit pool's calculated-field target in the same gesture", async () => {
+    ROWS = [STALE_NAME];
+    ATTENTION_COUNT = 1;
+    POOL = [
+      {
+        id: "f1",
+        description: "",
+        request: {
+          busId: "power",
+          id: 0x100,
+          extended: false,
+          kind: "classic",
+          data: [0, 0],
+          brs: false,
+          dlc: 8,
+        },
+        cycleMs: 100,
+        mode: "manual",
+        running: false,
+        calc: { counter: { signal: "PackVolts", increment: 1 } },
+      },
+    ];
+    renderPanel();
+    await waitFor(() => expect(sourcePicker()).toBeEnabled());
+
+    fireEvent.change(sourcePicker(), { target: { value: `/dbc/client.dbc\0PackVoltage` } });
+
+    await waitFor(() => {
+      const written = calls.find((c) => c.cmd === "set_transmit_frame");
+      expect(
+        (written?.args?.frame as { calc: { counter: { signal: string } } } | undefined)?.calc.counter
+          .signal,
+      ).toBe("PackVoltage");
+    });
   });
 
   it("has nothing to offer on a row with no candidates", async () => {
