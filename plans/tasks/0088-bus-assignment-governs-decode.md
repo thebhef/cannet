@@ -441,6 +441,105 @@ task. What is missing is a *stated policy* for an unreproducible
 outlier, so that the next agent does not have to improvise one.
 Recorded for the owner alongside the ADR 0031 estimator question.
 
+## Exit-criteria walk, phases 7 and 8 (overseer, 2026-08-21)
+
+The task was reopened after the walk above with two further phases, so
+this addendum judges the five criteria they added. Same standard: a
+named test or a named artefact, never a phase report. Suites re-run by
+the overseer on the phase-8 branch — Rust `cannet-gui` **811** passed /
+0 failed / 6 ignored, `cargo test --workspace` green, `cargo clippy -p
+cannet-gui --all-targets` clean; frontend **2421** passed across 185
+files at phase 7's head, untouched by phase 8.
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| 11 | Reloading a database stops the RBS elements **and** the periodic rows it was driving, one system-log entry, the reload still applies | **Met** | `1aace7de` covers all three reload paths — the watcher's auto-reload, a reload through `add_dbc`, and a capture re-imported under a loaded identity — with tests in `tests.rs` and `rbs/runtime.rs`. The brief's "do not write a second stop" holds: `stop_periodic_transmit_inner` has exactly three callers, the user's own Stop, phase 4's unassign, and this. ADR 0053 §1 amended in the same commit. A fourth commit (`f55b277a`) was needed to make the rule reachable at all — see the note below. |
+| 12 | Unassigning a database from a bus other than the series' own does not park or rebuild that series | **Met** | `unassigning_a_database_from_another_bus_leaves_this_series_decoding` (`signal_cache.rs`), with `a_databases_other_assignments_are_no_part_of_the_fingerprint` pinning it at the hash. The `dbc.buses` loop is gone from `dbc_encoding`; the only surviving reference to `dbc.buses` in the file is the `filter::dbc_applies` eligibility guard, which is the correct one. |
+| 13 | Loading a further database that defines the signal but does not win does not park or rebuild it | **Met** | `a_database_that_does_not_win_leaves_the_series_decoding` (`signal_cache.rs`) and `only_the_winning_definition_is_in_the_fingerprint`. The walk now `break`s at the first eligible database that defines the signal, and a pick is honoured by index over the same eligible sequence the decode walks. |
+| 14 | A different database with identical decode specs still revives the parked cache | **Met** | Phase 3's `a_park_is_revived_by_the_fingerprint_not_by_the_file_it_came_from` still passes unmodified, as does criterion 5's `a_view_is_restored_by_the_signal_and_its_samples_by_the_fingerprint`. This is the guarantee the change was most likely to break, and it did not. |
+| 15 | Editing the winning definition's specs still parks and rebuilds | **Met** | `an_encoding_change_moves_only_its_own_signals_fingerprint`, plus the three exhaustive input tests `every_bit_layout_input_moves_the_fingerprint`, `every_scaling_input_moves_the_fingerprint`, `every_mux_input_moves_the_fingerprint`. |
+
+**Verdict: all fifteen criteria met.**
+
+### The gate task 88 owed
+
+Deliberately deferred from phase 7 and run by the overseer on phase 8's
+head (`27c37785`), which is the only point where the whole task is in
+one tree. Release build via `tauri build --no-bundle`, four 60 s
+captures of **ev-zonal** with `--perf-interact scrub`, each gated
+separately with `cannet-perf-measurement check`.
+
+**All four passed, 31 metrics each, every row `ok`** — all three host
+modes present, none silently missing. Worst-to-worst across the four:
+
+| metric | baseline | runs 1–4 | limit |
+|---|---|---|---|
+| `lag_ms_max` | 10.500 | 2.2 / 15.4 / 2.9 / 12.4 | 41.000 |
+| `rx_gap_short_frac_worst` | 0.008 | 0.003 / 0.003 / 0.004 / 0.003 | 0.166 |
+| `tree_mb_peak` | 714.051 | 735.1 / 727.6 / 731.4 / 731.0 | 1492.102 |
+| `jsheap_mb_peak` | 70.300 | 82.8 / 75.6 / 81.2 / 79.9 | 204.600 |
+| `renderer_mb_peak` | 299.363 | 311.2 / 306.5 / 307.8 / 308.0 | 662.727 |
+| `jank_fraction` | 0.000 | 0.000 in every run | 0.050 |
+
+The two metrics under owner review both behaved: `lag_ms_max` sat well
+inside the 2.8–37.6 ms within-build spread phase 2's eight-run control
+established, and `rx_gap_short_frac_worst` came in *below* its own
+baseline in all four. No repeat of phase 6's `tree_mb_peak` outlier.
+**No baseline promoted, no limit touched.**
+
+The one-time cache rebuild the owner authorised was observed rather
+than inferred: every run logged `7 persisted signal cache(s) did not
+match this capture — rebuilding them by re-decoding its frames` on
+open, and the runs passed the gate anyway.
+
+### The reservation from the first walk is closed
+
+That walk left the task "code-complete but not gate-clean", missing a
+*stated policy* for an unreproducible outlier so the next agent would
+not have to improvise one. ADR 0031 now carries it (amended
+2026-08-21): document it in `plans/backlog.md`, check for an existing
+entry first because what matters is how often it recurs, and it
+licenses nothing else — limits still ratchet down only, no baseline is
+promoted, and the outlier is reported alongside the distribution that
+contradicts it rather than dropped from the set. Task 88's own gate
+then passed four for four with no outlier to apply it to.
+
+### Phase 7's fourth commit, and why it was not scope creep
+
+Phase 7's brief asked for a stop. `f55b277a` also changed the *shape*
+of **Reload all from disk**: it used to clear the set and reload it,
+and now swaps each database in place. That was not an embellishment —
+the stop hangs off `add_dbc` recognising a path it already holds, and
+the button did not take that route, so the rule the phase had just
+built was unreachable from the one control most likely to trigger it.
+Swapping in place is also the reading ADR 0053 §1 requires. The
+user-visible consequence — bus assignment and priority position now
+survive a reload instead of being re-derived — is recorded under
+Blockers as a decision rather than left to be discovered.
+
+### One finding carried forward, not closed here
+
+Phase 8 measured something its own brief did not anticipate: **decode
+resolves per frame, not per signal.** Where the winning definition
+withholds a value — a multiplexor arm that does not match, a payload
+too short — `signal_sampler::sample_shared` falls through to the next
+assigned database, which can then put samples in a pyramid the
+fingerprint has no input from. Measured, not assumed: with the winner
+defining `S` only in arm 0 and a second database defining it plainly, a
+frame in arm 1 decodes to 7.0, editing that second database moves it to
+18.0, and the fingerprint sits at `476b04dbda88b07e` either way.
+
+The phase implemented the ruling as written, named the exposure in ADR
+0047's amendment, and pinned it with
+`a_value_the_winner_withholds_is_outside_the_fingerprint` so a future
+change that closes it has to do so deliberately. That is the right call
+for a phase agent. Closing it properly means removing the decode
+fall-through, which changes decoded values — a ruling, not a phase
+edit — so it is carried to
+[task 92](0092-one-resolution-rule.md) as a fourth shape rather than
+resolved here.
+
+
 ## Status log
 
 ### 2026-08-19 — Phase 1: a frame's bus is required (branch `task-88-phase-1-frame-bus-required`)
