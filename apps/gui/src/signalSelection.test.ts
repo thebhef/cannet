@@ -12,6 +12,7 @@ import {
   reorderSectionNames,
   resolvePatterns,
   scopeCatalog,
+  selectedPatterns,
   signalPath,
   signalsFromPatterns,
   type SelectableArea,
@@ -295,5 +296,21 @@ describe("reorderSectionNames", () => {
     expect(reorderSectionNames(NAMES, "Pack", "Pack")).toBe(NAMES);
     expect(reorderSectionNames(NAMES, "Nope", "Pack")).toBe(NAMES);
     expect(reorderSectionNames(NAMES, "Pack", "Nope")).toBe(NAMES);
+  });
+});
+
+describe("selectedPatterns", () => {
+  it("appends every live section's patterns after the view-level ones", () => {
+    expect(
+      selectedPatterns(["/Vcu/"], ["Pack", "Cabin"], { Pack: ["/Bms/"], Cabin: ["/Hvac/"] }),
+    ).toEqual(["/Vcu/", "/Bms/", "/Hvac/"]);
+  });
+
+  it("dedupes a pattern a section repeats", () => {
+    expect(selectedPatterns(["/Bms/"], ["Pack"], { Pack: ["/Bms/", "/Bms/"] })).toEqual(["/Bms/"]);
+  });
+
+  it("drops the patterns of a section that no longer exists", () => {
+    expect(selectedPatterns([], [], { Pack: ["/Bms/"] })).toEqual([]);
   });
 });

@@ -21,7 +21,7 @@ Tasks keep stable numbers (they don't renumber when the order changes).
 | Outstanding | 15 |
 
 **Nothing has merged.** Everything implemented sits on one linear
-branch chain off `main`, tip `task-109-phase-2c-counter-derived-state`.
+branch chain off `main`, tip `task-109-phase-6-pattern-signals`.
 Merging the last branch takes all of it.
 
 Normally a completed task is removed from this file (the detail lives
@@ -107,11 +107,13 @@ in their own files:
    are not grid rows. Opened by owner instruction 2026-08-22.
    **Groomed 2026-08-22; regrooved 2026-08-23 after a bench session
    found the reported fault was the CAN link, not the USB device.
-   Phases 1, 2, 3 and 2c landed; 2d (Vector) running; 4, 5 and 6
-   outstanding. Kvaser deferred by owner ruling (queue 2.7).** Carries the
+   Every phase landed — 1, 2, 2b, 3, 2c, 2d, 4, 5 and 6; code-complete
+   2026-08-23. Kvaser deferred by owner ruling (queue 2.7).** Carries the
    acceptance blockers for tasks 99 (item 7) and 101 (item 2). Owner
    ruling 2026-08-22 on item 1: pattern-matched signals belong in the
-   view-signals list, so phase 6 implements before it investigates.
+   view-signals list, so phase 6 implemented before it investigated —
+   and the investigation then refuted the mount-order hypothesis, so
+   the pattern exclusion was the whole of the reported cause.
 
 ## Outstanding
 

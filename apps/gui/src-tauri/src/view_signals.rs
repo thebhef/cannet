@@ -129,6 +129,20 @@ pub struct ViewSignalRef {
     pub offset: Option<f64>,
 }
 
+impl ViewSignalRef {
+    /// Whether this reference recorded any of the fields a drift is
+    /// measured against. A view that records none pushes identity only
+    /// — a colormap target, a transmit frame's calculated-field
+    /// signal, a pattern match — and can say nothing about whether the
+    /// databases moved under it.
+    fn records_mapping(&self) -> bool {
+        self.message_name.is_some()
+            || self.unit.is_some()
+            || self.factor.is_some()
+            || self.offset.is_some()
+    }
+}
+
 /// Everything one view contributes: the label the "applies to" column
 /// shows for it, and every signal it references.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -141,9 +155,11 @@ pub struct ViewSignalRefs {
 ///
 /// Held by [`AppState`] and replaced a view at a time. Ordered, so the
 /// model built from it is deterministic when two views disagree about
-/// what they recorded for the same signal (the lowest view id wins —
-/// per-view divergence is a defect this panel exists to surface, not a
-/// state the model has to represent).
+/// what they recorded for the same signal (of two references that both
+/// recorded a mapping the lowest view id wins — per-view divergence is
+/// a defect this panel exists to surface, not a state the model has to
+/// represent; a reference holding identity alone always yields to one
+/// that recorded a mapping, since it has nothing to disagree with).
 #[derive(Debug, Default)]
 pub(crate) struct ViewSignalRegistry {
     views: BTreeMap<String, ViewSignalRefs>,
@@ -355,14 +371,20 @@ fn build_rows<'a>(
                 &reference.signal_name,
                 false,
             );
-            aggregates
-                .entry(id)
-                .or_insert(Aggregate {
-                    reference,
-                    used_by: BTreeSet::new(),
-                })
-                .used_by
-                .insert(view.view_name.as_str());
+            let agg = aggregates.entry(id).or_insert(Aggregate {
+                reference,
+                used_by: BTreeSet::new(),
+            });
+            // Whichever reference says the most wins: one that recorded
+            // the fields a drift is measured against beats one holding
+            // identity alone, whatever order the views arrive in.
+            // Between two that both recorded something, the first still
+            // wins — that disagreement is the defect this panel exists
+            // to surface.
+            if !agg.reference.records_mapping() && reference.records_mapping() {
+                agg.reference = reference;
+            }
+            agg.used_by.insert(view.view_name.as_str());
         }
     }
 
@@ -1373,6 +1395,31 @@ mod tests {
         assert_eq!(volts.used_by, vec!["Plot 1", "Plot 2"]);
         let other = rows.iter().find(|r| r.signal_name == "Other").unwrap();
         assert_eq!(other.used_by, vec!["Trace"]);
+    }
+
+    #[test]
+    fn an_identity_only_reference_never_masks_a_drift_another_view_recorded() {
+        // A view that records nothing about a signal — a colormap
+        // target, a transmit frame's counter, a pattern match — says
+        // less about it than a view that recorded the fields it was
+        // picked under. Merging them must keep the reference that says
+        // more, whichever view id sorts first, or a drift the other
+        // view really has would read as Decoded.
+        let db = plain(); // PackVolts in V
+        let buses = power();
+        let reg = registry(&[
+            ("a", "Signals", vec![bare(Some("power"), "PackVolts")]),
+            (
+                "b",
+                "Plot 1",
+                vec![recorded("PackVolts", "PackStatus", "mV", 0.1)],
+            ),
+        ]);
+        let rows = build(&reg, &[("a.dbc", &db, &buses)]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, ViewSignalStatus::Scale);
+        assert_eq!(rows[0].used_by, vec!["Plot 1", "Signals"]);
     }
 
     #[test]

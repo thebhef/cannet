@@ -350,6 +350,28 @@ panels where the cursor rides on the selection background rather than
 an outline.** The detail and the experiment are in the task's status
 log.
 
+### 1.30 A signal-generator rule's matches are still not pushed
+[task 109](tasks/0109-usage-feedback-chip-era.md) phase 6
+
+Ruling 2.4 put pattern-matched signals into the view-signals list, and
+they are: a plot area's patterns and the signals view's selection and
+section patterns now push their matches identity-only. The phase's
+brief named a third pattern case — a **signal-generator rule** — and
+that one was left out deliberately.
+
+A generator rule (ADR 0026) matches signal *names* across the whole
+catalog to assign a color-wheel slot. It puts nothing on screen, and
+wherever a matched signal is displayed the view displaying it already
+pushes it — so including generator matches would list signals no view
+shows. On the shipped example project a single rule like `Cell(\d+)`
+would add about a thousand such rows, all reading Decoded except
+whatever the databases happen to define twice, which would also enter
+the attention count.
+
+**Needed: yes or no.** The reasoning is in the task's status log; if
+the answer is yes it is a small builder plus a push from
+`GeneratorPanel`.
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost
@@ -558,6 +580,7 @@ Recorded by the phases that found them, not yet decided.
 | 3.37 | **A wire-level transmit rejection reaches the app and is thrown away.** `cannet-client::is_per_frame_error_code` classifies `TX_REJECTED` as non-fatal and logs it with `tracing::warn!`, which goes to dev stderr only — not the System Messages panel, not bus health, not the connection chip. So a tx-confirm trace row is a **local echo, never a wire confirmation**, and the trace can show a frame as sent that the far end refused: a listen-only bus, an FD frame on a classic bus, a saturated queue. Task 109 phase 2's route gate closes the unplugged-adapter case; this general one is a behavioural choice (where a rejection surfaces, and at what cadence — at RBS rate it is a flood and needs coalescing) so it was recorded rather than chosen. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 | 3.39 | **Error frames are trace rows, one each, and that is most likely the owner's third symptom.** During the bench fault the adapter emitted 115,136 error frames in 22 s (~5,200/s), and nothing filters them out of the ingest path: `session.rs`'s only error branch *adds* the health-coalescer fold and the `trace_store.append` below it is unconditional, `trace_store/flush.rs` persists the kind like any other, and `trace_query.rs` spells it for the paged view. So the pack bus trace kept growing at ~5,200 rows/s during the fault. Phase 2 attributed "the trace continued getting updates" to tx-confirm rows and closed that case; this is a second, larger contributor it did not see. **Not fixed:** `bus_health.rs` records the opposite decision in its module doc ("The frames themselves are stored like any other frame ... so a saved capture is not a lossy restatement of what was received"), so suppressing or coalescing them changes what a save contains. Drop them, coalesce them into one row, or keep them and filter at the view - a behavioural choice, and a separate phase. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 | 3.38 | **The bus-health readout was structurally inert on the only hardware there is.** python-can's `PcanBus.state` getter returns `self._state`, written only by the setter `__init__` calls — a stored echo of the configured value, never a device read — so bus-off and error-passive could not surface on PEAK no matter what the controller did. Task 109 phase 2 switches a PCAN bus onto the live `status()` read (`CAN_GetStatus`), matched against exact vendor status codes. That makes task 101's controller state work for the first time on this rig, and it is a behaviour change on a live data path that **has never met hardware** — worth knowing before the confirmation run. **Superseded in part by phase 2c:** the bench run showed `CAN_GetStatus` itself under-reports (it stops at `BUSWARNING` on a transmitter driving an open circuit), so the state is now derived from the error frames' TEC/REC and the status word only floors it. The exact match survives for the no-hardware code family alone. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
+| 3.40 | **The view-signals panel is unvirtualized, and pattern rows move its bound.** Its row list renders one DOM subtree per row, on the recorded grounds that "the row count is bounded (the signals the open views reference)". Task 109 phase 6 keeps that literally true but widens it: a view selecting by pattern now contributes every signal its pattern matches. On the shipped `examples/ev-zonal` databases (2,203 signals) a signals view with the pattern `Cell` would put **1,074** rows in the panel. Measured in jsdom, mount-to-first-row scales roughly linearly - 100 rows 224 ms, 500 rows 482 ms, 2,000 rows 1,679 ms - which is a shape, not a browser figure; no real-browser number was taken (perf capture skipped by ruling 2.5). Recorded rather than fixed: virtualizing this panel is its own piece of work. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 | 3.40 | **The Vector controller-state path has never met Vector hardware, and cannot here.** Task 109 phase 2d subclasses `VectorBus` to read the chip-state events its XL driver reports (`busStatus`, `txErrorCounter`, `rxErrorCounter`) and feeds them to the same derivation PEAK uses, polling with `xlCanRequestChipState` on the existing 500 ms cadence. The vxlapi64 DLL is absent in an agent's environment, so the backend cannot even load - the tests exercise the seam against faked chip-state events built from python-can 4.6.1's own struct definitions. Implemented and untested, not working. The re-test script is in the task file's blockers section, and it asks for a classic **and** an FD run, since the two event queues are different structs read through different hooks. It also asks whether Vector floods the trace with error frames the way PEAK does (3.39). | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 
 ---

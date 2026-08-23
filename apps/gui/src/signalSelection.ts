@@ -67,6 +67,28 @@ export function resolvePatterns(
   });
 }
 
+/// Everything the signal view selects by pattern: its view-level
+/// patterns plus every *live* section's own, deduped and in that order.
+/// A section's patterns are part of what the view selects rather than a
+/// re-ordering of rows that were already there, and patterns belonging
+/// to a section that no longer exists contribute nothing — the same
+/// rule the host applies when it resolves the selection
+/// (`signal_snapshot.rs`'s `selection_with_section_patterns`), mirrored
+/// here for the surfaces that need the matches without a round trip.
+export function selectedPatterns(
+  patterns: readonly string[],
+  sectionNames: readonly string[],
+  sectionPatterns: Readonly<Record<string, readonly string[]>>,
+): string[] {
+  const out = [...patterns];
+  for (const name of sectionNames) {
+    for (const p of sectionPatterns[name] ?? []) {
+      if (!out.includes(p)) out.push(p);
+    }
+  }
+  return out;
+}
+
 /// Shape `applyAreaSelections` accepts. Subset of `PlotPanel`'s
 /// `PlotAreaConfig` — anything the helpers need without bringing the
 /// renderer along. The series shape is the shared `SignalRef`

@@ -10,9 +10,8 @@ behave like the grid rows they sit on.
 
 Groomed with the owner 2026-08-22, with phases 2b / 2c / 2d added after
 the 2026-08-22 bench session found the reported fault was the CAN link,
-not the USB device. Phases 1, 2, 2b, 3, 2c, 2d, 4 and 5 landed; 6
-outstanding. Kvaser deferred by owner ruling 2026-08-23. See the status
-log.
+not the USB device. Every phase has landed: 1, 2, 2b, 3, 2c, 2d, 4, 5
+and 6. Kvaser deferred by owner ruling 2026-08-23. See the status log.
 
 Two of the observations are **acceptance blockers for tasks already
 finished** (owner-review-queue § 4) and are carried here rather than
@@ -1358,6 +1357,166 @@ was taken and nothing was written to
 ring itself was never photographed; the chain above stops at "the
 container holds focus and no author rule suppresses its outline". The
 closing look is the owner's, on the installer.
+
+**2026-08-23 - Phase 6 (The view-signals panel reads empty), item 1.**
+Branch `task-109-phase-6-pattern-signals` off
+`task-109-phase-5-nav-highlight`. Owner ruling 2.4 implemented, and the
+two hypotheses the ruling did not settle taken to a verdict.
+
+### What landed
+
+Pattern-matched signals join the pushed set, identity-only, in the two
+views that display them.
+
+| Builder | Was | Now |
+|---|---|---|
+| `plotViewSignalRefs(areas)` | every area's manual `signals`, with the `messageName` / `unit` recorded with them | `plotViewSignalRefs(areas, effectiveAreas)` - the same picks, plus everything in the *resolved* areas that is not one, identity-only and deduped |
+| `signalsViewSignalRefs(keys)` | the manual selection keys | `signalsViewSignalRefs(keys, matches)` - the same keys, plus the matches, identity-only, deduped against the keys |
+
+`PlotPanel` already computes `effectiveAreas` (`applyAreaSelection` per
+area, memoised per area id) for the renderer, so the push moved below
+that memo and reads it - no second resolution pass, and the per-area
+memo keeps a resolved object at the identity it had when the catalog
+did not move. `SignalsPanel` had no resolved set of its own (the host
+resolves the selection for the *rows*), so it resolves one for the
+push: `signalsFromPatterns` over `selectedPatterns(...)`, against the
+same source-scoped catalog its picker and its match counts already use.
+
+`selectedPatterns` is new in `signalSelection.ts` and mirrors the host's
+`signal_snapshot::selection_with_section_patterns`: a **section's**
+patterns are part of what the view selects, not a re-ordering of rows
+that were already there, and a pattern on a section that no longer
+exists contributes nothing. Without it a pattern typed into a section -
+the ordinary way to build this view - would still have pushed nothing.
+
+**A pattern row is identity-only, and cannot be otherwise.** The
+resolved match does carry a message name and unit, but they came from
+the catalog this instant; pushing them would have the host compare the
+catalog against itself and report Decoded forever. So the builders drop
+them, and such a row reads Decoded, Not Decoded or Ambiguous and never
+Scale or Stale. `viewSignalsPush.ts`'s module doc recorded the opposite
+decision at length and now records this one.
+
+**A `viaPattern` entry takes the identity-only path.** It is the
+persisted carrier for a pattern row's color / hidden override, not a
+pick - `PlotPanel` already says exactly that where it computes its own
+pick set - so it has no recorded mapping either.
+
+### No host change was needed for the wire - but one was needed for the merge
+
+The wire shape carried the case already (`messageName` / `unit` are
+`Option`, `serving.is_none()` gives Not Decoded, the drift comparison
+only runs where a recorded field exists), as the grooming said.
+Confirming that turned up a different problem, in `build_rows`'s
+aggregation.
+
+- **Observation.** One signal is one row, and the aggregate keeps *the
+  first view's record by view id order*. An identity-only reference is
+  a record.
+- **Hypothesis.** A view pushing identity only, whose id sorts first,
+  makes the row report Decoded even when another view recorded a
+  mapping that has since drifted.
+- **Experiment.**
+  `an_identity_only_reference_never_masks_a_drift_another_view_recorded`:
+  view `a` pushes `bare("PackVolts")`, view `b` pushes the same signal
+  `recorded` with unit `mV` against a database saying `V`. Falsifiable -
+  if the merge already preferred the richer record the row reads Scale.
+- **Data.** `left: Decoded, right: Scale`, at `view_signals.rs:1395`.
+- **Conclusion.** Confirmed. The tie-break was "lowest view id wins",
+  which is right for two views that *disagree* and wrong for one that
+  says nothing. Fixed: a reference recording none of message name /
+  unit / factor / offset yields to one that records any
+  (`ViewSignalRef::records_mapping`); between two that both record, the
+  first still wins, and the registry's own doc now says so.
+
+This was reachable before this phase - a colormap target and a transmit
+frame's counter signal have always pushed identity only - but pattern
+rows make it common rather than rare.
+
+### The owner's parenthetical, falsified
+
+*"does this need to have existed when views were created in the project
+to get populated?"*
+
+- **Hypothesis.** The panel lists only the signals of views that
+  mounted after it did.
+- **Experiment.** `ViewSignalsPanel.dom.test.tsx` -> "lists a signal
+  pushed before the panel existed". The mock host is given a real
+  registry (a map `set_view_signals` writes and `list_view_signals`
+  reads whole). A pushing view mounts with **no panel on screen** - the
+  test asserts `list_view_signals` has not been called at that point -
+  and only then is the panel mounted.
+- **Data.** The panel's own first fetch returns the row: `PackVolts`
+  renders, attributed to `Plot 1`.
+- **Conclusion.** Refuted. The registry is app state, not a
+  subscription - `usePushViewSignals` pushes from a mount effect that
+  runs whether or not anything is listening, and the panel refreshes on
+  mount as well as on `view-signals-changed`. Mount order cannot
+  matter, so the pattern exclusion was the whole of the reported cause.
+
+### Consequences
+
+- **The attention count now includes pattern rows.** Wanted, per the
+  ruling: a matched signal that two assigned databases both define
+  reads Ambiguous and is counted. A matched signal can hardly ever read
+  Not Decoded, because the subject a pattern matches against *is* the
+  catalog - a signal no database serves is not there to be matched. So
+  the badge grows by the catalog's ambiguity within the patterns'
+  reach, not by a new class of breakage.
+- **Row count follows pattern breadth, and this panel is not
+  virtualized.** Checked rather than assumed; the measurement is in
+  queue 3.40. On the shipped `examples/ev-zonal` databases (2,203
+  signals) the pattern `Cell` matches 1,074 of them. The comment in
+  `ViewSignalsPanel.tsx` that justified having no virtualization
+  ("the row count is bounded") has been rewritten to say what the bound
+  now is.
+- **Re-push churn stays bounded.** Both panels' match memos recompute
+  whenever the catalog object changes, but `usePushViewSignals`
+  compares the serialised body and skips the invoke when nothing moved.
+  The existing "does not re-invoke when a re-render passes an
+  equal-by-value refs array" case is the guard, and it does not care
+  whether the array came from storage or from a resolution.
+
+### Tests
+
+Each one written first and watched fail.
+
+| Where | Added | Falsified against |
+|---|---|---|
+| `viewSignalsPush.test.ts` | 5 - identity-only match, pick beats match, `viaPattern` is not a pick, cross-area dedupe, file-backed match | the old single-argument builders: 5 failed, 13 passed |
+| `signalSelection.test.ts` | 3 - `selectedPatterns`: section patterns appended, deduped, dead section dropped | new function |
+| `PlotPanel.dom.test.tsx` | 1 - a pattern-only area pushes its match identity-only | `plotViewSignalRefs(areas, areas)`: fails |
+| `SignalsPanel.dom.test.tsx` | 1 - a dropped pattern's match is pushed identity-only | `signalsViewSignalRefs(keys, [])`: fails |
+| `ViewSignalsPanel.dom.test.tsx` | 1 - the mount-order falsification above | - |
+| `view_signals.rs` | 1 - identity-only never masks a recorded drift | the unfixed merge: `Decoded` vs `Scale` |
+
+Frontend 2906 passing across 216 files; the `cannet-gui` Rust suite 939.
+
+### Not done
+
+**A signal-generator rule still pushes nothing.** The phase's brief
+named it as a third pattern case. A generator rule (ADR 0026) matches
+signal *names* across the whole catalog to assign a color-wheel slot -
+it displays nothing, and wherever a matched signal is on screen the
+view showing it already pushes it. Including its matches would list
+signals no view shows: on the example project one `Cell(\d+)` rule
+would add about a thousand rows, and whatever the databases define
+twice would enter the attention count with them. The owner's words were
+about fields that "dynamically update" in a list they wanted populated,
+which reads as the views that display them. Recorded as queue 1.30
+rather than decided silently; if the answer is yes it is a builder plus
+a push from `GeneratorPanel`.
+
+**Perf skipped by owner instruction** (queue 2.5). No ADR-0031 capture
+was taken and nothing was written to
+`docs/performance-measurements/frontend/`. The row-count numbers behind
+queue 3.40 are a jsdom scaling shape from a throwaway probe - not a
+browser figure, and not a gate reading.
+
+**No browser-rendered confirmation.** Per the no-UI-automation rule the
+panel was never looked at with a real project loaded; the chain above
+stops at "the pushes carry the matches, and the host builds rows from
+them". The closing look is the owner's, on the installer.
 
 ## Blockers / side effects
 
