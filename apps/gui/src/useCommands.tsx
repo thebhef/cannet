@@ -135,6 +135,13 @@ export interface UseCommandsOptions {
   // (`handleImportTrace`), the same call the toolbar dropdown's click
   // handler makes — same census/guard/cancel flow either way.
   openRecentCapture: (path: string) => void;
+  // The Recent-projects list — the same user-scope MRU (ADR 0042 §3)
+  // the toolbar's Projects chip reads. Each entry gets its own
+  // "Open recent project: <name>" palette command.
+  recentProjects: readonly string[];
+  // Open a recent project through the app's single project-open path
+  // (`openProjectAt`), the same call the toolbar menu makes.
+  openRecentProject: (path: string) => void;
 }
 
 /// A command's second stage (ADR 0037): the one piece of text the
@@ -222,6 +229,8 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     appCommands,
     recentCaptures,
     openRecentCapture,
+    recentProjects,
+    openRecentProject,
   } = options;
 
   const focusedPanelKind = useMemo(() => {
@@ -505,6 +514,18 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     [recentCaptures],
   );
 
+  // Recent-projects palette commands: the same shape, over the
+  // user-scope project MRU the toolbar's Projects chip reads.
+  const recentProjectCommands = useMemo(
+    () =>
+      recentProjects.map((path) => ({
+        id: `recentProject.open:${path}`,
+        path,
+        label: `Open recent project: ${basename(path)}`,
+      })),
+    [recentProjects],
+  );
+
   // The command registry: the app-domain commands passed in merged with
   // the framework/view/palette commands owned here. Rebuilt every render
   // (cheap) and read through a ref so the once-registered keydown
@@ -517,6 +538,9 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
     // `handleImportTrace`) — same census/guard/cancel flow either way.
     ...Object.fromEntries(
       recentCaptureCommands.map((c) => [c.id, () => openRecentCapture(c.path)]),
+    ),
+    ...Object.fromEntries(
+      recentProjectCommands.map((c) => [c.id, () => openRecentProject(c.path)]),
     ),
     "panel.show.project": showProjectPanel,
     "panel.show.systemMessages": showSystemMessagesPanel,
@@ -762,10 +786,23 @@ export function useCommands(options: UseCommandsOptions): UseCommandsResult {
       hint: "Recent",
       keywords: c.path,
     }));
+    const recentProjectItems = recentProjectCommands.map((c) => ({
+      id: c.id,
+      label: c.label,
+      hint: "Recent",
+      keywords: c.path,
+    }));
     // Recently-used first (the fzf ranking takes over once the user
     // types — this orders only the unfiltered list).
-    return sortRecentFirst([...items, ...recents], recentCommands);
-  }, [openPalette, commandContext, recentCommands, parsedBindings, recentCaptureCommands]);
+    return sortRecentFirst([...items, ...recents, ...recentProjectItems], recentCommands);
+  }, [
+    openPalette,
+    commandContext,
+    recentCommands,
+    parsedBindings,
+    recentCaptureCommands,
+    recentProjectCommands,
+  ]);
   // Open-or-focus the dockview panel for a project element — the reopen
   // path go-to-view uses for a closed element view (mirrors ProjectPanel's
   // open). A filter has no panel of its own, so surface the graph instead.

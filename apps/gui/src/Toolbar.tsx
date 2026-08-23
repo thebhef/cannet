@@ -20,6 +20,13 @@
 /// - **The seven "Add X" commands are one menu.** They differ only in
 ///   which panel they open, and seven near-identical phrases across the
 ///   bar is where the eye stops reading.
+/// - **Save is a split chip, and the split never swallows the press.**
+///   Save and its disclosure are two chips inside one
+///   {@link ChipSegment}: pressing Save saves, and only the `▾` beside
+///   it opens the menu that offers Save As. A disclosure that hijacked
+///   the primary press would make the commonest action in the bar the
+///   slowest one, so `Toolbar.dom.test.tsx` pins that pressing Save
+///   dispatches `project.save` and opens nothing.
 /// - **The toolbar carries nothing that reports a condition.** The
 ///   connection control, System Messages, Signal Mapping and RBS
 ///   Mapping all live in the status bar, where the condition already
@@ -29,6 +36,7 @@
 import { useState } from "react";
 
 import { ChipButton } from "./ChipButton";
+import { ChipSegment } from "./ChipSegment";
 import { useDismissableMenu } from "./useDismissableMenu";
 import type { IconName } from "./Icon";
 
@@ -47,9 +55,9 @@ interface ToolbarChip {
   busy?: boolean;
 }
 
-/// The separators and the two menus, interleaved with the chips in bar
-/// order.
-type ToolbarItem = ToolbarChip | "sep" | "recent" | "add";
+/// The separators, the split Save chip and the three menus, interleaved
+/// with the chips in bar order.
+type ToolbarItem = ToolbarChip | "sep" | "save" | "recentProjects" | "recent" | "add";
 
 /// The panels the Add menu opens, in the order they are listed.
 const ADD_PANEL_CHIPS: readonly { command: string; icon: IconName; label: string }[] = [
@@ -66,6 +74,12 @@ export interface ToolbarProps {
   /// Dispatches a command id. Every chip goes through this and nothing
   /// else.
   onRun: (commandId: string) => void;
+  /// The projects opened most recently, most recent first — user-scope
+  /// state (ADR 0042 §3), so it is the same list whichever project is
+  /// open. Empty means the Projects chip is not drawn at all.
+  recentProjects: readonly string[];
+  /// Re-open one of them. Not a command — the path is the argument.
+  onOpenRecentProject: (path: string) => void;
   /// Nothing has been captured, so there is nothing to clear or save.
   captureEmpty: boolean;
   /// A capture is being scanned or imported right now. Starting a
@@ -84,15 +98,25 @@ export function Toolbar({
   importing,
   recentCaptures,
   onOpenRecent,
+  recentProjects,
+  onOpenRecentProject,
 }: ToolbarProps) {
   const [addOpen, setAddOpen] = useState(false);
   const addRef = useDismissableMenu<HTMLDivElement>(addOpen, () => setAddOpen(false));
   const [recentOpen, setRecentOpen] = useState(false);
   const recentRef = useDismissableMenu<HTMLDivElement>(recentOpen, () => setRecentOpen(false));
+  const [projectsOpen, setProjectsOpen] = useState(false);
+  const projectsRef = useDismissableMenu<HTMLDivElement>(projectsOpen, () =>
+    setProjectsOpen(false),
+  );
+  const [saveOpen, setSaveOpen] = useState(false);
+  const saveRef = useDismissableMenu<HTMLDivElement>(saveOpen, () => setSaveOpen(false));
 
   const items: ToolbarItem[] = [
+    { command: "project.new", icon: "plus", label: "New", title: "New project" },
     { command: "project.open", icon: "folder", label: "Open", title: "Open project…" },
-    { command: "project.save", icon: "save", label: "Save", title: "Save project" },
+    "recentProjects",
+    "save",
     "sep",
     // A load running is the one thing the user is waiting on, so the
     // chip that started it says so rather than sitting there looking
@@ -138,6 +162,78 @@ export function Toolbar({
   const renderItem = (item: ToolbarItem, i: number) => {
     if (item === "sep") {
       return <span key={`sep-${i}`} className="toolbar-separator" aria-hidden="true" />;
+    }
+    if (item === "save") {
+      // The split chip: one hairline around two chips, and a menu
+      // hanging off the second. The primary press is Save's own and
+      // reaches nothing else — see the module doc.
+      return (
+        <div key="save" className="chip-menu" ref={saveRef}>
+          <ChipSegment label="Save" className="save-split">
+            <ChipButton
+              icon="save"
+              label="Save"
+              title="Save project"
+              onPress={() => onRun("project.save")}
+            />
+            <ChipButton
+              label={"▾"}
+              ariaLabel="More save actions"
+              title="More save actions"
+              menuOpen={saveOpen}
+              onPress={() => setSaveOpen((v) => !v)}
+            />
+          </ChipSegment>
+          {saveOpen && (
+            <ul role="menu" className="chip-menu-list save-split-menu">
+              <li role="menuitem">
+                <ChipButton
+                  icon="save"
+                  label="Save As…"
+                  title="Save project as…"
+                  onPress={() => {
+                    setSaveOpen(false);
+                    onRun("project.saveAs");
+                  }}
+                />
+              </li>
+            </ul>
+          )}
+        </div>
+      );
+    }
+    if (item === "recentProjects") {
+      // Nothing opened yet on this machine: a menu with nothing in it
+      // is worse than no menu.
+      if (recentProjects.length === 0) return null;
+      return (
+        <div key="recentProjects" className="chip-menu recent-projects" ref={projectsRef}>
+          <ChipButton
+            icon="clock"
+            label="Projects"
+            ariaLabel={`Recent projects (${recentProjects.length})`}
+            title="Recent projects"
+            menuOpen={projectsOpen}
+            onPress={() => setProjectsOpen((v) => !v)}
+          />
+          {projectsOpen && (
+            <ul role="menu" className="chip-menu-list recent-projects-menu">
+              {recentProjects.map((path) => (
+                <li key={path} role="menuitem">
+                  <ChipButton
+                    label={path}
+                    title={path}
+                    onPress={() => {
+                      setProjectsOpen(false);
+                      onOpenRecentProject(path);
+                    }}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      );
     }
     if (item === "add") {
       return (

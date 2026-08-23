@@ -21,8 +21,11 @@ afterEach(cleanup);
 /// icon-only form; a `null` command is a chip that opens a menu rather
 /// than running something.
 const BAR: readonly [string, string | null, string | null][] = [
+  ["New project", "New", "project.new"],
   ["Open project…", "Open", "project.open"],
+  ["Recent projects", "Projects", null],
   ["Save project", "Save", "project.save"],
+  ["More save actions", "▾", null],
   ["Import trace… (BLF / MDF)", "Import", "trace.import"],
   ["Recent captures", "Recent", null],
   ["Add DBC…", "DBC", "dbc.add"],
@@ -47,10 +50,12 @@ const ADD_MENU: readonly [string, string][] = [
 ];
 
 const RECENTS = ["C:/captures/drive-cycle-08.blf", "C:/captures/bench.mf4"];
+const RECENT_PROJECTS = ["C:/jobs/pack.cannet_prj", "C:/jobs/rig.cannet_prj"];
 
 function renderBar(over: Partial<Parameters<typeof Toolbar>[0]> = {}) {
   const onRun = vi.fn();
   const onOpenRecent = vi.fn();
+  const onOpenRecentProject = vi.fn();
   render(
     <Toolbar
       onRun={onRun}
@@ -58,10 +63,12 @@ function renderBar(over: Partial<Parameters<typeof Toolbar>[0]> = {}) {
       importing={false}
       recentCaptures={RECENTS}
       onOpenRecent={onOpenRecent}
+      recentProjects={RECENT_PROJECTS}
+      onOpenRecentProject={onOpenRecentProject}
       {...over}
     />,
   );
-  return { onRun, onOpenRecent };
+  return { onRun, onOpenRecent, onOpenRecentProject };
 }
 
 /// The chips sitting on the bar itself, left to right — not the ones
@@ -179,5 +186,66 @@ describe("Toolbar", () => {
     renderBar({ recentCaptures: [] });
     expect(document.querySelector(".recent-captures")).toBeNull();
     expect(barChips()).toHaveLength(BAR.length - 1);
+  });
+
+  it("lists the projects opened lately, and re-opens the one picked", () => {
+    const { onOpenRecentProject, onRun } = renderBar();
+    const chip = barChips().find((c) => c.getAttribute("title") === "Recent projects")!;
+    expect(chip).toHaveAttribute("aria-label", "Recent projects (2)");
+    fireEvent.click(chip);
+    const entries = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".recent-projects-menu .chip-button"),
+    );
+    expect(entries.map(labelOf)).toEqual(RECENT_PROJECTS);
+    fireEvent.click(entries[1]);
+    // The path is the argument, so it is not a command id — nothing is
+    // dispatched through `onRun`.
+    expect(onOpenRecentProject.mock.calls).toEqual([[RECENT_PROJECTS[1]]]);
+    expect(onRun).not.toHaveBeenCalled();
+  });
+
+  it("leaves the Projects chip out entirely when nothing has been opened yet", () => {
+    renderBar({ recentProjects: [] });
+    expect(document.querySelector(".recent-projects")).toBeNull();
+    expect(barChips()).toHaveLength(BAR.length - 1);
+  });
+
+  it("saves when Save is pressed — the disclosure never swallows the press", () => {
+    // The owner's rule for the split chip: "clicking on the save button
+    // should just save". Pressing Save must dispatch `project.save` and
+    // open nothing; only the caret beside it opens the menu.
+    const { onRun } = renderBar();
+    const save = barChips().find((c) => c.getAttribute("title") === "Save project")!;
+    expect(save).not.toHaveAttribute("aria-haspopup");
+    fireEvent.click(save);
+    expect(onRun.mock.calls).toEqual([["project.save"]]);
+    expect(document.querySelector(".save-split-menu")).toBeNull();
+  });
+
+  it("offers Save As from the disclosure beside Save, and only from there", () => {
+    const { onRun } = renderBar();
+    const caret = barChips().find((c) => c.getAttribute("title") === "More save actions")!;
+    expect(caret).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(caret);
+    // Opening the menu runs nothing by itself.
+    expect(onRun).not.toHaveBeenCalled();
+    expect(caret).toHaveAttribute("aria-expanded", "true");
+    const entries = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".save-split-menu .chip-button"),
+    );
+    expect(entries.map(labelOf)).toEqual(["Save As…"]);
+    fireEvent.click(entries[0]);
+    expect(onRun.mock.calls).toEqual([["project.saveAs"]]);
+    expect(document.querySelector(".save-split-menu")).toBeNull();
+  });
+
+  it("draws Save and its disclosure inside one hairline", () => {
+    // A split chip is one control, so it carries one outline (ADR
+    // 0055's segment): two chips each drawing their own would read as
+    // two unrelated commands.
+    renderBar();
+    const seg = document.querySelector(".toolbar .chip-seg.save-split")!;
+    expect(seg).not.toBeNull();
+    expect(seg.querySelectorAll(".chip-button")).toHaveLength(2);
   });
 });

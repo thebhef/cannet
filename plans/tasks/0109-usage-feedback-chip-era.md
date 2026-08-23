@@ -10,7 +10,7 @@ behave like the grid rows they sit on.
 
 Groomed with the owner 2026-08-22, with phases 2b / 2c / 2d added after
 the 2026-08-22 bench session found the reported fault was the CAN link,
-not the USB device. Phases 1, 2, 2b, 3, 2c and 2d landed; 4, 5 and 6
+not the USB device. Phases 1, 2, 2b, 3, 2c, 2d and 4 landed; 5 and 6
 outstanding. Kvaser deferred by owner ruling 2026-08-23. See the status
 log.
 
@@ -1103,7 +1103,126 @@ bindings were added, and nothing here makes adding them harder: a third
 vendor implements one `_<vendor>_state` method against the same
 `state_from_counters` / `worse_state` pair.
 
+**2026-08-23 — Phase 4 (The project affordances), items 4, 5 and 6.**
+Branch `task-109-phase-4-project-affordances` off
+`task-109-phase-2d-vector-chip-state`. Three top-level-bar affordances
+in task 108's chip language; no new icon and no new chip component.
+
+### What landed
+
+**Item 4 — New Project.** `project.close` is now `project.new`, labelled
+**New project**, with `Close project` kept as a hidden palette keyword
+so muscle memory still finds it. The handler is unchanged
+(`handleNewProject`); the command was always a *new*-project action and
+only its name said otherwise. Two riders, both in owner-review-queue
+1.28: the palette wording is user-visible, and the command lost its
+`hasProjectOpen` gate — it used to vanish whenever no project *file* was
+open, which is exactly the session a user most wants to start over from
+(a session always holds a project, ADR 0042 §1; only sometimes a file).
+A chip `New` (the `plus` glyph, the one the bar already spends on
+"create") sits at the head of the bar. `CommandContext.hasProjectOpen`
+is now gated on by no command; it is left in place because it is the
+context *shape* ADR 0018 declares and names as an example, computed by
+`useCommands` and enumerated by the boot-time conflict check — removing
+it would be an ADR edit, not a dead-variable cleanup.
+
+**Item 5 — Recent projects.** `UiState.recent_projects` joins
+`last_project` at **user scope** (`state.rs`'s `SCOPES`), per ADR 0042
+§3 and the owner's 2026-08-22 ruling: a list of projects is a memo about
+particular files, so ADR 0034 makes it state and not a setting, and it
+must not be workspace-scoped because its whole job is to name the
+project you are *not* in. No ADR diverged from, so no amendment; ADR
+0042 §3's table cell and ADR 0034's `project.close` mention were updated
+to match the code. The bound is the setting, `recent_projects_limit`
+(default 8, `Scope::UserOverridable`, `Kind::Behaviour`), exactly the
+`recent_blfs_limit` / `recent_commands_limit` idiom. Frontend: a
+`recentProjects.ts` pair of pure helpers over the shared `pushRecent`, a
+`Projects` chip menu on the bar, and one
+`Open recent project: <name>` palette entry each — the same two surfaces
+recent captures already occupy, built from the same list so they cannot
+drift. The host owns the list; React holds a seeded window on it, the
+way `recentCaptures` does.
+
+*List hygiene, decided here.* **Dedupe on path and reorder on open** —
+`pushRecent` moves an entry to the front, so the list is ordered by when
+you last worked in a project, the only ordering that stays useful as it
+fills. **Recording happens in `rememberProject`**, the one place the
+session records which file it is working in, so the last-project pointer
+and the MRU cannot disagree; `null` (a New project, which has no file
+yet) adds nothing. **A missing file is forgotten only when opening it
+fails** — the failed `openProjectAt` and the failed boot reopen both
+drop it. Nothing stats the list to prune it in advance: an entry on a
+disconnected share or an unmounted drive is still the project the user
+wants, and statting every entry to draw a menu would stall the bar on
+exactly those paths.
+
+**Item 6 — Save as a split chip.** Save and a `▾` disclosure are two
+`ChipButton`s inside one `ChipSegment` — 108's existing "several chips,
+one hairline" shape, not a new component. Pressing **Save** dispatches
+`project.save` and opens nothing; only the caret opens the menu, whose
+single entry runs `project.saveAs`. The owner's rule ("clicking on the
+save button should just save") is pinned by a test that asserts the Save
+chip carries no `aria-haspopup`, dispatches exactly `["project.save"]`,
+and leaves `.save-split-menu` absent.
+
+### A bug found on the way, and fixed
+
+`pushRecent`'s cap ignored a limit of zero: `recent_blfs_limit: 0`,
+documented as "remembers none", still kept the one entry just pushed
+(the guard was `out.length >= limit` *after* seeding `out` with the new
+value). Falsified before fixing — the new
+`recentMru.test.ts` case failed with `[ 'c' ]` against `[]` — then a
+`limit <= 0` early return made it pass. It fixes all three lists at
+once, which is why it was fixed rather than worked around in the new
+one.
+
+### Tests
+
+- `recentProjects.test.ts` (5): MRU push / dedupe-and-reorder / cap /
+  zero bound / forget.
+- `recentMru.test.ts` (+1): the zero-limit regression guard.
+- `Toolbar.dom.test.tsx` (+5, and the bar table grew three rows): the
+  Projects menu and its absence when empty, the Save press not opening
+  the menu, Save As reachable only from the caret, and the two chips
+  sharing one segment.
+- `App.recentProjects.dom.test.tsx` (4, new): against the real `App`
+  with a mock that splits user-scope from workspace-scope state — the
+  list records each open most-recent-first and survives a project
+  switch, an entry leaves only when an open actually fails, the palette
+  offers the same list, and the renamed command is findable by both
+  names.
+- `state.rs` (3 existing tests extended): `recent_projects` lands in the
+  user file, is absent from the project file, and is visible from a
+  second project.
+- `commands.test.ts`: `project.new` is available with no project file
+  open.
+
+Test-kit fallout: `toolbarTestKit.ts`'s `toolbarChip` matched
+`.toolbar > .chip-button, .toolbar > * > button`, which cannot see a
+chip nested inside a segment inside a menu wrapper. It now takes every
+button on the bar that is not inside an open menu list.
+
+### Not done
+
+**Perf skipped by owner instruction** (queue 2.5). No ADR-0031 capture
+was taken and nothing was written to
+`docs/performance-measurements/frontend/`.
+
+**Stale README copy from phase 1 fixed in passing.** Two paragraphs
+still described the project panel's *Connect all* / *Disconnect all*
+button, which phase 1 removed. Both now point at the status-bar chip —
+a doc-vs-code mismatch in a paragraph this phase was editing anyway.
+
 ## Blockers / side effects
+
+**Phase 4 - a stored keybinding on `project.close` stops working.**
+Renaming the command id makes any user customisation naming
+`project.close` an unknown-command binding. It is not silent: the
+sanitiser refuses it and `reportRejectedBindings` writes
+`ignoring keybinding "<chord>" -> project.close: unknown command` to the
+system log on load. There is no default binding for it, so this only
+reaches a user who bound it by hand. No migration was written, per
+ADR 0011's no-migration posture for best-effort machine-local files.
 
 **Phase 2d - the owner's Vector re-test script, and the phase is
 unverified until it is run.** Everything in phase 2d was written from

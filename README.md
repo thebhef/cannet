@@ -360,6 +360,9 @@ commands sit behind one **Add** menu rather than seven near-identical
 phrases across the bar. Everything is still a command: a chip
 dispatches the same command id the palette and the keyboard do, so
 what a chip does is documented once, wherever that command is.
+**Save is a split chip**: pressing **Save** saves, and only the `▾`
+beside it opens the menu that offers **Save As…** — a disclosure never
+swallows the primary press.
 
 **Under the toolbar is the status bar.** The toolbar is commands —
 things you press to make something happen. The bar beneath it is the
@@ -1373,12 +1376,21 @@ panel's column layout and auto-scroll toggle), the project's elements
 (traces — and later plots, transmit messages, …), the loaded DBC
 paths, the project's logical buses, and the interface bindings (each
 of which names its own server address). The **project panel** (or the
-toolbar's **Open** / **Save**) drives it: **Save** /
+toolbar's **New** / **Open** / **Save**) drives it: **Save** /
 **Save As…** write one, **Open…** restores it (re-loads the DBCs and
 restores the bus / binding configuration — hit **Connect** to switch),
 **New** starts a fresh unsaved project (default layout, no DBCs, disconnected,
-buffer cleared). The panel also lists the configured server(s) with
-**Connect all** / **Disconnect all** — and, beside them, **Manage
+buffer cleared). The toolbar also carries a **Projects** menu of the
+projects you opened most recently, and the command palette lists the
+same ones as `Open recent project: …` entries. That list follows *you*
+rather than any one project
+([ADR 0042](docs/adr/0042-project-directory-and-scopes.md) §3: it is
+user-scope state beside the last-project pointer, so it can name the
+project you are not in), it is bounded by the
+**`recent_projects_limit`** setting (default 8, `0` remembers none),
+and an entry leaves it only when opening it actually fails — nothing
+walks the filesystem to prune it in advance. The project panel lists
+the configured server(s) with **Manage
 servers…**, which opens the Servers panel. That button is always there,
 including on a project with no buses yet, which is exactly when a
 server still has to be added; the same launcher inside a bus row's
@@ -2248,8 +2260,8 @@ with one of the project's buses. Each bus is allowed at most one
 binding (one interface per bus); a bus that already has a binding is
 hidden from the picker.
 
-The status bar's **connection chip** (or **Connect all** in the
-project panel) iterates every unique server in `interface_bindings`, opens one
+The status bar's **connection chip** — the only place connection is
+commanded from — iterates every unique server in `interface_bindings`, opens one
 gRPC session per server, and subscribes only to the bound interfaces.
 The host's pump thread stamps every received frame with the chosen
 `bus_id`. **Disconnect** ends every session, and so does quitting the

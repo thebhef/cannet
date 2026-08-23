@@ -17,8 +17,12 @@ import { flushSync } from "react-dom";
 /// "Database panel". Throws rather than returning null: a test that has
 /// lost a control should say so where it happened.
 export function toolbarChip(name: string): HTMLButtonElement {
-  const chips = Array.from(
-    document.querySelectorAll<HTMLButtonElement>(".toolbar > .chip-button, .toolbar > * > button"),
+  // Every button on the bar itself, however deeply the chip sits — a
+  // split chip nests one inside a segment inside a menu wrapper — but
+  // not the entries inside an open menu, which are reached by the
+  // helpers below.
+  const chips = Array.from(document.querySelectorAll<HTMLButtonElement>(".toolbar button")).filter(
+    (el) => el.closest(".chip-menu-list") === null,
   );
   const chip = chips.find((c) => c.getAttribute("aria-label") === name);
   if (!chip) {

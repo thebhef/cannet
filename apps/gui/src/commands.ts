@@ -123,10 +123,16 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "project.save", label: "Save project", category: "Project" },
   { id: "project.saveAs", label: "Save project as…", category: "Project" },
   {
-    id: "project.close",
-    label: "Close project",
+    // It has always started a fresh project rather than leaving the app
+    // with nothing open, and "Close project" was the wrong name for
+    // that. Ungated on purpose: a session with no project *file* still
+    // holds a project (ADR 0042 §1) — the auto-located one, with its
+    // panels, databases and buses — and starting over is exactly what
+    // is wanted there.
+    id: "project.new",
+    label: "New project",
     category: "Project",
-    context: (ctx) => ctx.hasProjectOpen,
+    keywords: "Close project",
   },
   {
     id: "trace.import",

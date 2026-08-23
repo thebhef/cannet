@@ -164,7 +164,7 @@ both a place to persist them and a way to edit them.
   no key: the panel teaches the file, and pointing at a key nothing
   stores would teach the wrong thing.
 - **A command-palette entry opens the panel**, alongside the
-  separately-added `project.close`.
+  separately-added `project.new`.
 - **Keybinding customisation rides this file.** Per
   [ADR 0018](0018-command-keybinding-framework.md), user-edited
   keybindings persist as a `keybindings` field in `settings.json` (they
