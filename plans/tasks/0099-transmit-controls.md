@@ -1,5 +1,14 @@
 # Task 99 — Transmit Controls: One Idiom, One State
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
+> 2026-08-21 on the chain (nothing has merged). The seven exit criteria
+> are walked at `## Exit-criteria walk`, all met. **Its acceptance was
+> blocked** by task 109 item 7: this task took "Space already works in the
+> RBS panel" as a premise, and the premise was false. Task 109 phase 3
+> landed the fix and the regression test on 2026-08-23, so the block is
+> lifted. Findings still owed a verdict: owner-review-queue 1.10
+> (resolved), 1.11, 1.12.
+
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback.
 Three observations that are one question wearing three hats — **what
 commands transmission, and how is its state shown?**

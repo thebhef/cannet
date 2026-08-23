@@ -1,5 +1,14 @@
 # Task 27 — Live Disk-Watch for Project & RBS Files
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All three
+> phases landed 2026-08-19 on the chain (nothing has merged). The exit
+> criteria are walked at the end of the status log: five met and **one
+> (criterion 4) only partially met** — the host functions that stitch the
+> two watches together are covered by inspection, not by tests, because
+> Tauri's mock runtime will not load on Windows. Nothing in this task was
+> verified by driving the GUI. Findings still owed a verdict:
+> owner-review-queue 3.44, 3.45.
+
 Generalize the DBC auto-reload watcher (`apps/gui/src-tauri/src/dbc_watcher.rs`)
 so that an externally-edited **project (`.cannet_prj`)** or **RBS
 (`.cannet_rbs`)** file is picked up automatically, the same way a loaded

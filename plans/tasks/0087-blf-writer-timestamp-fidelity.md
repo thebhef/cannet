@@ -1,5 +1,12 @@
 # Task 87 — BLF Writer Timestamp Fidelity
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Both phases
+> landed 2026-08-19 on the chain (nothing has merged). The four exit
+> criteria are walked in phase 2's entry, all met. Finding still owed a
+> verdict: owner-review-queue **3.49** — no Vector tool has been watched
+> reading a cannet BLF that carries a descending object timestamp, which
+> this task's fix makes more likely to occur.
+
 Opened by owner ruling 2026-08-19, from a side finding of task 86
 phase 1. `BlfCaptureWriter` **silently clamps a frame that precedes the
 first frame appended**, so a saved BLF can differ from the capture it

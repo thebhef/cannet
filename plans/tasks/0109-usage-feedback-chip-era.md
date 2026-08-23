@@ -19,6 +19,11 @@ reopening those tasks:
 
 - **Item 2 blocks task 101.** Its hardware verification
   (owner-review-queue 3.14) was run and failed.
+  **Unblocked 2026-08-23:** the owner re-ran it after phases 2 and 2c
+  and **the PCAN fix is confirmed working** — unplugging the CAN link
+  now surfaces the fault (owner-review-queue 3.38). Two follow-ups came
+  out of that session, queued as 3.42 and 3.43. The Vector leg
+  (phase 2d) remains untested and is queue 3.40.
 - **Item 7 blocks task 99.** It shipped on a premise this observation
   falsifies.
 
@@ -514,19 +519,87 @@ cause or fix without citing the experiment whose data confirmed it.
 
 ## Exit criteria
 
-1. Each of the ten observations has either a landed fix with a test, or
-   a recorded verdict explaining why no change was made.
-2. Items 2 and 7 have verdicts good enough to unblock tasks 101 and 99
-   in owner-review-queue § 4.
-3. The investigations (items 2 and 8, and item 1 if the panel is still
-   empty after the ruled change) each carry a full observation →
-   conclusion chain in the status log, with the confirming experiment
-   named.
-4. No regression in the ADR 0031 harness beyond the owner's thresholds,
-   and a reading taken for any phase touching a render or data path.
-5. Docs move with the code: ADR 0042 / 0034 gain nothing new unless the
-   recent-projects work diverges from their scope table, in which case
-   the divergence is an ADR amendment, not a silent choice.
+Walked by the overseer 2026-08-23, one verdict per criterion.
+
+### 1 — every observation has a landed fix with a test, or a recorded verdict
+
+**Met.**
+
+| # | Observation | Phase | Verdict |
+|---|---|---|---|
+| 1 | view-signals panel empty | 6 | Fixed. Pattern matches push identity-only; the mount-order hypothesis was **refuted** by experiment, so the exclusion was the whole cause |
+| 2 | unplugged PEAK, no indication | 2, 2c, 2d | Fixed for PCAN and implemented for Vector — **owner hardware re-test outstanding**, see criterion 2 |
+| 3 | status-bar labels | 1 | Fixed. Both remote-session strings gone, metrics row left-justified |
+| 4 | New Project button | 4 | Fixed. `project.close` → `project.new`, chip at the head of the bar, context gate removed |
+| 5 | recent projects | 4 | Fixed. User-scope state beside `last_project`, bounded by `recent_projects_limit`, in bar and palette |
+| 6 | Save As as a submenu of Save | 4 | Fixed. Split chip; the primary press saves and opens nothing, pinned by test |
+| 7 | Space in the RBS panel | 3 | Fixed. `RbsPanel` never passed `onPrimaryAction`; task 99's premise was false, and the test it never wrote landed |
+| 8 | ArrowLeft highlights the whole box | 5 | Fixed. Our DOM does not change on that press; the UA rings the focused container. One guarded CSS rule |
+| 9 | redundant Disconnect all | 1 | Fixed. Whole button removed with its `onConnect` / `onDisconnect` chain |
+| 10 | RBS signals as grid rows | 3 | Fixed. Cursor, focus-on-click and Space; the grooming's "never on the layer" diagnosis was itself wrong and is corrected in the log |
+
+### 2 — items 2 and 7 unblock tasks 101 and 99
+
+**Item 7: met.** Space activates and deactivates an RBS message, with the
+regression test task 99 shipped without. Task 99's acceptance is
+unblocked.
+
+**Item 2: partially met, and the remainder is the owner's.** The defect
+is diagnosed to root cause on real hardware and fixed for PCAN with
+tests against captured bytes; Vector is implemented and explicitly
+untested; Kvaser is deferred by ruling (queue 2.7). What cannot be met
+from here is the confirming hardware test — no agent has a PEAK adapter,
+and the owner's bench session is what produced the diagnosis in the
+first place. **Task 101's acceptance turns on that re-test**, whose
+script is in `## Blockers / side effects`.
+
+**Met for PCAN as of 2026-08-23.** The owner ran the re-test and the fix
+is confirmed working: unplugging the CAN link surfaces the fault
+(owner-review-queue 3.38). Two follow-ups from that session are queued
+as 3.42 (`Error-active` does not read as healthy) and 3.43 (transmit
+frames still present as though they reached a wire). What is still
+outstanding is Vector only, which no agent can test (queue 3.40); the
+script for it is in `## Blockers / side effects`.
+
+### 3 — the investigations carry a full observation → conclusion chain
+
+**Met.** Item 2 (phase 2, then the bench session written up as § 2
+addendum, then phase 2c), item 8 (phase 5, with hypothesis 2 falsified
+by a jsdom reproduction and the browser-fact link logged as an inference
+rather than a measurement), item 1 (phase 6, mount-order refuted against
+a real registry). Each names the confirming experiment.
+
+### 4 — ADR 0031 harness
+
+**Waived in part by owner instruction 2026-08-23** (queue 2.5): no
+capture for phases 3 onward. Readings that were taken:
+
+- Phase 2 — three runs, load verified (173 ids, rx ~1606 / tx ~1610
+  f/s), `check passed (69 metrics gated)`, nothing near the thresholds.
+- Phase 3 — three runs completed before the instruction arrived, read in
+  band (renderer 263–302 MB, tree 668–704 MB); reports deleted per the
+  skip.
+- Phases 1, 4, 5, 6 — skipped, recorded in each status log.
+
+No regression was observed in anything measured. Note that memory
+readings on this machine are unreliable for the reason in queue 3.35,
+independent of this task.
+
+### 5 — docs move with the code
+
+**Met, and wider than the criterion anticipated.** ADR 0042 § 3's scope
+table gained `recent projects` in the user-scope State cell — a fill-in
+of the table as written, not a divergence, so no amendment was owed.
+Beyond what the criterion named: ADR 0039 amended twice (phase 2 for
+`unavailable` parking, phase 2c so a warning controller keeps its
+route), ADR 0044 amended (phase 5's focus-ring rule and the obligation
+it places on future panels), ADR 0034's stale `project.close` mention
+corrected, and README plus both sidecar READMEs and `SMOKE.md` updated.
+
+### Summary
+
+**Nine of ten observations are closed. Item 2 is fixed but unconfirmed**,
+and its confirmation is a bench test only the owner can run.
 
 ## Status log
 

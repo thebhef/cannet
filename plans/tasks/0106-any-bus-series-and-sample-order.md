@@ -1,5 +1,14 @@
 # Task 106 — The Any-Bus Series, and the Sample Order It Breaks
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All three
+> phases landed 2026-08-22 on the chain (nothing has merged). The four
+> exit criteria are walked at `## Exit criteria — verdicts`: met on an
+> unconfirmed ruling, met, met after one correction, and one not
+> applicable. **The ruling the whole task implements is the overseer's and
+> the owner has not confirmed it** — owner-review-queue 1.19, which also
+> names the two commits that are the whole diff to revert. Findings still
+> owed a verdict: owner-review-queue 3.15, 3.16.
+
 Opened by the overseer 2026-08-21, out of [task 91](0091-frame-index-at-ns-unsorted.md)'s
 audit. Task 91 fixed the trace store's time→index anchor, which
 binary-searched a column that is not sorted. The audit then found the

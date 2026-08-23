@@ -29,6 +29,14 @@ met; two are not, both bounded by the durable model and both queued for
 the owner (3.30 unknown-key passthrough, 3.31 file-backed subjects).
 The task is code-complete and awaiting acceptance.
 
+**Findings queued after the walk (2026-08-23):** owner-review-queue
+**1.36** — every coloured event this build writes to a BLF carries
+different bytes from every previous release's, and no Vector tool has
+been watched drawing either form — and **3.59**, a `#000000` event
+losing its colour through BLF. Nothing in this task was seen rendered:
+no phase-5 verdict rests on looking at the wash or the fade
+(owner-review-queue 3.44).
+
 ## Settled (owner rulings 2026-08-21)
 
 - **A subject is a signal, a message, or another event** — one
@@ -487,6 +495,16 @@ Consequences for the phase:
   range pair where a link is unambiguously a span.
 
 ### BLF's second colour — nothing uses it
+
+> **Overtaken by phase 2 (noted 2026-08-23).** This research section and
+> the one after it describe the writer as it stood *before* phase 2, in
+> the present tense. The code no longer does what they say:
+> `BlfCaptureWriter::append_marker` now writes the event's colour into
+> `background_color` under a white `foreground_color` — python-can's
+> convention, the fill rather than the glyphs — and the reader takes the
+> fill unless the fill is white. See "BLF's second colour, fixed as
+> queued" in phase 2's status entry. The consequence for other tools is
+> owner-review-queue **1.36**.
 
 `GLOBAL_MARKER` carries `foreground_color` and `background_color`, both
 `0x00RRGGBB`. In Vector's tooling they are the label's text and fill.

@@ -1,5 +1,13 @@
 # 0110 — Chain CI repair
 
+> **Status 2026-08-23 — landed, awaiting acceptance.** Committed as
+> `1ef20769` on the chain (nothing has merged). **This task was listed on
+> neither `roadmap.md` nor the owner-review queue until 2026-08-23.** It
+> carries **no exit criteria and no status log**; its verification is the
+> `## Every job, green` table, which is every CI job run by hand on one
+> commit. Findings still owed a verdict: owner-review-queue 2.8 (the MSI
+> drop, ruled), 3.27, **3.61**, **3.62**.
+
 ## Why this task exists
 
 24 tasks landed on one linear branch chain off `main`, and none of it

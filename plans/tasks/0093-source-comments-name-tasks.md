@@ -1,5 +1,13 @@
 # Task 93 — Source Comments Name Task Numbers
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
+> 2026-08-21 on the chain (nothing has merged): 71 matches across 41 files
+> taken to zero, plus the `comment-references` CI job. **The exit criteria
+> below carry no per-criterion verdict** (owner-review-queue 3.45).
+> Findings still owed a verdict: owner-review-queue 3.3, and **1.35** —
+> whether the CI gate this task added stays, which the task itself invited
+> the owner to overturn.
+
 Opened 2026-08-20 by the overseer, from a review finding on task 89
 phase 6. Not an owner observation — a working-agreement violation the
 overseen chain introduced and every phase review missed.

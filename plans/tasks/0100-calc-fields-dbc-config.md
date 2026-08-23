@@ -1,5 +1,10 @@
 # Task 100 — Counter / CRC From the DBC Does Not Reach the Fields Editor
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** Landed
+> 2026-08-21 on the chain (nothing has merged). The three exit criteria
+> are walked in the status log, all met. Findings still owed a verdict:
+> owner-review-queue 3.7, 3.8, **3.50**.
+
 Opened by owner instruction 2026-08-20, from 0.9.0 usage feedback:
 
 > if the counter or CRC is in the DBC, our 'fields' model in the

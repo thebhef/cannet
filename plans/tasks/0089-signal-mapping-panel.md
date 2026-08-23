@@ -1,5 +1,12 @@
 # Task 89 — The Signal Mapping Panel
 
+> **Status 2026-08-23 — code-complete, awaiting acceptance.** All six
+> phases landed 2026-08-20 on the chain (nothing has merged) and both
+> prototypes are deleted. **The exit criteria below were never walked** —
+> this file carries no per-criterion verdict anywhere (owner-review-queue
+> 3.45). Findings still owed a verdict: owner-review-queue 1.13,
+> **3.46**, **3.47**.
+
 Opened by owner ruling 2026-08-19, groomed the same day out of a
 prototyping session. A live status panel over the signals the open
 views reference: what each one is, what currently decodes it, and which
@@ -11,10 +18,12 @@ Prototypes (static mocks with hard-coded rows — the layout, column set,
 status taxonomy and filter behaviour are the deliverable, not the code;
 open in a browser, the button top-right switches themes):
 
-- [`plans/prototypes/view-signals-panel.html`](../prototypes/view-signals-panel.html)
-  — the views grid.
-- [`plans/prototypes/rbs-signals-panel.html`](../prototypes/rbs-signals-panel.html)
-  — the same grid over one RBS config's DBC fields.
+- `plans/prototypes/view-signals-panel.html` — the views grid.
+- `plans/prototypes/rbs-signals-panel.html` — the same grid over one RBS
+  config's DBC fields.
+
+**Both were deleted by phase 6**, superseded by the shipped panels, so
+the names above are history rather than links.
 
 It is the sibling of [task 88](0088-bus-assignment-governs-decode.md),
 which makes bus assignment govern decode. 88 ships the *warning* when
