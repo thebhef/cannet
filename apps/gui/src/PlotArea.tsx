@@ -58,6 +58,7 @@ import {
   type SignalValueFormat,
   type XSync,
 } from "./plotPanelConfig";
+import type { PlotExtent } from "./plotEvents";
 import { parsePlotAreaDragData, type PlotAreaDragPayload } from "./plotAreaTransfer";
 import {
   applyAutoPointFloor,
@@ -113,6 +114,14 @@ const ZOOM_STEP = 1.15;
 const EMPTY_SUBJECTS: readonly EventSubject[] = [];
 
 const SELECTED_SERIES_WIDTH = 2;
+/** Opacity of a linked pair's extent wash (ADR 0056). Low enough that
+ * the lines and the grid read straight through it — the band says
+ * *between here and here*, it is not a fill. */
+const EXTENT_WASH_ALPHA = 0.16;
+/** What a series or a marker line the highlight does not name fades to
+ * while some event is being acted on. Faded, never hidden: what the
+ * event is *not* about is still the reading it sits in. */
+const UNLIT_ALPHA = 0.28;
 /** Floor for `sample_signals`' `max_points` (the host min/max-decimates
  * to at most `2 * max_points`). We ask for ~1× the canvas width — 2
  * points per pixel after the host's 2× envelope, the full resolution a
@@ -644,6 +653,20 @@ interface PlotAreaProps {
    * (one rAF per panel) and owner-aware clearing happen panel-side. */
   onHoverX: (areaId: string, x: number | null) => void;
   events: NoteEvent[];
+  /** A linked pair's extent, projected onto this panel's x axis
+   * (ADR 0056). **Empty at rest** — a band draws only while one of the
+   * pair is selected or hovered, so the plot with nothing acted on
+   * carries no wash at all. */
+  eventExtents: readonly PlotExtent[];
+  /** The event ids an act of highlighting lights up — the event being
+   * acted on and whatever it is linked to. Empty means dim nothing, so
+   * every marker line draws at full strength. */
+  litEventIds: ReadonlySet<string>;
+  /** This axis's series the highlight names, by `signalRefKey`. Empty
+   * for an axis that holds none, which is also how an axis says "dim
+   * nothing here": an event about signals on another plot has no
+   * opinion about this one. */
+  litKeys: ReadonlySet<string>;
   xSyncRef: MutableRefObject<XSync>;
   registerInstance: (id: string, u: uPlot | null) => void;
   /** A live plot's interaction surface, borrowed while this axis is
@@ -880,6 +903,48 @@ const HOVER_MARKER_RADIUS_PX = 3;
  * the plot background is what keeps it legible on a tile, a stripe or a
  * gridline.
  */
+/**
+ * A linked pair's extent, as an event-colored wash at low opacity
+ * (owner ruling, ADR 0056).
+ *
+ * **Nothing at rest.** `extents` is empty unless one of a pair is
+ * hovered or selected, so at rest this paints not one pixel and the plot
+ * shows exactly what it always showed: the marker lines.
+ *
+ * Over the data and under the annotation — after the lines and the enum
+ * tiles, before the marker lines, the cursors and the hover markers. A
+ * wash that hid a readout would be worse than no band; one the series
+ * shows through says *between here and here* and stays out of the way.
+ *
+ * A pair at one instant is a zero-width band; it is floored to a single
+ * device pixel rather than dropped, so "these two are linked, and they
+ * happened together" still reads.
+ */
+export function drawEventExtents(
+  ctx: CanvasRenderingContext2D,
+  u: uPlot,
+  o: {
+    extents: readonly PlotExtent[];
+    top: number;
+    height: number;
+    left: number;
+    width: number;
+    ratio: number;
+  },
+): void {
+  if (o.extents.length === 0) return;
+  ctx.save();
+  ctx.globalAlpha = EXTENT_WASH_ALPHA;
+  for (const ex of o.extents) {
+    const x0 = u.valToPos(Math.min(ex.t0, ex.t1), "x", true);
+    const x1 = u.valToPos(Math.max(ex.t0, ex.t1), "x", true);
+    if (x1 < o.left || x0 > o.left + o.width) continue;
+    ctx.fillStyle = ex.color ?? theme().eventMarker;
+    ctx.fillRect(x0, o.top, Math.max(x1 - x0, 1 * o.ratio), o.height);
+  }
+  ctx.restore();
+}
+
 export function drawHoverMarkers(
   ctx: CanvasRenderingContext2D,
   u: uPlot,
@@ -1163,6 +1228,9 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     hoverX,
     onHoverX,
     events,
+    eventExtents,
+    litEventIds,
+    litKeys,
     xSyncRef,
     registerInstance,
     plotSurface,
@@ -1369,6 +1437,11 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
    * a rebuilt instance with the widths the selection already implies. */
   const selectedKeysRef = useRef(selectedKeys);
   selectedKeysRef.current = selectedKeys;
+  /** Same, for the transient highlight: a rebuild mid-hover must open
+   * with the fade already applied rather than flashing every series
+   * bright for one draw. */
+  const litKeysRef = useRef(litKeys);
+  litKeysRef.current = litKeys;
   /** Which signal's raw range / unit drives the y-axis labels. Falls
    * back to the first non-hidden signal if the configured key is no
    * longer present (signal removed). `null` when the area is empty. */
@@ -1445,6 +1518,39 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     });
     if (changed) u.redraw();
   }, [selectedKeys, signals]);
+
+  // The transient highlight (ADR 0056): while an event is being acted
+  // on, the series it names stay lit and the rest of *this axis* fade.
+  // The same live-instance write the selection above is — uPlot re-reads
+  // `series[i].alpha` every draw — so a hover costs a redraw, never a
+  // rebuild.
+  //
+  // Opacity, not width: width is already the *selection*'s language on
+  // this canvas, and spending it here would make two unrelated states
+  // look the same. An axis the highlight names nothing on hands back an
+  // empty `litKeys` and fades nothing, so an event about signals on
+  // another plot leaves this one alone.
+  useEffect(() => {
+    const u = uplotRef.current;
+    if (!u) return;
+    let changed = false;
+    signals.forEach((s, i) => {
+      const series = u.series[i + 1]; // series[0] is x
+      if (!series) return;
+      const a = litKeys.size > 0 && !litKeys.has(signalRefKey(s)) ? UNLIT_ALPHA : 1;
+      if (series.alpha === a) return;
+      series.alpha = a;
+      changed = true;
+    });
+    if (changed) u.redraw();
+  }, [litKeys, signals]);
+
+  // Redraw the overlay when a band appears, moves or goes: the extents
+  // and the lit set are read from `liveRef` inside the draw hook, and a
+  // stopped plot has nothing else to nudge it.
+  useEffect(() => {
+    uplotRef.current?.redraw();
+  }, [eventExtents, litEventIds]);
 
   // Value-table support for enum / state signals. When the
   // area shows *exactly one* signal *and* that signal's `VAL_`
@@ -1593,6 +1699,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
     cursorYh2,
     hoverX,
     events,
+    eventExtents,
+    litEventIds,
     onUserXChange,
     onHoverX,
     onAreaResampled,
@@ -1615,6 +1723,8 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
       cursorYh2,
       hoverX,
       events,
+      eventExtents,
+      litEventIds,
       onUserXChange,
       onHoverX,
       onAreaResampled,
@@ -2435,6 +2545,13 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
           // writing it there (the effect below) and this is only the
           // starting value a (re)built instance opens with.
           width: selectedKeysRef.current.has(signalRefKey(s)) ? SELECTED_SERIES_WIDTH : 1,
+          // Same story for the transient highlight's fade — read off the
+          // object every draw, so this is only what a (re)built instance
+          // opens with while some event is being acted on.
+          alpha:
+            litKeysRef.current.size > 0 && !litKeysRef.current.has(signalRefKey(s))
+              ? UNLIT_ALPHA
+              : 1,
           // `auto` defers to uPlot's density default; `off` never draws
           // markers; `on` always draws them but capped at a flat max across
           // the visible range so a zoomed-out window doesn't render a
@@ -2652,9 +2769,31 @@ export const PlotArea = memo(function PlotArea(p: PlotAreaProps) {
                 ctx.fillText(lbl, xp, ty + h / 2);
               }
             };
+            // A linked pair's extent, as an event-colored wash at low
+            // opacity (owner ruling) — behind the marker lines, because
+            // it is the region the two of them bound. Drawn **only**
+            // while one of the pair is being acted on: `eventExtents` is
+            // empty at rest, so this loop and everything the highlight
+            // adds below costs nothing and paints nothing on a plot
+            // nobody is pointing at.
+            drawEventExtents(ctx, u, {
+              extents: lr.eventExtents,
+              top,
+              height,
+              left,
+              width,
+              ratio,
+            });
+            // While an event is being acted on, the ones it says nothing
+            // about go quiet, so the pair (or the single event) reads at
+            // a glance. `litEventIds` is empty at rest, and then every
+            // line draws exactly as it always has.
+            const dimLines = lr.litEventIds.size > 0;
             for (const ev of lr.events) {
+              ctx.globalAlpha = dimLines && !lr.litEventIds.has(ev.id) ? UNLIT_ALPHA : 1;
               vline(ev.t, ev.color ?? theme().eventMarker, ev.id === "__t0" ? [] : [2, 3], isFirst ? ev.label : null, true);
             }
+            ctx.globalAlpha = 1;
             // ADR 0026: the X cursor's time label appears on
             // every axis (it used to render only on the last area, so
             // adding a plot area visually hid the labels). Format as

@@ -3,6 +3,7 @@
 // without mounting a plot: the panel only has to supply its origin, the
 // kinds it is showing, and the theme colors.
 
+import type { EventExtent } from "./eventHighlight";
 import { timelineEvents, type EventKind, type EventSubject, type Note } from "./notes";
 import { signalRefKey, type NoteEvent, type SignalRef } from "./plotPanelConfig";
 
@@ -66,4 +67,36 @@ export function subjectsForSelection(
     });
   }
   return out;
+}
+
+/// A linked pair's extent, projected onto the plot's display-relative x
+/// axis the way {@link plotTimelineEvents} projects its marker lines.
+export interface PlotExtent {
+  /// Stable per pair (`EventExtent.key`), so the draw can key on it.
+  key: string;
+  /// Display-relative seconds, `t0 <= t1`.
+  t0: number;
+  t1: number;
+  /// `undefined` leaves the plot's default event color in place, exactly
+  /// as a marker line's does.
+  color: string | undefined;
+}
+
+/// The bands a plot draws while an event is being acted on — nothing at
+/// rest, because {@link eventHighlight} hands back nothing at rest.
+///
+/// Same origin and the same color resolution as the marker lines, so a
+/// band and the two lines that bound it agree by construction.
+export function plotEventExtents(
+  extents: readonly EventExtent[],
+  baseSeconds: number | null,
+  kindColor: (kind: EventKind) => string | undefined,
+): PlotExtent[] {
+  if (baseSeconds == null || !Number.isFinite(baseSeconds)) return [];
+  return extents.map((e) => ({
+    key: e.key,
+    t0: e.startNs / 1e9 - baseSeconds,
+    t1: e.endNs / 1e9 - baseSeconds,
+    color: e.color ?? kindColor(e.kind),
+  }));
 }

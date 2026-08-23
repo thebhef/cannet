@@ -14,7 +14,12 @@
 import { describe, expect, it, vi } from "vitest";
 import type uPlot from "uplot";
 
-import { drawEnumTiles, drawExtrapolatedSegments, drawHoverMarkers } from "./PlotArea";
+import {
+  drawEnumTiles,
+  drawEventExtents,
+  drawExtrapolatedSegments,
+  drawHoverMarkers,
+} from "./PlotArea";
 import { mergeSeries, sampleColumns, splitExtrapolatedRows } from "./plotData";
 import { EXTRAPOLATION_STRIPE_PERIOD_PX } from "./plotEnumLanes";
 import { applySampleMarkerFilter } from "./plotPoints";
@@ -28,6 +33,9 @@ type Op = {
   stroke: string;
   fill: string;
   lineWidth: number;
+  /** The opacity the call was made under — the whole of what makes a
+   * wash a wash rather than a fill. */
+  alpha: number;
 };
 
 /** A 2D context that records the calls that put ink on the canvas,
@@ -64,6 +72,7 @@ function recorder() {
       stroke: state.strokeStyle,
       fill: state.fillStyle,
       lineWidth: state.lineWidth,
+      alpha: state.globalAlpha,
     });
   };
   const ctx = {
@@ -132,6 +141,7 @@ function recorder() {
         dash: [...state.dash],
         stroke: state.strokeStyle,
         lineWidth: state.lineWidth,
+        alpha: state.globalAlpha,
         // Recorded specially: a shadow pass is the same `fillText` with
         // a shadow set, so the shadow is the only thing telling the
         // passes apart from the final one.
@@ -947,5 +957,83 @@ describe("a lane label too long for its tile", () => {
     const a = labelOf("HighVoltageBatteryCellOverTemperature")!;
     const b = labelOf("CabinHeatPumpCondenserOverPressure")!;
     expect(a).not.toBe(b);
+  });
+});
+
+describe("drawEventExtents", () => {
+  const box = { top: 0, height: 100, left: 0, width: 400, ratio: 1 };
+  const u = () => fakeU([[0, 1, 2]], [{}]);
+
+  it("paints nothing at rest — the whole of what 'nothing draws at rest' means", () => {
+    const r = recorder();
+    drawEventExtents(r.ctx, u(), { ...box, extents: [] });
+    expect(r.ops).toEqual([]);
+  });
+
+  it("washes the pair's span in the event's color, at low opacity", () => {
+    const r = recorder();
+    drawEventExtents(r.ctx, u(), {
+      ...box,
+      extents: [{ key: "a b", t0: 1, t1: 3, color: "#ff0000" }],
+    });
+    expect(r.ops).toHaveLength(1);
+    const [op] = r.ops;
+    expect(op.op).toBe("fillRect");
+    // 1 unit = 10 px: the band spans exactly the two events' times.
+    expect(op.args).toEqual([10, 0, 20, 100]);
+    expect(op.fill).toBe("#ff0000");
+    // A wash, not a fill: the series and the grid read through it.
+    expect(op.alpha).toBeGreaterThan(0);
+    expect(op.alpha).toBeLessThan(0.25);
+  });
+
+  it("leaves the context's opacity where it found it", () => {
+    const r = recorder();
+    drawEventExtents(r.ctx, u(), {
+      ...box,
+      extents: [{ key: "a b", t0: 1, t1: 3, color: "#ff0000" }],
+    });
+    expect(r.state.globalAlpha).toBe(1);
+  });
+
+  it("falls back to the plot's event color when the pair's earlier end has none", () => {
+    const r = recorder();
+    drawEventExtents(r.ctx, u(), {
+      ...box,
+      extents: [{ key: "a b", t0: 0, t1: 1, color: undefined }],
+    });
+    expect(r.ops[0].fill).toBe(theme().eventMarker);
+  });
+
+  it("draws a pair at one instant as a hairline rather than dropping it", () => {
+    const r = recorder();
+    drawEventExtents(r.ctx, u(), {
+      ...box,
+      ratio: 2,
+      extents: [{ key: "a b", t0: 2, t1: 2, color: "#00ff00" }],
+    });
+    expect(r.ops[0].args).toEqual([20, 0, 2, 100]);
+  });
+
+  it("takes the span as it is given it, either way round", () => {
+    const r = recorder();
+    drawEventExtents(r.ctx, u(), {
+      ...box,
+      extents: [{ key: "a b", t0: 3, t1: 1, color: "#ff0000" }],
+    });
+    expect(r.ops[0].args).toEqual([10, 0, 20, 100]);
+  });
+
+  it("skips a band entirely outside the plot box", () => {
+    const r = recorder();
+    drawEventExtents(r.ctx, u(), {
+      ...box,
+      width: 15,
+      extents: [
+        { key: "far", t0: 5, t1: 6, color: "#ff0000" },
+        { key: "near", t0: 0, t1: 1, color: "#00ff00" },
+      ],
+    });
+    expect(r.ops.map((o) => o.fill)).toEqual(["#00ff00"]);
   });
 });

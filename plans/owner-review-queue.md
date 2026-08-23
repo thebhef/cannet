@@ -263,6 +263,30 @@ Nothing is lost; the menu has one more item on frame rows.
 **Needed: ratify the shared menu**, or say the row deserves a menu of
 its own with the picker dropped there.
 
+### 1.24 Acting on an event now dims the plot around it
+[task 107](tasks/0107-events-point-at-signals.md) phase 5
+
+The ruling says acting on an event highlights its subjects. The shipped
+reading also fades what the event says nothing about — the unnamed
+series on that axis, and the unnamed marker lines, to alpha 0.28. Faded,
+never hidden. It makes the highlight read at a glance, but it changes
+how a shipped plot looks during a hover rather than only adding a new
+mark, so it is not assumed.
+
+**Needed: keep the fade, or highlight without dimming.** Two
+conditionals either way.
+
+### 1.25 Hovering an event overrides a selection instead of adding to it
+[task 107](tasks/0107-events-point-at-signals.md) phase 5
+
+Nothing ruled on the interaction between the two ways of acting on an
+event. The reading taken is that pointing is the more immediate act, so
+a hover replaces the selection for as long as it lasts. The consequence:
+select a pair to see its extent band, then move the pointer across a
+third event, and the band goes until the pointer leaves.
+
+**Needed: confirm hover-wins, or make the two union.** One line.
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost
@@ -418,6 +442,8 @@ Recorded by the phases that found them, not yet decided.
 | 3.32 | **The plot's Shift+click gesture is undiscoverable.** Nothing on the plot says it exists; the README does. The prototype showed a hint line in the plot bar that the shipped chip toolbar has no room for, and the chip language has no hint-text element. Recorded rather than invented. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.33 | **`NotesStore::linked_events` has now gone two phases without a caller.** Phase 3 nominated phase 4; authoring writes rather than reads, and phase 5's highlight work reads links in the frontend through the TS twin, so it will not be the caller either. Probably resolved by deleting the wrapper — the free `linked_event_ids` it delegates to has a production caller and states the same contract. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.34 | **The perf-capture recipe in `README.md` had been wrong since the render tier shipped**, omitting `--rbs-run-on-start` and claiming the RBS Run flag was "already in the saved project". Two phases followed it and measured an idle bus that *passed* every gate. Fixed in task 107 phase 4 and verified against three live captures. Worth knowing that any frontend perf number taken before this fix may have been measured on no load. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.35 | **The ADR-0031 memory metrics are not isolated from other processes, and fail silently in both directions.** `descendant_pids` (`crash.rs`) walks recorded parent-pid links, and Windows never clears a process's `ParentProcessId` when its parent exits — so an unrelated orphan joins our tree the moment one of our processes reuses its dead parent's pid. Observed: a run's sidecar took pid 64880, which the operator's separately-running cannet still names as its parent, and its whole 4 GB application was measured as ours (`tree_mb_peak` 5132.6 vs a 1547.4 limit). Worse, when another cannet owns the shared WebView2 browser process **our own renderer is not our descendant**, so `webview_mb` / `renderer_mb_peak` read exactly 0.0 and `tree_mb_peak` reads ~122 MB — and *passes*. Confirmed by a ground-truth `Win32_Process` walk alongside a capture. Same class as the idle-bus silent disarm, in a metric family nobody checks for plausibility. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.36 | **Task 107 phase 5's memory behaviour is unmeasured, and the phase could not fix that.** Every capture this session was taken with the operator's own cannet running, which is what 3.35 makes unreadable; killing it was not an option under the shared-hardware rule. The timing metrics are sound (verified load, every gated metric under baseline). A clean memory reading needs one capture set taken with the machine to itself. | [task 107](tasks/0107-events-point-at-signals.md) |
 
 ---
 

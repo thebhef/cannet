@@ -25,6 +25,12 @@ import {
   type SubjectChip,
   type SubjectIndex,
 } from "./eventSubjects";
+import {
+  eventHighlight,
+  highlightsMessage,
+  hoverEvent,
+  useActiveEventIds,
+} from "./eventHighlight";
 import { useSignalCatalog } from "./signalCatalogContext";
 import { Icon } from "./Icon";
 import {
@@ -163,6 +169,11 @@ export interface EventActions {
 /// the space's ids are exactly the rows it holds.
 const FRAME_ROW_PREFIX = "f:";
 const EVENT_ROW_PREFIX = "e:";
+/// A row an event being acted on is about (ADR 0056). Transient by
+/// construction: the class is applied from derived state that is empty
+/// whenever nothing is hovered or selected, so the trace at rest carries
+/// it nowhere.
+export const SUBJECT_ROW_CLASS = "trace-row-subject";
 const frameRowId = (frame: TraceFrameRecord) => `${FRAME_ROW_PREFIX}${frame.index}`;
 /// The decoded signals a frame row discloses — rows of the space in
 /// their own right (ADR 0044), empty for anything that discloses
@@ -264,6 +275,17 @@ export function TraceView({
   // assigned or dropped repaints every chip and nothing else does.
   const { catalog } = useSignalCatalog();
   const subjectIndex = subjectIndexFor(catalog);
+
+  // What acting on an event is lighting up right now (ADR 0056), or
+  // `null` — the state the view is in unless a pointer or a selection
+  // says otherwise, and the cheap check every row makes. Transient: it
+  // is derived from a session-scoped channel and reaches nothing that
+  // persists.
+  const activeEvents = useActiveEventIds();
+  const highlight = useMemo(
+    () => eventHighlight(allEvents, activeEvents),
+    [allEvents, activeEvents],
+  );
 
   // The open rows, by stable id, each carrying how many decoded signals
   // it discloses. Keyed by id rather than by row position because a
@@ -927,6 +949,16 @@ export function TraceView({
                     // Deriving the id costs a string per row, so the
                     // common case — nothing selected — never asks.
                     selected={anySelected && grid.selection.has(rowIdOf(r) ?? "")}
+                    // A boolean, not the highlight object, for the same
+                    // reason the cursor and the selection are: a hover
+                    // then re-renders the rows it lights and no others.
+                    // Keyed by what the row *is* — a message identity, an
+                    // event id — never by its position in the window.
+                    subject={
+                      r?.row === "event"
+                        ? (highlight?.events.has(r.event.id) ?? false)
+                        : frame != null && highlightsMessage(highlight, frame.id, frame.extended)
+                    }
                     onSelect={handleRowClick}
                     onDragStart={startRowDrag}
                     onFrameContextMenu={handleFrameContextMenu}
@@ -1012,6 +1044,10 @@ interface RowProps {
   /// so the memo still skips a row whose id hasn't moved.
   rowDomId: (id: string) => string;
   selected: boolean;
+  /// An event being acted on names this row (ADR 0056) — this frame's
+  /// message, or this event, is one of its subjects. Transient: it goes
+  /// with the hover or the selection that raised it.
+  subject: boolean;
   onSelect: (rowId: string, e: React.MouseEvent) => void;
   /// The row drags its whole message (ADR 0045); the decoded lines
   /// inside it drag one signal each and stop the event there.
@@ -1046,6 +1082,7 @@ const Row = memo(function Row({
   selectableEvents,
   rowDomId,
   selected,
+  subject,
   onSelect,
   onDragStart,
   onFrameContextMenu,
@@ -1067,6 +1104,7 @@ const Row = memo(function Row({
         domId={rowDomId(`${EVENT_ROW_PREFIX}${event.id}`)}
         selectable={selectableEvents}
         selected={selected}
+        subject={subject}
         onSelect={onSelect}
         isExpanded={isExpanded}
         onToggle={onToggle}
@@ -1094,7 +1132,9 @@ const Row = memo(function Row({
       }
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
         frame?.violation ? " trace-row-violation" : ""
-      }${isErrorFrame ? ` ${ERROR_FRAME_ROW_CLASS}` : ""}${selected ? " selected" : ""}`}
+      }${isErrorFrame ? ` ${ERROR_FRAME_ROW_CLASS}` : ""}${selected ? " selected" : ""}${
+        subject ? ` ${SUBJECT_ROW_CLASS}` : ""
+      }`}
       title={
         frame?.violation
           ? `calculated-field check failed: ${frame.violation}`
@@ -1169,6 +1209,7 @@ function EventRow({
   domId,
   selectable,
   selected,
+  subject,
   onSelect,
   isExpanded,
   onToggle,
@@ -1196,6 +1237,9 @@ function EventRow({
   /// Event rows take part in this view's selection.
   selectable: boolean;
   selected: boolean;
+  /// This event is one an act of highlighting lights up — the one being
+  /// acted on, or an event it is linked to (ADR 0056).
+  subject: boolean;
   onSelect: (rowId: string, e: React.MouseEvent) => void;
   /// This row's body is disclosed. The body itself is drawn by the view,
   /// under this row, like a message's decoded signals.
@@ -1232,10 +1276,18 @@ function EventRow({
     <div
       className={`trace-row trace-event-row trace-event-${event.kind}${
         editable ? " trace-event-editable" : ""
-      }${focused ? " trace-event-focused" : ""}${selectable && selected ? " selected" : ""}`}
+      }${focused ? " trace-event-focused" : ""}${selectable && selected ? " selected" : ""}${
+        subject ? ` ${SUBJECT_ROW_CLASS}` : ""
+      }`}
       style={{ position: "absolute", top, left: 0, right: 0, height: ROW_HEIGHT }}
       title={event.label}
       id={domId}
+      // Pointing at an event is acting on it: its subjects light up
+      // wherever they are drawn, for exactly as long as the pointer
+      // rests here. The channel is session-scoped and view-local —
+      // nothing about a hover reaches the host (ADR 0056).
+      onMouseEnter={() => hoverEvent(event.id)}
+      onMouseLeave={() => hoverEvent(null)}
       // The row is what `aria-activedescendant` names, so the row is
       // where its disclosed state has to be readable — the caret below
       // carries its own, but a cursor on the row never reaches it. Same

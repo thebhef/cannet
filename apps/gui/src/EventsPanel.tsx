@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 import { emit } from "@tauri-apps/api/event";
 
@@ -14,6 +14,7 @@ import {
   timelineEvents,
   visibleEvents,
 } from "./notes";
+import { resetEventHighlight, selectEvents } from "./eventHighlight";
 import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import type { TraceRow } from "./trace";
 import { busLookup, type ColumnState } from "./traceColumns";
@@ -76,6 +77,14 @@ export function EventsPanel(_props: IDockviewPanelProps) {
   // the selection lives in the gridview, which this view declares its
   // event rows selectable in, and the view keeps only the ids it reports.
   const [selected, setSelected] = useState<readonly string[]>([]);
+  // Selecting an event is acting on it (ADR 0056): its subjects light up
+  // in the plot and the trace, and a selected end of a linked pair draws
+  // the pair's extent. Transient — the channel is view-local, and this
+  // view closing puts it back to rest.
+  useEffect(() => {
+    selectEvents(selected);
+  }, [selected]);
+  useEffect(() => resetEventHighlight, []);
   const pair = useMemo(() => {
     if (selected.length !== 2) return null;
     const two = allEvents.filter((e) => selected.includes(e.id));

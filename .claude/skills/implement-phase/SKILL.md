@@ -71,11 +71,33 @@ have side effects that are easy to forget:
 | `cargo fmt --all` | the hook formats *and re-stages* — run it before staging, or you commit unformatted Rust |
 | `check_local_paths.py`, `relativize_project_paths.py` | an absolute path from your machine reaches the commit |
 
-**A local pass is not proof CI passes.** The hook scopes checks down
-and says so in its own comments: Rust tests cover only the crates
-you touched, not their dependents, and the sidecar freeze, the MDF
-export oracle, and the source-comment check are left to CI entirely.
-If you could break a dependent crate, run `cargo test --workspace`.
+**The hook is not the gate. Run every CI job locally before you
+report** — this is an exit criterion, not a nicety. The hook
+deliberately scopes checks down, and says so in its own comments:
+Rust tests cover only the crates you touched, never their dependents,
+and the sidecar freeze, the MDF export oracle and the source-comment
+check are left to CI entirely. A phase that trusts the hook can
+report green while CI is red, and has.
+
+Read `.github/workflows/ci.yml` and match it — it is canonical, and
+this table only tells you the shape. Cheapest first, so you fail
+fast:
+
+| Job | Roughly |
+|---|---|
+| comment-references | the workflow's `git grep --untracked`, verbatim |
+| frontend | `pnpm --dir apps/gui test`, then `pnpm --dir apps/gui build` |
+| python | `uv sync --extra dev --frozen`, `ruff check`, `ruff format --check`, `mypy`, `pytest` — all via `uv run` |
+| rust | `cargo test --workspace`, then `cargo clippy --workspace --all-targets -- -D warnings` |
+| mdf-export-oracle | the `cannet-mdf` sample export, then the asammdf validation |
+| sidecar-freeze | `uv run --no-project scripts/build-sidecar.py` |
+
+**A job that was already red when you branched is still yours to
+report** — name it, name the commit that introduced it (`git log -S`
+finds it), and say whether you fixed it. Never call an inherited
+failure "pre-existing" and move on; that is how one lint rode a
+24-task chain. Fixing someone else's small, unambiguous breakage is
+in scope. Escalate instead when the fix implies a behavioural choice.
 
 New behaviour lands with tests. Bugs are fixed by first writing the
 failing test. No flaky tests, no "later".
@@ -89,10 +111,28 @@ data path.
 - Launch via `tauri dev` or the harness. A bare debug binary serves
   no frontend and just yields "localhost refused to connect".
 - Kill the process tree afterwards: a leaked host holds the dongles,
-  and the next run measures an idle bus.
-- Reports go in `docs/performance-measurements/` as
-  `YYYY-MM-DD-<commit>[-dirty].json`.
-  `crates/cannet-perf-measurement/README.md` is the how-to.
+  and the next run measures an idle bus. **Kill only what you
+  started** — never a `cannet-gui`, `cannet-server` or
+  `cannet-python-can` you did not launch.
+- **The dongles are shared informally, and the owner wins.** They run
+  their own cannet on this machine and will sometimes be holding the
+  hardware. A capture reading `fps 0` or `rx_gap: null` is usually
+  that. Do not hunt for the holder, do not kill it, do not retry in a
+  loop — report it and let the overseer coordinate. A number measured
+  off an idle bus is worse than no number, because it *passes*.
+- **Frontend render reports go in
+  `docs/performance-measurements/frontend/`** as
+  `<date>-<hash>-<label>.json` — the label is free text that tells
+  your runs apart (`-run1`, `-control-run2`, `-closeout`). The
+  directory is often *empty*: it holds working artifacts, deleted when
+  a campaign closes and its final gate is folded into `baseline.json`.
+  Empty is normal, not a sign you have the wrong path.
+- `docs/performance-measurements/` itself holds the host baseline
+  (`baseline.json`) and the host-mode `baseline` command's dated
+  snapshots. Different artifact, different subsystem — don't file a
+  render report there.
+- `README.md`'s perf section and
+  `crates/cannet-perf-measurement/README.md` are the how-to.
 
 **Collect; do not gate.** The signal is the series across builds,
 not any one reading. Measure, log it, keep going — reading the
@@ -121,6 +161,22 @@ Regardless of why you are measuring:
 - **Sanity-check the load first.** This harness has been silently
   disarmed and *passed* while measuring an idle bus. Check
   `ids_measured` and the rx/tx rates.
+
+### Every phase ships an installer
+
+Once your commit is green, run `pnpm --dir apps/gui tauri build`. The
+owner installs the NSIS bundle to try your work — a deliverable, not a
+check, and it is unconditional: every phase, whatever it touched.
+
+- Every build output is gitignored, so this cannot dirty the tree.
+  The sidecar freeze caches, so a rebuild is far cheaper than the
+  first one.
+- **A build failure is a phase failure.** Fix it and amend your commit.
+  Never report a phase whose bundle does not build.
+- **Report the installer path.** Local builds carry the placeholder
+  version — `target/release/bundle/nsis/cannet_0.0.0_x64-setup.exe`.
+  The release workflow injects the real version; you never edit it.
+- **Never run or install it.** That is the owner's, on their machine.
 
 ## 5. Investigations follow the scientific method
 
@@ -214,7 +270,10 @@ One commit, green, then report — short, in this order:
 - branch name and commit hash; pre-squash HEAD if you squashed
 - the commit message you composed
 - perf readings, anything over § 4's thresholds first
-- test counts per layer, and the commands you ran
+- **one row per CI job, with its result and the command you ran** —
+  all six, every phase. "Green" without the table is not a report,
+  and a job you did not run is a red job.
+- the NSIS installer's path
 - status-log, blockers, and queue entries you added
 - what you deviated on, and why
 

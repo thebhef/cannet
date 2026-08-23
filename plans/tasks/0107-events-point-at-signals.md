@@ -23,6 +23,12 @@ highlight, and the authoring / linking gestures. Implementation adds
 those to the surfaces as they are. Roadmap position is the one open
 question.
 
+**All five phases are implemented (2026-08-22)** and the exit criteria
+are walked below. Twenty-two of the twenty-four checkable claims are
+met; two are not, both bounded by the durable model and both queued for
+the owner (3.30 unknown-key passthrough, 3.31 file-backed subjects).
+The task is code-complete and awaiting acceptance.
+
 ## Settled (owner rulings 2026-08-21)
 
 - **A subject is a signal, a message, or another event** — one
@@ -72,7 +78,8 @@ Further rulings, same day:
   "link these two events" gesture for chains and spans.
 - **Prototype first.** The behaviours and views get an HTML
   prototype before implementation:
-  [`plans/prototypes/events-point-at-signals.html`](../prototypes/events-point-at-signals.html)
+  `plans/prototypes/events-point-at-signals.html` (deleted by phase 5;
+  see below and in git history)
   (app tokens, both themes; the event rows are the app's own
   `EventRow` markup and CSS, and the plot is real uPlot from the
   workspace install, configured as `PlotArea` configures it, with
@@ -193,9 +200,11 @@ plot / trace work is exercised at panel tier the way task 98's was.
 | 5 | Highlight and extent | Opus | Acting on an event transiently highlights its subjects in the plot and the trace; a linked pair draws its extent as an event-colored wash at low opacity, **only** while one of the two is selected or hovered. Nothing persists, nothing to undo, nothing draws at rest but the marker lines. |
 
 **The prototype is a design artefact, not a deliverable.** Unlike task
-108's, [`plans/prototypes/events-point-at-signals.html`](../prototypes/events-point-at-signals.html)
-carries no standing reference role, so it is deleted by the last phase
-that consumes it — the pattern the status-bar prototypes followed. Its
+108's, `plans/prototypes/events-point-at-signals.html`
+carried no standing reference role, so it is deleted by the last phase
+that consumes it — the pattern the status-bar prototypes followed.
+**Phase 5 deleted it**; it is reachable in git history through this
+commit's parent. Its
 trace view and plot panel show the general shape only and are **not** a
 cue to redesign any existing GUI surface (owner reading, 2026-08-21).
 
@@ -1003,6 +1012,287 @@ flipped red, the two no-regression guards correctly did not).
 - `pnpm --dir apps/gui test` 2818 passed across 210 files. All six CI
   jobs run locally and green.
 
+### Phase 5 — highlight and extent (2026-08-22)
+
+Landed on `task-107-phase-5-highlight-extent`, off
+`task-107-phase-4-authoring`. Frontend only; no Rust changed.
+**Interrupted mid-phase and resumed**: `b74852c4` was the checkpoint the
+stopped agent left, with the code green but the close-out work owed.
+This entry covers the whole phase, and the resumption's own findings are
+marked where they differ.
+
+**Two halves, and the split is the design.** `apps/gui/src/eventHighlight.ts`
+is a session-wide *channel* carrying only which event ids are being
+acted on, and a pure *derivation* from those ids plus the event list to
+the messages, fields, lit events and paired extents a renderer draws.
+
+- **The channel is a module-level store, not React state.** Hover moves
+  on every pointer sample; lifting it into the App tree would re-render
+  every panel to light one. `useSyncExternalStore` over a subscriber
+  set, subscribed where it is read — the idiom `theme.ts` already uses.
+  Nothing reaches the host, the project file or any persisted config, so
+  a reload starts at rest and there is nothing to undo.
+- **A hover replaces the selection for as long as it lasts.** Not ruled
+  on; the reading taken is that pointing at something is the more
+  immediate act and is what the reader is asking about. Pinned by a test
+  either way, so reversing it is a one-line change.
+- **`eventHighlight()` answers `null` at rest** — no active id, or none
+  of them names an event this view holds. That is the cheap check every
+  renderer makes before drawing a single conditional pixel, and it is
+  what makes the groomed rule (*nothing draws at rest but the marker
+  lines*) a property of the code rather than a promise.
+
+**The extent is derived, never stored.** `EventExtent` is built at
+render time from the link, per ADR 0056 § 3 — start and end from the
+pair's timestamps, colour and kind from the **earlier** end so the band
+looks the same whichever end the reader is pointing at, and a sorted
+two-id key so a renderer can key on the pair rather than the act. A pair
+at one instant is a zero-width band, floored to one device pixel rather
+than dropped: *these two are linked, and they happened together* still
+reads.
+
+**The plot.** `drawEventExtents` in `PlotArea.tsx` paints the wash at
+`EXTENT_WASH_ALPHA = 0.16`, over the data and under the annotation —
+after the lines and the enum tiles, before the marker lines, the cursors
+and the hover markers. A wash that hid a readout would be worse than no
+band; one the series shows through says *between here and here*. It
+returns immediately on an empty extent list, which is the state at rest.
+`plotEventExtents` in `plotEvents.ts` projects onto the same origin and
+resolves colour the same way `plotTimelineEvents` does, so a band and
+the two lines that bound it agree by construction.
+
+**Opacity, not width, for the series.** A lit series stays at `alpha` 1
+and the rest of *that axis* go to `UNLIT_ALPHA = 0.28`. Width is already
+the *selection*'s language on this canvas, and spending it here would
+make two unrelated states look the same. It is a live-instance write —
+uPlot re-reads `series[i].alpha` every draw — so a hover costs a redraw,
+never a rebuild, and a rebuild mid-hover opens with the fade already
+applied (`litKeysRef`) rather than flashing every series bright for one
+draw. An axis the highlight names nothing on hands back an empty
+`litKeys` and fades nothing, so an event about signals on another plot
+leaves this one alone.
+
+**The trace.** `TraceView` exports `SUBJECT_ROW_CLASS`
+(`.trace-row-subject`): an `--accent-tint` background with an inset rule
+on the **right** edge, so it composes with the cursor's rule on the
+left. A row gets it when the highlight names the frame's message — a
+message subject, or the message a *signal* subject lives on, which is
+what `touchedMessages` exists for: a frame is where a field is carried,
+so an event about a field is about that message's frames. An event row
+gets it when the highlight lights that event. The prop is a **boolean**,
+not the highlight object, for the same reason the cursor and the
+selection are: a hover then re-renders the rows it lights and no others.
+
+**Who raises it.** The events view's rows publish — `onMouseEnter` /
+`onMouseLeave` call `hoverEvent`, and `EventsPanel`'s selection (already
+lifted in phase 3, and reached from the keyboard through ADR 0044's grid
+selection) calls `selectEvents`. Unmounting the view calls
+`resetEventHighlight`, so closing the panel mid-hover leaves nothing lit.
+Two surfaces, one channel: the events view raises, the chronological
+trace and the plot answer — different panels, which is the whole reason
+the channel exists rather than a prop.
+
+**Judgement calls, for the record.**
+
+- **The unlit go quiet, they do not just stay put.** The ruling says
+  acting on an event *highlights its subjects*; the shipped reading also
+  fades the series and marker lines the highlight does not name. Faded,
+  never hidden — what the event is *not* about is still the reading it
+  sits in. This is a design addition rather than a groomed one and it
+  changes how a shipped plot looks during a hover, so it is queued
+  (1.24) rather than assumed.
+- **The colour comes from one fixed end.** Taking it from whichever end
+  is being pointed at would make the same pair flicker between two
+  colours as the pointer crossed it.
+- **Shared empty singletons** (`NONE`, `EMPTY_EXTENTS`,
+  `EMPTY_PLOT_EXTENTS`) so a plot at rest hands every area the same prop
+  identity render after render, and `useSyncExternalStore` sees no
+  change on a read at rest.
+- **No README change.** The two authoring gestures the README needed
+  arrived in phase 4; a transient highlight raised by hovering a row is
+  self-evident on contact and adds no command, flag or file format.
+
+**Found on resumption: the frontend *build* was red.** The checkpoint
+ran `pnpm test` but not `pnpm build`, and `tsc -b` rejected phase 5's own
+new DOM suite on two counts — `TraceRow` imported from `./types`, where
+it has never been exported (it lives in `./trace`), and an unused `name`
+parameter under `noUnusedParameters`. Both fixed here: the import moved
+to `./trace`, and the parameter — call-site documentation of which
+message each fixture frame is, asserted nowhere — took the repo's `_`
+prefix. Nothing about the behaviour changed. It is the exact failure the
+full-local-CI rule exists to catch: a green `pnpm test` is half of one
+CI job.
+
+**Perf — the timing is clean; every memory number this session is
+unusable, and the reason is a real defect in the sampler.** Three 60 s
+ADR-0031 captures on ev-zonal, release build, `--perf-interact scrub`,
+reports committed as `2026-08-22-51b4b352-closeout-run{1,2,3}.json`
+(named for the base commit, as phases 3 and 4 named theirs). Load
+verified on every run before reading anything: `ids_measured` 173, rx
+1601.5–1605.5 f/s, tx 1607.0–1607.9 f/s.
+
+Timing, all three runs, against baseline and limit:
+
+| Metric | Baseline | Runs 1 / 2 / 3 | Limit |
+|---|---|---|---|
+| `lag_ms_max` | 10.4 | 1.5 / 1.0 / 1.7 | 40.8 |
+| `longtask_ms_per_s_p95` | 0.0 | 0.0 / 0.0 / 0.0 | 17.0 |
+| `jank_fraction` | 0.0 | 0.0 / 0.0 / 0.0 | 0.05 |
+| `flush_ms_max` | 19.7 | 15.4 / 7.7 / 7.9 | 64.5 |
+| `tx_late_ms_max` | 15.3 | 12.9 / 5.1 / 5.4 | 55.7 |
+| `rx_fps_retention` | 0.999 | 0.995 / 0.997 / 0.995 | 0.800 |
+
+Nothing near a threshold, and no run over baseline on any timing
+metric — including the `tx_late_ms_max` tail that spiked to 73.8 ms once
+in phase 3.
+
+`check` nonetheless **FAILED**, on one metric in one run: `tree_mb_peak`
+5132.6 MB against a 1547.4 limit (run 1). Runs 2 and 3 reported
+`tree_mb_peak` 121.7 / 122.4 and `renderer_mb_peak` **0.0** — and passed.
+Both readings are wrong, in opposite directions, and neither says
+anything about this change.
+
+#### Investigation — the memory sampler is not isolated from other processes (scientific method)
+
+- **Observation.** Run 1: `mem.tree_mb` max 5132.6, `mem.webview_mb`
+  955.8, `mem.webview_renderer_mb` 633.8, `mem.host_mb` 62.3. Runs 2 and
+  3: `mem.tree_mb` 121.7 / 122.4, both webview gauges exactly 0.0,
+  `mem.host_mb` 62.1 / 62.8. `jsheap_mb` max was 97.4 / 94.2 / 70.5 on
+  the same three runs. A separately-started `cannet-gui.exe` (the
+  operator's own, installed at `%LOCALAPPDATA%\cannet`, started 20:30:55)
+  was running throughout at a 4025 MB working set.
+- **Hypothesis.** Both anomalies are the same defect: `descendant_pids`
+  (`crash.rs`) walks recorded parent-pid links, and on Windows a
+  process's `ParentProcessId` is **not cleared when its parent exits**,
+  so an unrelated orphan is folded in whenever one of our pids reuses
+  its dead parent's number. Separately, our own WebView2 renderer is not
+  our descendant when another cannet already owns the shared WebView2
+  browser process, so the webview gauges read zero.
+- **Experiment.** A fourth 40 s capture with `Win32_Process`
+  (`ProcessId`, `ParentProcessId`, `Name`, `WorkingSetSize`) polled every
+  6 s alongside it, so the sampler's answer can be checked against a
+  ground-truth tree walk. Falsifiable both ways: if the sampler's tree
+  matches the true descendant set, the hypothesis is wrong.
+- **Data.** In the run-4 snapshot our host is pid 20920 with exactly one
+  descendant, `cannet-python-can.exe` pid 60316 — 55 + 52 = 107 MB, and
+  **no `msedgewebview2.exe` has ppid 20920**. The sampler reported host
+  57.6, tree 117.2, webview 0.0: it matched the true tree walk exactly.
+  Every WebView2 process on the machine descends from another root; two
+  large renderers (309 MB and 283 MB) hang off browser process 3908,
+  whose parent is the operator's cannet-gui 59420. Separately, the
+  operator's cannet-gui 59420 records **ppid 64880** — and run 1's own
+  console log reads `sidecar started (pid 64880)`. Its real parent had
+  exited long before, and our run-1 sidecar was handed the recycled
+  number.
+- **Conclusion.** Confirmed, both halves. Run 1's 5132 MB is the
+  operator's entire application — 4025 MB host, ~925 MB of its WebView2
+  processes, 25 MB sidecar — grafted onto ours through a recycled parent
+  pid; run 1's `webview_mb` 955.8 and `renderer_mb` 633.8 are *their*
+  webview, not ours. Runs 2, 3 and 4 lost the graft and then measured no
+  renderer at all, because our renderer was spawned by the WebView2
+  browser process the operator's cannet already owned. Nothing here is
+  attributable to phase 5, the `check` failure is not a regression in
+  this change, and — the worse half — runs 2 and 3 **passed**
+  `tree_mb_peak` and `renderer_mb_peak` while measuring neither. Queued
+  as 3.35, with the consequence for this phase as 3.36.
+
+The honest summary: **this build's memory behaviour is unmeasured.** A
+clean reading needs the machine to itself, which is the operator's to
+give; the timing table above stands on its own, taken off a verified
+real load.
+
+**Tests** — 41 new across four files, written first and watched fail.
+
+- `eventHighlight` unit (19): the channel is at rest until something
+  acts; a hover is carried and let go; a selection outlives the pointer;
+  subscribers are notified only when what is active actually moves; the
+  snapshot keeps one identity at rest; the selection is copied, not
+  aliased; nothing is derived at rest or for an id no event answers to;
+  messages and fields are named; an extended reference is distinct from
+  the standard id of the same number; a whole message lights every series
+  and a field lights only itself; a link lights from either end; a pair's
+  extent draws identically from either end, once when both ends are
+  active, not at all with no link or with the far end absent; the colour
+  comes from the earlier end even when it has none of its own; several
+  active events union; every predicate answers false at rest.
+- `eventHighlight` DOM (13), two surfaces: the events view lights
+  nothing at rest, lights a hovered event and its link from either end,
+  puts everything back the moment the pointer leaves, lights an unlinked
+  event alone, holds a selected event after the pointer has gone, and
+  goes back to rest when the view unmounts; the chronological trace
+  lights no frame row at rest, lights the frames of the message a signal
+  subject lives on, lights a message subject's frames, lights the far
+  end's frames when the near end names nothing itself, puts every frame
+  row back when the highlight goes, and lights nothing for an event this
+  view does not hold.
+- `PlotArea.draw` (6): nothing is painted at rest — *the whole of what
+  "nothing draws at rest" means*; the pair's span is washed in the
+  event's colour at low opacity; the context's opacity is left where it
+  was found; the plot's event colour is the fallback; a pair at one
+  instant draws as a hairline; the span is taken either way round; a band
+  entirely outside the plot box is skipped.
+- `plotEvents` (3): nothing before the panel has an origin; the same
+  origin and colours as the marker lines; nothing when nothing is being
+  acted on.
+- `pnpm --dir apps/gui test` 2858 passed across 212 files. All six CI
+  jobs run locally and green — including `pnpm --dir apps/gui build`,
+  which was red at the checkpoint.
+
+**The prototype is deleted.** `plans/prototypes/events-point-at-signals.html`
+goes with this commit, as the grooming said the last consuming phase
+would. Its two links in this file are de-linked and now name it as
+removed; nothing else in the repo referenced it.
+`plans/prototypes/gui-chip-redesign.html` is task 108's durable artefact
+and is untouched.
+
+## Exit criteria, walked (phase 5 close-out)
+
+Task 107 carries no single "Exit criteria" list. The checkable claims
+below are drawn from **Settled (owner rulings 2026-08-21)**, the
+**prototype-question rulings**, **Implementation detail settled by
+reading the code**, **Owner call — link symmetry**, the **Chrome
+ruling**, the **Phases** table and the **Open questions**, each cited to
+the phase that satisfied it.
+
+| # | Criterion | Verdict | Evidence |
+|---|---|---|---|
+| 1 | A subject is a signal, a message, or another event — one concept, three referent kinds, not buses; an event's subjects are a list, possibly mixed | **Met** | `EventSubject` in `notes.rs` (phase 1), three variants, `Note.subjects: Vec<EventSubject>`; 14 Rust tests round-trip each kind. |
+| 2 | Acting on an event highlights its subject(s), not just names them on the row | **Met** | Phase 5: `eventHighlight.ts` plus `PlotArea`'s series fade and `TraceView`'s `.trace-row-subject`; 32 of the phase's 41 tests are this criterion. |
+| 3 | A span is a list of two events linked through the event→event subject mechanism, never a type with an extent field; the same mechanism documents chains | **Met** | ADR 0056 § 3; `link_events` writes one `EventSubject::Event`; chain read tested phase 1 (Rust) and phase 3 (`subjectChips`). |
+| 4 | Links are untyped | **Met** | `EventSubject::Event { id }` carries an id and nothing else — no relation field exists to populate. |
+| 5 | Extent bands are highlight-only; at rest only the marker lines show | **Met** | `eventHighlight()` returns `null` at rest and `drawEventExtents` returns on an empty list; pinned by `PlotArea.draw`'s "paints nothing at rest" and the DOM suite's at-rest assertion, re-asserted at the end of every positive case. |
+| 6 | Highlights are transient — nothing persists, nothing to undo | **Met** | The channel is a module-level store; no host command, project field or setting is written. `resetEventHighlight` on unmount, tested. |
+| 7 | Span-ness is nothing intrinsic to the events; renderers derive extents from the link | **Met** | `EventExtent` is built inside `eventHighlight()` at render time; no `Note` field holds a start, an end or a partner. |
+| 8 | 107 owns the model, and storage in the capture formats is part of it — research MDF vs BLF, ADR 0010, no sidecar | **Met** | Phase 2: `event_text.rs`'s one grammar in three records, ADR 0057 with the per-format loss table, 33 tests, asammdf oracle extended. No file is written beside a capture. |
+| 9 | The MDF4 lead — EV blocks natively carry point and range-pair events and can scope to channels | **Met as research; scoping answered in the negative** | Range pairs are written where a link joins exactly two events (phase 2, oracle-checked). `ev_scope` is **not** written: a cannet MDF has three bus-logging groups by frame structure and no per-message channel group, so a message subject has nothing true to point at. Recorded in ADR 0057, queued 3.29. |
+| 10 | The model and creation surface are provenance-agnostic | **Met for the provenances that exist** | `authorEvent` is the single constructor for all three hand gestures; a test pins that two gestures' events have the same key set. Triggers (task 23), imports and plugins (task 69) arrive with their own tasks, per the same ruling. |
+| 11 | Authoring gestures: Shift+click in a plot with signals selected; the trace row's context menu; the events view links two events | **Met** | Phase 4 (`PlotArea` mouseup branch; `TracePanel`'s `rowAction`); phase 3 (Link Events chip). |
+| 12 | Reference form is structural, not database-bound; resolves at render time; **remains** when unresolvable; no database identity stored | **Met** | `EventSubject` stores the id, the extended flag and, for a signal, the field name — nothing else; `subjectIndexFor` resolves against the assigned catalog at render time; four phase-3 tests cover the unresolved rendering, one against an empty catalog. |
+| 13 | Broken event references die; signal / message references never do | **Met** | `NotesStore::remove` and `clear` sweep the removed id from every remaining note in the same `Applied` (phase 1); tests pin that signal and message references survive it. |
+| 14 | Link symmetry — store once, read symmetrically | **Met** | One entry written on the later event (phase 3); `linked_event_ids` (Rust) and `linkedEventIds` (TS) read both directions; used by the chips (phase 3) and the extents (phase 5). |
+| 15 | Chip density — a `…` expansion, never an unbounded wrap | **Met, with a documented divergence in *where* it goes** | Overflow runs through the shared `useToolbarFit` / `planToolbarFit` (phase 3), so the row never grows with the subject count. The `…` opens the row's own body rather than a dropdown: `.trace-rows` is `overflow: auto; contain: strict` and the row stack inside it is `overflow: hidden`, so a menu from a row is clipped by construction. The prototype was updated to match. |
+| 16 | Band styling — event-coloured wash at low opacity | **Met** | `EXTENT_WASH_ALPHA = 0.16`, colour from the pair's earlier end (phase 5). |
+| 17 | Linking gesture — multi-select plus a toolbar button | **Met** | `selectableEvents` on `TraceView`, the Events view's `ChipButton` with the `link` glyph (phase 3). |
+| 18 | The event surface's toolbar speaks task 108's chip language | **Met** | The Link Events control is a `ChipButton` from 108's registry, built in that language rather than retrofitted — the ordering ruling's whole purpose. |
+| 19 | Subjects are one field on `Note`, any category may carry them, only durable ones reach a carrier | **Met** | `Note.subjects` with `#[serde(default)]`; `exportable()` untouched; a phase-1 test pins that a host-derived event may carry subjects and still never be exported. |
+| 20 | Both reference kinds carry `extended`, since message identity here is the id and that flag together | **Met** | The enum's shape; tests in phases 1, 3 and 5 each distinguish an extended reference from the standard id of the same number. |
+| 21 | Roadmap position — confirm or move the provisional slot after 108 | **Met** | Confirmed at grooming and honoured: 107 ran last, after 108 shipped. |
+| 22 | The prototype is a design artefact, deleted by the last phase that consumes it | **Met** | Maintained through phases 3 and 4 wherever implementation diverged; deleted in this commit. |
+| 23 | Unknown block keys are preserved verbatim on rewrite | **Partially met — and said so plainly** | True at the text layer: parse → serialize keeps unknown keys, malformed lines and unknown kinds, with tests (phase 2). **Not** true through file → `Note` → file: `Note` has no passthrough field, so opening and saving a file written by a future build drops what this build does not understand. Closing it is a durable-schema change. ADR 0057's loss table records it; queued 3.30. |
+| 24 | A subject can name anything a plot row can | **Not met — bounded, and recorded** | A **file-backed** series cannot be an event's subject: its `messageId` is a signal channel-group index, not an arbitration id, so `EventSubject`'s structural form has nothing true to say about it. Shift+click over a selection of nothing but file-backed rows names nothing and falls through. Closing it means a fourth referent kind — a model change to ADR 0056. Queued 3.31. |
+
+Criteria 23 and 24 are the two that are not fully met; both are recorded
+as blockers, both are queued for the owner, and both close only with a
+change to the durable model rather than with more of this task.
+Everything else the task settled is shipped and tested.
+
+One further caveat on the whole walk: **no criterion above is backed by
+a photograph of the running app.** Every verdict rests on a named test,
+an ADR or a file. The phase's own live check — the ADR-0031 render
+capture — could not be read this session (see the blocker below), so
+"the wash looks right on a real plot" is the owner's to confirm from the
+installer.
+
 ## Blockers / side effects
 
 ### Phase 1 (2026-08-22) — both since repaired
@@ -1128,3 +1418,59 @@ are clean.
   duplicate-timestamp frames could anchor an event one row late.
   `Note.timestampNs` is a JS number on the same wire, so this is the
   system's existing precision floor rather than a new one.
+
+### Phase 5 (2026-08-22)
+
+- **The frontend *build* was red at the checkpoint, and `pnpm test` said
+  nothing about it.** Phase 5's own new DOM suite imported `TraceRow`
+  from `./types`, which has never exported it, and left a parameter
+  unused under `noUnusedParameters`; `tsc -b` rejected both. Vitest
+  transpiles without typechecking, so a full green suite sat on top of a
+  build that could not run. Fixed here, and it is worth remembering as
+  the shape of the failure: the frontend CI job is `test` **and**
+  `build`, and running half of it is not running it.
+- **The ADR-0031 memory metrics are not isolated from other processes on
+  the machine, and can fail silently in both directions.** Confirmed by
+  experiment (see the phase-5 status entry). `descendant_pids`
+  (`crash.rs`) walks recorded parent-pid links, and Windows does not
+  clear a process's `ParentProcessId` when its parent exits — so an
+  unrelated orphan is folded into our tree the moment one of our
+  processes reuses its dead parent's pid number. That happened: run 1's
+  sidecar was handed pid 64880, which the operator's separately-running
+  cannet-gui still names as its parent, and the whole 4 GB application
+  was measured as ours (`tree_mb_peak` 5132.6 against a 1547.4 limit —
+  the only `check` failure in the set). The second half is worse:
+  when another cannet already owns the shared WebView2 browser process,
+  **our own renderer is not our descendant at all**, so `webview_mb` and
+  `webview_renderer_mb` read exactly 0.0 and `tree_mb_peak` reads ~122 MB
+  — and *passes*. Runs 2 and 3 passed both memory gates while measuring
+  no renderer. This is the same class as the idle-bus silent disarm the
+  perf rules warn about, in a metric family nobody has been checking for
+  plausibility. **No memory reading in this phase can be used**, and no
+  memory reading taken while another cannet is running should be trusted
+  retrospectively either. Queued as 3.35.
+- **This build's memory behaviour is therefore unmeasured.** A clean
+  reading needs the machine to itself. The operator's own cannet was
+  running throughout and was left alone, per the shared-hardware rule.
+  The timing metrics are unaffected — they were taken off a verified
+  real load (`ids_measured` 173, rx ≈ 1605 f/s) and came in under
+  baseline on every gated metric. Queued as 3.36.
+- **Acting on an event also dims what it is *not* about.** The ruling
+  says the subjects are highlighted; the shipped reading fades the
+  unnamed series (`UNLIT_ALPHA` 0.28) and the unnamed marker lines as
+  well. Defensible — a highlight nothing contrasts against is not one —
+  but it is a design addition, and it changes how a shipped plot looks
+  during a hover rather than only adding a new mark. Reversing it is
+  deleting two conditionals. Queued as 1.24.
+- **A hover overrides the selection rather than adding to it.** Not
+  ruled on either way. The reading taken is that pointing is the more
+  immediate act; the consequence is that a reader who selects a pair,
+  then moves the pointer across a third event, loses the pair's band
+  until the pointer leaves. Pinned by a test, so it is a one-line
+  reversal if the owner reads it the other way. Queued as 1.25.
+- **No live confirmation that the wash and the fade look right.** Every
+  phase-5 verdict rests on a test, and the tests assert what is drawn
+  (fill style, alpha, class), not how it reads. The ADR-0031 capture
+  cannot substitute — `--perf-interact scrub` never hovers an event row,
+  and ev-zonal carries no events for it to hover. The installer is the
+  first look anyone gets at this on a real plot.

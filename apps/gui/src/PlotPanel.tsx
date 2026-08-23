@@ -27,7 +27,13 @@ import { useTrace } from "./trace";
 import { PERF_TITLE, PlotToolbar } from "./PlotToolbar";
 import { useNotes } from "./notesContext";
 import { authorEvent, timelineEvents, type EventSubject } from "./notes";
-import { plotTimelineEvents, subjectsForSelection } from "./plotEvents";
+import { plotEventExtents, plotTimelineEvents, subjectsForSelection, type PlotExtent } from "./plotEvents";
+import {
+  eventHighlight,
+  highlightsSeries,
+  useActiveEventIds,
+  type EventExtent,
+} from "./eventHighlight";
 import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import { GOTO_EVENT, type GotoPayload } from "./gotoEvent";
 import { parseVisibleRangeInput, resolveVisibleRange } from "./plotVisibleRange";
@@ -188,6 +194,10 @@ const EMPTY_KEY_SET: ReadonlySet<string> = new Set();
 /// Shared "this area names nothing" list, so an area outside the
 /// selection sees an unchanged prop identity and does not re-render.
 const EMPTY_SUBJECTS: readonly EventSubject[] = [];
+/// Shared "nothing is being acted on" lists, so a plot at rest hands
+/// every area the same prop identity render after render (ADR 0056).
+const EMPTY_EXTENTS: readonly EventExtent[] = [];
+const EMPTY_PLOT_EXTENTS: readonly PlotExtent[] = [];
 /** Stable empty list for areas with no patterns — a fresh `[]` per render
  * would defeat `PlotArea`'s memo. */
 const EMPTY_RESOLUTIONS: readonly PatternResolution[] = [];
@@ -2371,6 +2381,49 @@ export function PlotPanel(props: IDockviewPanelProps) {
     () => [{ id: "__t0", t: 0, label: "T0" }, ...notes],
     [notes],
   );
+  // What acting on an event is lighting up right now (ADR 0056), and the
+  // three things this panel draws from it. All three are empty at rest,
+  // which is what keeps the plot at rest looking exactly as it did: the
+  // marker lines, and nothing else.
+  const activeEvents = useActiveEventIds();
+  const highlight = useMemo(
+    () => eventHighlight(timelineEvents(sessionNotes, model.truncationTsNs), activeEvents),
+    [sessionNotes, model.truncationTsNs, activeEvents],
+  );
+  /// The bands: a linked pair's extent, on the same origin and in the
+  /// same colors as the marker lines that bound it.
+  const eventExtents = useMemo(
+    () =>
+      plotEventExtents(highlight?.extents ?? EMPTY_EXTENTS, baseSeconds, (k) =>
+        k === "truncation"
+          ? theme().eventTruncation
+          : k === "busError"
+            ? theme().eventBusError
+            : undefined,
+      ),
+    [highlight, baseSeconds, themeName],
+  );
+  /// The marker lines that stay bright — the event being acted on and
+  /// whatever it is linked to. Empty means "dim nothing".
+  const litEventIds = highlight?.events ?? EMPTY_KEY_SET;
+  /// Per derived axis, the series the highlight names. Empty for an axis
+  /// that holds none, and that axis then dims nothing: an event about
+  /// signals on some *other* plot has no opinion about this one.
+  const litKeysByAxis = useMemo(() => {
+    const m = new Map<string, ReadonlySet<string>>();
+    if (highlight === null) return m;
+    for (const d of derivedAreaConfigs) {
+      const lit = new Set<string>();
+      for (const s of d.area.signals) {
+        if (s.fileBacked) continue;
+        if (highlightsSeries(highlight, s.messageId, s.extended, s.signalName)) {
+          lit.add(signalRefKey(s));
+        }
+      }
+      if (lit.size > 0) m.set(d.area.id, lit);
+    }
+    return m;
+  }, [highlight, derivedAreaConfigs]);
   // What the kind filter is hiding, counted off the *unfiltered* set so a
   // kind with something to show says so even while it is off.
   const eventKindCounts = useMemo(
@@ -2680,6 +2733,9 @@ export function PlotPanel(props: IDockviewPanelProps) {
               fitYEpoch={fitYEpoch}
               showDiag={showDiag}
               {...handlers}
+              eventExtents={eventExtents.length === 0 ? EMPTY_PLOT_EXTENTS : eventExtents}
+              litEventIds={litEventIds}
+              litKeys={litKeysByAxis.get(d.area.id) ?? EMPTY_KEY_SET}
               selectedKeys={selectedKeysByAxis.get(d.area.id) ?? EMPTY_KEY_SET}
               manualKeys={manualKeysByArea.get(parent.id) ?? EMPTY_KEY_SET}
               patternResolutions={patternResolutionsByArea.get(parent.id) ?? EMPTY_RESOLUTIONS}
