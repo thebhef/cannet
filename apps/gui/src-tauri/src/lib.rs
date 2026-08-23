@@ -546,6 +546,7 @@ pub fn run() -> ! {
             view_signals::set_view_signals,
             view_signals::remove_view_signals,
             view_signals::clear_view_signals,
+            view_signals::set_signal_dbc_pick,
             list_file_backed_content,
             sample_signals,
             signal_min_max,
@@ -673,6 +674,7 @@ pub fn run() -> ! {
                 active_project_id: Mutex::new(None),
                 watched_project: Mutex::new(watched_file::WatchedFile::default()),
                 view_signals: Mutex::new(view_signals::ViewSignalRegistry::default()),
+                signal_dbc_picks: Mutex::new(std::sync::Arc::default()),
             });
             // Make sure the main window has the id our capabilities expect.
             // Tauri assigns "main" by default for the first window in the
