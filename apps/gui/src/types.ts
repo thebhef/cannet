@@ -1138,6 +1138,58 @@ export interface RbsSignalView {
   hasValueTable: boolean;
 }
 
+/// The RBS signals panel's taxonomy (task 89 phase 6), drawn from what
+/// the encoder actually reports (`reconstruct_payload`) rather than
+/// invented. Severity order is declaration order, same convention as
+/// {@link ViewSignalStatus}. `"out-of-range"` is deliberately absent —
+/// it is decided in the frontend (`rbsValueClamp.ts`), never sent by
+/// the host, and slotted into this same severity band by
+/// `rbsSignalsFilter.ts`.
+export type RbsSignalStatus = "not-encoded" | "unknown-value" | "override" | "default" | "muted";
+
+/// One field of one `.cannet_rbs` config — `rbs_signal_rows`. Mirrors
+/// `rbs::signals::RbsSignalRow`; not combined across elements, unlike
+/// {@link ViewSignalRow} (the opposite scoping rule task 89 draws
+/// between the two grids).
+export interface RbsSignalRow {
+  /// Stable within one element: `<bus key>|<message key>|<signal>`.
+  id: string;
+  /// The file's bus key (a project logical-bus name).
+  busKey: string;
+  /// The resolved project bus id; `null` when no project bus has this
+  /// name. Feeds the value-table fetch the same way `RbsBusView.busId`
+  /// does for the RBS panel's own tree.
+  busId: string | null;
+  /// The ECU key an edit's `target` must name (`rbs/commands.rs`'s
+  /// `RbsTarget`) — the DBC's own transmitter grouping, not
+  /// necessarily where the file's entry (if any) happens to sit.
+  ecuName: string;
+  messageKey: string;
+  messageName: string | null;
+  messageId: number;
+  extended: boolean;
+  signalName: string;
+  unit: string;
+  status: RbsSignalStatus;
+  /// `null` for a Not Encoded row (nothing decodes it) or an inactive
+  /// multiplexed arm.
+  value: number | null;
+  label: string | null;
+  overridden: boolean;
+  overrideText: string | null;
+  calcRole: "counter" | "crc" | null;
+  factor: number;
+  offset: number;
+  min: number;
+  max: number;
+  size: number;
+  signed: boolean;
+  hasValueTable: boolean;
+  /// A short "what happened" note for the detail column; empty for a
+  /// clean Override row.
+  detail: string;
+}
+
 /// One dirty RBS element (unsaved override edits) — `rbs_dirty`.
 export interface RbsDirtyRecord {
   elementId: string;

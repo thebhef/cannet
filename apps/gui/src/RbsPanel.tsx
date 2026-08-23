@@ -31,30 +31,22 @@ import type { IDockviewPanelProps } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
-import type {
-  CalcFieldsSpec,
-  RbsMessageView,
-  RbsSignalView,
-  RbsView,
-  ValueTableEntryRecord,
-} from "./types";
+import type { CalcFieldsSpec, RbsMessageView, RbsSignalView, RbsView } from "./types";
 import { useProjectContext } from "./projectContext";
+import { elementLabel } from "./elementLabel";
+import { showRbsSignalsPanel } from "./dockLayout";
 import { CalcFieldEditor } from "./CalcFieldEditor";
 import { ChangedOnDiskNotice } from "./ChangedOnDiskNotice";
 import { Combobox } from "./Combobox";
 import { DisclosureToggle } from "./DisclosureToggle";
 import { ValidatedInput, parsePositiveInt } from "./ValidatedInput";
-import {
-  useValueTables,
-  valueTableOptions,
-  type ValueTableSignal,
-} from "./useValueTables";
 import { useElementPanel } from "./useElementPanel";
 import { useHostMirror } from "./useHostMirror";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { usePanelCommands } from "./panelCommands";
 import { toggleInSet } from "./toggleSet";
 import { formatBytes } from "./format";
+import { RbsValueCell } from "./rbsValueCell";
 import { GridviewFilterBox, useGridviewFilter } from "./gridviewFilter";
 import { useGridview, type Gridview } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter } from "./gridviewRows";
@@ -99,6 +91,7 @@ interface MenuState {
 }
 
 export function RbsPanel(props: IDockviewPanelProps) {
+  const { containerApi } = props;
   const project = useProjectContext();
   const { elementId, registry, element, persist } = useElementPanel(props, "rbs");
   // Persist just the elementId in panel params — no view-local
@@ -384,6 +377,15 @@ export function RbsPanel(props: IDockviewPanelProps) {
         </span>
         <button type="button" onClick={() => void handleOpenFile()}>
           Open…
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            showRbsSignalsPanel(containerApi, elementId, element ? elementLabel(element) : "")
+          }
+          title="Every field this config transmits, with where each value came from"
+        >
+          Signals
         </button>
       </div>
 
@@ -840,29 +842,6 @@ function SignalRow({
   inert,
   onMenu,
 }: SignalRowProps) {
-  // Enum signals are picked from the shared Combobox over their VAL_
-  // labels (fetched via the shared useValueTables hook) and commit the
-  // label string — the host resolves it through the table, and the
-  // file stores it. `freeText` keeps a raw out-of-table code sendable.
-  // Everything else is a free-text ValidatedInput.
-  const valueTableSignals = useMemo<ValueTableSignal[]>(
-    () =>
-      s.hasValueTable
-        ? [
-            {
-              busId,
-              messageId: message.messageId,
-              extended: message.extended,
-              signalName: s.name,
-            },
-          ]
-        : [],
-    [s.hasValueTable, s.name, busId, message.messageId, message.extended],
-  );
-  const [labels = []] = useValueTables(valueTableSignals).values();
-  const enumOptions = useMemo(() => valueTableOptions(labels), [labels]);
-
-  const display = s.label ?? (s.value != null ? formatValue(s.value) : "—");
   const commit = (value: string | number) => {
     void invoke("rbs_set_signal", {
       elementId,
@@ -882,85 +861,25 @@ function SignalRow({
     >
       <td className="rbs-sig-name">{s.name}</td>
       <td className="rbs-sig-value">
-        {s.calcRole ? (
-          <span
-            className="rbs-calc-cell"
-            title={`${s.calcRole} destination — recomputed on every send`}
-          >
-            {display} <em>({s.calcRole})</em>
-          </span>
-        ) : (
-          <>
-            {s.hasValueTable ? (
-              <Combobox
-                options={enumOptions}
-                value={s.label ?? ""}
-                placeholder={display === "—" ? "" : display}
-                onChange={(v) => {
-                  const parsed = parseSignalText(v, labels);
-                  if (parsed !== null) commit(parsed);
-                }}
-                className="rbs-signal-input"
-                ariaLabel={`${s.name} value`}
-                disabled={inert}
-                freeText
-              />
-            ) : (
-              <ValidatedInput
-                value={display === "—" ? "" : display}
-                focusBehavior="select"
-                parse={(text) => parseSignalText(text, labels)}
-                onCommit={commit}
-                className="rbs-signal-input"
-                ariaLabel={`${s.name} value`}
-                disabled={inert}
-              />
-            )}
-            {s.overridden && (
-              <button
-                type="button"
-                className="rbs-clear"
-                tabIndex={-1}
-                title={`clear override (track DBC default)${s.overrideText ? ` — currently ${s.overrideText}` : ""}`}
-                onClick={() =>
-                  void invoke("rbs_set_signal", {
-                    elementId,
-                    target,
-                    signal: s.name,
-                    value: null,
-                  }).catch(() => {})
-                }
-              >
-                ×
-              </button>
-            )}
-          </>
-        )}
+        <RbsValueCell
+          signal={s}
+          busId={busId}
+          messageId={message.messageId}
+          extended={message.extended}
+          disabled={inert}
+          onCommit={commit}
+          onClear={() =>
+            void invoke("rbs_set_signal", {
+              elementId,
+              target,
+              signal: s.name,
+              value: null,
+            }).catch(() => {})
+          }
+        />
       </td>
       <td className="rbs-sig-unit">{s.unit}</td>
     </tr>
   );
 }
 
-/// A signal cell's text → the value `rbs_set_signal` takes: a VAL_
-/// label verbatim (the file stores labels), else a number, else a `0x`
-/// raw. Anything else is rejected — the edit reverts.
-function parseSignalText(
-  text: string,
-  labels: readonly ValueTableEntryRecord[],
-): string | number | null {
-  const t = text.trim();
-  if (t === "") return null;
-  if (labels.some((l) => l.label === t)) return t;
-  const n = Number(t);
-  if (Number.isFinite(n)) return n;
-  if (/^0x[0-9a-fA-F]+$/.test(t)) return t;
-  return null;
-}
-
-function formatValue(v: number): string {
-  if (!Number.isFinite(v)) return String(v);
-  if (Number.isInteger(v)) return String(v);
-  const s = v.toPrecision(6);
-  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
-}

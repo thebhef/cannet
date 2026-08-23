@@ -5971,3 +5971,247 @@ button.color-chip {
   color: var(--text-faint);
   font-size: 0.8rem;
 }
+
+/* The RBS signals grid (task 89 phase 6): the same shapes as
+   .view-signals-* above, just under its own prefix — one config's
+   fields, not every open view's signals, so the rules below mirror
+   the view-signals block rather than being merged with it (the two
+   panels' rows never share a filter or a wash toggle). */
+.rbs-signals-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.rbs-signals-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.3rem 0.5rem;
+  background: var(--surface-overlay);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.rbs-signals-toolbar .spacer {
+  flex: 1 1 auto;
+}
+.rbs-signals-filters {
+  display: flex;
+  align-items: stretch;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.rbs-signals-status-filter {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+  padding: 0.1rem 0.4rem 0.1rem 0.25rem;
+  font: inherit;
+  color: var(--text-muted);
+  background: var(--surface-field);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.rbs-signals-status-filter:hover {
+  background: var(--surface-hover);
+}
+.rbs-signals-status-filter[aria-pressed="true"] {
+  border-color: var(--accent-marker);
+  color: var(--text-primary);
+}
+.rbs-signals-status-filter[aria-pressed="false"] .rbs-signals-chip {
+  opacity: 0.45;
+}
+.rbs-signals-status-filter > span {
+  align-self: center;
+  font-size: 0.8rem;
+}
+
+.rbs-signals-chip {
+  display: inline-block;
+  width: 0.85rem;
+  align-self: stretch;
+  border: 1px solid var(--border-wash);
+  border-radius: 2px;
+}
+.rbs-signals-chip--not-encoded {
+  background: var(--danger-text);
+}
+.rbs-signals-chip--out-of-range {
+  background: var(--text-signal-value);
+}
+.rbs-signals-chip--unknown-value {
+  background: var(--warn-border);
+}
+.rbs-signals-chip--override {
+  background: var(--modified-marker);
+}
+.rbs-signals-chip--default {
+  background: var(--text-dim);
+}
+.rbs-signals-chip--muted {
+  background: var(--text-muted);
+}
+
+.rbs-signals-busfilter {
+  position: relative;
+  display: inline-flex;
+}
+.rbs-signals-busbtn {
+  font: inherit;
+  font-size: 0.8rem;
+  min-width: 8rem;
+  text-align: left;
+  color: var(--text-muted);
+  background: var(--surface-field);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 0.15rem 0.4rem;
+  cursor: pointer;
+}
+.rbs-signals-busbtn:hover {
+  background: var(--surface-hover);
+}
+.rbs-signals-busmenu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  min-width: 11rem;
+  padding: 0.3rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--surface-overlay);
+  box-shadow: 0 6px 18px var(--shadow-menu);
+}
+.rbs-signals-busmenu label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0.3rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rbs-signals-busmenu label:hover {
+  background: var(--surface-hover);
+}
+.rbs-signals-busmenu-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--scope-text);
+}
+.rbs-signals-busmenu-n {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+}
+.rbs-signals-busmenu-rule {
+  height: 1px;
+  margin: 0.25rem 0.1rem;
+  background: var(--border-subtle);
+}
+.rbs-signals-busmenu button {
+  width: 100%;
+  text-align: left;
+  font-size: 0.78rem;
+  background: none;
+  border: none;
+  padding: 0.2rem 0.3rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.rbs-signals-busmenu button:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.rbs-signals-wash-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.rbs-signals-counts {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  font: inherit;
+  background: none;
+  border: none;
+  padding: 0.15rem 0.1rem;
+  cursor: pointer;
+}
+.rbs-signals-counts:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+.rbs-signals-rows {
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.rbs-signals-empty {
+  padding: 1rem;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+/* The row wash: see the view-signals block's own comment — same
+   color-mix mechanism, this taxonomy's colours. Override and Default
+   get no wash: a value the file set and one it merely inherited both
+   read as normal rows, same as a clean Decoded row does there. */
+.rbs-signals-row--wash-not-encoded {
+  background: color-mix(in srgb, var(--danger-text) 12%, var(--surface-row));
+}
+.rbs-signals-row--wash-out-of-range {
+  background: color-mix(in srgb, var(--text-signal-value) 16%, var(--surface-row));
+}
+.rbs-signals-row--wash-unknown-value {
+  background: color-mix(in srgb, var(--warn-border) 12%, var(--surface-row));
+}
+.rbs-signals-row--wash-muted {
+  background: color-mix(in srgb, var(--text-muted) 10%, var(--surface-row));
+}
+
+.rbs-signals-status-text {
+  margin-left: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.col-rs-bus,
+.col-rs-signal,
+.col-rs-msg {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.col-rs-bus {
+  color: var(--scope-text);
+}
+.col-rs-msg {
+  color: var(--text-message);
+}
+.col-rs-value .rbs-signal-input {
+  width: 100%;
+}
+
+.rbs-signals-detail {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.rbs-signals-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--surface-overlay);
+  color: var(--text-faint);
+  font-size: 0.8rem;
+}

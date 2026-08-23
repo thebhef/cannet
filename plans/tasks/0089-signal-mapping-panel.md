@@ -1102,3 +1102,271 @@ allocation to any path a capture exercises (the rewrite runs once per
 user gesture, in the frontend, over the element registry). Recorded here
 with the full distribution rather than discarded, per ADR 0031's
 unreproducible-outlier rule.
+
+### Phase 6 — the RBS variant (2026-08-20)
+
+Branch `task-89-phase-6-rbs-variant`, from `task-89-phase-5-remap-pick`
+(`a04b2589`). Five commits (`8ce9f186` the host model, `68cbc0d4` the
+shared value cell, `99d67629` the grid, `17bf49da` the launcher + a bug
+fix, `d0d93c15` README) plus this log. Workspace Rust tests
+1494 → 1498 (+4), zero failures; frontend 2367 → 2418 (+51, 183 files,
+was 178), zero failures; `cargo clippy --workspace --all-targets`
+clean, `cargo fmt --all` applied, `pnpm build` (tsc + vite) clean. This
+is task 89's last phase — both prototypes are retired (deleted,
+`plans/prototypes/`), superseded by the shipped panels.
+
+**The grid is the same one, not a second implementation.** "Same
+component, opposite scoping rule" reads two ways once measured against
+the code: `ViewSignalsPanel` and the new `RbsSignalsPanel` are two
+panel components — their row shapes, columns, and editable value cell
+differ enough (RBS rows carry a live signal editor and no
+database/source picker) that one component branching on a mode would
+read as a worse version of both, the same reasoning that already keeps
+`ByIdView`/`SignalView`/`TraceView`/the DBC tree/the RBS tree/the
+transmit list as separate components. What is genuinely one thing,
+reused rather than copied, is the *gridview* ADR 0044 names —
+`GridviewHeader`, `GridviewRow`, `useGridview`, `arrayRowSpace` — plus
+the identical toolbar shape (status chips + a bus fly-out, nothing-
+selected-is-no-filter, a toggleable wash, a footer shortcut to the
+problem statuses). The opposite scoping rule is expressed as a
+property of *which panel a row set is fetched into*, not a prop on a
+shared component: `ViewSignalsPanel` is a singleton fetching every
+open view's rows; `RbsSignalsPanel` is opened per element
+(`showRbsSignalsPanel`, one instance per `elementId`, same "no second
+copy" rule a singleton uses, just keyed by element) and fetches only
+that element's rows. Recorded here for the record the grooming's own
+phrasing invites a re-check: this is the reading measured against the
+codebase's own established pattern for "one shared base, several thin
+views," not the alternative (force one React component to cover both
+domains).
+
+**The shared clamp, and where it actually lives.** `rbsValueClamp.ts`
+exports `clampToSignalRange` / `isOutOfSignalRange` /
+`signalPhysicalRange`, called from exactly one place —
+`RbsValueCell.commit` — so neither caller can clamp differently by
+forgetting to call it: `RbsPanel.tsx`'s own tree and
+`RbsSignalsPanel.tsx`'s value column both render `<RbsValueCell>`,
+extracted this phase out of what was inline in `RbsPanel.tsx`'s
+`SignalRow`. `signalPhysicalRange` also answers the DBC crate's own
+documented edge case — `[0|0]` conventionally means "no declared
+bound," so when `min == max` the range is derived from the signal's
+raw bit width and factor/offset instead of leaving the value
+unconstrained, which would otherwise make Out of Range unreachable for
+every signal that never got an explicit `SignalMinimum`/`SignalMaximum`.
+
+**Out of Range is decided in the frontend, and that forces this grid's
+sort off the host.** The ruling is explicit that truncation on
+transmit is correct and the check belongs in the frontend
+(`rbsValueClamp.ts`); the host's `RbsSignalStatus` therefore has five
+variants, not six. `rbsSignalsFilter.ts::rbsSignalDisplayStatus` is the
+one place a host `Override` row is upgraded to `out-of-range` when its
+decoded value sits outside `signalPhysicalRange`, and every renderer,
+filter and sort in `RbsSignalsPanel.tsx` reads through this function,
+never the bare host status. Because the full severity order depends on
+that frontend fact, `rbsSignalsColumns.ts::sortRbsSignalRows` sorts
+client-side instead of passing `sortKey`/`sortDir` to a host command
+the way `list_view_signals` does — a deliberate divergence from the
+task's own "RESOLVED" note on that point, which was scoped to the
+views grid's model (phase 1) rather than binding on a status this
+grid computes after the fetch. The row set stays bounded exactly the
+way the views grid's is (one config's fields, not a capture's worth),
+so `CLAUDE.md`'s paging rule has nothing to say against it.
+
+**The taxonomy, and how each status is decided** — `rbs/signals.rs`,
+one command (`rbs_signal_rows`) building rows from the same
+`for_each_scoped_message` / `reconstruct_payload` the RBS runtime and
+its own tree already share, so this grid cannot disagree with what
+actually transmits:
+
+| Status | Decided by |
+| --- | --- |
+| Muted | the message won't play: bus disabled, its DBC-transmitter ECU disabled, or message-muted — checked first, since nothing else matters once true |
+| Not Encoded | an override names a signal absent from the message's descriptor, or a message no scoped DBC defines (or an unresolved bus) — `reconstruct_payload`'s `UnknownSignal` case, plus the message-level equivalent |
+| Unknown Value | a real signal whose override text didn't resolve — `reconstruct_payload`'s `InvalidHex` / `UnknownEnumLabel`, both real, both distinguished as `OverrideProblem` variants but merged into one status per the taxonomy's own name |
+| Override | the file sets it and it applied |
+| Default | no override: the DBC's `GenSigStartValue`, or (when none) the file's fill bit — the detail column names which |
+
+`OverrideWarning` (`rbs/runtime.rs`) replaces the plain `Vec<String>`
+`reconstruct_payload` used to return, carrying a `signal: String` and
+an `OverrideProblem` discriminant alongside the same human-readable
+`message()` the system log already showed — so the taxonomy is
+classified from structured data the encoder itself produced, never by
+re-parsing warning text, and the RBS system-log wording is byte-for-
+byte unchanged (`rebuild_element_rows` calls `.message()` where it
+used the raw string before).
+
+**Not Encoded splits cleanly from Unknown Value, and the split is the
+same one the encoder already draws.** "Unknown signal" means there is
+no signal to hang a decode on at all — the RBS analogue of the views
+panel's "no database defines it," so it reads Not Encoded. "Invalid
+hex" / "no enum label" mean the signal is real and every *other* field
+of the message keeps encoding correctly; only this one override's text
+didn't resolve, so the default goes out instead — Unknown Value. The
+prototype's own two examples (`GearTarget: "0xZZ"`, `DriveMode:
+"Sport"`) are both this second case; `DoorAjar` in the prototype (an
+override naming a signal nothing defines) is the first. Both are
+regression-tested (`a_bad_enum_label_reads_unknown_value_not_not_encoded`,
+and `statuses_reflect_the_encoders_own_report`'s `ghost`/`phantom`/
+`whatever` rows for the three Not Encoded shapes: unknown signal on a
+resolved message, a message no DBC defines, and an unresolved bus).
+
+**`ecu_name` had to be added to the row, and here is why.** An edit
+routes through `rbs_set_signal(elementId, target, signal, value)`,
+where `target.ecu` is a plain string key `entry_mut`
+(`rbs/commands.rs`) files a *fresh* override under verbatim — get it
+wrong and a new override lands under the wrong ECU, which then warns
+as a transmitter mismatch. The row therefore carries the DBC's own
+transmitter grouping (`ecu_name` from `for_each_scoped_message`), the
+same key `RbsPanel.tsx`'s tree already uses for every edit it makes,
+so the grid's edits and the tree's edits are indistinguishable to the
+file. Not encoded rows carry the file's own ECU key as a matter of
+completeness (there's no edit to route, since the value cell disables
+itself) rather than leaving the field with no defensible value.
+
+**`bus_id` is the resolved project id, not the file's bus key.**
+`RbsSignalRow.busKey` is the file's logical-bus name (shown in the
+grid, matches the RBS tree's own bus column); `RbsSignalRow.busId` is
+the resolved project bus id or `null`, which is what the value-table
+fetch (`useValueTables`) needs for an enum signal's `VAL_` labels —
+the same distinction `RbsBusView` already draws for the tree. An
+earlier draft conflated the two (passing the file's bus *name* as if
+it were the project bus *id*), which would have silently broken enum
+lookups for every RBS grid row; caught before it reached a commit.
+
+**Bug found and fixed in passing, in code this phase touched anyway**
+(observation → hypothesis → experiment → data → conclusion):
+
+- *Observation.* Extracting `parseSignalText` verbatim out of
+  `RbsPanel.tsx` into the shared `rbsValueCell.tsx` was meant to be a
+  pure move, no behaviour change — but writing
+  `rbsValueCell.dom.test.tsx`'s hex-entry test against the moved
+  function first (before touching its body) failed:
+  `parseSignalText("0xA", [])` returned `10`, not `"0xA"`.
+- *Hypothesis.* `Number("0xA")` is a valid JS numeric literal (`10`),
+  and the function checked `Number.isFinite(Number(t))` *before* the
+  `/^0x[0-9a-fA-F]+$/` regex — so any hex override whose digits are
+  all valid decimal-parseable hex (which is every one) never reaches
+  the hex branch at all.
+- *Experiment.* Ran the pre-existing (pre-move) `parseSignalText`
+  against `"0xA"` and `"0x1F"` directly, before any edit.
+  Reordered the checks (hex prefix before `Number()`) and re-ran the
+  RBS panel's own DOM tests to confirm nothing that exercises numeric
+  or enum entry regressed.
+- *Data.* Pre-fix: `parseSignalText("0xA", [])` → `10`;
+  `parseSignalText("0x1F", [])` → `31`. Post-fix: `"0xA"` and `"0x1F"`
+  verbatim. `RbsPanel.dom.test.tsx` (22 tests) and
+  `rbsValueCell.dom.test.tsx` (11 tests) both green after.
+- *Conclusion.* Confirmed: a hex override typed into the RBS panel's
+  own tree — before this phase touched anything — was silently sent
+  as `RbsValue::Number(10)` (a *physical* value) instead of
+  `RbsValue::Text("0xA")` (*raw bits*), which differ whenever the
+  signal's factor/offset aren't `(1, 0)`. Fixed at the one shared call
+  site both panels now use; regression-guarded at the pure-function
+  level and end to end through the input
+  (`rbsValueCell.dom.test.tsx`'s "the hex-override bug, end to end
+  through the input").
+
+**Second bug found in passing: `removeElement` leaked a panel.**
+`App.tsx` located "the" panel for a removed element with `.find` and
+removed just that one. Harmless while every element had exactly one
+panel; this phase's launcher makes an RBS element's signals grid a
+*second* panel over the same `elementId`, so `.find` would leave it
+open, pointing at a project element that no longer exists. Extracted
+the lookup into a pure `panelsForElementId` (`dockLayout.ts`) and
+switched `removeElement` to iterate every match; regression-guarded
+directly on the pure function rather than through a full `App` mount
+(no existing test drives element removal through the real UI, and
+building that harness from scratch was judged the wrong size of fix
+for a one-line defect with an easy pure-function repro).
+
+**The focused-panel-kind collision, named and closed before it
+shipped.** Both of an RBS element's panels carry the same `elementId`
+in their dockview params, and `panelCommands.ts`'s registry is keyed
+by `elementId` alone (one entry per id, last-registered wins) — so a
+naive reuse of the "rbs" focus kind would have let `panel.find` /
+`panel.rename`, fired while the signals grid is focused, silently
+reach into the *other*, unfocused panel's registration. Closed two
+ways: `panelKindForFocus` checks the panel id's `rbs-signals-` prefix
+before it ever looks at `elementKind`, reporting a distinct
+`"rbs-signals"` kind (added to `FOCUSED_PANEL_KINDS`, deliberately left
+out of `RENAMEABLE_PANEL_KINDS` / `FINDABLE_PANEL_KINDS`, so those
+commands are simply unavailable while this panel is focused); and
+`RbsSignalsPanel` never calls `usePanelCommands` at all, so it never
+touches the shared registry map in the first place. Both are load-
+bearing on their own; kept both rather than picking one, since either
+alone leaves the other panel's behaviour to infer.
+
+**The panel title, and the one place "element" must not appear.**
+`elementPanelTitle(panelId, elementLabel)` is the single function that
+decides an element-backed panel's tab text: verbatim for every
+existing panel, `"‹config name› — Signals"` for one whose id carries
+the `rbs-signals-` prefix. It replaces the bare `elementLabel(...)`
+call inside `App`'s existing title-sync effect (the one that already
+walks every panel and heals a stale title after a rename) — without
+this, that effect would have overwritten the grid's own title back to
+the bare config name on the next rename, since it does not otherwise
+know the signals panel is not the element's primary one.
+
+**What a pick here does not reach, named rather than silently
+scoped.** The grid's row set, like the RBS tree's own, is drawn from
+`for_each_scoped_message` over the *currently assigned* DBCs; an
+unresolved bus contributes rows only for the overrides its file
+entries actually list (there is no DBC to enumerate "every signal"
+from), matching the ADR 0028 "renders inert, never a load failure"
+rule and the phase 1 precedent of not fabricating rows the model
+cannot back with a fact.
+
+**Not touched:** `TraceStore::frame_index_at_ns` (task 91); the
+per-message decode paths task 92 names are the *view*-signals side of
+this task, not the RBS side — this phase's rows come from
+`reconstruct_payload`/`for_each_scoped_message`, which task 92 does
+not name and this phase did not change the resolution rule of.
+
+**Prototypes retired.** Both `plans/prototypes/view-signals-panel.html`
+and `plans/prototypes/rbs-signals-panel.html` are deleted (committed
+alongside the host model, `8ce9f186`) — their entire purpose was
+pre-implementation guidance for phases 1–6, and both are now
+superseded by the shipped panels. The task file's own "Prototypes"
+list above (out of this phase's remit — everything above the status
+log is the owner's) still names their paths; git history keeps the
+files for anyone who wants to see what they looked like.
+
+#### ADR-0031 perf gate
+
+`pnpm --dir apps/gui tauri build --no-bundle`
+(`target/release/cannet-gui.exe`, frontend embedded), `cargo build
+--release -p cannet-perf-measurement`; `examples/ev-zonal` at ~1608 fps,
+`--connect-on-start`, `--perf-interact scrub`, four 60 s captures into
+an isolated `--app-data-dir` (`scratch-perf-p6/app-data` — a fresh
+directory of my own, since the delegation contract reserves the
+existing untracked `scratch-perf/` for the owner), gated by `cargo run
+--release -p cannet-perf-measurement -- check --expected-rx-fps 1608
+--expected-tx-fps 1608` (one `--frontend-report` per run) against the
+committed `docs/performance-measurements/baseline.json`. **No baseline
+was promoted and no gate limit was touched.** Reports are review
+artifacts and stay out of the repository (`scratch-perf-p6/` is
+untracked, left alone the same way `scratch-perf/` is).
+
+Four runs, `check` over all four: **passed, 87 metrics gated.** Every
+metric read `ok`; nothing regressed and nothing widened.
+
+| run | rx fps | tx fps | `rx_gap` p95 ratio worst | `rx_gap` short-frac worst | `lag_ms` max | `tree_mb` peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1603.6 | 1608.4 | 1.159 | 0.003 | 3.4 | 717.6 |
+| 2 | 1607.4 | 1610.1 | 1.147 | 0.002 | 2.8 | 718.8 |
+| 3 | 1606.8 | 1610.0 | 1.181 | 0.003 | 3.7 | 703.1 |
+| 4 | 1607.8 | 1609.9 | 1.206 | 0.003 | 11.7 | 723.5 |
+
+Every value sits comfortably inside its limit (`rx_gap_p95_ratio_worst`
+2.898, `rx_gap_short_frac_worst` 0.166) and inside the bands prior
+phases reported — no repeat of either of the two unreproduced
+outliers ADR 0031's own rule flags (the 0.194/0.236 `rx_gap` spikes, or
+the 8233 MB `tree_mb_peak` sighting); `tree_mb_peak` (703.1–723.5 MB)
+sits inside the 705–768 MB range prior phases reported, `lag_ms_max`
+(2.8–11.7) inside the 1.1–29.4 band task 89's own brief names as
+known-jittery. The three memory-drift metrics gate on the median across
+the four reports (`jsheap_mb_drift_per_min` 0.357 vs a 24.094 limit,
+`renderer_mb_drift_per_min` 40.568 vs 85.336, `tree_mb_drift_per_min`
+72.377 vs 139.240), all `ok`. Host modes (tracebuffer/grpc/
+hardware-peak) gated on their own baselines and were all `ok` too,
+unaffected by a frontend-only change.

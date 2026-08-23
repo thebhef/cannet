@@ -21,6 +21,7 @@ export const FOCUSED_PANEL_KINDS = [
   "signals",
   "transmit",
   "rbs",
+  "rbs-signals",
   "colormap",
   "generator",
   "project",
