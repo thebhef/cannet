@@ -444,6 +444,8 @@ Recorded by the phases that found them, not yet decided.
 | 3.34 | **The perf-capture recipe in `README.md` had been wrong since the render tier shipped**, omitting `--rbs-run-on-start` and claiming the RBS Run flag was "already in the saved project". Two phases followed it and measured an idle bus that *passed* every gate. Fixed in task 107 phase 4 and verified against three live captures. Worth knowing that any frontend perf number taken before this fix may have been measured on no load. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.35 | **The ADR-0031 memory metrics are not isolated from other processes, and fail silently in both directions.** `descendant_pids` (`crash.rs`) walks recorded parent-pid links, and Windows never clears a process's `ParentProcessId` when its parent exits — so an unrelated orphan joins our tree the moment one of our processes reuses its dead parent's pid. Observed: a run's sidecar took pid 64880, which the operator's separately-running cannet still names as its parent, and its whole 4 GB application was measured as ours (`tree_mb_peak` 5132.6 vs a 1547.4 limit). Worse, when another cannet owns the shared WebView2 browser process **our own renderer is not our descendant**, so `webview_mb` / `renderer_mb_peak` read exactly 0.0 and `tree_mb_peak` reads ~122 MB — and *passes*. Confirmed by a ground-truth `Win32_Process` walk alongside a capture. Same class as the idle-bus silent disarm, in a metric family nobody checks for plausibility. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.36 | **Task 107 phase 5's memory behaviour is unmeasured, and the phase could not fix that.** Every capture this session was taken with the operator's own cannet running, which is what 3.35 makes unreadable; killing it was not an option under the shared-hardware rule. The timing metrics are sound (verified load, every gated metric under baseline). A clean memory reading needs one capture set taken with the machine to itself. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.37 | **A wire-level transmit rejection reaches the app and is thrown away.** `cannet-client::is_per_frame_error_code` classifies `TX_REJECTED` as non-fatal and logs it with `tracing::warn!`, which goes to dev stderr only — not the System Messages panel, not bus health, not the connection chip. So a tx-confirm trace row is a **local echo, never a wire confirmation**, and the trace can show a frame as sent that the far end refused: a listen-only bus, an FD frame on a classic bus, a saturated queue. Task 109 phase 2's route gate closes the unplugged-adapter case; this general one is a behavioural choice (where a rejection surfaces, and at what cadence — at RBS rate it is a flood and needs coalescing) so it was recorded rather than chosen. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
+| 3.38 | **The bus-health readout was structurally inert on the only hardware there is.** python-can's `PcanBus.state` getter returns `self._state`, written only by the setter `__init__` calls — a stored echo of the configured value, never a device read — so bus-off and error-passive could not surface on PEAK no matter what the controller did. Task 109 phase 2 switches a PCAN bus onto the live `status()` read (`CAN_GetStatus`), matched against exact vendor status codes. That makes task 101's controller state work for the first time on this rig, and it is a behaviour change on a live data path that **has never met hardware** — worth knowing before the confirmation run. | [task 109](tasks/0109-usage-feedback-chip-era.md) |
 
 ---
 
@@ -488,6 +490,18 @@ test or artefact.
   were still transmitting. The last of those is the serious one — the
   trace showed traffic that never reached a wire. Task 109 item 2 and
   its phase 2 own the investigation.
+
+  **Phase 2 has reported (2026-08-22).** All three symptoms have a
+  confirmed cause and a landed fix; the "steady utilization" hypothesis
+  (a stale reading) was *refuted* and replaced — the reading was live
+  and was measuring the host's own tx echo, the same cause as the
+  phantom trace rows. What acceptance still needs is the hardware run
+  itself, which no agent can do: the expected observations, and what to
+  look at if they do not appear, are written out under **Blockers /
+  side effects** in [task 109](tasks/0109-usage-feedback-chip-era.md).
+  Two findings from the investigation are queued above as 3.37 and
+  3.38; 3.38 in particular is a behaviour change to a live data path
+  that the confirmation run is the first hardware to see.
 - **99 — transmit controls.** It shipped on the premise that Space
   already acted on RBS message rows and only needed adding to the
   transmit panel. The premise is false and was never tested: the RBS

@@ -836,6 +836,15 @@ ul.status-bar-menu .status-chip {
 .bus-health-state[data-tone="busoff"] .bus-health-dot {
   background: var(--danger-text);
 }
+/* An adapter the driver cannot reach: the same alarm weight as bus-off
+   -- nothing is being carried either way -- with the row's own words
+   telling the two apart. */
+.bus-health-state[data-tone="unavailable"] {
+  color: var(--danger-text);
+}
+.bus-health-state[data-tone="unavailable"] .bus-health-dot {
+  background: var(--danger-text);
+}
 .bus-health-state[data-tone="off"] {
   color: var(--text-faint);
 }

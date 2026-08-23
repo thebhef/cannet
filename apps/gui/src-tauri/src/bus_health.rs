@@ -16,7 +16,11 @@
 //! - **Controller state.** `InterfaceState` — the ISO 11898-1
 //!   fault-confinement state plus the transmit and receive error
 //!   counters — arrives on the session stream and is cached here per
-//!   interface.
+//!   interface. One reported state is not a fault-confinement state:
+//!   `unavailable`, which says the peer's driver can no longer reach
+//!   the interface. It is also the one that takes the bus's transmit
+//!   route down (ADR 0039's park), because a route that survives the
+//!   adapter fills the trace with frames no wire carried.
 //! - **Bus load.** Computed where the bitrate is known and reported as
 //!   absent where it is not; see [`load_percent`].
 //!
@@ -200,7 +204,9 @@ fn description_for(run: &ErrorRun) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ControllerHealth {
-    /// `"active"`, `"passive"` or `"busOff"`. A driver that reports a
+    /// `"active"`, `"passive"`, `"busOff"` — or `"unavailable"`, which
+    /// is not a fault-confinement state at all but the driver reporting
+    /// it can no longer reach the interface. A driver that reports a
     /// state we do not recognise contributes nothing rather than a
     /// guess, so there is no "unknown" variant to render.
     pub(crate) state: &'static str,

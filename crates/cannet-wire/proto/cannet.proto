@@ -243,7 +243,8 @@ message InterfaceAllocated {
 
 // Bridge controller-state change. Pushed by the server to every
 // session subscribed to the bridge id; mirrors the underlying
-// controller's ISO 11898-1 fault-confinement state.
+// controller's ISO 11898-1 fault-confinement state, or reports that
+// the driver can no longer reach the interface at all.
 message InterfaceState {
   string interface_id = 1;
   ControllerState state = 2;
@@ -258,6 +259,13 @@ enum ControllerState {
   CONTROLLER_STATE_ACTIVE = 1;
   CONTROLLER_STATE_PASSIVE = 2;
   CONTROLLER_STATE_BUS_OFF = 3;
+  // Not an ISO 11898-1 fault-confinement state: the driver can no
+  // longer reach this interface at all — the device was removed, or
+  // its handle was invalidated — so the controller is reporting
+  // nothing rather than reporting that it is unwell. A peer that does
+  // not know this value treats it as unrecognised and reports no
+  // state, which is the honest degradation.
+  CONTROLLER_STATE_UNAVAILABLE = 4;
 }
 
 // Install a bridge whose RX feeds from, and TX forwards to, an

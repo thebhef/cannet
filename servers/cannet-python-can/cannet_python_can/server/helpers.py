@@ -165,4 +165,6 @@ def _state_name_to_proto(name: str) -> "pb.ControllerState.V":
         return pb.CONTROLLER_STATE_PASSIVE
     if name == drv.STATE_BUS_OFF:
         return pb.CONTROLLER_STATE_BUS_OFF
+    if name == drv.STATE_UNAVAILABLE:
+        return pb.CONTROLLER_STATE_UNAVAILABLE
     return pb.CONTROLLER_STATE_ACTIVE

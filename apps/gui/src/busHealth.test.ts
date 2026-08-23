@@ -138,6 +138,26 @@ describe("busHealthRows", () => {
     expect(r.loadAbsentReason).toBeNull();
   });
 
+  it("shows an interface the driver cannot reach as its own state, not as bus-off", () => {
+    // A removed adapter and a bus-off controller must not read alike:
+    // bus-off is a present controller that recovers on its own, and
+    // rendering the two the same would promise a recovery that cannot
+    // happen without someone plugging the cable back in.
+    const r = row("b2", {
+      health: {
+        ...health,
+        b2: {
+          controller: { state: "unavailable", tec: 0, rec: 0 },
+          loadPercent: 0,
+          errorCount: 0,
+          errorRate: 0,
+        },
+      },
+    });
+    expect(r.tone).toBe("unavailable");
+    expect(r.stateText).toBe("Adapter unavailable");
+  });
+
   it("falls back to the wire id for an interface the app has not enumerated", () => {
     expect(row("b1", { interfaces: [] }).adapter).toBe("pcan:PCAN_USBBUS1(SN:1)");
   });
@@ -155,6 +175,18 @@ describe("busHealthConcerns", () => {
     // would tint for every virtual bus and every driver that does not
     // answer, which is exactly the alarm nobody would keep looking at.
     expect(busHealthConcerns(busHealthRows({ ...inputs, health: {} }))).toEqual([]);
+  });
+
+  it("counts an unreachable adapter as a fault the launcher tints for", () => {
+    const concerns = busHealthConcerns(
+      busHealthRows({
+        ...inputs,
+        health: {
+          b1: { controller: { state: "unavailable", tec: 0, rec: 0 }, errorCount: 0, errorRate: 0 },
+        },
+      }),
+    );
+    expect(concerns).toEqual([{ bus: "Powertrain", state: "adapter unavailable", busOff: true }]);
   });
 
   it("counts a bus-off bus as a fault rather than a warning", () => {

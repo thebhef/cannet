@@ -59,10 +59,25 @@ export function useBusHealth(): BusHealthMap {
 
 /// How a controller state reads. The host sends the ISO 11898-1 name;
 /// this is the only place it is spelled for a reader.
+///
+/// `unavailable` is not one of that standard's states: it is the peer's
+/// driver saying it can no longer reach the interface at all. It gets
+/// its own words rather than borrowing bus-off's, because bus-off is a
+/// controller that took itself off the wire and comes back on its own,
+/// and this one comes back when someone plugs the cable in.
 const CONTROLLER_STATE_TEXT: Record<string, string> = {
   active: "Error-active",
   passive: "Error-passive",
   busOff: "Bus-off",
+  unavailable: "Adapter unavailable",
+};
+
+/// The indicator style each controller state paints with. Absent from
+/// the map means error-active, which is the unremarkable case.
+const CONTROLLER_STATE_TONE: Record<string, BusHealthRow["tone"]> = {
+  passive: "passive",
+  busOff: "busoff",
+  unavailable: "unavailable",
 };
 
 /// One row of the health panel: every cell either a value or `null`,
@@ -77,10 +92,11 @@ export interface BusHealthRow {
   busId: string;
   /// The project's name for the bus.
   name: string;
-  /// `Error-active` / `Error-passive` / `Bus-off` / `Not connected`.
+  /// `Error-active` / `Error-passive` / `Bus-off` / `Adapter
+  /// unavailable` / `Not connected`.
   stateText: string;
   /// The style key the row's indicator paints with.
-  tone: "active" | "passive" | "busoff" | "off";
+  tone: "active" | "passive" | "busoff" | "unavailable" | "off";
   /// Percentage of the wire in use, or `null` where it cannot be known.
   loadPercent: number | null;
   /// Why the load is unknowable, for the cell's tooltip. `null` when
@@ -134,11 +150,7 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
           ? "Connected"
           : "Not connected",
       tone: controller
-        ? controller.state === "busOff"
-          ? "busoff"
-          : controller.state === "passive"
-            ? "passive"
-            : "active"
+        ? (CONTROLLER_STATE_TONE[controller.state] ?? "active")
         : connected
           ? "active"
           : "off",
@@ -162,16 +174,20 @@ export function busHealthRows(inp: BusHealthInputs): BusHealthRow[] {
 }
 
 /// The buses the status-bar launcher reports on: every one whose
-/// controller is not error-active. A bus that has not reported a state
+/// controller is not error-active, including one whose adapter the
+/// driver can no longer reach. A bus that has not reported a state
 /// is *not* a concern — silence is not a fault, and the launcher would
 /// otherwise light up for every virtual bus and every driver that does
 /// not answer.
 export function busHealthConcerns(rows: readonly BusHealthRow[]): BusHealthConcern[] {
   return rows
-    .filter((r) => r.tone === "passive" || r.tone === "busoff")
+    .filter((r) => r.tone === "passive" || r.tone === "busoff" || r.tone === "unavailable")
     .map((r) => ({
       bus: r.name,
       state: r.stateText.toLowerCase(),
-      busOff: r.tone === "busoff",
+      // An unreachable adapter is the launcher's fault tint, not its
+      // warning tint: nothing on that bus is being carried, and unlike
+      // error-passive it does not clear itself.
+      busOff: r.tone === "busoff" || r.tone === "unavailable",
     }));
 }

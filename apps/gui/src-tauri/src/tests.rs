@@ -7183,3 +7183,136 @@ fn a_signal_the_picked_database_withholds_has_no_value_in_the_row() {
     });
     assert_eq!(row_value_of(&state, "A"), None);
 }
+
+// ---- an interface the driver can no longer reach ---------------------------
+//
+// The defect these cover: with the adapter unplugged, the session, its
+// subscription and its bus binding all stayed exactly as they were, so
+// the transmit path kept resolving a route and kept appending
+// tx-confirm rows. The trace showed a bus that looked like it was
+// sending while nothing reached a wire, and — because bus load is
+// derived from what the store holds — its load reading stayed steady
+// off those rows alone. A controller reporting `unavailable` is what
+// makes the route stop resolving, which is the route-loss ADR 0039
+// already parks on.
+
+fn session_with_controller(bus: &str, interface: &str, state: Option<i32>) -> RemoteSession {
+    let controllers = cannet_client::controller::ControllerStates::new();
+    if let Some(state) = state {
+        controllers.record(interface, state, 0, 0);
+    }
+    RemoteSession {
+        handle: None,
+        tx: SessionTx::Vbus(Vec::new()),
+        channel_to_interface: vec![(0, interface.into())],
+        channel_to_bus: vec![(0, bus.into())],
+        stop: Arc::new(AtomicBool::new(false)),
+        clock: None,
+        controllers: Some(controllers),
+    }
+}
+
+fn sessions_with(session: RemoteSession) -> std::collections::HashMap<String, RemoteSession> {
+    let mut map = std::collections::HashMap::new();
+    map.insert("tcp://host:1".to_string(), session);
+    map
+}
+
+#[test]
+fn a_bus_whose_interface_is_unavailable_has_no_route() {
+    // 4 is CONTROLLER_STATE_UNAVAILABLE on the wire.
+    let sessions = sessions_with(session_with_controller("p", "PCAN_USBBUS1", Some(4)));
+    assert!(
+        crate::session::resolve_bus_route(&sessions, "p").is_none(),
+        "an interface the driver cannot reach is not a transmit destination",
+    );
+}
+
+#[test]
+fn a_bus_off_controller_still_has_a_route() {
+    // The control, and the reason this is a distinct wire value rather
+    // than a reuse of bus-off: a bus-off controller is present and
+    // recovers on its own, so transmission is suspended by the
+    // controller, not by us. Parking a bus-off bus would freeze every
+    // periodic's counter over a fault the hardware clears by itself.
+    for state in [1, 2, 3] {
+        let sessions = sessions_with(session_with_controller("p", "PCAN_USBBUS1", Some(state)));
+        assert!(
+            crate::session::resolve_bus_route(&sessions, "p").is_some(),
+            "state {state} must keep its route",
+        );
+    }
+    // And a session that reports no controller at all — the in-process
+    // virtual bus — is not treated as unreachable either.
+    let sessions = sessions_with(session_with_controller("p", "PCAN_USBBUS1", None));
+    assert!(crate::session::resolve_bus_route(&sessions, "p").is_some());
+}
+
+#[test]
+fn transmitting_onto_an_unavailable_interface_says_why() {
+    // The manual single-shot still appends its tx-confirm row — ADR
+    // 0039 keeps that, an analyzer shows its own transmits — but the
+    // wire status has to name the reason. Before, the bus fell through
+    // to the generic "not bound on any active server", which is false:
+    // it is bound, and the binding is the problem's context, not its
+    // cause.
+    let state = test_state();
+    state.remote_sessions.lock().unwrap().insert(
+        "tcp://host:1".into(),
+        session_with_controller("p", "PCAN_USBBUS1", Some(4)),
+    );
+    let req = ipc::TransmitRequest {
+        bus_id: "p".into(),
+        id: 0x123,
+        extended: false,
+        kind: ipc::TransmitKind::Classic,
+        data: vec![1, 2, 3, 4],
+        brs: false,
+        esi: false,
+        dlc: 0,
+    };
+    let result = transmit_frame_inner(&state, &req).unwrap();
+    let ipc::TransmitWireStatus::Failed { message } = result.wire_status else {
+        panic!("expected Failed, got {:?}", result.wire_status);
+    };
+    assert!(
+        message.contains("PCAN_USBBUS1"),
+        "the message must name the interface: {message}",
+    );
+    assert!(
+        !message.contains("not bound"),
+        "the bus is bound; the adapter is gone: {message}",
+    );
+    assert_eq!(
+        state.trace_store.len(),
+        1,
+        "the local tx-confirm still lands"
+    );
+}
+
+#[test]
+fn an_interface_that_comes_back_gets_its_route_back() {
+    // ADR 0039's park is only half the behaviour; the other half is the
+    // resume, which here rides the scheduler's existing ~1 s parked
+    // probe rather than a new hint — `resolve_bus_route` starts
+    // answering again the moment the peer reports a reachable
+    // controller, and the probe is already re-asking.
+    let controllers = cannet_client::controller::ControllerStates::new();
+    controllers.record("PCAN_USBBUS1", 4, 0, 0);
+    let mut sessions = std::collections::HashMap::new();
+    sessions.insert(
+        "tcp://host:1".to_string(),
+        RemoteSession {
+            handle: None,
+            tx: SessionTx::Vbus(Vec::new()),
+            channel_to_interface: vec![(0, "PCAN_USBBUS1".into())],
+            channel_to_bus: vec![(0, "p".into())],
+            stop: Arc::new(AtomicBool::new(false)),
+            clock: None,
+            controllers: Some(controllers.clone()),
+        },
+    );
+    assert!(crate::session::resolve_bus_route(&sessions, "p").is_none());
+    controllers.record("PCAN_USBBUS1", 1, 0, 0);
+    assert!(crate::session::resolve_bus_route(&sessions, "p").is_some());
+}

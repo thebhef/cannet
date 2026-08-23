@@ -30,6 +30,18 @@ The transmit scheduler's periodic-emission semantics, in four rules:
    re-anchors at the resume instant plus the same stagger offset.
    Manual single-shot sends while disconnected still prepare and
    append their trace row — an analyzer shows its own transmits.
+
+   **A bus whose peer reports its interface `unavailable` has no live
+   route**, and parks with the rest. Unplugging an adapter leaves the
+   session, the subscription and the binding exactly as they were, so
+   nothing else in the route notices; without this the scheduler goes
+   on transmitting into a driver that cannot carry the frames, and
+   every one of them still appends a tx-confirm row. A trace that shows
+   traffic no wire carried is wrong data, not a missing indicator. The
+   test is deliberately narrow: an error-passive or **bus-off**
+   controller keeps its route, because it is present and recovers on
+   its own, and parking it would freeze every counter over a fault the
+   hardware clears by itself.
 4. **Wake contract: best-effort OS timer.** The driver blocks on the
    command channel with a deadline timeout; typical wake lateness is
    ≤2 ms (measured), and the regression guard is the perf rig's
@@ -65,10 +77,13 @@ manufacturing a violation the sender never put on a wire.
   rows; on reconnect the receiver sees a time gap but a sequential
   counter. Reconnect resume is immediate via the hint, ≤ ~1 s via the
   probe if the hint is ever missed.
-- Every route-up transition must pass through the session-registration
-  seam (or the probe covers it within ~1 s) — routes only change at
-  session register/unregister today, since a session's channel→bus
-  mapping is fixed at insert.
+- Route-up transitions arrive two ways. A session's channel→bus mapping
+  is fixed at insert, so a *new* route comes only from the
+  session-registration seam and its `RoutesChanged` hint. An interface
+  becoming reachable again does not pass through that seam — the
+  controller state changes underneath a session that never moved — so
+  that resume rides the ~1 s parked probe alone. The probe is armed
+  only while something is parked, which is exactly when it is needed.
 
 ## Rejected alternatives
 
@@ -85,6 +100,14 @@ manufacturing a violation the sender never put on a wire.
 - **Keep ticking while the route is down** (prepare + step counter,
   emit nothing). Wastes per-period wakes on a disconnected bus and
   turns every outage into a counter discontinuity at the receiver.
+- **Park on bus-off too.** A bus-off controller recovers on its own and
+  the periodics should be running when it does; parking would freeze
+  their counters across a fault the hardware clears in milliseconds.
+- **Mark the tx-confirm row instead of parking, when the interface is
+  gone.** The trace row would have to carry a "went nowhere" flag every
+  reader, exporter and file format then has to understand — and the
+  frame still would not have been sent. Not transmitting is both
+  smaller and more truthful.
 - **Event-only park resume (no probe).** A missed hint from a future
   route-up path would strand parked messages forever; the probe bounds
   that failure to ~1 s of latency.

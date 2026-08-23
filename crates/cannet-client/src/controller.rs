@@ -16,6 +16,13 @@
 //! to read them, because the session's only outward channel is the
 //! frame stream and a controller state is not a frame.
 //!
+//! One state here is **not** ISO 11898-1's: `Unavailable`, which a
+//! peer sends when its driver can no longer reach the interface at all
+//! (the device was removed). It rides the same message because it
+//! answers the same question — what the driver has to say about this
+//! interface — and because "there is no controller here any more" is
+//! the one answer the three-state machine cannot express.
+//!
 //! [`ControllerStates`] is that place, shaped like
 //! [`SessionClock`](crate::clock::SessionClock): a cheap-to-clone handle
 //! over shared state that the session's own worker writes and anything
@@ -35,6 +42,12 @@ pub enum ControllerState {
     Passive,
     /// Transmit counter above 255. The node is off the wire.
     BusOff,
+    /// Not a fault-confinement state at all: the driver can no longer
+    /// reach the interface — the device was unplugged, or its handle
+    /// was invalidated — so there is no controller left to report on.
+    /// Distinct from `BusOff`, where a present controller has taken
+    /// itself off the wire and will recover on its own.
+    Unavailable,
 }
 
 impl ControllerState {
@@ -48,6 +61,7 @@ impl ControllerState {
             1 => Some(Self::Active),
             2 => Some(Self::Passive),
             3 => Some(Self::BusOff),
+            4 => Some(Self::Unavailable),
             _ => None,
         }
     }
@@ -59,6 +73,7 @@ impl ControllerState {
             Self::Active => "active",
             Self::Passive => "passive",
             Self::BusOff => "busOff",
+            Self::Unavailable => "unavailable",
         }
     }
 }
@@ -177,5 +192,24 @@ mod tests {
         assert_eq!(ControllerState::Active.as_str(), "active");
         assert_eq!(ControllerState::Passive.as_str(), "passive");
         assert_eq!(ControllerState::BusOff.as_str(), "busOff");
+        assert_eq!(ControllerState::Unavailable.as_str(), "unavailable");
+    }
+
+    #[test]
+    fn an_interface_the_driver_can_no_longer_reach_is_its_own_state() {
+        // A removed device is not a bus-off controller: bus-off is a
+        // present controller that took itself off the wire and will
+        // come back, and reporting one as the other would have the
+        // panel promise a recovery that cannot happen.
+        let states = ControllerStates::new();
+        states.record("PCAN_USBBUS1", 4, 0, 0);
+        assert_eq!(
+            states.get("PCAN_USBBUS1").unwrap().state,
+            ControllerState::Unavailable,
+        );
+        assert_ne!(
+            states.get("PCAN_USBBUS1").unwrap().state,
+            ControllerState::BusOff,
+        );
     }
 }
