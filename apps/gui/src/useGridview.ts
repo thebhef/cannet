@@ -7,7 +7,14 @@
 /// and the non-virtualized panels sit unchanged beneath one interaction
 /// model.
 
-import { useCallback, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type MutableRefObject,
+} from "react";
 
 import { GRIDVIEW_ATTR, isActivatableTarget, isEditableTarget } from "./keybindings";
 import {
@@ -339,4 +346,44 @@ export function useGridview({
   );
 
   return { cursor, selection: selection.ids, containerProps, rowDomId, onRowClick };
+}
+
+/// The props every row of a gridview carries so the gridview can see it:
+/// the DOM id `aria-activedescendant` names, and the click that moves the
+/// cursor. Both depend only on the row's id, so they are built once per
+/// row and reused. The cursor class is *not* here — it changes as the
+/// cursor moves, so the panel spreads it at the call site.
+export interface RowGridProps {
+  id: string;
+  onClick: (e: ReactMouseEvent) => void;
+}
+
+/// `gridRef` rather than a `Gridview`: the hook hands back a fresh object
+/// every render, and a cached handler must reach the live one.
+/// `containerRef` is the gridview container, which the click hands the
+/// keyboard to — the container is the only thing in a gridview that holds
+/// focus (ADR 0044), so without this a mouse-then-keyboard session leaves
+/// focus on `<body>` and the grid's keys do nothing.
+export function makeRowGridPropsCache(
+  gridRef: MutableRefObject<Gridview>,
+  containerRef: { readonly current: HTMLElement | null },
+): (id: string) => RowGridProps {
+  const cache = new Map<string, RowGridProps>();
+  return (id) => {
+    let props = cache.get(id);
+    if (props === undefined) {
+      props = {
+        id: gridRef.current.rowDomId(id),
+        onClick: (e) => {
+          gridRef.current.onRowClick(id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey });
+          // …unless the click was aimed at a control that wants focus
+          // itself, which would then lose it on the way in.
+          const target = e.target as HTMLElement | null;
+          if (target?.closest?.("button, input") == null) containerRef.current?.focus();
+        },
+      };
+      cache.set(id, props);
+    }
+    return props;
+  };
 }

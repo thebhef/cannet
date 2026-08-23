@@ -18,9 +18,11 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import type { RbsMessageView, RbsView } from "./types";
 
 let VIEW: RbsView | null = null;
+const calls: Array<{ cmd: string; args: unknown }> = [];
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (cmd: string) => {
+  invoke: vi.fn(async (cmd: string, args?: unknown) => {
+    calls.push({ cmd, args });
     if (cmd === "rbs_view") return VIEW;
     if (cmd === "list_value_tables") return [];
     return undefined;
@@ -162,6 +164,7 @@ function rowOf(text: string): HTMLElement {
 
 beforeEach(() => {
   VIEW = treeView();
+  calls.length = 0;
 });
 afterEach(() => {
   cleanup();
@@ -328,6 +331,73 @@ describe("RbsPanel on the gridview", () => {
       vi.advanceTimersByTime(200);
     });
     expect(screen.getByText("TorqueRequest")).toBeInTheDocument();
+  });
+
+  // Space is the layer's primary action on the cursor's row (ADR 0044).
+  // The RBS tree shipped on the gridview without binding it, so the
+  // press fell through to the scroll container and scrolled — these are
+  // the tests that would have caught it.
+  it("Space activates and deactivates the cursor row at whichever level it is", async () => {
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    const enables = () => calls.filter((c) => c.cmd === "rbs_set_enabled").map((c) => c.args);
+
+    fireEvent.keyDown(tree, { key: "ArrowDown" }); // the bus
+    fireEvent.keyDown(tree, { key: " " });
+    fireEvent.keyDown(tree, { key: "ArrowDown" }); // the ECU
+    fireEvent.keyDown(tree, { key: " " });
+    fireEvent.keyDown(tree, { key: "ArrowDown" }); // the message
+    fireEvent.keyDown(tree, { key: " " });
+
+    expect(enables()).toEqual([
+      { elementId: "el", bus: "Powertrain", ecu: null, message: null, enabled: false },
+      { elementId: "el", bus: "Powertrain", ecu: "BMS", message: null, enabled: false },
+      { elementId: "el", bus: "Powertrain", ecu: "BMS", message: "0x100", enabled: false },
+    ]);
+  });
+
+  it("Space turns a disabled message back on", async () => {
+    VIEW = treeView();
+    VIEW.buses[0].ecus[0].messages[0].enabled = false;
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: " " });
+    expect(calls.filter((c) => c.cmd === "rbs_set_enabled").map((c) => c.args)).toEqual([
+      { elementId: "el", bus: "Powertrain", ecu: "BMS", message: "0x100", enabled: true },
+    ]);
+  });
+
+  it("Space does nothing on a row whose checkbox the mouse cannot press either", async () => {
+    VIEW = treeView();
+    VIEW.buses[0].ecus[0].messages[0].name = null;
+    renderPanel();
+    await screen.findByText("0x100");
+    const tree = screen.getByRole("tree");
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: " " });
+    expect(calls.filter((c) => c.cmd === "rbs_set_enabled")).toEqual([]);
+  });
+
+  it("leaves Space to a focused enable checkbox, which activates on it itself", async () => {
+    renderPanel();
+    await screen.findByText("PackStatus");
+    const tree = screen.getByRole("tree");
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    fireEvent.keyDown(tree, { key: "ArrowDown" });
+    const box = screen.getByLabelText("0x100 enabled") as HTMLElement;
+    box.focus();
+    fireEvent.keyDown(box, { key: " " });
+    // The browser toggles the checkbox; the grid must not also fire, or
+    // the press lands twice and cancels itself out.
+    expect(calls.filter((c) => c.cmd === "rbs_set_enabled")).toEqual([]);
   });
 
   it("marks its tree as a gridview so the global dispatcher stays off its keys", async () => {

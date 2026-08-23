@@ -6712,6 +6712,14 @@ button.color-chip {
   background: color-mix(in srgb, var(--text-muted) 10%, var(--surface-row));
 }
 
+/* The gridview's cursor (ADR 0044), the same outline the RBS tree's own
+   rows carry — the container holds focus, so the cursor's row has to
+   say so itself. The selection is `.trace-row.selected`, shared. */
+.rbs-signals-row[data-active] {
+  outline: 1px solid var(--select-outline);
+  outline-offset: -1px;
+}
+
 .rbs-signals-status-text {
   margin-left: 0.35rem;
   font-size: 0.78rem;

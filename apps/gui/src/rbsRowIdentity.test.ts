@@ -8,13 +8,13 @@
 // These assert *identity*, not equality: an equal-but-fresh string is
 // exactly the regression these guard against.
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   buildVisibleTree,
+  findRbsEnableToggle,
   makeRbsRowIds,
   makeRbsRowSpace,
-  makeRowGridPropsCache,
   messageRowId,
 } from "./rbsRowIdentity";
 import type { RbsView } from "./types";
@@ -112,45 +112,55 @@ describe("makeRbsRowSpace", () => {
   });
 });
 
-describe("makeRowGridPropsCache", () => {
-  it("hands back the same props object for the same row", () => {
-    const grid = {
-      rowDomId: (id: string) => `p-${id}`,
-      onRowClick: vi.fn(),
-    };
-    const rowProps = makeRowGridPropsCache({ current: grid } as never, { current: null });
-    expect(rowProps("m:pack/0x100")).toBe(rowProps("m:pack/0x100"));
-    expect(rowProps("m:pack/0x100").id).toBe("p-m:pack/0x100");
-  });
+describe("findRbsEnableToggle", () => {
+  const ids = makeRbsRowIds();
+  const tree = () => buildVisibleTree(view(), ids, () => true, null);
 
-  it("routes the click to the live gridview, not the one it was built with", () => {
-    const first = { rowDomId: (id: string) => id, onRowClick: vi.fn() };
-    const ref = { current: first };
-    const rowProps = makeRowGridPropsCache(ref as never, { current: null });
-    const props = rowProps("m:pack/0x100");
-    const later = { rowDomId: (id: string) => id, onRowClick: vi.fn() };
-    ref.current = later;
-    props.onClick({ ctrlKey: true, metaKey: false, shiftKey: false } as never);
-    expect(first.onRowClick).not.toHaveBeenCalled();
-    expect(later.onRowClick).toHaveBeenCalledWith("m:pack/0x100", { mod: true, shift: false });
-  });
-
-  it("hands the container the keyboard, unless the click was aimed at a control", () => {
-    const grid = { rowDomId: (id: string) => id, onRowClick: vi.fn() };
-    const container = { focus: vi.fn() };
-    const rowProps = makeRowGridPropsCache({ current: grid } as never, {
-      current: container as never,
+  it("inverts the enable of whichever level the row is", () => {
+    expect(findRbsEnableToggle(tree(), ids, ids.bus("pack"))).toEqual({
+      bus: "pack",
+      ecu: null,
+      message: null,
+      enabled: false,
     });
-    const click = (target: unknown) =>
-      rowProps("m:pack/0x100").onClick({
-        ctrlKey: false,
-        metaKey: false,
-        shiftKey: false,
-        target,
-      } as never);
-    click({ closest: () => null });
-    expect(container.focus).toHaveBeenCalledTimes(1);
-    click({ closest: () => ({}) });
-    expect(container.focus).toHaveBeenCalledTimes(1);
+    expect(findRbsEnableToggle(tree(), ids, ids.ecu("pack", "BMS"))).toEqual({
+      bus: "pack",
+      ecu: "BMS",
+      message: null,
+      enabled: false,
+    });
+    // A message names the ECU it hangs under: `rbs_set_enabled` files
+    // the entry there, and the row id alone does not carry it.
+    expect(findRbsEnableToggle(tree(), ids, ids.message("pack", "0x100"))).toEqual({
+      bus: "pack",
+      ecu: "BMS",
+      message: "0x100",
+      enabled: false,
+    });
+  });
+
+  it("turns a disabled level back on", () => {
+    const v = view();
+    v.buses[0].ecus[0].messages[0].enabled = false;
+    const t = buildVisibleTree(v, ids, () => true, null);
+    expect(findRbsEnableToggle(t, ids, ids.message("pack", "0x100"))?.enabled).toBe(true);
+  });
+
+  it("has nothing to toggle on an inert row, the way the checkbox has nothing to press", () => {
+    const unresolved = view();
+    (unresolved.buses[0] as { busId: string | null }).busId = null;
+    const ut = buildVisibleTree(unresolved, ids, () => true, null);
+    expect(findRbsEnableToggle(ut, ids, ids.bus("pack"))).toBeNull();
+    expect(findRbsEnableToggle(ut, ids, ids.message("pack", "0x100"))).toBeNull();
+
+    const unknown = view();
+    (unknown.buses[0].ecus[0].messages[0] as { name: string | null }).name = null;
+    const kt = buildVisibleTree(unknown, ids, () => true, null);
+    expect(findRbsEnableToggle(kt, ids, ids.message("pack", "0x100"))).toBeNull();
+    expect(findRbsEnableToggle(kt, ids, ids.message("pack", "0x102"))).not.toBeNull();
+  });
+
+  it("answers null for a row that is not in the tree", () => {
+    expect(findRbsEnableToggle(tree(), ids, "m:pack/0xFFF")).toBeNull();
   });
 });

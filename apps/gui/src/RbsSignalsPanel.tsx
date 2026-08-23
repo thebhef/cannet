@@ -52,7 +52,7 @@ import {
   type RbsSignalDisplayStatus,
 } from "./rbsSignalsFilter";
 import { GridviewHeader, GridviewRow } from "./gridviewColumns";
-import { useGridview } from "./useGridview";
+import { makeRowGridPropsCache, useGridview, type RowGridProps } from "./useGridview";
 import { arrayRowSpace, type GridviewAdapter, type GridviewRow as GridviewRowModel } from "./gridviewRows";
 import { useDismissableMenu } from "./useDismissableMenu";
 import { toggleInSet } from "./toggleSet";
@@ -257,8 +257,44 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
       isSelectable: () => true,
     };
   }, [gridRows]);
-  const grid = useGridview({ adapter, pageRows: PAGE_ROWS, idPrefix: "rbs-signals" });
+  /// Space is the layer's primary action on the cursor's row
+  /// (ADR 0044). One idiom across both RBS panels: it activates or
+  /// deactivates a message. Here the row is a *field* of one, so the
+  /// press toggles the message that carries it — the state the row
+  /// already reports, since Muted is exactly "this message will not
+  /// play". Derived from that status rather than from the message's own
+  /// flag on purpose: where the mute comes from the bus or the ECU the
+  /// press is inert, which is honest, whereas flipping the message flag
+  /// under it would be a change with nothing on screen to show it.
+  const rowsRef = useRef<readonly RbsSignalRow[]>(allRows);
+  rowsRef.current = allRows;
+  const onPrimaryAction = useCallback(
+    (id: string) => {
+      const row = rowsRef.current.find((r) => r.id === id);
+      if (row == null) return;
+      void invoke("rbs_set_enabled", {
+        elementId,
+        bus: row.busKey,
+        ecu: row.ecuName,
+        message: row.messageKey,
+        enabled: row.status === "muted",
+      }).catch(() => {});
+    },
+    [elementId],
+  );
+  const grid = useGridview({
+    adapter,
+    pageRows: PAGE_ROWS,
+    idPrefix: "rbs-signals",
+    onPrimaryAction,
+  });
   rowDomIdRef.current = grid.rowDomId;
+  /// The row's DOM id and its click — the click is what hands the
+  /// keyboard to the container, so a mouse-then-keyboard session can
+  /// arrow (ADR 0044).
+  const gridRef = useRef(grid);
+  gridRef.current = grid;
+  const rowProps = useMemo(() => makeRowGridPropsCache(gridRef, containerRef), []);
 
   const busCount = new Set(allRows.map((r) => r.busKey)).size;
   const problemCount = allRows.filter((r) => RBS_SIGNAL_PROBLEM_STATUSES.includes(rbsSignalDisplayStatus(r))).length;
@@ -353,11 +389,11 @@ export function RbsSignalsPanel(props: IDockviewPanelProps) {
               columns={visible}
               gridTemplate={gridTemplate}
               washesOn={washesOn}
-              rowDomId={grid.rowDomId}
+              gridProps={rowProps(r.id)}
               onCommit={onCommit}
               onClear={onClear}
               selected={grid.selection.has(r.id)}
-              onSelect={(id, e) => grid.onRowClick(id, { mod: e.ctrlKey || e.metaKey, shift: e.shiftKey })}
+              active={grid.cursor === r.id}
             />
           ))
         )}
@@ -374,11 +410,12 @@ interface RbsSignalRowLineProps {
   columns: readonly RbsSignalColumnState[];
   gridTemplate: string;
   washesOn: boolean;
-  rowDomId: (id: string) => string;
+  gridProps: RowGridProps;
   onCommit: (row: RbsSignalRow, value: string | number) => void;
   onClear: (row: RbsSignalRow) => void;
   selected: boolean;
-  onSelect: (id: string, e: React.MouseEvent) => void;
+  /// The gridview's cursor is on this row.
+  active: boolean;
 }
 
 function RbsSignalRowLine({
@@ -386,11 +423,11 @@ function RbsSignalRowLine({
   columns,
   gridTemplate,
   washesOn,
-  rowDomId,
+  gridProps,
   onCommit,
   onClear,
   selected,
-  onSelect,
+  active,
 }: RbsSignalRowLineProps) {
   const status = rbsSignalDisplayStatus(row);
   const disabled = row.status === "not-encoded" || row.status === "muted";
@@ -399,10 +436,10 @@ function RbsSignalRowLine({
       defs={RBS_SIGNAL_COLUMN_DEFS}
       columns={columns}
       gridTemplate={gridTemplate}
-      id={rowDomId(row.id)}
+      {...gridProps}
       className={`trace-row rbs-signals-row${washesOn ? ` rbs-signals-row--wash-${STATUS_CLASS[status]}` : ""}${selected ? " selected" : ""}`}
       aria-selected={selected}
-      onClick={(e) => onSelect(row.id, e)}
+      data-active={active || undefined}
       renderCell={(key, className) => {
         switch (key) {
           case "status":

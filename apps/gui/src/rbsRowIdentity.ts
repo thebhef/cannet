@@ -4,18 +4,16 @@
 /// testable only as *identity*.
 ///
 /// The panel re-renders on a 500 ms value poll: the message payloads and
-/// running flags move, the tree's shape does not. So a row's id, its DOM
-/// id and its click handler — all pure functions of that shape — are
-/// interned rather than rebuilt, and the visible tree reuses the ECU's
-/// own message array whenever no filter is narrowing it. On a
+/// running flags move, the tree's shape does not. So a row's id and the
+/// row space built from it — pure functions of that shape — are interned
+/// rather than rebuilt, and the visible tree reuses the ECU's own
+/// message array whenever no filter is narrowing it. On a
 /// hundreds-of-rows RBS config, rebuilding those per row per refresh is
 /// the panel's largest allocation and it answers the same thing every
-/// time.
-
-import type { MutableRefObject, MouseEvent } from "react";
+/// time. (The per-row DOM id and click handler are interned the same
+/// way, in the layer's own `makeRowGridPropsCache`.)
 
 import type { RbsBusView, RbsEcuView, RbsMessageView, RbsView } from "./types";
-import type { Gridview } from "./useGridview";
 import type { GridviewFilterEntry } from "./gridviewFilter";
 import type { GridviewRow } from "./gridviewRows";
 
@@ -77,46 +75,6 @@ export function makeRbsRowIds(): RbsRowIds {
   };
 }
 
-/// The props every row in the panel carries so the gridview can see it:
-/// the DOM id `aria-activedescendant` names, and the click that moves the
-/// cursor. Both depend only on the row's id, so they are built once per
-/// row and reused. The cursor class is *not* here — it changes as the
-/// cursor moves, so the panel spreads it at the call site.
-export interface RowGridProps {
-  id: string;
-  onClick: (e: MouseEvent) => void;
-}
-
-/// `gridRef` rather than a `Gridview`: the hook hands back a fresh object
-/// every render, and a cached handler must reach the live one.
-/// `containerRef` is the gridview container, which the click hands the
-/// keyboard to — the container is the only thing in a gridview that holds
-/// focus (ADR 0044), so without this a mouse-then-keyboard session leaves
-/// focus on `<body>` and the grid's keys do nothing.
-export function makeRowGridPropsCache(
-  gridRef: MutableRefObject<Gridview>,
-  containerRef: { readonly current: HTMLElement | null },
-): (id: string) => RowGridProps {
-  const cache = new Map<string, RowGridProps>();
-  return (id) => {
-    let props = cache.get(id);
-    if (props === undefined) {
-      props = {
-        id: gridRef.current.rowDomId(id),
-        onClick: (e) => {
-          gridRef.current.onRowClick(id, { mod: e.metaKey || e.ctrlKey, shift: e.shiftKey });
-          // …unless the click was aimed at a control that wants focus
-          // itself, which would then lose it on the way in.
-          const target = e.target as HTMLElement | null;
-          if (target?.closest?.("button, input") == null) containerRef.current?.focus();
-        },
-      };
-      cache.set(id, props);
-    }
-    return props;
-  };
-}
-
 /// The tree as it will actually render, with the filter's hiding and the
 /// expansion already applied. Built once per render and consumed twice:
 /// by the panel's nested renderers, and — flattened — by the gridview's
@@ -163,6 +121,54 @@ export function buildVisibleTree(
     out.push({ bus, expanded: busExpanded, ecus });
   }
   return out;
+}
+
+/// What Space does on a row of the RBS tree — the layer's primary
+/// action (ADR 0044) — expressed as the `rbs_set_enabled` call the
+/// row's own enable checkbox would make, with the value already
+/// inverted. One idiom for all three row kinds: a bus, an ECU and a
+/// message each activate or deactivate at their own level, exactly as
+/// the mouse does.
+export interface RbsEnableToggle {
+  bus: string;
+  ecu: string | null;
+  message: string | null;
+  enabled: boolean;
+}
+
+/// Resolve `rowId` against the visible tree, or `null` where the row
+/// has no enable to toggle — a bus no project bus resolves, a message
+/// no database defines, whose checkboxes are disabled for the mouse
+/// too. Walked on the press rather than indexed per render: the tree is
+/// rebuilt on every value poll and a keystroke is rare, so an index
+/// would be paid 120 times a minute to serve a press that may never
+/// come.
+export function findRbsEnableToggle(
+  tree: readonly VisibleBus[],
+  ids: RbsRowIds,
+  rowId: string,
+): RbsEnableToggle | null {
+  for (const b of tree) {
+    const inert = b.bus.busId == null;
+    if (ids.bus(b.bus.key) === rowId) {
+      return inert ? null : { bus: b.bus.key, ecu: null, message: null, enabled: !b.bus.enabled };
+    }
+    for (const e of b.ecus) {
+      if (ids.ecu(b.bus.key, e.ecu.name) === rowId) {
+        return inert
+          ? null
+          : { bus: b.bus.key, ecu: e.ecu.name, message: null, enabled: !e.ecu.enabled };
+      }
+      for (const m of e.messages) {
+        if (ids.message(b.bus.key, m.key) === rowId) {
+          return inert || m.name == null
+            ? null
+            : { bus: b.bus.key, ecu: e.ecu.name, message: m.key, enabled: !m.enabled };
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /// The visible tree as the gridview's ordered row space: buses and ECUs
