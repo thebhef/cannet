@@ -89,8 +89,6 @@ const projectCtx: ProjectContextValue = {
   busesWithPendingHwConfig: [],
   onAddBinding: noop,
   onRemoveBinding: noop,
-  onConnect: noop,
-  onDisconnect: noop,
   localVirtualBuses: [],
   onAddVirtualBus: noop,
   onRemoveVirtualBus: noop,

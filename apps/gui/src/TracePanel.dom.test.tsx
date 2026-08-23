@@ -100,8 +100,6 @@ const projectCtx = {
   onUpdateBus: () => {},
   onAddBinding: () => {},
   onRemoveBinding: () => {},
-  onConnect: () => {},
-  onDisconnect: () => {},
 } as unknown as ProjectContextValue;
 
 function makeRegistry(elements: ProjectElement[]): ElementRegistry {
