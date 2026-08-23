@@ -299,10 +299,10 @@ jobs:
           echo "SERVER_INSTALLER_PATH=$PKG" >> "$GITHUB_ENV"
 
       # Windows gets a .zip, not a .tar.gz: the platform's own bundle
-      # formats in this workflow (.msi, NSIS .exe) are already
-      # Windows-native installers, and zip is the Windows-native
-      # archive format (native `Compress-Archive`, no tar dependency),
-      # matching that same native-to-the-platform choice.
+      # format in this workflow (NSIS .exe) is already a Windows-native
+      # installer, and zip is the Windows-native archive format
+      # (native `Compress-Archive`, no tar dependency), matching that
+      # same native-to-the-platform choice.
       - name: Package server archive (Windows zip)
         if: matrix.platform == 'windows-latest'
         shell: pwsh

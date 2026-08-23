@@ -23,7 +23,7 @@ Prebuilt **alpha** bundles are published to
 | Platform                      | GUI bundle                    | `cannet-server` installer           |
 |-------------------------------|-------------------------------|-------------------------------------|
 | macOS (Apple Silicon / arm64) | `.dmg` — drag to Applications | `cannet-server-vX.Y.Z-<target>.pkg` |
-| Windows (x64)                 | `.msi` or NSIS `-setup.exe`   | `cannet-server_X.Y.Z_x64-setup.exe` |
+| Windows (x64)                 | NSIS `-setup.exe`             | `cannet-server_X.Y.Z_x64-setup.exe` |
 | Linux (x64)                   | —                             | `cannet-server_X.Y.Z_amd64.deb`     |
 
 The server installers are for hosting hardware on a machine that does
@@ -2863,7 +2863,6 @@ they'll grow as features land.
 | `target/release/bundle/appimage/cannet_<ver>_amd64.AppImage` | Linux (any glibc-compatible distro) | ~80 MB* | Self-contained: bundles WebKitGTK and friends. `chmod +x` and run. |
 | `target/release/bundle/dmg/cannet_<ver>_x64.dmg` | macOS | — | Drag-to-Applications disk image. |
 | `target/release/bundle/macos/cannet.app` | macOS | — | The raw `.app` bundle, codesignable. |
-| `target/release/bundle/msi/cannet_<ver>_x64_en-US.msi` | Windows | — | MSI installer. |
 | `target/release/bundle/nsis/cannet_<ver>_x64-setup.exe` | Windows | — | NSIS installer. |
 
 \* AppImage size is approximate; the bundling step needs FUSE on the
