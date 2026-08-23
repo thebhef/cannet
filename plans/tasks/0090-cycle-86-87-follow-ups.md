@@ -291,3 +291,188 @@ their noted bands: `lag_ms_max` worst 26.3 ms (band 1.1–29.4, limit
 41), `rx_gap_short_frac_worst` worst 0.005 (band 0.003–0.0105, limit
 0.166). `tree_mb_peak` worst 767.7 MB against baseline 714.1 / limit
 1492.1 — no repeat of task 88 phase 6's unreproduced 8233 MB spike.
+
+**Why the benchmark spread was noise, settled by construction**
+(overseer, 2026-08-20). Repeated `bench_blf_import` samples ranged
+`full` 5.0–9.3 s across both the parent commit and this one, which
+looked alarming until the *census* phase moved too — and the census is
+untouched by this change. Two facts close it without further
+measurement:
+
+- **`bench_blf_import` never constructs a `WindowedSource`.** The bench
+  drives the reader directly; the modified code path is not reached at
+  all, so the change cannot move this benchmark in either direction.
+- **An unwindowed import is a strict no-op under the change.** The
+  edited branch is `self.end_ns.is_some_and(|end| ..)`, which is
+  `false` when no time range was requested — identical in the old and
+  new code. Only an import that actually specifies `end_ns` takes the
+  new path, and there the extra work is bounded by the file the census
+  has already walked end to end.
+
+The variance was machine contention (concurrent release builds), not
+the fix. Recorded because a future reader meeting these numbers in the
+log deserves the reason rather than the raw spread.
+
+### 2026-08-20 — Phase 2: the three housekeeping items (branch `task-90-phase-2-housekeeping`)
+
+Branched from `task-90-phase-1-window-reads-to-eof` (`288e7bc2`). Two
+commits — item 3 landed no code (see below).
+
+**Item 2 — `2d554eb2`, "Rename cannet-mdf's example so it no longer
+collides with cannet-blf's".** Renamed
+`crates/cannet-mdf/examples/gen_time_origin_fixtures.rs` to
+`gen_mdf_time_origin_fixtures.rs` (`cannet-blf`'s keeps the shorter
+name). Updated the three places that named the old `cargo run -p
+cannet-mdf --example gen_time_origin_fixtures` command:
+`crates/cannet-mdf/examples/gen_mdf_time_origin_fixtures.rs`'s own doc
+comment, `examples/time-origins/README.md`'s regenerate instructions,
+and the doc comment on `apps/gui/src-tauri/src/tests.rs`'s
+`time_origin_fixture` helper. Left `plans/tasks/0086` / `0087` / the
+roadmap alone — they're historical records of a problem that existed,
+not a live index to keep current.
+
+**Verification is the point of this item**: a plain parallel `cargo
+test --workspace` (examples included, no `--lib --tests`) run twice —
+once right after this commit, once again after item 4's — both green,
+no `LNK1104`, 35 test binaries, 1456 then 1457 tests passed (the `+1`
+is item 4's new test). No collision.
+
+**Item 3 — investigated, no code landed; the doc comment's claim is
+false and the binary search is not reliable on the store's own
+non-monotonic data.** Per the phase brief: verify before touching the
+comment, and if the code depends on the claim, this stops being a
+comment fix — investigate and report rather than paper over it.
+
+*Observation.* `TraceStore::frame_index_at_ns`'s doc comment
+(`apps/gui/src-tauri/src/trace_store/mod.rs:567`) states "Frames are
+appended in arrival order with monotonic timestamps, so this is an
+`O(log n)` binary search". The store's own committed test,
+`live_edge_is_the_newest_frame_not_the_last_appended_one` (same file,
+line 906), appends timestamps `5e9, 9e9, 7e9, 8e9` in that store-index
+order and asserts the live edge is `9e9` (the running max), not `8e9`
+(the last-appended row) — direct proof the store's ts sequence is not
+monotonic in store-index order.
+
+*Hypothesis.* An ordinary binary search's correctness (finding the
+least index satisfying a monotone predicate) requires the array to be
+sorted by the field it searches on. If the store's ts sequence isn't
+sorted, `frame_index_at_ns` can return a wrong answer, not just an
+imprecise one.
+
+*Experiment.* Added a temporary test (not committed) reproducing the
+exact `live_edge` fixture — append `5e9, 9e9, 7e9, 8e9` — then called
+`frame_index_at_ns` for probes `0..10` (seconds) and printed the
+result under `--nocapture`, comparing against the "first store-index
+with `ts >= probe`" answer a linear scan of the same array gives.
+
+*Data.*
+
+```
+probe 0 -> frame_index_at_ns = 0   (linear scan agrees: index 0, ts=5e9)
+probe 5 -> frame_index_at_ns = 0   (agrees)
+probe 6 -> frame_index_at_ns = 1   (agrees: index 1, ts=9e9)
+probe 7 -> frame_index_at_ns = 1   (agrees)
+probe 8 -> frame_index_at_ns = 3   (WRONG: linear scan says index 1, ts=9e9 — earlier in
+                                     the store and already >= 8)
+probe 9 -> frame_index_at_ns = 4   (WRONG: len() / "not found" — but index 1, ts=9e9,
+                                     is an exact match still inside the buffer)
+probe 10 -> frame_index_at_ns = 4  (agrees: len(), nothing reaches 10e9)
+```
+
+*Conclusion.* The claim is false and the code depends on it: on this
+store's own documented non-monotonic shape, the binary search does not
+reliably find the first (by store index) frame at/after a timestamp —
+it can return a later index than the true answer (`probe 8`), or even
+report "not found" while a matching frame is still buffered
+(`probe 9`), which silently drops a timeline event from the merged
+chronological view (`frame_indices_at_ns` /
+`filtered_positions_at_ns`, `apps/gui/src-tauri/src/trace_query.rs`)
+rather than placing it. This is a correctness question, not a comment
+question, so per the phase brief no comment or code change landed for
+this item — the temporary probe test was discarded, not committed
+(`git status` on `trace_store/mod.rs` is clean). Left for an owner
+decision on disposition (new task; whether the failure mode matters
+enough in practice to prioritize, given dips are brief and the
+function's two current callers are markers/bookmarks rather than the
+hot per-frame path). See `## Blockers / side effects` below.
+
+**Item 4 — `649f8cb9`, "cannet-spill: reject a reopened manifest whose
+version doesn't match".** TDD: added
+`reopen_rejects_a_manifest_whose_version_does_not_match`
+(`crates/cannet-spill/src/disk.rs`) first — flush a store, hand-edit
+the written `manifest.json`'s `version` down by one, assert
+`reopen_timed` returns `Ok(None)`. Ran red under the unmodified code
+(`assertion failed: ... .is_none()`); confirmed the gap the task
+description predicted. Then added the check in `reopen_timed`
+(compare `manifest.version` to `MANIFEST_VERSION`, `return Ok(None)`
+on mismatch, right after deserializing and before any field is used)
+and the version-policy paragraph on `MANIFEST_VERSION`'s doc comment
+(additive/backward-compatible changes — a new field with a sensible
+`#[serde(default)]`, as has always been the case — do not rev the
+constant; it moves only when an old scratch genuinely cannot be read
+correctly by the new code). Test went green; `cannet-spill` stayed at
+0 failed, 70 passed (was 69), 1 ignored.
+
+This closes the hole task 88 scoped its exit criterion around: reopen
+bypassed `append`'s bus-required rule, so a pre-rule scratch could
+restore bus-less frames without the version check ever tripping.
+
+**Test counts.** `cargo test --workspace --lib --tests`:
+**1455 → 1456** passed (0 failed throughout), matching phase 1's
+ending count plus item 4's one new test. `cargo test -p cannet-spill`:
+**69 → 70** passed, 0 failed, 1 ignored. Full parallel
+`cargo test --workspace` (examples + doctests, the form item 2's
+verification requires): green both times it was run in this phase, no
+`LNK1104`, 35 binaries, 1457 tests passed at the branch's final state.
+`cargo clippy --workspace --all-targets` and `cargo fmt --all -- --check`
+both clean at HEAD.
+
+**ADR-0031 render-tier gate** (item 4 touches the restore path).
+Release build (`pnpm --dir apps/gui tauri build --no-bundle`), four
+60 s `--perf-interact scrub` runs against `examples/ev-zonal`
+(`docs/performance-measurements/frontend/2026-08-20-649f8cb9-p2-run{1..4}.json`,
+not committed — review artifacts). Each run's own log shows the reopen
+path this item changed actually exercising the new check on real state
+— "restored 215794 frames from prior capture" (and similarly ~215.7k
+for the other three runs) from `scratch-perf/app-data`'s scratch,
+successfully, confirming a version-matched manifest still restores
+normally. `cannet-perf-measurement check` against the promoted
+baseline with all four `--frontend-report`s and `--expected-rx-fps
+1608 --expected-tx-fps 1608`:
+
+```
+check passed (87 metrics gated)
+```
+
+Every host mode (`tracebuffer`, `grpc`, `hardware-peak`) and every
+frontend metric across all four runs is `ok`. No baseline promoted, no
+limit widened. The two known-jittery metrics landed inside their noted
+bands: `lag_ms_max` worst 4.8 ms (band 1.1–29.4, limit 41),
+`rx_gap_short_frac_worst` worst 0.004 (band 0.003–0.0105, limit
+0.166). `tree_mb_peak` worst 738.8 MB against baseline 714.1 / limit
+1492.1 — consistent with phase 1's 767.7 MB, no repeat of task 88
+phase 6's unreproduced 8233 MB spike.
+
+## Blockers / side effects
+
+- **Item 3 surfaced a correctness bug, not just a stale comment**
+  (2026-08-20, phase 2). `TraceStore::frame_index_at_ns` runs an
+  ordinary binary search over frame timestamps that are not
+  necessarily sorted in store-index order (the store's own
+  `live_edge_is_the_newest_frame_not_the_last_appended_one` test
+  proves the non-monotonic shape is normal, from ordinary multi-bus
+  interleaving). Measured directly (see the write-up above): on that
+  exact shape, the search can return a later index than the true
+  "first frame at/after `ts`" answer, or report "not found"
+  (`len()`) while a matching frame is still buffered — which would
+  silently drop a timeline event from where `frame_indices_at_ns` /
+  `filtered_positions_at_ns` splice it into the chronological trace
+  view. Out of this phase's scope (a comment-only fix was authorized;
+  a behavioural fix to the search itself was not), and the phase brief
+  asked for a report rather than a silent fix here specifically. Needs
+  an owner decision: whether this is worth a dedicated task, and if
+  so what the intended contract should be (e.g., bound the search to
+  the low-water-to-live-edge span and fall back to a linear scan
+  within that span, since the drop is brief; or accept an approximate
+  "close enough for splicing a marker" contract and document that
+  instead — a design choice, not implemented here).

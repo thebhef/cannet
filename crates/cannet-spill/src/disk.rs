@@ -86,8 +86,20 @@ struct Manifest {
 
 /// Current [`Manifest::version`]. v2 added [`Manifest::first_index`] (the
 /// DS-8 low-water mark); v3 added the per-id `first_slot` to the by-id
-/// directory (6d). A manifest from before the current layout fails to parse
-/// and the caller wipes the (ephemeral) scratch.
+/// directory (6d). [`DiskRawStore::reopen_timed`] compares a loaded
+/// manifest's `version` against this constant and rejects a mismatch as a
+/// clean miss (`Ok(None)`) — the caller treats that the same as no
+/// manifest at all and wipes the (ephemeral) scratch.
+///
+/// Version policy, so the check stays meaningful rather than a nuisance:
+/// additive and backward-compatible changes (a new field with a sensible
+/// `#[serde(default)]`, as has always been the case) do **not** rev this
+/// constant — an old manifest still parses correctly under the new layout,
+/// so there is nothing to reject. Bump it only when an old scratch
+/// genuinely cannot be read correctly by the new code — a field's meaning
+/// changes, one is removed, or a default would silently misdescribe what
+/// the old layout actually wrote. The check then rejects exactly the
+/// manifests that would otherwise be misread.
 const MANIFEST_VERSION: u32 = 3;
 
 /// Segment sizing and the RAM-ring depth. Defaults suit production; tests
@@ -318,6 +330,14 @@ impl DiskRawStore {
         let phase = std::time::Instant::now();
         let manifest: Manifest = serde_json::from_slice(&std::fs::read(&manifest_path)?)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if manifest.version != MANIFEST_VERSION {
+            // A version stamped by an incompatible layout: reject rather
+            // than risk misreading fields the old layout didn't have (or
+            // didn't mean the same way). Ok(None) is the same "clean miss"
+            // the caller already treats a missing manifest as — it wipes
+            // the (ephemeral) scratch and starts fresh.
+            return Ok(None);
+        }
         stats.manifest_ms = ms_since(phase);
         let len = usize::try_from(manifest.len).unwrap_or(usize::MAX);
         let cfg = manifest.cfg;
@@ -988,6 +1008,28 @@ mod tests {
             stats.total_files(),
             stats.meta_files + stats.payload_files + stats.byid_files
         );
+    }
+
+    #[test]
+    fn reopen_rejects_a_manifest_whose_version_does_not_match() {
+        // A stale manifest layout must not be misread as the current one —
+        // the version stamp exists precisely so an incompatible manifest
+        // is rejected rather than parsed against the wrong field set.
+        let dir = TempDir::new().unwrap();
+        {
+            let mut s = DiskRawStore::with_config(dir.path(), tiny()).unwrap();
+            s.append(frame(0, 1));
+            s.flush().unwrap();
+        }
+        let manifest_path = dir.path().join(MANIFEST_NAME);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["version"], MANIFEST_VERSION);
+        manifest["version"] = serde_json::json!(MANIFEST_VERSION - 1);
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        // Treated as a clean miss (the caller wipes and starts fresh), not
+        // an error and not a misread of the old layout's fields.
+        assert!(DiskRawStore::reopen_timed(dir.path()).unwrap().is_none());
     }
 
     #[test]

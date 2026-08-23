@@ -4,7 +4,7 @@
 //! Run from the repository root:
 //!
 //! ```text
-//! cargo run -p cannet-mdf --example gen_time_origin_fixtures
+//! cargo run -p cannet-mdf --example gen_mdf_time_origin_fixtures
 //! ```
 //!
 //! `wall-clock-signals.mf4` states an `hd_start_time_ns`, so every
