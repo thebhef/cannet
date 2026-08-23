@@ -204,6 +204,22 @@ bound, and discarded whole when the capture changes.
 _Avoid_: "orphaned" / "dangling" — both imply there is no way back,
 and a park exists precisely because there is.
 
+**Trace import census**:
+The header-only pass over an entire capture file that runs when a file
+is picked, **before** any frame is imported (`scan_blf_channels` /
+`scan_mdf_channels`). It reads object headers end to end to find the
+distinct channel numbers, the total frame count, the first and last
+timestamps, the capture start time and the markers — everything the
+channel-to-bus mapping dialog must show before frames flow. So opening
+a large file costs two full passes: the census, then the import pump
+that actually moves frames into the capture model. Shortened to
+"census" in code and comments; the full name is the one to use when
+the phase needs distinguishing from the import.
+_Avoid_: "scan" alone, which is also what the plot's resample and the
+DBC sweep do. _Avoid_: calling the census "the import" — the import is
+the second pass, and the two differ in what they can report and
+whether they can be cancelled.
+
 ### Transmit
 
 **Calculated field**:

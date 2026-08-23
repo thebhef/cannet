@@ -184,57 +184,6 @@ trip over it.
   Task 20 on the existing tree; this item is the presentation rework
   on top.
 
-### Cursors and markers
-
-These are the general event surface governed by the timeline-event model
-([ADR 0035](../docs/adr/0035-timeline-event-model.md)) — markers across
-every timeseries view, persisted, exported, navigable, eventually a
-singleton panel. The disk-spill truncation marker (task 0018) wires the
-first non-note kind; the items below are the rest.
-
-Task 0018 landed more of this than just the truncation marker: notes grew a
-`kind` + `color`; events **interleave into the chronological trace** by
-timestamp (`eventMerge` splices host-anchored events — `frame_indices_at_ns`
-— into the windowed frame stream, the truncation marker as the floor row); a
-**singleton `EventsPanel`** (command palette → "Show events") is the trace
-view rendering only events; and an `EventContextMenu` edits
-name/color/remove on any editable event row. Remaining follow-ups:
-
-- `[bug]` **macOS: the event color picker opens in the wrong location.**
-  The native color picker for events appears in odd positions on macOS
-  (the plot series color picker seems to open correctly, so compare the
-  two anchoring paths). Likely a popover/anchor-positioning difference in
-  the event color control vs. the plot swatch. (Task 32 QA.)
-  **Candidate fix landed (unverified on macOS):** `.trace-event-swatch-input`
-  now fills the swatch's real footprint (`inset:0`, no `width/height:0`)
-  instead of collapsing to a zero-size point, so the native picker has a
-  concrete anchor rect at the swatch. If a Mac confirms this resolves the
-  mis-positioning, close the item; if not, revert the CSS and investigate
-  the virtualized-row scroll-offset anchor path instead.
-- `[ui/feat]` cursor + marker rework.
-  - Each cursor-created marker carries an editable description; the
-    list UI gets an expand-to-show body on the row, collapsed by
-    default, plus a per-marker color picker.
-  - Cursors / markers grow into their own top-level view (they are
-    global, not per-panel; their lifecycle is similar to project
-    view, graph view, system messages). The view shows both BLF
-    record types — `GLOBAL_MARKER` and `EVENT_COMMENT` — with
-    filtering by record type and by the user-defined event tag (below).
-  - Add a "create marker from message" flow: emit an `EVENT_COMMENT`
-    whose `commentedEventType` matches the source message
-    (`can` / `can-fd`) and whose object timestamp equals the source
-    message's, so it tracks with the message per the BLF spec. The
-    text field is prefixed `cannet:event:<user-string>\n` to enable
-    filtering; the UI strips the prefix and renders just `<user-string>`.
-    `<user-string>` is configurable in the UI. Use cases: fault
-    detections, contactor open/close, specific commands sent. UI
-    design needed for picking the source message and authoring the
-    rendered text.
-  - `EVENT_COMMENT` markers should be rendered in the graph view,
-    when enabled in the filter
-  - `GLOBAL_MARKER` and `EVENT_COMMENT` items should appear in 
-    historical-mode trace views
-
 ### GUI chrome and cross-cutting
 
 - `[feat]` **"Save current layout as my default" is a default
@@ -879,127 +828,83 @@ next planning pass.
   design point: encoding several rules in one STRING value (one
   value per attribute name at database scope; ADR 0043 rules out
   JSON-in-STRING). (Owner, task-56 grooming 2026-08-07.)
-- `[feat]` **"View signals" — a live status panel over the signals the
-  views reference.** Prototype:
-  [`prototypes/view-signals-panel.html`](prototypes/view-signals-panel.html)
-  (open it in a browser; the button top-right switches themes). It is a
-  static mock with hard-coded rows — the layout, column set, status
-  taxonomy and filter behaviour are the deliverable, not the code.
-  **The same grid serves the RBS element's DBC fields** (owner ruling
-  2026-08-19), prototyped in
-  [`prototypes/rbs-signals-panel.html`](prototypes/rbs-signals-panel.html):
-  same chips, same filter model, same sortable columns, with the RBS's
-  own status vocabulary — Override / Start value / Fill / Muted / Not
-  Decoded, which is exactly the `.cannet_rbs` precedence
-  `fill_bit -> GenSigStartValue -> override` (ADR 0028,
-  `rbs/runtime.rs`) made visible per row. Worth stating because it is
-  the reason the reuse is more than cosmetic: a sparse override document
-  records only what the user changed, while every transmitted frame is
-  fully populated, so *where a value came from* is the question the RBS
-  panel exists to answer and the status chip is already the column that
-  answers it. **The grid is shared; the scope is not.** The views
-  grid combines across every view because per-view divergence is a defect
-  the owner ruled out; an RBS grid is scoped to **one** `.cannet_rbs`
-  because two RBS sims are *meant* to hold different values and timings,
-  and combining them would invite editing across configs the user thinks
-  of as independent. Same component, opposite scoping rule, and the
-  reason is which kind of divergence is a bug (owner, 2026-08-19). The
-  config is named in the panel title; the app's internal word "element"
-  stays out of the UI. When a project's DBC is
-  replaced by a newer version of itself, view configurations that
-  reference signals by name keep pointing at names the new file may
-  have renamed, moved, or dropped. Task 88 settles the adjacent half —
-  a view configured against an unassigned database keeps its
-  configuration and comes back when the database is re-assigned — but
-  says nothing about a signal that no longer exists under that name. A
-  remap view would let the user re-point a file's signal selections
-  onto what the *assigned* DBC actually defines, scoped per DBC file
-  rather than per view, so one remap fixes every consumer of that
-  database at once. Owner note (2026-08-19, task 88 grooming): a full
-  remapping UI "might be extreme, but could be nice for when DBC
-  versions change" — the tractable version is a view that configures
-  the existing-in-assigned-DBC signal selection. **Shape the owner has
-  in mind: another gridview (ADR 0044), one combobox picker per signal,
-  filterable to just those not mapped to a live signal** — so the
-  default view is the short list of what actually broke, not every
-  signal in the file. Note that a view config carries no DBC path
-  (`signalKey` is `bus | messageId : signalName`), so this is needed
-  only where a *name* changed, not where a file was replaced.
-  Two highlights the owner wants in that grid (2026-08-19): **signals
-  with no scale they can reach** — read as a candidate whose unit
-  differs from the signal it replaces, so it cannot join the y-scale
-  group it used to share and would land on an axis of its own (ADR 0026
-  groups y scales by unit); and **signals with multiple matches in the
-  same view** — more than one assigned database defines that name, so
-  the mapping is ambiguous and the user should pick rather than inherit
-  load order (the same ambiguity task 88 rules must *warn* about,
-  naming the winner). A fifth case fell out of prototyping: **same name,
-  changed scaling** (factor 0.1 -> 0.5) — nothing looks broken, but the
-  fingerprint differs so the parked cache will not revive and the signal
-  silently re-decodes; invisible without this view.
-  Owner decisions from the 2026-08-19 prototype: **it is not scoped to a
-  database at all.** Anchoring it to one file ("powertrain.dbc -> pt")
-  was the original framing and the owner rejected it: the panel lists
-  *every signal the open views reference* and what currently serves it,
-  live, so assigning / unassigning / replacing a database moves rows in
-  it without a reopen. Consequently there is **no apply step** — a pick
-  takes effect immediately, like any other panel — and columns for the
-  serving database and which views use each signal replace the scope
-  header. A database picker was tried and rejected on the way: it read
-  as an assignment gesture, which is exactly what task 88 makes
-  load-bearing; **one signal is one row, and a pick applies
-  everywhere** — the owner ruled that the frontend must not support
-  Plot 1 configured differently from Plot 2, and that a user should
-  never have to repeat a fix per view. The grid is therefore keyed on
-  signal identity, and the "used by" column is *blast radius*, not a
-  list of things to fix one at a time. Note this has to be **enforced**:
-  today each plot series stores its own `bus | messageId : signalName`,
-  so divergence is currently possible. Two ways to close it — rewrite
-  every referencing view config when the pick is made (no new model
-  concept; reverting to the old database simply reports the difference
-  the other way round, self-healing through the same panel), or a
-  project-scoped alias table resolving old name -> current signal (keeps
-  both working, but adds durable indirection that can outlive its reason
-  and mis-resolve quietly). Overseer recommendation: **rewrite on pick**;
-  not yet ruled on. **The ambiguous case is the one that is not free**
-  (owner, 2026-08-19): every other repair is a rewrite of view state that
-  already exists, but "which database wins for this signal" has no home
-  in the model. Measured: the signal catalog *deduplicates the collision
-  away* -- `list_signals` dedups on `(bus_id, message_id, signal_name)`
-  (`dbc_commands.rs`) -- and the decoder settles it silently by load
-  order, the first database yielding the signal name winning
-  (`signal_cache.rs`, pinned by
-  `first_dbc_wins_per_signal_not_per_message`). The existing
-  signal-focused views are therefore blind to it and not responsible for
-  it: it is resolved upstream of them and never reported. Persisting a
-  selection therefore belongs in the **project file, attached to the
-  signal** (owner ruling 2026-08-19) -- the decoder being a consumer is a
-  *driver* for putting it there, not an argument against it. Rules:
-  **not persisted when not set**, so an absent entry means the databases
-  resolve in their consistent order and default behaviour stays
-  predictable; and the entry is **dropped silently from the project when
-  the selected DBC is removed**, falling back to that same default.
-  `SignalKey` does **not** grow a DBC field -- that would mean two
-  decodes of one signal, which defeats the purpose. And **no DBC
-  disambiguation appears in views that report signals or messages**: the
-  plot stays `bus.ecu.signal`, clear and minimal, and this panel is the
-  one place the rare ambiguity is resolved. Expected shape of that rare
-  case (owner): a client-facing DBC alongside a private one carrying
-  extra enum values, rather than two databases genuinely defining the
-  same message / signal / scaling combination;
-  **reuse the existing gridview** (ADR 0044) rather than a bespoke
-  table, **sortable, sorted by bus by default**; **the problem
-  highlight is toggleable**, with the status column carrying the fact
-  when the row washes are off; and **it is a separate launchable
-  panel**, not an embedded section. A database assigned to several buses
-  shows rows from all of them in one grid — the mapping is name-to-name
-  within the database, so one pick fixes every bus and every view that
-  reads it. Open question for grooming: the status column sorts by
-  *severity*, not alphabetically, so check that the shared gridview can
-  express a custom sort key before committing to reuse.
-  Prototyping also surfaced a theme finding worth its own look, recorded
-  here because it is where it was found: the light theme's warn wash
-  (`--warn-surface-dim` #fbf7e8) is ~4% off white, so a row tint that
+- `[perf]` **`rx_gap_*` worst-case metrics spike on runs nothing
+  explains.** Two sightings, both on builds whose diff cannot touch the
+  ingest path. **(1)** Task 88 phase 2's *control* build — GUI byte-identical
+  to the previous phase, the commit touched only the perf crate —
+  `rx_gap_short_frac_worst` read **0.194** against a 0.166 limit on run
+  1 of 4, with 0.0007 / 0.0002 / 0.0017 on the rest. **(2)** Task 89
+  phase 4, run 3 of **12**: `rx_gap_short_frac_worst` **0.236** and
+  `rx_gap_p95_ratio_worst` **3.307** (limits 0.166 / 2.898); the other
+  eleven runs passed all 213 metrics. Run 3 was the only run of twelve
+  with tx below 1600 (1530.6) while its rx was second-highest, which
+  reads as a transmit-side stutter rather than a receive regression;
+  runs 4–12 were nine consecutive clean runs. The decisive control — a
+  parent-commit capture — was not run, because it needs a branch switch
+  and the phase agent was barred from switching branches mid-phase.
+
+  Recorded under
+  [ADR 0031](../docs/adr/0031-gui-performance-automation-self-driving.md)'s
+  unreproducible-outlier rule (owner, 2026-08-20): documented, not
+  chased. No baseline promoted, no limit widened in either case.
+  **Add further sightings to this entry rather than opening a new one**
+  — the signal worth having is the rate, and two in eight gated phases
+  is already worth knowing. Note this family is also the one whose
+  *estimator* is questionable: these are worst-of-N statistics whose
+  within-build spread exceeds their between-build differences.
+- `[perf]` **Unreproduced `tree_mb_peak` spike: 8233 MB against a 1492 MB
+  limit.** Seen once, on task 88 phase 6's first ADR-0031 gate — a phase
+  whose only change was consolidating three colour swatches into one
+  presentational component. That run's `host_mb` and `webview_mb` were
+  ordinary; two immediate re-captures on the same unmodified binary read
+  710.9 and 719.8 MB; phases 3–5's first-runs were all ordinary, which
+  falsifies a "first run after a build" explanation. Six later runs
+  across task 88 phase 6, task 90 phases 1–2 and task 89 phases 1–3 have
+  read 705–768 MB, so it has not recurred. Either a real spike nobody
+  has a mechanism for, or a bad read. Recorded under
+  [ADR 0031](../docs/adr/0031-gui-performance-automation-self-driving.md)'s
+  unreproducible-outlier rule (owner, 2026-08-20). **Add sightings to
+  this entry rather than opening a new one** — the useful signal is
+  whether it recurs.
+
+  **Sighting 2 (task 89 phase 5, 2026-08-20): 982.2 MB**, run 2 of four,
+  with the other three at 724.5 / 732.6 / 729.7 on the same build. Well
+  under the 1492 limit so the gate passed, and nothing like the 8233 MB
+  reading — but it is 35% above the band the other three sit in, and
+  above the 705–768 range every prior phase produced. Reported, not
+  chased. Worth noting the shape now differs between the two sightings:
+  one implausible spike and one merely elevated run, which may or may
+  not be the same phenomenon.
+- `[test]` **Host-side logic is not unit-testable without a Tauri app,
+  and the mock runtime does not load on Windows.** Task 86 phase 3
+  recorded that `dbc_watcher::reload_one` cannot be unit-tested; task 27
+  phase 1 tried to close that by adding `tauri = { features = ["test"] }`
+  as a dev-dependency and probing `tauri::test::mock_app`, and the whole
+  `cannet-gui` lib test binary then failed to start —
+  `exit code: 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND`, before any test
+  ran. Not one test failing: the suite unable to load. Most likely a
+  missing DLL export, probably the WebView2 loader the `test` feature
+  links differently. Reverted.
+  **Owner ruling 2026-08-19: do not chase the mock runtime.** The
+  entanglement is the problem, not the harness — `reload_one`'s decision
+  logic (did it read, did it parse, is it still loaded, what changed) has
+  no Tauri in it, and is untestable only because the function reaches
+  `AppHandle` for `state()`, the `sys_*!` macros and event emission. The
+  expected resolution is **lifting the host-side model into its own
+  Tauri-free crate**, after which nothing under test needs a Tauri app to
+  exist and the mock runtime stops mattering. Revisit when that
+  extraction is scoped; a per-command seam (a pure core returning an
+  outcome, plus a thin shell mapping it to logs and events) is the
+  fallback if it does not happen. Two things ride on this: **task 27's
+  exit criterion 4** rests on the harness that does not exist, so
+  accepting or rejecting it is a judgement call rather than deferred
+  implementation; and [task 83](tasks/0083-cycle-follow-ups.md)'s
+  project-command test harness gap is the same complaint about different
+  commands, closed by the same extraction.
+- `[ux]` **The light theme's warn wash is nearly invisible.**
+  `--warn-surface-dim` (#fbf7e8) is ~4% off white, so a row tint that
   reads instantly in dark mode is close to invisible in light. That
-  affects anywhere the app tints a row to mean something, not just this
-  view. Not scoped; needs grooming before it becomes a task.
+  affects anywhere the app tints a row to mean something. Found while
+  prototyping the signal mapping panel
+  ([task 89](tasks/0089-signal-mapping-panel.md)), but not scoped to it;
+  needs grooming before it becomes a task. (Owner, 2026-08-19.)

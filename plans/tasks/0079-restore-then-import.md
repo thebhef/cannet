@@ -31,6 +31,20 @@ isolate the cache/scratch root too (or document and implement whatever
 narrower mechanism ADR 0031 amends to), so a harness run neither reads
 nor writes the operator's scratch.
 
+## Owner ruling (2026-08-19)
+
+Kept as scoped. The 2026-08-18 question of whether this is worth
+implementing at all is closed: both halves stand, §1 as a
+user-reachable defect and §2 because ADR 0031's isolation claim and the
+implementation disagree, which is not optional to leave standing.
+
+Note when it is picked up: tasks 86 and 27 both moved session
+re-anchoring after §1 was attributed — task 86 item 2(c) cross-references
+this task for "an import into a session whose start came from somewhere
+else never re-anchors" — so re-run the reproduction against the tip
+before implementing, to see whether the defect still presents in the
+same shape.
+
 ## Exit criteria (draft — firm at grooming)
 
 - The restore-then-import sequence shows the imported trace (the
