@@ -13,6 +13,8 @@ import {
   timelineEvents,
   TRUNCATION_EVENT_ID,
   truncationEvent,
+  linkedEventIds,
+  type EventSubject,
   type Note,
 } from "./notes";
 
@@ -116,5 +118,63 @@ describe("event kinds", () => {
     ]);
     const withErrors = new Set<EventKind>([...defaultVisibleKinds(), "busError"]);
     expect(visibleEvents(all, withErrors).map((e) => e.id)).toEqual(["e", "n", TRUNCATION_EVENT_ID]);
+  });
+});
+
+describe("event subjects", () => {
+  const signal: EventSubject = {
+    kind: "signal",
+    messageId: 0x180,
+    extended: false,
+    signalName: "PackCurrent",
+  };
+  const message: EventSubject = { kind: "message", messageId: 0x18da00f1, extended: true };
+
+  it("carries the host's subject list onto the rendered event", () => {
+    const e = noteToEvent({
+      id: "a",
+      timestampNs: 1,
+      label: "n",
+      subjects: [signal, message, { kind: "event", id: "b" }],
+    });
+    expect(e.subjects).toEqual([signal, message, { kind: "event", id: "b" }]);
+  });
+
+  it("gives an event with no subjects an empty list, never undefined", () => {
+    expect(noteToEvent(note("a", 1)).subjects).toEqual([]);
+    expect(truncationEvent(5).subjects).toEqual([]);
+  });
+
+  it("reads a link from either end, wherever it is stored", () => {
+    const events = timelineEvents(
+      [
+        { id: "a", timestampNs: 1, label: "a", subjects: [{ kind: "event", id: "b" }] },
+        note("b", 2),
+      ],
+      null,
+    );
+    expect(linkedEventIds(events, "a")).toEqual(["b"]);
+    expect(linkedEventIds(events, "b")).toEqual(["a"]);
+  });
+
+  it("names both ends of a chain from its middle", () => {
+    const events = timelineEvents(
+      [
+        note("a", 1),
+        { id: "b", timestampNs: 2, label: "b", subjects: [{ kind: "event", id: "a" }] },
+        { id: "c", timestampNs: 3, label: "c", subjects: [{ kind: "event", id: "b" }] },
+      ],
+      null,
+    );
+    expect(linkedEventIds(events, "b")).toEqual(["a", "c"]);
+  });
+
+  it("leaves an unresolved reference out of the link list without dropping it", () => {
+    const events = timelineEvents(
+      [{ id: "a", timestampNs: 1, label: "a", subjects: [{ kind: "event", id: "gone" }, signal] }],
+      null,
+    );
+    expect(linkedEventIds(events, "a")).toEqual([]);
+    expect(events[0].subjects).toHaveLength(2);
   });
 });
