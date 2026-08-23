@@ -523,3 +523,133 @@ panel's was before task 88.
 
 **Not touched:** `TraceStore::frame_index_at_ns` (task 91); no host
 file at all this phase, so nothing here reads it either.
+
+### Phase 3 — the launcher badge (2026-08-20)
+
+Branch `task-89-phase-3-launcher-badge`, from `task-89-phase-2-panel`
+(`4eef42a9`). Three commits (`69083380` the hook, `e61e8f9d` the
+toolbar wiring, `51828233` a mount-fetch fix caught by its own test)
+plus this log. Frontend tests 2331 → 2336 (5 new, still 177 files, no
+new file added past the hook's own test), zero failures; `pnpm build`
+(tsc and vite) clean. No host file touched this phase, so workspace
+Rust tests stayed at 1478 (reconfirmed green) and `cargo clippy`/`cargo
+fmt` had nothing new to check.
+
+**What shipped.** `useViewSignalsAttentionCount`
+(`viewSignalsAttention.ts`) and one bespoke toolbar item on the
+"View signals" button, the same shape the System Messages button's
+unread badge already uses (`system-messages-button` /
+`system-messages-badge`): a small pill next to the label, rendered only
+when the count is above zero.
+
+**Where the count comes from.** The hook calls the same
+`list_view_signals` command the panel calls and reads its
+`attentionCount` field — the same number `build_rows` /
+`needs_attention()` computed in phase 1, over the same row pass that
+builds the panel. There is no second counting rule to disagree with the
+panel's: `sortKey`/`sortDir`/`busNames` are irrelevant to the count (it
+is `rows.iter().filter(needs_attention).count()` before any sort is
+applied), so the hook passes `null`/`null`/`[]` and only reads the one
+field back.
+
+**Live with the panel closed.** The hook is called directly in `App`,
+which is always mounted, independently of whether `ViewSignalsPanel`
+is. It refetches on the same two triggers the panel itself refetches
+on, so the two can never disagree about *when* to ask: the
+`view-signals-changed` event (a view's pushed references changed) and
+the DBC-change generation (ADR 0053 §2/§3, already covering assignment
+changes since task 88). The event half reuses the shared host-mirror
+pattern (`useHostMirror.ts`, also `TransmitPanel`/`RbsPanel`'s
+fetch/listen/launch-race machinery) rather than a third hand-rolled
+fetch/listen pair; the generation half folds `useDbcGeneration` on top,
+guarded by a `seenDbcGenerationRef` the same way `App`'s own trace-model
+re-anchor effect guards it (see the bug below for why the guard is
+there).
+
+**Quiet at zero.** `viewSignalsAttentionCount > 0` gates both the badge
+`<span>` and the count inside it — at zero the button renders exactly
+like every other command-backed toolbar button, no empty pill, no "0".
+
+**Bug found and fixed before it shipped** (observation → hypothesis →
+experiment → data → conclusion), the same shape phase 2's panel caught
+for its own two-effects-both-firing-on-mount bug:
+
+- *Observation.* A test asserting `listCalls().length` after mount
+  passed at "greater than 0" without pinning a number, which felt too
+  loose for a hook whose whole cost note is "fires only on real
+  changes, never a timer."
+- *Hypothesis.* `useHostMirror` already fires two fetches on mount by
+  contract (the initial paint, then the post-listener refetch that
+  closes the async-`listen` launch race) — folding `dbcGeneration`
+  straight into a second `useEffect(() => refresh(), [dbcGeneration,
+  refresh])` should cost nothing extra, since it is one more listener,
+  not a poll.
+- *Experiment.* Logged the mock's call count after a bare mount.
+- *Data.* Three calls, not two.
+- *Conclusion.* Confirmed: a fresh effect's first run always reads its
+  dependency as "changed from nothing," so the naive fold fired a third
+  mount fetch — exactly the shape phase 2's two-effects bug took, just
+  inside one hook instead of across two. Fixed with the same guard
+  `App` already uses for the identical hazard on its own trace-model
+  epoch (`seenDbcGenerationRef`, seeded with the generation already in
+  hand so only a genuine post-mount change refetches).
+  `does not pay a third fetch for folding the DBC generation onto
+  useHostMirror's own mount + launch-race pair` pins the count at
+  exactly 2 as the regression guard.
+
+**Cost note, not built speculatively.** There is no count-only host
+command, so every refresh — mount, `view-signals-changed`, a DBC
+change — pulls the full row set even though the badge renders none of
+it. Judged not obviously real: the row count is bounded by how many
+signals the open views reference (typically small), and the fetch is
+event-gated rather than a poll, so it does not compound with capture
+length or session time. A count-only command would drop the row
+payload; the module doc names this so a future reader who wants to
+build one knows why it wasn't done here.
+
+**Palettes left alone, on purpose.** The command palette entry
+(`panel.show.viewSignals`) and the go-to-view palette entry are
+unchanged plain-label rows — no other launcher's badge (System
+Messages' unread count included) appears in either list today, and a
+number stapled onto a palette row's label reads as noise there, not as
+the same "something needs a look" signal the toolbar pill carries. The
+toolbar button is the one place the ruling names, so this phase leaves
+both palettes as phase 2 shipped them.
+
+**Not touched:** `TraceStore::frame_index_at_ns` (task 91); no host
+file at all this phase, so nothing here reads it either.
+
+#### ADR-0031 perf gate
+
+`pnpm --dir apps/gui tauri build --no-bundle` (`target/release/cannet-gui.exe`,
+frontend embedded), `cargo build --release -p cannet-perf-measurement`;
+`examples/ev-zonal` at ~1608 fps, `--connect-on-start`,
+`--perf-interact scrub`, four 60 s captures into an isolated
+`--app-data-dir` (`scratch-perf/app-data`), gated by `cargo run
+--release -p cannet-perf-measurement -- check --expected-rx-fps 1608
+--expected-tx-fps 1608` (one `--frontend-report` per run) against the
+committed `docs/performance-measurements/baseline.json`. **No baseline
+was promoted and no gate limit was touched.** Reports are review
+artifacts and stay out of the repository.
+
+Four runs, `check` over all four: **passed, 87 metrics gated.** Every
+metric read `ok`; nothing regressed and nothing widened.
+
+| run | rx fps | tx fps | `rx_gap` short-frac worst | `rx_gap` p95 ratio worst | `lag_ms` max | `tree_mb` peak |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 1602.7 | 1607.3 | 0.0025 | 1.178 | 1.9 | 733.2 |
+| 2 | 1608.9 | 1611.9 | 0.0053 | 1.173 | 9.1 | 725.6 |
+| 3 | 1607.2 | 1608.2 | 0.0043 | 1.143 | 3.9 | 727.8 |
+| 4 | 1601.4 | 1608.4 | 0.0071 | 1.161 | 2.8 | 732.3 |
+
+Both `rx_gap_short_frac_worst` (0.0025–0.0071) and `lag_ms_max`
+(1.9–9.1) sat inside the bands task 89 phase 3's brief named as
+known-jittery and under owner review (0.002–0.0105 / 1.1–29.4);
+`tree_mb_peak` (725.6–733.2 MB) sat inside the 705–768 MB range prior
+phases already reported, with no repeat of task 88 phase 6's
+unreproduced 8233 MB outlier. The three memory-drift metrics gated on
+the median across the four reports (`jsheap_mb_drift_per_min` 8.7 vs a
+24.1 limit, `renderer_mb_drift_per_min` 42.5 vs 85.3,
+`tree_mb_drift_per_min` 74.6 vs 139.2), all `ok`. Host modes
+(tracebuffer/grpc/hardware-peak) gated on their own baselines and were
+all `ok` too, unaffected by a frontend-only change.
