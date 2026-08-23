@@ -159,11 +159,14 @@ truth.
 **Encoding fingerprint**:
 A short hash of everything decode reads for one signal — start bit,
 width, byte order, signedness, factor, offset, float kind, mux arm and
-gate — across the databases that may decode it, plus their bus
-scoping. It answers "which definition were these samples decoded
-under", and is what decides whether a cached series is still valid
-when the DBC set changes. Value tables and attributes are deliberately
-outside it: neither changes a decoded number.
+gate — taken over the **winning** definition alone: the one database
+that decodes the series (assigned to its bus, first in load order or
+named by a pick). It answers "which definition were these samples
+decoded under", and is what decides whether a cached series is still
+valid when the DBC set changes. Deliberately outside it, because none
+of them changes a decoded number: value tables and attributes, what
+else the winning database is assigned to, and the databases behind it
+that supply no sample (ADR 0054).
 
 **File-backed signal**:
 A signal imported from a capture file as an already-decoded value

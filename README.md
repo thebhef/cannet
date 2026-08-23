@@ -2215,6 +2215,15 @@ any assigned database defining that signal brings the view back, and one
 defining it exactly as the parked samples were decoded brings the samples
 back with it.
 
+**And a change that cannot move a value costs nothing at all.** A
+decoded sample comes from one signal definition, so unchecking some
+*other* bus of the database that decodes it, or loading a further
+database behind that one, leaves the samples exactly where they are —
+no park, no rebuild, no wait. Only a change of definition — editing the
+`SG_` entry that decodes the signal, putting another database in front
+of it, or unassigning it from the bus the samples came from — parks
+anything.
+
 **Unchecking a bus stops what it was driving.** A periodic transmit row
 or a rest-of-bus row that is *transmitting* is putting frames on a real
 bus, so once no database assigned to that bus defines its message any

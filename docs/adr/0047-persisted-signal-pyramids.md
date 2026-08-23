@@ -9,7 +9,9 @@ databases that may decode the series' bus, not every database that
 defines the signal; amended (2026-08-19) — bus assignment governs
 decode, so an unassigned database is in no chain and a series that
 names no bus has the empty chain; amended (2026-08-19) — the encoding
-fingerprint is stamped when a cache is built, not at persist
+fingerprint is stamped when a cache is built, not at persist; amended
+(2026-08-21) — the fingerprint identifies the **winning** definition
+alone, per [ADR 0054](0054-a-decoded-value-has-one-definition.md)
 
 ## Context
 
@@ -71,21 +73,19 @@ recomputed against the model now loaded. It is what makes a row's
 samples reusable or not, and it is judged **alone**: a match reopens
 that pyramid, a mismatch rebuilds that signal and only that signal.
 
-- For a **DBC-backed** row the fingerprint is over that signal's
-  *candidate chain*: every loaded database that defines it in that
-  message **and may decode the series' bus**, in load order, each
-  contributing the fields a decode actually reads — start bit, length,
-  byte order, sign, factor, offset, float kind, mux arm, the message's
-  mux gate — plus its bus scoping. Nothing about the files the databases
-  were parsed from enters it. The chain, rather than a nominated winner,
-  because resolution is per *frame*: the decode path takes the first
-  database that yields the name for the payload in hand, so a database
-  that loses one frame can win the next. A database that defines nothing
-  about the signal contributes nothing, which is what makes loading,
-  unloading or re-prioritising an unrelated database invalidate nothing.
-  A series that names no bus has the **empty** chain: no assignment
-  admits a query without a bus, so no database can be a candidate for
-  it (see the 2026-08-19 assignment amendment).
+- For a **DBC-backed** row the fingerprint is over the **one
+  definition that decodes the series** — the first database assigned to
+  the series' bus that defines the signal in that message, or the one a
+  per-signal pick names — as the fields a decode actually reads: start
+  bit, length, byte order, sign, factor, offset, float kind, mux arm,
+  the message's mux gate. Nothing else about the loaded set enters it,
+  and nothing about the files the databases were parsed from: not the
+  other buses the winner is assigned to, and not the databases behind
+  it, neither of which can move a sample
+  ([ADR 0054](0054-a-decoded-value-has-one-definition.md); see the
+  2026-08-21 amendment). A series that names no bus, or one no assigned
+  database defines, has **no definition**: well-defined, and distinct
+  from every fingerprint that decodes something.
 - For a **file-backed** row it is over the source the samples were
   imported from — path, signal channel group, channel name. No DBC bears
   on such a series, so no DBC-set change may touch it; and none can,
@@ -215,7 +215,7 @@ longer answers to the loaded set moves to a **retention pool**:
   ever be thrown away.
 - **This applies in-session too.** A DBC-set change judges the live
   pyramids the same way a restore judges persisted ones: one whose
-  candidate chain has not moved keeps decoding, one whose has is parked,
+  definition has not moved keeps decoding, one whose has is parked,
   and one the pool can answer for is revived — all in the one call. **A
   cache is stamped where it is created**, against the set that is about to
   decode it, so a pyramid built in the current session parks like any
@@ -311,6 +311,49 @@ fingerprint the new chain answers for. What revives one is the
 fingerprint, not the file: any assigned database that defines the signal
 the way the samples were decoded brings them back.
 
+## Amendment (2026-08-21) — the fingerprint identifies the winning definition
+
+[ADR 0054](0054-a-decoded-value-has-one-definition.md) states that a
+decoded value comes from exactly one signal definition and that
+anything derived from it depends on that definition and **nothing
+else**. The fingerprint is bound by part 3 of it, and was not meeting
+it. Two inputs come out, and what remains is the winner's decode
+specification:
+
+- **The winner's other bus assignments.** They were hashed after the
+  eligibility filter had already narrowed the walk to databases
+  assigned to the series' own bus, so every one of them decodes a frame
+  on that bus identically however else it is assigned. Unchecking an
+  unrelated bus parked pyramids whose samples could not move.
+- **The candidates behind the winner.** Resolution is first-wins per
+  signal, so a database further down the load order supplies no sample.
+  Loading one that defines the signal, or editing it, parked pyramids
+  whose values were unchanged.
+
+Both faults have the same shape, and it is the one a derived key must
+never have: **two states that decode identically hashed differently.**
+The amendments above are unaffected — an unassigned database still
+decodes nothing and so is still no candidate for anything; what changes
+is that eligibility now selects one definition rather than an ordered
+chain.
+
+**What this gives up, stated plainly.** `sample_shared` still resolves
+per *frame*: where the winning definition withholds a value — a
+multiplexor arm that does not match, a payload too short — the next
+assigned database can still supply one for that frame. Those samples now
+sit under a fingerprint that cannot see the database that produced them,
+so editing it does not invalidate them. The chain covered that corner,
+at the price of invalidating on every state that could not change a
+sample; this is the trade ADR 0054 makes, and the exposure is one
+narrow shape (two assigned databases defining the same signal on one
+bus, the second reached only through a mux arm, edited without the
+first). It is worth naming rather than discovering.
+
+The cost is a **one-time rebuild of every DBC-backed pyramid**: the
+hashed encoding changed shape, so no persisted fingerprint matches. Ruled
+payable — pyramids are caches, and the spurious rebuilds this ends were
+being paid over and over.
+
 ## Why
 
 - **The cost is asymmetric and the data was already there.** The rebuild
@@ -333,10 +376,10 @@ the way the samples were decoded brings them back.
 - **The failure mode of getting it wrong is silent and bad.** A stale
   pyramid does not crash; it draws a plausible wrong plot, or a plot
   that is quietly missing a range of history. That is why every gate is
-  conservative in the same direction: a fingerprint covers every decode
-  input and a few that only *might* be one (a re-scoped database whose
-  frames this path does not filter by, a `0.0` → `-0.0` edit), a
-  crash-truncated store invalidates, and an unjudgeable row rebuilds.
+  conservative in the same direction: a fingerprint covers every input
+  to the winning definition's decode and one that only *might* be one (a
+  `0.0` → `-0.0` edit that changes no value), a crash-truncated store
+  invalidates, and an unjudgeable row rebuilds.
 - **The whole-set stamp was the wrong grain.** It read each database's
   path, size and modification time, so a copy, a checkout or a backup
   tool discarded every pyramid in the session for a decode that had not
@@ -367,14 +410,17 @@ the way the samples were decoded brings them back.
   the touched-file case and nothing else: an edit to one signal's scaling
   still discards every other signal's pyramid, which on a large session
   is the same minutes for the same reason.
-- **Nominate a winning database per signal and fingerprint its spec.**
-  What this ADR's own risk register originally asked for, and not
-  expressible: resolution is per frame, so there is no single winner to
-  nominate (a multiplexor arm that does not match, or a payload too
-  short, hands the signal to the next database for that frame only). The
-  ordered candidate chain has the property the nomination was after — a
-  priority change that cannot change any frame's decode moves nothing —
-  without pretending to a winner.
+- **Fingerprint the ordered candidate chain rather than a winner.**
+  What this ADR said until the 2026-08-21 amendment, on the argument
+  that resolution is per frame — a multiplexor arm that does not match,
+  or a payload too short, hands the signal to the next database for that
+  frame. Rejected because the chain fails the test a derived key has to
+  pass: two states that decode identically hashed differently, so a
+  second definition that never wins, or an assignment to an unrelated
+  bus, parked pyramids whose samples provably could not move. One
+  definition is what a value has
+  ([ADR 0054](0054-a-decoded-value-has-one-definition.md)); the residual
+  per-frame fall-through is named in that amendment.
 - **Bound the retention pool as a share of the scratch cap.** Ties two
   budgets that bound different things: the scratch cap bounds the capture
   being worked on, the pool bounds what is kept for a session that may

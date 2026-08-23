@@ -4712,12 +4712,13 @@ fn a_reload_in_place_keeps_the_unchanged_signals_pyramid_and_rebuilds_the_change
 fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyramid() {
     // The third path, and the one the design question is about: a
     // *different* file added and the old one removed. It is two DBC-set
-    // changes with both databases loaded in between, so the intermediate
-    // set re-encodes every signal (a two-database chain is not a
-    // one-database chain) and parks both pyramids. What makes the
-    // replace work is the parked-cache pool: the removal leaves a chain
-    // that is once again one database's, and any pyramid whose
-    // fingerprint that chain answers for is handed straight back.
+    // changes with both databases loaded in between — and neither of
+    // them touches the signal the replacement defines exactly as the
+    // file it stands in for did. A value depends on the definition that
+    // decodes it and on nothing else (ADR 0054), so the newcomer is
+    // inert while the incumbent is in front of it, and taking the
+    // incumbent away leaves `A` decoding what it already decoded. Only
+    // `B`, which the replacement rescales, is a change of definition.
     let scratch = tempfile::TempDir::new().unwrap();
     let state = ab_state(scratch.path(), None, 200);
     crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
@@ -4741,21 +4742,22 @@ fn replacing_a_dbc_with_a_near_identical_file_keeps_the_unchanged_signals_pyrami
         (2, 0),
         "loading a file decodes nothing, so no chain moved",
     );
-    // Assigning it to the bus is what puts it in the chain.
+    // Assigning it to the bus does not either: it is behind the file
+    // that already decodes both signals, so it supplies no sample.
     ab_assign(&state, "b.dbc");
     let mid = state.signal_caches.usage();
     assert_eq!(
         (mid.live, mid.retained),
-        (0, 2),
-        "both chains grew a second candidate, so both pyramids park",
+        (2, 0),
+        "the incumbent still decodes both, so neither pyramid moves",
     );
 
-    // Step 2: the old file is removed, leaving one database on the bus
-    // again.
+    // Step 2: the old file is removed, so the replacement is now the
+    // definition — the same one for `A`, another one for `B`.
     ab_remove(&state, "a.dbc");
     let usage = state.signal_caches.usage();
-    assert_eq!(usage.live, 1, "A's chain is what it was, so A comes back");
-    assert_eq!(usage.revivals, 1, "…out of the pool, not off the frames");
+    assert_eq!(usage.live, 1, "A's definition is what it was, so A stands");
+    assert_eq!(usage.revivals, 0, "…without ever having left for the pool");
     assert_eq!(usage.retained, 1, "B stays parked against its return");
 
     let cold = ab_cold_store(200);
