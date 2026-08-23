@@ -67,6 +67,19 @@ mouse-then-keyboard session leaves focus on the document body and the
 grid's keys point at nothing. There is no active cell: interactive
 content inside a row is reached by Tab, not by the grid cursor.
 
+*(Amended 2026-08-23. The container being what holds focus means the
+UA's focus ring goes round the whole scroll viewport, which reads as
+the entire panel lighting up — loudest on a press that moves nothing,
+where it is the only thing on screen that changed. **While the
+container names an active row, the row's own cursor styling is the
+focus indication and the box ring is suppressed; while it names none,
+the ring stays**, because focus arriving by Tab before the cursor has
+moved has nothing else to point at. The rule is keyed on the
+container's gridview attribute and the presence of
+`aria-activedescendant`, so it holds for every panel on the layer, and
+each panel owes its cursor a visible row indicator that does not depend
+on the row being selectable.)*
+
 **One key table for every gridview:**
 
 | Key | Branch | Leaf with content | Plain leaf |

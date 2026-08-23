@@ -259,6 +259,35 @@ describe("chronological cursor and selection", () => {
     expect(selectedIds()).toHaveLength(4);
   });
 
+  it("says where focus is on the row, not on the box, once a cursor exists", () => {
+    // The container is what holds DOM focus (ADR 0044), so a UA focus
+    // ring goes round the whole scroll viewport — "the entire box gets
+    // highlighted". `[data-gridview][aria-activedescendant]:focus` drops
+    // it in favour of the row indicator, which means what the container
+    // *names* decides whether the box is ringed. Pin both states.
+    render(view({ count: 10, getRow: (d) => frameRow(d, 0) }));
+    grid().focus();
+    // Tab in, cursor nowhere: no row is named and no row is marked, so
+    // the box ring is the only focus indication there is and it stays.
+    expect(document.activeElement).toBe(grid());
+    expect(grid()).not.toHaveAttribute("aria-activedescendant");
+    expect(document.querySelectorAll(".trace-row.selected")).toHaveLength(0);
+
+    fireEvent.keyDown(grid(), { key: "ArrowDown" });
+    expect(grid()).toHaveAttribute("aria-activedescendant");
+    expect(activeRow()).toHaveClass("selected");
+
+    // Left on a top-level row with nothing to collapse and no parent to
+    // walk out to. The grid consumes the press either way — a no-op Left
+    // must not scroll the viewport sideways instead — so nothing in the
+    // panel's own markup moves, and without the rule above the container
+    // ring would be the only thing on screen that changed.
+    const before = document.body.innerHTML;
+    fireEvent.keyDown(grid(), { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(grid());
+    expect(document.body.innerHTML).toBe(before);
+  });
+
   it("takes the loaded page on Ctrl+A, not the whole capture", () => {
     // The row space is millions of host-paged rows; walking it on every
     // click is not affordable and the frontend does not hold it anyway.
