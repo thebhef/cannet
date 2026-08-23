@@ -77,13 +77,16 @@ where
 /// seam, not a second ingest path. Every source — BLF, live, future
 /// formats — gets range windowing the same way, for free, by wrapping.
 ///
-/// Frames before `start_ns` are skipped (the inner source is still
-/// walked, so a wrapped source that surfaces side information as it
-/// walks — e.g. `BlfCanFrameSource`'s marker sink — still sees that
-/// prefix). Once a frame past `end_ns` is reached, this reports
-/// end-of-stream and never calls the inner source again — "stop after"
-/// means the walk really stops, matching a file's arrival-ordered
-/// timestamps; a would-be-later frame doesn't get evaluated.
+/// Frames outside `[start_ns, end_ns]` are skipped, not truncated: the
+/// inner source is walked all the way to EOF regardless of where a
+/// frame falls, because a capture's frames are not promised to arrive
+/// in timestamp order (ADR 0024) — a real multi-bus capture dips below
+/// its own running maximum several times a minute, and a frame that
+/// belongs in the window can sit after one that doesn't. Stopping at
+/// the first out-of-range frame would silently drop those. A wrapped
+/// source that surfaces side information as it walks — e.g.
+/// `BlfCanFrameSource`'s marker sink — sees the whole walk, not just a
+/// prefix bounded by the window.
 pub struct WindowedSource<S> {
     inner: S,
     start_ns: Option<u64>,
@@ -123,8 +126,7 @@ impl<S: CanFrameSource> CanFrameSource for WindowedSource<S> {
                 continue;
             }
             if self.end_ns.is_some_and(|end| frame.timestamp_ns > end) {
-                self.done = true;
-                return Ok(None);
+                continue;
             }
             return Ok(Some(frame));
         }
@@ -285,12 +287,14 @@ mod tests {
     }
 
     #[test]
-    fn windowed_source_stops_at_the_first_frame_past_end_and_never_resumes() {
-        // A frame past `end_ns` ends the stream even if a later frame in
-        // the underlying source would fall back in range — "stop after"
-        // means the walk stops, it doesn't filter the whole file.
+    fn windowed_source_reads_to_eof_and_keeps_a_frame_that_falls_back_in_range() {
+        // Real captures are not timestamp-ordered (ADR 0024): a frame
+        // past `end_ns` must not end the walk, because a later frame in
+        // the underlying source can still be back inside the window —
+        // this is the shape of `wall-clock-out-of-order.blf`, whose two
+        // earliest frames sit after a frame comfortably past the window.
         let source = WindowedSource::new(vec_source(&[1, 2, 5, 2]), None, Some(3));
-        assert_eq!(drain(source), vec![1, 2]);
+        assert_eq!(drain(source), vec![1, 2, 2]);
     }
 
     #[test]
