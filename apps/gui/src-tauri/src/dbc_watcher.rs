@@ -286,8 +286,11 @@ pub fn reload_one(app: &AppHandle, path: &str) {
             return;
         }
     };
+    let state: State<'_, crate::app_state::AppState> = app.state();
+    // Snapshotted before the swap: afterwards there is no way left to
+    // ask what the content this replaces was driving.
+    let backed_before = crate::transmit_commands::dbc_backed_running_periodics(&state);
     {
-        let state: State<'_, crate::app_state::AppState> = app.state();
         let mut list = state.databases();
         let Some(slot) = list.iter_mut().find(|d| d.path == path) else {
             // Unloaded between the FS event and now — nothing to
@@ -301,10 +304,11 @@ pub fn reload_one(app: &AppHandle, path: &str) {
     // Signal placements may have moved — drop the derived decode caches so
     // the new parse takes effect (see `crate::app_state::invalidate_derived_caches`),
     // rebuild RBS rows, and re-resolve every TX entry's calculated fields.
-    {
-        let state: State<'_, crate::app_state::AppState> = app.state();
-        crate::app_state::invalidate_derived_caches(&state);
-    }
+    crate::app_state::invalidate_derived_caches(&state);
+    // The definitions a periodic was transmitting from just changed
+    // underneath it, so it stops before anything else hears about the
+    // swap (ADR 0053 §1).
+    crate::dbc_commands::report_reload_stops(app, &state, path, &backed_before);
     crate::dbc_commands::announce_dbc_change(app, path);
 }
 

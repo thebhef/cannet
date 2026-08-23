@@ -1217,7 +1217,21 @@ fn adopt_embedded_databases(app: &AppHandle, mdf_path: &str, source: &MdfCanFram
         }
     };
     let state: State<'_, AppState> = app.state();
+    // Snapshotted before the installs: a re-import replaces the same
+    // capture's databases in place, and afterwards there is no way left
+    // to ask what the content they replace was driving.
+    let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state.inner());
     let loaded = install_embedded_databases(state.inner(), mdf_path, &attachments);
+    for db in &loaded {
+        if db.reloaded {
+            crate::dbc_commands::report_reload_stops(
+                app,
+                state.inner(),
+                &db.identity,
+                &backed_before,
+            );
+        }
+    }
     for db in &loaded {
         for w in &db.warnings {
             sys_warn!(app, "dbc", "{identity}: {w}", identity = db.identity);
@@ -1254,6 +1268,9 @@ pub(crate) struct EmbeddedDbc {
     pub warnings: Vec<String>,
     /// Why it did not load, if it did not.
     pub error: Option<String>,
+    /// Whether this replaced a database already loaded under the same
+    /// identity — a re-import of the same capture is a reload in place.
+    pub reloaded: bool,
 }
 
 /// Whether an `##AT` attachment is a database this project can read: the
@@ -1295,12 +1312,14 @@ pub(crate) fn install_embedded_databases(
                     message_count: installed.message_count,
                     warnings: installed.warnings,
                     error: None,
+                    reloaded: installed.reloaded,
                 },
                 Err(message) => EmbeddedDbc {
                     identity,
                     message_count: 0,
                     warnings: Vec::new(),
                     error: Some(message),
+                    reloaded: false,
                 },
             }
         })

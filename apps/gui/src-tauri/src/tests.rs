@@ -5177,6 +5177,138 @@ fn removing_a_database_stops_the_periodics_it_was_driving() {
     assert!(!state.transmit_frames().is_running("row"));
 }
 
+// ---- Reloading a database stops what it was driving ----------------
+//
+// The same uncommanded send, reached the other way round: a database
+// reloaded in place can change or drop the very definitions a periodic
+// is transmitting from, and the user did not type the gesture — which
+// makes it more surprising than an unassign, not less. The reload
+// itself still applies (ADR 0053 §1 governs the swap); the stop happens
+// first.
+
+/// One message with one signal, so a reload can *add* an id the
+/// database did not define before.
+fn one_message_dbc_text(can_id: u32) -> String {
+    format!(
+        "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: ECU\n\nBO_ {can_id} Msg: 8 ECU\n \
+         SG_ S : 0|8@1+ (1,0) [0|0] \"\" Vector__XXX\n"
+    )
+}
+
+/// A reload in place, as every reload path performs it: snapshot what
+/// the set is driving, swap, then stop what the reloaded database was
+/// driving. Returns the ids stopped.
+fn reload_in_place(state: &AppState, path: &str, text: &str) -> Vec<String> {
+    let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state);
+    let installed = crate::dbc_commands::install_dbc(state, path, text).unwrap();
+    assert!(
+        installed.reloaded,
+        "same identity -> a swap, not a new entry"
+    );
+    crate::transmit_commands::stop_periodics_driven_by(state, &backed_before, path)
+}
+
+#[test]
+fn reloading_a_database_stops_the_periodics_it_was_driving() {
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    running_row(&state, "from-dbc", "pt", 256);
+    // A raw id no database on the bus describes, and a row the database
+    // does define but that the user already stopped: neither is the
+    // reload's business, and neither may be counted.
+    running_row(&state, "hand-typed", "pt", 0x555);
+    running_row(&state, "parked", "pt", 256);
+    state.transmit_frames().stop_periodic("parked");
+
+    let stopped = reload_in_place(&state, "a.dbc", &ab_dbc_text(2, 1));
+
+    assert_eq!(stopped, vec!["from-dbc".to_string()]);
+    let registry = state.transmit_frames();
+    assert!(!registry.is_running("from-dbc"));
+    assert!(
+        registry.is_running("hand-typed"),
+        "a row no database was driving is none of the reload's business",
+    );
+    // The state the panel reads is the one the user's own Stop leaves.
+    let view = registry
+        .list()
+        .into_iter()
+        .find(|v| v.frame.id == "from-dbc")
+        .expect("the row keeps its configuration");
+    assert!(!view.running);
+    assert_eq!(
+        view.frame.mode,
+        crate::transmit_frames::TransmitMode::Periodic
+    );
+    assert_eq!(view.frame.cycle_ms, 100);
+    drop(registry);
+    // And the reload itself applied: the swapped scale is what the bus
+    // now answers with.
+    let a_factor = state
+        .first_dbc_on_bus(Some("pt"), |db| {
+            db.describe_message(cannet_core::CanId::new(256, false).unwrap())
+        })
+        .expect("the reloaded database still backs the bus")
+        .signals
+        .into_iter()
+        .find(|s| s.name == "A")
+        .expect("A is still defined")
+        .factor;
+    assert!((a_factor - 2.0).abs() < f64::EPSILON, "{a_factor}");
+}
+
+#[test]
+fn a_row_a_different_database_defines_survives_a_reload() {
+    // "Driven by the database that reloaded" is the same per-bus
+    // priority scan the transmit panel's own queries use: the winner
+    // for this id is `b.dbc`, so reloading `a.dbc` changes nothing the
+    // row transmits.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "b.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["pt".to_string()]);
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    running_row(&state, "row", "pt", 256);
+
+    let stopped = reload_in_place(&state, "a.dbc", &ab_dbc_text(2, 1));
+
+    assert!(stopped.is_empty(), "{stopped:?}");
+    assert!(state.transmit_frames().is_running("row"));
+}
+
+#[test]
+fn a_reload_that_takes_over_a_message_stops_the_row_it_now_drives() {
+    // The scan is asked either side of the swap, so a reload that makes
+    // the database the *new* winner for an id is caught too: the row's
+    // definitions moved underneath it just the same.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &one_message_dbc_text(0x111)).unwrap();
+    crate::dbc_commands::install_dbc(&state, "b.dbc", &ab_dbc_text(1, 1)).unwrap();
+    crate::dbc_commands::set_dbc_buses_inner(&state, "a.dbc", vec!["pt".to_string()]);
+    crate::dbc_commands::set_dbc_buses_inner(&state, "b.dbc", vec!["pt".to_string()]);
+    running_row(&state, "row", "pt", 256);
+
+    let stopped = reload_in_place(&state, "a.dbc", &ab_dbc_text(3, 1));
+
+    assert_eq!(stopped, vec!["row".to_string()]);
+    assert!(!state.transmit_frames().is_running("row"));
+}
+
+#[test]
+fn reloading_a_database_assigned_to_no_bus_stops_nothing() {
+    // A database assigned to nothing decodes nothing and drives
+    // nothing, so its content changing cannot reach a row.
+    let state = test_state();
+    crate::dbc_commands::install_dbc(&state, "a.dbc", &ab_dbc_text(1, 1)).unwrap();
+    running_row(&state, "row", "pt", 256);
+
+    let stopped = reload_in_place(&state, "a.dbc", &ab_dbc_text(2, 1));
+
+    assert!(stopped.is_empty(), "{stopped:?}");
+    assert!(state.transmit_frames().is_running("row"));
+}
+
 // ---- The Database panel warns on a duplicate id ---------------------
 //
 // Priority stays one project-wide load order; assignment filters it

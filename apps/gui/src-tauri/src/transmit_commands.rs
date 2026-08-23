@@ -245,34 +245,46 @@ pub(crate) fn stop_periodic_transmit(app: AppHandle, state: State<'_, AppState>,
     emit_transmit_frames_changed(&app);
 }
 
-/// Whether a database assigned to this periodic's bus defines the
-/// message it transmits — i.e. whether the loaded set is what the row
-/// is driven from. The same per-bus priority scan the transmit panel's
-/// describe / decode / encode queries use, so the answer is exactly
-/// "does the app still show this row a message".
-fn dbc_backs(state: &AppState, p: &transmit_frames::RunningPeriodic) -> bool {
-    let Ok(id) = CanId::new(p.can_id, p.extended) else {
-        return false;
-    };
-    state
-        .first_dbc_on_bus(Some(&p.bus_id), |db| db.describe_message(id))
-        .is_some()
+/// A firing periodic the DBC set is driving, and the database driving
+/// it: the answer of the per-bus priority scan, plus which database
+/// gave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BackedPeriodic {
+    /// The registry id of the row.
+    pub id: String,
+    /// The path of the database whose definition the row transmits.
+    pub dbc_path: String,
 }
 
-/// The ids of the periodics the current DBC set is driving: firing
-/// right now, and defined by a database assigned to their bus. Taken
-/// **before** a change to the set; [`stop_periodics_left_unbacked`]
-/// re-asks the same question after it.
+/// The database assigned to this periodic's bus that defines the
+/// message it transmits — i.e. what the loaded set is driving the row
+/// from, or `None` if nothing is. The same per-bus priority scan the
+/// transmit panel's describe / decode / encode queries use, so the
+/// answer is exactly "which database does the app show this row a
+/// message out of".
+fn backing_dbc(state: &AppState, p: &transmit_frames::RunningPeriodic) -> Option<String> {
+    let id = CanId::new(p.can_id, p.extended).ok()?;
+    state
+        .first_dbc_on_bus_with_path(Some(&p.bus_id), |db| db.describe_message(id))
+        .map(|(path, _)| path)
+}
+
+/// The periodics the current DBC set is driving: firing right now, and
+/// defined by a database assigned to their bus, each paired with that
+/// database. Taken **before** a change to the set;
+/// [`stop_periodics_left_unbacked`] and [`stop_periodics_driven_by`]
+/// re-ask the same question after it.
 ///
 /// A row the set never backed — a hand-typed id no database on the bus
-/// describes — is absent from both answers, so an assignment change is
+/// describes — is absent from both answers, so a change to the set is
 /// never its business.
-pub(crate) fn dbc_backed_running_periodics(state: &AppState) -> Vec<String> {
+pub(crate) fn dbc_backed_running_periodics(state: &AppState) -> Vec<BackedPeriodic> {
     let running = state.transmit_frames().running_periodics();
     running
         .into_iter()
-        .filter(|p| dbc_backs(state, p))
-        .map(|p| p.id)
+        .filter_map(|p| {
+            backing_dbc(state, &p).map(|dbc_path| BackedPeriodic { id: p.id, dbc_path })
+        })
         .collect()
 }
 
@@ -288,12 +300,48 @@ pub(crate) fn dbc_backed_running_periodics(state: &AppState) -> Vec<String> {
 /// configuration, exactly as the user's own Stop leaves it.
 pub(crate) fn stop_periodics_left_unbacked(
     state: &AppState,
-    backed_before: &[String],
+    backed_before: &[BackedPeriodic],
 ) -> Vec<String> {
     let running = state.transmit_frames().running_periodics();
     let mut stopped = Vec::new();
     for p in running {
-        if backed_before.contains(&p.id) && !dbc_backs(state, &p) {
+        let was_backed = backed_before.iter().any(|b| b.id == p.id);
+        if was_backed && backing_dbc(state, &p).is_none() {
+            stop_periodic_transmit_inner(state, &p.id);
+            stopped.push(p.id);
+        }
+    }
+    stopped
+}
+
+/// Stop every periodic the database at `path` was driving — or is
+/// driving now — and return the ids stopped in pool order.
+///
+/// The reload counterpart to [`stop_periodics_left_unbacked`]. A
+/// database reloaded in place can change or drop the very definitions a
+/// row is transmitting from, so continuing to put those frames on a
+/// real bus is [ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+/// §1's uncommanded send — reached by a file changing underneath rather
+/// than by a deliberate gesture, which makes it more surprising, not
+/// less. The reload itself still applies; the stop happens first.
+///
+/// "Driven by" is the same per-bus priority scan asked either side of
+/// the swap, so a row a *different* assigned database defines is none
+/// of the reload's business, and a row the reload makes this database
+/// the new winner for is.
+pub(crate) fn stop_periodics_driven_by(
+    state: &AppState,
+    backed_before: &[BackedPeriodic],
+    path: &str,
+) -> Vec<String> {
+    let running = state.transmit_frames().running_periodics();
+    let mut stopped = Vec::new();
+    for p in running {
+        let before = backed_before
+            .iter()
+            .find(|b| b.id == p.id)
+            .map(|b| b.dbc_path.as_str());
+        if before == Some(path) || backing_dbc(state, &p).as_deref() == Some(path) {
             stop_periodic_transmit_inner(state, &p.id);
             stopped.push(p.id);
         }

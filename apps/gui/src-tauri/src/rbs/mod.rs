@@ -33,8 +33,8 @@ pub use file_model::{format_message_key, parse_message_key, RbsFile, RbsMessage,
 
 mod runtime;
 
-pub(crate) use runtime::refresh_all_elements;
 pub use runtime::RbsRuntime;
+pub(crate) use runtime::{refresh_all_elements, stop_elements_owning};
 
 mod view;
 

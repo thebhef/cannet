@@ -138,6 +138,9 @@ pub(crate) fn add_dbc(
             return Err(msg);
         }
     };
+    // Snapshotted before the swap: afterwards there is no way left to
+    // ask what the content this replaces was driving.
+    let backed_before = crate::transmit_commands::dbc_backed_running_periodics(state.inner());
     let installed = match install_dbc(state.inner(), &path, &text) {
         Ok(i) => i,
         Err(msg) => {
@@ -150,6 +153,7 @@ pub(crate) fn add_dbc(
     }
     if installed.reloaded {
         sys_info!(&app, "dbc", "reloaded DBC {path}");
+        report_reload_stops(&app, state.inner(), &path, &backed_before);
     } else {
         sys_info!(&app, "dbc", "loaded DBC {path}");
         // Start watching this file's parent dir for FS
@@ -228,10 +232,11 @@ pub(crate) fn remove_dbc_inner(state: &AppState, path: &str) -> Option<Vec<Strin
     ))
 }
 
-/// Record, in **one** system-log entry, that an assignment change
-/// stopped periodics that were firing. One line however many stopped:
-/// no modal and no per-element notice.
-fn log_periodics_stopped(app: &AppHandle, path: &str, stopped: &[String]) {
+/// Record, in **one** system-log entry, that a change to the DBC set
+/// stopped periodics that were firing, and tell the open transmit views
+/// — their Run control is the state that just moved. One line however
+/// many stopped: no modal and no per-element notice.
+fn report_periodics_stopped(app: &AppHandle, path: &str, stopped: &[String]) {
     if stopped.is_empty() {
         return;
     }
@@ -241,6 +246,38 @@ fn log_periodics_stopped(app: &AppHandle, path: &str, stopped: &[String]) {
         "stopped {} running transmit(s) {path} was driving",
         stopped.len()
     );
+    crate::transmit_commands::emit_transmit_frames_changed(app);
+}
+
+/// A database reloaded in place stops what it was driving, and says so
+/// in one line. `backed_before` is
+/// [`crate::transmit_commands::dbc_backed_running_periodics`] taken
+/// **before** the swap — every reload path snapshots it first, because
+/// afterwards there is no way left to ask what the old content was
+/// driving.
+///
+/// An RBS element whose rows were among them stops with them: its rows
+/// are derived, so the rebuild the announcement runs would otherwise put
+/// them straight back ([`rbs::stop_elements_owning`]). Its Run flag is
+/// the project's, mirrored onto the host, so `rbs-run-stopped` names the
+/// elements the host turned off and the project follows — the two halves
+/// of one flag cannot be left disagreeing.
+///
+/// The reload itself always proceeds
+/// ([ADR 0053](../../../docs/adr/0053-reload-when-it-applies-and-what-it-tells.md)
+/// §1 governs the swap); this is the stop that happens first.
+pub(crate) fn report_reload_stops(
+    app: &AppHandle,
+    state: &AppState,
+    path: &str,
+    backed_before: &[crate::transmit_commands::BackedPeriodic],
+) {
+    let stopped = crate::transmit_commands::stop_periodics_driven_by(state, backed_before, path);
+    let elements = rbs::stop_elements_owning(state, &stopped);
+    report_periodics_stopped(app, path, &stopped);
+    if !elements.is_empty() {
+        let _ = app.emit("rbs-run-stopped", elements);
+    }
 }
 
 /// Replace the bus assignment of a loaded DBC. An empty `buses`
@@ -266,10 +303,7 @@ pub(crate) fn set_dbc_buses(
     // stopped in the same call; the announcement below is what then
     // takes them out of the pool altogether, and it notifies the RBS
     // panel itself.
-    log_periodics_stopped(&app, &path, &stopped);
-    if !stopped.is_empty() {
-        crate::transmit_commands::emit_transmit_frames_changed(&app);
-    }
+    report_periodics_stopped(&app, &path, &stopped);
     announce_dbc_change(&app, &path);
     dbc_list(state.inner())
 }
@@ -281,10 +315,7 @@ pub(crate) fn set_dbc_buses(
 pub(crate) fn remove_dbc(app: AppHandle, state: State<'_, AppState>, path: String) -> Vec<DbcInfo> {
     if let Some(stopped) = remove_dbc_inner(state.inner(), &path) {
         sys_info!(&app, "dbc", "removed DBC {path}");
-        log_periodics_stopped(&app, &path, &stopped);
-        if !stopped.is_empty() {
-            crate::transmit_commands::emit_transmit_frames_changed(&app);
-        }
+        report_periodics_stopped(&app, &path, &stopped);
         if let Some(w) = state.dbc_watcher().as_mut() {
             w.unwatch_file(std::path::Path::new(&path));
         }

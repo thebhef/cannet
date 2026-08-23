@@ -2487,10 +2487,39 @@ export function App() {
 
   // Re-read every loaded DBC from disk (a file that's gone or no longer
   // parses drops out, with an error). No-op when none are loaded.
-  // Preserve per-DBC bus scoping across the reload.
-  const handleReloadDbc = useCallback(() => {
-    if (dbcPaths.length > 0) void loadDbcSet(dbcPaths, dbcBuses);
-  }, [dbcPaths, dbcBuses, loadDbcSet]);
+  //
+  // Each path goes through `add_dbc`, which swaps it in place and so
+  // keeps its bus assignment and priority position — deliberately *not*
+  // through `loadDbcSet`, whose `clear_dbcs` would make every re-read
+  // look to the host like a first load and hide that it is reloading
+  // definitions something may be transmitting from (ADR 0053 §1).
+  const handleReloadDbc = useCallback(async () => {
+    if (dbcPaths.length === 0) return;
+    // One set change spread over a call per database, as `loadDbcSet`
+    // does it: a single re-anchor at the end rather than one per call.
+    const release = suppressDbcChanges();
+    try {
+      let list: string[] = [...dbcPaths];
+      const errors: string[] = [];
+      for (const path of dbcPaths) {
+        try {
+          list = (await invoke<DbcInfo[]>("add_dbc", { path })).map((d) => d.dbc_path);
+        } catch (err) {
+          errors.push(`${path}: ${String(err)}`);
+          try {
+            list = (await invoke<DbcInfo[]>("remove_dbc", { path })).map((d) => d.dbc_path);
+          } catch {
+            /* the host kept it; the error above is what the user sees */
+          }
+        }
+      }
+      setDbcPaths(list);
+      invalidateCache();
+      if (errors.length > 0) setState({ kind: "error", message: `DBC: ${errors.join("; ")}` });
+    } finally {
+      release();
+    }
+  }, [dbcPaths, invalidateCache]);
 
   // Update a single DBC's bus scoping and push it to the host.
   const handleSetDbcBuses = useCallback(
@@ -2729,6 +2758,19 @@ export function App() {
     }
     rbsHostStateRef.current = current;
   }, [registry, queueRbsOp]);
+  // The host turns an element's Run off when a database it was
+  // transmitting from reloads underneath it (ADR 0053 §1's swap
+  // exception). Run is the *project's* flag mirrored onto the host, so
+  // the project follows the host here — otherwise the panel's Run
+  // control would read on while nothing is being sent.
+  useEffect(() => {
+    const un = listen<string[]>("rbs-run-stopped", (event) => {
+      for (const id of event.payload) updateElement(id, { kind: "rbs", run: false });
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, [updateElement]);
   // The global RBS kill-switch is runtime-only host state; mirror it
   // through its dedicated event so the palette toggle and the panel
   // button stay in sync.
