@@ -535,6 +535,8 @@ describe("TracePanel event kinds", () => {
     describeNote: vi.fn(),
     retagNote: vi.fn(),
     removeNote: vi.fn(),
+    linkEvents: vi.fn(),
+    unlinkEvents: vi.fn(),
   });
 
   function renderWithNotes(notes: Note[], ctx: NotesContextValue = notesCtx(notes)) {
@@ -602,6 +604,8 @@ describe("TracePanel event rows: the same interactions as the events view", () =
     describeNote: vi.fn(),
     retagNote: vi.fn(),
     removeNote: vi.fn(),
+    linkEvents: vi.fn(),
+    unlinkEvents: vi.fn(),
   });
 
   function renderWithNotes(notes: Note[], ctx: NotesContextValue = notesCtx(notes)) {

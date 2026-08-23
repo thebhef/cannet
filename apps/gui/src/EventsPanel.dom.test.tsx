@@ -48,6 +48,8 @@ const notesCtx = (notes: Note[]): NotesContextValue => ({
   describeNote: vi.fn(),
   retagNote: vi.fn(),
   removeNote: vi.fn(),
+  linkEvents: vi.fn(),
+  unlinkEvents: vi.fn(),
 });
 
 function renderPanel(notes: Note[], data: TraceData = traceData) {
@@ -454,13 +456,14 @@ describe("EventsPanel event row ARIA", () => {
     expect(activeRow()).not.toHaveAttribute("aria-expanded");
   });
 
-  it("advertises no selection, because an event row is not selectable", () => {
-    // A frame row carries `aria-selected`; an event row is not a message
-    // and takes no part in the selection (ADR 0044), so claiming the
-    // attribute would say it does.
+  it("advertises its selection, because this view's event rows are selectable", () => {
+    // An event row takes no part in the selection where it is drawn
+    // beside frames (ADR 0044) — but this view's Link Events control
+    // acts on exactly two selected events, so here the adapter declares
+    // them selectable and the row says which it is.
     renderPanel([tagged]);
     fireEvent.keyDown(grid(), { key: "ArrowDown" });
-    expect(activeRow()).not.toHaveAttribute("aria-selected");
+    expect(activeRow()).toHaveAttribute("aria-selected", "true");
   });
 
   it("keeps the caret out of the tab order, so Tab lands on a control that needs it", () => {

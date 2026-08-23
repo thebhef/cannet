@@ -74,6 +74,7 @@ function eventRow(id: string, label: string, editable = true): TraceRow {
       timestampNs: EVENT_TS,
       color: null,
       editable,
+      subjects: [],
     } as unknown as TimelineEvent,
   };
 }

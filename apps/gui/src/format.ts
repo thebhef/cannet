@@ -24,11 +24,20 @@ export type CanIdFormat = "hex" | "decimal";
 /// rather than defaulted — a caller that forgot it is how "hex only"
 /// happened in the first place.
 export function formatId(frame: TraceFrameRecord, format: CanIdFormat): string {
-  const id =
-    format === "decimal"
-      ? frame.id.toString(10)
-      : formatCanIdHex(frame.id, frame.extended);
-  return `${frame.extended ? "x" : "s"}:${id}`;
+  return formatArbitrationId(frame.id, frame.extended, format);
+}
+
+/// The same string from a raw `(id, extended)` pair, for a surface that
+/// names a message without holding a frame — an event's subject chip
+/// names one structurally (ADR 0056). Same prefix rule, same reason: the
+/// two id widths overlap numerically.
+export function formatArbitrationId(
+  id: number,
+  extended: boolean,
+  format: CanIdFormat,
+): string {
+  const text = format === "decimal" ? id.toString(10) : formatCanIdHex(id, extended);
+  return `${extended ? "x" : "s"}:${text}`;
 }
 
 export function formatKind(frame: TraceFrameRecord): string {

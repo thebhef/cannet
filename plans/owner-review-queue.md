@@ -211,6 +211,31 @@ series nothing can revive.
 
 **Needed: ratify, or revert the two commits.**
 
+### 1.20 An event row in the Events view is now selectable
+[task 107](tasks/0107-events-point-at-signals.md) phase 3
+
+The linking gesture is "multi-select + toolbar button" (owner ruling
+2026-08-21), and the selection it needs is the gridview's. ADR 0044
+leaves selectability to the adapter's declaration, so the Events view now
+declares its event rows selectable — clicking one selects it as well as
+putting the cursor on it, Ctrl/Cmd+click adds a second, and the row
+carries `aria-selected`. **Only that view.** An event interleaved into
+the chronological trace is still cursor-only, as before.
+
+**Needed: confirm that a click in the Events view now selecting is
+wanted**, or say the multi-select should be a control of its own.
+
+### 1.21 The Link Events chip also unlinks
+[task 107](tasks/0107-events-point-at-signals.md) phase 3
+
+The groomed scope named a "Link Events" control. Built as named, a link
+can be made and never unmade — the host's `unlink_events` would have no
+caller. The chip therefore has two faces: with two unlinked events
+selected it reads **Link Events**, and with two already-linked events
+selected it reads **Unlink Events** and drops the link.
+
+**Needed: ratify, or say unlink belongs somewhere else.**
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost

@@ -1815,6 +1815,8 @@ describe("PlotPanel", () => {
         describeNote: () => {},
         retagNote: () => {},
         removeNote: () => {},
+        linkEvents: () => {},
+        unlinkEvents: () => {},
       };
       renderPanel({
         params: { elementId: "el-note" },

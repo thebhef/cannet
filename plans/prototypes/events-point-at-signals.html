@@ -137,35 +137,43 @@ ul.q li { margin:.3rem 0; }
 .trace-event-edit:hover { color:var(--text-secondary); }
 .trace-event-remove:hover { color:var(--danger-text); }
 
-/* NEW: the subject chips, after the label. */
-.chips { display:flex; gap:.35rem; min-width:0; overflow:hidden; }
-.chip { display:inline-flex; align-items:center; gap:.3rem; font-size:12px;
-  border:1px solid var(--border-subtle); border-radius:3px; padding:0 .35rem;
-  line-height:16px; color:var(--text-muted); background:var(--surface-field);
-  transition:border-color .12s; }
-.chip .sw { width:.5rem; height:.5rem; border-radius:2px; }
+/* NEW: the subject chips, after the label. As shipped: the container is
+   a flex item that GROWS, so its width is the room the row has left over
+   rather than a function of what is in it — which is what keeps the
+   shared toolbar-fit measurement from chasing its own tail. It must not
+   clip: fit comes from removing chips. */
+.chips { display:flex; align-items:center; gap:.35rem; flex:1 1 auto;
+  min-width:0; }
+.chip { display:inline-flex; align-items:center; gap:.3rem; flex:0 0 auto;
+  font-size:11px;
+  border:1px solid var(--border-wash); border-radius:2px; padding:0 .35rem;
+  line-height:16px; color:var(--text-muted); background:var(--surface-field); }
+.chip svg { display:block; flex:0 0 auto; }
+/* A message reads in the same ink the trace's id column uses. A signal
+   carries no swatch: a subject stores no bus, and signal colour is
+   bus-scoped, so there is no one colour to draw. */
 .chip.msg { color:var(--text-message); }
 .chip.evt { color:var(--text-source); }
 /* A structural reference (message ID + signal field) that no assigned
-   database resolves right now: it persists, rendered muted, no swatch. */
+   database resolves right now: it persists, rendered muted. */
 .chip.unresolved { color:var(--text-faint); font-style:italic; }
-.trace-event-row:hover .chip, .trace-event-focused .chip {
-  border-color:var(--accent-marker); }
-/* Chip overflow: same pattern as the status-bar prototype — a … button
-   with a count, dropping a menu of the full chip set. */
-.menu-wrap { position:relative; display:inline-flex; }
-.more { display:inline-flex; align-items:center; gap:.35rem; font:inherit;
-  font-size:12px; color:var(--text-body); cursor:pointer;
+/* Chip overflow: the shared toolbar-fit planner decides how many stay,
+   and the rest collapse into a … carrying the count. Pressing it opens
+   the row's own body — a dropdown cannot work in the app, whose row
+   scroller is `contain: strict` and would clip one. */
+.more { display:inline-flex; align-items:center; flex:0 0 auto; font:inherit;
+  font-size:11px; color:var(--text-primary); cursor:pointer;
   background:var(--surface-toolbar-control);
   border:1px solid var(--border-wash); border-radius:2px;
   padding:0 .35rem; line-height:16px; }
 .more:hover { background:var(--surface-toolbar-control-hover); }
-.chip-menu { position:absolute; top:100%; left:0; margin:4px 0 0 0;
-  padding:4px; list-style:none; display:flex; flex-direction:column; gap:4px;
-  background:var(--surface-pop); border:1px solid var(--border-subtle);
-  border-radius:4px; z-index:50; box-shadow:0 4px 12px var(--shadow-menu); }
-.chip-menu[hidden] { display:none; }
-.chip-menu .chip { width:max-content; }
+/* The disclosed body line: every chip, the collapsed ones included. */
+.about { display:flex; align-items:center; gap:.35rem; min-width:0;
+  overflow-x:auto; padding:0 .55rem 0 6.9rem; height:18px;
+  background:var(--surface-row); color:var(--text-faint); font-size:11px;
+  border-bottom:1px solid var(--border-subtle); }
+.about[hidden] { display:none; }
+.about > b { font-weight:600; color:var(--text-label); margin-right:.2rem; }
 
 /* === Trace snippet === */
 .grid { width:100%; border-collapse:collapse; }
@@ -241,16 +249,25 @@ kbd { font:11px ui-monospace, monospace; color:var(--text-label);
 <h2>The events view: subjects on the row, and linking</h2>
 <p class="note">
   The rows are the app&rsquo;s own event rows; the subject chips are the one
-  new element — <b>signal</b> (colored swatch), <b>message</b> (arbitration
-  id), <b>event</b> (↔ the linked event&rsquo;s label). At most two chips
-  show inline; more overflow into a <b>…</b> expansion (the status-bar
-  prototype&rsquo;s pattern — the overtemp row exercises it). A signal or
-  message reference is <b>structural</b> — message ID plus signal field —
-  so it never breaks: unresolved right now, it renders muted (the
-  contactor row&rsquo;s <i>TorqueReq</i>). Only event references die, with
-  their event. Click selects;
+  new element — <b>signal</b> (the field name), <b>message</b> (the
+  arbitration id in the trace&rsquo;s own <code>s:</code>/<code>x:</code>
+  form, plus the name a database gives it), <b>event</b> (the registry&rsquo;s
+  link glyph and the linked event&rsquo;s label). A signal chip carries no
+  colour swatch: a subject stores no bus, and signal colour is bus-scoped,
+  so there is no one colour to draw. Chips that do not fit collapse into a
+  <b>…</b> expansion carrying their count (the overtemp row exercises it);
+  pressing it opens the row&rsquo;s body, where the whole list is drawn
+  under <b>about</b> — a dropdown would be clipped by the app&rsquo;s row
+  scroller. In the app the shared toolbar-fit planner measures the row and
+  decides how many stay; here the inline count is fixed at two.
+  A signal or message reference is <b>structural</b> — message ID plus
+  signal field — so it never breaks: unresolved right now, it renders muted
+  (the contactor row&rsquo;s <i>TorqueReq</i>). Only event references die,
+  with their event. A link is stored once and <b>read from both ends</b>,
+  so it chips on both events. Click selects;
   <kbd>Mod</kbd>+click multi-selects; with exactly two selected, <i>Link
-  events</i> activates, and selecting either end of a linked pair shades
+  Events</i> activates — and reads <i>Unlink Events</i> when the two are
+  already linked — and selecting either end of a linked pair shades
   the plot between them.
 </p>
 <div class="frame">
@@ -278,7 +295,9 @@ kbd { font:11px ui-monospace, monospace; color:var(--text-label);
 <h2>Settled by owner rulings 2026-08-21</h2>
 <ul class="q">
   <li><b>Chip density:</b> overflow into a <b>…</b> expansion, the
-    status-bar prototype&rsquo;s pattern (shown above).</li>
+    status-bar prototype&rsquo;s pattern (shown above). As shipped, the
+    shared toolbar-fit planner decides how many chips stay and the
+    <b>…</b> discloses the row&rsquo;s body rather than a dropdown.</li>
   <li><b>Reference form:</b> structural — a message reference is the
     arbitration ID, a signal reference is message ID + signal field name.
     No database identity is stored; the reference resolves against
@@ -478,27 +497,39 @@ function signalColor(id) {
 // would be dropped from the model). Signal / message references are
 // structural — message ID + field name — so they never die: one that no
 // assigned database resolves right now renders muted, without a swatch.
+// The app renders an arbitration id the way its trace does: an `s:` /
+// `x:` prefix (11- and 29-bit ids overlap numerically) and the id in the
+// view's own format.
+function idText(ref) { return "s:" + ref.replace(/^0x/, ""); }
+// The registry's `link` glyph, which is what an event→event reference
+// wears in the app.
+const LINK_SVG = `<svg width="11" height="11" viewBox="0 0 14 14" style="fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round"><path d="M6 8l2-2"/><path d="M8.5 8.5l2-2a2.1 2.1 0 0 0-3-3l-2 2M5.5 5.5l-2 2a2.1 2.1 0 0 0 3 3l2-2"/></svg>`;
 function chipHtml(sub) {
   if (sub.kind === "signal") {
-    const c = signalColor(sub.sig);
-    if (!c) return `<span class="chip unresolved" title="${sub.msg}.${sub.sig} — no assigned database defines this right now">${sub.sig}</span>`;
-    return `<span class="chip" title="${sub.msg}.${sub.sig}"><span class="sw" style="background:${c}"></span>${sub.sig}</span>`;
+    const known = !!signalColor(sub.sig);
+    const where = idText(sub.msg);
+    if (!known) return `<span class="chip unresolved" title="signal ${where}.${sub.sig} — no assigned database defines it right now">${sub.sig}</span>`;
+    return `<span class="chip" title="signal ${where}.${sub.sig}">${sub.sig}</span>`;
   }
   if (sub.kind === "message") {
     const m = MESSAGES.find(m => m.id === sub.ref);
-    return `<span class="chip msg">${sub.ref}${m ? " " + m.name : ""}</span>`;
+    const id = idText(sub.ref);
+    if (!m) return `<span class="chip msg unresolved" title="message ${id} — no assigned database defines it right now">${id}</span>`;
+    return `<span class="chip msg" title="message ${id} ${m.name}">${id} ${m.name}</span>`;
   }
   const target = events.find(e => e.id === sub.ref);
-  return target ? `<span class="chip evt">↔ ${target.label}</span>` : "";
+  return target ? `<span class="chip evt" title="linked event — ${target.label}">${LINK_SVG}${target.label}</span>` : "";
 }
-// Chip overflow (owner ruling 2026-08-21): at most 2 chips inline, the
-// rest behind a … expansion, the status-bar prototype's pattern.
+// Chip overflow (owner ruling 2026-08-21): a … expansion, the status
+// bar's pattern. In the app the shared toolbar-fit planner measures the
+// row and decides how many stay; here the count is fixed at 2, so the
+// behaviour is visible without a layout pass.
+const INLINE_CHIPS = 2;
 function chipsHtml(subjects) {
   const chips = subjects.map(chipHtml).filter(Boolean);
-  if (chips.length <= 2) return chips.join("");
-  return chips.slice(0, 2).join("") +
-    `<span class="menu-wrap"><button class="more chip-more">… +${chips.length - 2}</button>` +
-    `<span class="chip-menu" hidden>${chips.join("")}</span></span>`;
+  if (chips.length <= INLINE_CHIPS) return chips.join("");
+  return chips.slice(0, INLINE_CHIPS).join("") +
+    `<button class="more chip-more" title="show ${chips.length - INLINE_CHIPS} more subjects">… +${chips.length - INLINE_CHIPS}</button>`;
 }
 // One builder for both surfaces, mirroring the app's EventRow structure:
 // time, ⇥ goto, color bar, label, [NEW chips], ✎ / × pinned right.
@@ -517,18 +548,31 @@ function eventRowEl(e, { goto } = {}) {
     `<button class="trace-event-remove" title="remove event">×</button>`;
   row.addEventListener("mouseenter", () => setTransient(e.id));
   row.addEventListener("mouseleave", () => setTransient(selectedRow));
+  return row;
+}
+// The row plus the body it discloses. Pressing … opens the body, where
+// the whole subject list is drawn — the app's row scroller has no room
+// for a dropdown.
+function eventRowBlock(e, opts) {
+  const wrap = document.createElement("div");
+  const row = eventRowEl(e, opts);
+  wrap.appendChild(row);
+  const about = document.createElement("div");
+  about.className = "about";
+  about.hidden = true;
+  about.innerHTML = "<b>about</b>" + e.subjects.map(chipHtml).filter(Boolean).join("");
+  if (e.subjects.length) wrap.appendChild(about);
   const more = row.querySelector(".chip-more");
   if (more) more.addEventListener("click", ev => {
     ev.stopPropagation();
-    const menu = more.nextElementSibling;
-    menu.hidden = !menu.hidden;
+    about.hidden = !about.hidden;
   });
-  return row;
+  return { wrap, row };
 }
 function renderEvents() {
   evlist.innerHTML = "";
   for (const e of [...events].sort((a, b) => a.t - b.t)) {
-    const row = eventRowEl(e, { goto: true });
+    const { wrap, row } = eventRowBlock(e, { goto: true });
     row.addEventListener("click", ev => {
       if (ev.metaKey || ev.ctrlKey) {
         multi.has(e.id) ? multi.delete(e.id) : multi.add(e.id);
@@ -540,7 +584,7 @@ function renderEvents() {
       setTransient(selectedRow);
       renderEvents();
     });
-    evlist.appendChild(row);
+    evlist.appendChild(wrap);
   }
   document.getElementById("linkSpan").disabled = multi.size !== 2;
 }

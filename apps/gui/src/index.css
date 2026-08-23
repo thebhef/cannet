@@ -2816,6 +2816,78 @@ button.color-chip {
   margin-left: 0;
 }
 
+/* === Subject chips on an event row (ADR 0056) ===
+   What the event is about, resolved against the databases assigned right
+   now. The container is a flex item that *grows*, so its own width is the
+   room the row has left over rather than a function of what is in it —
+   which is what keeps `useToolbarFit`'s measurement from chasing its own
+   tail as chips collapse. It must not clip: fit comes from removing
+   chips, never from hiding them. */
+.event-subject-chips {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.event-subject-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: 0 0 auto;
+  max-width: 14rem;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 0.35rem;
+  border: 1px solid var(--border-wash);
+  border-radius: 2px;
+  color: var(--text-muted);
+  background: var(--surface-field);
+}
+.event-subject-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.event-subject-chip svg {
+  display: block;
+  flex: 0 0 auto;
+}
+/* A message reads in the same ink the trace's id column uses, so the
+   chip and the table above it name a message the same way. */
+.event-subject-chip--message {
+  color: var(--text-message);
+}
+.event-subject-chip--event {
+  color: var(--text-source);
+}
+/* A structural reference no assigned database can name right now. It is a
+   state, not a fault (ADR 0056): the chip still says what it points at,
+   and the tooltip says why it is muted. */
+.event-subject-chip--unresolved {
+  color: var(--text-faint);
+  font-style: italic;
+}
+/* The `…` control, in a row's density. Pressing it opens the row's body,
+   where the whole subject list is drawn — a dropdown cannot work here,
+   since the scroll area is `contain: strict` and would clip it. */
+.event-subject-more {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 0.35rem;
+}
+/* The disclosed subject line: every chip, including the ones the row
+   could not fit. One line, like every other body row, so an event with
+   many subjects scrolls rather than growing the block. */
+.trace-event-body-subjects {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
 /* Pinned to the right edge of the row. */
 .trace-event-remove {
   margin-left: auto;
@@ -6697,6 +6769,11 @@ button.color-chip {
   padding: 0.25rem 0.6rem;
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border-subtle);
+}
+/* Pushes the Link Events chip to the bar's right edge, away from the two
+   filters — a command, not a filter. */
+.events-panel-toolbar-spacer {
+  flex: 1 1 auto;
 }
 
 /* An event row's disclosure control (ADR 0035): opens the tag and

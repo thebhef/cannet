@@ -727,6 +727,144 @@ path, and the harness exercises neither.
 
 All six CI jobs run locally and green.
 
+### Phase 3 — subjects on the event row (2026-08-22)
+
+Landed on `task-107-phase-3-subject-chips`, off `task-107-phase-2-carrier`
+(`8d8e105a`). The first phase of 107 with any UI, and no Rust changed.
+
+**Resolution is a pure function, and it is the phase's centre.**
+`apps/gui/src/eventSubjects.ts` turns an event's subjects into the chips a
+row draws: `subjectIndexFor(catalog)` is what the assigned databases can
+name (message id + extended → name; message + field → does it exist),
+cached in a `WeakMap` on the catalog array so a viewport of rows shares
+one index; `subjectChips(event, events, index, idFormat)` returns the
+chips. Message and signal subjects come first in the order the event
+stores them, then the links.
+
+- **Unresolved is drawn, not repaired.** A chip whose reference no
+  assigned database names keeps its label — the field name, or the
+  arbitration id — goes muted and italic, and says why in its tooltip.
+  Four tests pin it, including the same event read against an empty
+  catalog.
+- **A message chip reads `s:1A2 BMS_Status`**, the trace's own id
+  spelling and the view's own id format, rather than the prototype's
+  `0x1A2`. `formatId` grew a raw-pair twin (`formatArbitrationId`) so
+  there is one place the prefix rule lives.
+- **No swatch on a signal chip.** The prototype draws one. A subject
+  stores no bus (ADR 0056) and `signalKey` — what the colour resolver
+  takes — is bus-scoped, so a structural reference has no single colour
+  to draw. Kinds are told apart by ink instead: a message in
+  `--text-message` (the trace's id column), a link by the registry's
+  `link` glyph, everything muted-italic when unresolved. Prototype
+  updated to match, in this commit.
+- **`linked_event_ids` was already called** — phase 2's `capture.rs`
+  got there first, and its `#[allow(dead_code)]` is gone. The caller
+  this phase adds is the **frontend** twin `linkedEventIds`, which
+  `subjectChips` uses for the link chips, so both events in a pair chip
+  each other though only one stores the reference. See the blocker below
+  for `NotesStore::linked_events`, which is still uncalled.
+
+**Overflow: the shared planner, an unshared destination.** The chips are a
+run through `useToolbarFit` / `planToolbarFit` — the same measurement and
+the same arithmetic the status bar and both toolbars use, not a second
+implementation. What could not be shared is where the collapsed chips
+*go*: the status bar drops an absolutely-positioned menu, and an event row
+cannot. `.trace-rows` is `overflow: auto; contain: strict` and the sticky
+row stack inside it is `overflow: hidden`, so a dropdown from a row is
+clipped by construction; portalling one out is a larger change than this
+phase. The row already has an expansion — the body that discloses the tag
+and the description — so `…` opens that, and the body gained an **about**
+line carrying every chip. Same promise as the status bar's: nothing is
+more than one click away, and the row never grows with the subject count.
+
+Two details that decide whether the measurement is stable:
+
+- **The chips container grows** (`flex: 1 1 auto`), so its `clientWidth`
+  is the room the row has left over rather than a function of what is in
+  it. Measuring a shrink-to-fit container would make the planner chase
+  its own tail: collapse a chip, the container narrows, the planner
+  collapses another.
+- **It must not clip.** The hook's own docs say a clipping bar swallows
+  its overflow; here fit is guaranteed by removing chips, and clipping
+  would instead hide them silently.
+
+**Multi-select and the Link Events chip.** ADR 0044 leaves selectability
+to the adapter, so `TraceView` grew `selectableEvents` and the Events view
+sets it; `onEventSelectionChange` reports the selected event ids up rather
+than the panel keeping a second selection model. The chip is a plain
+`ChipButton` with the registry's `link` icon — the 108 prototype's
+events-view bar, built as drawn. `NotesContextValue` gained `linkEvents` /
+`unlinkEvents` over phase 1's IPC. The pair is sorted chronologically and
+the reference is stored on the **later** event, so the stored form is
+predictable; nothing reads the direction. Both changes are queued for the
+owner (3.20, 3.21 → queue 1.20, 1.21).
+
+**Judgement calls, for the record.**
+
+- **The chip is not a `ChipButton`.** A subject chip is neither a command
+  nor a state report — it names a thing, and in this phase it does
+  nothing when pressed. It is its own small element on the chip
+  language's tokens (2px radius, `--border-wash` hairline, 11px). The
+  `…` control *does* borrow the status bar's
+  `.status-bar-overflow-button` outright, plus a density modifier — the
+  sanctioned "shared class on a bespoke button", so "there is more, one
+  click away" looks the same everywhere.
+- **The Link Events chip unlinks too**, which the groomed scope did not
+  say. Built strictly as scoped, a link could be made and never unmade
+  and `unlink_events` would keep its no caller. Queued rather than
+  assumed.
+- **The subjects body line is keyed off the stored list, not off what
+  resolves**, so assigning or dropping a database never moves the row
+  geometry underneath the reader.
+
+**Perf.** Three 60 s ADR-0031 captures on ev-zonal, release build,
+`--perf-interact scrub`, load verified (`ids_measured` 173, rx ≈ 1607 f/s,
+tx ≈ 1610 f/s). `check` passed on runs 1 and 3; run 2 failed one metric,
+`tx_late_ms_max` 73.8 (baseline 15.3, limit 55.7), with 19.3 and 20.9 on
+the other two. Read as the known worst-of-N tail rather than this change:
+the ev-zonal project carries no events, so no chip renders in the capture
+at all, and tx lateness is the host's transmit scheduler. Memory came in
+*under* baseline on every tier (renderer peak 310–313 MB vs 316; tree peak
+725–728 MB vs 742).
+
+*A rig note, since the run instructions omit it:* `--connect-on-start`
+alone gives a 0 f/s capture on ev-zonal — the load is the RBS, and
+`--rbs-run-on-start` is what arms it. The first attempt read `rx_fps 0`,
+`tx_fps 0`, `rx_gap: null` with both dongles enumerated and no other
+cannet running; it was discarded, not filed.
+
+**Tests** — 33 new, written first and watched fail.
+
+- `eventSubjects` (14): the index is shared per catalog and rebuilt for a
+  new one; a message and a signal each resolve; an unresolvable one keeps
+  its label and says why; an extended reference is distinct from the
+  standard id of the same number; the id follows the view's format; a
+  signal whose message resolves but whose field does not is unresolved; a
+  link reads from the storing end and from the other end; a link to an
+  absent event chips nothing; subject order is kept with links last;
+  every key is distinct.
+- `EventSubjectChips` (7): everything draws when there is room; what does
+  not fit collapses into a `…` carrying its count; the chips come back
+  when the room does; a single overflowing chip still gets the `…` rather
+  than being dropped; pressing it discloses the row and opens no menu;
+  the press does not reach the row's own click; it reports the row's
+  disclosed state.
+- `EventsPanel.subjects` (12): a signal and a message resolve on the row;
+  an unresolvable pair renders muted and still names what it points at;
+  the same event read against no database resolves nothing; an event
+  about nothing draws no chip region; a link chips on both events; a link
+  to an absent event chips nothing; the body's about line lists every
+  subject; subjects give a non-editable event something to disclose;
+  Link Events is off until exactly two are selected, links storing on the
+  later event, becomes Unlink Events on an already-linked pair, and goes
+  off again when the selection collapses.
+- Two shipped assertions changed with the behaviour: the events view's
+  event row now *does* carry `aria-selected` (the trace's still does
+  not, pinned where it was), and `TraceView.gridview`'s fixture event
+  gained the `subjects: []` every real event carries.
+- `pnpm --dir apps/gui test` 2795 passed across 210 files. All six CI
+  jobs run locally and green.
+
 ## Blockers / side effects
 
 ### Phase 1 (2026-08-22) — both since repaired
@@ -770,3 +908,40 @@ are clean.
 - **A `#000000` event loses its colour through BLF** (§ ADR 0057's loss
   table). Pre-existing — the packed `0` has always meant both black and
   uncoloured — and now pinned by a test rather than left implicit.
+
+### Phase 3 (2026-08-22)
+
+- **`NotesStore::linked_events` still has no caller and keeps its
+  `#[allow(dead_code)]`.** Phase 1 named this phase its intended caller
+  and asked for the attribute to go. It could not: the caller this phase
+  adds is a *renderer*, and renderers are the frontend, which reads the
+  symmetric link over `TimelineEvent[]` through the TS twin
+  `linkedEventIds` — now called for real. The Rust free function
+  `linked_event_ids` did get its production caller, in phase 2
+  (`capture.rs`, the MDF range-pair interop write), and its attribute is
+  already gone. What remains dead is the one-line `NotesStore` wrapper,
+  exercised only by its own tests. Left in place rather than deleted: it
+  states the model's contract beside the model, and phase 4's authoring
+  gestures are the next plausible host-side caller. Worth a decision if
+  they turn out not to be.
+- **The `…` opens the row's body instead of a menu.** The prototype and
+  the status bar both drop an absolutely-positioned list. `.trace-rows`
+  is `overflow: auto; contain: strict` and the row stack inside it is
+  `overflow: hidden`, so a dropdown from a row is clipped by
+  construction — this is a property of the virtualized scroller, not of
+  the chip language, and it would take portalling the menu out of the
+  scroller to change. The disclosure is the app's own expansion
+  mechanism and reaches the keyboard cursor for free, so it was the
+  closest faithful reading; the prototype was updated to match.
+- **A signal chip has no colour swatch, though the prototype draws
+  one.** A subject stores no bus (ADR 0056) and signal colour is
+  bus-scoped (`signalKey`), so one structural reference can map to
+  several coloured series. Nothing here should grow a colour; if the
+  owner wants a swatch, the honest version picks a bus, which is a model
+  change.
+- **`--connect-on-start` alone measures an idle bus on ev-zonal.** The
+  designed load is the RBS, and `--rbs-run-on-start` arms it. Without
+  it the capture is real, the report is written, and every gated metric
+  passes on nothing — exactly the silent-disarm failure mode the perf
+  rules warn about. The frontend perf instructions in
+  `crates/cannet-perf-measurement/README.md` do not name the flag.
