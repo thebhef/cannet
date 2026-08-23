@@ -53,6 +53,7 @@ import { ColorMapPanel } from "./ColorMapPanel";
 import { GeneratorPanel } from "./GeneratorPanel";
 import { SystemMessagesPanel } from "./SystemMessagesPanel";
 import { DatabasePanel } from "./DatabasePanel";
+import { ViewSignalsPanel } from "./ViewSignalsPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { AboutPanel } from "./AboutPanel";
 import { EventsPanel } from "./EventsPanel";
@@ -149,6 +150,7 @@ import {
   SYSTEM_MESSAGES_PANEL_COMPONENT,
   TRACE_PANEL_COMPONENT,
   TRANSMIT_PANEL_COMPONENT,
+  VIEW_SIGNALS_PANEL_COMPONENT,
   elementPanelComponent,
   normalizeSingletonTitles,
   stripMaximizedNode,
@@ -255,6 +257,7 @@ const DOCK_COMPONENTS = {
   [PROJECT_GRAPH_PANEL_COMPONENT]: ProjectGraphPanel,
   [SYSTEM_MESSAGES_PANEL_COMPONENT]: SystemMessagesPanel,
   [DBC_PANEL_COMPONENT]: DatabasePanel,
+  [VIEW_SIGNALS_PANEL_COMPONENT]: ViewSignalsPanel,
   [SETTINGS_PANEL_COMPONENT]: SettingsPanel,
   [ABOUT_PANEL_COMPONENT]: AboutPanel,
   [EVENTS_PANEL_COMPONENT]: EventsPanel,
@@ -3308,6 +3311,7 @@ export function App() {
     { id: "panel.add.colormap", label: "Add color map" },
     { id: "panel.add.generator", label: "Add generator" },
     { id: "panel.show.dbc", label: "Database panel" },
+    { id: "panel.show.viewSignals", label: "View signals" },
     { id: "panel.show.projectGraph", label: "Graph panel" },
     { id: "panel.show.events", label: "Events panel" },
     { id: "panel.show.project", label: "Project panel" },

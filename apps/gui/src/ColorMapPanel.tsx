@@ -11,6 +11,8 @@ import { rulesFromValueTable } from "./colorMap";
 import { isEnumValueTable, type ColorRule, type ProjectElement, type ValueTableEntryRecord } from "./types";
 import { useValueTables, type ValueTableSignal } from "./useValueTables";
 import { busLookup } from "./traceColumns";
+import { elementLabel } from "./elementLabel";
+import { colorMapViewSignalRefs, usePushViewSignals } from "./viewSignalsPush";
 
 type ColorMapElement = Extract<ProjectElement, { kind: "colormap" }>;
 
@@ -77,6 +79,15 @@ export function ColorMapPanel(props: IDockviewPanelProps) {
     [element?.busId, messageId, extended, signalName],
   );
   const [valueTable = []] = useValueTables(targetSignals).values();
+
+  // Push this element's one target signal to the host's view-signal
+  // panel model (task 89) — identity only, since a colormap records no
+  // message name or unit for a target to have drifted from.
+  const viewSignalRefs = useMemo(
+    () => colorMapViewSignalRefs({ busId: element?.busId ?? null, messageId, extended, signalName }),
+    [element?.busId, messageId, extended, signalName],
+  );
+  usePushViewSignals(elementId, element ? elementLabel(element) : "", viewSignalRefs);
 
   const setRules = useCallback(
     (rules: ColorRule[]) => update(elementId, { rules }),
