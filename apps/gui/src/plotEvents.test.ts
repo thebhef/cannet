@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { defaultVisibleKinds, type EventKind, type Note } from "./notes";
-import { plotTimelineEvents } from "./plotEvents";
+import { plotTimelineEvents, subjectsForSelection } from "./plotEvents";
+import { signalRefKey, type SignalRef } from "./plotPanelConfig";
 
 const KIND_COLOR = (k: EventKind) =>
   k === "truncation" ? "#amber" : k === "busError" ? "#red" : undefined;
@@ -44,5 +45,65 @@ describe("plotTimelineEvents", () => {
     expect(plotTimelineEvents(own, null, 0, defaultVisibleKinds(), KIND_COLOR)[0].color).toBe(
       "#123456",
     );
+  });
+});
+
+describe("subjectsForSelection", () => {
+  const ref = (over: Partial<SignalRef>): SignalRef => ({
+    busId: "bus-a",
+    messageId: 0x180,
+    extended: false,
+    signalName: "PackCurrent",
+    messageName: "BMS_Status",
+    unit: "A",
+    ...over,
+  });
+  const keys = (...rs: SignalRef[]) => new Set(rs.map(signalRefKey));
+
+  it("turns the selected rows into signal subjects, in the area's order", () => {
+    const a = ref({});
+    const b = ref({ signalName: "ContactorState" });
+    expect(subjectsForSelection([a, b], keys(b, a))).toEqual([
+      { kind: "signal", messageId: 0x180, extended: false, signalName: "PackCurrent" },
+      { kind: "signal", messageId: 0x180, extended: false, signalName: "ContactorState" },
+    ]);
+  });
+
+  it("names only what is selected", () => {
+    const a = ref({});
+    const b = ref({ signalName: "ContactorState" });
+    expect(subjectsForSelection([a, b], keys(b))).toEqual([
+      { kind: "signal", messageId: 0x180, extended: false, signalName: "ContactorState" },
+    ]);
+    expect(subjectsForSelection([a, b], new Set())).toEqual([]);
+  });
+
+  it("keeps the extended flag, which is half of message identity", () => {
+    const x = ref({ extended: true });
+    expect(subjectsForSelection([x], keys(x))).toEqual([
+      { kind: "signal", messageId: 0x180, extended: true, signalName: "PackCurrent" },
+    ]);
+  });
+
+  it("collapses the same signal selected on two buses into one subject", () => {
+    // A subject stores no bus (ADR 0056), so two rows differing only in
+    // their bus are one structural reference — not a duplicate chip.
+    const a = ref({ busId: "bus-a" });
+    const b = ref({ busId: "bus-b" });
+    expect(subjectsForSelection([a, b], keys(a, b))).toEqual([
+      { kind: "signal", messageId: 0x180, extended: false, signalName: "PackCurrent" },
+    ]);
+  });
+
+  it("drops a file-backed series, which has no message to reference", () => {
+    // Its `messageId` is a signal channel group index, not an
+    // arbitration id, so writing it as a message reference would name a
+    // message that does not exist.
+    const f = ref({ fileBacked: true, busId: null, signalName: "Torque" });
+    const s = ref({});
+    expect(subjectsForSelection([f], keys(f))).toEqual([]);
+    expect(subjectsForSelection([f, s], keys(f, s))).toEqual([
+      { kind: "signal", messageId: 0x180, extended: false, signalName: "PackCurrent" },
+    ]);
   });
 });

@@ -14,9 +14,12 @@ import {
   TRUNCATION_EVENT_ID,
   truncationEvent,
   linkedEventIds,
+  authorEvent,
   type EventSubject,
   type Note,
 } from "./notes";
+
+import { wheelColor } from "./palette";
 
 function note(id: string, ts: number, label = "n"): Note {
   return { id, timestampNs: ts, label };
@@ -176,5 +179,57 @@ describe("event subjects", () => {
     );
     expect(linkedEventIds(events, "a")).toEqual([]);
     expect(events[0].subjects).toHaveLength(2);
+  });
+});
+
+describe("authoring an event (ADR 0056)", () => {
+  const sig: EventSubject = {
+    kind: "signal",
+    messageId: 0x180,
+    extended: false,
+    signalName: "PackCurrent",
+  };
+  const msg: EventSubject = { kind: "message", messageId: 0x2a1, extended: false };
+
+  it("mints an event at the given time carrying the given subjects", () => {
+    const e = authorEvent(1_234, [sig], 0);
+    expect(e.timestampNs).toBe(1_234);
+    expect(e.subjects).toEqual([sig]);
+    expect(e.id).toBeTruthy();
+  });
+
+  it("numbers the label and takes the wheel color from the existing count", () => {
+    expect(authorEvent(1, [], 0).label).toBe("note 1");
+    expect(authorEvent(1, [], 2).label).toBe("note 3");
+    expect(authorEvent(1, [], 2).color).toBe(wheelColor(2));
+  });
+
+  it("gives every event a distinct id", () => {
+    expect(authorEvent(1, [], 0).id).not.toBe(authorEvent(1, [], 0).id);
+  });
+
+  it("records nothing about which gesture made it", () => {
+    // Provenance-agnostic: two gestures, one resulting shape. An event
+    // authored from a plot selection and one authored from a trace row
+    // differ only in their subjects and their time — never in a field
+    // that says where they came from.
+    const fromPlot = authorEvent(9, [sig], 4);
+    const fromTrace = authorEvent(9, [msg], 4);
+    expect(Object.keys(fromPlot).sort()).toEqual(Object.keys(fromTrace).sort());
+    expect({ ...fromPlot, id: "", subjects: [] }).toEqual({ ...fromTrace, id: "", subjects: [] });
+  });
+
+  it("is the same shape the existing subject-less note path produced", () => {
+    // The plot's note cursor authors through this too, so an
+    // unsubjected event is exactly what it always was, plus an empty
+    // subject list the host defaults anyway.
+    const e = authorEvent(7, [], 1);
+    expect(e).toEqual({
+      id: e.id,
+      timestampNs: 7,
+      label: "note 2",
+      color: wheelColor(1),
+      subjects: [],
+    });
   });
 });

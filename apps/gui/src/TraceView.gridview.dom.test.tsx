@@ -20,6 +20,7 @@ import { defaultColumns } from "./traceColumns";
 import { SIGNAL_DND_MIME } from "./dragSignals";
 import type { TraceRow } from "./trace";
 import type { TimelineEvent } from "./notes";
+import type { TraceFrameRecord } from "./types";
 
 class FakeResizeObserver {
   observe() {}
@@ -101,6 +102,7 @@ function view(props: {
   autoScroll?: boolean;
   onAutoScrollDisabled?: () => void;
   eventActions?: EventActions;
+  onFrameContextMenu?: (frame: TraceFrameRecord, e: React.MouseEvent) => void;
 }) {
   return (
     <TraceView
@@ -118,6 +120,7 @@ function view(props: {
       ensureVisible={noop}
       onAutoScrollDisabled={props.onAutoScrollDisabled ?? noop}
       eventActions={props.eventActions}
+      onFrameContextMenu={props.onFrameContextMenu}
     />
   );
 }
@@ -606,5 +609,52 @@ describe("an error frame is not an ordinary empty data frame", () => {
     const row = rowShowing(0);
     expect(row).not.toHaveClass("trace-row-error-frame");
     expect(row.querySelector(".col-msg")?.textContent).toBe("");
+  });
+});
+
+describe("a frame row's context menu (ADR 0056)", () => {
+  it("hands the right-clicked frame to the owner and stops there", () => {
+    // The panel opens its sources picker on any right-click, so a row
+    // that offers its own menu has to stop the event reaching it — the
+    // column header's settled precedent.
+    const onFrameContextMenu = vi.fn();
+    const outer = vi.fn();
+    render(
+      <div onContextMenu={outer}>
+        {view({ count: 5, getRow: (i) => frameRow(i), onFrameContextMenu })}
+      </div>,
+    );
+    fireEvent.contextMenu(rowShowing(2));
+    expect(onFrameContextMenu).toHaveBeenCalledTimes(1);
+    expect(onFrameContextMenu.mock.calls[0][0]).toMatchObject({ index: 2, id: 0x102 });
+    expect(outer).not.toHaveBeenCalled();
+  });
+
+  it("lets the right-click through when no owner wants it", () => {
+    // Every other trace-like view — the events view, the by-id table —
+    // keeps the panel's sources picker on every right-click.
+    const outer = vi.fn();
+    render(<div onContextMenu={outer}>{view({ count: 5, getRow: (i) => frameRow(i) })}</div>);
+    fireEvent.contextMenu(rowShowing(2));
+    expect(outer).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers nothing on an event row, which is about no message", () => {
+    const onFrameContextMenu = vi.fn();
+    const outer = vi.fn();
+    render(
+      <div onContextMenu={outer}>
+        {view({
+          count: 1,
+          getRow: () => eventRow("n1", "boom"),
+          onFrameContextMenu,
+        })}
+      </div>,
+    );
+    const evRow = document.querySelector(".trace-event-row");
+    expect(evRow).toBeTruthy();
+    fireEvent.contextMenu(evRow!);
+    expect(onFrameContextMenu).not.toHaveBeenCalled();
+    expect(outer).toHaveBeenCalledTimes(1);
   });
 });

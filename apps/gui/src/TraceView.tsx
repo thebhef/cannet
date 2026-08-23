@@ -128,6 +128,12 @@ interface TraceViewProps {
   /// The selected event ids, whenever they change. Only meaningful with
   /// {@link TraceViewProps.selectableEvents}.
   onEventSelectionChange?: (ids: readonly string[]) => void;
+  /// A frame row was right-clicked. Given, the row keeps the event to
+  /// itself — `preventDefault` and `stopPropagation`, so a panel-wide
+  /// context menu does not also open — and the owner puts up a menu
+  /// about that message. Omitted, a right-click bubbles as it always
+  /// did, which is what every view showing no frames wants.
+  onFrameContextMenu?: (frame: TraceFrameRecord, e: React.MouseEvent) => void;
 }
 
 /// Inline mutators for an editable timeline event (ADR 0035), wired by the
@@ -242,6 +248,7 @@ export function TraceView({
   events: allEvents = EMPTY_EVENTS,
   selectableEvents = false,
   onEventSelectionChange,
+  onFrameContextMenu,
 }: TraceViewProps) {
   diagCount("render.TraceView"); // DIAG
 
@@ -773,6 +780,21 @@ export function TraceView({
   /// when that row is in the selection — every selected row's message.
   /// Resolved from the rows this view holds, at drag time, so the scroll
   /// path pays nothing for it.
+  /// The row-level right-click, kept ref-stable so a live tick does not
+  /// repaint every visible row. `null` when nobody wants it, which is
+  /// what leaves the event free to bubble to the panel.
+  const frameContextRef = useRef(onFrameContextMenu);
+  frameContextRef.current = onFrameContextMenu;
+  const handleFrameContextMenu = useCallback(
+    (frame: TraceFrameRecord, e: React.MouseEvent) => {
+      const handler = frameContextRef.current;
+      if (!handler) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handler(frame, e);
+    },
+    [],
+  );
   const startRowDrag = useCallback(
     (id: string, e: React.DragEvent) => {
       const g = geometry.current;
@@ -907,6 +929,8 @@ export function TraceView({
                     selected={anySelected && grid.selection.has(rowIdOf(r) ?? "")}
                     onSelect={handleRowClick}
                     onDragStart={startRowDrag}
+                    onFrameContextMenu={handleFrameContextMenu}
+                    frameContextMenu={onFrameContextMenu != null}
                   />
                   {isExpanded && r?.row === "event" && (
                     <EventBody
@@ -992,6 +1016,12 @@ interface RowProps {
   /// The row drags its whole message (ADR 0045); the decoded lines
   /// inside it drag one signal each and stop the event there.
   onDragStart: (rowId: string, e: React.DragEvent) => void;
+  /// Right-click on a frame row, when the view's owner wants one
+  /// (ADR 0056). Always given; it is inert unless the owner asked.
+  onFrameContextMenu: (frame: TraceFrameRecord, e: React.MouseEvent) => void;
+  /// Whether that handler does anything — the row attaches no
+  /// `onContextMenu` at all when it does not, so the event bubbles.
+  frameContextMenu: boolean;
 }
 
 const Row = memo(function Row({
@@ -1018,6 +1048,8 @@ const Row = memo(function Row({
   selected,
   onSelect,
   onDragStart,
+  onFrameContextMenu,
+  frameContextMenu,
 }: RowProps) {
   // Event rows (truncation marker, notes) render through the same renderer
   // as frames but with their own row layout (ADR 0035).
@@ -1057,6 +1089,9 @@ const Row = memo(function Row({
       aria-selected={rowId == null ? undefined : selected}
       draggable={rowId != null}
       onDragStart={rowId == null ? undefined : (e) => onDragStart(rowId, e)}
+      onContextMenu={
+        frame && frameContextMenu ? (e) => onFrameContextMenu(frame, e) : undefined
+      }
       className={`trace-row ${isExpanded ? "expanded" : ""} ${frame ? "" : "loading"}${
         frame?.violation ? " trace-row-violation" : ""
       }${isErrorFrame ? ` ${ERROR_FRAME_ROW_CLASS}` : ""}${selected ? " selected" : ""}`}

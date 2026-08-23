@@ -10,12 +10,17 @@ export interface NotesContextValue {
   /// Current chronological list — host snapshot kept live by the
   /// `notes-changed` event.
   notes: Note[];
-  /// Drop a note at the given absolute trace ns timestamp. The
-  /// host's add command emits `notes-changed` so the list updates
-  /// for every panel; the caller's local optimistic state, if any,
-  /// reconciles on the event. `color` (a `#RRGGBB` picked at creation)
-  /// is optional — omitted falls back to the view's default note color.
-  addNote: (id: string, timestampNs: number, label: string, color?: string) => void;
+  /// Add a fully-formed note — mint it with `authorEvent`, the one
+  /// constructor every authoring gesture shares. The host's
+  /// add command emits `notes-changed` so the list updates for every
+  /// panel; the caller's local optimistic state, if any, reconciles on
+  /// the event.
+  ///
+  /// The whole note travels, rather than a positional argument per
+  /// field, because an event now carries subjects (ADR 0056) and a
+  /// gesture that authors one must be able to say so in the same call
+  /// the host already accepts — `add_note` takes the struct.
+  addNote: (note: Note) => void;
   /// Update a note's label.
   renameNote: (id: string, label: string) => void;
   /// Set or clear a note's color (`#RRGGBB`, or `null` for the view

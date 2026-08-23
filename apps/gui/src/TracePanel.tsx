@@ -13,7 +13,7 @@ import { useTraceModel } from "./traceData";
 import { LIVE_TAIL_ROWS, useLiveTailDemand } from "./liveTailDemand";
 import { useTrace, type TraceRow } from "./trace";
 import { useNotes } from "./notesContext";
-import { timelineEvents, visibleEvents } from "./notes";
+import { authorEvent, timelineEvents, visibleEvents } from "./notes";
 import { countByKind, EventKindFilter, useEventKindFilter } from "./EventKindFilter";
 import { buildEventMerge } from "./eventMerge";
 import { useFilteredTrace } from "./useFilteredTrace";
@@ -23,7 +23,7 @@ import { buildSinkPredicate } from "./sinkPredicate";
 import { buildColorResolver } from "./colorMap";
 import { SourcesContextMenu } from "./SourcesPicker";
 import { useElementPanel, useElementRehydrate, useElementSources } from "./useElementPanel";
-import { hostSettings } from "./hostSettings";
+import { hostSettings, useSetting } from "./hostSettings";
 import { toggleInSet } from "./toggleSet";
 import {
   type ColumnKey,
@@ -37,6 +37,8 @@ import {
   resizeColumn,
   toggleColumn,
 } from "./traceColumns";
+import { formatId, type CanIdFormat } from "./format";
+import type { TraceFrameRecord } from "./types";
 import { diagCount } from "./diag"; // DIAG
 
 type TraceMode = "chronological" | "by-id";
@@ -196,10 +198,20 @@ export function TracePanel(props: IDockviewPanelProps) {
   // Right-click anywhere in the trace panel opens the sources
   // context menu at the cursor. The menu owns its own outside-click
   // / Escape dismissal.
-  const [sourcesMenu, setSourcesMenu] = useState<{ x: number; y: number } | null>(null);
+  // `frame` is the row the click landed on, when it landed on one — the
+  // menu then leads with an action about that message (ADR 0056) and
+  // still carries the picker below it.
+  const [sourcesMenu, setSourcesMenu] = useState<{
+    x: number;
+    y: number;
+    frame: TraceFrameRecord | null;
+  } | null>(null);
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    setSourcesMenu({ x: e.clientX, y: e.clientY });
+    setSourcesMenu({ x: e.clientX, y: e.clientY, frame: null });
+  }, []);
+  const handleFrameContextMenu = useCallback((frame: TraceFrameRecord, e: React.MouseEvent) => {
+    setSourcesMenu({ x: e.clientX, y: e.clientY, frame });
   }, []);
 
   // By-id: the host-paged, host-sorted snapshot of the window
@@ -253,7 +265,8 @@ export function TracePanel(props: IDockviewPanelProps) {
   // Timeline events (ADR 0035): host notes + the derived truncation marker,
   // the whole (sparse) set. They render in the chronological trace, spliced
   // among the frame rows by timestamp.
-  const { notes, renameNote, recolorNote, describeNote, retagNote, removeNote } = useNotes();
+  const { notes, addNote, renameNote, recolorNote, describeNote, retagNote, removeNote } =
+    useNotes();
   const allEvents = useMemo(
     () => timelineEvents(notes, model.truncationTsNs),
     [notes, model.truncationTsNs],
@@ -358,6 +371,33 @@ export function TracePanel(props: IDockviewPanelProps) {
   // listener below, which re-anchors the view on the row — which is where the
   // cursor already is, so the jump the other panels make costs this one
   // nothing.
+  const idFormat = useSetting("can_id_format") as CanIdFormat;
+  /// What the context menu calls the message: the database's name for it
+  /// when one is assigned, otherwise the trace's own id spelling — the
+  /// same fallback an unresolved subject chip makes (ADR 0056).
+  const messageLabel = useCallback(
+    (frame: TraceFrameRecord) => frame.decoded?.name ?? formatId(frame, idFormat),
+    [idFormat],
+  );
+  /// Author an event about this frame's message, at this frame's time.
+  /// `authorEvent` is the shared constructor the plot's gesture uses
+  /// too, so the two are indistinguishable afterwards — the model does
+  /// not know which one made an event.
+  const createEventFromFrame = useCallback(
+    (frame: TraceFrameRecord) => {
+      addNote(
+        authorEvent(
+          // `timestamp_seconds` is the host's `timestamp_ns / 1e9`, so
+          // this is that division inverted, not a second time model.
+          Math.round(frame.timestamp_seconds * 1e9),
+          [{ kind: "message", messageId: frame.id, extended: frame.extended }],
+          notes.length,
+        ),
+      );
+    },
+    [addNote, notes.length],
+  );
+
   const eventActions = useMemo<EventActions>(
     () => ({
       onRename: renameNote,
@@ -415,6 +455,15 @@ export function TracePanel(props: IDockviewPanelProps) {
           filters={availableFilters}
           onChange={handleSourcesChange}
           onClose={() => setSourcesMenu(null)}
+          rowAction={
+            sourcesMenu.frame
+              ? {
+                  label: `Create event from ${messageLabel(sourcesMenu.frame)}`,
+                  title: "add a timeline event at this frame's time, about this message",
+                  onInvoke: () => createEventFromFrame(sourcesMenu.frame!),
+                }
+              : undefined
+          }
         />
       )}
       <div className="trace-panel-toolbar">
@@ -477,6 +526,7 @@ export function TracePanel(props: IDockviewPanelProps) {
           onAutoScrollDisabled={handleAutoScrollDisabled}
           eventActions={eventActions}
           scrollTarget={scrollTarget}
+          onFrameContextMenu={handleFrameContextMenu}
         />
       )}
       {mode === "by-id" && (

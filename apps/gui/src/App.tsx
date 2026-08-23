@@ -2865,18 +2865,14 @@ export function App() {
   // mirror updates from the `notes-changed` event, not from
   // optimistic local state, so a panel-A add shows up on panel B
   // through the same code path.
-  const addNoteRemote = useCallback(
-    (id: string, timestampNs: number, label: string, color?: string) => {
-      // `color` rides the note payload directly — `Note.color` is
-      // `#[serde(default)]`, so omitting it yields `None` (the view
-      // default) with no host-side change.
-      const note = color ? { id, timestampNs, label, color } : { id, timestampNs, label };
-      void invoke("add_note", { note }).catch(() => {
-        /* best effort — error surfaces in System Messages */
-      });
-    },
-    [],
-  );
+  const addNoteRemote = useCallback((note: Note) => {
+    // The whole note goes over as one struct: every field the caller
+    // left off is `#[serde(default)]` host-side, so an event with no
+    // color or no subjects costs nothing to send.
+    void invoke("add_note", { note }).catch(() => {
+      /* best effort — error surfaces in System Messages */
+    });
+  }, []);
   const renameNoteRemote = useCallback((id: string, label: string) => {
     void invoke("rename_note", { id, label }).catch(() => { /* best effort */ });
   }, []);

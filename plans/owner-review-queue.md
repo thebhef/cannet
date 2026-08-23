@@ -236,6 +236,33 @@ selected it reads **Unlink Events** and drops the link.
 
 **Needed: ratify, or say unlink belongs somewhere else.**
 
+### 1.22 Shift+click on a plot now authors an event instead of placing a cursor
+[task 107](tasks/0107-events-point-at-signals.md) phase 4
+
+Shift was read nowhere in the plot canvas's mouse handling, so
+Shift+left-click has always been a plain left-click — cursor A in `x`
+mode, H1 in `y`, a note in `note`. It now creates an event about the
+area's selected signals, **and only when that area holds a selection**;
+with nothing selected it falls through to exactly the old behaviour. It
+is deliberately mode-independent, so it also fires in `off`, where a
+click used to do nothing at all.
+
+**Needed: confirm the modifier is the right home for it**, and that
+firing in every cursor mode (rather than only in `note` mode) is wanted.
+
+### 1.23 A right-click on a trace frame row now leads with an event action
+[task 107](tasks/0107-events-point-at-signals.md) phase 4
+
+The groomed gesture is "the trace row's context menu". The panel already
+opens the sources picker on any right-click, and rows are almost the
+whole panel, so a row-owned menu of its own would take that affordance
+away over most of the surface. Instead the row's right-click puts up the
+**same** menu with **Create event from &lt;message&gt;** above the picker.
+Nothing is lost; the menu has one more item on frame rows.
+
+**Needed: ratify the shared menu**, or say the row deserves a menu of
+its own with the picker dropped there.
+
 ---
 
 ## 2. Ruled, and recorded here so the ruling is not lost
@@ -387,6 +414,10 @@ Recorded by the phases that found them, not yet decided.
 | 3.28 | **Every MDF file cannet has written names its events the wrong `ev_type`.** `mdf4-rs` numbers `Marker` 2; ASAM MDF 4.x puts `EV_T_MARKER` at 6 and reads 2 as `EV_T_ACQUISITION_INTERRUPT` (confirmed against asammdf). Fixed at the write boundary; existing files stay mislabelled to conformant readers and nothing rewrites them. The crate's `from_u8` also rejects types 3–6, so a foreign file using them parses as a marker — worth an upstream issue. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.29 | **`ev_scope` is not written, because a cannet MDF has nothing for a subject to point at.** The grooming expected subjects to scope to a `##CN`/`##CG`; the writer emits three bus-logging groups by frame *structure* and no DBC-decoded signal channels, so a message subject has no referent and scoping one to `CAN_DataFrame` would be false. Becomes writable if per-message channel groups are ever written. | [task 107](tasks/0107-events-point-at-signals.md) |
 | 3.30 | **A later schema version's unknown block keys survive a parse but not a model round-trip.** The groomed rule says they are preserved on rewrite; the parser does preserve them, but `Note` has no field to hold one, so opening and saving a file written by a future build drops what this build does not understand. Closing it means a passthrough field on the durable schema. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.31 | **A file-backed series cannot be an event's subject.** Its `messageId` is a signal channel group index rather than an arbitration id, so `EventSubject`'s structural form (ADR 0056) has nothing true to say about it — Shift+click over a selection of nothing but file-backed rows names nothing and falls through. Closing it means a fourth referent kind, which is a model change. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.32 | **The plot's Shift+click gesture is undiscoverable.** Nothing on the plot says it exists; the README does. The prototype showed a hint line in the plot bar that the shipped chip toolbar has no room for, and the chip language has no hint-text element. Recorded rather than invented. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.33 | **`NotesStore::linked_events` has now gone two phases without a caller.** Phase 3 nominated phase 4; authoring writes rather than reads, and phase 5's highlight work reads links in the frontend through the TS twin, so it will not be the caller either. Probably resolved by deleting the wrapper — the free `linked_event_ids` it delegates to has a production caller and states the same contract. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.34 | **The perf-capture recipe in `README.md` had been wrong since the render tier shipped**, omitting `--rbs-run-on-start` and claiming the RBS Run flag was "already in the saved project". Two phases followed it and measured an idle bus that *passed* every gate. Fixed in task 107 phase 4 and verified against three live captures. Worth knowing that any frontend perf number taken before this fix may have been measured on no load. | [task 107](tasks/0107-events-point-at-signals.md) |
 
 ---
 
