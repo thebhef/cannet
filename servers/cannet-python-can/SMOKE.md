@@ -44,6 +44,15 @@ simply skips that vendor and the others still work.
      trace should show the frames with `direction=Rx`.
   5. Send a frame from the transmit panel; observe it on the wire
      (second Vector channel, or external CAN analyser).
+  6. **Bus health, classic and FD.** With traffic running, pull one end
+     of the CAN cable. The bus health panel should reach
+     **error-passive** with TEC climbing to 128 and pinning, and return
+     to error-active by itself when the cable goes back in. Repeat on an
+     FD-configured bus: the chip state arrives through a different XL
+     event struct on the FD queue, so a classic run does not cover it.
+     **This is the one part of the Vector path that has never been run
+     against hardware** — it was implemented from the XL API's field
+     definitions and unit-tested against faked chip-state events.
 - **Loopback option**: a Vector device with two channels can echo TX
   on channel 0 to RX on channel 1. Bind both as separate logical
   buses for a single-device smoke.

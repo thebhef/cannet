@@ -126,6 +126,22 @@ def _install_fake_vector(configs):
     mod_xldefine.XL_BusCapabilities = _BusCaps
     sys.modules["can.interfaces.vector.xldefine"] = mod_xldefine
 
+    # The open path subclasses ``VectorBus`` to pick up its chip-state
+    # hooks, so the fake module has to offer a base class to derive
+    # from. Deliberately without any PCAN attribute, and recording what
+    # it was constructed with.
+    class _FakeVectorBus:
+        def __init__(self, channel=None, **kwargs):
+            self.opened_with = {"channel": channel, **kwargs}
+
+        def handle_can_event(self, event):
+            pass
+
+        def handle_canfd_event(self, event):
+            pass
+
+    mod_root.VectorBus = _FakeVectorBus
+
 
 def _uninstall_fake_vector() -> None:
     _remove_fake_modules(
@@ -133,6 +149,12 @@ def _uninstall_fake_vector() -> None:
         "can.interfaces.vector.canlib",
         "can.interfaces.vector.xldefine",
     )
+    # The driver caches the chip-state subclass it builds, so a class
+    # derived from the fake base above would outlive the fake module and
+    # be handed to the next test. Drop it with the modules it came from.
+    import cannet_python_can.driver_python_can as m  # noqa: WPS433
+
+    m._vector_bus_class = None
 
 
 def test_vector_includes_serial_in_id_and_label() -> None:
@@ -695,27 +717,31 @@ def test_open_non_pcan_does_not_touch_pcan_basic() -> None:
     crash with ``AttributeError`` on those backends. This test pins
     the vendor gate by opening a Vector bus stub that deliberately
     lacks every PCAN-specific attribute and asserting open() returns
-    cleanly."""
+    cleanly.
+
+    A Vector open no longer goes through ``can.interface.Bus``: it
+    constructs the chip-state subclass directly, because python-can's
+    backend table can only ever name ``VectorBus`` itself. So the stub
+    is the fake module's base class rather than a factory, and the test
+    also pins that the channel really is opened as that subclass —
+    otherwise the chip-state hooks would silently not be installed."""
     _install_fake_vector([_VectorCfg("Virtual", 0, serial_number=None)])
-
-    class _FakeVectorBus:
-        def __init__(self, **kwargs):
-            pass  # intentionally no m_objPCANBasic / m_PcanHandle
-
-    def factory(interface, **kwargs):
-        assert interface == "vector"
-        return _FakeVectorBus(**kwargs)
-
-    original = _stub_can_interface_bus(factory)
     try:
         m = _fresh_driver_module()
         from cannet_python_can.driver import OpenConfig
 
         # Would raise AttributeError if the PCAN suppression ran here.
-        m.PythonCanDriver().open(
+        ch = m.PythonCanDriver().open(
             "vector:Virtual(ch:0)",
             OpenConfig(bitrate_bps=500_000),
         )
+        bus = ch._bus
+        assert isinstance(bus, m._chip_state_vector_bus_class())
+        assert not hasattr(bus, "m_objPCANBasic")
+        assert bus.opened_with == {
+            "channel": 0,
+            "app_name": "Virtual",
+            "bitrate": 500_000,
+        }
     finally:
-        _restore_can_interface_bus(original)
         _uninstall_fake_vector()

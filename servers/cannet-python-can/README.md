@@ -119,8 +119,14 @@ The sidecar implements the **hardware-server wire model** described in
 - `Body::InterfaceState { interface_id, state, tec, rec }` is
   pushed: a snapshot on each `Subscribe`, plus a fresh push whenever
   the controller's fault-confinement state or its TEC / REC
-  counters change. python-can's `Bus.state` is polled at ~2 Hz;
-  TEC / REC are reported as 0 on backends that don't expose them.
+  counters change. The controller is read at ~2 Hz. On PEAK the
+  state comes from the error counters its error frames carry, on
+  Vector from the chip-state events its XL driver reports (both
+  floored by the vendor's own status word, neither able to talk the
+  other down); everything else falls back to python-can's
+  `Bus.state`, which most backends do not implement. TEC / REC are
+  reported as 0 wherever they are not exposed. The Vector path has
+  not been run against Vector hardware.
 - `Body::ClockProbe { t1 }` is answered with
   `Body::ClockReply { t1, t2, t3 }` — the sidecar's own wall-clock
   receive and send stamps, from the same `time.time_ns()` clock that

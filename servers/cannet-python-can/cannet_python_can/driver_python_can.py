@@ -108,6 +108,28 @@ _PCAN_STATUS_UNREACHABLE = frozenset(
 _PCAN_ERR_REC_OFFSET = 2
 _PCAN_ERR_TEC_OFFSET = 3
 
+#: Vector XL chip-state constants, copied from python-can's own
+#: ``can.interfaces.vector.xldefine``. Spelled out here for the same
+#: reason PEAK's are: this module has to load on a machine with no
+#: Vector XL library at all, and the values a reading is tested against
+#: should be visible where the test is. A unit test asserts each one
+#: still equals the enum member it copies.
+#:
+#: ``busStatus`` is a bit field — ``XL_BusStatus`` gives BUSOFF 1,
+#: ERROR_PASSIVE 2, ERROR_WARNING 4, ERROR_ACTIVE 8, one bit each — so
+#: it is masked, exactly like PEAK's bus-error half. ERROR_ACTIVE needs
+#: no constant: it is the healthy reading, and so is the fall-through.
+_XL_CHIPSTAT_BUSOFF = 0x01
+_XL_CHIPSTAT_ERROR_PASSIVE = 0x02
+_XL_CHIPSTAT_ERROR_WARNING = 0x04
+#: ``XL_EventTags.XL_CHIP_STATE`` — the classic-CAN event queue's tag
+#: for a chip-state answer.
+_XL_EVENT_TAG_CHIP_STATE = 4
+#: ``XL_CANFD_RX_EventTags.XL_CAN_EV_TAG_CHIP_STATE`` — the same answer
+#: on the CAN FD queue, which is a different event struct with its own
+#: union member.
+_XL_CANFD_EVENT_TAG_CHIP_STATE = 1033
+
 
 def _pcan_status_state(status: int) -> str:
     """The worst fault-confinement state a PCAN status word admits to.
@@ -130,6 +152,131 @@ def _pcan_status_state(status: int) -> str:
     if status & _PCAN_ERROR_BUSWARNING:
         return STATE_WARNING
     return STATE_ACTIVE
+
+
+def _xl_chip_state_state(bus_status: int) -> str:
+    """The worst fault-confinement state a Vector ``busStatus`` admits to.
+
+    Masked for the same reason PEAK's status word is: ``XL_BusStatus``
+    gives each state its own bit, so a controller past the warning limit
+    and into error-passive reports both. Nothing set reads as active —
+    an answer that is not certainly a fault must not raise one.
+    """
+    if bus_status & _XL_CHIPSTAT_BUSOFF:
+        return STATE_BUS_OFF
+    if bus_status & _XL_CHIPSTAT_ERROR_PASSIVE:
+        return STATE_PASSIVE
+    if bus_status & _XL_CHIPSTAT_ERROR_WARNING:
+        return STATE_WARNING
+    return STATE_ACTIVE
+
+
+def _xl_chip_state_reading(chip_state: object) -> tuple[int, int, int]:
+    """``(busStatus, tec, rec)`` out of an XL chip-state struct.
+
+    ``s_xl_chip_state`` (classic) and ``s_xl_can_ev_chip_state`` (FD)
+    declare the same three leading fields in the same order, so one
+    reader serves both event shapes.
+    """
+    return (
+        int(getattr(chip_state, "busStatus", 0)),
+        int(getattr(chip_state, "txErrorCounter", 0)),
+        int(getattr(chip_state, "rxErrorCounter", 0)),
+    )
+
+
+#: Built once, on first Vector open. Importing python-can's Vector
+#: backend probes for the XL library, so the sidecar must not pay for it
+#: — or depend on it — at module load.
+_vector_bus_class: Optional[type] = None
+
+
+def _chip_state_vector_bus_class() -> type:
+    """python-can's ``VectorBus``, subclassed to keep the chip state the
+    XL driver reports.
+
+    ``VectorBus.handle_can_event`` and ``handle_canfd_event`` are empty
+    methods python-can calls for every event that is not a message, and
+    documents for subclassing; their own docstrings name
+    ``XL_CHIP_STATE`` and ``XL_CAN_EV_TAG_CHIP_STATE`` as tags that
+    arrive there. That is the supported seam, which is why nothing here
+    patches python-can.
+
+    ``Bus.state`` is deliberately *not* implemented on top of this.
+    python-can's ``BusState`` has three values and cannot hold warning,
+    error-passive and bus-off apart — the ixxat backend has to fold
+    bus-off into ``BusState.ERROR`` — while this sidecar's wire carries
+    all three plus "unavailable". Conforming would mean flattening the
+    model to fit an interface whose meaning python-can itself has left
+    unsettled since 2019 (issue #736, open against 4.6.1). The
+    derivation stays in this driver's own seam, as it does for PEAK.
+
+    The class object costs nothing beyond the import: ``canlib`` catches
+    the XL library's absence itself and only *opening* a bus needs it.
+    """
+    global _vector_bus_class
+    if _vector_bus_class is not None:
+        return _vector_bus_class
+
+    from can.interfaces.vector import VectorBus  # type: ignore[import-untyped]
+
+    class _ChipStateVectorBus(VectorBus):  # type: ignore[misc, valid-type]
+        """A ``VectorBus`` that remembers the last chip state it was told.
+
+        The XL driver answers ``xlCanRequestChipState`` asynchronously,
+        as an event in the same queue the messages come out of, so the
+        request and the answer are on opposite sides of a ``recv``. The
+        reading is stored as one tuple, so the state poll (its own
+        thread) can never read a torn triple from the rx thread's write.
+        """
+
+        #: ``(busStatus, tec, rec)``, or ``None`` until the first answer
+        #: arrives. A class attribute so it reads correctly before
+        #: anything has been received.
+        chip_state: Optional[tuple[int, int, int]] = None
+
+        def handle_can_event(self, event: object) -> None:
+            if getattr(event, "tag", None) == _XL_EVENT_TAG_CHIP_STATE:
+                self.chip_state = _xl_chip_state_reading(event.tagData.chipState)  # type: ignore[attr-defined]
+
+        def handle_canfd_event(self, event: object) -> None:
+            if getattr(event, "tag", None) == _XL_CANFD_EVENT_TAG_CHIP_STATE:
+                self.chip_state = _xl_chip_state_reading(
+                    event.tagData.canChipState  # type: ignore[attr-defined]
+                )
+
+        def request_chip_state(self) -> None:
+            """Ask the controller for a fresh chip state.
+
+            Polled rather than only awaited: ``xlCanRequestChipState`` is
+            already bound in python-can's ``xldriver``, and a request on
+            the state poll's cadence means a fault that never produces
+            another event still gets noticed. python-can's ``errcheck``
+            raises on any non-zero XL status, so a card that has gone
+            away surfaces here rather than as silence.
+            """
+            self.xldriver.xlCanRequestChipState(self.port_handle, self.mask)
+
+    _vector_bus_class = _ChipStateVectorBus
+    return _vector_bus_class
+
+
+def _open_vector_bus(kwargs: dict) -> object:
+    """Open a Vector channel as :func:`_chip_state_vector_bus_class`.
+
+    ``can.interface.Bus`` resolves the class from python-can's own
+    ``BACKENDS`` table, which can only ever name ``VectorBus`` — there is
+    no way to hand it a subclass short of editing that table, and editing
+    it would be the monkey-patch the documented ``handle_*_event`` hooks
+    exist to avoid. So the class is constructed directly, with the same
+    configuration merge ``Bus`` performs first, so a Vector open still
+    sees whatever ``can.rc`` or a ``can.conf`` would have contributed.
+    """
+    assert can is not None  # callable only after import succeeded
+    merged = dict(can.util.load_config(config={"interface": "vector", **kwargs}))
+    del merged["interface"]
+    channel = merged.pop("channel")
+    return _chip_state_vector_bus_class()(channel, **merged)
 
 
 class PythonCanDriver:
@@ -156,7 +303,10 @@ class PythonCanDriver:
             raise KeyError(channel_id)
         interface, kwargs = _bus_kwargs_for(channel_id, config)
         try:
-            bus = can.interface.Bus(interface=interface, **kwargs)  # type: ignore[union-attr]
+            if interface == "vector":
+                bus = _open_vector_bus(kwargs)
+            else:
+                bus = can.interface.Bus(interface=interface, **kwargs)  # type: ignore[union-attr]
         except Exception as e:  # noqa: BLE001
             raise OSError(f"open {channel_id}: {e}") from e
         if interface == "pcan":
@@ -198,6 +348,9 @@ class PythonCanChannel:
         # the live status read and the error-frame counter decode, since
         # the payload layout below is PEAK's and nobody else's.
         self._is_pcan = hasattr(bus, "m_objPCANBasic")
+        # The marker our own `VectorBus` subclass carries: it is the only
+        # bus that can be asked for a chip state and remembers the answer.
+        self._is_vector = hasattr(bus, "request_chip_state")
         # Last error counters the controller reported, as one tuple so
         # the state poll (its own thread) can never read a torn pair
         # from the rx thread's write. `(rec, tec)`, matching the payload
@@ -300,16 +453,16 @@ class PythonCanChannel:
         Two sources, in order. A read that already failed at the device
         boundary (see :attr:`_unreachable`) settles it: there is nothing
         to ask. Otherwise the backend is asked — PCAN through its error
-        counters and its live channel status, everything else through
-        python-can's ``Bus.state`` (``BusState.ACTIVE`` / ``PASSIVE`` /
-        ``ERROR``, with ``ERROR`` mapped to ``bus_off`` as the closest
-        analog of an ISO 11898-1 fault state in that three-value enum).
-        A read that raises reports :data:`STATE_UNAVAILABLE`, never the
-        healthy default: "we cannot reach it" must not render as "it is
-        fine".
+        counters and its live channel status, Vector through the chip
+        state its XL driver reports, everything else through python-can's
+        ``Bus.state`` (``BusState.ACTIVE`` / ``PASSIVE`` / ``ERROR``, with
+        ``ERROR`` mapped to ``bus_off`` as the closest analog of an ISO
+        11898-1 fault state in that three-value enum). A read that raises
+        reports :data:`STATE_UNAVAILABLE`, never the healthy default: "we
+        cannot reach it" must not render as "it is fine".
 
         TEC / REC are reported where the backend exposes them and 0
-        where it does not; today that means PCAN.
+        where it does not; today that means PCAN and Vector.
         """
         if self._closed or can is None:
             return ControllerState()
@@ -317,6 +470,8 @@ class PythonCanChannel:
             return ControllerState(state=STATE_UNAVAILABLE)
         if self._is_pcan:
             return self._pcan_state()
+        if self._is_vector:
+            return self._vector_state()
         try:
             raw = self._bus.state  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
@@ -376,6 +531,53 @@ class PythonCanChannel:
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
         state = worse_state(_pcan_status_state(status), from_counters)
+        return ControllerState(state=state, tec=tec, rec=rec)
+
+    def _vector_state(self) -> ControllerState:
+        """Vector's controller state, read off the chip state its XL
+        driver reports.
+
+        **Unverified against hardware.** No Vector adapter and no Vector
+        XL library existed anywhere this was developed or tested, so what
+        follows is written from the XL API's own field definitions and
+        exercised against faked events. It is implemented, not proven.
+
+        Same shape as PEAK's, and deliberately the same derivation
+        (:func:`~cannet_python_can.driver.state_from_counters` combined
+        with :func:`~cannet_python_can.driver.worse_state`) rather than a
+        second rule written for a second vendor. Vector is the easier of
+        the two: ``s_xl_chip_state`` carries ``busStatus``,
+        ``txErrorCounter`` and ``rxErrorCounter`` together, so the
+        counters need no payload archaeology — but the counters still
+        outrank the status bits, because ISO 11898-1 defines confinement
+        on the counters and PEAK's status word was measured
+        under-reporting a real fault as a healthy bus.
+
+        The request is placed first and the *previous* answer read: the
+        XL driver replies asynchronously, as an event on the same queue
+        the messages arrive on, so a reading is always one poll old. At
+        the state pump's 500 ms cadence that is half a second, and the
+        publish-on-change gate above it coalesces unchanged readings the
+        same way it does PEAK's.
+
+        Nothing here reads ``Bus.state``: python-can's ``VectorBus`` does
+        not implement it, and ``BusABC``'s getter returns
+        ``BusState.ACTIVE`` unconditionally, so it would report a healthy
+        bus through every fault.
+        """
+        try:
+            self._bus.request_chip_state()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            self._unreachable = True
+            return ControllerState(state=STATE_UNAVAILABLE)
+        self._unreachable = False
+        reading = getattr(self._bus, "chip_state", None)
+        if reading is None:
+            return ControllerState()
+        bus_status, tec, rec = reading
+        state = worse_state(
+            _xl_chip_state_state(bus_status), state_from_counters(tec, rec)
+        )
         return ControllerState(state=state, tec=tec, rec=rec)
 
     def close(self) -> None:
