@@ -119,8 +119,8 @@ def test_a_read_that_succeeds_again_clears_the_unreachable_mark() -> None:
     ("status", "expected"),
     [
         (0x00000, drv.STATE_ACTIVE),  # PCAN_ERROR_OK
-        (0x00004, drv.STATE_ACTIVE),  # PCAN_ERROR_BUSLIGHT — a warning level
-        (0x00008, drv.STATE_ACTIVE),  # PCAN_ERROR_BUSHEAVY — a warning level
+        (0x00004, drv.STATE_ACTIVE),  # PCAN_ERROR_BUSLIGHT — below the limit
+        (0x00008, drv.STATE_WARNING),  # PCAN_ERROR_BUSWARNING — at the limit
         (0x00020, drv.STATE_ACTIVE),  # PCAN_ERROR_QRCVEMPTY — nothing to read
         (0x00080, drv.STATE_ACTIVE),  # PCAN_ERROR_QXMTFULL — saturated, present
         (0x40000, drv.STATE_PASSIVE),  # PCAN_ERROR_BUSPASSIVE
@@ -129,16 +129,19 @@ def test_a_read_that_succeeds_again_clears_the_unreachable_mark() -> None:
         (0x00200, drv.STATE_UNAVAILABLE),  # PCAN_ERROR_NODRIVER
         (0x01400, drv.STATE_UNAVAILABLE),  # PCAN_ERROR_ILLHW
         (0x01800, drv.STATE_UNAVAILABLE),  # PCAN_ERROR_ILLNET
-        (0x01C00, drv.STATE_UNAVAILABLE),  # PCAN_ERROR_ILLCLIENT / ILLHANDLE
+        (0x01C00, drv.STATE_UNAVAILABLE),  # PCAN_ERROR_ILLHANDLE
         (0x4000000, drv.STATE_UNAVAILABLE),  # PCAN_ERROR_INITIALIZE
     ],
 )
 def test_pcan_channel_status_maps_onto_the_states_we_report(
     status: int, expected: str
 ) -> None:
-    # A saturated transmit queue and a bus-error warning level are the
+    # A saturated transmit queue and a light bus error are the
     # controls: both mean the adapter is present and working, and
-    # neither may park the bus.
+    # neither may park the bus. The bits themselves are masked and the
+    # counters they are combined with are the state source — see
+    # `test_counter_derived_state.py`; this table is the exact-match
+    # no-hardware family plus the single-flag readings.
     assert _channel(_PcanShapedBus(status)).state().state == expected
 
 

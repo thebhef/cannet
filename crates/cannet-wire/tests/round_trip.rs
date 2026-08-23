@@ -229,6 +229,7 @@ fn interface_state_envelope_round_trips_every_controller_state() {
         proto::ControllerState::Passive,
         proto::ControllerState::BusOff,
         proto::ControllerState::Unavailable,
+        proto::ControllerState::Warning,
     ] {
         let s = proto::InterfaceState {
             interface_id: "virtual:bus0/bridge-can0".into(),

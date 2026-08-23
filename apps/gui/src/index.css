@@ -824,9 +824,16 @@ ul.status-bar-menu .status-chip {
 .bus-health-state[data-tone="active"] .bus-health-dot {
   background: var(--ok-dot);
 }
+/* Over the ISO warning limit and error-passive share the warning
+   palette: both are a present controller counting errors, and the row's
+   own words say which. Only the states where nothing is being carried
+   -- bus-off, and an adapter the driver cannot reach -- take the alarm
+   palette. */
+.bus-health-state[data-tone="warning"],
 .bus-health-state[data-tone="passive"] {
   color: var(--warn-text);
 }
+.bus-health-state[data-tone="warning"] .bus-health-dot,
 .bus-health-state[data-tone="passive"] .bus-health-dot {
   background: var(--warn-border);
 }

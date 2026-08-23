@@ -21,8 +21,8 @@ Tasks keep stable numbers (they don't renumber when the order changes).
 | Outstanding | 15 |
 
 **Nothing has merged.** Everything implemented sits on one linear
-branch chain off `main`, tip `task-108-phase-6-panel-icons`. Merging
-the last branch takes all of it.
+branch chain off `main`, tip `task-109-phase-2b-unplug-regression`.
+Merging the last branch takes all of it.
 
 Normally a completed task is removed from this file (the detail lives
 in git history). That is **deferred by owner ruling 2026-08-22**: the
@@ -82,8 +82,7 @@ in their own files:
    the adopted in-repo icon registry, state on the hairline. Also
    styles task 107's event-surface toolbar. Opened by owner instruction
    2026-08-21.
-   **Phases 1–5 landed; phase 6 (icons reach into the panels) is
-   running.** The prototype
+   **All six phases landed.** The prototype
    [`../prototypes/gui-chip-redesign.html`](../prototypes/gui-chip-redesign.html)
    is durable and maintained in the same commits.
 2. [Task 107 — Events Point at Signals](0107-events-point-at-signals.md)
@@ -93,8 +92,12 @@ in their own files:
    Groomed and prototype approved 2026-08-21; carrier research (MDF4 EV
    blocks vs. BLF `GLOBAL_MARKER`) closed 2026-08-22, so phase 2
    implements rather than discovers.
-   **Groomed into 5 phases. Not started.** Runs after 108, per the
-   owner's ordering 101 → 106 → 19 → 108 → 107.
+   **All five phases landed; code-complete 2026-08-22.** Exit criteria
+   walked in the task file: 22 of 24 met. The two that are not — unknown
+   block keys surviving a text round-trip but not `file → Note → file`
+   (queue 3.30), and a file-backed series being unable to be an event's
+   subject (queue 3.31) — each close only with a durable-model change,
+   and are the task's acceptance question.
 3. [Task 109 — Usage Feedback From the Chip-Era Build](0109-usage-feedback-chip-era.md)
    — ten observations from test-driving the chain: the view-signals
    panel reading empty, the unplugged-PEAK verification failing, the
@@ -102,8 +105,10 @@ in their own files:
    not exist as buttons, Space in the RBS panel, a keyboard-nav
    highlight artefact, a redundant Disconnect-all, and RBS signals that
    are not grid rows. Opened by owner instruction 2026-08-22.
-   **Groomed into 6 phases 2026-08-22. Not started.** Carries the
-   acceptance blockers for tasks 99 (item 7) and 101 (item 2).
+   **Groomed into 6 phases 2026-08-22. Phases 1–3 landed; 2b (the unplug fix did not fire on hardware) running; 2c (counter-derived controller state) landed 2026-08-23.** Carries the
+   acceptance blockers for tasks 99 (item 7) and 101 (item 2). Owner
+   ruling 2026-08-22 on item 1: pattern-matched signals belong in the
+   view-signals list, so phase 6 implements before it investigates.
 
 ## Outstanding
 

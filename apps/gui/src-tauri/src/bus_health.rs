@@ -204,11 +204,15 @@ fn description_for(run: &ErrorRun) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ControllerHealth {
-    /// `"active"`, `"passive"`, `"busOff"` — or `"unavailable"`, which
-    /// is not a fault-confinement state at all but the driver reporting
-    /// it can no longer reach the interface. A driver that reports a
-    /// state we do not recognise contributes nothing rather than a
-    /// guess, so there is no "unknown" variant to render.
+    /// `"active"`, `"warning"`, `"passive"`, `"busOff"` — or
+    /// `"unavailable"`, which is not a fault-confinement state at all
+    /// but the driver reporting it can no longer reach the interface.
+    /// `"warning"` is not one of ISO 11898-1's three states either: it
+    /// is the warning limit the standard defines on the way to
+    /// error-passive, and it is the first reading that separates a bus
+    /// in trouble from a quiet one. A driver that reports a state we do
+    /// not recognise contributes nothing rather than a guess, so there
+    /// is no "unknown" variant to render.
     pub(crate) state: &'static str,
     pub(crate) tec: u32,
     pub(crate) rec: u32,

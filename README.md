@@ -383,9 +383,25 @@ worth knowing when one is. It stays neutral while every controller that
 reports is error-active, and tints with a count when one is not, naming
 the bus in its tooltip. Pressing it opens the **Bus health** panel: one
 row per logical bus with its ISO 11898-1 fault-confinement state
-(error-active / error-passive / bus-off), the transmit and receive error
-counters, the bus load, the error-frame tally and rate, and the adapter
-with the configuration the host actually put on the wire for it.
+(error-active / error-warning / error-passive / bus-off), the transmit
+and receive error counters, the bus load, the error-frame tally and
+rate, and the adapter with the configuration the host actually put on
+the wire for it.
+
+**Error-warning** is not one of the standard's three states — the
+controller is still error-active — but it is the limit the standard
+defines on the way to error-passive, and it is the first reading that
+separates a bus in trouble from a quiet one. It tints the launcher as a
+warning rather than a fault, and it keeps transmitting.
+
+On a PEAK adapter the state and the two counters are read from the
+**error frames the controller emits**, which carry its transmit and
+receive error registers. That is deliberate: PCAN-Basic's channel-status
+query stops at its bus-warning bit on a channel transmitting into an
+open circuit, so a state read from the status word alone under-reports a
+broken wire as a healthy bus. The counters climb 8 per failed
+transmission, cross the standard's thresholds, and fall again on every
+success, so recovery needs no separate signal.
 
 A row can also read **adapter unavailable**, which is not one of that
 standard's states: the driver can no longer reach the interface, which
@@ -395,8 +411,10 @@ transmission** — periodic messages targeting the bus park (as they do
 for any route loss) and resume on their own within about a second of
 the adapter coming back. Without that, the app goes on handing frames
 to a driver that cannot carry them, and each one still appears in the
-trace as though it had been sent. A bus-off controller keeps
-transmitting: it is present and recovers by itself.
+trace as though it had been sent. A controller over the warning limit,
+one that has gone error-passive, and even one that is bus-off all keep
+transmitting: each is present and recovers by itself as its counters
+fall.
 
 **Absent is not zero anywhere in that panel.** An in-process virtual bus
 has no configurable bitrate and therefore no defined load; a bus with no

@@ -158,6 +158,26 @@ describe("busHealthRows", () => {
     expect(r.stateText).toBe("Adapter unavailable");
   });
 
+  it("gives a controller over the warning limit its own words and the warning tone", () => {
+    // The reading an unplugged CAN cable produces on its way to
+    // error-passive. Before it had a name it arrived as "active", which
+    // is why a real fault looked like a healthy bus.
+    const r = row("b2", {
+      health: {
+        ...health,
+        b2: {
+          controller: { state: "warning", tec: 104, rec: 0 },
+          loadPercent: 0,
+          errorCount: 0,
+          errorRate: 0,
+        },
+      },
+    });
+    expect(r.tone).toBe("warning");
+    expect(r.stateText).toBe("Error-warning");
+    expect(r.tec).toBe(104);
+  });
+
   it("falls back to the wire id for an interface the app has not enumerated", () => {
     expect(row("b1", { interfaces: [] }).adapter).toBe("pcan:PCAN_USBBUS1(SN:1)");
   });
@@ -187,6 +207,22 @@ describe("busHealthConcerns", () => {
       }),
     );
     expect(concerns).toEqual([{ bus: "Powertrain", state: "adapter unavailable", busOff: true }]);
+  });
+
+  it("names a bus over the warning limit as a concern, tinted as a warning", () => {
+    // Not the launcher's fault tint: the controller is present and its
+    // counters fall again on their own. But it is a concern -- a
+    // launcher that stayed dark until 128 would say nothing through the
+    // part of a fault an operator could still act on.
+    const concerns = busHealthConcerns(
+      busHealthRows({
+        ...inputs,
+        health: {
+          b1: { controller: { state: "warning", tec: 104, rec: 0 }, errorCount: 0, errorRate: 0 },
+        },
+      }),
+    );
+    expect(concerns).toEqual([{ bus: "Powertrain", state: "error-warning", busOff: false }]);
   });
 
   it("counts a bus-off bus as a fault rather than a warning", () => {

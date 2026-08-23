@@ -49,7 +49,10 @@ from .driver import (
     STATE_BUS_OFF,
     STATE_PASSIVE,
     STATE_UNAVAILABLE,
+    STATE_WARNING,
     TxRejected,
+    state_from_counters,
+    worse_state,
 )
 
 _log = logging.getLogger(__name__)
@@ -71,17 +74,62 @@ except Exception as _e:  # noqa: BLE001 - swallow any import-time error.
 #: than imported so a build without the PCAN backend still loads, and
 #: so the exact values a reading is compared against are visible where
 #: the comparison is.
+#:
+#: These four are **flags**, and the vendor header says so itself:
+#: ``PCAN_ERROR_ANYBUSERR`` is defined as their bitwise union, 0x4001C.
+#: A real reading combines them — a controller that is error-passive
+#: and still over the warning limit answers 0x40008 — so the bus-error
+#: half of a status word is masked, never compared for equality.
+_PCAN_ERROR_BUSLIGHT = 0x00004
+_PCAN_ERROR_BUSWARNING = 0x00008
 _PCAN_ERROR_BUSOFF = 0x00010
 _PCAN_ERROR_BUSPASSIVE = 0x40000
 #: Statuses that mean there is no reachable adapter behind the handle:
 #: the controller registers do not answer (REGTEST), the driver is not
 #: loaded (NODRIVER), the hardware / net / client handle is invalid
-#: (ILLHW, ILLNET, ILLCLIENT) or the channel is not initialised
+#: (ILLHW, ILLNET, ILLHANDLE) or the channel is not initialised
 #: (INITIALIZE). None of these can be reported by a channel that is
 #: open on a present device.
+#:
+#: Unlike the bus-error flags above, these are multi-bit *values* that
+#: overlap each other bit for bit — ILLHW 0x1400, ILLNET 0x1800 and
+#: ILLHANDLE 0x1C00 share the 0x0400 and 0x0800 bits — so they keep the
+#: exact match a masked test would ruin.
 _PCAN_STATUS_UNREACHABLE = frozenset(
     {0x00100, 0x00200, 0x01400, 0x01800, 0x01C00, 0x4000000}
 )
+
+#: Byte offsets of the two error counters in a PEAK error frame's
+#: payload. Measured on a PCAN-USB FD at the bench: byte 3 stepped by
+#: exactly 8 per failed transmission and pinned at 128 — the transmit
+#: error counter, by its own arithmetic — while byte 2 stayed 0 on a
+#: channel that was only transmitting. Byte 1 is an error-type code
+#: nothing here reads.
+_PCAN_ERR_REC_OFFSET = 2
+_PCAN_ERR_TEC_OFFSET = 3
+
+
+def _pcan_status_state(status: int) -> str:
+    """The worst fault-confinement state a PCAN status word admits to.
+
+    Masked, because these bits are flags — the vendor header defines
+    ``PCAN_ERROR_ANYBUSERR`` as their union, and a controller that is
+    error-passive while still over the warning limit answers with both
+    set. ``BUSLIGHT`` sits below ISO 11898-1's warning limit and so
+    reads as active: a light bus error is a controller counting, not a
+    controller in trouble.
+
+    Everything unrecognised reads as active too — a busy transmit queue
+    and an empty receive queue both show up here, and a reading that is
+    not certainly a fault must not raise one.
+    """
+    if status & _PCAN_ERROR_BUSOFF:
+        return STATE_BUS_OFF
+    if status & _PCAN_ERROR_BUSPASSIVE:
+        return STATE_PASSIVE
+    if status & _PCAN_ERROR_BUSWARNING:
+        return STATE_WARNING
+    return STATE_ACTIVE
 
 
 class PythonCanDriver:
@@ -145,6 +193,16 @@ class PythonCanChannel:
         # single-node bench bus is worse than being slow to notice a
         # real removal.
         self._unreachable = False
+        # python-can's own marker for its PCAN backend: the real
+        # `PcanBus` holds the PCANBasic handle here. Used to gate both
+        # the live status read and the error-frame counter decode, since
+        # the payload layout below is PEAK's and nobody else's.
+        self._is_pcan = hasattr(bus, "m_objPCANBasic")
+        # Last error counters the controller reported, as one tuple so
+        # the state poll (its own thread) can never read a torn pair
+        # from the rx thread's write. `(rec, tec)`, matching the payload
+        # order they are decoded from.
+        self._counters: tuple[int, int] = (0, 0)
 
     def recv(self, timeout_s: float) -> Optional[Frame]:
         if self._closed:
@@ -157,7 +215,35 @@ class PythonCanChannel:
         self._unreachable = False
         if msg is None:
             return None
-        return _msg_to_frame(msg)
+        frame = _msg_to_frame(msg)
+        if self._is_pcan and frame.kind == FrameKind.ERROR:
+            self._note_pcan_counters(frame.data)
+        return frame
+
+    def _note_pcan_counters(self, data: bytes) -> None:
+        """Record the error counters carried by a PEAK error frame.
+
+        This is the only live reading of the controller's registers that
+        PCAN offers. ``CAN_GetStatus`` and the queued
+        ``PCAN_MESSAGE_STATUS`` frames both stop at ``BUSWARNING`` on a
+        transmitter driving an open circuit, while these counters climb
+        past the error-passive threshold and count back down when the
+        wire is restored.
+
+        Costs two array reads on the receive thread, which matters: the
+        measured rate on that fault was about 5,200 error frames a
+        second. Nothing is published from here — the state poll reads
+        the latest pair on its own 500 ms cadence, which is where the
+        coalescing happens.
+
+        A payload too short to hold them leaves the last reading in
+        place. Every PEAK error frame observed carried four bytes, and a
+        shorter one is a backend we do not have a layout for, not a
+        controller reporting zero.
+        """
+        if len(data) <= _PCAN_ERR_TEC_OFFSET:
+            return
+        self._counters = (data[_PCAN_ERR_REC_OFFSET], data[_PCAN_ERR_TEC_OFFSET])
 
     def send(self, frame: Frame) -> None:
         if self._closed:
@@ -213,24 +299,24 @@ class PythonCanChannel:
 
         Two sources, in order. A read that already failed at the device
         boundary (see :attr:`_unreachable`) settles it: there is nothing
-        to ask. Otherwise the backend is asked — PCAN through its live
-        channel status, everything else through python-can's
-        ``Bus.state`` (``BusState.ACTIVE`` / ``PASSIVE`` / ``ERROR``,
-        with ``ERROR`` mapped to ``bus_off`` as the closest analog of an
-        ISO 11898-1 fault state in that three-value enum). A read that
-        raises reports :data:`STATE_UNAVAILABLE`, never the healthy
-        default: "we cannot reach it" must not render as "it is fine".
+        to ask. Otherwise the backend is asked — PCAN through its error
+        counters and its live channel status, everything else through
+        python-can's ``Bus.state`` (``BusState.ACTIVE`` / ``PASSIVE`` /
+        ``ERROR``, with ``ERROR`` mapped to ``bus_off`` as the closest
+        analog of an ISO 11898-1 fault state in that three-value enum).
+        A read that raises reports :data:`STATE_UNAVAILABLE`, never the
+        healthy default: "we cannot reach it" must not render as "it is
+        fine".
 
-        TEC / REC aren't exposed uniformly across backends; reported
-        as 0.
+        TEC / REC are reported where the backend exposes them and 0
+        where it does not; today that means PCAN.
         """
         if self._closed or can is None:
             return ControllerState()
         if self._unreachable:
             return ControllerState(state=STATE_UNAVAILABLE)
-        pcan = self._pcan_state()
-        if pcan is not None:
-            return pcan
+        if self._is_pcan:
+            return self._pcan_state()
         try:
             raw = self._bus.state  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
@@ -243,28 +329,43 @@ class PythonCanChannel:
             return ControllerState(state=STATE_BUS_OFF)
         return ControllerState(state=STATE_ACTIVE)
 
-    def _pcan_state(self) -> Optional[ControllerState]:
-        """PCAN's controller state read from the device, or ``None`` for
-        a backend that is not PCAN.
+    def _pcan_state(self) -> ControllerState:
+        """PCAN's controller state, derived from the error counters its
+        error frames carry and floored by its live channel status.
 
-        python-can's ``PcanBus.state`` is a **stored echo** of the value
-        the bus was configured with — its getter returns ``self._state``,
-        written only by the setter ``__init__`` calls — so it never moves
-        on its own and can never report bus-off or error-passive. The
-        live read is ``PcanBus.status()``, which calls PCAN-Basic's
-        ``CAN_GetStatus``; that is what this asks.
+        **The counters are the state source.** ISO 11898-1 defines fault
+        confinement on TEC and REC, and PEAK reports both in every error
+        frame (see :meth:`_note_pcan_counters`). They rise 8 per failed
+        transmission, fall on every success, and therefore recover
+        without anything having to notice that a fault ended.
 
-        Statuses are matched exactly rather than by mask.
-        ``CAN_GetStatus`` answers with one code, and the vendor header's
-        "mask" constants share bits with unrelated codes, so a masked
-        test would read a busy transmit queue as a missing adapter.
-        Anything unrecognised — and both bus-error warning levels, which
-        mean a present controller counting errors — reads as active: a
-        reading that is not certainly a fault must not park a bus.
+        **The status word is a floor, not the answer.** Measured on a
+        transmitter driving an open circuit, ``CAN_GetStatus`` reported
+        ``BUSWARNING`` and never moved further while the counters
+        climbed past the error-passive threshold — so a state read from
+        the status word alone under-reports a real fault as a healthy
+        bus. It still contributes what only it can: bus-off is visible
+        there at a transmit counter no single payload byte can express.
+        The two are combined with :func:`~cannet_python_can.driver
+        .worse_state` so neither can talk the other down.
+
+        Note also that python-can's ``PcanBus.state`` is a **stored
+        echo** of the value the bus was configured with — its getter
+        returns ``self._state``, written only by the setter ``__init__``
+        calls — so it never moves at all and is not consulted here.
+
+        The bus-error bits are masked, because the vendor header's own
+        ``PCAN_ERROR_ANYBUSERR`` defines them as a union and a real
+        reading combines them. The no-hardware family keeps its exact
+        match: those are multi-bit values that overlap each other, and a
+        masked test there would read a busy transmit queue as a missing
+        adapter.
         """
+        rec, tec = self._counters
+        from_counters = state_from_counters(tec, rec)
         status_read = getattr(self._bus, "status", None)
-        if not hasattr(self._bus, "m_objPCANBasic") or not callable(status_read):
-            return None
+        if not callable(status_read):
+            return ControllerState(state=from_counters, tec=tec, rec=rec)
         try:
             status = int(status_read())
         except Exception:  # noqa: BLE001
@@ -274,11 +375,8 @@ class PythonCanChannel:
         if status in _PCAN_STATUS_UNREACHABLE:
             self._unreachable = True
             return ControllerState(state=STATE_UNAVAILABLE)
-        if status == _PCAN_ERROR_BUSOFF:
-            return ControllerState(state=STATE_BUS_OFF)
-        if status == _PCAN_ERROR_BUSPASSIVE:
-            return ControllerState(state=STATE_PASSIVE)
-        return ControllerState(state=STATE_ACTIVE)
+        state = worse_state(_pcan_status_state(status), from_counters)
+        return ControllerState(state=state, tec=tec, rec=rec)
 
     def close(self) -> None:
         if self._closed:
