@@ -57,12 +57,12 @@ use std::path::{Path, PathBuf};
 use cannet_core::{CanFrame, CanFramePayload, Direction};
 use mdf4_rs::blocks::{
     AttachmentBlock, BlockHeader, ChannelBlock, ChannelGroupBlock, ConversionBlock, ConversionType,
-    DataGroupBlock, DataType, EventBlock, EventCause, EventSyncType, EventType, FileHistoryBlock,
-    HeaderBlock, IdentificationBlock, MetadataBlock, SourceBlock, TextBlock,
+    DataGroupBlock, DataType, EventBlock, EventCause, EventRangeType, EventSyncType, EventType,
+    FileHistoryBlock, HeaderBlock, IdentificationBlock, MetadataBlock, SourceBlock, TextBlock,
 };
 
 use crate::attachments::MdfAttachment;
-use crate::events::{comment_xml, MdfEvent};
+use crate::events::{comment_xml, MdfEvent, MdfEventRange};
 use crate::file::{CN_TYPE_MASTER, SI_BUS_CAN, SI_TYPE_BUS};
 use crate::signals::FileSignal;
 
@@ -97,6 +97,25 @@ const PAYLOAD_OFFSET: u32 = 21;
 
 /// One record of a signal channel group: master seconds, then the value.
 const SIGNAL_RECORD_SIZE: u32 = 16;
+
+/// `ev_type` for a user-placed marker.
+///
+/// Written as a byte rather than through `mdf4_rs::blocks::EventType`,
+/// because the two disagree: the crate numbers `Marker` **2**, and ASAM
+/// MDF 4.x assigns 2 to `EV_T_ACQUISITION_INTERRUPT` and puts
+/// `EV_T_MARKER` at **6**. asammdf — an independent implementation of the
+/// same standard — agrees with the standard (`EVENT_TYPE_MARKER = 6`), so
+/// a file written through the crate's enum would tell every conformant
+/// reader that a user's note was an interrupted acquisition.
+const EV_TYPE_MARKER: u8 = 6;
+
+/// Byte offset of `ev_type` inside a serialized `##EV` block: the 24-byte
+/// block header, then the five fixed links this writer emits (it writes
+/// no scope or attachment links, so there are no variable ones).
+const EV_TYPE_OFFSET: usize = 24 + 5 * 8;
+
+/// Byte offset of `ev_ev_range` — the third of the five fixed links.
+const EV_RANGE_LINK_OFFSET: u64 = 24 + 2 * 8;
 
 /// Payload lengths a CAN FD DLC can express, ascending — the index is the
 /// DLC once the classic 0..=8 range is past.
@@ -570,18 +589,26 @@ impl MdfCaptureWriter {
     /// The `##EV` chain, back to front. Returns the first block's address.
     fn write_events(&self, t: &mut Trailer) -> Result<u64, MdfWriteError> {
         let mut first = 0u64;
-        for event in self.events.iter().rev() {
+        // Block address of each event by its position in `self.events`,
+        // so the range links can be filled in once every address is known.
+        let mut addrs = vec![0u64; self.events.len()];
+        for (i, event) in self.events.iter().enumerate().rev() {
             let name_addr = t.tx(&event.name);
-            let comment_addr = if event.properties.is_empty() {
+            let comment_addr = if event.text.is_empty() && event.properties.is_empty() {
                 0
             } else {
-                t.md(&comment_xml(&event.properties))
+                t.md(&comment_xml(&event.text, &event.properties))
             };
             let ev = EventBlock {
                 cause: EventCause::User,
                 name_addr,
                 comment_addr,
                 next_ev_addr: first,
+                range_type: match event.range {
+                    None => EventRangeType::Point,
+                    Some(MdfEventRange::Begin { .. }) => EventRangeType::RangeBegin,
+                    Some(MdfEventRange::End { .. }) => EventRangeType::RangeEnd,
+                },
                 // Nanoseconds as the base value with a 1e-9 factor, so the
                 // stored time is an integer and the physical value is
                 // seconds — the same axis the master channels use.
@@ -592,7 +619,24 @@ impl MdfCaptureWriter {
                 sync_factor: 1e-9,
                 ..EventBlock::new(EventType::Marker, EventSyncType::Time, 0.0)
             };
-            first = t.put(&ev.to_bytes()?);
+            let mut bytes = ev.to_bytes()?;
+            bytes[EV_TYPE_OFFSET] = EV_TYPE_MARKER;
+            first = t.put(&bytes);
+            addrs[i] = first;
+        }
+        // A range link is an address, so it can only be written once every
+        // block is placed — an end event points back at a begin event
+        // written after it.
+        for (i, event) in self.events.iter().enumerate() {
+            let other = match event.range {
+                None => continue,
+                Some(MdfEventRange::Begin { end }) => end,
+                Some(MdfEventRange::End { begin }) => begin,
+            };
+            let Some(target) = addrs.get(other).copied() else {
+                continue;
+            };
+            t.patch_u64(addrs[i] + EV_RANGE_LINK_OFFSET, target);
         }
         Ok(first)
     }
@@ -654,6 +698,14 @@ impl Trailer {
         let addr = self.base + self.buf.len() as u64;
         self.buf.extend_from_slice(bytes);
         addr
+    }
+
+    /// Overwrite a `u64` at an absolute address inside a block already
+    /// appended. Only for links whose target is not known until later —
+    /// the trailer is still in memory, so this is a write, not a seek.
+    fn patch_u64(&mut self, addr: u64, value: u64) {
+        let at = usize::try_from(addr - self.base).expect("a trailer offset fits a usize");
+        self.buf[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
 
     fn tx(&mut self, text: &str) -> u64 {

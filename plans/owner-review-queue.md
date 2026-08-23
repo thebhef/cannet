@@ -359,6 +359,9 @@ Recorded by the phases that found them, not yet decided.
 | 3.26 | **Ten bars were swept; two were mutation-proved.** The phase pinned handlers per bar and proved the pinning discriminates on the trace panel (Pause→Stop) and system messages (Clear→copyAll), reasoning in its log that the rest did not need it. That is within what was asked, and the net test delta (+5 across ten bars, with large edits to existing per-bar tests) is consistent with a restyle rather than a rewrite — but **control-preservation across the other eight bars rests on the pre-existing tests being behavioural rather than markup-shaped.** Worth a look during the chrome review, since a quietly mis-wired control is the failure mode of a breadth phase. | [task 108](tasks/0108-gui-chip-redesign.md) |
 | 3.6 | Task 97's grooming asked that the owner see both axes before the **lanes** axis changed. No comparison was produced, because the lanes axis has no y-gutter labelling to compare — it already draws nothing there, and its labels are the tiles. If the owner meant the lane *tiles*, that is a different request, and it cuts against the stated reason for removing the axis labels. | [task 97](tasks/0097-enum-labels-on-axis.md) |
 | 3.27 | **A CI guard test's own coverage check dropped a helper rather than a scenario.** `81d5343e` (task 108 phase 3) collapsed the toolbar to commands-only, which broke three `window.__shot.toolbar(...)` scenario steps in `cannet-perf-measurement`'s screenshot harness — fixed by switching them to the equivalent `command(...)` calls. With none left, the guard test's own `assert!(!labels.is_empty())` for the `toolbar` helper became unsatisfiable, so that coverage-loop entry was removed rather than the scenario weakened. Follows directly from the chip-toolbar's own "commands only" design, but it is a test-scope call, not a pure bugfix — flagged for a sanity check. | [task 110](tasks/0110-chain-ci-repair.md) |
+| 3.28 | **Every MDF file cannet has written names its events the wrong `ev_type`.** `mdf4-rs` numbers `Marker` 2; ASAM MDF 4.x puts `EV_T_MARKER` at 6 and reads 2 as `EV_T_ACQUISITION_INTERRUPT` (confirmed against asammdf). Fixed at the write boundary; existing files stay mislabelled to conformant readers and nothing rewrites them. The crate's `from_u8` also rejects types 3–6, so a foreign file using them parses as a marker — worth an upstream issue. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.29 | **`ev_scope` is not written, because a cannet MDF has nothing for a subject to point at.** The grooming expected subjects to scope to a `##CN`/`##CG`; the writer emits three bus-logging groups by frame *structure* and no DBC-decoded signal channels, so a message subject has no referent and scoping one to `CAN_DataFrame` would be false. Becomes writable if per-message channel groups are ever written. | [task 107](tasks/0107-events-point-at-signals.md) |
+| 3.30 | **A later schema version's unknown block keys survive a parse but not a model round-trip.** The groomed rule says they are preserved on rewrite; the parser does preserve them, but `Note` has no field to hold one, so opening and saving a file written by a future build drops what this build does not understand. Closing it means a passthrough field on the durable schema. | [task 107](tasks/0107-events-point-at-signals.md) |
 
 ---
 
@@ -392,6 +395,26 @@ test or artefact.
 | 101 | Bus health — error frames labelled and coalesced, controller state, bus load |
 | 106 | The any-bus series ruled on, and the signal cache's sample-order sweep |
 | 19 | Typed-argument palette prompts, `Mod+T`/`Mod+E`, and event-row keyboard actions |
+
+**Two of these are blocked, by findings recorded in task 109**
+(2026-08-22, from the owner's test drive of the chain):
+
+- **101 — bus health.** Its hardware verification (item 3.14 above) was
+  run and **failed**. Unplugging the PEAK dongles produced no indication
+  of a bus fault; one side's utilization dropped to 0 while the other
+  held steady; and the pack bus trace kept producing rows as though it
+  were still transmitting. The last of those is the serious one — the
+  trace showed traffic that never reached a wire. Task 109 item 2 and
+  its phase 2 own the investigation.
+- **99 — transmit controls.** It shipped on the premise that Space
+  already acted on RBS message rows and only needed adding to the
+  transmit panel. The premise is false and was never tested: the RBS
+  rows' enable control is a plain checkbox, so Space reaches the scroll
+  container. Task 109 item 7 and its phase 3 own the fix, with the test
+  that would have caught it.
+
+Neither task is reopened; 109 carries both so one task holds all ten of
+the owner's observations.
 
 ## 5. Housekeeping owed at close-out
 

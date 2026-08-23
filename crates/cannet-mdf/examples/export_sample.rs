@@ -18,7 +18,9 @@
 use std::path::PathBuf;
 
 use cannet_core::{CanFdFlags, CanFrame, CanFramePayload, CanId, Direction};
-use cannet_mdf::{FileSignal, MdfAttachment, MdfCaptureLayout, MdfCaptureWriter, MdfEvent};
+use cannet_mdf::{
+    FileSignal, MdfAttachment, MdfCaptureLayout, MdfCaptureWriter, MdfEvent, MdfEventRange,
+};
 use serde_json::json;
 
 /// Sub-millisecond wall clock, so a rounded origin would show.
@@ -73,9 +75,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "events": events.iter().map(|e| json!({
             "t_abs_ns": e.timestamp_ns,
             "name": e.name,
+            "text": e.text,
             "properties": e.properties.iter()
                 .map(|(k, v)| (k.clone(), serde_json::Value::from(v.clone())))
                 .collect::<serde_json::Map<_, _>>(),
+            // 0 point, 1 range begin, 2 range end — ASAM's ev_range_type.
+            "range_type": match e.range {
+                None => 0,
+                Some(MdfEventRange::Begin { .. }) => 1,
+                Some(MdfEventRange::End { .. }) => 2,
+            },
+            "range_index": match e.range {
+                None => serde_json::Value::Null,
+                Some(MdfEventRange::Begin { end }) => serde_json::Value::from(end),
+                Some(MdfEventRange::End { begin }) => serde_json::Value::from(begin),
+            },
         })).collect::<Vec<_>>(),
         "attachment": {
             "file_name": attachment.file_name,
@@ -192,12 +206,22 @@ fn signals() -> Vec<(Option<String>, FileSignal)> {
     ]
 }
 
+/// Three events, so the oracle sees every shape the writer emits: a plain
+/// point marker, a comment carrying both `<TX>` text and foreign
+/// properties, and a native begin/end range pair.
 fn events() -> Vec<MdfEvent> {
     vec![
         MdfEvent {
             timestamp_ns: START_NS + 5_000_000,
             name: "run start".to_owned(),
-            properties: vec![("cannet.id".to_owned(), "sample-0".to_owned())],
+            text: "run start
+
+cannet-event/1
+id: sample-0
+kind: note"
+                .to_owned(),
+            range: Some(MdfEventRange::Begin { end: 2 }),
+            ..MdfEvent::default()
         },
         MdfEvent {
             timestamp_ns: START_NS + 45_678_901_234,
@@ -206,6 +230,18 @@ fn events() -> Vec<MdfEvent> {
                 ("cannet.id".to_owned(), "sample-1".to_owned()),
                 ("cannet.color".to_owned(), "#FF8800".to_owned()),
             ],
+            ..MdfEvent::default()
+        },
+        MdfEvent {
+            timestamp_ns: START_NS + 60_000_000_000,
+            name: "run end".to_owned(),
+            text: "cannet-event/1
+id: sample-2
+kind: note
+link: sample-0"
+                .to_owned(),
+            range: Some(MdfEventRange::End { begin: 0 }),
+            ..MdfEvent::default()
         },
     ]
 }

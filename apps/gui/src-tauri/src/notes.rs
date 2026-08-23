@@ -194,10 +194,6 @@ impl Note {
 ///
 /// An id that names no event in `events` is unresolved, not broken: it is
 /// simply absent from the result and stays in the subject list.
-// No host-side caller yet — exercised by tests. The symmetric read is the
-// model's own contract (ADR 0056), so it lives beside the model rather than
-// being re-derived by each consumer that comes to need it.
-#[allow(dead_code)]
 pub fn linked_event_ids(events: &[Note], id: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push = |candidate: &str| {

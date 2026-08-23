@@ -126,8 +126,8 @@ in the Description column is a verbatim quote from the cited line.
 |---:|------|------|--------|--------|-------|
 | 5 | `APP_TRIGGER` | nice | ✗ | ◐ skip | *application trigger object* (binlog_objects.h:34). `[cannet]` Application-defined slot; only useful if cannet defines its own trigger semantics. |
 | 65 | `APP_TEXT` | nice | ✓ read+write | ✓ read | *text object* (binlog_objects.h:111). The struct `VBLAppText` (binlog_objects.h:2259) carries `mSource` (text-source flag: `BL_APPTEXT_MEASUREMENTCOMMENT=0`, `BL_APPTEXT_DBCHANNELINFO=1`, `BL_APPTEXT_METADATA=2`), `mTextLength`, and `mText` (MBCS). `[cannet]` Landed Phase 10 Step 3 in `cannet-blf::format::text`. |
-| 92 | `EVENT_COMMENT` | desired | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:150` defines the type without an enum comment. Struct `VBLEventComment` (binlog_objects.h:2363) carries `mCommentedEventType`, `mTextLength`, and `mText` (MBCS). `[cannet]` Landed Phase 10 Step 3 in `cannet-blf::format::text`; the user-typed annotation in Vector CANalyzer's Trace Window, important for reading third-party captures. |
-| 96 | `GLOBAL_MARKER` | **required** | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:157` defines the type without an enum comment. Struct `VBLGlobalMarker` (binlog_objects.h:2379) is a self-sized record with group name + marker name + description lengths concatenated after the fixed fields. `[cannet]` Landed Phase 10 Step 2 in `cannet-blf::format::marker`; carries cannet's plot-panel notes inside the BLF per [ADR 0010](adr/0010-no-sidecar-files.md). |
+| 92 | `EVENT_COMMENT` | desired | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:150` defines the type without an enum comment. Struct `VBLEventComment` (binlog_objects.h:2363) carries `mCommentedEventType`, `mTextLength`, and `mText` (MBCS). `[cannet]` Landed in `cannet-blf::format::text`; the user-typed annotation in Vector CANalyzer's Trace Window, important for reading third-party captures, and the record cannet's message-bound events ride ([ADR 0057](adr/0057-one-text-block-carries-an-event.md)). |
+| 96 | `GLOBAL_MARKER` | **required** | ✓ read+write | ◐ skip | `[bare in spec]` — `binlog_objects.h:157` defines the type without an enum comment. Struct `VBLGlobalMarker` (binlog_objects.h:2379) is a self-sized record with group name + marker name + description lengths concatenated after the fixed fields. `[cannet]` Landed in `cannet-blf::format::marker`; carries cannet's timeline events inside the BLF per [ADR 0010](adr/0010-no-sidecar-files.md), with the event's colour as the fill and the rest in a `cannet-event/1` block in the description ([ADR 0057](adr/0057-one-text-block-carries-an-event.md)). |
 
 ### Environment / system variables
 
@@ -444,6 +444,19 @@ property of that strategy rather than anything the format forces.
 Markers (`GLOBAL_MARKER`) obey exactly the same rule as frames: written
 where they are stamped, clamped only if they precede the anchor, and
 counted in the same report when they are.
+
+### What a cannet marker looks like
+
+`group_name` is `cannet`, `marker_name` is the event's label, and the
+event's colour is the marker's **fill** — `background_color` under a white
+`foreground_color`, which is how python-can's independent BLF writer packs
+one. Everything else an event holds and the record has no field for — its
+stable id, its kind, its tag, and the structural subject references of
+[ADR 0056](adr/0056-an-event-subject-is-a-structural-reference.md) — rides
+the `description` in a `cannet-event/1` text block under the user's own
+words, and the same block rides an `EVENT_COMMENT`'s one text field.
+[ADR 0057](adr/0057-one-text-block-carries-an-event.md) has the grammar,
+the parsing rules, and exactly what a round-trip loses.
 
 `FileStatistics.last_object_time` is the capture's **latest** event
 rather than whichever was appended last, so an unordered file's header

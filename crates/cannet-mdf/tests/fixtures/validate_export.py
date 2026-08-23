@@ -32,6 +32,10 @@ from asammdf import MDF
 
 ID_UNFIN_STD_FLAGS = 60  # u16, per the MDF 4.1 identification block
 
+# ev_type / ev_cause values, per the ASAM MDF 4.1 event block.
+EVENT_TYPE_MARKER = 6
+EVENT_CAUSE_USER = 4
+
 STRUCTURES = ("CAN_DataFrame", "CAN_ErrorFrame", "CAN_RemoteFrame")
 
 # Every scalar member of a bus-logging structure, and the key it carries in
@@ -161,10 +165,21 @@ def properties_of(comment: str) -> dict[str, str]:
     }
 
 
+def text_of(comment: str) -> str:
+    """The ``<TX>`` element of an event comment — the event's own free text."""
+    import xml.etree.ElementTree as ET
+
+    if not comment:
+        return ""
+    tx = ET.fromstring(comment).find("./TX")
+    return "" if tx is None else (tx.text or "")
+
+
 def check_events(mdf: MDF, expected, start_ns: int, problems: list[str]) -> None:
     if len(mdf.events) != len(expected):
         problems.append(f"{len(mdf.events)} event(s), expected {len(expected)}")
         return
+    addresses = [event.address for event in mdf.events]
     for i, (event, want) in enumerate(zip(mdf.events, expected)):
         if event.name != want["name"]:
             problems.append(f"event {i} name {event.name!r} != {want['name']!r}")
@@ -174,6 +189,33 @@ def check_events(mdf: MDF, expected, start_ns: int, problems: list[str]) -> None
         got_props = properties_of(event.comment)
         if got_props != want["properties"]:
             problems.append(f"event {i} properties {got_props} != {want['properties']}")
+        got_text = text_of(event.comment)
+        if got_text != want["text"]:
+            problems.append(f"event {i} text {got_text!r} != {want['text']!r}")
+        # ASAM MDF 4.x: EV_T_MARKER is 6 and EV_C_USER is 4. mdf4-rs's own
+        # EventType enum numbers Marker 2 (the standard's acquisition
+        # interrupt), so this is the check that keeps the writer honest
+        # against an implementation that is not the one it links.
+        if event.event_type != EVENT_TYPE_MARKER:
+            problems.append(
+                f"event {i} ev_type {event.event_type} != {EVENT_TYPE_MARKER} (EV_T_MARKER)"
+            )
+        if event.cause != EVENT_CAUSE_USER:
+            problems.append(
+                f"event {i} ev_cause {event.cause} != {EVENT_CAUSE_USER} (EV_C_USER)"
+            )
+        if event.range_type != want["range_type"]:
+            problems.append(
+                f"event {i} ev_range_type {event.range_type} != {want['range_type']}"
+            )
+        if want["range_index"] is None:
+            if event.range_start_ev_addr != 0:
+                problems.append(f"event {i} links a range it is not part of")
+        elif event.range_start_ev_addr != addresses[want["range_index"]]:
+            problems.append(
+                f"event {i} range link {event.range_start_ev_addr} "
+                f"!= event {want['range_index']} at {addresses[want['range_index']]}"
+            )
 
 
 def check_attachment(mdf: MDF, want, problems: list[str]) -> None:

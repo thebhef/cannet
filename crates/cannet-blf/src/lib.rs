@@ -630,17 +630,22 @@ impl BlfCaptureWriter {
     /// UTF-8 bytes — BLF's "MBCS" is encoding-tolerant.
     ///
     /// The marker uses `group_name = "cannet"` and the relocatable
-    /// flag `GlobalMarker::build` stamps; `foreground_color` is the
-    /// event's `0x00RRGGBB` color (ADR 0035), `0` for the build
-    /// default (black). Markers ride in the same `LOG_CONTAINER`s as
-    /// CAN frames in timestamp order; intersperse them with `append`
-    /// as the capture timeline dictates.
+    /// flag `GlobalMarker::build` stamps. `color` is the event's
+    /// `0x00RRGGBB` color (ADR 0035) and becomes the marker's **fill** —
+    /// `background_color`, under a white `foreground_color`, which is
+    /// how python-can's independent BLF writer packs one and the only
+    /// reading under which the two fields mean text-on-a-chip. `0` is an
+    /// uncolored event and keeps the neutral black-on-white default.
+    ///
+    /// Markers ride in the same `LOG_CONTAINER`s as CAN frames in
+    /// timestamp order; intersperse them with `append` as the capture
+    /// timeline dictates.
     pub fn append_marker(
         &mut self,
         timestamp_ns: u64,
         marker_name: &str,
         description: &str,
-        foreground_color: u32,
+        color: u32,
     ) -> Result<(), BlfWriteError> {
         let inner = self.inner.as_mut().ok_or_else(|| {
             BlfWriteError::Io(io::Error::other("writer has already been finished"))
@@ -654,10 +659,14 @@ impl BlfCaptureWriter {
             marker_name.as_bytes().to_vec(),
             description.as_bytes().to_vec(),
         );
-        // Carry the event's color (ADR 0035) in the marker's `0x00RRGGBB`
-        // foreground color; `0` is the build default (black) for an
-        // uncolored event, preserving the prior byte output.
-        marker.foreground_color = foreground_color;
+        // The event's color (ADR 0035) is the chip, not the glyphs: fill
+        // it and put white text over it. An uncolored event keeps
+        // `build`'s neutral black-on-white, byte-identical to what one
+        // has always produced.
+        if color & 0x00FF_FFFF != 0 {
+            marker.background_color = color & 0x00FF_FFFF;
+            marker.foreground_color = 0x00FF_FFFF;
+        }
         let bytes = format::marker::encode(&marker);
         inner.append_object(&bytes, timestamp_ns)?;
         self.marker_count += 1;
@@ -1236,7 +1245,7 @@ mod tests {
                     assert_eq!(m.group_name, b"cannet");
                     assert_eq!(m.marker_name, b"stuck bit");
                     assert_eq!(m.description, b"note-uuid-1");
-                    assert_eq!(m.foreground_color, 0x00FF_8800, "color round-trips");
+                    assert_eq!(m.background_color, 0x00FF_8800, "color round-trips");
                     saw_marker = true;
                 }
                 _ => {}
@@ -1295,6 +1304,44 @@ mod tests {
         );
         assert_eq!(seen[1].marker.marker_name, b"m2");
         assert_eq!(seen[1].marker.description, b"id-2");
+    }
+
+    /// An event's colour is the marker's **fill**, not its text.
+    ///
+    /// python-can's BLF writer — an independent implementation — packs a
+    /// global marker with a white `foreground_color` over a saturated
+    /// `background_color`, which only makes sense as text on a filled
+    /// chip. cannet writes the same way, so an event's colour reads as a
+    /// solid block in Vector's tooling rather than as thin glyphs.
+    ///
+    /// The control is the uncoloured marker beside it: it keeps the
+    /// neutral black-on-white default, byte-for-byte what an uncoloured
+    /// note has always produced.
+    #[test]
+    fn a_marker_carries_the_event_colour_as_its_fill_over_white_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("coloured.blf");
+        let mut w = BlfCaptureWriter::create(&dest).unwrap();
+        w.append_marker(TS_BASE_NS, "coloured", "id-1", 0x00FF_8800)
+            .unwrap();
+        w.append_marker(TS_BASE_NS + 1_000, "plain", "id-2", 0)
+            .unwrap();
+        w.finish().unwrap();
+
+        let mut reader = format::reader::BlfReader::open(&dest).unwrap();
+        let mut seen = Vec::new();
+        while let Some(obj) = reader.next_object().unwrap() {
+            if let format::reader::BlfObject::GlobalMarker(m) = obj {
+                seen.push(m);
+            }
+        }
+        assert_eq!(seen.len(), 2);
+
+        assert_eq!(seen[0].background_color, 0x00FF_8800);
+        assert_eq!(seen[0].foreground_color, 0x00FF_FFFF);
+        // Uncoloured: the build default, black on white.
+        assert_eq!(seen[1].background_color, 0x00FF_FFFF);
+        assert_eq!(seen[1].foreground_color, 0x0000_0000);
     }
 
     /// Without a sink, markers stay invisible to the frame adapter —

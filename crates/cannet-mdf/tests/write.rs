@@ -6,7 +6,7 @@
 use cannet_core::{CanFdFlags, CanFrame, CanFrameSource, CanId, Direction};
 use cannet_mdf::{
     FileSignal, MdfAttachment, MdfCanFrameSource, MdfCaptureLayout, MdfCaptureWriter, MdfEvent,
-    MdfWriteError,
+    MdfEventRange, MdfWriteError,
 };
 
 /// `hd_start_time_ns` of every capture below — an arbitrary wall clock
@@ -285,22 +285,24 @@ fn a_coded_signals_value_table_survives_the_write() {
 }
 
 #[test]
-fn timeline_events_come_back_with_their_time_and_properties() {
+fn timeline_events_come_back_with_their_time_text_and_properties() {
     let dir = tempfile::tempdir().expect("temp dir");
     let dest = dir.path().join("events.mf4");
     let events = vec![
         MdfEvent {
             timestamp_ns: START_NS + 1,
             name: "trigger armed".to_owned(),
+            text: "the harness armed it".to_owned(),
             properties: vec![
                 ("cannet.id".to_owned(), "3f1c-0".to_owned()),
                 ("cannet.color".to_owned(), "#FF8800".to_owned()),
             ],
+            range: None,
         },
         MdfEvent {
             timestamp_ns: START_NS + 12_345_678_901,
             name: "fault & recovery".to_owned(),
-            properties: Vec::new(),
+            ..MdfEvent::default()
         },
     ];
 
@@ -323,6 +325,96 @@ fn timeline_events_come_back_with_their_time_and_properties() {
     let source = MdfCanFrameSource::open(&dest).expect("opens");
     assert_eq!(source.events().expect("events read"), events);
     assert_eq!(cannet_mdf::scan_mdf(&dest).expect("scans").events, events);
+}
+
+/// A `##EV` block's begin/end pair is MDF's own, *typed* span. cannet has
+/// no span type (ADR 0056), so the pair is written only as interop — and
+/// what is written has to come back, in both directions of the link, or it
+/// says something the file does not mean.
+///
+/// The control is the third event: not in a range, and still a point.
+#[test]
+fn a_native_range_pair_links_both_ways_and_leaves_a_point_event_alone() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let dest = dir.path().join("range.mf4");
+    let events = vec![
+        MdfEvent {
+            timestamp_ns: START_NS + 1,
+            name: "contactor opens".to_owned(),
+            range: Some(MdfEventRange::Begin { end: 2 }),
+            ..MdfEvent::default()
+        },
+        MdfEvent {
+            timestamp_ns: START_NS + 2,
+            name: "unrelated".to_owned(),
+            ..MdfEvent::default()
+        },
+        MdfEvent {
+            timestamp_ns: START_NS + 3,
+            name: "contactor closes".to_owned(),
+            range: Some(MdfEventRange::End { begin: 0 }),
+            ..MdfEvent::default()
+        },
+    ];
+
+    let mut writer = MdfCaptureWriter::create(
+        &dest,
+        MdfCaptureLayout {
+            start_time_ns: START_NS,
+            max_payload_len: 8,
+        },
+    )
+    .expect("writer opens");
+    writer
+        .append_frame(&classic(START_NS, 0, 0x100, false, &[1]))
+        .expect("frame appends");
+    for event in &events {
+        writer.add_event(event.clone());
+    }
+    writer.finish().expect("writer finishes");
+
+    let source = MdfCanFrameSource::open(&dest).expect("opens");
+    assert_eq!(source.events().expect("events read"), events);
+}
+
+/// Every conformant reader has to see a user's note as a marker. The
+/// `mdf4-rs` enum this writer otherwise uses numbers `Marker` 2, which
+/// ASAM MDF 4.x assigns to `EV_T_ACQUISITION_INTERRUPT`; the standard's
+/// marker is 6. The byte in the file is the thing that matters, so it is
+/// what this asserts.
+#[test]
+fn an_event_is_written_as_the_standards_marker_type() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let dest = dir.path().join("evtype.mf4");
+    let mut writer = MdfCaptureWriter::create(
+        &dest,
+        MdfCaptureLayout {
+            start_time_ns: START_NS,
+            max_payload_len: 8,
+        },
+    )
+    .expect("writer opens");
+    writer
+        .append_frame(&classic(START_NS, 0, 0x100, false, &[1]))
+        .expect("frame appends");
+    writer.add_event(MdfEvent {
+        timestamp_ns: START_NS + 1,
+        name: "a note".to_owned(),
+        ..MdfEvent::default()
+    });
+    writer.finish().expect("writer finishes");
+
+    // Find the one ##EV block and read its ev_type: 24-byte block header,
+    // then the five fixed links this writer emits.
+    let bytes = std::fs::read(&dest).expect("reads back");
+    let at = (0..bytes.len() - 4)
+        .find(|i| &bytes[*i..*i + 4] == b"##EV")
+        .expect("the file carries an ##EV block");
+    assert_eq!(
+        bytes[at + 24 + 5 * 8],
+        6,
+        "EV_T_MARKER is 6 in ASAM MDF 4.x",
+    );
 }
 
 #[test]

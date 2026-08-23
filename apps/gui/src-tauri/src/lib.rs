@@ -48,6 +48,7 @@ mod dbc_commands;
 mod dbc_watcher;
 mod diag;
 mod emitters;
+mod event_text;
 mod trace_query;
 // `filter` and `trace_store` are `pub` so the `cannet-perf-measurement` performance
 // harness can drive the real host model — the same `TraceStore` and

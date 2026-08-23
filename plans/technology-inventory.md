@@ -363,7 +363,7 @@ without reshaping callers.
     unfinalized-file recovery and conversion (CC) handling are
     sound: over the user corpus its decode of plain signal channel
     groups matched asammdf on every one of 3,731 channel rows.
-    Two gaps qualify the adoption:
+    Three gaps qualify the adoption:
     - **It does not follow `cn_composition`** (the `##CN`
       `component_addr` link), so its own `channels()` never exposes
       `CAN_DataFrame.ID`/`.DLC`/`.DataBytes`/… and it yields no
@@ -380,6 +380,13 @@ without reshaping callers.
       data-block resolver used by the record iterator accepts only
       `##DT`/`##DV`/`##DL`/`##HL` and errors on `##DZ`. CANedge
       writes DZ and the task requires it.
+    - **Its `EventType` enum numbers `Marker` 2**, where ASAM MDF 4.x
+      puts `EV_T_MARKER` at 6 and assigns 2 to
+      `EV_T_ACQUISITION_INTERRUPT` (confirmed against asammdf's
+      `v4_constants`). `from_u8` also rejects 3–6 outright, so a
+      foreign file using those types silently parses as a marker.
+      `cannet-mdf`'s writer stamps the byte directly rather than
+      going through the enum; nothing in the reader consults it.
   - **What `cannet-mdf` ends up using** (settled when the reader
     landed, and the reason both gaps above cost less than they
     look). `mdf4-rs`'s *reader* types (`MDF`, `ChannelGroup`,
