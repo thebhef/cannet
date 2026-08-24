@@ -136,6 +136,30 @@ export function collapsedRunHeads(collapsed: readonly boolean[]): boolean[] {
   return collapsed.map((c, i) => c && !collapsed[i - 1]);
 }
 
+/** Index of the lowest axis that actually draws a plot canvas, or
+ * `null` when every axis in the stack is collapsed.
+ *
+ * Chrome that belongs to the *bottom of the plot column* rather than to
+ * one axis — the x-axis time label, the A/B cursor timestamps and their
+ * delta — renders on a single axis, and it has to be one with a canvas:
+ * a collapsed axis is a heading row with no uPlot behind it, so
+ * anchoring to the last axis positionally makes that chrome vanish the
+ * moment the bottom area is collapsed. */
+export function bottomDrawingAxis(collapsed: readonly boolean[]): number | null {
+  for (let i = collapsed.length - 1; i >= 0; i--) {
+    if (!collapsed[i]) return i;
+  }
+  return null;
+}
+
+/** The same, for the *top* of the plot column — where the event marker
+ * labels sit. Collapsing the topmost area took them with it for exactly
+ * the reason {@link bottomDrawingAxis} exists. */
+export function topDrawingAxis(collapsed: readonly boolean[]): number | null {
+  const at = collapsed.indexOf(false);
+  return at < 0 ? null : at;
+}
+
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
